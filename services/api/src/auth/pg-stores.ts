@@ -376,7 +376,7 @@ export class PgUserStore implements UserStore {
     await tx.execute(sql`
       WITH held AS (
         SELECT cleanup_id, role FROM cleanup_members
-        WHERE user_id = ${id} AND role IN ('cohost', 'staff')
+        WHERE user_id = ${id} AND role IN ('cohost', 'staff', 'coordinator')
       ), demoted AS (
         UPDATE cleanup_members m SET role = 'member'
         FROM held h

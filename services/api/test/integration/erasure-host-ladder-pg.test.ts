@@ -364,19 +364,35 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     expect(await statusOf(h, doomed)).toBe("cancelled")
   })
 
+  it("never hands the event to a coordinator - the successor ladder is org owner then cohost", async () => {
+    const h = pg!
+    const host = await user(h, "host-with-coordinator")
+    const coordinator = await user(h, "coordinator-not-successor")
+    const plain = await event(h, { organizerId: host })
+    await addEventMember(h, plain, coordinator, "coordinator", 1)
+
+    await new PgUserStore(h.db).softDeleteAndAnonymize(host)
+
+    expect(await statusOf(h, plain)).toBe("cancelled")
+    expect(await eventRoleOf(h, plain, coordinator)).toBe("coordinator")
+  })
+
   it("steps a tombstone down to member on other people's events and audits it with a null actor", async () => {
     const h = pg!
     const owner = await user(h, "other-host")
     const leaving = await user(h, "leaving-cohost")
     const cohosted = await event(h, { organizerId: owner })
     const staffed = await event(h, { organizerId: owner })
+    const coordinated = await event(h, { organizerId: owner })
     await addEventMember(h, cohosted, leaving, "cohost", 2)
     await addEventMember(h, staffed, leaving, "staff", 2)
+    await addEventMember(h, coordinated, leaving, "coordinator", 2)
 
     await new PgUserStore(h.db).softDeleteAndAnonymize(leaving)
 
     expect(await eventRoleOf(h, cohosted, leaving)).toBe("member")
     expect(await eventRoleOf(h, staffed, leaving)).toBe("member")
+    expect(await eventRoleOf(h, coordinated, leaving)).toBe("member")
 
     const rows = await h.sql<{ target: string; actor_id: string | null; meta: Record<string, unknown> }[]>`
       SELECT target, actor_id, meta FROM audit_log
@@ -384,11 +400,11 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
          AND meta->>'targetUserId' = ${leaving}
        ORDER BY target
     `
-    expect(rows).toHaveLength(2)
+    expect(rows).toHaveLength(3)
     for (const row of rows) {
       expect(row.actor_id).toBeNull()
       expect(row.meta.to).toBe("member")
     }
-    expect(rows.map((r) => r.meta.from).sort()).toEqual(["cohost", "staff"])
+    expect(rows.map((r) => r.meta.from).sort()).toEqual(["cohost", "coordinator", "staff"])
   })
 })

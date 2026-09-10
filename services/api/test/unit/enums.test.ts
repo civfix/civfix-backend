@@ -238,7 +238,7 @@ describe("schema enum tuples mirror @civfix/shared", () => {
   })
 
   it("NotificationType carries the five social-feed post interaction values (in order)", () => {
-    expect(NOTIFICATION_TYPE_VALUES.slice(-8, -3)).toEqual([
+    expect(NOTIFICATION_TYPE_VALUES.slice(-9, -4)).toEqual([
       "post_like",
       "post_repost",
       "post_reply",
@@ -251,15 +251,37 @@ describe("schema enum tuples mirror @civfix/shared", () => {
   })
 
   it("NotificationType carries the two service-hours values (LAST, in order)", () => {
-    expect(NOTIFICATION_TYPE_VALUES.slice(-3, -1)).toEqual(["cleanup_slot", "hours_logged"])
+    expect(NOTIFICATION_TYPE_VALUES.slice(-4, -2)).toEqual(["cleanup_slot", "hours_logged"])
     for (const t of ["cleanup_slot", "hours_logged"]) {
       expect(NotificationTypeSchema.options).toContain(t)
     }
   })
 
-  it("NotificationType carries the host-broadcast value LAST", () => {
-    expect(NOTIFICATION_TYPE_VALUES.at(-1)).toBe("event_broadcast")
-    expect(NotificationTypeSchema.options.at(-1)).toBe("event_broadcast")
+  it("NotificationType carries the host-broadcast value, then the event-team-invite value LAST", () => {
+    expect(NOTIFICATION_TYPE_VALUES.at(-2)).toBe("event_broadcast")
+    expect(NotificationTypeSchema.options.at(-2)).toBe("event_broadcast")
+    expect(NOTIFICATION_TYPE_VALUES.at(-1)).toBe("event_team_invite")
+    expect(NotificationTypeSchema.options.at(-1)).toBe("event_team_invite")
+  })
+
+  it("CleanupMemberRole appends coordinator LAST and EventTeamRole stays its invitable subset", () => {
+    expect(CLEANUP_MEMBER_ROLE_VALUES.at(-1)).toBe("coordinator")
+    expect([...EVENT_TEAM_ROLE_VALUES]).toEqual(["cohost", "staff", "coordinator"])
+    const positions = EVENT_TEAM_ROLE_VALUES.map((role) =>
+      (CLEANUP_MEMBER_ROLE_VALUES as readonly string[]).indexOf(role),
+    )
+    expect(positions.every((at) => at >= 0)).toBe(true)
+    expect([...positions]).toEqual([...positions].sort((a, b) => a - b))
+  })
+
+  it("EventTeamInviteStatus appends declined LAST, distinct from revoked", () => {
+    expect([...EVENT_TEAM_INVITE_STATUS_VALUES]).toEqual([
+      "pending",
+      "accepted",
+      "revoked",
+      "expired",
+      "declined",
+    ])
   })
 
   it("MediaPurpose matches the shared enum exactly", () => {

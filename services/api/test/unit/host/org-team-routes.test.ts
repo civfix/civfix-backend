@@ -13,6 +13,7 @@ import { makeInMemoryStores } from "../../../src/auth/stores.js"
 import { buildAuthServices } from "../../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../../helpers/auth.js"
 import { InMemoryOrganizationRepository } from "../../../src/services/host/organization-repository.memory.js"
+import { fakeCleanupReader } from "../../helpers/host-team.js"
 import { InMemoryHostTeamRepository } from "../../../src/services/host/host-team-repository.memory.js"
 import { hostForbiddenCopy } from "../../../src/services/host/authz.js"
 import type { HostStandingResolution } from "../../../src/services/host/host-standing.js"
@@ -68,6 +69,7 @@ async function makeHarness(): Promise<Harness> {
     hostTeamOverrides: {
       repo: team,
       counters: new InMemoryCounterStore(() => Date.now()),
+      loadEvent: fakeCleanupReader(),
       standing: (cleanupId: string, userId: string, capability: Parameters<typeof can>[1]) => {
         const role =
           team.members.find((m) => m.cleanupId === cleanupId && m.userId === userId)?.role ?? null

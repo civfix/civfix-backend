@@ -61,14 +61,23 @@ describe("the lanes the host jobs register", () => {
     resetRetentionLanesForTests()
   })
 
-  it("registers the registration lanes alongside the comms lanes", () => {
+  it("registers the registration and team-invite lanes alongside the comms lanes", () => {
     registerHostRetentionLanes()
     expect(registeredRetentionLanes().map((lane) => lane.name)).toEqual([
       "broadcast_deliveries",
       "broadcast_content",
       "host_exports",
+      "team_invite_expiry",
+      "team_invite_emails",
       "registrations",
     ])
+  })
+
+  it("wires the two cleanup_team_invites lanes docs/retention-cleanup.md promises", () => {
+    registerHostRetentionLanes()
+    const names = registeredRetentionLanes().map((lane) => lane.name)
+    expect(names).toContain("team_invite_expiry")
+    expect(names).toContain("team_invite_emails")
   })
 })
 

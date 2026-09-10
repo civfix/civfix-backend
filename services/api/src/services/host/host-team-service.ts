@@ -3,22 +3,33 @@ import {
   AppError,
   MAX_TEAM_INVITES_PER_EVENT,
   type AcceptEventTeamInviteResponse,
+  type AcceptMyEventInviteResponse,
+  type CleanupDTO,
+  type DeclineMyEventInviteResponse,
   type EventTeamInviteDTO,
   type EventTeamMemberDTO,
+  type EventTeamRole,
   type InviteEventTeamMemberRequest,
   type HostCapability,
   type ListEventTeamResponse,
+  type ListMyEventInvitesResponse,
+  type PendingEventTeamInviteDTO,
 } from "@civfix/shared"
 import { can } from "@civfix/shared/host"
 import { InMemoryCounterStore, type CounterStore } from "../../abuse/counter-store.js"
 import { generateToken, sha256Hex } from "../../auth/crypto.js"
 import { toAttendeePersonDTO } from "../cleanup-dto.js"
-import { requireCapability } from "./authz.js"
+import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import type { MessageKey } from "../../i18n/renderMessage.js"
+import type { CreateNotificationInput } from "../notification-service.js"
+import { isEventPubliclyVisible, requireCapability } from "./authz.js"
+import type { EventMediaPresigner } from "./event-media.js"
 import type { HostStandingResolution } from "./host-standing.js"
 import type {
   EventTeamInviteRecord,
   EventTeamMemberRecord,
   HostTeamRepository,
+  PendingInviteForUserRecord,
 } from "./host-team-repository.types.js"
 
 export const TEAM_INVITES_PER_EVENT_PER_DAY = 30
@@ -32,7 +43,17 @@ export const TEAM_MEMBER_CAP = 200
 
 export const TEAM_INVITE_LIST_CAP = 100
 
+export const MY_EVENT_INVITES_DEFAULT_LIMIT = 20
+
 export const TEAM_INVITE_TOKEN_BYTES = 32
+
+export const TEAM_INVITE_INBOX_LINK = "/"
+
+const TEAM_ROLE_LABEL_KEYS: Record<EventTeamRole, MessageKey> = {
+  cohost: "role.cohost",
+  coordinator: "role.coordinator",
+  staff: "role.staff",
+}
 
 const fallbackCounters = new InMemoryCounterStore()
 
@@ -48,11 +69,22 @@ export interface HostTeamStandingLookup {
   ): Promise<HostStandingResolution>
 }
 
+export interface HostTeamNotifier {
+  createNotification(userId: string, input: CreateNotificationInput): Promise<unknown>
+}
+
+export interface HostTeamEventLoader {
+  (cleanupId: string, viewerUserId: string): Promise<CleanupDTO>
+}
+
 export interface HostTeamServiceDeps {
   repo: HostTeamRepository
   standing: HostTeamStandingLookup
+  loadEvent: HostTeamEventLoader
   counters?: CounterStore
   mailer?: HostTeamMailer
+  notifier?: HostTeamNotifier
+  presignEventMedia?: EventMediaPresigner
   eventTitleOf?: (cleanupId: string) => Promise<string | null>
   webOrigin?: string
   logger?: { warn(obj: unknown, msg?: string): void }
@@ -74,8 +106,12 @@ export interface HostTeamService {
     userId: string,
     token: string,
   ): Promise<AcceptEventTeamInviteResponse>
-  scrubInviteEmails(limit: number): Promise<number>
-  expireStaleInvites(limit: number): Promise<number>
+  listMyInvites(
+    userId: string,
+    query: { cursor?: string; limit?: number },
+  ): Promise<ListMyEventInvitesResponse>
+  acceptMyInvite(userId: string, inviteId: string): Promise<AcceptMyEventInviteResponse>
+  declineMyInvite(userId: string, inviteId: string): Promise<DeclineMyEventInviteResponse>
 }
 
 export function maskEmail(email: string): string {
@@ -104,6 +140,28 @@ function toInviteDTO(record: EventTeamInviteRecord): EventTeamInviteDTO {
   }
 }
 
+function toPendingInviteDTO(
+  record: PendingInviteForUserRecord,
+  coverThumbUrl: string | null,
+): PendingEventTeamInviteDTO {
+  return {
+    id: record.id,
+    role: record.role,
+    event: {
+      id: record.event.id,
+      title: record.event.title,
+      startsAt: record.event.startsAt.toISOString(),
+      endsAt: record.event.endsAt === null ? null : record.event.endsAt.toISOString(),
+      status: record.event.status,
+      coverThumbUrl,
+      address: record.event.address,
+    },
+    invitedBy: record.invitedBy === null ? null : toAttendeePersonDTO(record.invitedBy, false),
+    createdAt: record.createdAt.toISOString(),
+    expiresAt: record.expiresAt.toISOString(),
+  }
+}
+
 function toMemberDTO(
   record: EventTeamMemberRecord,
   opts: { canManage: boolean; actorId: string },
@@ -128,13 +186,13 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
   async function notifyInvitee(
     email: string,
     cleanupId: string,
+    title: string,
     role: string,
     token: string,
   ): Promise<void> {
     if (deps.mailer === undefined) return
-    const title = (await deps.eventTitleOf?.(cleanupId)) ?? "a civfix event"
     const base = deps.webOrigin ?? "https://civfix.org"
-    const link = `${base}/cleanups/${cleanupId}?teamInvite=${encodeURIComponent(token)}`
+    const link = `${base}/cleanups/${cleanupId}#teamInvite=${encodeURIComponent(token)}`
     try {
       await deps.mailer.sendTransactional(email, "generic", {
         subject: `You've been invited to help run ${title}`,
@@ -142,6 +200,28 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
       })
     } catch (err) {
       deps.logger?.warn({ err, cleanupId }, "event team invite email failed (suppressed)")
+    }
+  }
+
+  async function notifyInvitedUser(
+    userId: string,
+    cleanupId: string,
+    title: string,
+    role: EventTeamRole,
+  ): Promise<void> {
+    if (deps.notifier === undefined) return
+    try {
+      await deps.notifier.createNotification(userId, {
+        type: "event_team_invite",
+        titleKey: "notification.event_team_invite.title",
+        bodyKey: "notification.event_team_invite.body",
+        vars: { title },
+        varKeys: { role: TEAM_ROLE_LABEL_KEYS[role] },
+        link: TEAM_INVITE_INBOX_LINK,
+        push: "auto",
+      })
+    } catch (err) {
+      deps.logger?.warn({ err, cleanupId }, "event team invite notification failed (suppressed)")
     }
   }
 
@@ -165,16 +245,6 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
       input: Omit<InviteEventTeamMemberRequest, "id">,
     ): Promise<{ ok: true; invite: EventTeamInviteDTO }> {
       await deps.standing(cleanupId, actorId, "manage_team")
-      const sent = await counters.incr(`host:teamInvites:${cleanupId}`, TEAM_INVITE_WINDOW_SEC)
-      if (sent > TEAM_INVITES_PER_EVENT_PER_DAY) {
-        throw AppError.rateLimited(
-          "This event has sent too many team invitations today. Please try again tomorrow.",
-        )
-      }
-      const pending = await deps.repo.countPendingInvites(cleanupId)
-      if (pending >= MAX_TEAM_INVITES_PER_EVENT) {
-        throw AppError.conflict("This event already has the maximum number of open invitations.")
-      }
       const byEmail = input.identifierKind === "email"
       const resolved = byEmail ? null : await deps.repo.resolveUserByHandle(input.identifier)
       if (!byEmail && resolved === null) {
@@ -183,6 +253,23 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
       const invitedUserId = resolved?.userId ?? null
       const typedEmail = byEmail ? input.identifier.toLowerCase() : null
       const notifyAt = typedEmail ?? resolved?.email ?? null
+      const alreadyOpen = await deps.repo.findOpenInvite({
+        cleanupId,
+        invitedUserId,
+        invitedEmail: typedEmail,
+      })
+      if (alreadyOpen === null) {
+        const sent = await counters.incr(`host:teamInvites:${cleanupId}`, TEAM_INVITE_WINDOW_SEC)
+        if (sent > TEAM_INVITES_PER_EVENT_PER_DAY) {
+          throw AppError.rateLimited(
+            "This event has sent too many team invitations today. Please try again tomorrow.",
+          )
+        }
+        const pending = await deps.repo.countPendingInvites(cleanupId)
+        if (pending >= MAX_TEAM_INVITES_PER_EVENT) {
+          throw AppError.conflict("This event already has the maximum number of open invitations.")
+        }
+      }
       const token = newToken()
       const outcome = await deps.repo.createInviteTx({
         inviteId: newId(),
@@ -198,17 +285,21 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
       if (outcome.kind === "already_member") {
         throw AppError.conflict("That person is already on the event team.")
       }
-      if (outcome.kind === "already_invited") {
-        throw AppError.conflict("That person already has an open invitation.")
-      }
       if (outcome.kind === "banned") {
         throw AppError.forbidden("A host removed that person from this event.")
       }
       if (outcome.kind === "closed") {
         throw AppError.conflict("This event is closed, so its team can no longer change.")
       }
+      if (outcome.kind === "already_invited" || outcome.kind === "updated") {
+        return { ok: true, invite: toInviteDTO(outcome.invite) }
+      }
+      const eventTitle = (await deps.eventTitleOf?.(cleanupId)) ?? "a civfix event"
       if (notifyAt !== null) {
-        await notifyInvitee(notifyAt, cleanupId, input.role, token)
+        await notifyInvitee(notifyAt, cleanupId, eventTitle, input.role, token)
+      }
+      if (invitedUserId !== null) {
+        await notifyInvitedUser(invitedUserId, cleanupId, eventTitle, input.role)
       }
       return { ok: true, invite: toInviteDTO(outcome.invite) }
     },
@@ -250,16 +341,64 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
       return { ok: true, role: outcome.role }
     },
 
-    scrubInviteEmails(limit: number): Promise<number> {
-      return deps.repo.scrubInviteEmails(
-        new Date(now().getTime() - TEAM_INVITE_EMAIL_SCRUB_DELAY_MS),
+    async listMyInvites(
+      userId: string,
+      query: { cursor?: string; limit?: number },
+    ): Promise<ListMyEventInvitesResponse> {
+      const limit = query.limit ?? MY_EVENT_INVITES_DEFAULT_LIMIT
+      const { items, nextCursor } = await deps.repo.listInvitesForUser({
+        userId,
+        now: now(),
+        cursor: query.cursor ?? null,
         limit,
+      })
+      const presign = deps.presignEventMedia
+      const coverUrls = await mapWithLimit(items, PRESIGN_CONCURRENCY, (record) =>
+        record.event.coverKey === null || presign === undefined
+          ? Promise.resolve(null)
+          : presign(record.event.coverKey, {
+              forceSigned: !isEventPubliclyVisible(record.event.visibility),
+            }),
       )
+      return {
+        items: items.map((record, index) =>
+          toPendingInviteDTO(record, coverUrls[index] ?? null),
+        ),
+        nextCursor,
+      }
     },
 
-    expireStaleInvites(limit: number): Promise<number> {
-      return deps.repo.expireStaleInvites(now(), limit)
+    async acceptMyInvite(userId: string, inviteId: string): Promise<AcceptMyEventInviteResponse> {
+      const outcome = await deps.repo.acceptInviteByIdTx({ inviteId, userId, now: now() })
+      if (outcome.kind === "not_found") {
+        throw AppError.notFound("That invitation is no longer valid.")
+      }
+      if (outcome.kind === "not_open") {
+        throw AppError.conflict("That invitation is no longer open.")
+      }
+      if (outcome.kind === "expired") throw AppError.conflict("That invitation has expired.")
+      if (outcome.kind === "closed") {
+        throw AppError.conflict("This event is closed, so its team can no longer change.")
+      }
+      if (outcome.kind === "banned") {
+        throw AppError.forbidden("A host removed you from this event, so you can't rejoin it.")
+      }
+      const event = await deps.loadEvent(outcome.cleanupId, userId)
+      return { ok: true, role: outcome.role, event }
     },
+
+    async declineMyInvite(
+      userId: string,
+      inviteId: string,
+    ): Promise<DeclineMyEventInviteResponse> {
+      const outcome = await deps.repo.declineInviteTx({ inviteId, userId, now: now() })
+      if (outcome === "not_found") throw AppError.notFound("That invitation is no longer valid.")
+      if (outcome === "not_pending") {
+        throw AppError.conflict("That invitation is no longer open.")
+      }
+      return { ok: true }
+    },
+
   }
 }
 

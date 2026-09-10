@@ -46,6 +46,9 @@ export const cleanupTeamInvites = pgTable(
     uniqueIndex("cleanup_team_invites_pending_email_uidx")
       .on(t.cleanupId, t.invitedEmail)
       .where(sql`${t.status} = 'pending' and ${t.invitedEmail} is not null`),
+    index("cleanup_team_invites_invitee_pending_idx")
+      .on(t.invitedUserId, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.status} = 'pending' and ${t.invitedUserId} is not null`),
     index("cleanup_team_invites_expiry_idx")
       .on(t.expiresAt)
       .where(sql`${t.status} = 'pending'`),

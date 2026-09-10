@@ -1,13 +1,26 @@
 import { randomUUID } from "node:crypto"
-import type { CleanupMemberRole, EventTeamInviteStatus, EventTeamRole } from "@civfix/shared"
+import type {
+  CleanupMemberRole,
+  CleanupStatus,
+  EventTeamInviteStatus,
+  EventTeamRole,
+  EventVisibility,
+} from "@civfix/shared"
+import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
 import type { CleanupPersonView } from "../cleanup-repository.types.js"
 import type {
+  AcceptTeamInviteByIdOutcome,
   AcceptTeamInviteOutcome,
   CreateTeamInviteArgs,
   CreateTeamInviteOutcome,
+  DeclineTeamInviteOutcome,
   EventTeamInviteRecord,
   EventTeamMemberRecord,
   HostTeamRepository,
+  InviteEventView,
+  ListInvitesForUserArgs,
+  OpenTeamInviteQuery,
+  PendingInviteForUserRecord,
   RevokeTeamInviteOutcome,
 } from "./host-team-repository.types.js"
 
@@ -36,14 +49,27 @@ interface StoredPerson {
 const ROLE_ORDER: Record<CleanupMemberRole, number> = {
   organizer: 0,
   cohost: 1,
-  staff: 2,
-  member: 3,
+  coordinator: 2,
+  staff: 3,
+  member: 4,
 }
 
-const TEAM_ROLE_RANK: Record<string, number> = { organizer: 4, cohost: 3, staff: 2, member: 1 }
+const TEAM_ROLE_RANK: Record<string, number> = {
+  organizer: 5,
+  cohost: 4,
+  coordinator: 3,
+  staff: 2,
+  member: 1,
+}
+
+const CLOSED_EVENT_STATUSES: CleanupStatus[] = ["cancelled", "done"]
 
 function teamRoleRank(role: string): number {
   return TEAM_ROLE_RANK[role] ?? 0
+}
+
+function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
 }
 
 export class InMemoryHostTeamRepository implements HostTeamRepository {
@@ -52,8 +78,14 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
   readonly invites: StoredInvite[] = []
   readonly bans: { cleanupId: string; userId: string }[] = []
   readonly closedEvents = new Set<string>()
+  readonly events = new Map<string, InviteEventView>()
   readonly users = new Map<string, StoredPerson>()
-  readonly audits: { actorId: string; action: string; target: string }[] = []
+  readonly audits: {
+    actorId: string
+    action: string
+    target: string
+    meta?: Record<string, unknown>
+  }[] = []
 
   seedUser(over: Partial<StoredPerson> = {}): StoredPerson {
     const person: StoredPerson = {
@@ -78,18 +110,60 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
     else this.members.push({ cleanupId, userId, role, joinedAt })
   }
 
+  seedEvent(cleanupId: string, over: Partial<InviteEventView> = {}): InviteEventView {
+    const event: InviteEventView = {
+      id: cleanupId,
+      title: over.title ?? "Beach cleanup",
+      startsAt: over.startsAt ?? new Date("2026-10-01T17:00:00.000Z"),
+      endsAt: over.endsAt ?? null,
+      status: over.status ?? ("upcoming" as CleanupStatus),
+      visibility: over.visibility ?? ("public" as EventVisibility),
+      coverKey: over.coverKey ?? null,
+      address: over.address ?? null,
+    }
+    this.events.set(cleanupId, event)
+    return event
+  }
+
+  private eventOf(cleanupId: string): InviteEventView {
+    const event = this.events.get(cleanupId) ?? this.seedEvent(cleanupId)
+    return this.closedEvents.has(cleanupId) ? { ...event, status: "cancelled" } : { ...event }
+  }
+
+  private isClosed(cleanupId: string): boolean {
+    return CLOSED_EVENT_STATUSES.includes(this.eventOf(cleanupId).status)
+  }
+
   seedBan(cleanupId: string, userId: string): void {
     this.bans.push({ cleanupId, userId })
   }
 
-  private personOf(userId: string): CleanupPersonView {
-    const stored = this.users.get(userId) ?? this.seedUser({ id: userId })
+  private personOf(userId: string): CleanupPersonView | null {
+    const stored = this.users.get(userId)
+    if (stored === undefined) return null
     return {
       id: stored.id,
       displayName: stored.displayName,
       handle: stored.handle,
       bio: null,
     }
+  }
+
+  private seatMember(
+    cleanupId: string,
+    userId: string,
+    role: EventTeamRole,
+    now: Date,
+  ): CleanupMemberRole {
+    const existing = this.members.find((m) => m.cleanupId === cleanupId && m.userId === userId)
+    if (existing === undefined) {
+      this.members.push({ cleanupId, userId, role, joinedAt: now })
+      return role
+    }
+    if (existing.role !== "organizer" && teamRoleRank(role) > teamRoleRank(existing.role)) {
+      existing.role = role
+    }
+    return existing.role
   }
 
   private toInviteRecord(invite: StoredInvite): EventTeamInviteRecord {
@@ -114,17 +188,20 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
         (a, b) =>
           ROLE_ORDER[a.role] - ROLE_ORDER[b.role] ||
           a.joinedAt.getTime() - b.joinedAt.getTime() ||
-          a.userId.localeCompare(b.userId),
+          compareIds(a.userId, b.userId),
       )
+      .flatMap((m) => {
+        const person = this.personOf(m.userId)
+        return person === null ? [] : [{ person, role: m.role, joinedAt: m.joinedAt }]
+      })
       .slice(0, limit)
-      .map((m) => ({ person: this.personOf(m.userId), role: m.role, joinedAt: m.joinedAt }))
     return Promise.resolve(rows)
   }
 
   listInvites(cleanupId: string, limit: number): Promise<EventTeamInviteRecord[]> {
     const rows = this.invites
       .filter((i) => i.cleanupId === cleanupId && i.status === "pending")
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareIds(b.id, a.id))
       .slice(0, limit)
       .map((i) => this.toInviteRecord(i))
     return Promise.resolve(rows)
@@ -141,8 +218,25 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
     return Promise.resolve(match === undefined ? null : { userId: match.id, email: match.email })
   }
 
+  private openInviteFor(args: OpenTeamInviteQuery): StoredInvite | undefined {
+    return [...this.invites]
+      .reverse()
+      .find(
+        (i) =>
+          i.cleanupId === args.cleanupId &&
+          i.status === "pending" &&
+          ((i.invitedUserId !== null && i.invitedUserId === args.invitedUserId) ||
+            (i.invitedEmail !== null && i.invitedEmail === args.invitedEmail)),
+      )
+  }
+
+  findOpenInvite(query: OpenTeamInviteQuery): Promise<EventTeamInviteRecord | null> {
+    const open = this.openInviteFor(query)
+    return Promise.resolve(open === undefined ? null : this.toInviteRecord(open))
+  }
+
   createInviteTx(args: CreateTeamInviteArgs): Promise<CreateTeamInviteOutcome> {
-    if (this.closedEvents.has(args.cleanupId)) return Promise.resolve({ kind: "closed" })
+    if (this.isClosed(args.cleanupId)) return Promise.resolve({ kind: "closed" })
     if (args.invitedUserId !== null) {
       const member = this.members.find(
         (m) => m.cleanupId === args.cleanupId && m.userId === args.invitedUserId,
@@ -155,14 +249,21 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
       )
       if (banned) return Promise.resolve({ kind: "banned" })
     }
-    const open = this.invites.find(
-      (i) =>
-        i.cleanupId === args.cleanupId &&
-        i.status === "pending" &&
-        ((i.invitedUserId !== null && i.invitedUserId === args.invitedUserId) ||
-          (i.invitedEmail !== null && i.invitedEmail === args.invitedEmail)),
-    )
-    if (open !== undefined) return Promise.resolve({ kind: "already_invited" })
+    const open = this.openInviteFor(args)
+    if (open !== undefined) {
+      if (open.role === args.role) {
+        return Promise.resolve({ kind: "already_invited", invite: this.toInviteRecord(open) })
+      }
+      const from = open.role
+      open.role = args.role
+      this.audits.push({
+        actorId: args.invitedBy,
+        action: "event.team_role_changed",
+        target: `cleanup:${args.cleanupId}`,
+        meta: { inviteId: open.id, from, to: args.role },
+      })
+      return Promise.resolve({ kind: "updated", invite: this.toInviteRecord(open) })
+    }
     const invite: StoredInvite = {
       id: args.inviteId,
       cleanupId: args.cleanupId,
@@ -212,7 +313,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
     userId: string
     now: Date
   }): Promise<AcceptTeamInviteOutcome> {
-    if (this.closedEvents.has(args.cleanupId)) return Promise.resolve({ kind: "closed" })
+    if (this.isClosed(args.cleanupId)) return Promise.resolve({ kind: "closed" })
     const invite = this.invites.find(
       (i) => i.tokenHash === args.tokenHash && i.cleanupId === args.cleanupId,
     )
@@ -236,19 +337,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
     if (this.bans.some((b) => b.cleanupId === args.cleanupId && b.userId === args.userId)) {
       return Promise.resolve({ kind: "banned" })
     }
-    const existing = this.members.find(
-      (m) => m.cleanupId === args.cleanupId && m.userId === args.userId,
-    )
-    if (existing === undefined) {
-      this.members.push({
-        cleanupId: args.cleanupId,
-        userId: args.userId,
-        role: invite.role,
-        joinedAt: args.now,
-      })
-    } else if (existing.role !== "organizer" && teamRoleRank(invite.role) > teamRoleRank(existing.role)) {
-      existing.role = invite.role
-    }
+    const seated = this.seatMember(args.cleanupId, args.userId, invite.role, args.now)
     invite.status = "accepted"
     invite.acceptedAt = args.now
     invite.invitedEmail = null
@@ -258,38 +347,137 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
       action: "event.team_role_changed",
       target: `cleanup:${args.cleanupId}`,
     })
-    const role =
-      this.members.find((m) => m.cleanupId === args.cleanupId && m.userId === args.userId)?.role ??
-      invite.role
-    return Promise.resolve({ kind: "accepted", role })
+    return Promise.resolve({ kind: "accepted", role: seated })
+  }
+
+  listInvitesForUser(
+    args: ListInvitesForUserArgs,
+  ): Promise<{ items: PendingInviteForUserRecord[]; nextCursor: string | null }> {
+    const cursor = parseTimeCursor(args.cursor)
+    const rows = this.invites
+      .filter(
+        (i) =>
+          i.invitedUserId === args.userId &&
+          i.status === "pending" &&
+          i.expiresAt.getTime() > args.now.getTime() &&
+          !this.isClosed(i.cleanupId),
+      )
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareIds(b.id, a.id))
+      .filter(
+        (i) =>
+          cursor === null ||
+          i.createdAt.getTime() < cursor.at.getTime() ||
+          (i.createdAt.getTime() === cursor.at.getTime() && i.id < cursor.id),
+      )
+      .slice(0, args.limit + 1)
+      .map(
+        (i): PendingInviteForUserRecord => ({
+          id: i.id,
+          role: i.role,
+          event: this.eventOf(i.cleanupId),
+          invitedBy: this.personOf(i.invitedBy),
+          createdAt: i.createdAt,
+          expiresAt: i.expiresAt,
+        }),
+      )
+    return Promise.resolve(
+      pageWith(rows, args.limit, (last) =>
+        encodeTimeCursor({ at: last.createdAt, id: last.id }),
+      ),
+    )
+  }
+
+  acceptInviteByIdTx(args: {
+    inviteId: string
+    userId: string
+    now: Date
+  }): Promise<AcceptTeamInviteByIdOutcome> {
+    const invite = this.invites.find(
+      (i) => i.id === args.inviteId && i.invitedUserId === args.userId,
+    )
+    if (invite === undefined) return Promise.resolve({ kind: "not_found" })
+    const cleanupId = invite.cleanupId
+    if (invite.status === "accepted") {
+      const held = this.members.find(
+        (m) => m.cleanupId === cleanupId && m.userId === args.userId,
+      )?.role
+      return Promise.resolve(
+        held === undefined ? { kind: "not_open" } : { kind: "accepted", cleanupId, role: held },
+      )
+    }
+    if (invite.status !== "pending") return Promise.resolve({ kind: "not_open" })
+    if (this.isClosed(cleanupId)) return Promise.resolve({ kind: "closed" })
+    if (invite.expiresAt.getTime() <= args.now.getTime()) {
+      invite.status = "expired"
+      invite.invitedEmail = null
+      invite.emailScrubbedAt = args.now
+      return Promise.resolve({ kind: "expired" })
+    }
+    if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === args.userId)) {
+      return Promise.resolve({ kind: "banned" })
+    }
+    const role = this.seatMember(cleanupId, args.userId, invite.role, args.now)
+    invite.status = "accepted"
+    invite.acceptedAt = args.now
+    invite.invitedEmail = null
+    invite.emailScrubbedAt = args.now
+    this.audits.push({
+      actorId: args.userId,
+      action: "event.team_role_changed",
+      target: `cleanup:${cleanupId}`,
+    })
+    return Promise.resolve({ kind: "accepted", cleanupId, role })
+  }
+
+  declineInviteTx(args: {
+    inviteId: string
+    userId: string
+    now: Date
+  }): Promise<DeclineTeamInviteOutcome> {
+    const invite = this.invites.find(
+      (i) => i.id === args.inviteId && i.invitedUserId === args.userId,
+    )
+    if (invite === undefined) return Promise.resolve("not_found")
+    if (invite.status !== "pending") return Promise.resolve("not_pending")
+    invite.status = "declined"
+    invite.invitedEmail = null
+    invite.emailScrubbedAt = args.now
+    this.audits.push({
+      actorId: args.userId,
+      action: "event.team_invite_declined",
+      target: `cleanup:${invite.cleanupId}`,
+    })
+    return Promise.resolve("declined")
+  }
+
+  private byExpiryAsc(match: (invite: StoredInvite) => boolean, limit: number): StoredInvite[] {
+    return this.invites
+      .filter(match)
+      .sort((a, b) => a.expiresAt.getTime() - b.expiresAt.getTime() || compareIds(a.id, b.id))
+      .slice(0, limit)
   }
 
   scrubInviteEmails(before: Date, limit: number): Promise<number> {
-    let scrubbed = 0
-    for (const invite of this.invites) {
-      if (scrubbed >= limit) break
-      if (
+    const due = this.byExpiryAsc(
+      (invite) =>
         invite.invitedEmail !== null &&
         invite.emailScrubbedAt === null &&
-        invite.expiresAt.getTime() < before.getTime()
-      ) {
-        invite.invitedEmail = null
-        invite.emailScrubbedAt = before
-        scrubbed += 1
-      }
+        invite.expiresAt.getTime() < before.getTime(),
+      limit,
+    )
+    for (const invite of due) {
+      invite.invitedEmail = null
+      invite.emailScrubbedAt = before
     }
-    return Promise.resolve(scrubbed)
+    return Promise.resolve(due.length)
   }
 
   expireStaleInvites(now: Date, limit: number): Promise<number> {
-    let expired = 0
-    for (const invite of this.invites) {
-      if (expired >= limit) break
-      if (invite.status === "pending" && invite.expiresAt.getTime() < now.getTime()) {
-        invite.status = "expired"
-        expired += 1
-      }
-    }
-    return Promise.resolve(expired)
+    const due = this.byExpiryAsc(
+      (invite) => invite.status === "pending" && invite.expiresAt.getTime() <= now.getTime(),
+      limit,
+    )
+    for (const invite of due) invite.status = "expired"
+    return Promise.resolve(due.length)
   }
 }

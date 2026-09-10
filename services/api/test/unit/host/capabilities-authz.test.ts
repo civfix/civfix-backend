@@ -8,7 +8,14 @@ import {
   isEventPubliclyVisible,
 } from "../../../src/services/host/authz.js"
 
-const EVENT_ROLES: (CleanupMemberRole | null)[] = [null, "organizer", "cohost", "staff", "member"]
+const EVENT_ROLES: (CleanupMemberRole | null)[] = [
+  null,
+  "organizer",
+  "cohost",
+  "coordinator",
+  "staff",
+  "member",
+]
 const ORG_ROLES: (OrganizationMemberRole | null)[] = [null, "owner", "admin", "member"]
 
 describe("host capability matrix (backend realm)", () => {
@@ -49,6 +56,46 @@ describe("host capability matrix (backend realm)", () => {
     expect(can({ eventRole: "staff", orgRole: null }, "view_guest_contact")).toBe(false)
     expect(can({ eventRole: "staff", orgRole: null }, "view_answers")).toBe(false)
     expect(can({ eventRole: "staff", orgRole: null }, "broadcast")).toBe(false)
+  })
+
+  it("coordinator runs the day and changes nothing", () => {
+    const coordinator = hostCapabilities({ eventRole: "coordinator", orgRole: null })
+    expect([...coordinator].sort()).toEqual(
+      [
+        "broadcast",
+        "check_in",
+        "moderate_chat",
+        "view_analytics",
+        "view_answers",
+        "view_event_private",
+        "view_roster",
+      ].sort(),
+    )
+    for (const capability of [
+      "view_guest_contact",
+      "export",
+      "manage_event",
+      "manage_tickets",
+      "manage_page",
+      "manage_team",
+      "cancel_event",
+      "manage_org_link",
+      "request_resources",
+      "manage_payments",
+      "view_donations",
+    ] as HostCapability[]) {
+      expect(can({ eventRole: "coordinator", orgRole: null }, capability), capability).toBe(false)
+    }
+  })
+
+  it("coordinator sits strictly between staff and cohost", () => {
+    const staff = hostCapabilities({ eventRole: "staff", orgRole: null })
+    const coordinator = hostCapabilities({ eventRole: "coordinator", orgRole: null })
+    const cohost = hostCapabilities({ eventRole: "cohost", orgRole: null })
+    for (const capability of staff) expect(coordinator.has(capability), capability).toBe(true)
+    for (const capability of coordinator) expect(cohost.has(capability), capability).toBe(true)
+    expect(coordinator.size).toBeGreaterThan(staff.size)
+    expect(coordinator.size).toBeLessThan(cohost.size)
   })
 
   it("plain member and no standing hold nothing", () => {

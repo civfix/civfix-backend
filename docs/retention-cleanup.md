@@ -315,8 +315,9 @@ must outlive the in-flight and stale-claim windows by a wide margin.
 Organizations, ticketed registration, host broadcasts and donations each add
 stores with their own rule. Everything below is enforced by the
 `host.retention.sweep` cron (`HOST_RETENTION_CRON`, default `35 4 * * *`) unless
-another lane is named; every lane is bounded (500 rows × 20 pages per run) and
-NEVER throws — a failed lane is logged and the next lane still runs.
+another lane is named; every lane is bounded (`RETENTION_BATCH_SIZE` = 1000 rows ×
+`RETENTION_MAX_PAGES` = 50 pages per run, `retention-lanes.ts`) and NEVER throws —
+a failed lane is logged and the next lane still runs.
 
 ### Organizations and event team
 
@@ -324,8 +325,8 @@ NEVER throws — a failed lane is logged and the next lane still runs.
 |---|---|---|
 | `org_verifications.ein_number` | NULLed **90 days** after `reviewed_at`; `ein_scrubbed_at` records it. The row (kind, decision, document list, reviewer) is kept — it is the audit trail of a verification decision. | `host.retention.sweep` → `organizationService.scrubDecidedEins(limit)` |
 | `org_verifications.documents` | Kept as an id list; the underlying media are `purpose = 'verification'` assets and follow the verification-media rules. Never exported to the organization or to `/me/data-export`. | — |
-| `cleanup_team_invites.invited_email` | NULLed **7 days after `expires_at`**, and immediately on accept or revoke; `email_scrubbed_at` records it. The row is kept as the record of who was given standing on the event. | `host.retention.sweep` → `hostTeamService.scrubInviteEmails(limit)` + the accept/revoke statements |
-| `cleanup_team_invites.status` | `pending` → `expired` once `expires_at` passes. | `host.retention.sweep` → `hostTeamService.expireStaleInvites(limit)` |
+| `cleanup_team_invites.invited_email` | NULLed **7 days after `expires_at`** (`TEAM_INVITE_EMAIL_SCRUB_DELAY_MS`), and immediately on accept, decline or revoke; `email_scrubbed_at` records it. The row is kept as the record of who was given standing on the event. | `host.retention.sweep` → `team_invite_emails` lane (`comms-jobs.ts`, applying `TEAM_INVITE_EMAIL_SCRUB_DELAY_MS` from `host-team-service.ts` to `hostTeamRepository.scrubInviteEmails`) + the accept/decline/revoke statements |
+| `cleanup_team_invites.status` | `pending` → `expired` at or after `expires_at` (`expires_at <= now`, the same inclusive boundary the accept path applies, so the sweep never disagrees with a live accept). `declined` (the invitee refused) and `revoked` (the host withdrew) are set on the spot and are terminal; neither blocklists a re-invite. | `host.retention.sweep` → `team_invite_expiry` lane (`comms-jobs.ts` → `hostTeamRepository.expireStaleInvites`); `HostTeamService` does not own a retention entry point. |
 | `event_consents` | **Never scrubbed, never swept.** Deleted only with its event (`ON DELETE CASCADE`); `registration_id` is `ON DELETE SET NULL` (0121) so the consent artifact survives a registration that does not. It holds no contact detail of its own — the subject is a foreign key — and it is the artifact THAT consent existed, including the `surface` it was captured on. | — |
 
 ### Registration and check-in

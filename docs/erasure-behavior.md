@@ -83,7 +83,9 @@ one erasure transaction):
    whose `organization_id` points at a live organization with a live owner. A
    `cleanup_members` row with `role = 'organizer'` is upserted for them.
 2. Otherwise **the senior cohost** — the earliest `joined_at` cohost whose account
-   is still live — is promoted to organizer.
+   is still live — is promoted to organizer. Only `cohost` is a successor:
+   `coordinator` and `staff` were invited to run a day, not to own an event, so a
+   coordinator-only event is cancelled at rung 5 rather than handed over.
 3. An `event.host_transferred` audit row is written for every event that moved.
 4. The departing organizer keeps no `organizer` row on an event they no longer
    own (demoted to `member`).
@@ -117,9 +119,9 @@ Two rungs of that scrub exist for a reason:
   against a person who no longer exists. The statement uses the same `releases`
   shape as the guest-cancel CTE, so a type row is touched at most once, and the
   released type ids are handed to a post-commit `waitlist.promote` job.
-- **A `cohost` or `staff` row on someone else's event is stepped down to
-  `member`.** The organizer rung already demotes the departing organizer; without
-  this one a tombstone stays on the team roster as "Deleted User — cohost" and
+- **A `cohost`, `coordinator` or `staff` row on someone else's event is stepped
+  down to `member`.** The organizer rung already demotes the departing organizer;
+  without this one a tombstone stays on the team roster as "Deleted User — cohost" and
   keeps receiving the realtime host-team signals (`hostTeamUserIds`). Each
   step-down writes an `event.team_role_changed` audit row with a **null actor** —
   nobody performed it; the erasure did.
