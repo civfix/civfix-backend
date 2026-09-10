@@ -6,7 +6,7 @@ import { abuseFlags } from "../db/schema/moderation.js"
 import { moderationItems } from "../db/schema/moderation_items.js"
 import { reports } from "../db/schema/reports.js"
 import { jurisdictions } from "../db/schema/jurisdictions.js"
-import type { Db, Queryable } from "../db/client.js"
+import type { Db, Queryable, Sql } from "../db/client.js"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 
 export { normalizeEtag, readEtag } from "./media-etag.js"
@@ -112,7 +112,7 @@ function toAsset(row: typeof mediaAssets.$inferSelect): MediaWorkerAsset {
   }
 }
 
-export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
+export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
   return {
     async findById(id: string): Promise<MediaWorkerAsset | null> {
       const rows = await db.select().from(mediaAssets).where(eq(mediaAssets.id, id)).limit(1)
@@ -206,7 +206,6 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
     },
 
     async findOrphans(olderThan: Date, limit: number): Promise<OrphanRow[]> {
-      const tag = db.$client
       const rows = await tag<OrphanRow[]>`
         SELECT ${ORPHAN_COLUMNS_SQL(tag)}
           FROM media_assets
@@ -217,7 +216,6 @@ export function makeDrizzleMediaWorkerRepo(db: Db): MediaWorkerRepo {
     },
 
     async deleteOrphan(id: string, olderThan: Date): Promise<OrphanRow | null> {
-      const tag = db.$client
       const rows = await tag<OrphanRow[]>`
         DELETE FROM media_assets
          WHERE media_assets.id = ${id}::uuid

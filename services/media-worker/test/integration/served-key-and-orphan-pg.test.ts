@@ -18,7 +18,7 @@ describe.skipIf(!pg)("served_key + conditional orphan reap (integration)", () =>
 
   beforeAll(() => {
     h = pg as WorkerPgHarness
-    repo = makeDrizzleMediaWorkerRepo(h.db)
+    repo = makeDrizzleMediaWorkerRepo(h.db, h.sql)
     storage = new FakeStorage()
   })
 
@@ -125,8 +125,9 @@ describe.skipIf(!pg)("served_key + conditional orphan reap (integration)", () =>
   })
 
   async function insertUser(name: string): Promise<string> {
+    const handle = `user${randomUUID().replace(/-/g, "").slice(0, 12)}`
     const [row] = await h.sql<{ id: string }[]>`
-      INSERT INTO users (display_name) VALUES (${name}) RETURNING id
+      INSERT INTO users (display_name, handle) VALUES (${name}, ${handle}) RETURNING id
     `
     if (!row) throw new Error("failed to insert user fixture")
     return row.id

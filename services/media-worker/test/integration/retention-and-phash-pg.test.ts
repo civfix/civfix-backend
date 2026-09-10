@@ -2,7 +2,7 @@
  * The worker's RAW SQL against the canonical migrated schema (Docker-gated; SKIPS without Docker).
  *
  * Two pieces of the worker talk to Postgres in hand-written SQL and were only ever exercised against
- * fakes: runRetentionSweep (five paged DELETE ... RETURNING statements, spy-
+ * fakes: runRetentionSweep (five paged DELETE ... RETURNING statements plus the inbound-email lane, spy-
  * tested as STRINGS, so a wrong column or table name was invisible) and makePhashDuplicateLookup (replaced
  * by an injected stub in every unit test, and its interpolated `AND id <> $1` / `AND report_id IS DISTINCT
  * FROM $2` fragments plus ORDER BY created_at are exactly the kind of thing a string spy cannot check).
@@ -17,6 +17,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
+import { FakeStorage } from "@civfix/shared/fakes"
 import { runRetentionSweep } from "../../src/jobs/retention-sweep.js"
 import { buildSeams, type WorkerSeams } from "../../src/seams.js"
 import { withWorkerPg, type WorkerPgHarness } from "../helpers/pg.js"
@@ -58,13 +59,14 @@ afterAll(async () => {
 describe.skipIf(!pg)("retention.sweep against the real schema", () => {
   const NOW = new Date("2026-06-20T12:00:00Z")
 
-  /** A deterministic baseline: these five tables hold ONLY what each test puts in them. */
+  /** A deterministic baseline: these six tables hold ONLY what each test puts in them. */
   beforeEach(async () => {
     await h.sql`DELETE FROM email_otps`
     await h.sql`DELETE FROM anon_tokens`
     await h.sql`DELETE FROM sessions`
     await h.sql`DELETE FROM idempotency_keys`
     await h.sql`DELETE FROM notifications`
+    await h.sql`DELETE FROM inbound_emails`
   })
 
   const at = (ms: number): Date => new Date(NOW.getTime() + ms)
@@ -120,7 +122,29 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     return row!.id
   }
 
-  it("deletes exactly the expired/consumed rows in all five tables and keeps the live ones", async () => {
+  async function insertInboundEmail(opts: {
+    archivedAt: Date | null
+    attachmentKey?: string
+  }): Promise<string> {
+    const attachments =
+      opts.attachmentKey === undefined
+        ? []
+        : [{ key: opts.attachmentKey, filename: "scan.pdf", size: 3 }]
+    const [row] = await h.sql<{ id: string }[]>`
+      INSERT INTO inbound_emails (message_id, status, attachments, received_at, archived_at)
+      VALUES (
+        ${`<${randomUUID()}@example.com>`},
+        ${opts.archivedAt === null ? "unread" : "archived"},
+        ${h.sql.json(attachments)},
+        ${opts.archivedAt ?? NOW},
+        ${opts.archivedAt}
+      )
+      RETURNING id
+    `
+    return row!.id
+  }
+
+  it("deletes exactly the expired/consumed rows in all six tables and keeps the live ones", async () => {
     // Doomed: past the 1h grace cutoff, or consumed regardless of expiry.
     const expiredOtp = await insertOtp({ expiresAt: at(-3 * HOUR) })
     const consumedButValidOtp = await insertOtp({ expiresAt: at(3 * HOUR), consumedAt: at(-HOUR) })
@@ -137,7 +161,18 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     const recentKey = await insertIdempotencyKey(at(-2 * HOUR))
     const recentNotification = await insertNotification(at(-24 * HOUR))
 
-    const res = await runRetentionSweep({ sql: h.sql, now: () => NOW, log: () => {} })
+    // inbound_emails is reaped on archived_at, 180 days, and only after its attachment objects are gone.
+    const attachmentKey = `inbound/${randomUUID()}.pdf`
+    const storage = new FakeStorage()
+    await storage.put(attachmentKey, Buffer.from([1, 2, 3]), { contentType: "application/pdf" })
+    const archivedEmail = await insertInboundEmail({
+      archivedAt: at(-200 * 24 * HOUR),
+      attachmentKey,
+    })
+    const recentlyArchivedEmail = await insertInboundEmail({ archivedAt: at(-10 * 24 * HOUR) })
+    const unarchivedEmail = await insertInboundEmail({ archivedAt: null })
+
+    const res = await runRetentionSweep({ sql: h.sql, now: () => NOW, log: () => {}, storage })
 
     expect(res).toEqual({
       otps: 2,
@@ -145,6 +180,8 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
       sessions: 1,
       idempotencyKeys: 1,
       notifications: 1,
+      inboundEmails: 1,
+      inboundEmailObjectsLeaked: 0,
       errors: 0,
     })
 
@@ -168,16 +205,30 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     const notifications = await h.sql<{ id: string }[]>`SELECT id FROM notifications`
     expect(notifications.map((r) => r.id)).toEqual([recentNotification])
     expect(notifications.map((r) => r.id)).not.toContain(oldNotification)
+
+    const emails = await h.sql<{ id: string }[]>`SELECT id FROM inbound_emails`
+    expect(emails.map((r) => r.id).sort()).toEqual(
+      [recentlyArchivedEmail, unarchivedEmail].sort(),
+    )
+    expect(emails.map((r) => r.id)).not.toContain(archivedEmail)
+    expect(storage.get(attachmentKey)).toBeNull()
   })
 
   it("is a no-op on an empty database (no throw, all zeroes)", async () => {
-    const res = await runRetentionSweep({ sql: h.sql, now: () => NOW, log: () => {} })
+    const res = await runRetentionSweep({
+      sql: h.sql,
+      now: () => NOW,
+      log: () => {},
+      storage: new FakeStorage(),
+    })
     expect(res).toEqual({
       otps: 0,
       anonTokens: 0,
       sessions: 0,
       idempotencyKeys: 0,
       notifications: 0,
+      inboundEmails: 0,
+      inboundEmailObjectsLeaked: 0,
       errors: 0,
     })
   })
