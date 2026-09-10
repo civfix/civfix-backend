@@ -74,6 +74,40 @@ const EXPECTED_TABLES = [
   "cleanup_slots",
   "cleanup_slot_claims",
   "service_hours_certificates",
+  "organizations",
+  "organization_members",
+  "organization_invites",
+  "org_verifications",
+  "event_consents",
+  "cleanup_team_invites",
+  "cleanup_ticket_types",
+  "cleanup_registrations",
+  "cleanup_registration_seats",
+  "cleanup_waitlist",
+  "cleanup_questions",
+  "cleanup_answers",
+  "cleanup_pages",
+  "cleanup_page_media",
+  "broadcasts",
+  "broadcast_deliveries",
+  "broadcast_unsubscribes",
+  "cleanup_broadcast_mutes",
+  "email_suppressions",
+  "event_metrics_daily",
+  "host_exports",
+  "org_stripe_accounts",
+  "org_donation_settings",
+  "org_donation_agreement_changes",
+  "org_eligibility",
+  "org_eligibility_checks",
+  "eligibility_source_revisions",
+  "donations",
+  "donation_refunds",
+  "donation_disputes",
+  "donation_reconciliation_runs",
+  "stripe_events",
+  "legal_documents",
+  "consent_records",
 ] as const
 
 const FOREIGN_TABLES = new Set([
@@ -515,18 +549,90 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
     mirror: schema.VERIFICATION_STATUS_VALUES,
     omitted: ["unverified"],
   },
+  { table: "cleanups", column: "visibility", mirror: schema.EVENT_VISIBILITY_VALUES },
+  { table: "organizations", column: "verified_status", mirror: schema.ORG_VERIFICATION_STATUS_VALUES },
+  { table: "organizations", column: "verified_kind", mirror: schema.ORG_VERIFICATION_KIND_VALUES },
+  { table: "organization_members", column: "role", mirror: schema.ORGANIZATION_MEMBER_ROLE_VALUES },
+  { table: "organization_invites", column: "role", mirror: schema.ORGANIZATION_INVITE_ROLE_VALUES },
+  { table: "organization_invites", column: "status", mirror: schema.ORGANIZATION_INVITE_STATUS_VALUES },
+  { table: "org_verifications", column: "status", mirror: schema.ORG_VERIFICATION_STATUS_VALUES },
+  { table: "org_verifications", column: "kind", mirror: schema.ORG_VERIFICATION_KIND_VALUES },
+  { table: "event_consents", column: "subject_type", mirror: schema.EVENT_CONSENT_SUBJECT_TYPE_VALUES },
+  { table: "cleanup_team_invites", column: "role", mirror: schema.EVENT_TEAM_ROLE_VALUES },
+  { table: "cleanup_team_invites", column: "status", mirror: schema.EVENT_TEAM_INVITE_STATUS_VALUES },
+  { table: "cleanup_ticket_types", column: "visibility", mirror: schema.TICKET_TYPE_VISIBILITY_VALUES },
+  { table: "cleanup_registrations", column: "status", mirror: schema.REGISTRATION_STATUS_VALUES },
+  { table: "cleanup_registrations", column: "source", mirror: schema.REGISTRATION_SOURCE_VALUES },
+  { table: "cleanup_registration_seats", column: "status", mirror: schema.SEAT_STATUS_VALUES },
+  { table: "cleanup_registration_seats", column: "checkin_method", mirror: schema.CHECKIN_METHOD_VALUES },
+  { table: "cleanup_waitlist", column: "status", mirror: schema.WAITLIST_STATUS_VALUES },
+  { table: "cleanup_questions", column: "kind", mirror: schema.EVENT_QUESTION_KIND_VALUES },
+  { table: "cleanup_pages", column: "status", mirror: schema.EVENT_PAGE_STATUS_VALUES },
+  { table: "cleanup_pages", column: "theme_accent", mirror: schema.THEME_ACCENT_VALUES },
+  { table: "broadcasts", column: "kind", mirror: schema.BROADCAST_KIND_VALUES },
+  { table: "broadcasts", column: "status", mirror: schema.BROADCAST_STATUS_VALUES },
+  { table: "broadcast_deliveries", column: "channel", mirror: schema.BROADCAST_CHANNEL_VALUES },
+  { table: "broadcast_deliveries", column: "status", mirror: schema.DELIVERY_STATUS_VALUES },
+  { table: "broadcast_deliveries", column: "recipient_kind", mirror: schema.BROADCAST_RECIPIENT_KIND_VALUES },
+  {
+    table: "broadcast_deliveries",
+    column: "suppression_reason",
+    mirror: schema.DELIVERY_SUPPRESSION_REASON_VALUES,
+  },
+  { table: "broadcast_deliveries", column: "failure_kind", mirror: schema.DELIVERY_FAILURE_KIND_VALUES },
+  { table: "broadcast_unsubscribes", column: "scope", mirror: schema.UNSUBSCRIBE_SCOPE_VALUES },
+  { table: "broadcast_unsubscribes", column: "reason", mirror: schema.UNSUBSCRIBE_REASON_VALUES },
+  { table: "email_suppressions", column: "reason", mirror: schema.EMAIL_SUPPRESSION_REASON_VALUES },
+  { table: "host_exports", column: "kind", mirror: schema.HOST_EXPORT_KIND_VALUES },
+  { table: "host_exports", column: "status", mirror: schema.HOST_EXPORT_STATUS_VALUES },
+  { table: "org_stripe_accounts", column: "onboarding_state", mirror: schema.ORG_PAYMENTS_STATE_VALUES },
+  {
+    table: "org_donation_settings",
+    column: "disabled_reason",
+    mirror: schema.DONATIONS_DISABLED_REASON_VALUES,
+  },
+  {
+    table: "org_donation_agreement_changes",
+    column: "change_kind",
+    mirror: schema.AGREEMENT_CHANGE_KIND_VALUES,
+  },
+  { table: "org_eligibility", column: "verdict", mirror: schema.ELIGIBILITY_VERDICT_VALUES },
+  { table: "org_eligibility", column: "ein_source", mirror: schema.EIN_SOURCE_VALUES },
+  { table: "org_eligibility_checks", column: "source", mirror: schema.ELIGIBILITY_SOURCE_VALUES },
+  {
+    table: "org_eligibility_checks",
+    column: "verdict_contribution",
+    mirror: schema.ELIGIBILITY_VERDICT_CONTRIBUTION_VALUES,
+  },
+  { table: "eligibility_source_revisions", column: "source", mirror: schema.ELIGIBILITY_SOURCE_VALUES },
+  { table: "donations", column: "status", mirror: schema.DONATION_STATUS_VALUES },
+  { table: "donations", column: "dispute_state", mirror: schema.DONATION_DISPUTE_STATE_VALUES },
+  {
+    table: "donation_refunds",
+    column: "app_fee_refund_state",
+    mirror: schema.APP_FEE_REFUND_STATE_VALUES,
+  },
+  { table: "donation_disputes", column: "state", mirror: schema.DONATION_DISPUTE_STATE_VALUES },
+  { table: "donation_reconciliation_runs", column: "status", mirror: schema.RECONCILIATION_STATUS_VALUES },
+  { table: "stripe_events", column: "scope", mirror: schema.STRIPE_EVENT_SCOPE_VALUES },
+  { table: "legal_documents", column: "type", mirror: schema.LEGAL_DOCUMENT_TYPE_VALUES },
+  { table: "consent_records", column: "subject_kind", mirror: schema.CONSENT_SUBJECT_KIND_VALUES },
+  { table: "consent_records", column: "surface", mirror: schema.CONSENT_SURFACE_VALUES },
   { table: "chat_groups", column: "kind", mirror: ["group", "channel"] },
   { table: "chat_groups", column: "visibility", mirror: ["private", "public"] },
   { table: "volunteer_hours", column: "source", mirror: ["report", "event", "manual"] },
   { table: "reports", column: "verification_verdict", mirror: ["approved", "rejected"] },
+  { table: "broadcast_unsubscribes", column: "subject_kind", mirror: ["user", "guest"] },
 ]
 
+const CONSTRAINT_QUALIFIERS = /(?:\s+NO INHERIT)?(?:\s+NOT VALID)?$/
 const VALUE_SET_CHECK = /^CHECK \(\((\w+) = ANY \(ARRAY\[(.+)\]\)\)\)$/
 const NULLABLE_VALUE_SET_CHECK =
   /^CHECK \(\(\((\w+) IS NULL\) OR \(\1 = ANY \(ARRAY\[(.+)\]\)\)\)\)$/
 
 function parseValueSet(def: string): { column: string; values: string[] } | null {
-  const m = VALUE_SET_CHECK.exec(def) ?? NULLABLE_VALUE_SET_CHECK.exec(def)
+  const expression = def.replace(CONSTRAINT_QUALIFIERS, "")
+  const m = VALUE_SET_CHECK.exec(expression) ?? NULLABLE_VALUE_SET_CHECK.exec(expression)
   if (m === null) return null
   const values = [...m[2]!.matchAll(/'((?:[^']|'')*)'::text/g)].map((x) => x[1]!.replace(/''/g, "'"))
   return { column: m[1]!, values }
@@ -549,7 +655,10 @@ describe.skipIf(!pg)("schema: enum mirrors match the DDL CHECK constraints", () 
     const out = new Map<string, string[]>()
     for (const r of rows) {
       const parsed = parseValueSet(r.def)
-      if (parsed !== null) out.set(`${r.tbl}.${parsed.column}`, parsed.values)
+      if (parsed === null) continue
+      const key = `${r.tbl}.${parsed.column}`
+      const prior = out.get(key)
+      out.set(key, prior === undefined ? parsed.values : prior.filter((v) => parsed.values.includes(v)))
     }
     return out
   }

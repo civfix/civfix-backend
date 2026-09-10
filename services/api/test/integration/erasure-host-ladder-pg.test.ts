@@ -224,8 +224,12 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     `
     const ticketType = typeRows[0]!.id
     await h.sql`
-      INSERT INTO cleanup_waitlist (cleanup_id, ticket_type_id, user_id, party_size, status, offered_at)
-      VALUES (${target}, ${ticketType}, ${waiter}, 2, 'offered', now())
+      INSERT INTO cleanup_waitlist (
+        cleanup_id, ticket_type_id, user_id, party_size, status, offered_at, claim_expires_at
+      )
+      VALUES (
+        ${target}, ${ticketType}, ${waiter}, 2, 'offered', now(), now() + interval '10 minutes'
+      )
     `
     await h.sql`
       INSERT INTO cleanup_waitlist (cleanup_id, ticket_type_id, user_id, party_size, status, offered_at)
@@ -319,8 +323,12 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     `
     const ticketType = typeRows[0]!.id
     await h.sql`
-      INSERT INTO cleanup_waitlist (cleanup_id, ticket_type_id, user_id, party_size, status, offered_at)
-      VALUES (${target}, ${ticketType}, ${waiter}, 2, 'offered', now())
+      INSERT INTO cleanup_waitlist (
+        cleanup_id, ticket_type_id, user_id, party_size, status, offered_at, claim_expires_at
+      )
+      VALUES (
+        ${target}, ${ticketType}, ${waiter}, 2, 'offered', now(), now() + interval '10 minutes'
+      )
     `
     const enqueued: { name: string; data: unknown; opts: unknown }[] = []
 

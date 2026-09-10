@@ -15,6 +15,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { publishMediaAsReady } from "../helpers/media-pg.js"
 import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
@@ -150,21 +151,24 @@ describe.skipIf(!pg)("media routes (integration)", () => {
       payload: { kind: "image", contentType: "image/webp", byteSize: 4096, sha256: "e".repeat(64) },
     })
     const { uploadId } = createRes.json()
-    const [row] = await h.sql<{ id: string; r2_key: string }[]>`
-      SELECT id, r2_key FROM media_assets WHERE upload_id = ${uploadId}
+    const [row] = await h.sql<{ id: string }[]>`
+      SELECT id FROM media_assets WHERE upload_id = ${uploadId}
     `
 
     // While validating -> 404 on the public path.
     const notReady = await app.inject({ method: "GET", url: `/v1/media/${row!.id}` })
     expect(notReady.statusCode).toBe(404)
 
-    // Flip to ready (as the worker would) and re-fetch.
-    await h.sql`UPDATE media_assets SET status = 'ready', width = 800, height = 600 WHERE id = ${row!.id}`
+    // Flip to ready (as the worker would: publish the processed bytes to served_key, then CAS) and
+    // re-fetch. A ready row whose served_key is still NULL stays a 404 — that is the pre-0097 state
+    // db:backfill-served-key adopts.
+    const servedKey = await publishMediaAsReady(h.sql, row!.id)
+    await h.sql`UPDATE media_assets SET width = 800, height = 600 WHERE id = ${row!.id}`
     const ready = await app.inject({ method: "GET", url: `/v1/media/${row!.id}` })
     expect(ready.statusCode).toBe(200)
     const dto = ready.json()
     expect(dto.status).toBe("ready")
-    expect(dto.url).toBe(`memory://${row!.r2_key}`)
+    expect(dto.url).toBe(`memory://${servedKey}`)
     expect(dto.width).toBe(800)
   })
 })

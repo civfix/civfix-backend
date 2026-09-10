@@ -81,7 +81,7 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
   const databaseUrl = (source.DATABASE_URL ?? "").trim()
   if (databaseUrl) {
     dbHandle = makeDb(databaseUrl)
-    repo = makeDrizzleMediaWorkerRepo(dbHandle.db)
+    repo = makeDrizzleMediaWorkerRepo(dbHandle.db, dbHandle.sql)
     anonHoldRepo = makeDrizzleAnonHoldReleaseRepo(dbHandle.sql)
   } else if (source.NODE_ENV === "production") {
     throw new Error("media-worker: DATABASE_URL is required in production to persist media results")

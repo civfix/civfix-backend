@@ -203,8 +203,9 @@ describe.skipIf(!pg)("check-in idempotency (integration)", () => {
     await register(upcoming, await newUser("Future"))
     expect(await repo.sweepNoShows({ now: new Date(), limit: 100 })).toBe(0)
 
-    const done = await newCleanup(organizer, PAST, "done")
+    const done = await newCleanup(organizer, PAST)
     await register(done, await newUser("Past"))
+    await h.sql`UPDATE cleanups SET status = 'done' WHERE id = ${done}`
     expect(await repo.sweepNoShows({ now: new Date(), limit: 100 })).toBe(1)
   })
 })

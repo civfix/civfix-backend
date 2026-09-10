@@ -1,4 +1,5 @@
 
+import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import {
@@ -27,10 +28,17 @@ function insert(over: Partial<InboundEmailInsert> = {}): InboundEmailInsert {
 describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
   let h: PgHarness
   let repo: InboundRepository
+  let operatorId: string
 
-  beforeAll(() => {
+  beforeAll(async () => {
     h = pg as PgHarness
     repo = makeDrizzleInboundRepository(h.sql)
+    const operator = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name, handle, role)
+      VALUES ('Inbox Operator', ${`op_${randomUUID().replace(/-/g, "").slice(0, 12)}`}, 'operator')
+      RETURNING id
+    `
+    operatorId = operator[0]!.id
   })
 
   beforeEach(async () => {
@@ -130,17 +138,17 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     }
 
     expect(await read()).toBeNull()
-    await repo.setStatus(id, "read", "op-1")
+    await repo.setStatus(id, "read", operatorId)
     expect(await read()).toBeNull()
 
-    await repo.setStatus(id, "archived", "op-1")
+    await repo.setStatus(id, "archived", operatorId)
     const first = await read()
     expect(first).toBeInstanceOf(Date)
 
-    await repo.setStatus(id, "archived", "op-1")
+    await repo.setStatus(id, "archived", operatorId)
     expect((await read())?.getTime()).toBe(first!.getTime())
 
-    await repo.setStatus(id, "unread", "op-1")
+    await repo.setStatus(id, "unread", operatorId)
     expect(await read()).toBeNull()
   })
 
@@ -158,8 +166,8 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     const fresh = await repo.insertIdempotent(insert({ messageId: "<fresh-archived@x>" }))
     const unread = await repo.insertIdempotent(insert({ messageId: "<still-unread@x>" }))
 
-    await repo.setStatus(stale.id, "archived", "op-1")
-    await repo.setStatus(fresh.id, "archived", "op-1")
+    await repo.setStatus(stale.id, "archived", operatorId)
+    await repo.setStatus(fresh.id, "archived", operatorId)
     await h.sql`
       UPDATE inbound_emails SET archived_at = now() - make_interval(secs => ${long / 1000})
       WHERE id = ${stale.id}

@@ -261,7 +261,7 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
   it("B1: 0100 settles every pre-existing inbound row, so none of them enter the pending set", async () => {
     const [report] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
-      VALUES ('pre-migration-1', ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
+      VALUES (gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
               'published', '8a2a1072b59ffff', ${GEOID})
       RETURNING id
     `
@@ -314,7 +314,7 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
   it("findMessagesPendingEffects returns only affiliated, unapplied, thread-bound inbound messages", async () => {
     const [report] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
-      VALUES ('pending-effects-1', ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
+      VALUES (gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
               'published', '8a2a1072b59ffff', ${GEOID})
       RETURNING id
     `

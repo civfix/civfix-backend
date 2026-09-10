@@ -17,6 +17,7 @@ import { servableMediaFilter, servedKeyExpr } from "./media-served-key.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./host/event-media.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup } from "./media-bindings.js"
 import { isUniqueViolationOn } from "./host/registration-sql.js"
+import { deterministicUuid } from "./deterministic-uuid.js"
 import type {
   AttendeeView,
   CancelCleanupOutcome,
@@ -188,11 +189,15 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     return rows[0] ? toRecord(rows[0]) : null
   }
 
+  function idempotencyRowKey(idem: CleanupIdempotency): string {
+    return deterministicUuid([idem.scope, idem.userOrAnon ?? "", idem.key])
+  }
+
   async function readIdempotentCleanupId(idem: CleanupIdempotency): Promise<string | null> {
     const rows = await sql<{ response_snapshot: { cleanupId?: string } }[]>`
       SELECT response_snapshot
       FROM idempotency_keys
-      WHERE key = ${idem.key}
+      WHERE key = ${idempotencyRowKey(idem)}
         AND scope = ${idem.scope}
         AND user_or_anon IS NOT DISTINCT FROM ${idem.userOrAnon}
       LIMIT 1
@@ -263,7 +268,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             await tx`
               INSERT INTO idempotency_keys (key, scope, user_or_anon, response_snapshot)
               VALUES (
-                ${idem.key},
+                ${idempotencyRowKey(idem)},
                 ${idem.scope},
                 ${idem.userOrAnon},
                 ${sql.json({ cleanupId: args.cleanupId })}

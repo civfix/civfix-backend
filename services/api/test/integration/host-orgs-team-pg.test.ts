@@ -1,7 +1,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { withPg, type PgHarness } from "../helpers/pg.js"
+import { testHandle, withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeDrizzleOrganizationRepository } from "../../src/services/host/organization-repository.drizzle.js"
 import { makeDrizzleHostTeamRepository } from "../../src/services/host/host-team-repository.drizzle.js"
@@ -36,7 +36,7 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
   async function newUser(name: string, handle?: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name, handle)
-      VALUES (${name}, ${handle ?? `h-${randomUUID().slice(0, 12)}`})
+      VALUES (${name}, ${handle ?? testHandle()})
       RETURNING id
     `
     return (u as { id: string }).id
@@ -283,7 +283,10 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
     const owner = await newUser("Slugger")
     const slug = `page-${randomUUID().slice(0, 8)}`
     const first = await newEvent(owner, { pageSlug: slug })
-    await expectPgError(() => newEvent(owner, { pageSlug: slug }), UNIQUE_VIOLATION)
+    await expect(newEvent(owner, { pageSlug: slug })).rejects.toMatchObject({
+      code: "VALIDATION",
+      fields: { pageSlug: "that address is already taken" },
+    })
     const found = await cleanups.findCleanupByPageSlug(slug)
     expect(found?.id).toBe(first)
   })
@@ -577,24 +580,30 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
   })
 
   it("never demotes the organizer when they accept an invite for a lesser role", async () => {
-    const organizer = await newUser("Boss")
-    const eventId = await newEvent(organizer)
+    const host = await newUser("Boss")
+    const eventId = await newEvent(host)
+    const promoted = await newUser("Deputy")
     const tokenHash = `hash-${randomUUID()}`
     await team.createInviteTx({
       inviteId: randomUUID(),
       cleanupId: eventId,
-      invitedUserId: organizer,
+      invitedUserId: promoted,
       invitedEmail: null,
       role: "staff",
       tokenHash,
-      invitedBy: organizer,
+      invitedBy: host,
       expiresAt: new Date(Date.now() + 86_400_000),
       now: new Date(),
     })
+    await h.sql`
+      INSERT INTO cleanup_members (cleanup_id, user_id, role)
+      VALUES (${eventId}, ${promoted}, 'organizer')
+      ON CONFLICT (cleanup_id, user_id) DO UPDATE SET role = 'organizer'
+    `
     const accepted = await team.acceptInviteTx({
       cleanupId: eventId,
       tokenHash,
-      userId: organizer,
+      userId: promoted,
       now: new Date(),
     })
     expect(accepted).toEqual({ kind: "accepted", role: "organizer" })
