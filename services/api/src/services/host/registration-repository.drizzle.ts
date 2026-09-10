@@ -12,8 +12,8 @@ import {
 import { isCleanupTerminal } from "../cleanup-rules.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup } from "../media-bindings.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./event-media.js"
+import { deterministicUuid } from "../deterministic-uuid.js"
 import {
-  deterministicUuid,
   isCheckViolationOn,
   isReservedSeatsBackstopViolation,
   isUniqueViolationOn,
