@@ -593,11 +593,13 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           logo_key: string | null
           verified_status: OrgVerificationStatus
           verified_kind: OrgVerificationKind | null
+          suspended: boolean
         }[]
       >`
         SELECT o.id, o.slug, o.name,
                ${servedKeyExpr(sql, "am")} AS logo_key,
-               o.verified_status, o.verified_kind
+               o.verified_status, o.verified_kind,
+               (o.suspended_at IS NOT NULL) AS suspended
         FROM organizations o
         LEFT JOIN media_assets am ON am.id = o.logo_media_id
         WHERE o.id = ${organizationId} AND o.deleted_at IS NULL
@@ -612,6 +614,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         logoKey: row.logo_key,
         verifiedStatus: row.verified_status,
         verifiedKind: row.verified_kind,
+        suspended: row.suspended,
       }
     },
 

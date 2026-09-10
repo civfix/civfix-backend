@@ -17,6 +17,7 @@ const CONTEXT: EventBroadcastContext = {
   address: null,
   status: "upcoming",
   organizerUserId: "00000000-0000-0000-0000-0000000000aa",
+  organizationSuspended: false,
   replyTo: null,
   replyToVerified: false,
 }

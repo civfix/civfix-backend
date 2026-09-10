@@ -31,4 +31,13 @@ export const EVENT_TEAM_INVITE_STATUS_VALUES = [
   "expired",
 ] as const
 
+export const ORGANIZATION_INVITE_ROLE_VALUES = ["admin", "member"] as const
+
+export const ORGANIZATION_INVITE_STATUS_VALUES = [
+  "pending",
+  "accepted",
+  "revoked",
+  "expired",
+] as const
+
 export const EVENT_CONSENT_SUBJECT_TYPE_VALUES = ["user", "guest"] as const

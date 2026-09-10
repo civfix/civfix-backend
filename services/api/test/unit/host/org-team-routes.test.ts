@@ -24,11 +24,16 @@ interface Harness {
   app: FastifyInstance
   orgs: InMemoryOrganizationRepository
   team: InMemoryHostTeamRepository
+  mailer: FakeMailer
   token: string
   userId: string
   cookie: string
   csrf: string
+  /** Sign in a second account (OTP) and return its bearer token. */
+  signIn(email: string): Promise<string>
 }
+
+const INVITE_TOKEN = "org-invite-token-0123456789abcdefghijklmnop"
 
 let current: Harness | undefined
 
@@ -57,6 +62,8 @@ async function makeHarness(): Promise<Harness> {
     organizationOverrides: {
       repo: orgs,
       counters: new InMemoryCounterStore(() => Date.now()),
+      newToken: () => INVITE_TOKEN,
+      mailer,
     },
     hostTeamOverrides: {
       repo: team,
@@ -112,14 +119,32 @@ async function makeHarness(): Promise<Harness> {
   const cookie = cookieList.map((c) => c.split(";")[0]).join("; ")
   const csrf = (web.json() as { csrfToken?: string }).csrfToken ?? ""
 
+  async function signIn(otherEmail: string): Promise<string> {
+    await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email: otherEmail } })
+    const otherCode = mailer.lastOtpFor(otherEmail) as string
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/auth/otp/verify",
+      headers: { "x-client": "mobile" },
+      payload: { email: otherEmail, code: otherCode },
+    })
+    const body = res.json() as { token: string; user: { id: string } }
+    // The org repo's user table is separate from the auth stores: mirror the account so the invite's
+    // email-match rule can see it.
+    orgs.seedUser({ id: body.user.id, displayName: otherEmail, email: otherEmail })
+    return body.token
+  }
+
   const h: Harness = {
     app,
     orgs,
     team,
+    mailer,
     token: bearerBody.token,
     userId: bearerBody.user.id,
     cookie,
     csrf,
+    signIn,
   }
   current = h
   return h
@@ -190,6 +215,23 @@ describe("organization routes", () => {
       headers: auth(token),
     })
     expect(mine.json().items).toHaveLength(1)
+  })
+
+  it("lowercases the slug at the edge and finds it by any casing", async () => {
+    const { app, token, orgs } = await makeHarness()
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/orgs",
+      headers: auth(token),
+      payload: { name: "Ballona Creek Trust", slug: "Ballona-Creek-Trust" },
+    })
+    expect(created.statusCode).toBe(201)
+    expect(created.json().slug).toBe("ballona-creek-trust")
+    expect([...orgs.organizations.values()][0]?.slug).toBe("ballona-creek-trust")
+
+    const bySlug = await app.inject({ method: "GET", url: "/v1/orgs/by-slug/BALLONA-creek-TRUST" })
+    expect(bySlug.statusCode).toBe(200)
+    expect(bySlug.json().slug).toBe("ballona-creek-trust")
   })
 
   it("404s an unknown slug", async () => {
@@ -327,5 +369,273 @@ describe("portfolio route", () => {
       headers: auth(token),
     })
     expect(res.statusCode).toBe(422)
+  })
+})
+
+describe("organization invites + suspension routes (0.41.0)", () => {
+  async function ownedOrg(h: Harness): Promise<string> {
+    h.orgs.seedUser({ id: h.userId, displayName: "Host", handle: "host", email: "host@example.com" })
+    const created = await h.app.inject({
+      method: "POST",
+      url: "/v1/orgs",
+      headers: auth(h.token),
+      payload: { name: "Ballona Creek Trust", slug: "ballona-creek-trust" },
+    })
+    return (created.json() as { id: string }).id
+  }
+
+  it("emails an invite to an address with no account, lists it, and revokes it", async () => {
+    const h = await makeHarness()
+    const id = await ownedOrg(h)
+    const invited = await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${id}/members`,
+      headers: auth(h.token),
+      payload: { identifierKind: "email", identifier: "newcomer@example.org", role: "member" },
+    })
+    expect(invited.statusCode).toBe(200)
+    const body = invited.json() as { member: null; invited: boolean; invite: { id: string; status: string } }
+    expect(body.member).toBeNull()
+    expect(body.invited).toBe(true)
+    expect(body.invite).toMatchObject({ status: "pending", role: "member", email: "newcomer@example.org" })
+    const mail = h.mailer.sent.find((m) => m.to === "newcomer@example.org")
+    expect(mail).toBeDefined()
+    expect(JSON.stringify(mail)).toContain(`/manage/org-invites/accept#token=${INVITE_TOKEN}`)
+    expect(JSON.stringify(mail)).not.toContain("?token=")
+
+    const listed = await h.app.inject({
+      method: "GET",
+      url: `/v1/orgs/${id}/invites`,
+      headers: auth(h.token),
+    })
+    expect(listed.statusCode).toBe(200)
+    expect((listed.json() as { items: { id: string }[] }).items.map((i) => i.id)).toEqual([body.invite.id])
+
+    const revoked = await h.app.inject({
+      method: "DELETE",
+      url: `/v1/orgs/${id}/invites/${body.invite.id}`,
+      headers: auth(h.token),
+    })
+    expect(revoked.statusCode).toBe(200)
+    expect((await h.app.inject({
+      method: "GET",
+      url: `/v1/orgs/${id}/invites`,
+      headers: auth(h.token),
+    })).json().items[0].status).toBe("revoked")
+    const again = await h.app.inject({
+      method: "DELETE",
+      url: `/v1/orgs/${id}/invites/${body.invite.id}`,
+      headers: auth(h.token),
+    })
+    expect(again.statusCode).toBe(404)
+  })
+
+  it("answers an email with an account and one without in the same shape, with the account masked", async () => {
+    const h = await makeHarness()
+    const id = await ownedOrg(h)
+    // A real signed-in account holds this address (mirrored into the org repo by signIn).
+    await h.signIn("known@example.org")
+    const known = await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${id}/members`,
+      headers: auth(h.token),
+      payload: { identifierKind: "email", identifier: "known@example.org", role: "member" },
+    })
+    const unknown = await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${id}/members`,
+      headers: auth(h.token),
+      payload: { identifierKind: "email", identifier: "unknown@example.org", role: "member" },
+    })
+    expect(known.statusCode).toBe(200)
+    expect(unknown.statusCode).toBe(200)
+    const a = known.json() as { invite: Record<string, unknown> }
+    const b = unknown.json() as { invite: Record<string, unknown> }
+    expect(Object.keys(a).sort()).toEqual(Object.keys(b).sort())
+    expect(Object.keys(a.invite).sort()).toEqual(Object.keys(b.invite).sort())
+    expect(a.invite).toMatchObject({ user: null, status: "pending" })
+    expect(b.invite).toMatchObject({ user: null, status: "pending" })
+    // Neither is seated until accept.
+    expect(h.orgs.members.filter((m) => m.organizationId === id)).toHaveLength(1)
+    // A repeat is the same 200 for both, not a 409 for one of them.
+    for (const identifier of ["known@example.org", "unknown@example.org"]) {
+      const again = await h.app.inject({
+        method: "POST",
+        url: `/v1/orgs/${id}/members`,
+        headers: auth(h.token),
+        payload: { identifierKind: "email", identifier, role: "member" },
+      })
+      expect(again.statusCode, identifier).toBe(200)
+      expect((again.json() as { invite: { status: string } }).invite.status).toBe("pending")
+    }
+  })
+
+  it("404s a revoke whose inviteId belongs to a different org than :id", async () => {
+    const h = await makeHarness()
+    const first = await ownedOrg(h)
+    const other = await h.app.inject({
+      method: "POST",
+      url: "/v1/orgs",
+      headers: auth(h.token),
+      payload: { name: "Second Org", slug: "second-org" },
+    })
+    const second = (other.json() as { id: string }).id
+    const invited = await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${first}/members`,
+      headers: auth(h.token),
+      payload: { identifierKind: "email", identifier: "newcomer@example.org", role: "member" },
+    })
+    const inviteId = (invited.json() as { invite: { id: string } }).invite.id
+    const mismatched = await h.app.inject({
+      method: "DELETE",
+      url: `/v1/orgs/${second}/invites/${inviteId}`,
+      headers: auth(h.token),
+    })
+    expect(mismatched.statusCode).toBe(404)
+    expect(h.orgs.invites.find((i) => i.id === inviteId)?.status).toBe("pending")
+    const matched = await h.app.inject({
+      method: "DELETE",
+      url: `/v1/orgs/${first}/invites/${inviteId}`,
+      headers: auth(h.token),
+    })
+    expect(matched.statusCode).toBe(200)
+  })
+
+  it("409s an accept while the org is suspended", async () => {
+    const h = await makeHarness()
+    const id = await ownedOrg(h)
+    await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${id}/members`,
+      headers: auth(h.token),
+      payload: { identifierKind: "email", identifier: "newcomer@example.org", role: "member" },
+    })
+    const stored = h.orgs.organizations.get(id)
+    if (stored === undefined) throw new Error("org missing")
+    stored.suspendedAt = new Date()
+    stored.suspendedReason = "impersonation"
+    const right = await h.signIn("newcomer@example.org")
+    const refused = await h.app.inject({
+      method: "POST",
+      url: "/v1/org-invites/accept",
+      headers: auth(right),
+      payload: { token: INVITE_TOKEN },
+    })
+    expect(refused.statusCode).toBe(409)
+    expect(h.orgs.invites[0]?.status).toBe("pending")
+  })
+
+  it("accepts an invite with the matching account, rejects the wrong account and a bad token", async () => {
+    const h = await makeHarness()
+    const id = await ownedOrg(h)
+    await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${id}/members`,
+      headers: auth(h.token),
+      payload: { identifierKind: "email", identifier: "newcomer@example.org", role: "admin" },
+    })
+    const wrong = await h.signIn("someone-else@example.org")
+    const refused = await h.app.inject({
+      method: "POST",
+      url: "/v1/org-invites/accept",
+      headers: auth(wrong),
+      payload: { token: INVITE_TOKEN },
+    })
+    expect(refused.statusCode).toBe(404)
+
+    const right = await h.signIn("newcomer@example.org")
+    const accepted = await h.app.inject({
+      method: "POST",
+      url: "/v1/org-invites/accept",
+      headers: auth(right),
+      payload: { token: INVITE_TOKEN },
+    })
+    expect(accepted.statusCode).toBe(200)
+    expect(accepted.json()).toMatchObject({
+      ok: true,
+      role: "admin",
+      organization: { id, slug: "ballona-creek-trust", myRole: "admin", suspended: false },
+    })
+    const reused = await h.app.inject({
+      method: "POST",
+      url: "/v1/org-invites/accept",
+      headers: auth(right),
+      payload: { token: INVITE_TOKEN },
+    })
+    expect(reused.statusCode).toBe(404)
+    const tooShort = await h.app.inject({
+      method: "POST",
+      url: "/v1/org-invites/accept",
+      headers: auth(right),
+      payload: { token: "short" },
+    })
+    expect(tooShort.statusCode).toBe(422)
+  })
+
+  it("401s the invite routes without a session and 404s a non-member listing invites", async () => {
+    const h = await makeHarness()
+    const id = await ownedOrg(h)
+    for (const [method, url] of [
+      ["GET", `/v1/orgs/${id}/invites`],
+      ["DELETE", `/v1/orgs/${id}/invites/${randomUUID()}`],
+      ["POST", "/v1/org-invites/accept"],
+    ] as const) {
+      const res = await h.app.inject({ method, url, ...(method === "GET" ? {} : { payload: { token: INVITE_TOKEN } }) })
+      expect(res.statusCode, `${method} ${url}`).toBe(401)
+    }
+    const stranger = await h.signIn("stranger@example.org")
+    const res = await h.app.inject({ method: "GET", url: `/v1/orgs/${id}/invites`, headers: auth(stranger) })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it("a suspended org 404s publicly, reads with suspended:true for members, and refuses self-service", async () => {
+    const h = await makeHarness()
+    const id = await ownedOrg(h)
+    const stored = h.orgs.organizations.get(id)
+    if (stored === undefined) throw new Error("org missing")
+    stored.suspendedAt = new Date()
+    stored.suspendedReason = "impersonation"
+
+    const anon = await h.app.inject({ method: "GET", url: "/v1/orgs/by-slug/ballona-creek-trust" })
+    expect(anon.statusCode).toBe(404)
+    const stranger = await h.signIn("stranger@example.org")
+    const other = await h.app.inject({
+      method: "GET",
+      url: "/v1/orgs/by-slug/ballona-creek-trust",
+      headers: auth(stranger),
+    })
+    expect(other.statusCode).toBe(404)
+    const member = await h.app.inject({
+      method: "GET",
+      url: "/v1/orgs/by-slug/ballona-creek-trust",
+      headers: auth(h.token),
+    })
+    expect(member.statusCode).toBe(200)
+    expect(member.json()).toMatchObject({ suspended: true, myRole: "owner" })
+
+    const edit = await h.app.inject({
+      method: "PATCH",
+      url: `/v1/orgs/${id}`,
+      headers: auth(h.token),
+      payload: { name: "Renamed" },
+    })
+    expect(edit.statusCode).toBe(403)
+    const invite = await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${id}/members`,
+      headers: auth(h.token),
+      payload: { identifierKind: "email", identifier: "x@example.org", role: "member" },
+    })
+    expect(invite.statusCode).toBe(403)
+    const apply = await h.app.inject({
+      method: "POST",
+      url: `/v1/orgs/${id}/verification`,
+      headers: auth(h.token),
+      payload: { kind: "community", documents: [] },
+    })
+    expect(apply.statusCode).toBe(403)
+    const mine = await h.app.inject({ method: "GET", url: "/v1/me/organizations", headers: auth(h.token) })
+    expect(mine.json().items[0]).toMatchObject({ suspended: true })
   })
 })

@@ -29,6 +29,10 @@ export const organizations = pgTable(
     verifiedKind: text("verified_kind").$type<OrgVerificationKind>(),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
     createdBy: uuid("created_by").references(() => users.id),
+    // Operator suspension flag (0162): reversible, independent of verified_status and deleted_at.
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    suspendedReason: text("suspended_reason"),
+    suspendedBy: uuid("suspended_by").references(() => users.id),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -47,6 +51,9 @@ export const organizations = pgTable(
     index("organizations_created_by_idx")
       .on(t.createdBy)
       .where(sql`${t.deletedAt} is null`),
+    index("organizations_suspended_idx")
+      .on(t.suspendedAt.desc(), t.id.desc())
+      .where(sql`${t.suspendedAt} is not null and ${t.deletedAt} is null`),
     index("organizations_logo_media_idx")
       .on(t.logoMediaId)
       .where(sql`${t.logoMediaId} is not null`),

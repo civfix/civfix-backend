@@ -86,8 +86,22 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   private readonly hosts = new Map<string, HostMessagingState>()
   private dueReminders: DueReminder[] = []
 
-  seedEvent(context: EventBroadcastContext): void {
-    this.events.set(context.cleanupId, context)
+  seedEvent(
+    context: Omit<EventBroadcastContext, "organizationSuspended"> & {
+      organizationSuspended?: boolean
+    },
+  ): void {
+    this.events.set(context.cleanupId, {
+      ...context,
+      organizationSuspended: context.organizationSuspended ?? false,
+    })
+  }
+
+  /** Flip the org-suspension flag on a seeded event (what adminSetOrgSuspended does to its linked events). */
+  setEventOrganizationSuspended(cleanupId: string, suspended: boolean): void {
+    const existing = this.events.get(cleanupId)
+    if (existing === undefined) throw new Error(`no seeded event ${cleanupId}`)
+    this.events.set(cleanupId, { ...existing, organizationSuspended: suspended })
   }
 
   seedHost(userId: string, state: Partial<HostMessagingState> = {}): void {

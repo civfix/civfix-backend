@@ -225,6 +225,54 @@ describe("connect onboarding refusals", () => {
   })
 })
 
+describe("org suspension gate (DECISIONS §32)", () => {
+  it("refuses every self-service mutation on a suspended org, but keeps the reads", async () => {
+    const h = harness({ orgs: [orgRow({ suspended: true })], accounts: [accountRow()] })
+    expect(await codeOf(() => h.service.createAccount(ORG_ID, USER_ID))).toBe(ErrorCode.FORBIDDEN)
+    expect(await codeOf(() => h.service.createAccountLink(ORG_ID, "onboarding"))).toBe(
+      ErrorCode.FORBIDDEN,
+    )
+    expect(
+      await codeOf(() =>
+        h.service.updateSettings({ organizationId: ORG_ID, userId: USER_ID, missionBlurb: "x" }),
+      ),
+    ).toBe(ErrorCode.FORBIDDEN)
+    expect(
+      await codeOf(() =>
+        h.service.acceptAgreement({
+          organizationId: ORG_ID,
+          userId: USER_ID,
+          version: currentVersion("org_donation_agreement"),
+          surface: "web_org_settings",
+        }),
+      ),
+    ).toBe(ErrorCode.FORBIDDEN)
+    expect(h.repo.state.settings[0]?.missionBlurb).not.toBe("x")
+    // Reads and the platform/operator paths still work.
+    expect((await h.service.status(ORG_ID)).organizationId).toBe(ORG_ID)
+    expect((await h.service.settings(ORG_ID)).organizationId).toBe(ORG_ID)
+    const bare = harness({ orgs: [orgRow({ suspended: true })] })
+    expect(await bare.service.syncAccount(ORG_ID)).toBe("not_started")
+    expect(
+      await h.service.setDonationsEnabledByOperator({
+        organizationId: ORG_ID,
+        enabled: false,
+        reasonText: "under review",
+        actorUserId: USER_ID,
+      }),
+    ).toBe(false)
+  })
+
+  it("refuses a reconnect on a suspended org before touching Stripe", async () => {
+    const h = harness({
+      orgs: [orgRow({ suspended: true })],
+      accounts: [accountRow({ deauthorizedAt: NOW })],
+    })
+    expect(await codeOf(() => h.service.createAccount(ORG_ID, USER_ID))).toBe(ErrorCode.FORBIDDEN)
+    expect(h.repo.state.accounts[0]?.deauthorizedAt).toEqual(NOW)
+  })
+})
+
 describe("account sync effects", () => {
   it("switches donations off with a stripe_blocked reason when the account blocks", async () => {
     const h = harness()

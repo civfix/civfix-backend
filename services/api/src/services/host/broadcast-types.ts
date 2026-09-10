@@ -132,6 +132,8 @@ export interface EventBroadcastContext {
   address: string | null
   status: string
   organizerUserId: string
+  /** True when the event is linked to an operator-suspended organization (0162, DECISIONS §32). */
+  organizationSuspended: boolean
   replyTo: string | null
   replyToVerified: boolean
 }

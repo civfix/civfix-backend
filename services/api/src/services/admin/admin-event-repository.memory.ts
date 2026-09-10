@@ -61,6 +61,8 @@ export interface SeededEvent {
   record: AdminEventRecord
   /** The raw stored cleanups.status (Phase-1 enum); record.status is its EventStatus projection. */
   storedStatus: string
+  /** cleanups.organization_id (the org link), for the admin org events list. */
+  organizationId: string | null
   members: EventMemberRef[]
 }
 
@@ -126,6 +128,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     lat?: number
     lng?: number
     scheduledAt?: Date
+    organizationId?: string | null
     members?: EventMemberRef[]
     timeline?: AdminEventTimelineRecord[]
     messages?: AdminEventMessageRecord[]
@@ -152,6 +155,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
         scheduledAt: input.scheduledAt ?? this.now,
       },
       storedStatus,
+      organizationId: input.organizationId ?? null,
       members: input.members ?? [],
     }
     this.events.set(id, seeded)
@@ -206,10 +210,19 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
       const variants = new Set(storedVariantsForEventStatus(args.status))
       seededRows = seededRows.filter((s) => variants.has(s.storedStatus))
     }
+    if (args.organizationId !== undefined) {
+      seededRows = seededRows.filter((s) => s.organizationId === args.organizationId)
+    }
     let rows = seededRows.map((s) => s.record)
 
     if (args.q !== null) rows = rows.filter((r) => matchesQuery(r, args.q as string))
     if (args.flaggedOnly) rows = rows.filter((r) => r.flagged)
+    if (args.when !== undefined) {
+      const ref = args.when.ref.getTime()
+      rows = rows.filter((r) =>
+        args.when?.kind === "upcoming" ? r.scheduledAt.getTime() >= ref : r.scheduledAt.getTime() < ref,
+      )
+    }
 
     rows.sort((a, b) => {
       const primary = b.scheduledAt.getTime() - a.scheduledAt.getTime()

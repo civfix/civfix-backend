@@ -1,5 +1,8 @@
 import type {
+  OrganizationInviteRole,
+  OrganizationInviteStatus,
   OrganizationMemberRole,
+  OrgPaymentsState,
   OrgVerificationKind,
   OrgVerificationStatus,
   SocialLinks,
@@ -20,7 +23,11 @@ export interface OrganizationRecord {
   verifiedAt: Date | null
   createdBy: string | null
   createdAt: Date
+  updatedAt: Date
   deletedAt: Date | null
+  /** Operator suspension flag (0162). NULL = not suspended. */
+  suspendedAt: Date | null
+  suspendedReason: string | null
   memberCount: number
   eventCount: number
   myRole: OrganizationMemberRole | null
@@ -30,6 +37,15 @@ export interface OrganizationMemberRecord {
   person: CleanupPersonView
   role: OrganizationMemberRole
   joinedAt: Date
+}
+
+/** The organization's single owner (organization_members role='owner'), with the address to notify. */
+export interface OrganizationOwnerRecord {
+  userId: string
+  displayName: string
+  handle: string
+  email: string | null
+  joined: Date
 }
 
 export interface OrgVerificationRecord {
@@ -59,6 +75,20 @@ export interface AdminOrgVerificationRecord extends OrgVerificationRecord {
   reviewedBy: AdminActorView | null
 }
 
+/** Operator-facing extras on an org row: the owner and the donation/payout state, read in one query. */
+export interface AdminOrganizationRecord extends OrganizationRecord {
+  owner: AdminActorView | null
+  donationsEnabled: boolean
+  paymentsState: OrgPaymentsState | null
+}
+
+export interface AdminOrganizationCounts {
+  all: number
+  verified: number
+  pending: number
+  suspended: number
+}
+
 export interface CreateOrganizationArgs {
   organizationId: string
   slug: string
@@ -67,17 +97,33 @@ export interface CreateOrganizationArgs {
   websiteUrl: string | null
   logoMediaId: string | null
   socialLinks: SocialLinks | null
+  /** Recorded as organizations.created_by (the operator on the admin path). */
   createdBy: string
+  /** The member seated as owner. Defaults to createdBy (the self-service path). */
+  ownerUserId?: string
+  /** Admin path only: create the org already verified as this kind (DECISIONS §32). */
+  verifiedKind?: OrgVerificationKind | null
+  /** Admin path only: the operator's mandatory audit reason; writes org.created + (when verified) the verification audit in the transaction. */
+  operatorReason?: string
   now: Date
 }
 
 export interface UpdateOrganizationPatch {
   name?: string
+  slug?: string
   description?: string | null
   websiteUrl?: string | null
   logoMediaId?: string | null
   socialLinks?: SocialLinks | null
 }
+
+export interface UpdateOrganizationAudit {
+  actorId: string
+  reason: string
+  changed: string[]
+}
+
+export type UpdateOrganizationOutcome = "updated" | "not_found" | "slug_taken"
 
 export interface ApplyOrgVerificationArgs {
   verificationId: string
@@ -112,6 +158,99 @@ export interface AdminOrgListQuery {
   limit: number
 }
 
+export interface AdminOrganizationListQuery {
+  q?: string
+  verified?: OrgVerificationStatus
+  kind?: OrgVerificationKind
+  suspended?: boolean
+  donationsEnabled?: boolean
+  cursor: string | null
+  limit: number
+}
+
+export interface SetOrganizationSuspendedArgs {
+  organizationId: string
+  suspended: boolean
+  reason: string
+  actorId: string
+  now: Date
+}
+
+export type SetOrganizationSuspendedOutcome = "updated" | "not_found"
+
+export interface AdminOrgMemberRecord {
+  user: AdminActorView
+  role: OrganizationMemberRole
+  joinedAt: Date
+}
+
+export interface AdminAddMemberArgs {
+  organizationId: string
+  userId: string
+  role: OrganizationMemberRole
+  actorId: string
+  reason: string
+  now: Date
+}
+
+export type AdminAddMemberOutcome = "added" | "already_member" | "user_not_found" | "not_found"
+
+export interface AdminSetMemberRoleArgs {
+  organizationId: string
+  userId: string
+  role: OrganizationMemberRole
+  actorId: string
+  reason: string
+  now: Date
+}
+
+/** `sole_owner`: the target IS the owner and no transfer was requested — demotion needs a new owner first. */
+export type AdminSetMemberRoleOutcome = "updated" | "not_member" | "sole_owner"
+
+export interface OrganizationInviteRecord {
+  id: string
+  organizationId: string
+  email: string | null
+  user: CleanupPersonView | null
+  role: OrganizationInviteRole
+  status: OrganizationInviteStatus
+  invitedBy: CleanupPersonView | null
+  createdAt: Date
+  expiresAt: Date
+}
+
+export interface CreateOrganizationInviteArgs {
+  inviteId: string
+  organizationId: string
+  email: string
+  /**
+   * The verified account the address resolved to at invite time, when there is one. Recorded so the
+   * accept/notification paths know who was meant, but the invite is STILL a pending record that this
+   * account must accept: every email invite looks the same to the inviter (no account-existence oracle).
+   */
+  userId: string | null
+  role: OrganizationInviteRole
+  tokenHash: string
+  invitedBy: string
+  expiresAt: Date
+  now: Date
+}
+
+/** `already_invited` carries the open invite so the caller can answer with it (idempotent re-invite). */
+export type CreateOrganizationInviteOutcome =
+  | { kind: "created"; invite: OrganizationInviteRecord }
+  | { kind: "already_invited"; invite: OrganizationInviteRecord }
+
+export type RevokeOrganizationInviteOutcome = "revoked" | "not_found"
+
+/** `role` is the SEATED role: for an existing member that is their current role, never an upgrade from the invite. */
+export type AcceptOrganizationInviteOutcome =
+  | { kind: "accepted"; organizationId: string; role: OrganizationMemberRole; alreadyMember: boolean }
+  | { kind: "invalid" }
+  | { kind: "expired" }
+  | { kind: "wrong_recipient" }
+  | { kind: "suspended" }
+
 export type AddOrganizationMemberOutcome = "added" | "already_member" | "user_not_found"
 
 export type RemoveOrganizationMemberOutcome = "removed" | "not_member" | "owner"
@@ -125,13 +264,22 @@ export interface OrganizationRepository {
   findOrganizationById(id: string, viewerId: string | null): Promise<OrganizationRecord | null>
   findOrganizationBySlug(slug: string, viewerId: string | null): Promise<OrganizationRecord | null>
   listMyOrganizations(userId: string, limit: number): Promise<OrganizationRecord[]>
-  updateOrganizationTx(id: string, patch: UpdateOrganizationPatch, now: Date): Promise<boolean>
+  updateOrganizationTx(
+    id: string,
+    patch: UpdateOrganizationPatch,
+    now: Date,
+    audit?: UpdateOrganizationAudit,
+  ): Promise<UpdateOrganizationOutcome>
   roleOf(organizationId: string, userId: string): Promise<OrganizationMemberRole | null>
   listMembers(args: {
     organizationId: string
     cursor: string | null
     limit: number
   }): Promise<{ items: OrganizationMemberRecord[]; nextCursor: string | null }>
+  findMember(organizationId: string, userId: string): Promise<OrganizationMemberRecord | null>
+  findOwner(organizationId: string): Promise<OrganizationOwnerRecord | null>
+  /** A live (non-deleted) account by id, in operator-facing shape. */
+  findUser(userId: string): Promise<AdminActorView | null>
   resolveUserByIdentifier(identifier: OrgMemberIdentifier): Promise<string | null>
   addMemberTx(args: {
     organizationId: string
@@ -150,6 +298,7 @@ export interface OrganizationRepository {
     organizationId: string
     userId: string
     actorId: string
+    reason?: string
   }): Promise<RemoveOrganizationMemberOutcome>
   applyVerificationTx(args: ApplyOrgVerificationArgs): Promise<OrgVerificationRecord>
   getVerification(organizationId: string): Promise<OrgVerificationRecord | null>
@@ -159,7 +308,43 @@ export interface OrganizationRepository {
     pendingCount: number
   }>
   adminGetVerification(organizationId: string): Promise<AdminOrgVerificationRecord | null>
+  /** Latest verification row per org, for list pages (one query, not N). */
+  adminGetVerifications(organizationIds: string[]): Promise<Map<string, AdminOrgVerificationRecord>>
   decideVerificationTx(args: DecideOrgVerificationArgs): Promise<DecideOrgVerificationOutcome>
   verifiedEinOf(organizationId: string): Promise<string | null>
   scrubDecidedEins(before: Date, limit: number): Promise<number>
+
+  // ---- Admin org management (0.41.0) ----
+  adminFindOrganization(id: string): Promise<AdminOrganizationRecord | null>
+  adminListOrganizations(query: AdminOrganizationListQuery): Promise<{
+    items: AdminOrganizationRecord[]
+    nextCursor: string | null
+    counts: AdminOrganizationCounts | null
+  }>
+  setSuspendedTx(args: SetOrganizationSuspendedArgs): Promise<SetOrganizationSuspendedOutcome>
+  adminListMembers(args: {
+    organizationId: string
+    cursor: string | null
+    limit: number
+  }): Promise<{ items: AdminOrgMemberRecord[]; nextCursor: string | null }>
+  /** role=owner is an ownership transfer: the previous owner becomes admin in the same transaction. */
+  adminAddMemberTx(args: AdminAddMemberArgs): Promise<AdminAddMemberOutcome>
+  adminSetMemberRoleTx(args: AdminSetMemberRoleArgs): Promise<AdminSetMemberRoleOutcome>
+
+  // ---- Org invites (0.41.0) ----
+  countPendingInvites(organizationId: string, now: Date): Promise<number>
+  createInviteTx(args: CreateOrganizationInviteArgs): Promise<CreateOrganizationInviteOutcome>
+  /** Pending first, newest first; rows past expires_at are flipped to `expired` on the way out. */
+  listInvites(organizationId: string, now: Date, limit: number): Promise<OrganizationInviteRecord[]>
+  revokeInviteTx(args: {
+    organizationId: string
+    inviteId: string
+    actorId: string
+    now: Date
+  }): Promise<RevokeOrganizationInviteOutcome>
+  acceptInviteTx(args: {
+    tokenHash: string
+    userId: string
+    now: Date
+  }): Promise<AcceptOrganizationInviteOutcome>
 }

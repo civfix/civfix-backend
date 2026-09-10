@@ -33,6 +33,7 @@ export function orgRow(patch: Partial<OrgIdentityRow> = {}): OrgIdentityRow {
     logoUrl: null,
     verifiedStatus: "verified",
     verifiedKind: "nonprofit",
+    suspended: false,
     ...patch,
   }
 }

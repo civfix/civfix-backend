@@ -55,6 +55,18 @@ export type AdminAuditAction =
   | "org.verification_rejected"
   | "org.member_role_changed"
   | "org.member_removed"
+  | "org.member_added"
+  | "org.ownership_transferred"
+  | "org.created"
+  | "org.updated"
+  | "org.suspended"
+  | "org.unsuspended"
+  | "org.invite_created"
+  | "org.invite_revoked"
+  | "org.invite_accepted"
+  | "org.list_viewed"
+  | "org.members_viewed"
+  | "org.events_viewed"
   | "event.host_transferred"
   | "event.team_invited"
   | "event.team_invite_revoked"
@@ -87,6 +99,9 @@ export const AUDIT_READ_ACTIONS: readonly AdminAuditAction[] = [
   "media.viewed",
   "org.detail_viewed",
   "org.verifications_viewed",
+  "org.list_viewed",
+  "org.members_viewed",
+  "org.events_viewed",
   "event.roster_viewed",
   "event.guests_viewed",
   "event.answers_viewed",
