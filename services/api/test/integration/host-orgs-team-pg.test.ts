@@ -543,7 +543,7 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
       cleanupId: eventId,
       invitedUserId: invitee,
       invitedEmail: "invitee@example.org",
-      role: "cohost",
+      role: "staff",
       tokenHash: `hash-${randomUUID()}`,
       invitedBy: organizer,
       expiresAt: new Date(Date.now() + 86_400_000),
