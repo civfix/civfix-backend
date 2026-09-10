@@ -63,11 +63,15 @@ describe.skipIf(!pg)("H18: follow suggestions are bounded before ranking", () =>
     })
   }
 
+  const CHILD_NODE_LINE = /^\s*->/
+
   function nodeDetail(lines: string[], nodeAt: number): string {
+    const nodeIndent = (lines[nodeAt] ?? "").search(/\S/)
     const detail: string[] = []
     for (let i = nodeAt + 1; i < lines.length; i++) {
       const line = lines[i] ?? ""
-      if (line.includes("->") || line.trim() === "") break
+      if (line.trim() === "") break
+      if (CHILD_NODE_LINE.test(line) || line.search(/\S/) <= nodeIndent) break
       detail.push(line)
     }
     return detail.join("\n")

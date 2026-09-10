@@ -14,6 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedMediaAsset, servedKeyFor } from "../helpers/media-pg.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { LA_CITY, PROBE_INSIDE_CITY } from "../../src/db/seed-fixtures.js"
@@ -64,13 +65,14 @@ describe.skipIf(!pg)("first-visible-still preview policy (integration)", () => {
       createdAt?: Date
     },
   ): Promise<void> {
-    await h.sql`
-      INSERT INTO media_assets (upload_id, report_id, kind, r2_key, thumb_key, status, created_at)
-      VALUES (
-        ${randomUUID()}, ${reportId}, ${opts.kind}, ${opts.r2Key}, ${opts.thumbKey ?? null},
-        ${opts.status ?? "ready"}, ${opts.createdAt ?? new Date()}
-      )
-    `
+    await seedMediaAsset(h.sql, {
+      reportId,
+      kind: opts.kind,
+      r2Key: opts.r2Key,
+      thumbKey: opts.thumbKey ?? null,
+      status: opts.status ?? "ready",
+      ...(opts.createdAt !== undefined ? { createdAt: opts.createdAt } : {}),
+    })
   }
 
   /** The event gallery's view of a report (via a cleanup it is linked to). */
@@ -117,7 +119,7 @@ describe.skipIf(!pg)("first-visible-still preview policy (integration)", () => {
     // Map pin: the poster is offered as the thumb (the service prefers thumbKey over r2Key).
     const pin = await pinKeys(reportId)
     expect(pin.thumbKey).toBe("media/clip-poster.jpg")
-    expect(pin.r2Key).toBe("media/clip.mp4")
+    expect(pin.r2Key).toBe(servedKeyFor("media/clip.mp4"))
     // Gallery: the single rendered key is the SAME poster (was the only surface that showed one before).
     expect(await galleryThumb(reportId, org)).toBe("media/clip-poster.jpg")
   })
@@ -140,8 +142,8 @@ describe.skipIf(!pg)("first-visible-still preview policy (integration)", () => {
 
     const pin = await pinKeys(reportId)
     expect(pin.thumbKey).toBeNull()
-    expect(pin.r2Key).toBe("media/photo.jpg")
-    expect(await galleryThumb(reportId, org)).toBe("media/photo.jpg")
+    expect(pin.r2Key).toBe(servedKeyFor("media/photo.jpg"))
+    expect(await galleryThumb(reportId, org)).toBe(servedKeyFor("media/photo.jpg"))
   })
 
   it("only READY assets can preview, and the earliest qualifying one wins on both surfaces", async () => {

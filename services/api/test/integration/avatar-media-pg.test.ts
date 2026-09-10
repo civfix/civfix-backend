@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedMediaAsset, type SeededMedia } from "../helpers/media-pg.js"
 import { PgUserStore } from "../../src/auth/pg-stores.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { resolveAvatarMediaOrThrow } from "../../src/services/avatar-media.js"
@@ -15,13 +16,14 @@ const fakePresign: PresignMedia = (r2Key, thumbKey) =>
   })
 
 interface SeedOptions {
-  status?: string
-  kind?: string
+  status?: "validating" | "ready" | "rejected" | "held"
+  kind?: "image" | "video"
   reportId?: string
   postId?: string
   chatMessageId?: string
   purpose?: string
   ageHours?: number
+  servedKey?: string | null
 }
 
 describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
@@ -31,25 +33,18 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
     await h.teardown()
   })
 
-  async function seedMedia(
-    over: SeedOptions = {},
-  ): Promise<{ id: string; uploadId: string; r2Key: string }> {
-    const uploadId = randomUUID()
-    const r2Key = `uploads/2026/01/${uploadId}`
-    const [row] = await h.sql<{ id: string }[]>`
-      INSERT INTO media_assets (
-        upload_id, kind, r2_key, status, byte_size, report_id, post_id, chat_message_id,
-        purpose, created_at
-      )
-      VALUES (
-        ${uploadId}, ${over.kind ?? "image"}, ${r2Key}, ${over.status ?? "ready"}, 1024,
-        ${over.reportId ?? null}, ${over.postId ?? null}, ${over.chatMessageId ?? null},
-        ${over.purpose ?? "report"},
-        now() - make_interval(hours => ${over.ageHours ?? 0})
-      )
-      RETURNING id
-    `
-    return { id: row!.id, uploadId, r2Key }
+  async function seedMedia(over: SeedOptions = {}): Promise<SeededMedia> {
+    return await seedMediaAsset(h.sql, {
+      kind: over.kind ?? "image",
+      status: over.status ?? "ready",
+      byteSize: 1024,
+      reportId: over.reportId ?? null,
+      postId: over.postId ?? null,
+      chatMessageId: over.chatMessageId ?? null,
+      purpose: over.purpose ?? "report",
+      createdAt: new Date(Date.now() - (over.ageHours ?? 0) * 3_600_000),
+      ...(over.servedKey !== undefined ? { servedKey: over.servedKey } : {}),
+    })
   }
 
   async function seedForeignReport(): Promise<string> {
@@ -111,7 +106,7 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
     it("resolves a ready, unbound image to {id, r2Key}", async () => {
       const media = await seedMedia()
       const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId)
-      expect(ref).toEqual({ id: media.id, r2Key: media.r2Key })
+      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey })
     })
 
     it("rejects a nonexistent uploadId (422)", async () => {
@@ -125,6 +120,11 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
 
     it("rejects a still-validating (unfinalized) upload", async () => {
       const media = await seedMedia({ status: "validating" })
+      await expect(resolveAvatarMediaOrThrow(h.sql, media.uploadId)).rejects.toMatchObject(rejects422)
+    })
+
+    it("rejects a ready asset the worker never published (served_key still NULL)", async () => {
+      const media = await seedMedia({ servedKey: null })
       await expect(resolveAvatarMediaOrThrow(h.sql, media.uploadId)).rejects.toMatchObject(rejects422)
     })
 
@@ -158,7 +158,7 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
     it("F074: accepts an upload still inside the claim window", async () => {
       const media = await seedMedia({ ageHours: 5 })
       const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId)
-      expect(ref).toEqual({ id: media.id, r2Key: media.r2Key })
+      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey })
     })
 
     it("F074: rejects a verification document (it cannot be laundered into a public avatar)", async () => {
@@ -193,7 +193,7 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       const owner = await seedUser()
       await claimUserAvatar(owner, media.id)
       const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId, { userId: owner })
-      expect(ref).toEqual({ id: media.id, r2Key: media.r2Key })
+      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey })
     })
 
     it("F074: a group may re-apply the avatar it already has", async () => {
@@ -201,7 +201,7 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       const group = await seedGroup()
       await claimGroupAvatar(group, media.id)
       const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId, { groupId: group })
-      expect(ref).toEqual({ id: media.id, r2Key: media.r2Key })
+      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey })
     })
   })
 
@@ -230,7 +230,7 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
         avatarUploadId: media.uploadId,
         presignAvatar: (key) => Promise.resolve(`https://cdn.example.test/${key}`),
       })
-      expect(updated.avatarUrl).toBe(`https://cdn.example.test/${media.r2Key}`)
+      expect(updated.avatarUrl).toBe(`https://cdn.example.test/${media.servedKey}`)
       expect(await avatarMediaIdOf(id)).toBe(media.id)
     })
 

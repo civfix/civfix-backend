@@ -1,7 +1,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { withPg, type PgHarness } from "../helpers/pg.js"
+import { testHandle, withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeDrizzleOrganizationRepository } from "../../src/services/host/organization-repository.drizzle.js"
 import { makeDrizzleHostTeamRepository } from "../../src/services/host/host-team-repository.drizzle.js"
@@ -36,7 +36,7 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
   async function newUser(name: string, handle?: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name, handle)
-      VALUES (${name}, ${handle ?? `h-${randomUUID().slice(0, 12)}`})
+      VALUES (${name}, ${handle ?? testHandle()})
       RETURNING id
     `
     return (u as { id: string }).id

@@ -11,9 +11,9 @@
  * PgSessionStore.findById is wrapped with a spy and asserted to be untouched on the cache hit).
  */
 
-import { randomUUID } from "node:crypto"
 import { afterAll, describe, expect, it, vi } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedMediaAsset } from "../helpers/media-pg.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { SessionService } from "../../src/auth/session-service.js"
 import { OtpService } from "../../src/auth/otp.js"
@@ -154,23 +154,21 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
     expect(u2.id).toBe(u1.id)
   })
 
-  it("updateProfile with an avatarUploadId canonicalizes users.avatar_url (presigned r2_key) + returns it", async () => {
+  it("updateProfile with an avatarUploadId canonicalizes users.avatar_url (presigned served_key) + returns it", async () => {
     const users = new PgUserStore(h.db)
     const user = await users.create("avatar.canon@example.com", { displayName: "Avatar Canon" })
 
-    // A finalized avatar media row (the presign -> PUT -> finalize pipeline's end state). Only the columns
-    // the resolution path reads (upload_id -> r2_key) matter here; the worker overwrites r2_key in place.
-    const uploadId = randomUUID()
-    const r2Key = "avatars/canon/processed.jpg"
-    await h.sql`
-      INSERT INTO media_assets (upload_id, kind, r2_key, status)
-      VALUES (${uploadId}, 'image', ${r2Key}, 'ready')
-    `
+    // A published avatar media row (the presign -> PUT -> finalize -> media.checks pipeline's end state).
+    // The worker publishes its processed bytes to served_key, NOT back over the client-writable r2_key,
+    // and every read path (including this one) hands out served_key.
+    const media = await seedMediaAsset(h.sql, { r2Key: "avatars/canon/upload.jpg" })
+    const uploadId = media.uploadId
+    const servedKey = media.servedKey
 
     // Inject the canonical presigner the route wires from the Storage seam (R2_PUBLIC_BASE => stable URL).
     const presignAvatar = (key: string): Promise<string> =>
       Promise.resolve(`https://cdn.example.test/${key}`)
-    const expectedUrl = `https://cdn.example.test/${r2Key}`
+    const expectedUrl = `https://cdn.example.test/${servedKey}`
 
     // The RETURNED record (the PUT /me/profile response + session/me, via toUserDTO) carries the new URL.
     const updated = await users.updateProfile(user.id, {

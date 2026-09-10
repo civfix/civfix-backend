@@ -558,7 +558,10 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     ])
   }
 
-  async function replaySnapshot(tag: Queryable, args: RegisterTxArgs): Promise<RegisterTxOutcome> {
+  async function findRegisterSnapshot(
+    tag: Queryable,
+    args: RegisterTxArgs,
+  ): Promise<RegisterSnapshot | undefined> {
     const rows = await tag<{ response_snapshot: RegisterSnapshot }[]>`
       SELECT response_snapshot FROM idempotency_keys
        WHERE key = ${registerIdempotencyKey(args)}
@@ -566,12 +569,24 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
          AND user_or_anon IS NOT DISTINCT FROM ${idempotencyOwnerOf(args)}
        LIMIT 1
     `
-    const snapshot = rows[0]?.response_snapshot
-    if (snapshot === undefined) return { kind: "already_registered" }
+    return rows[0]?.response_snapshot
+  }
+
+  async function replayOf(
+    tag: Queryable,
+    args: RegisterTxArgs,
+    snapshot: RegisterSnapshot,
+  ): Promise<RegisterTxOutcome> {
     return {
       kind: "replayed",
       registration: await loadRegistrationById(tag, args.cleanupId, snapshot.registrationId),
     }
+  }
+
+  async function replaySnapshot(tag: Queryable, args: RegisterTxArgs): Promise<RegisterTxOutcome> {
+    const snapshot = await findRegisterSnapshot(tag, args)
+    if (snapshot === undefined) return { kind: "already_registered" }
+    return replayOf(tag, args, snapshot)
   }
 
   async function registerErrorOutcome(
@@ -628,6 +643,9 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       `
       if (banned.length > 0) return { kind: "banned" as const }
     }
+
+    const replay = await findRegisterSnapshot(tx, args)
+    if (replay !== undefined) return replayOf(tx, args, replay)
 
     const active = await tx<{ id: string }[]>`
       SELECT id FROM cleanup_registrations
@@ -2012,17 +2030,24 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       now: Date
     }): Promise<CheckinResultRecord> {
       const updated = await sql<(SeatRowSelect & { first_time: boolean })[]>`
+        WITH target AS (
+          SELECT id, checked_in_at IS NULL AS first_time
+            FROM cleanup_registration_seats
+           WHERE ticket_token_hash = ${args.tokenHash}
+             AND cleanup_id = ${args.cleanupId}
+             AND status = 'active'
+             AND no_show_at IS NULL
+           FOR UPDATE
+        )
         UPDATE cleanup_registration_seats s
            SET checked_in_at  = COALESCE(s.checked_in_at, ${args.now}),
                checked_in_by  = COALESCE(s.checked_in_by, ${args.actorId}),
                checkin_method = COALESCE(s.checkin_method, ${args.method})
-         WHERE s.ticket_token_hash = ${args.tokenHash}
-           AND s.cleanup_id = ${args.cleanupId}
-           AND s.status = 'active'
-           AND s.no_show_at IS NULL
+          FROM target t
+         WHERE s.id = t.id
         RETURNING s.id, s.registration_id, s.seat_index, s.attendee_name, s.status,
                   s.checked_in_at, s.checked_in_by, s.checkin_method, s.checkin_coarsened_at,
-                  s.no_show_at, (s.checked_in_at = ${args.now}) AS first_time
+                  s.no_show_at, t.first_time
       `
       const row = updated[0]
       if (row !== undefined) {
@@ -2056,17 +2081,24 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       now: Date
     }): Promise<CheckinResultRecord> {
       const updated = await sql<(SeatRowSelect & { first_time: boolean })[]>`
+        WITH target AS (
+          SELECT id, checked_in_at IS NULL AS first_time
+            FROM cleanup_registration_seats
+           WHERE id = ${args.seatId}
+             AND cleanup_id = ${args.cleanupId}
+             AND status = 'active'
+           FOR UPDATE
+        )
         UPDATE cleanup_registration_seats s
            SET checked_in_at  = COALESCE(s.checked_in_at, ${args.now}),
                checked_in_by  = COALESCE(s.checked_in_by, ${args.actorId}),
                checkin_method = COALESCE(s.checkin_method, ${args.method}),
                no_show_at     = NULL
-         WHERE s.id = ${args.seatId}
-           AND s.cleanup_id = ${args.cleanupId}
-           AND s.status = 'active'
+          FROM target t
+         WHERE s.id = t.id
         RETURNING s.id, s.registration_id, s.seat_index, s.attendee_name, s.status,
                   s.checked_in_at, s.checked_in_by, s.checkin_method, s.checkin_coarsened_at,
-                  s.no_show_at, (s.checked_in_at = ${args.now}) AS first_time
+                  s.no_show_at, t.first_time
       `
       const row = updated[0]
       if (row === undefined) {

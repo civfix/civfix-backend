@@ -182,7 +182,7 @@ export interface CleanupCancelFanoutJob {
 }
 
 export const HOST_EVENTS_PER_DAY = 10
-const HOST_EVENTS_WINDOW_SEC = 24 * 60 * 60
+export const HOST_EVENTS_WINDOW_SEC = 24 * 60 * 60
 
 export const HOST_ROSTER_READS_PER_HOUR = 200
 const HOST_ROSTER_READ_WINDOW_SEC = 60 * 60

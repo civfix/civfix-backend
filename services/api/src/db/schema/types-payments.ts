@@ -72,7 +72,13 @@ export const ELIGIBILITY_VERDICT_CONTRIBUTION_VALUES = [
   "neutral",
 ] as const
 
-export const APP_FEE_REFUND_STATE_VALUES = ["pending", "done", "skipped", "failed"] as const
+export const APP_FEE_REFUND_STATE_VALUES = [
+  "pending",
+  "done",
+  "skipped",
+  "failed",
+  "failed_after",
+] as const
 
 export const CONSENT_SUBJECT_KIND_VALUES = ["user", "donor", "organization"] as const
 

@@ -23,12 +23,20 @@ import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { SessionService } from "../../src/auth/session-service.js"
 import { makeWsTicketStore } from "../../src/auth/ws-ticket.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
-import { WS_CLOSE_POLICY_VIOLATION } from "../../src/ws/types.js"
+import {
+  WS_CLOSE_POLICY_VIOLATION,
+  WS_REAUTH_INTERVAL_MS,
+  WS_REAUTH_JITTER_MS,
+} from "../../src/ws/types.js"
 import { SESSION_COOKIE } from "../../src/auth/transport.js"
 
 
 const WS_OPEN = 1
 const WS_CLOSED = 3
+
+const FULL_REAUTH_HEARTBEATS = Math.ceil(
+  (WS_REAUTH_INTERVAL_MS + WS_REAUTH_JITTER_MS) / WS_HEARTBEAT_MS,
+)
 
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const ALICE = "11111111-1111-1111-1111-111111111111"
@@ -882,14 +890,16 @@ describe("H3: the cookie socket honours the revocation epoch even when the Redis
       const handler = captureGatewayHandler(baseOpts({ sessions }))
       const socket = new MockSocket()
       handler(socket as unknown as WebSocket, cookieRequest(ALICE, token))
-      await settle()
+      await settleUntil(() => vi.getTimerCount() > 0 || socket.closes.length > 0)
       expect(socket.closes).toHaveLength(0)
 
       cache.failDel = true
       await sessions.revokeAllForUser(ALICE)
       expect(await cache.get(`sess:${hash}`)).not.toBeNull()
 
-      for (let i = 0; i < 5; i += 1) await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_MS)
+      for (let i = 0; i < FULL_REAUTH_HEARTBEATS; i += 1) {
+        await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_MS)
+      }
       expect(socket.closes).toHaveLength(1)
       expect(socket.closes[0]?.reason).toBe("session no longer valid")
     } finally {
