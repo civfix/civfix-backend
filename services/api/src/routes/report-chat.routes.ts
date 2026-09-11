@@ -207,7 +207,10 @@ export async function registerReportChatRoutes(
       repo.listMembers(id, userId),
       repo.countMembers(id),
     ])
-    const affiliations = await container.getAffiliationLoader()(members.map((m) => m.user.id))
+    const affiliations =
+      app.chatOverrides?.reportChat === undefined
+        ? await container.getAffiliationLoader()(members.map((m) => m.user.id))
+        : new Map()
     const participants = members.map((m) => ({
       ...m,
       user: withAffiliation(m.user, affiliations),
