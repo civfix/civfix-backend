@@ -117,6 +117,7 @@ import {
   ORG_PAYMENTS_READ_RATE_LIMIT,
   ORG_SETTINGS_WRITE_RATE_LIMIT,
   ORG_DONATION_EXPORT_RATE_LIMIT,
+  ORG_PAYOUT_RATE_LIMIT,
 } from "../../src/routes/org-payments.routes.js"
 import { LEGAL_VERSIONS_RATE_LIMIT } from "../../src/routes/legal.routes.js"
 import { STRIPE_WEBHOOK_RATE_LIMIT } from "../../src/routes/webhooks/stripe.routes.js"
@@ -511,6 +512,7 @@ const IDENTITY_SCOPED_LIMITS = {
   ORG_PAYMENTS_READ_RATE_LIMIT,
   ORG_SETTINGS_WRITE_RATE_LIMIT,
   ORG_DONATION_EXPORT_RATE_LIMIT,
+  ORG_PAYOUT_RATE_LIMIT,
 }
 
 const HOST_SCOPED_LIMITS = {
