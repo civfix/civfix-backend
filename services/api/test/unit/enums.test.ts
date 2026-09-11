@@ -60,6 +60,7 @@ import {
   HostExportStatusSchema,
   DonationStatusSchema,
   DonationDisputeStateSchema,
+  PayoutStatusSchema,
   OrgPaymentsStateSchema,
   DonateStateSchema,
   EligibilityVerdictSchema,
@@ -136,6 +137,7 @@ import {
 import {
   DONATION_STATUS_VALUES,
   DONATION_DISPUTE_STATE_VALUES,
+  PAYOUT_STATUS_VALUES,
   ORG_PAYMENTS_STATE_VALUES,
   DONATE_STATE_VALUES,
   ELIGIBILITY_VERDICT_VALUES,
@@ -208,6 +210,7 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ["HostExportStatus", HOST_EXPORT_STATUS_VALUES, HostExportStatusSchema.options],
     ["DonationStatus", DONATION_STATUS_VALUES, DonationStatusSchema.options],
     ["DonationDisputeState", DONATION_DISPUTE_STATE_VALUES, DonationDisputeStateSchema.options],
+    ["PayoutStatus", PAYOUT_STATUS_VALUES, PayoutStatusSchema.options],
     ["OrgPaymentsState", ORG_PAYMENTS_STATE_VALUES, OrgPaymentsStateSchema.options],
     ["DonateState", DONATE_STATE_VALUES, DonateStateSchema.options],
     ["EligibilityVerdict", ELIGIBILITY_VERDICT_VALUES, EligibilityVerdictSchema.options],

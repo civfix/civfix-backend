@@ -1,15 +1,19 @@
 import {
   AcceptOrgDonationAgreementRequestSchema,
+  CreateOrgPayoutRequestSchema,
   CreateOrgStripeAccountLinkRequestSchema,
   RequestOrgDonationExportRequestSchema,
   UpdateOrgDonationSettingsRequestSchema,
   type AcceptOrgDonationAgreementResponse,
+  type CreateOrgPayoutResponse,
   type CreateOrgStripeAccountLinkResponse,
   type CreateOrgStripeAccountResponse,
+  type GetOrgBalanceResponse,
   type GetOrgDonationSettingsResponse,
   type GetOrgPaymentsStatusResponse,
   type GetOrgDonationSummaryResponse,
   type ListOrgDonationsResponse,
+  type ListOrgPayoutsResponse,
   type RequestOrgDonationExportResponse,
   type UpdateOrgDonationSettingsResponse,
 } from "@civfix/shared"
@@ -32,6 +36,13 @@ import {
   type OrgPaymentsService,
 } from "../services/payments/org-payments-service.js"
 import {
+  makeOrgPayoutsService,
+  type OrgPayoutsService,
+} from "../services/payments/org-payouts-service.js"
+import { makeDrizzleOrgPayoutsRepository } from "../services/payments/org-payouts-repository.drizzle.js"
+import type { OrgPayoutsRepository } from "../services/payments/org-payouts-repository.types.js"
+import type { CounterStore } from "../abuse/counter-store.js"
+import {
   makeDonationService,
   type DonationService,
   type DonationStorage,
@@ -44,9 +55,13 @@ export const ORG_ACCOUNT_LINK_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1
 export const ORG_PAYMENTS_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 export const ORG_SETTINGS_WRITE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 day" })
 export const ORG_DONATION_EXPORT_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 day" })
+export const ORG_PAYOUT_RATE_LIMIT = perIdentity({ max: 5, timeWindow: "1 hour" })
 
 export const ORG_DONATIONS_PAGE_DEFAULT = 25
 export const ORG_DONATIONS_PAGE_MAX = 50
+
+export const ORG_PAYOUTS_PAGE_DEFAULT = 25
+export const ORG_PAYOUTS_PAGE_MAX = 50
 
 const IdParamsSchema = z.object({ id: z.string().uuid() }).strict()
 
@@ -62,12 +77,21 @@ const ListQuerySchema = z
   })
   .strict()
 
+const PayoutsListQuerySchema = z
+  .object({
+    cursor: z.string().max(512).optional(),
+    limit: z.coerce.number().int().positive().max(ORG_PAYOUTS_PAGE_MAX).optional(),
+  })
+  .strict()
+
 const SummaryQuerySchema = z
   .object({ from: z.string().datetime().optional(), to: z.string().datetime().optional() })
   .strict()
 
 export interface OrgPaymentsOverrides {
   orgs?: OrgPaymentsRepository
+  payouts?: OrgPayoutsRepository
+  counters?: CounterStore
   donations?: DonationRepository
   storage?: DonationStorage
   exports?: Pick<HostExportService, "request">
@@ -111,6 +135,22 @@ export async function registerOrgPaymentsRoutes(
         PAYMENT_METHOD_DOMAINS: env.PAYMENT_METHOD_DOMAINS,
         PUBLIC_WEB_ORIGIN: webOrigin,
       },
+      ...(app.orgPaymentsOverrides?.now !== undefined ? { now: app.orgPaymentsOverrides.now } : {}),
+      logger: app.log,
+    })
+  }
+
+  function payoutRepo(): OrgPayoutsRepository {
+    return app.orgPaymentsOverrides?.payouts ?? makeDrizzleOrgPayoutsRepository(container.getDb().sql)
+  }
+
+  function payouts(): OrgPayoutsService {
+    return makeOrgPayoutsService({
+      orgs: orgRepo(),
+      payouts: payoutRepo(),
+      payments: container.payments,
+      counters: app.orgPaymentsOverrides?.counters ?? container.getCounterStore(),
+      env: { PAYMENTS_ENABLED: env.PAYMENTS_ENABLED },
       ...(app.orgPaymentsOverrides?.now !== undefined ? { now: app.orgPaymentsOverrides.now } : {}),
       logger: app.log,
     })
@@ -304,6 +344,59 @@ export async function registerOrgPaymentsRoutes(
         organizationId: id,
         ...(query.from !== undefined ? { from: new Date(query.from) } : {}),
         ...(query.to !== undefined ? { to: new Date(query.to) } : {}),
+      })
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "getOrgBalance",
+    { config: { rateLimit: ORG_PAYMENTS_READ_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(IdParamsSchema, request.params)
+      await requireViewDonations(id, userId)
+      const payload: GetOrgBalanceResponse = await payouts().getBalance(id)
+      reply.header("cache-control", "no-store").status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "createOrgPayout",
+    { preHandler: csrfProtect, config: { rateLimit: ORG_PAYOUT_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(IdParamsSchema, request.params)
+      await requireManagePayments(id, userId)
+      const body = parse(CreateOrgPayoutRequestSchema, {
+        ...((request.body as object | undefined) ?? {}),
+        id,
+      })
+      const payout = await payouts().createPayout(id, userId, {
+        ...(body.amountMinor !== undefined ? { amountMinor: body.amountMinor } : {}),
+        currency: body.currency,
+        idempotencyKey: body.idempotencyKey,
+      })
+      const payload: CreateOrgPayoutResponse = { payout }
+      reply.header("cache-control", "no-store").status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "listOrgPayouts",
+    { config: { rateLimit: ORG_PAYMENTS_READ_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(IdParamsSchema, request.params)
+      await requireViewDonations(id, userId)
+      const query = parse(PayoutsListQuerySchema, request.query ?? {})
+      const payload: ListOrgPayoutsResponse = await payouts().listPayouts({
+        organizationId: id,
+        ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
+        limit: query.limit ?? ORG_PAYOUTS_PAGE_DEFAULT,
       })
       reply.status(200).send(payload)
     },

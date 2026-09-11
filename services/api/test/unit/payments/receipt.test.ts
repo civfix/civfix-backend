@@ -15,6 +15,7 @@ import {
   makeMemoryStripeEventRepository,
 } from "../../../src/services/payments/donation-repository.memory.js"
 import { makeMemoryOrgPaymentsRepository } from "../../../src/services/payments/org-payments-repository.memory.js"
+import { makeMemoryOrgPayoutsRepository } from "../../../src/services/payments/org-payouts-repository.memory.js"
 import { loadPaymentsEnv } from "../../../src/env/payments-env.js"
 import { NOW, ORG_ID, accountRow, eligibilityRow, orgRow, settingsRow } from "./helpers.js"
 
@@ -179,6 +180,7 @@ async function receiptHarness(): Promise<ReceiptHarness> {
       settings: [settingsRow()],
       eligibility: [eligibilityRow()],
     }),
+    payouts: makeMemoryOrgPayoutsRepository(),
     orgPayments: {} as PaymentsRuntime["orgPayments"],
     eligibility: {} as PaymentsRuntime["eligibility"],
     payments: new FakePayments({ now: () => NOW.getTime() }),

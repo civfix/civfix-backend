@@ -95,6 +95,7 @@ export * from "./event_metrics_daily.js"
 export * from "./host_exports.js"
 
 export * from "./org_stripe_accounts.js"
+export * from "./org_payouts.js"
 export * from "./org_donation_settings.js"
 export * from "./org_donation_agreement_changes.js"
 export * from "./org_eligibility.js"

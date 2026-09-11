@@ -95,6 +95,7 @@ const EXPECTED_TABLES = [
   "event_metrics_daily",
   "host_exports",
   "org_stripe_accounts",
+  "org_payouts",
   "org_donation_settings",
   "org_donation_agreement_changes",
   "org_eligibility",
@@ -579,6 +580,7 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   { table: "host_exports", column: "kind", mirror: schema.HOST_EXPORT_KIND_VALUES },
   { table: "host_exports", column: "status", mirror: schema.HOST_EXPORT_STATUS_VALUES },
   { table: "org_stripe_accounts", column: "onboarding_state", mirror: schema.ORG_PAYMENTS_STATE_VALUES },
+  { table: "org_payouts", column: "status", mirror: schema.PAYOUT_STATUS_VALUES },
   {
     table: "org_donation_settings",
     column: "disabled_reason",

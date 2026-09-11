@@ -1,5 +1,6 @@
 import { AppError } from "@civfix/shared"
 import type {
+  AccountBalance,
   AccountLink,
   ApplicationFeeRecord,
   ApplicationFeeRefund,
@@ -14,6 +15,7 @@ import type {
   PaymentsMode,
   PaymentsPage,
   PaymentsWebhookEvent,
+  PayoutRecord,
 } from "@civfix/shared/interfaces"
 
 export const PAYMENTS_DISABLED_MESSAGE = "Donations are not available."
@@ -68,6 +70,18 @@ export class DisabledPayments implements Payments {
   }
 
   refundApplicationFee(): Promise<ApplicationFeeRefund> {
+    return refuse()
+  }
+
+  retrieveBalance(): Promise<AccountBalance> {
+    return refuse()
+  }
+
+  createPayout(): Promise<PayoutRecord> {
+    return refuse()
+  }
+
+  listPayouts(): Promise<PaymentsPage<PayoutRecord>> {
     return refuse()
   }
 

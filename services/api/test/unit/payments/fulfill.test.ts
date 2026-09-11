@@ -10,6 +10,7 @@ import {
 } from "../../../src/services/payments/payments-jobs.js"
 import { makeMemoryDonationRepository, makeMemoryStripeEventRepository } from "../../../src/services/payments/donation-repository.memory.js"
 import { makeMemoryOrgPaymentsRepository } from "../../../src/services/payments/org-payments-repository.memory.js"
+import { makeMemoryOrgPayoutsRepository } from "../../../src/services/payments/org-payouts-repository.memory.js"
 import { loadPaymentsEnv } from "../../../src/env/payments-env.js"
 import {
   NOW,
@@ -115,6 +116,7 @@ async function harness(options: { amountMinor?: number; feeMinor?: number } = {}
     donations,
     events,
     orgs,
+    payouts: makeMemoryOrgPayoutsRepository(),
     orgPayments: {} as PaymentsRuntime["orgPayments"],
     eligibility: {} as PaymentsRuntime["eligibility"],
     payments,
