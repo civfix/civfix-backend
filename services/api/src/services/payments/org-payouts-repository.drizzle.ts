@@ -96,6 +96,16 @@ export function makeDrizzleOrgPayoutsRepository(sql: Sql): OrgPayoutsRepository 
       return row === undefined ? null : toPayout(row)
     },
 
+    async knownStripePayoutIds(organizationId, stripePayoutIds): Promise<ReadonlySet<string>> {
+      const wanted = [...new Set(stripePayoutIds)]
+      if (wanted.length === 0) return new Set()
+      const rows = await sql<{ stripe_payout_id: string }[]>`
+        SELECT stripe_payout_id FROM org_payouts
+         WHERE organization_id = ${organizationId}
+           AND stripe_payout_id = ANY(${wanted}::text[])`
+      return new Set(rows.map((row) => row.stripe_payout_id))
+    },
+
     async markSubmitted(input): Promise<OrgPayoutRecord | null> {
       return sql.begin(async (tx) => {
         const mirrors = await tx<
@@ -107,7 +117,10 @@ export function makeDrizzleOrgPayoutsRepository(sql: Sql): OrgPayoutsRepository 
              AND id <> ${input.id}
           RETURNING status, arrival_date, failure_message`
         const mirror = mirrors[0]
-        const status = mirror !== undefined ? mirror.status : input.status
+        const status =
+          mirror !== undefined && TERMINAL_PAYOUT_STATUSES.includes(mirror.status)
+            ? mirror.status
+            : input.status
         const arrivalDate = mirror?.arrival_date ?? input.arrivalDate
         const failureMessage = mirror?.failure_message ?? input.failureMessage
         const rows = await tx<OrgPayoutRowSelect[]>`
@@ -167,7 +180,7 @@ export function makeDrizzleOrgPayoutsRepository(sql: Sql): OrgPayoutsRepository 
                arrival_date, failure_message, requested_by, idempotency_key, created_at, updated_at
           FROM org_payouts
          WHERE organization_id = ${organizationId}
-           AND stripe_payout_id IS NOT NULL
+           AND (stripe_payout_id IS NOT NULL OR status = 'failed')
            ${keyset}
          ORDER BY created_at DESC, id DESC
          LIMIT ${limit}`

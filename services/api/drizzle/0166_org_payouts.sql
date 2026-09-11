@@ -17,6 +17,14 @@
 -- `stripe_payout_id` is therefore NULL until Stripe answers, and unique once it
 -- is set (payout ids are globally unique).
 --
+-- A ROW THAT NEVER LEARNED ITS OUTCOME (status 'pending', stripe_payout_id
+-- NULL) blocks the organization's next payout until it is resolved, and it is
+-- resolved by READING the connected account - listing its payouts and adopting
+-- the one this row was asking for, or recording that none was ever made. The
+-- recovery path never re-issues a payout request: a Stripe idempotency key
+-- stops deduplicating after its retention window, so re-sending an old one
+-- would mint a SECOND real payout rather than replay the first.
+--
 -- `requested_by` IS NULLABLE ON PURPOSE. A payout made from the organization's
 -- own Stripe dashboard, or by the automatic schedule, arrives here only through
 -- the `payout.*` connect webhooks, which know an account but no civfix user. A

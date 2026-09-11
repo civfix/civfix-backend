@@ -62,6 +62,19 @@ export function makeMemoryOrgPayoutsRepository(
       return Promise.resolve(match === undefined ? null : { ...match })
     },
 
+    knownStripePayoutIds(organizationId, stripePayoutIds): Promise<ReadonlySet<string>> {
+      const wanted = new Set(stripePayoutIds)
+      const found = rows
+        .filter(
+          (row) =>
+            row.organizationId === organizationId &&
+            row.stripePayoutId !== null &&
+            wanted.has(row.stripePayoutId),
+        )
+        .map((row) => row.stripePayoutId as string)
+      return Promise.resolve(new Set(found))
+    },
+
     markSubmitted(input): Promise<OrgPayoutRecord | null> {
       const record = byId(input.id)
       if (record === undefined) return Promise.resolve(null)
@@ -74,7 +87,10 @@ export function makeMemoryOrgPayoutsRepository(
       const mirror = mirrorIndex >= 0 ? rows[mirrorIndex] : undefined
       if (mirrorIndex >= 0) rows.splice(mirrorIndex, 1)
       record.stripePayoutId = input.stripePayoutId
-      record.status = mirror?.status ?? input.status
+      record.status =
+        mirror !== undefined && TERMINAL_PAYOUT_STATUSES.includes(mirror.status)
+          ? mirror.status
+          : input.status
       record.arrivalDate = mirror?.arrivalDate ?? input.arrivalDate
       record.failureMessage = mirror?.failureMessage ?? input.failureMessage
       record.updatedAt = input.now
@@ -127,7 +143,11 @@ export function makeMemoryOrgPayoutsRepository(
     listForOrg({ organizationId, cursor, limit }): Promise<OrgPayoutRecord[]> {
       const decoded = decodePayoutCursor(cursor)
       const ordered = rows
-        .filter((row) => row.organizationId === organizationId && row.stripePayoutId !== null)
+        .filter(
+          (row) =>
+            row.organizationId === organizationId &&
+            (row.stripePayoutId !== null || row.status === "failed"),
+        )
         .sort((a, b) => {
           const byTime = b.createdAt.getTime() - a.createdAt.getTime()
           return byTime !== 0 ? byTime : b.id.localeCompare(a.id)

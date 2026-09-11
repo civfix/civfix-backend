@@ -54,6 +54,8 @@ async function harness(
     paymentsEnabled?: boolean
     createPayoutRejectsWith?: Error
     createPayoutRejectsOnce?: Error
+    createPayoutLosesResponseOnce?: Error
+    listPayoutsRejectsWith?: Error
     accountConnected?: boolean
   } = {},
 ): Promise<Harness> {
@@ -70,22 +72,35 @@ async function harness(
 
   const refusal = options.createPayoutRejectsWith
   const onceRefusal = options.createPayoutRejectsOnce
+  const lostResponse = options.createPayoutLosesResponseOnce
   let refusalsLeft = onceRefusal === undefined ? 0 : 1
-  const payments: Payments =
-    refusal === undefined && onceRefusal === undefined
-      ? fake
-      : ({
-          retrieveBalance: (account: string) => fake.retrieveBalance(account),
-          createPayout: (account: string, payoutInput: unknown) => {
-            if (refusal !== undefined) return Promise.reject(refusal)
-            if (refusalsLeft > 0) {
-              refusalsLeft -= 1
-              return Promise.reject(onceRefusal)
-            }
-            return fake.createPayout(account, payoutInput as never)
-          },
-          listPayouts: (account: string) => fake.listPayouts(account, {}),
-        } as unknown as Payments)
+  let lossesLeft = lostResponse === undefined ? 0 : 1
+  const listRefusal = options.listPayoutsRejectsWith
+  const patched =
+    refusal !== undefined ||
+    onceRefusal !== undefined ||
+    lostResponse !== undefined ||
+    listRefusal !== undefined
+  const payments: Payments = !patched
+    ? fake
+    : ({
+        retrieveBalance: (account: string) => fake.retrieveBalance(account),
+        createPayout: async (account: string, payoutInput: unknown) => {
+          if (refusal !== undefined) throw refusal
+          if (refusalsLeft > 0) {
+            refusalsLeft -= 1
+            throw onceRefusal
+          }
+          const created = await fake.createPayout(account, payoutInput as never)
+          if (lossesLeft > 0) {
+            lossesLeft -= 1
+            throw lostResponse
+          }
+          return created
+        },
+        listPayouts: (account: string) =>
+          listRefusal === undefined ? fake.listPayouts(account, {}) : Promise.reject(listRefusal),
+      } as unknown as Payments)
 
   const service = makeOrgPayoutsService({
     orgs,
@@ -313,13 +328,14 @@ describe("creating a payout", () => {
     expect(payouts.rows[0]?.stripePayoutId).toBeNull()
   })
 
-  it("refuses a SECOND payout while an earlier one is still unconfirmed", async () => {
+  it("refuses the next payout while the processor cannot be read at all", async () => {
     const timeout = Object.assign(new Error("connection error"), {
       type: "StripeConnectionError",
     })
     const { service, payouts } = await harness({
       availableMinor: 10_000,
       createPayoutRejectsWith: timeout,
+      listPayoutsRejectsWith: timeout,
     })
     await expect(
       service.createPayout(ORG_ID, USER_ID, {
@@ -337,9 +353,42 @@ describe("creating a payout", () => {
       }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
     expect(payouts.rows).toHaveLength(1)
+    expect(payouts.rows[0]?.status).toBe("pending")
   })
 
-  it("settles the earlier unconfirmed payout and then lets the new request through", async () => {
+  it("ADOPTS the payout the processor really made when our response was lost", async () => {
+    const timeout = Object.assign(new Error("connection error"), {
+      type: "StripeConnectionError",
+    })
+    const { service, payouts, payments } = await harness({
+      availableMinor: 10_000,
+      createPayoutLosesResponseOnce: timeout,
+    })
+    await expect(
+      service.createPayout(ORG_ID, USER_ID, {
+        amountMinor: 1_000,
+        currency: "USD",
+        idempotencyKey: IDEMPOTENCY_KEY,
+      }),
+    ).rejects.toMatchObject({ code: "PAYMENT_UNAVAILABLE" })
+    expect(payouts.rows[0]?.stripePayoutId).toBeNull()
+
+    await service.createPayout(ORG_ID, USER_ID, {
+      amountMinor: 2_000,
+      currency: "USD",
+      idempotencyKey: SECOND_KEY,
+    })
+
+    const account = payouts.rows[0]!.stripeAccountId
+    const onProcessor = await payments.listPayouts(account, {})
+    expect(onProcessor.items.filter((p) => p.amountMinor === 1_000)).toHaveLength(1)
+    expect(payouts.rows[0]?.stripePayoutId).toBe(
+      onProcessor.items.find((p) => p.amountMinor === 1_000)?.id,
+    )
+    expect(payouts.rows[0]?.status).not.toBe("failed")
+  })
+
+  it("closes an unconfirmed row the processor never received, then lets the new request through", async () => {
     const timeout = Object.assign(new Error("connection error"), {
       type: "StripeConnectionError",
     })
@@ -363,9 +412,28 @@ describe("creating a payout", () => {
     })
 
     expect(payouts.rows).toHaveLength(2)
-    expect(payouts.rows[0]?.stripePayoutId).not.toBeNull()
-    expect(payouts.rows[0]?.idempotencyKey).toBe(IDEMPOTENCY_KEY)
-    expect(second.stripePayoutId).not.toBe(payouts.rows[0]?.stripePayoutId)
+    expect(payouts.rows[0]?.status).toBe("failed")
+    expect(payouts.rows[0]?.stripePayoutId).toBeNull()
+    expect(second.stripePayoutId).not.toBe("")
+  })
+
+  it("keeps a refused payout visible in the organization's history", async () => {
+    const { service, payouts } = await harness({
+      availableMinor: 10_000,
+      createPayoutRejectsWith: new Error("payouts_not_allowed"),
+    })
+    await expect(
+      service.createPayout(ORG_ID, USER_ID, {
+        amountMinor: 1_000,
+        currency: "USD",
+        idempotencyKey: IDEMPOTENCY_KEY,
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+
+    const page = await payouts.listForOrg({ organizationId: ORG_ID, limit: 10 })
+    expect(page).toHaveLength(1)
+    expect(page[0]?.status).toBe("failed")
+    expect(page[0]?.stripePayoutId).toBeNull()
   })
 
   it("re-raises the stored refusal on a replay of a failed key", async () => {

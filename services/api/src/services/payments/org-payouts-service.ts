@@ -24,6 +24,13 @@ export const PAYOUT_RATE_LIMIT_MESSAGE =
 export const PAYOUT_IN_FLIGHT_MESSAGE =
   "That payout is still being submitted. Refresh the payout list in a moment."
 
+export const RECONCILE_PAGE_LIMIT = 25
+
+export const RECONCILE_SLACK_SEC = 300
+
+export const PAYOUT_NEVER_SUBMITTED_MESSAGE =
+  "This payout never reached Stripe, so no money moved. Send it again when you are ready."
+
 export const PAYOUT_UNCONFIRMED_MESSAGE =
   "An earlier payout has not been confirmed by Stripe yet. Refresh the payout list in a moment before sending another."
 
@@ -100,36 +107,43 @@ export function makeOrgPayoutsService(deps: OrgPayoutsServiceDeps): OrgPayoutsSe
     }
   }
 
-  async function settleUnconfirmed(accountId: string, row: OrgPayoutRecord): Promise<void> {
-    if (row.idempotencyKey === null) {
+  async function settleUnconfirmed(row: OrgPayoutRecord): Promise<void> {
+    let page
+    try {
+      page = await deps.payments.listPayouts(row.stripeAccountId, { limit: RECONCILE_PAGE_LIMIT })
+    } catch (err) {
+      deps.logger?.error(
+        { organizationId: row.organizationId, payoutId: row.id, err: payoutFailure(err).code },
+        "could not read the connected account to settle an unconfirmed org payout",
+      )
       throw AppError.conflict(PAYOUT_UNCONFIRMED_MESSAGE)
     }
-    let submitted
-    try {
-      submitted = await deps.payments.createPayout(accountId, {
-        amountMinor: row.amountMinor,
-        currency: PAYOUT_CURRENCY,
-        idempotencyKey: row.idempotencyKey,
+    const createdFrom = Math.floor(row.createdAt.getTime() / 1000) - RECONCILE_SLACK_SEC
+    const candidates = page.items.filter(
+      (payout) => payout.amountMinor === row.amountMinor && payout.createdSec >= createdFrom,
+    )
+    const known = await deps.payouts.knownStripePayoutIds(
+      row.organizationId,
+      candidates.map((payout) => payout.id),
+    )
+    const match = candidates
+      .filter((payout) => !known.has(payout.id))
+      .sort((a, b) => a.createdSec - b.createdSec)[0]
+
+    if (match === undefined) {
+      await deps.payouts.markFailed({
+        id: row.id,
+        failureMessage: PAYOUT_NEVER_SUBMITTED_MESSAGE,
+        now: now(),
       })
-    } catch (err) {
-      const failure = payoutFailure(err)
-      if (payoutRefusalCode(failure) === null) {
-        deps.logger?.error(
-          { organizationId: row.organizationId, payoutId: row.id, code: failure.code },
-          "could not settle an unconfirmed org payout: refusing the new request until it resolves",
-        )
-        throw AppError.conflict(PAYOUT_UNCONFIRMED_MESSAGE)
-      }
-      await deps.payouts.markFailed({ id: row.id, failureMessage: failure.message, now: now() })
       return
     }
     await deps.payouts.markSubmitted({
       id: row.id,
       organizationId: row.organizationId,
-      stripePayoutId: submitted.id,
-      status: submitted.status,
-      arrivalDate:
-        submitted.arrivalDateSec === null ? null : new Date(submitted.arrivalDateSec * 1000),
+      stripePayoutId: match.id,
+      status: match.status,
+      arrivalDate: match.arrivalDateSec === null ? null : new Date(match.arrivalDateSec * 1000),
       failureMessage: null,
       now: now(),
     })
@@ -164,7 +178,7 @@ export function makeOrgPayoutsService(deps: OrgPayoutsServiceDeps): OrgPayoutsSe
 
       const unconfirmed = await deps.payouts.findUnconfirmed(organizationId)
       if (unconfirmed !== null && unconfirmed.idempotencyKey !== input.idempotencyKey) {
-        await settleUnconfirmed(accountId, unconfirmed)
+        await settleUnconfirmed(unconfirmed)
       }
 
       const balance = await deps.payments.retrieveBalance(accountId)

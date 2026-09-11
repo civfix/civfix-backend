@@ -67,6 +67,10 @@ export interface ListOrgPayoutsQuery {
 export interface OrgPayoutsRepository {
   insertPending(input: InsertPendingPayoutInput): Promise<InsertPendingPayoutResult>
   findUnconfirmed(organizationId: string): Promise<OrgPayoutRecord | null>
+  knownStripePayoutIds(
+    organizationId: string,
+    stripePayoutIds: readonly string[],
+  ): Promise<ReadonlySet<string>>
   markSubmitted(input: MarkPayoutSubmittedInput): Promise<OrgPayoutRecord | null>
   markFailed(input: MarkPayoutFailedInput): Promise<OrgPayoutRecord | null>
   upsertFromProvider(input: UpsertProviderPayoutInput): Promise<void>
