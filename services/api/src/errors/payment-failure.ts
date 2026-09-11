@@ -142,3 +142,48 @@ export function paymentFailureKind(err: unknown): PaymentFailureKind | null {
     ? (value as PaymentFailureKind)
     : null
 }
+
+export const PAYOUT_FAILURE_CODES = [
+  "payouts_not_allowed",
+  "balance_insufficient",
+  "account_invalid",
+] as const
+
+export type PayoutFailureCode = (typeof PAYOUT_FAILURE_CODES)[number]
+
+const PAYOUT_FAILURE_COPY: Readonly<Record<PayoutFailureCode, string>> = {
+  payouts_not_allowed:
+    "Stripe has not enabled payouts on this account yet. Finish the payout details in Stripe, then try again.",
+  balance_insufficient:
+    "The available balance is lower than the amount requested. Try again once more donations have settled.",
+  account_invalid:
+    "This organization's payout account can't be reached right now. Reconnect it in Stripe and try again.",
+}
+
+export function payoutFailureCode(err: unknown): PayoutFailureCode | null {
+  if (typeof err !== "object" || err === null) return null
+  const source = err as Record<string, unknown>
+  const code = source.code
+  if (typeof code === "string") {
+    const direct = PAYOUT_FAILURE_CODES.find((known) => known === code)
+    if (direct !== undefined) return direct
+  }
+  const message = source.message
+  if (typeof message !== "string") return null
+  return PAYOUT_FAILURE_CODES.find((known) => message.includes(known)) ?? null
+}
+
+export function payoutRefusal(code: PayoutFailureCode): AppError {
+  const message = PAYOUT_FAILURE_COPY[code]
+  if (code === "balance_insufficient") return AppError.conflict(message)
+  if (code === "account_invalid") return AppError.paymentUnavailable(message)
+  return new AppError(ErrorCode.VALIDATION, message, {
+    fields: { [PAYMENT_FAILURE_FIELD]: code },
+  })
+}
+
+export function payoutFailure(err: unknown): AppError {
+  if (err instanceof AppError) return err
+  const code = payoutFailureCode(err)
+  return code === null ? paymentFailure(err) : payoutRefusal(code)
+}
