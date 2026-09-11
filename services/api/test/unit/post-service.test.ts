@@ -799,3 +799,91 @@ describe("PostRepository organization hydration", () => {
     expect(organizationStatements(fake)).toHaveLength(0)
   })
 })
+
+describe("PostRepository hydration drops missing reference ids", () => {
+  const VIEWER = "11111111-1111-1111-1111-111111111111"
+  const POST = "22222222-2222-2222-2222-222222222222"
+  const AUTHOR = "33333333-3333-3333-3333-333333333333"
+  const EVENT = "55555555-5555-5555-5555-555555555555"
+  const AT = new Date("2026-09-01T00:00:00.000Z")
+
+  const authorRow = {
+    id: AUTHOR,
+    display_name: "Author",
+    handle: "author",
+    bio: null,
+    followers: 0,
+    following: 0,
+    avatar_r2_key: null,
+    avatar_url: null,
+    is_following: false,
+    deleted_at: null,
+  }
+
+  function holedRow(over: Record<string, unknown>) {
+    return {
+      id: POST,
+      author_id: AUTHOR,
+      kind: "post",
+      body: "hello",
+      thread_root_id: null,
+      like_count: 0,
+      repost_count: 0,
+      reply_count: 0,
+      save_count: 0,
+      organization_id: null,
+      created_at: AT,
+      updated_at: AT,
+      ...over,
+    }
+  }
+
+  function repoOver(row: Record<string, unknown>) {
+    const fake = makeFakeSql([
+      { match: /FROM posts p WHERE p\.id = \?/, rows: [row] },
+      { match: /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/, rows: [authorRow] },
+    ])
+    const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
+      presignMedia: () => Promise.resolve({ url: "u" }),
+      presignAvatar: () => Promise.resolve("a"),
+    })
+    return { repo, fake }
+  }
+
+  function matching(fake: ReturnType<typeof makeFakeSql>, re: RegExp) {
+    return fake.statements.filter((s) => re.test(s.sql))
+  }
+
+  it("runs no ref, event or report query when every reference column is absent", async () => {
+    const { repo, fake } = repoOver(
+      holedRow({
+        repost_of_id: undefined,
+        reply_to_id: undefined,
+        event_id: undefined,
+        report_id: undefined,
+      }),
+    )
+    const dto = await repo.getPostDTO(POST, VIEWER)
+    expect(dto?.id).toBe(POST)
+    expect(matching(fake, /LEFT JOIN users u ON u\.id = p\.author_id/)).toHaveLength(0)
+    expect(matching(fake, /FROM cleanups c/)).toHaveLength(0)
+    expect(matching(fake, /FROM reports r/)).toHaveLength(0)
+  })
+
+  it("batches only the present reference ids, never a hole", async () => {
+    const { repo, fake } = repoOver(
+      holedRow({
+        repost_of_id: null,
+        reply_to_id: undefined,
+        event_id: EVENT,
+        report_id: undefined,
+      }),
+    )
+    await repo.getPostDTO(POST, VIEWER)
+    expect(matching(fake, /LEFT JOIN users u ON u\.id = p\.author_id/)).toHaveLength(0)
+    expect(matching(fake, /FROM reports r/)).toHaveLength(0)
+    const events = matching(fake, /FROM cleanups c/)
+    expect(events).toHaveLength(1)
+    expect(events[0]!.values).toContainEqual([EVENT])
+  })
+})

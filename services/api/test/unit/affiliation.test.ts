@@ -68,6 +68,20 @@ describe("loadPrimaryAffiliations", () => {
     expect(out.size).toBe(0)
   })
 
+  it("batches only the present ids when a row-derived batch carries holes", async () => {
+    const { sql, calls } = fakeSql([])
+    await loadPrimaryAffiliations(sql, undefined, [ANN, null, BOB, undefined, ANN, null], null)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.args[0]).toEqual([ANN, BOB])
+  })
+
+  it("issues no query at all when every id in the batch is missing", async () => {
+    const { sql, calls } = fakeSql([])
+    const out = await loadPrimaryAffiliations(sql, undefined, [null, undefined, null], null)
+    expect(calls).toHaveLength(0)
+    expect(out.size).toBe(0)
+  })
+
   it("resolves the pin first and the earliest membership second, in the SQL itself", async () => {
     const { sql, calls } = fakeSql([])
     await loadPrimaryAffiliations(sql, undefined, [ANN], null)
