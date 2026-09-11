@@ -270,6 +270,7 @@ function round2(n: number): number {
 export async function entriesWithCreditorAffiliation(
   load: AffiliationLoader | undefined,
   views: readonly VolunteerHoursEntryView[],
+  viewerId: string | null,
 ): Promise<VolunteerHoursEntryDTO[]> {
   const dtos = views.map(toVolunteerHoursEntryDTO)
   if (load === undefined) return dtos
@@ -277,7 +278,7 @@ export async function entriesWithCreditorAffiliation(
     .map((v) => v.creditedBy?.id)
     .filter((id): id is string => id !== undefined)
   if (creditorIds.length === 0) return dtos
-  const affiliations = await load(creditorIds)
+  const affiliations = await load(creditorIds, viewerId)
   if (affiliations.size === 0) return dtos
   return dtos.map((dto) =>
     dto.creditedBy === undefined || dto.creditedBy === null
@@ -408,7 +409,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         deps.repo.totalHoursFor(userId),
       ])
       return {
-        items: await entriesWithCreditorAffiliation(deps.affiliations, page.items),
+        items: await entriesWithCreditorAffiliation(deps.affiliations, page.items, userId),
         nextCursor: page.nextCursor,
         totalHours,
       }
@@ -451,7 +452,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         visible: true,
         totalHours: totals.totalHours,
         byJurisdiction: totals.byJurisdiction,
-        items: await entriesWithCreditorAffiliation(deps.affiliations, page.items),
+        items: await entriesWithCreditorAffiliation(deps.affiliations, page.items, viewerId),
         reportHours: 0,
         nextCursor: page.nextCursor,
       }

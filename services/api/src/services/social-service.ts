@@ -276,6 +276,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     const people = await attachAffiliations(
       deps.affiliations,
       items.map((it) => toPersonDTO(it, it.isFollowing)),
+      viewer.userId,
     )
     return { items: people, nextCursor }
   }
@@ -308,7 +309,9 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       view.avatarR2Key !== null
         ? await presignAvatar(view.avatarR2Key)
         : (view.avatarUrl ?? undefined)
-    const affiliations = deps.affiliations ? await deps.affiliations([view.id]) : undefined
+    const affiliations = deps.affiliations
+      ? await deps.affiliations([view.id], viewer.userId)
+      : undefined
     const organization = affiliations?.get(view.id) ?? null
     return {
       id: view.id,
@@ -378,6 +381,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         items: await attachAffiliations(
           deps.affiliations,
           items.map((it) => toPersonDTO(it, it.isFollowing)),
+          viewer.userId,
         ),
         nextCursor,
       }
@@ -393,6 +397,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       const results = await attachAffiliations(
         deps.affiliations,
         items.map((it) => toPersonDTO(it, it.isFollowing)),
+        viewerId,
       )
       await writeSuggestionsCache(viewerId, results)
       return { results: results.slice(0, limit) }

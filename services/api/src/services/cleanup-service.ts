@@ -1323,6 +1323,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const attendees = await attachAffiliations(
         deps.affiliations,
         views.map((v) => toAttendeeDTO(v, v.isFollowing)),
+        viewer.userId,
       )
       return { attendees, going: record.going, scope }
     },

@@ -262,7 +262,7 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
             ...invites.flatMap((i) =>
               [i.invitee?.id, i.invitedBy?.id].filter((id): id is string => id !== undefined),
             ),
-          ])
+          ], actorId)
         : NO_AFFILIATIONS
       return {
         members: members.map((m) => toMemberDTO(m, { canManage, actorId, affiliations })),
@@ -394,6 +394,7 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
       const affiliations = deps.affiliations
         ? await deps.affiliations(
             items.map((i) => i.invitedBy?.id).filter((id): id is string => id !== undefined),
+            userId,
           )
         : NO_AFFILIATIONS
       return {

@@ -248,9 +248,12 @@ export async function tombstonePostInTx(tx: Queryable, postId: string): Promise<
 }
 
 export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRepository {
-  async function loadAffiliations(userIds: string[]): Promise<PrimaryAffiliations> {
+  async function loadAffiliations(
+    userIds: string[],
+    viewerId: string,
+  ): Promise<PrimaryAffiliations> {
     if (deps.affiliations === undefined) return NO_AFFILIATIONS
-    return deps.affiliations(userIds)
+    return deps.affiliations(userIds, viewerId)
   }
 
   async function loadOrganizations(ids: string[]): Promise<Map<string, OrganizationRefDTO>> {
@@ -343,7 +346,10 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       }
       return dto
     })
-    const affiliations = await loadAffiliations(rows.filter((r) => r.deleted_at === null).map((r) => r.id))
+    const affiliations = await loadAffiliations(
+      rows.filter((r) => r.deleted_at === null).map((r) => r.id),
+      viewerId,
+    )
     for (const dto of resolved) out.set(dto.id, withAffiliation(dto, affiliations))
     return out
   }
@@ -629,7 +635,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       loadReports(reportIds),
       loadMedia(readableRefIds),
       loadOrganizations(orgIds),
-      loadAffiliations(refsResult.authorIds),
+      loadAffiliations(refsResult.authorIds, viewerId),
     ])
 
     for (const ref of refs.values()) {

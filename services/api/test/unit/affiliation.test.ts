@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { PersonDTO } from "@civfix/shared"
-import type { Queryable } from "../../src/db/client.js"
+import type { Sql } from "../../src/db/client.js"
 import {
   attachAffiliations,
   loadPrimaryAffiliations,
@@ -26,13 +26,16 @@ interface FakeRow {
   logo_key: string | null
 }
 
-function fakeSql(rows: FakeRow[]): { sql: Queryable; calls: Capture[] } {
+function fakeSql(rows: FakeRow[]): { sql: Sql; calls: Capture[]; fragments: Capture[] } {
   const calls: Capture[] = []
+  const fragments: Capture[] = []
   const tag = (strings: TemplateStringsArray, ...args: unknown[]): Promise<FakeRow[]> => {
-    calls.push({ text: strings.join("?"), args })
+    const capture = { text: strings.join("?"), args }
+    if (capture.text.includes("FROM organization_members")) calls.push(capture)
+    else fragments.push(capture)
     return Promise.resolve(rows)
   }
-  return { sql: tag as unknown as Queryable, calls }
+  return { sql: tag as unknown as Sql, calls, fragments }
 }
 
 function person(id: string): PersonDTO {
@@ -53,21 +56,21 @@ function row(over: Partial<FakeRow> & { user_id: string; id: string }): FakeRow 
 describe("loadPrimaryAffiliations", () => {
   it("issues exactly ONE query for a whole batch and de-duplicates the ids", async () => {
     const { sql, calls } = fakeSql([])
-    await loadPrimaryAffiliations(sql, undefined, [ANN, BOB, ANN, BOB, CAROL])
+    await loadPrimaryAffiliations(sql, undefined, [ANN, BOB, ANN, BOB, CAROL], null)
     expect(calls).toHaveLength(1)
     expect(calls[0]!.args[0]).toEqual([ANN, BOB, CAROL])
   })
 
   it("issues no query at all for an empty batch", async () => {
     const { sql, calls } = fakeSql([])
-    const out = await loadPrimaryAffiliations(sql, undefined, [])
+    const out = await loadPrimaryAffiliations(sql, undefined, [], null)
     expect(calls).toHaveLength(0)
     expect(out.size).toBe(0)
   })
 
   it("resolves the pin first and the earliest membership second, in the SQL itself", async () => {
     const { sql, calls } = fakeSql([])
-    await loadPrimaryAffiliations(sql, undefined, [ANN])
+    await loadPrimaryAffiliations(sql, undefined, [ANN], null)
     const text = calls[0]!.text.replace(/\s+/g, " ")
     // DISTINCT ON + this ORDER BY is what makes the read one query instead of one per person.
     expect(text).toContain("SELECT DISTINCT ON (m.user_id)")
@@ -79,11 +82,28 @@ describe("loadPrimaryAffiliations", () => {
 
   it("never returns a suspended or deleted organization, or a tombstoned member", async () => {
     const { sql, calls } = fakeSql([])
-    await loadPrimaryAffiliations(sql, undefined, [ANN])
+    await loadPrimaryAffiliations(sql, undefined, [ANN], null)
     const text = calls[0]!.text.replace(/\s+/g, " ")
     expect(text).toContain("u.deleted_at IS NULL")
     expect(text).toContain("o.deleted_at IS NULL")
     expect(text).toContain("o.suspended_at IS NULL")
+  })
+
+  it("never lets a blocked pair see each other's affiliation", async () => {
+    const { sql, calls, fragments } = fakeSql([])
+    await loadPrimaryAffiliations(sql, undefined, [ANN], BOB)
+    expect(calls[0]!.text.replace(/\s+/g, " ")).toContain("AND NOT")
+    const guard = fragments.map((f) => f.text.replace(/\s+/g, " ")).join(" ")
+    expect(guard).toContain("user_blocks")
+    expect(fragments.some((f) => f.args.includes(BOB))).toBe(true)
+  })
+
+  it("asks for no block exclusion at all when there is no viewer", async () => {
+    const { sql, fragments } = fakeSql([])
+    await loadPrimaryAffiliations(sql, undefined, [ANN], null)
+    const guard = fragments.map((f) => f.text.replace(/\s+/g, " ")).join(" ")
+    expect(guard).toContain("FALSE")
+    expect(guard).not.toContain("user_blocks")
   })
 
   it("projects the badge fields, including the org's own verification", async () => {
@@ -95,7 +115,7 @@ describe("loadPrimaryAffiliations", () => {
         verified_kind: "nonprofit",
       }),
     ])
-    const out = await loadPrimaryAffiliations(sql, undefined, [ANN])
+    const out = await loadPrimaryAffiliations(sql, undefined, [ANN], null)
     expect(out.get(ANN)).toEqual({
       id: "org-1",
       slug: "ballona-creek-trust",
@@ -120,6 +140,7 @@ describe("loadPrimaryAffiliations", () => {
         return Promise.resolve(`https://cdn.example/${key}`)
       },
       [ANN, BOB, CAROL],
+      null,
     )
     expect(presigned).toEqual(["uploads/2026/01/logo"])
     expect(out.get(ANN)?.logoUrl).toBe("https://cdn.example/uploads/2026/01/logo")
@@ -129,7 +150,7 @@ describe("loadPrimaryAffiliations", () => {
 
   it("leaves logoUrl null when no presigner is wired (offline / fake container)", async () => {
     const { sql } = fakeSql([row({ user_id: ANN, id: "org-1", logo_key: "uploads/x" })])
-    const out = await loadPrimaryAffiliations(sql, undefined, [ANN])
+    const out = await loadPrimaryAffiliations(sql, undefined, [ANN], null)
     expect(out.get(ANN)?.logoUrl).toBeNull()
   })
 })
@@ -144,8 +165,9 @@ describe("withAffiliation / attachAffiliations", () => {
   it("attaches the batch to every person that has one and leaves the rest alone", async () => {
     const { sql, calls } = fakeSql([row({ user_id: BOB, id: "org-1" })])
     const out = await attachAffiliations(
-      (ids) => loadPrimaryAffiliations(sql, undefined, ids),
+      (ids, viewerId) => loadPrimaryAffiliations(sql, undefined, ids, viewerId),
       [person(ANN), person(BOB)],
+      null,
     )
     expect(calls).toHaveLength(1)
     expect(out[0]!.organization).toBeUndefined()
@@ -154,6 +176,6 @@ describe("withAffiliation / attachAffiliations", () => {
 
   it("is a no-op with no loader wired, so a memory-repo caller stays offline", async () => {
     const people = [person(ANN)]
-    expect(await attachAffiliations(undefined, people)).toBe(people)
+    expect(await attachAffiliations(undefined, people, null)).toBe(people)
   })
 })

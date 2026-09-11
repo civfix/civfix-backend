@@ -702,7 +702,10 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       })
       const canManage = record.myRole === "owner" || record.myRole === "admin"
       const affiliations = deps.affiliations
-        ? await deps.affiliations(items.map((m) => m.person.id))
+        ? await deps.affiliations(
+            items.map((m) => m.person.id),
+            actorId,
+          )
         : NO_AFFILIATIONS
       return {
         items: items.map((member) => ({
@@ -831,7 +834,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         .map((r) => r.invitedBy?.id)
         .filter((id): id is string => id !== undefined)
       const affiliations = deps.affiliations
-        ? await deps.affiliations(inviterIds)
+        ? await deps.affiliations(inviterIds, userId)
         : NO_AFFILIATIONS
       const logoUrls = await presignLogoKeys(records.map((r) => r.organization.logoKey))
       return {

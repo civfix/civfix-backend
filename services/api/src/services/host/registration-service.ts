@@ -420,6 +420,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
       const affiliations = deps.affiliations
         ? await deps.affiliations(
             items.map((i) => i.person?.id).filter((id): id is string => id != null),
+            actorId,
           )
         : NO_AFFILIATIONS
       return {

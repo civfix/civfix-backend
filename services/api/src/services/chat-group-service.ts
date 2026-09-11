@@ -282,7 +282,10 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
       )
       const page = await groups.listMembers(req.id, viewerId, req.cursor ?? null, limit)
       const affiliations = deps.affiliations
-        ? await deps.affiliations(page.members.map((m) => m.user.id))
+        ? await deps.affiliations(
+            page.members.map((m) => m.user.id),
+            viewerId,
+          )
         : NO_AFFILIATIONS
       return {
         members: page.members.map((m) => {

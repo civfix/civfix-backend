@@ -1,12 +1,16 @@
 import type { OrganizationRefDTO, PersonDTO } from "@civfix/shared"
-import type { Queryable } from "../db/client.js"
+import type { Sql } from "../db/client.js"
+import { blockedPairExpr } from "./hidden-identity.js"
 import { PRESIGN_CONCURRENCY, mapWithLimit } from "./media-presign.js"
 
 export type PrimaryAffiliations = ReadonlyMap<string, OrganizationRefDTO>
 
 export const NO_AFFILIATIONS: PrimaryAffiliations = new Map()
 
-export type AffiliationLoader = (userIds: readonly string[]) => Promise<PrimaryAffiliations>
+export type AffiliationLoader = (
+  userIds: readonly string[],
+  viewerId: string | null,
+) => Promise<PrimaryAffiliations>
 
 export type LogoPresigner = (key: string) => Promise<string>
 
@@ -21,9 +25,10 @@ interface AffiliationRow {
 }
 
 export async function loadPrimaryAffiliations(
-  sql: Queryable,
+  sql: Sql,
   presignLogo: LogoPresigner | undefined,
   userIds: readonly string[],
+  viewerId: string | null,
 ): Promise<PrimaryAffiliations> {
   const ids = [...new Set(userIds)]
   if (ids.length === 0) return NO_AFFILIATIONS
@@ -45,6 +50,7 @@ export async function loadPrimaryAffiliations(
       AND u.deleted_at IS NULL
       AND o.deleted_at IS NULL
       AND o.suspended_at IS NULL
+      AND NOT ${blockedPairExpr(sql, viewerId, sql`m.user_id`)}
     ORDER BY
       m.user_id,
       COALESCE(o.id = u.primary_organization_id, false) DESC,
@@ -78,18 +84,22 @@ export async function loadPrimaryAffiliations(
 }
 
 export function makeAffiliationLoader(
-  sql: Queryable,
+  sql: Sql,
   presignLogo: LogoPresigner | undefined,
 ): AffiliationLoader {
-  return (userIds) => loadPrimaryAffiliations(sql, presignLogo, userIds)
+  return (userIds, viewerId) => loadPrimaryAffiliations(sql, presignLogo, userIds, viewerId)
 }
 
 export async function attachAffiliations<T extends PersonDTO>(
   load: AffiliationLoader | undefined,
   people: T[],
+  viewerId: string | null,
 ): Promise<T[]> {
   if (load === undefined || people.length === 0) return people
-  const affiliations = await load(people.map((p) => p.id))
+  const affiliations = await load(
+    people.map((p) => p.id),
+    viewerId,
+  )
   if (affiliations.size === 0) return people
   return people.map((person) => withAffiliation(person, affiliations))
 }
