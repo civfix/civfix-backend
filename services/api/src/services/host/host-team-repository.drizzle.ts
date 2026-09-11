@@ -457,10 +457,11 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
             status: EventTeamInviteStatus
             invited_user_id: string | null
             invited_email: string | null
+            invited_by: string | null
             expires_at: Date
           }[]
         >`
-          SELECT id, role, status, invited_user_id, invited_email, expires_at
+          SELECT id, role, status, invited_user_id, invited_email, invited_by, expires_at
           FROM cleanup_team_invites
           WHERE token_hash = ${args.tokenHash} AND cleanup_id = ${args.cleanupId}
           LIMIT 1
@@ -468,6 +469,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         `
         const invite = rows[0]
         if (invite === undefined || invite.status !== "pending") return { kind: "invalid" }
+        if (invite.invited_by === args.userId) return { kind: "wrong_recipient" }
         if (invite.expires_at.getTime() <= args.now.getTime()) {
           await tx`
             UPDATE cleanup_team_invites

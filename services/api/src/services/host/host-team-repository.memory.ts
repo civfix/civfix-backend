@@ -320,6 +320,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
     if (invite === undefined || invite.status !== "pending") {
       return Promise.resolve({ kind: "invalid" })
     }
+    if (invite.invitedBy === args.userId) return Promise.resolve({ kind: "wrong_recipient" })
     if (invite.expiresAt.getTime() <= args.now.getTime()) {
       invite.status = "expired"
       invite.invitedEmail = null

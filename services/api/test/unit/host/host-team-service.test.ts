@@ -504,6 +504,30 @@ describe("acceptEventTeamInvite", () => {
     expect(result.role).toBe("organizer")
   })
 
+  it("refuses a self-invite by handle, so manage_team cannot mint the inviter a seat", async () => {
+    repo.seedUser({ id: ORGANIZER, handle: "olive", email: "olive@x.org" })
+    await expect(
+      service.inviteMember(EVENT, ORGANIZER, {
+        identifierKind: "handle",
+        identifier: "olive",
+        role: "cohost",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    expect(repo.invites).toHaveLength(0)
+  })
+
+  it("refuses to let the inviter accept their own emailed invite", async () => {
+    await service.inviteMember(EVENT, ORGANIZER, {
+      identifierKind: "email",
+      identifier: "olive@x.org",
+      role: "cohost",
+    })
+    repo.seedUser({ id: ORGANIZER, handle: "olive", email: "olive@x.org" })
+    await expect(
+      service.acceptInvite(EVENT, ORGANIZER, "token-1-aaaaaaaaaaaaaaaaaaaaaaaa"),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
   it("an email-only invite is bound to that address, not to whoever holds the link", async () => {
     await service.inviteMember(EVENT, ORGANIZER, {
       identifierKind: "email",

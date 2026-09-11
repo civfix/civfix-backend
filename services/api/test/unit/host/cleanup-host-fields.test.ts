@@ -482,6 +482,18 @@ describe("setCleanupMemberRole widened to staff", () => {
     expect(audits.some((a) => a.action === "event.team_role_changed")).toBe(true)
   })
 
+  it("refuses to change your OWN role, so an org admin cannot seat themselves a cohost", async () => {
+    const org = repo.seedOrganization({ slug: "bct" })
+    repo.seedOrgMember(org.id, ORG, "owner")
+    repo.seedOrgMember(org.id, ORG_OWNER, "admin")
+    const created = await service.createCleanup(base({ organizationId: org.id }), ORG)
+    repo.seedMember(created.id, ORG_OWNER, "member")
+    await expect(
+      service.setMemberRole(created.id, ORG_OWNER, ORG_OWNER, "cohost"),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    expect(await repo.roleOf(created.id, ORG_OWNER)).toBe("member")
+  })
+
   it("only the organizer (manage_team) may change roles", async () => {
     const created = await service.createCleanup(base(), ORG)
     repo.seedMember(created.id, COHOST, "cohost")

@@ -1338,6 +1338,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (targetUserId === record.organizerUserId) {
         throw AppError.forbidden("The organizer's role can't be changed.")
       }
+      if (targetUserId === actorId) {
+        throw AppError.conflict("You can't change your own role on this event.")
+      }
       const targetRole = await deps.repo.roleOf(id, targetUserId)
       if (targetRole === null) {
         if (role === "member" && (await deps.repo.isBanned(id, targetUserId))) {

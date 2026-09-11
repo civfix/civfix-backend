@@ -282,6 +282,9 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
         throw AppError.notFound("No account matches that handle.")
       }
       const invitedUserId = resolved?.userId ?? null
+      if (invitedUserId === actorId) {
+        throw AppError.conflict("You can't invite yourself to an event team.")
+      }
       const typedEmail = byEmail ? input.identifier.toLowerCase() : null
       const notifyAt = typedEmail ?? resolved?.email ?? null
       const alreadyOpen = await deps.repo.findOpenInvite({
