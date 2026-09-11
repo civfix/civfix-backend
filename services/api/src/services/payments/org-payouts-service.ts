@@ -130,6 +130,13 @@ export function makeOrgPayoutsService(deps: OrgPayoutsServiceDeps): OrgPayoutsSe
       .filter((payout) => !known.has(payout.id))
       .sort((a, b) => a.createdSec - b.createdSec)[0]
 
+    if (match === undefined && page.nextCursor !== null) {
+      deps.logger?.error(
+        { organizationId: row.organizationId, payoutId: row.id },
+        "could not see far enough back on the connected account to settle an unconfirmed org payout",
+      )
+      throw AppError.conflict(PAYOUT_UNCONFIRMED_MESSAGE)
+    }
     if (match === undefined) {
       await deps.payouts.markFailed({
         id: row.id,
