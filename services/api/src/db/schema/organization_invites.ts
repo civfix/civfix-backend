@@ -45,6 +45,9 @@ export const organizationInvites = pgTable(
     index("organization_invites_invitee_pending_idx")
       .on(t.userId, t.createdAt.desc(), t.id.desc())
       .where(sql`${t.status} = 'pending' and ${t.userId} is not null`),
+    index("organization_invites_invitee_email_pending_idx")
+      .on(t.email, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.status} = 'pending' and ${t.email} is not null`),
     index("organization_invites_expiry_idx")
       .on(t.expiresAt)
       .where(sql`${t.status} = 'pending'`),

@@ -701,6 +701,9 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       reason?: string
     }): Promise<RemoveOrganizationMemberOutcome> {
       return sql.begin(async (tx) => {
+        await tx`
+          SELECT id FROM users WHERE id = ${args.userId} LIMIT 1 FOR UPDATE
+        `
         const removed = await tx<{ role: OrganizationMemberRole }[]>`
           DELETE FROM organization_members
           WHERE organization_id = ${args.organizationId}
@@ -1238,6 +1241,16 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       now: Date
       limit: number
     }): Promise<PendingOrganizationInviteRecord[]> {
+      const viewer = await sql<{ email: string | null }[]>`
+        SELECT email FROM users
+        WHERE id = ${args.userId} AND email_verified = true AND deleted_at IS NULL
+        LIMIT 1
+      `
+      const verifiedEmail = viewer[0]?.email ?? null
+      const addressed =
+        verifiedEmail === null
+          ? sql`i.user_id = ${args.userId}`
+          : sql`(i.user_id = ${args.userId} OR i.email = ${verifiedEmail})`
       const rows = await sql<
         {
           id: string
@@ -1283,19 +1296,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             SELECT 1 FROM organization_members m
             WHERE m.organization_id = i.organization_id AND m.user_id = ${args.userId}
           )
-          AND (
-            i.user_id = ${args.userId}
-            OR (
-              i.email IS NOT NULL
-              AND EXISTS (
-                SELECT 1 FROM users u
-                WHERE u.id = ${args.userId}
-                  AND u.email = i.email
-                  AND u.email_verified = true
-                  AND u.deleted_at IS NULL
-              )
-            )
-          )
+          AND ${addressed}
         ORDER BY i.created_at DESC, i.id DESC
         LIMIT ${args.limit}
       `

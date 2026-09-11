@@ -63,8 +63,12 @@
 -- IF NOT EXISTS; one concern per file (affiliation, both halves of it); one
 -- transaction per file. Forward-only, no down.
 --
--- LOCK ORDER (binding on every writer): organizations -> organization_members
---   -> organization_invites -> cleanups -> cleanup_members -> ...
+-- LOCK ORDER (binding on every writer): users -> organizations
+--   -> organization_members -> organization_invites -> cleanups -> cleanup_members -> ...
+--   `users` joins the head of the order with this file, because clearing
+--   primary_organization_id makes a membership write touch a users row too:
+--   account erasure already locks users first (auth/pg-stores.ts runErasure),
+--   so removeMemberTx takes its users row lock before it deletes the membership.
 --
 -- Ordering rules: requires 0001_core.sql (users), 0051_social_posts.sql (posts)
 -- and 0105_organizations.sql (organizations).

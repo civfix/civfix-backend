@@ -17,10 +17,17 @@
 --    the column already carries DDL enforcement and losing it would be a
 --    regression.
 --
--- 2. organization_invites_invitee_pending_idx
---    Backs GET /me/org-invites, which lists one person's open invites newest
---    first: (user_id, created_at DESC, id DESC) partial on status = 'pending'
---    AND user_id IS NOT NULL. Built in-transaction WITHOUT CONCURRENTLY on
+-- 2. organization_invites_invitee_pending_idx and
+--    organization_invites_invitee_email_pending_idx
+--    Back GET /me/org-invites, which lists one person's open invites newest
+--    first. An invite reaches a person one of two ways - it names their account
+--    (user_id) or it carries an address they have verified (email) - so the
+--    query is a two-branch OR and needs an index per branch to stay off a
+--    sequential scan: (user_id, created_at DESC, id DESC) partial on
+--    status = 'pending' AND user_id IS NOT NULL, and (email, created_at DESC,
+--    id DESC) partial on status = 'pending' AND email IS NOT NULL. The
+--    pre-existing organization_invites_pending_email_uidx leads on
+--    organization_id and cannot serve an address-only lookup. Built in-transaction WITHOUT CONCURRENTLY on
 --    purpose - organization_invites is a small, cold table (an invite per seat,
 --    capped per org, expiring on a clock) and is on no hot write path, so the
 --    build lock is measured in milliseconds. The hot-table rule (users,
@@ -66,6 +73,10 @@ ALTER TABLE organization_invites
 CREATE INDEX IF NOT EXISTS organization_invites_invitee_pending_idx
   ON organization_invites (user_id, created_at DESC, id DESC)
   WHERE status = 'pending' AND user_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS organization_invites_invitee_email_pending_idx
+  ON organization_invites (email, created_at DESC, id DESC)
+  WHERE status = 'pending' AND email IS NOT NULL;
 
 COMMENT ON COLUMN organization_invites.status IS
   'pending | accepted | revoked | expired | declined. revoked = the organization withdrew the offer; declined = the invitee refused it; expired = the clock. accepted, revoked, expired and declined are all terminal, and none of them blocklists a re-invite.';
