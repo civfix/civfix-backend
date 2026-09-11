@@ -169,7 +169,6 @@ describe("catalog integrity", () => {
         "certificate.attestation.body",
         "certificate.table.truncated",
         "certificate.error.no_hours",
-        "certificate.holder.verified",
       ] as const satisfies readonly MessageKey[]) {
         expect(catalog[key], `${locale}: ${key} is a verbatim copy of the English source`).not.toBe(
           en[key],

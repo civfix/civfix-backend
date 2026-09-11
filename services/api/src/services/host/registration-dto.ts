@@ -55,7 +55,6 @@ export function toRegistrantPerson(identity: RegistrantIdentity): PersonDTO {
     followers: 0,
     following: 0,
     isFollowing: false,
-    ...(identity.verified ? { verified: true } : {}),
   }
 }
 

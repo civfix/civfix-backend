@@ -142,8 +142,8 @@ async function makeHarness(): Promise<Harness> {
     })
     expect(res.statusCode).toBe(200)
     const userId = res.json().user.id as string
-    // The routes read holder identity through the certificate repo (users + user_verification).
-    certs.setHolder(userId, { displayName: name, handle: name.toLowerCase(), verified: true })
+    // The routes read holder identity through the certificate repo (users).
+    certs.setHolder(userId, { displayName: name, handle: name.toLowerCase() })
     return { res, userId }
   }
 
@@ -167,7 +167,7 @@ async function makeHarness(): Promise<Harness> {
     credit(userId, amount, title = "Beach cleanup at the pier") {
       const cleanupId = randomUUID()
       const host = "00000000-0000-4000-8000-0000000000aa"
-      hours.seedUser(host, { name: "Ada Host", handle: "ada", avatarUrl: null, verified: true })
+      hours.seedUser(host, { name: "Ada Host", handle: "ada", avatarUrl: null })
       hours.seedCleanup(cleanupId, {
         title,
         referenceCode: "CFX-EVT-1",
@@ -511,7 +511,6 @@ describe("GET /service-hours/verify/:code (public)", () => {
     h.certs.setHolder(userId, {
       displayName: "Jane Doe",
       handle: "jane",
-      verified: true,
       ...(over.deleted !== undefined ? { deleted: over.deleted } : {}),
     })
     const code = over.code ?? "A1B2C3D4E5F0"

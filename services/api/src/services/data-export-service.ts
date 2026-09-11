@@ -224,10 +224,6 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
       `
 
-      const verification = sql<{ status: string; applied_at: Date }[]>`
-        SELECT status, applied_at FROM user_verification WHERE user_id = ${userId} LIMIT 1
-      `
-
       const certificates = sql<
         {
           code: string
@@ -389,7 +385,6 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         blockRows,
         notificationPrefRows,
         pushTokenRows,
-        verificationRows,
         certificateRows,
         donationRows,
         organizationRows,
@@ -412,7 +407,6 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         blocks,
         notificationPrefs,
         pushTokenRowsQuery,
-        verification,
         certificates,
         donations,
         organizations,
@@ -480,7 +474,6 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
           })),
           DATA_EXPORT_MAX_ROWS,
         ),
-        verification: verificationRows[0] ?? null,
         certificates: fit("certificates", certificateRows, DATA_EXPORT_MAX_ROWS),
         organizations: fit("organizations", organizationRows, DATA_EXPORT_MAX_ROWS),
         eventTeamMemberships: fit(

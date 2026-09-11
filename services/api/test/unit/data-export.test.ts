@@ -22,6 +22,7 @@ function userRecord(over: Partial<UserRecord> = {}): UserRecord {
     handleChangedAt: null,
     email: "jane@example.com",
     emailVerified: true,
+    primaryOrganizationId: null,
     avatarUrl: null,
     profileComplete: true,
     allowDirectMessages: true,

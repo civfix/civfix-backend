@@ -105,15 +105,6 @@ async function insertPost(
   return rows[0]!.id
 }
 
-async function insertVerificationMedia(h: PgHarness, r2Key: string): Promise<string> {
-  const rows = await h.sql<{ id: string }[]>`
-    INSERT INTO media_assets (upload_id, kind, r2_key, status, purpose, finalized_at)
-    VALUES (gen_random_uuid(), 'image', ${r2Key}, 'ready', 'verification', now())
-    RETURNING id
-  `
-  return rows[0]!.id
-}
-
 async function metaOf(h: PgHarness, itemId: string): Promise<Record<string, unknown>> {
   const rows = await h.sql<{ meta: Record<string, unknown> }[]>`
     SELECT meta FROM moderation_items WHERE id = ${itemId}
@@ -407,76 +398,6 @@ describe.skipIf(!pg)("account deletion content cascade (PgUserStore.softDeleteAn
     expect((asReporter.user as Record<string, unknown>).name).toBe("Neighborly Nate")
 
     expect(await metaOf(h, unrelated)).toEqual(unrelatedBefore)
-  })
-
-  it("blanks the verification application and deletes its document media + objects", async () => {
-    const h = pg!
-    const victim = await insertUser(h, "Applicant Victim")
-    const bystander = await insertUser(h, "Applicant Bystander")
-    const victimDocA = await insertVerificationMedia(h, "verification/2026/victim-a.jpg")
-    const victimDocB = await insertVerificationMedia(h, "verification/2026/victim-b.jpg")
-    const bystanderDoc = await insertVerificationMedia(h, "verification/2026/bystander.jpg")
-    const reportMedia = await h.sql<{ id: string }[]>`
-      INSERT INTO media_assets (upload_id, kind, r2_key, status, purpose)
-      VALUES (gen_random_uuid(), 'image', 'reports/keep-me.jpg', 'ready', 'report')
-      RETURNING id
-    `
-    const appliedAt = new Date("2026-01-05T00:00:00.000Z")
-    await h.sql`
-      INSERT INTO user_verification (user_id, status, note, documents, rejection_reason, applied_at)
-      VALUES (
-        ${victim}, 'rejected', 'I am the block captain, DOB 1984-02-11',
-        ${h.sql.json([
-          { mediaId: victimDocA, status: "rejected" },
-          { mediaId: victimDocB, status: "rejected" },
-        ])}::jsonb,
-        'document illegible', ${appliedAt}
-      )
-    `
-    await h.sql`
-      INSERT INTO user_verification (user_id, status, note, documents)
-      VALUES (${bystander}, 'verified', 'bystander note', ${h.sql.json([
-        { mediaId: bystanderDoc, status: "verified" },
-      ])}::jsonb)
-    `
-
-    const objects = new SpyObjectStore()
-    await new PgUserStore(h.db, { certificateObjects: objects }).softDeleteAndAnonymize(victim)
-
-    const rows = await h.sql<
-      {
-        status: string
-        note: string | null
-        rejection_reason: string | null
-        documents: unknown
-        applied_at: Date
-      }[]
-    >`
-      SELECT status, note, rejection_reason, documents, applied_at
-      FROM user_verification WHERE user_id = ${victim}
-    `
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.note).toBeNull()
-    expect(rows[0]!.rejection_reason).toBeNull()
-    expect(rows[0]!.documents).toEqual([])
-    expect(rows[0]!.status).toBe("rejected")
-    expect(rows[0]!.applied_at.toISOString()).toBe(appliedAt.toISOString())
-
-    const survivors = await h.sql<{ id: string }[]>`
-      SELECT id FROM media_assets
-      WHERE id = ANY(${[victimDocA, victimDocB, bystanderDoc, reportMedia[0]!.id]}::uuid[])
-      ORDER BY id
-    `
-    expect(survivors.map((r) => r.id).sort()).toEqual([bystanderDoc, reportMedia[0]!.id].sort())
-    expect(objects.deleted.sort()).toEqual(
-      ["verification/2026/victim-a.jpg", "verification/2026/victim-b.jpg"].sort(),
-    )
-
-    const bystanderRow = await h.sql<{ note: string | null; documents: unknown }[]>`
-      SELECT note, documents FROM user_verification WHERE user_id = ${bystander}
-    `
-    expect(bystanderRow[0]!.note).toBe("bystander note")
-    expect(bystanderRow[0]!.documents).toEqual([{ mediaId: bystanderDoc, status: "verified" }])
   })
 
   it("unlists the deleted user's public posts, leaving other authors' posts in the feed", async () => {

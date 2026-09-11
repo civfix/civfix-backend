@@ -139,7 +139,6 @@ export interface RegistrantIdentity {
   handle: string | null
   bio: string | null
   avatarUrl: string | null
-  verified: boolean
   deletedAt: Date | null
 }
 

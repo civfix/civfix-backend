@@ -33,10 +33,6 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
     return u!.id
   }
 
-  async function verify(userId: string): Promise<void> {
-    await h.sql`INSERT INTO user_verification (user_id, status) VALUES (${userId}, 'verified')`
-  }
-
   async function block(blockerId: string, blockedId: string): Promise<void> {
     await h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${blockerId}, ${blockedId})`
   }
@@ -109,8 +105,6 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
     it("keeps rank + hours but hides WHO, in BOTH directions, never the viewer's own row", async () => {
       const viewer = await newUser("BoardViewer")
       const other = await newUser("BoardOther")
-      await verify(viewer)
-      await verify(other)
       await creditHours(other, 40)
       await creditHours(viewer, 20)
       const repo = makeDrizzleVolunteerHoursRepository(h.sql)
@@ -119,7 +113,6 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
       const openOther = open.entries.find((e) => e.userId === other)!
       expect(openOther.name).toBe("BoardOther")
       expect(openOther.rank).toBe(1)
-      expect(openOther.verified).toBe(true)
       expect(openOther.handle).not.toBeUndefined()
 
       for (const direction of BOTH_BLOCK_DIRECTIONS) {
@@ -133,13 +126,11 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
           expect(redacted.name).toBe(HIDDEN_USER_LABEL)
           expect(redacted.handle).toBeUndefined()
           expect(redacted.avatarUrl).toBeUndefined()
-          expect(redacted.verified).toBe(false)
 
           const mine = page.entries.find((e) => e.userId === viewer)!
           expect(mine.name).toBe("BoardViewer")
           expect(mine.rank).toBe(2)
           expect(mine.hours).toBe(20)
-          expect(mine.verified).toBe(true)
           expect(page.viewerRank).toBe(2)
           expect(page.viewerHours).toBe(20)
           expect(page.participantCount).toBe(2)
@@ -205,7 +196,6 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
       const owner = await newUser("GroupOwner")
       const viewer = await newUser("GroupViewer")
       const other = await newUser("GroupOther")
-      await verify(other)
       const groupId = await newGroup(owner, [viewer, other])
       const repo = makeChatGroupRepository(h.sql)
 
@@ -213,7 +203,6 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
       expect(open.members).toHaveLength(3)
       const openOther = open.members.find((m) => m.user.id === other)!
       expect(openOther.user.name).toBe("GroupOther")
-      expect(openOther.user.verified).toBe(true)
 
       for (const direction of BOTH_BLOCK_DIRECTIONS) {
         await withBlockDirection(direction, viewer, other, async () => {
@@ -225,7 +214,6 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
           expect(redacted.user.handle).toBeNull()
           expect(redacted.user.bio).toBeNull()
           expect(redacted.user.avatarUrl).toBeUndefined()
-          expect(redacted.user.verified).toBeUndefined()
           expect(redacted.user.deleted).toBeUndefined()
           expect(redacted.role).toBe("member")
 

@@ -1,8 +1,10 @@
 # Account erasure behavior (civfix-backend)
 
 **Audience:** internal (engineering + privacy counsel). Not served publicly.
-**Last verified:** 2026-07-27 (service-hours pre-deploy privacy re-audit; previous
-pass 2026-06-20).
+**Last verified:** 2026-09-10 (0.43.0: the `user_verification` table - the
+"verified neighbor" queue - was dropped by migration 0164, so the erasure lane
+that blanked its note/documents and deleted the document media is gone with it.
+Previous passes 2026-07-27, 2026-06-20).
 
 This documents exactly what happens to a user's data when they delete their
 account via `DELETE /me`, so the published privacy policy and any DSAR / erasure
@@ -24,7 +26,8 @@ response can be answered truthfully. It is the source of record for the
    - Sets `users.allow_direct_messages = false`.
    - **Scrubs** the identity columns: `email = NULL`, `email_verified = false`,
      `display_name = 'Deleted User'`, `handle` → a generated placeholder,
-     `bio`, `avatar_url`, `avatar_media_id`, `social_links` → `NULL`.
+     `bio`, `avatar_url`, `avatar_media_id`, `social_links`,
+     `primary_organization_id` → `NULL`.
    - **Unlists** the user's `public` reports (→ `hidden`).
    - **Transfers, then cancels** the events they organize — the host-transfer
      ladder below. Only what nobody could take over is cancelled.
@@ -56,14 +59,15 @@ response can be answered truthfully. It is the source of record for the
 |---|---|
 | Live sessions / login | **Revoked** — all sessions deleted, ban marker set, cookies cleared. |
 | DM reachability | **Off** — `allow_direct_messages = false`. |
-| `display_name`, `handle`, `email`, `bio`, `avatar_url`, `avatar_media_id`, `social_links` | **Scrubbed** on the `users` row — nulled, or replaced with the `Deleted User` label / a generated placeholder handle. |
+| `display_name`, `handle`, `email`, `bio`, `avatar_url`, `avatar_media_id`, `social_links`, `primary_organization_id` | **Scrubbed** on the `users` row — nulled, or replaced with the `Deleted User` label / a generated placeholder handle. |
 | OAuth identity links | **Deleted** (best-effort, step 4) — otherwise a provider sign-in walks back into the tombstone once the ban marker's TTL lapses. |
 | Device push tokens | **Deleted** (best-effort, step 4). |
 | Reports the user filed | **Kept** as rows; the user's `public` ones are flipped to `hidden` (see public rendering below). |
 | Discussion comments, chat, DMs the user wrote | **Kept** (soft-deleted only where the user deleted them individually). |
 | Cleanups organized / joined | **Kept**; an `upcoming`/`active` event they organize is TRANSFERRED where anyone can take it over, and cancelled only when nobody can (ladder below). |
-| Organizations they belonged to | Membership rows **deleted**. An organization they OWNED promotes its earliest live admin; one left with nobody is **soft-deleted** and its events lose both `organization_id` and `donation_url`. |
+| Organizations they belonged to | Membership rows **deleted**, and `users.primary_organization_id` (the affiliation badge pin, 0.43.0) is nulled in the same transaction. An organization they OWNED promotes its earliest live admin; one left with nobody is **soft-deleted** and its events lose both `organization_id` and `donation_url`. |
 | Event team invitations they sent or received | Pending ones **revoked**, the invitee address **scrubbed**. |
+| Posts published under an organization (`posts.organization_id`, 0.43.0) | **Kept**, exactly like every other post: the FK names the organization, not the person, and the author de-links the same way. Nothing about the org link identifies the departing account. |
 | `event_consents` | **Kept, untouched by every lane.** It carries no contact detail of its own (the subject is a foreign key) and it is the artifact THAT consent existed; the account row it points at is tombstoned rather than deleted. |
 | `cleanup_registrations`, `cleanup_registration_seats`, check-ins | **Kept** — they are the roster record of someone else's event. Only the departing person's own free text (`cleanup_answers` values, `attendee_name`, `host_note`) is scrubbed in the same transaction. |
 | `cleanup_waitlist` | Live entries (`waiting`/`offered`) **cancelled**, and the seats an `offered` entry reserved are released back to the ticket type. |
