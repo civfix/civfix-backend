@@ -793,77 +793,77 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     organizerUserId: string,
     copyFrom?: DuplicateSource,
   ): Promise<CleanupDTO> {
-      assertEventTextClean(input)
-      clampBring(input.bring)
-      const linkedReportIds = clampLinkIds(input.linkedReportIds ?? [])
-      if (input.eventKind !== "cleanup" && linkedReportIds.length > 0) {
-        throw AppError.validation({ linkedReportIds: "only cleanup events can link reports" })
-      }
-      await assertReportsLinkable(linkedReportIds)
-      const slots = toDesiredSlots(input.slots ?? [], null, { keepIds: false })
+    assertEventTextClean(input)
+    clampBring(input.bring)
+    const linkedReportIds = clampLinkIds(input.linkedReportIds ?? [])
+    if (input.eventKind !== "cleanup" && linkedReportIds.length > 0) {
+      throw AppError.validation({ linkedReportIds: "only cleanup events can link reports" })
+    }
+    await assertReportsLinkable(linkedReportIds)
+    const slots = toDesiredSlots(input.slots ?? [], null, { keepIds: false })
 
-      const host = await resolveHostWrite({
-        patch: { ...input, scheduledAt: input.scheduledAt },
-        actorId: organizerUserId,
-        cleanupId: null,
-        current: null,
-      })
-      await assertHostEventBudget(organizerUserId)
+    const host = await resolveHostWrite({
+      patch: { ...input, scheduledAt: input.scheduledAt },
+      actorId: organizerUserId,
+      cleanupId: null,
+      current: null,
+    })
+    await assertHostEventBudget(organizerUserId)
 
-      const jurisdictionGeoid =
-        deps.resolveJurisdictionGeoid !== undefined
-          ? await deps.resolveJurisdictionGeoid(input.lat, input.lng)
-          : null
-      const jurCode =
-        deps.resolveJurisdictionCode !== undefined
-          ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
-          : UNKNOWN_JURCODE
+    const jurisdictionGeoid =
+      deps.resolveJurisdictionGeoid !== undefined
+        ? await deps.resolveJurisdictionGeoid(input.lat, input.lng)
+        : null
+    const jurCode =
+      deps.resolveJurisdictionCode !== undefined
+        ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
+        : UNKNOWN_JURCODE
 
-      const cleanupId = newId()
-      const outcome = await deps.repo.createCleanupTx({
-        cleanupId,
-        organizerUserId,
-        type: input.type,
-        eventKind: input.eventKind,
-        title: input.title,
-        description: input.description ?? null,
-        lat: input.lat,
-        lng: input.lng,
-        scheduledAt: new Date(input.scheduledAt),
-        status: "upcoming",
-        bring: input.bring ?? null,
-        address: input.address ?? null,
-        jurisdictionGeoid,
-        jurCode,
-        linkedReportIds,
-        slots,
-        host,
-        ...(copyFrom !== undefined ? { copyFrom } : {}),
-        ...(input.idempotencyKey !== undefined
-          ? {
-              idempotency: {
-                key: input.idempotencyKey,
-                scope: CLEANUP_CREATE_IDEMPOTENCY_SCOPE,
-                userOrAnon: `user:${organizerUserId}`,
-              },
-            }
-          : {}),
-      })
-      const record = outcome.record
-      const standing = await standingOf(record.id, organizerUserId)
-      const [linkedReports, slotBoard, media] = await Promise.all([
-        hydrateLinkedReports(record.id, record.eventKind),
-        hydrateSlots(record.id, organizerUserId),
-        eventMediaUrls(record, { gallery: true }),
-      ])
-      return enrichOne(
-        toCleanupDTO(record, standing.eventRole !== null, linkedReports, standing.eventRole, {
-          slots: slotBoard,
-          myCapabilities: capabilityList(standing),
-          ...media,
-        }),
-        organizerUserId,
-      )
+    const cleanupId = newId()
+    const outcome = await deps.repo.createCleanupTx({
+      cleanupId,
+      organizerUserId,
+      type: input.type,
+      eventKind: input.eventKind,
+      title: input.title,
+      description: input.description ?? null,
+      lat: input.lat,
+      lng: input.lng,
+      scheduledAt: new Date(input.scheduledAt),
+      status: "upcoming",
+      bring: input.bring ?? null,
+      address: input.address ?? null,
+      jurisdictionGeoid,
+      jurCode,
+      linkedReportIds,
+      slots,
+      host,
+      ...(copyFrom !== undefined ? { copyFrom } : {}),
+      ...(input.idempotencyKey !== undefined
+        ? {
+            idempotency: {
+              key: input.idempotencyKey,
+              scope: CLEANUP_CREATE_IDEMPOTENCY_SCOPE,
+              userOrAnon: `user:${organizerUserId}`,
+            },
+          }
+        : {}),
+    })
+    const record = outcome.record
+    const standing = await standingOf(record.id, organizerUserId)
+    const [linkedReports, slotBoard, media] = await Promise.all([
+      hydrateLinkedReports(record.id, record.eventKind),
+      hydrateSlots(record.id, organizerUserId),
+      eventMediaUrls(record, { gallery: true }),
+    ])
+    return enrichOne(
+      toCleanupDTO(record, standing.eventRole !== null, linkedReports, standing.eventRole, {
+        slots: slotBoard,
+        myCapabilities: capabilityList(standing),
+        ...media,
+      }),
+      organizerUserId,
+    )
   }
 
   async function resolveDuplicateOrganization(
