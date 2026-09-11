@@ -19,6 +19,7 @@ import { goingScalar } from "./cleanup-sql.js"
 import { servedKeyExpr } from "./media-served-key.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
+import { presentIds } from "./present-ids.js"
 import {
   NO_AFFILIATIONS,
   withAffiliation,
@@ -277,9 +278,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     ids: readonly (string | null | undefined)[],
   ): Promise<Map<string, OrganizationRefDTO>> {
     const out = new Map<string, OrganizationRefDTO>()
-    const wanted = [...new Set(ids)].filter(
-      (id): id is string => id !== null && id !== undefined,
-    )
+    const wanted = presentIds(ids)
     if (wanted.length === 0) return out
     const rows = await sql<
       {
@@ -519,7 +518,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
             }
           : null
       if (author !== null) authorIds.push(author.id)
-      if (!deleted && r.organization_id !== null) orgIds.set(r.id, r.organization_id)
+      if (!deleted && r.organization_id != null) orgIds.set(r.id, r.organization_id)
       out.set(r.id, {
         id: r.id,
         author,
@@ -613,13 +612,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     if (rows.length === 0) return []
     const postIds = rows.map((r) => r.id)
     const authorIds = [...new Set(rows.map((r) => r.author_id))]
-    const refIds = [
-      ...new Set(
-        rows
-          .flatMap((r) => [r.repost_of_id, r.reply_to_id])
-          .filter((x): x is string => x !== null),
-      ),
-    ]
+    const refIds = presentIds(rows.flatMap((r) => [r.repost_of_id, r.reply_to_id]))
     const [authors, media, mentions, refsResult, flags] = await Promise.all([
       loadAuthors(authorIds, viewerId),
       loadMedia(postIds),
@@ -632,20 +625,14 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     const refLinks = refsResult.links
 
     const linkValues = [...refLinks.values()]
-    const eventIds = [
-      ...new Set(
-        [...rows.map((r) => r.event_id), ...linkValues.map((l) => l.eventId)].filter(
-          (x): x is string => x !== null,
-        ),
-      ),
-    ]
-    const reportIds = [
-      ...new Set(
-        [...rows.map((r) => r.report_id), ...linkValues.map((l) => l.reportId)].filter(
-          (x): x is string => x !== null,
-        ),
-      ),
-    ]
+    const eventIds = presentIds([
+      ...rows.map((r) => r.event_id),
+      ...linkValues.map((l) => l.eventId),
+    ])
+    const reportIds = presentIds([
+      ...rows.map((r) => r.report_id),
+      ...linkValues.map((l) => l.reportId),
+    ])
     const readableRefIds = [...refs.values()].filter((r) => !r.deleted).map((r) => r.id)
     const orgIds = [...rows.map((r) => r.organization_id), ...refsResult.orgIds.values()]
     const [events, reports, refMedia, organizations, refAffiliations] = await Promise.all([

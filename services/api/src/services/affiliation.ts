@@ -2,6 +2,7 @@ import type { OrganizationRefDTO, PersonDTO } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
 import { blockedPairExpr } from "./hidden-identity.js"
 import { PRESIGN_CONCURRENCY, mapWithLimit } from "./media-presign.js"
+import { presentIds } from "./present-ids.js"
 
 export type PrimaryAffiliations = ReadonlyMap<string, OrganizationRefDTO>
 
@@ -27,10 +28,10 @@ interface AffiliationRow {
 export async function loadPrimaryAffiliations(
   sql: Sql,
   presignLogo: LogoPresigner | undefined,
-  userIds: readonly string[],
+  userIds: readonly (string | null | undefined)[],
   viewerId: string | null,
 ): Promise<PrimaryAffiliations> {
-  const ids = [...new Set(userIds)]
+  const ids = presentIds(userIds)
   if (ids.length === 0) return NO_AFFILIATIONS
 
   const rows = await sql<AffiliationRow[]>`
