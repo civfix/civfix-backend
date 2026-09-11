@@ -96,6 +96,7 @@ const EXPECTED_TABLES = [
   "host_exports",
   "org_stripe_accounts",
   "org_payouts",
+  "user_verification",
   "org_donation_settings",
   "org_donation_agreement_changes",
   "org_eligibility",
@@ -582,6 +583,12 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   { table: "org_stripe_accounts", column: "onboarding_state", mirror: schema.ORG_PAYMENTS_STATE_VALUES },
   { table: "org_payouts", column: "status", mirror: schema.PAYOUT_STATUS_VALUES },
   {
+    table: "user_verification",
+    column: "status",
+    mirror: schema.VERIFICATION_STATUS_VALUES,
+    omitted: ["unverified"],
+  },
+  {
     table: "org_donation_settings",
     column: "disabled_reason",
     mirror: schema.DONATIONS_DISABLED_REASON_VALUES,
@@ -694,6 +701,23 @@ describe.skipIf(!pg)("schema: enum mirrors match the DDL CHECK constraints", () 
         VALUES (gen_random_uuid(), 'image', 'uploads/purpose-bogus', 'ready', 'avatar')
       `,
     ).rejects.toMatchObject({ code: "23514" })
+  })
+
+  it("the documented omission is genuinely REJECTED: user_verification.status = 'unverified'", async () => {
+    const [u] = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name) VALUES ('Verification Omission') RETURNING id
+    `
+    await expect(
+      h.sql`INSERT INTO user_verification (user_id, status) VALUES (${u!.id}, 'unverified')`,
+    ).rejects.toMatchObject({ code: "23514" })
+    for (const status of ["pending", "verified", "rejected"]) {
+      const rows = await h.sql<{ status: string }[]>`
+        INSERT INTO user_verification (user_id, status) VALUES (${u!.id}, ${status})
+        ON CONFLICT (user_id) DO UPDATE SET status = EXCLUDED.status
+        RETURNING status
+      `
+      expect(rows[0]!.status).toBe(status)
+    }
   })
 
   it("every Drizzle-mirror index exists in the live database (F152 parity)", async () => {

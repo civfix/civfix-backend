@@ -1,10 +1,13 @@
 # Account erasure behavior (civfix-backend)
 
 **Audience:** internal (engineering + privacy counsel). Not served publicly.
-**Last verified:** 2026-09-10 (0.43.0: the `user_verification` table - the
-"verified neighbor" queue - was dropped by migration 0164, so the erasure lane
-that blanked its note/documents and deleted the document media is gone with it.
-Previous passes 2026-07-27, 2026-06-20).
+**Last verified:** 2026-09-10 (0.43.0: no code reads the `user_verification`
+table - the "verified neighbor" queue - any more, but the table itself and the
+erasure lane that blanks its note/documents and deletes the document media both
+STAY until the release after this one. Dropping it in the same release that
+stops reading it would break the previous image while it still serves traffic
+during the blue/green window, which `docs/migrations-expand-contract.md`
+forbids. Previous passes 2026-07-27, 2026-06-20).
 
 This documents exactly what happens to a user's data when they delete their
 account via `DELETE /me`, so the published privacy policy and any DSAR / erasure

@@ -586,7 +586,33 @@ export class PgUserStore implements UserStore {
         WHERE meta->>'reporterUserId' = ${id}
       `)
 
-      const objectKeys = [...certificates.map((c) => c.r2Key)]
+      const verificationMedia = await tx.execute<{
+        r2_key: string
+        served_key: string | null
+        thumb_key: string | null
+      }>(sql`
+        DELETE FROM media_assets
+        WHERE purpose = 'verification'
+          AND id IN (
+            SELECT (doc->>'mediaId')::uuid
+            FROM user_verification uv,
+                 jsonb_array_elements(uv.documents) AS doc
+            WHERE uv.user_id = ${id} AND doc->>'mediaId' IS NOT NULL
+          )
+        RETURNING r2_key, served_key, thumb_key
+      `)
+      await tx.execute(sql`
+        UPDATE user_verification
+        SET note = NULL, rejection_reason = NULL, documents = '[]'::jsonb, updated_at = now()
+        WHERE user_id = ${id}
+      `)
+
+      const objectKeys = [
+        ...certificates.map((c) => c.r2Key),
+        ...verificationMedia.flatMap((m) =>
+          [m.r2_key, m.served_key, m.thumb_key].filter((k): k is string => k !== null),
+        ),
+      ]
       return { record: toUserRecord(r), objectKeys, moved, releasedTicketTypeIds }
     })
 

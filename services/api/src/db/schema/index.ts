@@ -96,6 +96,7 @@ export * from "./host_exports.js"
 
 export * from "./org_stripe_accounts.js"
 export * from "./org_payouts.js"
+export * from "./user_verification.js"
 export * from "./org_donation_settings.js"
 export * from "./org_donation_agreement_changes.js"
 export * from "./org_eligibility.js"

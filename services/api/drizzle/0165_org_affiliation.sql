@@ -18,6 +18,7 @@
 --
 --    STILL OUTSTANDING (a later release, out of band, SHARE UPDATE EXCLUSIVE):
 --      ALTER TABLE users VALIDATE CONSTRAINT users_primary_organization_fk;
+--      ALTER TABLE posts VALIDATE CONSTRAINT posts_organization_fk;
 --
 --    No index on the column. The only reader is "SELECT ... FROM users WHERE
 --    id = ANY($1)" (affiliation.ts), served by the PK, and the only writer is
@@ -28,6 +29,12 @@
 --    on users is not worth its build.
 --
 -- 2. posts.organization_id
+--    Its FK is added NOT VALID for the same reason users' is: an inline
+--    REFERENCES clause runs the referential-integrity initial check as a second
+--    full pass while ALTER TABLE still holds ACCESS EXCLUSIVE. Every row the
+--    previous image wrote has NULL here, so the constraint holds by
+--    construction and every INSERT/UPDATE is checked from now on.
+--
 --    "Post as <org>": the acting account stays posts.author_id (deletion,
 --    moderation and rate limits keep following the human), and this column
 --    records the organization the post is published under. Any-role membership
@@ -83,7 +90,20 @@ COMMENT ON COLUMN users.primary_organization_id IS
   'Which organization membership shows as this person''s affiliation badge. NULL = choose automatically (earliest organization_members.joined_at). A preference only: it grants nothing, and it is cleared in the same transaction that removes the matching membership.';
 
 ALTER TABLE posts
-  ADD COLUMN IF NOT EXISTS organization_id uuid REFERENCES organizations(id) ON DELETE SET NULL;
+  ADD COLUMN IF NOT EXISTS organization_id uuid;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'posts_organization_fk' AND conrelid = 'posts'::regclass
+  ) THEN
+    ALTER TABLE posts
+      ADD CONSTRAINT posts_organization_fk
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE SET NULL
+      NOT VALID;
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS posts_organization_created_idx
   ON posts (organization_id, created_at DESC)

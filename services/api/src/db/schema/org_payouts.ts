@@ -1,12 +1,16 @@
 import { sql } from "drizzle-orm"
 import { bigint, char, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
+import { organizations } from "./organizations.js"
 import type { PayoutStatusValue } from "./types-payments.js"
+import { users } from "./users.js"
 
 export const orgPayouts = pgTable(
   "org_payouts",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    organizationId: uuid("organization_id").notNull(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
     stripeAccountId: text("stripe_account_id").notNull(),
     stripePayoutId: text("stripe_payout_id"),
     amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
@@ -14,7 +18,7 @@ export const orgPayouts = pgTable(
     status: text("status").$type<PayoutStatusValue>().notNull().default("pending"),
     arrivalDate: timestamp("arrival_date", { withTimezone: true }),
     failureMessage: text("failure_message"),
-    requestedBy: uuid("requested_by"),
+    requestedBy: uuid("requested_by").references(() => users.id, { onDelete: "set null" }),
     idempotencyKey: uuid("idempotency_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

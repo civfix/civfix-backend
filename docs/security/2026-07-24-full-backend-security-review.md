@@ -322,7 +322,7 @@ Everything an operator has to do by hand, in order, plus the two infra facts and
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
-`drizzle/` holds **150 files**, `0000_extensions.sql` … `0167_org_payouts.sql`. The nine rows
+`drizzle/` holds **149 files**, `0000_extensions.sql` … `0167_org_payouts.sql`. The nine rows
 below are exactly what this change set adds — `0052`–`0060`, contiguous, no gaps — and everything from
 `0000` through `0051_social_posts.sql` predates it. (`0060` arrived later than the rest, with the feed
 redesign; it is listed here because this table is the single operator runbook. `0061`–`0064` arrived
@@ -548,16 +548,40 @@ foreign key into `organizations` from `0105`.
 | `0161_org_stripe_accounts_reconnect.sql` | adds `reconnect_attempts` and `previous_stripe_account_ids` to `org_stripe_accounts`: the attempt counter that gives each reconnect its own Stripe idempotency key (`acct:<org>:v2:<n>`) and the audit trail of accounts an organization has been relinked away from. `ADD COLUMN IF NOT EXISTS` with catalog defaults, no rewrite | Connecting a payout account after a deauthorization fails on an undefined column, so a deauthorized organization stays a dead end |
 | `0162_org_suspension_and_invites.sql` | adds `organizations.suspended_at` / `suspended_reason` / `suspended_by` (the reversible operator suspension flag behind `adminSetOrgSuspended`, independent of `verified_status` and `deleted_at`) and creates `organization_invites`: the pending record behind an email invite to an address with no account, storing only the SHA-256 of the single-use accept token, with a partial unique `(organization_id, email) WHERE status = 'pending'`. Three nullable column adds, no rewrite; brand-new empty table | Every `/admin/orgs` list/suspend read fails on an undefined column, and an email invite to a non-user is still the silent no-op it was in 0.40.0 |
 | `0163_event_team_tiers.sql` | widens the `cleanup_team_invites` role CHECK to `('cohost','staff','coordinator')` and the status CHECK to include `'declined'`, adds the partial index `cleanup_team_invites_invitee_pending_idx (invited_user_id, created_at DESC, id DESC) WHERE status = 'pending' AND invited_user_id IS NOT NULL` that backs `GET /me/event-invites`, and re-COMMENTs `cleanup_members.role` with the widened value set. Two named DROP/ADD constraint pairs plus one index on a small cold table; no rewrite, no backfill | Inviting a `coordinator` raises a CHECK violation, declining an invite raises another, and the invitee inbox seq-scans every invite in the table |
-| `0164_drop_user_verification.sql` | drops `user_verification`, the per-user "verified neighbor" queue, and with it the cosmetic identity badge and the two gates that read it (`requestResources`, the volunteer-hours creditor). ORGANIZATION verification is untouched, and so is `media_assets.purpose = 'verification'`, which `org_verifications` documents still use. `DROP TABLE IF EXISTS`; ACCESS EXCLUSIVE on that one table only, which nothing references and nothing reads after this release | Every `EXISTS (SELECT 1 FROM user_verification …)` projection left in a stale image raises `relation does not exist` on the feed, the roster, the profile and the admin Users page |
 | `0165_org_affiliation.sql` | adds `users.primary_organization_id` (nullable, FK to `organizations` added **NOT VALID**, `ON DELETE SET NULL`) - the pin that chooses which membership shows as a person's affiliation badge - and `posts.organization_id` (nullable, FK, `ON DELETE SET NULL`) with the partial index `posts_organization_created_idx (organization_id, created_at DESC) WHERE organization_id IS NOT NULL AND deleted_at IS NULL`. Two catalog-only nullable column adds (PG11+ , no rewrite); `posts` is not a hot table so its index builds inline | "Post as organization" writes to an undefined column, the settings write that pins an affiliation 500s, and the affiliation read joins a column that is not there |
 | `0166_org_invite_declined.sql` | widens the `organization_invites` status CHECK to include `'declined'` and adds the partial index `organization_invites_invitee_pending_idx (user_id, created_at DESC, id DESC) WHERE status = 'pending' AND user_id IS NOT NULL` that backs `GET /me/org-invites`. One named DROP/ADD constraint pair plus one index on a small cold table; no rewrite, no backfill. The paired `org_invite` notification type needs no DDL - `notifications.type` has no DB CHECK by convention | Declining an org invite raises a CHECK violation and the invitee inbox seq-scans every invite in the table |
 | `0167_org_payouts.sql` | creates `org_payouts`, the audit mirror of the Stripe Payout objects on an organization's connected account (0.43.0, DECISIONS §34). `bigint` minor units + `char(3) CHECK 'USD'` like `donations`, a status CHECK over `('pending','in_transit','paid','failed','canceled')`, `organization_id` RESTRICT, `requested_by` nullable SET NULL (a payout made from the org's own Stripe dashboard arrives only through the `payout.*` connect webhook and has no civfix actor), a partial unique on `stripe_payout_id` and a partial unique on `(organization_id, idempotency_key)` that is what makes a retried payout replay instead of paying twice. Brand-new empty table; no existing table touched | `GET /v1/orgs/:id/payments/balance` and both payout routes 500 on a missing relation, and every `payout.*` connect webhook dead-letters |
 
+**Deferred to the NEXT release** (expand/contract, `docs/migrations-expand-contract.md`): 0.43.0
+stops every code path from reading `user_verification` but does NOT drop it — a `DROP TABLE` in the
+same release would make the previous api color raise `relation does not exist` on the feed, the
+roster, the profile and the admin Users page for the whole migrate-to-cutover window, and for good
+after a `CIVFIX_REF=<sha>` rollback. Once the 0.43.0 image is running everywhere, ship
+`DROP TABLE IF EXISTS user_verification` as its own migration, and run the inventory query below in
+EVERY environment first (expected: zero rows — the in-app application flow that wrote `documents`
+was removed long ago, and after the DROP the object keys are unrecoverable):
+
+```sql
+SELECT m.id, m.r2_key, m.served_key, m.thumb_key
+FROM media_assets m
+WHERE m.purpose = 'verification'
+  AND m.id IN (
+    SELECT (doc->>'mediaId')::uuid
+    FROM user_verification uv, jsonb_array_elements(uv.documents) AS doc
+    WHERE doc->>'mediaId' IS NOT NULL
+  );
+```
+
+Any rows it returns are identity documents: delete the objects from R2 and the rows from
+`media_assets` by hand before the drop ships. `media_assets.purpose = 'verification'` itself STAYS
+either way — `org_verifications` documents are claimed with it.
+
 **Deferred to a later release, out of band** (record them in the expand/contract ledger): the six
 `NOT VALID` CHECKs `0107` adds on `cleanups` and `0110`'s `media_assets_purpose_expanded` still need
-`ALTER TABLE … VALIDATE CONSTRAINT`, and so does `0165`'s
-`users_primary_organization_fk`. They are correct as `NOT VALID` — the constraint is enforced for
-every new row — and validating takes a scan that does not belong in a deploy transaction.
+`ALTER TABLE … VALIDATE CONSTRAINT`, and so do `0165`'s
+`users_primary_organization_fk` and `posts_organization_fk`. They are correct as `NOT VALID` — the
+constraint is enforced for every new row — and validating takes a scan that does not belong in a
+deploy transaction.
 | `0096_cleanup_guests.sql` | guest event RSVP (contract 0.38.0): `cleanup_guests` (event-scoped, contact-bearing attendance rows; SHA-256 manage-token hash only; partial unique on the active `(cleanup_id, contact_key)`), `guest_otps` (event-scoped one-time codes, hash only), `sms_opt_outs` (STOP suppression list, kept indefinitely). Three brand-new empty tables; no existing table touched | `POST /v1/cleanups/:id/guest-rsvp/*` and `GET /v1/cleanups/:id/guests` 500 on a missing relation, and `going` cannot include guests |
 | `0097_media_assets_served_key.sql` | adds `media_assets.served_key` (audit C1): the worker-owned key the processed object is published to, so the client-writable upload key is never served after `ready`. Catalog-only nullable `ADD COLUMN` on a hot table. **Post-deploy:** run `node dist/db/backfill-served-key.js` immediately and again ~20 min later; pre-existing `ready` media reads as not-found until it completes | Every existing photo 404s until the backfill runs; new uploads work |
 | `0098_sweep_predicate_indexes.sql` | idempotent guard that warns while `media_assets_orphan_sweep_idx` is missing (hot table; build it out of band with `CREATE INDEX CONCURRENTLY`, see `docs/out-of-band-indexes.md`) plus two small inline `email_otps` indexes (`expires_at`, partial `consumed_at`) backing the OTP retention lane (audit H13/M) | Both sweeps sequential-scan; correctness unaffected |
