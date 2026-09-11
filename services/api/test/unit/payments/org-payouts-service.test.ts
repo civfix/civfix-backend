@@ -281,6 +281,54 @@ describe("creating a payout", () => {
     expect(payouts.rows[0]?.stripePayoutId).toBeNull()
   })
 
+  it("leaves the row PENDING when the processor outcome is unknown, so the money is never paid twice", async () => {
+    const timeout = Object.assign(new Error("connection error"), {
+      type: "StripeConnectionError",
+    })
+    const { service, payouts } = await harness({
+      availableMinor: 10_000,
+      createPayoutRejectsWith: timeout,
+    })
+
+    await expect(
+      service.createPayout(ORG_ID, USER_ID, {
+        amountMinor: 1_000,
+        currency: "USD",
+        idempotencyKey: IDEMPOTENCY_KEY,
+      }),
+    ).rejects.toMatchObject({ code: "PAYMENT_UNAVAILABLE" })
+
+    expect(payouts.rows).toHaveLength(1)
+    expect(payouts.rows[0]?.status).toBe("pending")
+    expect(payouts.rows[0]?.stripePayoutId).toBeNull()
+  })
+
+  it("refuses a SECOND payout while an earlier one is still unconfirmed", async () => {
+    const timeout = Object.assign(new Error("connection error"), {
+      type: "StripeConnectionError",
+    })
+    const { service, payouts } = await harness({
+      availableMinor: 10_000,
+      createPayoutRejectsWith: timeout,
+    })
+    await expect(
+      service.createPayout(ORG_ID, USER_ID, {
+        amountMinor: 1_000,
+        currency: "USD",
+        idempotencyKey: IDEMPOTENCY_KEY,
+      }),
+    ).rejects.toMatchObject({ code: "PAYMENT_UNAVAILABLE" })
+
+    await expect(
+      service.createPayout(ORG_ID, USER_ID, {
+        amountMinor: 1_000,
+        currency: "USD",
+        idempotencyKey: SECOND_KEY,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    expect(payouts.rows).toHaveLength(1)
+  })
+
   it("re-raises the stored refusal on a replay of a failed key", async () => {
     const { service } = await harness({
       availableMinor: 10_000,
@@ -346,5 +394,70 @@ describe("the payout gate is owner-shaped", () => {
     expect(can({ eventRole: null, orgRole: "owner" }, "view_donations")).toBe(true)
     expect(can({ eventRole: null, orgRole: "admin" }, "view_donations")).toBe(true)
     expect(can({ eventRole: null, orgRole: "member" }, "view_donations")).toBe(false)
+  })
+})
+
+describe("the payout audit mirror", () => {
+  it("folds a webhook-created row into the row the request owns, instead of colliding on it", async () => {
+    const payouts = makeMemoryOrgPayoutsRepository()
+    const pending = await payouts.insertPending({
+      organizationId: ORG_ID,
+      stripeAccountId: "acct_1",
+      amountMinor: 4_000,
+      requestedBy: USER_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      now: NOW,
+    })
+    await payouts.upsertFromProvider({
+      organizationId: ORG_ID,
+      stripeAccountId: "acct_1",
+      stripePayoutId: "po_1",
+      amountMinor: 4_000,
+      status: "in_transit",
+      arrivalDate: null,
+      failureMessage: null,
+      createdAt: NOW,
+      now: NOW,
+    })
+    expect(payouts.rows).toHaveLength(2)
+
+    const stored = await payouts.markSubmitted({
+      id: pending.record.id,
+      organizationId: ORG_ID,
+      stripePayoutId: "po_1",
+      status: "pending",
+      arrivalDate: null,
+      failureMessage: null,
+      now: NOW,
+    })
+
+    expect(payouts.rows).toHaveLength(1)
+    expect(stored?.id).toBe(pending.record.id)
+    expect(stored?.requestedBy).toBe(USER_ID)
+    expect(stored?.idempotencyKey).toBe(IDEMPOTENCY_KEY)
+  })
+
+  it("reports an unconfirmed payout only while it has no processor id", async () => {
+    const payouts = makeMemoryOrgPayoutsRepository()
+    expect(await payouts.findUnconfirmed(ORG_ID)).toBeNull()
+    const pending = await payouts.insertPending({
+      organizationId: ORG_ID,
+      stripeAccountId: "acct_1",
+      amountMinor: 1_000,
+      requestedBy: USER_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      now: NOW,
+    })
+    expect(await payouts.findUnconfirmed(ORG_ID)).toMatchObject({ id: pending.record.id })
+    await payouts.markSubmitted({
+      id: pending.record.id,
+      organizationId: ORG_ID,
+      stripePayoutId: "po_1",
+      status: "pending",
+      arrivalDate: null,
+      failureMessage: null,
+      now: NOW,
+    })
+    expect(await payouts.findUnconfirmed(ORG_ID)).toBeNull()
   })
 })

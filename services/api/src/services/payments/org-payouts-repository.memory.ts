@@ -50,9 +50,28 @@ export function makeMemoryOrgPayoutsRepository(
       return Promise.resolve({ record: { ...record }, replayed: false })
     },
 
+    findUnconfirmed(organizationId): Promise<OrgPayoutRecord | null> {
+      const match = [...rows]
+        .reverse()
+        .find(
+          (row) =>
+            row.organizationId === organizationId &&
+            row.stripePayoutId === null &&
+            row.status === "pending",
+        )
+      return Promise.resolve(match === undefined ? null : { ...match })
+    },
+
     markSubmitted(input): Promise<OrgPayoutRecord | null> {
       const record = byId(input.id)
       if (record === undefined) return Promise.resolve(null)
+      const mirrorIndex = rows.findIndex(
+        (row) =>
+          row.id !== input.id &&
+          row.organizationId === input.organizationId &&
+          row.stripePayoutId === input.stripePayoutId,
+      )
+      if (mirrorIndex >= 0) rows.splice(mirrorIndex, 1)
       record.stripePayoutId = input.stripePayoutId
       record.status = input.status
       record.arrivalDate = input.arrivalDate

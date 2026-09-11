@@ -1,7 +1,7 @@
 import { AppError, type OrgBalanceDTO, type PayoutDTO } from "@civfix/shared"
 import type { Payments } from "@civfix/shared/interfaces"
 import type { CounterStore } from "../../abuse/counter-store.js"
-import { payoutFailure, payoutRefusal } from "../../errors/payment-failure.js"
+import { payoutFailure, payoutRefusal, payoutRefusalCode } from "../../errors/payment-failure.js"
 import type { OrgPaymentsRepository, OrgPaymentsView } from "./org-payments-repository.drizzle.js"
 import { encodePayoutCursor } from "./org-payouts-repository.drizzle.js"
 import type { OrgPayoutRecord, OrgPayoutsRepository } from "./org-payouts-repository.types.js"
@@ -23,6 +23,9 @@ export const PAYOUT_RATE_LIMIT_MESSAGE =
 
 export const PAYOUT_IN_FLIGHT_MESSAGE =
   "That payout is still being submitted. Refresh the payout list in a moment."
+
+export const PAYOUT_UNCONFIRMED_MESSAGE =
+  "An earlier payout has not been confirmed by Stripe yet. Refresh the payout list in a moment before sending another."
 
 export interface CreateOrgPayoutInput {
   amountMinor?: number
@@ -124,12 +127,9 @@ export function makeOrgPayoutsService(deps: OrgPayoutsServiceDeps): OrgPayoutsSe
       const accountId = connectedAccountId(view)
       if (accountId === null) throw AppError.conflict(NO_PAYOUT_ACCOUNT_MESSAGE)
 
-      const requests = await deps.counters.incr(
-        `org:payouts:${organizationId}`,
-        ORG_PAYOUT_WINDOW_SEC,
-      )
-      if (requests > ORG_PAYOUTS_PER_HOUR) {
-        throw AppError.rateLimited(PAYOUT_RATE_LIMIT_MESSAGE)
+      const unconfirmed = await deps.payouts.findUnconfirmed(organizationId)
+      if (unconfirmed !== null && unconfirmed.idempotencyKey !== input.idempotencyKey) {
+        throw AppError.conflict(PAYOUT_UNCONFIRMED_MESSAGE)
       }
 
       const balance = await deps.payments.retrieveBalance(accountId)
@@ -152,6 +152,14 @@ export function makeOrgPayoutsService(deps: OrgPayoutsServiceDeps): OrgPayoutsSe
           throw AppError.conflict(pending.record.failureMessage ?? PAYOUT_IN_FLIGHT_MESSAGE)
         }
         if (pending.record.stripePayoutId !== null) return toPayoutDTO(pending.record)
+      } else {
+        const requests = await deps.counters.incr(
+          `org:payouts:${organizationId}`,
+          ORG_PAYOUT_WINDOW_SEC,
+        )
+        if (requests > ORG_PAYOUTS_PER_HOUR) {
+          throw AppError.rateLimited(PAYOUT_RATE_LIMIT_MESSAGE)
+        }
       }
 
       let submitted
@@ -163,6 +171,13 @@ export function makeOrgPayoutsService(deps: OrgPayoutsServiceDeps): OrgPayoutsSe
         })
       } catch (err) {
         const failure = payoutFailure(err)
+        if (payoutRefusalCode(failure) === null) {
+          deps.logger?.error(
+            { organizationId, payoutId: pending.record.id, code: failure.code },
+            "org payout outcome unknown: the row stays pending until a payout webhook settles it",
+          )
+          throw failure
+        }
         await deps.payouts.markFailed({
           id: pending.record.id,
           failureMessage: failure.message,
@@ -177,6 +192,7 @@ export function makeOrgPayoutsService(deps: OrgPayoutsServiceDeps): OrgPayoutsSe
 
       const stored = await deps.payouts.markSubmitted({
         id: pending.record.id,
+        organizationId,
         stripePayoutId: submitted.id,
         status: submitted.status,
         arrivalDate:

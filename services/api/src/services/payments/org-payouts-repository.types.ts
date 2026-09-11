@@ -32,6 +32,7 @@ export interface InsertPendingPayoutResult {
 
 export interface MarkPayoutSubmittedInput {
   id: string
+  organizationId: string
   stripePayoutId: string
   status: PayoutStatusValue
   arrivalDate: Date | null
@@ -65,6 +66,7 @@ export interface ListOrgPayoutsQuery {
 
 export interface OrgPayoutsRepository {
   insertPending(input: InsertPendingPayoutInput): Promise<InsertPendingPayoutResult>
+  findUnconfirmed(organizationId: string): Promise<OrgPayoutRecord | null>
   markSubmitted(input: MarkPayoutSubmittedInput): Promise<OrgPayoutRecord | null>
   markFailed(input: MarkPayoutFailedInput): Promise<OrgPayoutRecord | null>
   upsertFromProvider(input: UpsertProviderPayoutInput): Promise<void>

@@ -175,11 +175,23 @@ export function payoutFailureCode(err: unknown): PayoutFailureCode | null {
 
 export function payoutRefusal(code: PayoutFailureCode): AppError {
   const message = PAYOUT_FAILURE_COPY[code]
-  if (code === "balance_insufficient") return AppError.conflict(message)
-  if (code === "account_invalid") return AppError.paymentUnavailable(message)
-  return new AppError(ErrorCode.VALIDATION, message, {
-    fields: { [PAYMENT_FAILURE_FIELD]: code },
-  })
+  const fields = { [PAYMENT_FAILURE_FIELD]: code }
+  if (code === "balance_insufficient") {
+    return new AppError(ErrorCode.CONFLICT, message, { fields })
+  }
+  if (code === "account_invalid") {
+    return new AppError(ErrorCode.PAYMENT_UNAVAILABLE, message, { fields })
+  }
+  return new AppError(ErrorCode.VALIDATION, message, { fields })
+}
+
+export function payoutRefusalCode(err: unknown): PayoutFailureCode | null {
+  if (typeof err !== "object" || err === null) return null
+  const fields = (err as { fields?: unknown }).fields
+  if (typeof fields !== "object" || fields === null) return null
+  const value = (fields as Record<string, unknown>)[PAYMENT_FAILURE_FIELD]
+  if (typeof value !== "string") return null
+  return PAYOUT_FAILURE_CODES.find((known) => known === value) ?? null
 }
 
 export function payoutFailure(err: unknown): AppError {

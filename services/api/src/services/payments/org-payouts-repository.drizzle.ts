@@ -82,7 +82,26 @@ export function makeDrizzleOrgPayoutsRepository(sql: Sql): OrgPayoutsRepository 
       return { record: toPayout(row), replayed: true }
     },
 
+    async findUnconfirmed(organizationId): Promise<OrgPayoutRecord | null> {
+      const rows = await sql<OrgPayoutRowSelect[]>`
+        SELECT id, organization_id, stripe_account_id, stripe_payout_id, amount_minor, status,
+               arrival_date, failure_message, requested_by, idempotency_key, created_at, updated_at
+          FROM org_payouts
+         WHERE organization_id = ${organizationId}
+           AND stripe_payout_id IS NULL
+           AND status = 'pending'
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`
+      const row = rows[0]
+      return row === undefined ? null : toPayout(row)
+    },
+
     async markSubmitted(input): Promise<OrgPayoutRecord | null> {
+      await sql`
+        DELETE FROM org_payouts
+         WHERE stripe_payout_id = ${input.stripePayoutId}
+           AND organization_id = ${input.organizationId}
+           AND id <> ${input.id}`
       const rows = await sql<OrgPayoutRowSelect[]>`
         UPDATE org_payouts
            SET stripe_payout_id = ${input.stripePayoutId},
@@ -122,7 +141,8 @@ export function makeDrizzleOrgPayoutsRepository(sql: Sql): OrgPayoutsRepository 
                       arrival_date = EXCLUDED.arrival_date,
                       failure_message = COALESCE(EXCLUDED.failure_message, org_payouts.failure_message),
                       updated_at = EXCLUDED.updated_at
-              WHERE org_payouts.status <> EXCLUDED.status
+              WHERE org_payouts.organization_id = EXCLUDED.organization_id
+                AND org_payouts.status <> EXCLUDED.status
                 AND (org_payouts.status NOT IN ('paid','failed','canceled')
                      OR EXCLUDED.status IN ('paid','failed','canceled'))`
     },
