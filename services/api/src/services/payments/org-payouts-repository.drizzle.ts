@@ -149,16 +149,17 @@ export function makeDrizzleOrgPayoutsRepository(sql: Sql): OrgPayoutsRepository 
 
     async listForOrg({ organizationId, cursor, limit }): Promise<OrgPayoutRecord[]> {
       const decoded = decodePayoutCursor(cursor)
+      const keyset =
+        decoded === null
+          ? sql``
+          : sql`AND (created_at, id) < (${decoded.at}::timestamptz, ${decoded.id}::uuid)`
       const rows = await sql<OrgPayoutRowSelect[]>`
         SELECT id, organization_id, stripe_account_id, stripe_payout_id, amount_minor, status,
                arrival_date, failure_message, requested_by, idempotency_key, created_at, updated_at
           FROM org_payouts
          WHERE organization_id = ${organizationId}
            AND stripe_payout_id IS NOT NULL
-           AND (
-             ${decoded === null}
-             OR (created_at, id) < (${decoded?.at ?? null}::timestamptz, ${decoded?.id ?? null}::uuid)
-           )
+           ${keyset}
          ORDER BY created_at DESC, id DESC
          LIMIT ${limit}`
       return rows.map(toPayout)

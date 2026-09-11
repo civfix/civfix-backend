@@ -1428,14 +1428,11 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         `
         const invite = invites[0]
         if (invite === undefined || invite.status !== "pending") return { kind: "invalid" }
-        if (invite.expires_at.getTime() <= args.now.getTime()) {
-          await tx`UPDATE organization_invites SET status = 'expired' WHERE id = ${invite.id}`
-          return { kind: "expired" }
-        }
         // The invite is a claim on the account that signs in with the invited address (verified), the
         // same rule cleanup_team_invites applies - never on whoever holds the link. The id-addressed
         // path has no token to prove anything, so the seat itself is the claim: the row must name this
-        // account, or carry an address this account has verified.
+        // account, or carry an address this account has verified. This is decided BEFORE expiry, so a
+        // caller holding someone else's invite id never learns that the invite exists.
         const addressed =
           invite.user_id !== null && invite.user_id === args.userId
             ? true
@@ -1453,6 +1450,10 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
                 ).length > 0
         if (byToken ? invite.email !== null && !addressed : !addressed) {
           return { kind: "wrong_recipient" }
+        }
+        if (invite.expires_at.getTime() <= args.now.getTime()) {
+          await tx`UPDATE organization_invites SET status = 'expired' WHERE id = ${invite.id}`
+          return { kind: "expired" }
         }
         if (orgRow.suspended) return { kind: "suspended" }
         const inserted = await tx<{ user_id: string }[]>`
