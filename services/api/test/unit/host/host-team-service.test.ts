@@ -509,23 +509,19 @@ describe("acceptEventTeamInvite", () => {
     expect(result.role).toBe("organizer")
   })
 
-  it("refuses to invite anyone into a role that carries powers the inviter lacks", async () => {
+  it("0.43.0: an org admin seats nobody on the event team, in any role", async () => {
     orgAdmins.add(STRANGER)
-    await expect(
-      service.inviteMember(EVENT, STRANGER, {
-        identifierKind: "email",
-        identifier: "ida@x.org",
-        role: "cohost",
-      }),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    expect(can({ eventRole: null, orgRole: "admin" }, "manage_team")).toBe(false)
+    for (const role of ["cohost", "coordinator", "staff"] as const) {
+      await expect(
+        service.inviteMember(EVENT, STRANGER, {
+          identifierKind: "email",
+          identifier: "ida@x.org",
+          role,
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    }
     expect(repo.invites).toHaveLength(0)
-
-    const { invite } = await service.inviteMember(EVENT, STRANGER, {
-      identifierKind: "email",
-      identifier: "ida@x.org",
-      role: "staff",
-    })
-    expect(invite.role).toBe("staff")
   })
 
   it("refuses a self-invite by handle, so manage_team cannot mint the inviter a seat", async () => {

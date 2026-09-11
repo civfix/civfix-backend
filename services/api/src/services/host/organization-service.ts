@@ -401,7 +401,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
   async function requireOrgCapability(
     organizationId: string,
     actorId: string,
-    capability: "manage_event" | "manage_team" | "manage_org_link",
+    capability: "manage_event" | "manage_org_link" | "manage_org_members",
   ): Promise<OrganizationRecord> {
     const record = await deps.repo.findOrganizationById(organizationId, actorId)
     if (record === null) notFoundOrganization()
@@ -418,6 +418,17 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
   ): Promise<OrganizationRecord> {
     const record = await deps.repo.findOrganizationById(organizationId, actorId)
     if (record === null || record.myRole === null) notFoundOrganization()
+    return record
+  }
+
+  async function requireOrgOwner(
+    organizationId: string,
+    actorId: string,
+  ): Promise<OrganizationRecord> {
+    const record = await requireOrgMembership(organizationId, actorId)
+    if (record.myRole !== "owner") {
+      throw AppError.forbidden("Only the organization owner can change member roles.")
+    }
     return record
   }
 
@@ -700,7 +711,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         cursor: page.cursor,
         limit: page.limit,
       })
-      const canManage = record.myRole === "owner" || record.myRole === "admin"
+      const canManage = can({ eventRole: null, orgRole: record.myRole }, "manage_org_members")
       const affiliations = deps.affiliations
         ? await deps.affiliations(
             items.map((m) => m.person.id),
@@ -728,7 +739,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       invited: boolean
       invite?: OrganizationInviteDTO | null
     }> {
-      const org = await requireOrgCapability(id, actorId, "manage_team")
+      const org = await requireOrgCapability(id, actorId, "manage_org_members")
       assertNotSuspended(org)
       const invites = await counters.incr(`org:invites:${id}`, ORG_INVITE_WINDOW_SEC)
       if (invites > ORG_INVITES_PER_HOUR) {
@@ -805,14 +816,13 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     },
 
     async listInvites(id: string, actorId: string): Promise<{ items: OrganizationInviteDTO[] }> {
-      // Invites carry the typed email, so listing them is owner|admin (manage_event), not any member.
-      await requireOrgCapability(id, actorId, "manage_event")
+      await requireOrgCapability(id, actorId, "manage_org_members")
       const records = await deps.repo.listInvites(id, now(), ORG_INVITE_LIST_CAP)
       return { items: records.map(toInviteDTO) }
     },
 
     async revokeInvite(id: string, actorId: string, inviteId: string): Promise<{ ok: true }> {
-      await requireOrgCapability(id, actorId, "manage_team")
+      await requireOrgCapability(id, actorId, "manage_org_members")
       const outcome = await deps.repo.revokeInviteTx({
         organizationId: id,
         inviteId,
@@ -881,7 +891,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       targetUserId: string,
       role: "admin" | "member",
     ): Promise<{ ok: true }> {
-      const org = await requireOrgCapability(id, actorId, "manage_team")
+      const org = await requireOrgOwner(id, actorId)
       assertNotSuspended(org)
       if (targetUserId === actorId) {
         throw AppError.conflict("You can't change your own role.")
@@ -903,7 +913,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
 
     async removeMember(id: string, actorId: string, targetUserId: string): Promise<{ ok: true }> {
       if (targetUserId === actorId) await requireOrgMembership(id, actorId)
-      else await requireOrgCapability(id, actorId, "manage_team")
+      else await requireOrgCapability(id, actorId, "manage_org_members")
       const outcome = await deps.repo.removeMemberTx({
         organizationId: id,
         userId: targetUserId,

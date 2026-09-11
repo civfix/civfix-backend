@@ -482,29 +482,31 @@ describe("setCleanupMemberRole widened to staff", () => {
     expect(audits.some((a) => a.action === "event.team_role_changed")).toBe(true)
   })
 
-  it("never grants a role with powers the actor does not hold, to themselves or anyone", async () => {
+  it("0.43.0: an org admin seats nobody on the event team, and the organizer still can", async () => {
     const org = repo.seedOrganization({ slug: "bct" })
     repo.seedOrgMember(org.id, ORG, "owner")
     repo.seedOrgMember(org.id, ORG_OWNER, "admin")
     const created = await service.createCleanup(base({ organizationId: org.id }), ORG)
     repo.seedMember(created.id, ORG_OWNER, "member")
     repo.seedMember(created.id, OUTSIDER, "member")
+    for (const role of ["cohost", "staff"] as const) {
+      await expect(
+        service.setMemberRole(created.id, ORG_OWNER, OUTSIDER, role),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    }
     await expect(
       service.setMemberRole(created.id, ORG_OWNER, ORG_OWNER, "cohost"),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
-    await expect(
-      service.setMemberRole(created.id, ORG_OWNER, OUTSIDER, "cohost"),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" })
     expect(await repo.roleOf(created.id, ORG_OWNER)).toBe("member")
     expect(await repo.roleOf(created.id, OUTSIDER)).toBe("member")
-    await service.setMemberRole(created.id, ORG_OWNER, OUTSIDER, "staff")
+    await service.setMemberRole(created.id, ORG, OUTSIDER, "staff")
     expect(await repo.roleOf(created.id, OUTSIDER)).toBe("staff")
   })
 
   it("still refuses to change your own role even when the role itself is grantable", async () => {
     const org = repo.seedOrganization({ slug: "bct2" })
     repo.seedOrgMember(org.id, ORG, "owner")
-    repo.seedOrgMember(org.id, ORG_OWNER, "admin")
+    repo.seedOrgMember(org.id, ORG_OWNER, "owner")
     const created = await service.createCleanup(base({ organizationId: org.id }), ORG)
     repo.seedMember(created.id, ORG_OWNER, "member")
     await expect(
