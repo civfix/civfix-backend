@@ -57,7 +57,6 @@ export interface PersonRowSelect {
   bio: string | null
   followers: number
   following: number
-  verified: boolean
   avatar_r2_key: string | null
   avatar_url: string | null
   social_links?: SocialLinks | null
@@ -76,7 +75,6 @@ export function toPersonView(r: PersonRowSelect): PersonView {
     bio: r.bio,
     followers: Number(r.followers),
     following: Number(r.following),
-    verified: r.verified,
     avatarR2Key: r.avatar_r2_key,
     avatarUrl: r.avatar_url,
     socialLinks: r.social_links ?? null,
@@ -272,7 +270,6 @@ async function connectionsPage(
       u.bio,
       u.follower_count AS followers,
       u.following_count AS following,
-      EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
       ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
       u.avatar_url,
       u.show_volunteer_hours,
@@ -410,7 +407,6 @@ function suggestFollowsStatement(
           c.bio,
           c.followers,
           c.following,
-          EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = c.id AND v.status = 'verified') AS verified,
           ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
           c.avatar_url,
           c.show_volunteer_hours,
@@ -447,7 +443,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         u.bio,
         u.follower_count AS followers,
         u.following_count AS following,
-        EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
         ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
         u.avatar_url,
         u.social_links,
@@ -505,7 +500,6 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           u.bio,
           u.follower_count AS followers,
           u.following_count AS following,
-          EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
           ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
           u.avatar_url,
           u.show_volunteer_hours,

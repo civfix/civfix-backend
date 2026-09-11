@@ -44,7 +44,6 @@ interface LedgerRow {
   creditor_id: string | null
   creditor_name: string | null
   creditor_handle: string | null
-  creditor_verified: boolean | null
 }
 
 function toEntryView(r: LedgerRow): VolunteerHoursEntryView {
@@ -66,7 +65,7 @@ function toEntryView(r: LedgerRow): VolunteerHoursEntryView {
             id: r.creditor_id,
             name: r.creditor_name ?? "",
             handle: r.creditor_handle,
-            verified: r.creditor_verified ?? false,
+            organization: null,
           }
         : null,
   }
@@ -347,7 +346,6 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           name: string
           handle: string | null
           avatar_url: string | null
-          verified: boolean
           hours: number
           blocked_pair: boolean
         }[]
@@ -357,10 +355,6 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           u.display_name AS name,
           u.handle,
           u.avatar_url,
-          EXISTS (
-            SELECT 1 FROM user_verification uv
-            WHERE uv.user_id = ujh.user_id AND uv.status = 'verified'
-          ) AS verified,
           ${blockedPair} AS blocked_pair,
           ujh.total_hours::float8 AS hours
         FROM user_jurisdiction_hours ujh
@@ -423,7 +417,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         const rankAndHours = { rank: offset + i + 1, userId: r.user_id, hours: r.hours }
         if (r.blocked_pair) {
           const hidden = hiddenIdentity(r.user_id)
-          return { ...rankAndHours, name: hidden.name, avatar: hidden.avatar, verified: false }
+          return { ...rankAndHours, name: hidden.name, avatar: hidden.avatar }
         }
         return {
           ...rankAndHours,
@@ -431,7 +425,6 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           ...(r.handle !== null ? { handle: r.handle } : {}),
           avatar: avatarGradient(r.user_id),
           ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
-          verified: r.verified,
         }
       })
 
@@ -468,11 +461,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           j.name AS jurisdiction_name,
           lb.id AS creditor_id,
           lb.display_name AS creditor_name,
-          lb.handle AS creditor_handle,
-          EXISTS (
-            SELECT 1 FROM user_verification uv
-            WHERE uv.user_id = lb.id AND uv.status = 'verified'
-          ) AS creditor_verified
+          lb.handle AS creditor_handle
         FROM volunteer_hours vh
         LEFT JOIN cleanups c      ON c.id = vh.cleanup_id
         LEFT JOIN jurisdictions j ON j.geoid = vh.jurisdiction_geoid
@@ -551,11 +540,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           j.name AS jurisdiction_name,
           lb.id AS creditor_id,
           lb.display_name AS creditor_name,
-          lb.handle AS creditor_handle,
-          EXISTS (
-            SELECT 1 FROM user_verification uv
-            WHERE uv.user_id = lb.id AND uv.status = 'verified'
-          ) AS creditor_verified
+          lb.handle AS creditor_handle
         FROM volunteer_hours vh
         LEFT JOIN cleanups c      ON c.id = vh.cleanup_id
         LEFT JOIN jurisdictions j ON j.geoid = vh.jurisdiction_geoid

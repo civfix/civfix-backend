@@ -35,6 +35,7 @@ import { makeDrizzleDiscussionRepository } from "../services/discussion-reposito
 import type { DiscussionRepository } from "../services/discussion-types.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
+import { withAffiliation } from "../services/affiliation.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
 
@@ -202,10 +203,15 @@ export async function registerReportChatRoutes(
     const { id } = parse(ReportChatIdParamsSchema, request.params)
     await requireVisibleReport(id, userId)
     const repo = getReportChatRepo()
-    const [participants, total] = await Promise.all([
+    const [members, total] = await Promise.all([
       repo.listMembers(id, userId),
       repo.countMembers(id),
     ])
+    const affiliations = await container.getAffiliationLoader()(members.map((m) => m.user.id))
+    const participants = members.map((m) => ({
+      ...m,
+      user: withAffiliation(m.user, affiliations),
+    }))
     const payload: ReportChatParticipantsResponse = { participants, total }
     reply.status(200).send(payload)
   })

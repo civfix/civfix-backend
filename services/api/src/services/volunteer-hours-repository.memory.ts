@@ -3,6 +3,7 @@ import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   LeaderboardEntryDTO,
   MyVolunteerHoursDTO,
+  OrganizationRefDTO,
   VolunteerHoursSource,
 } from "@civfix/shared"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
@@ -30,7 +31,7 @@ export interface MemoryLeaderboardUser {
   name: string
   handle: string | null
   avatarUrl: string | null
-  verified: boolean
+  organization?: OrganizationRefDTO | null
   showVolunteerHours?: boolean | null
   deleted?: boolean
 }
@@ -327,7 +328,6 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
         ...(user?.handle != null ? { handle: user.handle } : {}),
         avatar: avatarGradient(row.userId),
         ...(user?.avatarUrl != null ? { avatarUrl: user.avatarUrl } : {}),
-        verified: user?.verified ?? false,
         hours: round2(row.hours),
       }
     })
@@ -436,7 +436,7 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
               id: e.loggedByUserId,
               name: creditor?.name ?? "",
               handle: creditor?.handle ?? null,
-              verified: creditor?.verified ?? false,
+              organization: creditor?.organization ?? null,
             }
           : null,
     }

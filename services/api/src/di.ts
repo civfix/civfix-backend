@@ -78,6 +78,7 @@ import {
 } from "./services/notification-service.js"
 import { makeDrizzleNotificationRepository } from "./services/notification-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "./services/media-intake-service.js"
+import { makeAffiliationLoader, type AffiliationLoader } from "./services/affiliation.js"
 import { RedisByteMeter, type ByteMeter } from "./services/media-byte-quota.js"
 import { RedisCounterStore, type CounterStore } from "./abuse/counter-store.js"
 import { InMemoryBlocksRepository, InMemoryDmRepository } from "./services/dm-repository.memory.js"
@@ -124,6 +125,7 @@ export interface Container {
   getBlocksRepo(): BlocksRepository
   getVolunteerHoursRepo(): VolunteerHoursRepository
   getCertificateRepo(): CertificateRepository
+  getAffiliationLoader(): AffiliationLoader
   getPostRepo(): PostRepository
   getPostService(): PostService
   getNotificationService(logger?: NotificationLogger): NotificationService
@@ -195,11 +197,22 @@ export function buildContainer(env: Env): Container {
   }
 
   let postRepo: PostRepository | undefined
+  let affiliationLoader: AffiliationLoader | undefined
+  function getAffiliationLoader(): AffiliationLoader {
+    if (!affiliationLoader) {
+      affiliationLoader = makeAffiliationLoader(getDb().sql, (k: string) =>
+        storage.presignGet(k, MEDIA_GET_URL_TTL_SEC),
+      )
+    }
+    return affiliationLoader
+  }
+
   function getPostRepo(): PostRepository {
     if (!postRepo) {
       postRepo = makeDrizzlePostRepository(getDb().sql, {
         presignMedia,
         presignAvatar: (k: string) => storage.presignGet(k, MEDIA_GET_URL_TTL_SEC),
+        affiliations: getAffiliationLoader(),
       })
     }
     return postRepo
@@ -514,6 +527,7 @@ export function buildContainer(env: Env): Container {
     getBlocksRepo,
     getVolunteerHoursRepo,
     getCertificateRepo,
+    getAffiliationLoader,
     getPostRepo,
     getPostService,
     getNotificationService,

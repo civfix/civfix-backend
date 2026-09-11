@@ -60,7 +60,6 @@ function makeService(
   return makeVolunteerHoursService({
     repo,
     cleanups,
-    isVerified: () => Promise.resolve(true),
   })
 }
 
@@ -169,7 +168,7 @@ describe("hours ledger: getMyHoursEntries keyset paging", () => {
   it("carries the joined event + jurisdiction + creditedBy identity", async () => {
     const repo = makeRepo()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
-    repo.seedUser(HOST, { name: "Ann Host", handle: "ann", avatarUrl: null, verified: true })
+    repo.seedUser(HOST, { name: "Ann Host", handle: "ann", avatarUrl: null })
     await creditEvent(repo, EVENT_IDS[0], BOB, 2, {
       title: "Ocean Beach sweep",
       referenceCode: "EVENT-SF-000123",
@@ -186,14 +185,55 @@ describe("hours ledger: getMyHoursEntries keyset paging", () => {
     expect(entry.jurisdictionName).toBe("San Francisco")
     expect(entry.occurredAt).toBe("2026-05-20T17:00:00.000Z")
     expect(entry.creditedAt).not.toBe(entry.occurredAt)
-    expect(entry.creditedBy).toEqual({ id: HOST, name: "Ann Host", handle: "ann", verified: true })
+    expect(entry.creditedBy).toEqual({
+      id: HOST,
+      name: "Ann Host",
+      handle: "ann",
+      organization: null,
+    })
+  })
+
+  it("badges the creditor with their organization in ONE batched lookup (0.43.0)", async () => {
+    const org = {
+      id: "99999999-9999-4999-8999-999999999999",
+      slug: "ballona-creek-trust",
+      name: "Ballona Creek Trust",
+      logoUrl: null,
+      verified: false,
+      verifiedKind: null,
+    }
+    const repo = makeRepo()
+    repo.seedUser(HOST, { name: "Ann Host", handle: "ann", avatarUrl: null })
+    await creditEvent(repo, EVENT_IDS[0], BOB, 2, { title: "One" })
+    await creditEvent(repo, EVENT_IDS[1], BOB, 1, { title: "Two" })
+    const batches: string[][] = []
+    const service = makeVolunteerHoursService({
+      repo,
+      cleanups: makeCleanups(null, []),
+      affiliations: (ids) => {
+        batches.push([...ids])
+        return Promise.resolve(new Map(ids.map((id) => [id, org])))
+      },
+    })
+
+    const page = await service.getMyHoursEntries(BOB, {})
+    expect(batches).toHaveLength(1)
+    expect(page.items.every((e) => e.creditedBy?.organization?.id === org.id)).toBe(true)
+  })
+
+  it("leaves the creditor unbadged when no loader is wired", async () => {
+    const repo = makeRepo()
+    repo.seedUser(HOST, { name: "Ann Host", handle: "ann", avatarUrl: null })
+    await creditEvent(repo, EVENT_IDS[0], BOB, 2, { title: "One" })
+    const page = await makeService(repo).getMyHoursEntries(BOB, {})
+    expect(page.items[0]!.creditedBy?.organization).toBeNull()
   })
 })
 
 describe("hours ledger: the public projection (C18's two gates)", () => {
   async function seedBob(repo: InMemoryVolunteerHoursRepository): Promise<void> {
     repo.seedJurisdiction(GEOID_A, "San Francisco")
-    repo.seedUser(HOST, { name: "Ann Host", handle: "ann", avatarUrl: null, verified: true })
+    repo.seedUser(HOST, { name: "Ann Host", handle: "ann", avatarUrl: null })
     await creditEvent(repo, EVENT_IDS[0], BOB, 2, { title: "Ocean Beach sweep" })
     await creditEvent(repo, EVENT_IDS[1], BOB, 1, { title: "Dolores clean-up" })
     repo.seedLegacyReportEntry(BOB, REPORT_ONE, GEOID_A)
@@ -207,7 +247,6 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
       name: "Bob",
       handle: "bob",
       avatarUrl: null,
-      verified: false,
       showVolunteerHours: true,
     })
     const res = await makeService(repo).getPublicHours({ id: BOB }, CAROL)
@@ -224,7 +263,7 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
   it("NULL (never chosen): visible with an EMPTY items list and a truthful nextCursor", async () => {
     const repo = makeRepo()
     await seedBob(repo)
-    repo.seedUser(BOB, { name: "Bob", handle: "bob", avatarUrl: null, verified: false })
+    repo.seedUser(BOB, { name: "Bob", handle: "bob", avatarUrl: null })
     const res = await makeService(repo).getPublicHours({ id: BOB }, CAROL)
 
     expect(res.visible).toBe(true)
@@ -241,14 +280,12 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
       name: "Bob",
       handle: "bob",
       avatarUrl: null,
-      verified: false,
       showVolunteerHours: false,
     })
     repo.seedUser(DAVE, {
       name: "Dave",
       handle: "dave",
       avatarUrl: null,
-      verified: false,
       showVolunteerHours: true,
     })
 
@@ -273,7 +310,6 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
       name: "Bob",
       handle: "bob",
       avatarUrl: null,
-      verified: false,
       showVolunteerHours: true,
       deleted: true,
     })
@@ -281,7 +317,6 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
       name: "Dave",
       handle: "dave",
       avatarUrl: null,
-      verified: false,
       showVolunteerHours: true,
     })
 
@@ -297,21 +332,18 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
       name: "Bob",
       handle: "bob",
       avatarUrl: null,
-      verified: false,
       showVolunteerHours: true,
     })
     repo.seedUser(DAVE, {
       name: "Dave",
       handle: "dave",
       avatarUrl: null,
-      verified: false,
       showVolunteerHours: true,
     })
 
     const gatedService = makeVolunteerHoursService({
       repo,
       cleanups: makeCleanups(null, []),
-      isVerified: () => Promise.resolve(true),
       isBlockedEitherWay: (a, b) =>
         Promise.resolve((a === CAROL && b === BOB) || (a === BOB && b === CAROL)),
     })
@@ -334,7 +366,6 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
       name: "Bob",
       handle: "bob",
       avatarUrl: null,
-      verified: false,
       showVolunteerHours: false,
     })
     const res = await makeService(repo).getPublicHours({ id: BOB }, BOB)
@@ -349,7 +380,6 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
       name: "Bob",
       handle: null,
       avatarUrl: null,
-      verified: false,
       showVolunteerHours: true,
     })
     for (const [i, id] of EVENT_IDS.entries()) {

@@ -16,6 +16,7 @@ import type {
   GroupMemberView,
 } from "./chat-group-repository.drizzle.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
+import { NO_AFFILIATIONS, withAffiliation, type AffiliationLoader } from "./affiliation.js"
 
 export const GROUP_MEMBERS_DEFAULT_LIMIT = 25
 export const GROUP_MEMBERS_MAX_LIMIT = 50
@@ -25,6 +26,7 @@ const INVITE_BLOCK_SCAN_MEMBERS = 200
 export interface ChatGroupServiceDeps {
   groups: ChatGroupRepository
   isMutedFor?: (userId: string, groupId: string) => Promise<boolean>
+  affiliations?: AffiliationLoader
 }
 
 const forbidden = (message: string, code: string): AppError =>
@@ -279,7 +281,16 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
         GROUP_MEMBERS_MAX_LIMIT,
       )
       const page = await groups.listMembers(req.id, viewerId, req.cursor ?? null, limit)
-      return { members: page.members.map(toMemberDTO), nextCursor: page.nextCursor }
+      const affiliations = deps.affiliations
+        ? await deps.affiliations(page.members.map((m) => m.user.id))
+        : NO_AFFILIATIONS
+      return {
+        members: page.members.map((m) => {
+          const dto = toMemberDTO(m)
+          return { ...dto, user: withAffiliation(dto.user, affiliations) }
+        }),
+        nextCursor: page.nextCursor,
+      }
     },
 
     async joinGroup(userId, groupId) {

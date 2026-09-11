@@ -145,6 +145,7 @@ export function makeContainerRegistrationServices(
     counters,
     ...(audit !== undefined ? { audit } : {}),
     ...(teamUserIds !== undefined ? { teamUserIds } : {}),
+    ...(sql === undefined ? {} : { affiliations: container.getAffiliationLoader() }),
     ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
     ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
     ...(logger !== undefined ? { logger } : {}),

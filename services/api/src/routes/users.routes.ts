@@ -149,6 +149,9 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
       ...(body.showVolunteerHours !== undefined
         ? { showVolunteerHours: body.showVolunteerHours }
         : {}),
+      ...(body.primaryOrganizationId !== undefined
+        ? { primaryOrganizationId: body.primaryOrganizationId }
+        : {}),
     }
     const updated =
       Object.keys(patch).length === 0

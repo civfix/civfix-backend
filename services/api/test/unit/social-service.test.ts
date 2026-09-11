@@ -95,7 +95,6 @@ describe("toPersonDTO", () => {
       bio: "hi",
       followers: 3,
       following: 7,
-      verified: false,
       avatarR2Key: null,
       avatarUrl: null,
       socialLinks: null,
@@ -111,7 +110,6 @@ describe("toPersonDTO", () => {
       followers: 3,
       following: 7,
       isFollowing: true,
-      verified: false,
     })
     expect(dto.avatarUrl).toBeUndefined()
   })
@@ -124,7 +122,6 @@ describe("toPersonDTO", () => {
       bio: null,
       followers: 0,
       following: 0,
-      verified: false,
       avatarR2Key: null,
       avatarUrl: "https://cdn.example.test/avatars/jane.jpg",
       socialLinks: null,
@@ -637,7 +634,7 @@ describe("getProfile block gate (CVX-023)", () => {
   it("returns a neutral shell with blockedByMe when the viewer blocked the target", async () => {
     const { repo, service } = makeBlockedService([{ blocker: A, blocked: B }])
     repo.seedUser({ id: A, displayName: "Alice" })
-    repo.seedUser({ id: B, displayName: "Bob", handle: "bob", bio: "hi", verified: true })
+    repo.seedUser({ id: B, displayName: "Bob", handle: "bob", bio: "hi" })
     repo.seedReports(B, 5, 2)
     repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, title: "Past" }))
 
@@ -646,7 +643,7 @@ describe("getProfile block gate (CVX-023)", () => {
     expect(profile.id).toBe(B)
     expect(profile.name).toBe("Bob")
     expect(profile.handle).toBe("bob")
-    expect(profile.verified).toBe(true)
+    expect(profile.organization ?? null).toBeNull()
     expect(profile.bio).toBeNull()
     expect(profile.stats).toEqual({ reports: 0, fixed: 0, cleanups: 0 })
     expect(profile.pastEvents).toEqual([])
@@ -1318,5 +1315,73 @@ describe("profile events block gate", () => {
     expect(profile.pastEvents).toEqual([])
     expect(profile.upcomingEvents).toEqual([])
     expect(profile.pastEventsCursor ?? null).toBeNull()
+  })
+})
+
+describe("primary organization affiliation (0.43.0)", () => {
+  const ORG = {
+    id: "99999999-9999-4999-8999-999999999999",
+    slug: "ballona-creek-trust",
+    name: "Ballona Creek Trust",
+    logoUrl: "https://cdn.test/logo",
+    verified: true,
+    verifiedKind: "nonprofit" as const,
+  }
+
+  function harnessWithAffiliations(): {
+    repo: InMemorySocialRepository
+    service: SocialService
+    batches: string[][]
+  } {
+    const repo = new InMemorySocialRepository()
+    const batches: string[][] = []
+    const service = makeSocialService({
+      repo,
+      affiliations: (ids) => {
+        batches.push([...ids])
+        return Promise.resolve(new Map(ids.includes(B) ? [[B, ORG]] : []))
+      },
+    })
+    return { repo, service, batches }
+  }
+
+  it("badges a person list in ONE batched lookup for the whole page", async () => {
+    const { repo, service, batches } = harnessWithAffiliations()
+    repo.seedUser({ id: A, displayName: "Alice", handle: "alice" })
+    repo.seedUser({ id: B, displayName: "Bob", handle: "bob" })
+    const page = await service.listPeople({}, { userId: null })
+    expect(batches).toHaveLength(1)
+    expect(new Set(batches[0])).toEqual(new Set([A, B]))
+    expect(page.items.find((p) => p.id === B)?.organization).toEqual(ORG)
+    expect(page.items.find((p) => p.id === A)?.organization).toBeUndefined()
+  })
+
+  it("badges a profile and reports null rather than omitting the field", async () => {
+    const { repo, service } = harnessWithAffiliations()
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob", handle: "bob" })
+    expect((await service.getProfile(B, { userId: null })).profile.organization).toEqual(ORG)
+    expect((await service.getProfile(A, { userId: null })).profile.organization).toBeNull()
+  })
+
+  it("shows no affiliation on the neutral shell of a person the viewer blocked", async () => {
+    const repo = new InMemorySocialRepository()
+    const service = makeSocialService({
+      repo,
+      affiliations: (ids) => Promise.resolve(new Map(ids.map((id) => [id, ORG]))),
+      blockState: () => Promise.resolve({ blockedByViewer: true, blockedByTarget: false }),
+    })
+    repo.seedUser({ id: A, displayName: "Alice" })
+    repo.seedUser({ id: B, displayName: "Bob", handle: "bob" })
+    const { profile } = await service.getProfile(B, { userId: A })
+    expect(profile.blockedByMe).toBe(true)
+    expect(profile.organization ?? null).toBeNull()
+  })
+
+  it("stays silent when no loader is wired (an offline service still answers)", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: B, displayName: "Bob", handle: "bob" })
+    const page = await service.listPeople({}, { userId: null })
+    expect(page.items[0]?.organization).toBeUndefined()
   })
 })

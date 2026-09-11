@@ -99,7 +99,6 @@ export interface CleanupPersonView {
   displayName: string
   handle: string | null
   bio: string | null
-  verified?: boolean
 }
 
 export interface AttendeeView extends CleanupPersonView {
