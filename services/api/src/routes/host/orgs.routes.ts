@@ -8,6 +8,7 @@ import {
   GetOrganizationVerificationRequestSchema,
   InviteOrganizationMemberRequestSchema,
   IdSchema,
+  ListOrganizationEventsRequestSchema,
   ListOrganizationInvitesRequestSchema,
   ListOrganizationMembersRequestSchema,
   OrgSlugSchema,
@@ -23,6 +24,7 @@ import {
   type GetOrganizationVerificationResponse,
   type InviteOrganizationMemberResponse,
   type ListMyOrganizationsResponse,
+  type ListOrganizationEventsResponse,
   type ListOrganizationInvitesResponse,
   type ListOrganizationMembersResponse,
   type RemoveOrganizationMemberResponse,
@@ -44,6 +46,8 @@ import {
   type OrganizationService,
   type OrganizationServiceDeps,
 } from "../../services/host/organization-service.js"
+import { makeContainerCleanupService } from "../cleanups.routes.js"
+import { CLEANUPS_DEFAULT_LIMIT } from "../../services/cleanup-service.js"
 import { makeDrizzleOrganizationRepository } from "../../services/host/organization-repository.drizzle.js"
 import type { OrganizationRepository } from "../../services/host/organization-repository.types.js"
 import { makeEligibilityBootstrap } from "../../services/payments/eligibility-bootstrap.js"
@@ -81,6 +85,14 @@ const OrgSlugParamsSchema = z.object({ slug: OrgSlugSchema }).strict()
 
 const OrgMembersQuerySchema = z
   .object({ cursor: z.string().optional(), limit: z.string().optional() })
+  .strict()
+
+const OrgEventsQuerySchema = z
+  .object({
+    when: z.string().optional(),
+    cursor: z.string().optional(),
+    limit: z.string().optional(),
+  })
   .strict()
 
 export const CREATE_ORG_RATE_LIMIT = perIdentity({ max: 5, timeWindow: "1 hour" })
@@ -200,6 +212,35 @@ export async function registerHostOrgRoutes(
         request.auth?.userId ?? null,
       )
       reply.status(200).send(dto)
+    },
+  )
+
+  route(
+    app,
+    "listOrganizationEvents",
+    { config: { rateLimit: PUBLIC_ORG_READ_RATE_LIMIT } },
+    async (request, reply) => {
+      const { slug } = parse(OrgSlugParamsSchema, request.params)
+      const q = parse(OrgEventsQuerySchema, request.query ?? {})
+      const validated = parse(ListOrganizationEventsRequestSchema, {
+        slug,
+        ...(q.when !== undefined ? { when: q.when } : {}),
+        ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
+        ...(q.limit !== undefined ? { limit: q.limit } : {}),
+      })
+      const payload: ListOrganizationEventsResponse = await makeContainerCleanupService(
+        app,
+        container,
+      ).listOrganizationEvents(
+        validated.slug,
+        { userId: request.auth?.userId ?? null },
+        {
+          when: validated.when,
+          cursor: validated.cursor ?? null,
+          limit: validated.limit ?? CLEANUPS_DEFAULT_LIMIT,
+        },
+      )
+      reply.status(200).send(payload)
     },
   )
 

@@ -1,5 +1,11 @@
 
-import { AppError, MAX_LINKED_REPORTS } from "@civfix/shared"
+import { randomUUID } from "node:crypto"
+import {
+  AppError,
+  MAX_EVENT_QUESTIONS,
+  MAX_LINKED_REPORTS,
+  MAX_TICKET_TYPES_PER_EVENT,
+} from "@civfix/shared"
 import type postgres from "postgres"
 import type { Queryable, Sql } from "../db/client.js"
 import {
@@ -31,6 +37,7 @@ import type {
   CompleteCleanupOutcome,
   CreateCleanupTxArgs,
   DesiredSlot,
+  DuplicateSource,
   EventSlotView,
   LinkedEventView,
   LinkedReportView,
@@ -38,6 +45,8 @@ import type {
   LeaveCleanupOutcome,
   ListCleanupsFilters,
   NearPoint,
+  OrganizationEventsFilters,
+  OrganizationEventsHost,
   RemoveMemberOutcome,
   SlotReconcileResult,
   UpdateCleanupPatch,
@@ -115,6 +124,123 @@ async function claimEventMediaInTx(
   if (claimed.length !== wanted.length) {
     throw AppError.validation({ coverMediaId: "One or more images are unavailable." })
   }
+}
+
+const PAGE_BLOCK_MEDIA_KEYS = new Set(["mediaId", "avatarMediaId", "logoMediaId"])
+
+export function stripPageBlockMedia(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripPageBlockMedia)
+  if (typeof value !== "object" || value === null) return value
+  const out: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (PAGE_BLOCK_MEDIA_KEYS.has(key)) continue
+    out[key] = stripPageBlockMedia(entry)
+  }
+  return out
+}
+
+async function copyTicketTypesInTx(
+  tx: Queryable,
+  cleanupId: string,
+  source: DuplicateSource,
+): Promise<{ oldIds: string[]; newIds: string[] }> {
+  if (!source.ticketTypes) return { oldIds: [], newIds: [] }
+  const rows = await tx<{ id: string }[]>`
+    SELECT id FROM cleanup_ticket_types
+    WHERE cleanup_id = ${source.cleanupId}
+    ORDER BY sort_order, id
+    LIMIT ${MAX_TICKET_TYPES_PER_EVENT}
+  `
+  const oldIds = rows.map((row) => row.id)
+  if (oldIds.length === 0) return { oldIds, newIds: [] }
+  const newIds = oldIds.map(() => randomUUID())
+  await tx`
+    INSERT INTO cleanup_ticket_types (
+      id, cleanup_id, name, description, capacity, reserved_seats,
+      sales_opens_at, sales_closes_at, visibility, access_code_hash,
+      max_party_size, sort_order, waitlist_enabled
+    )
+    SELECT m.new_id, ${cleanupId}, t.name, t.description, t.capacity, 0,
+           CASE WHEN t.sales_opens_at > now() THEN t.sales_opens_at ELSE NULL END,
+           CASE WHEN t.sales_closes_at > now() THEN t.sales_closes_at ELSE NULL END,
+           t.visibility, t.access_code_hash, t.max_party_size, t.sort_order, t.waitlist_enabled
+    FROM cleanup_ticket_types t
+    JOIN unnest(${oldIds}::uuid[], ${newIds}::uuid[]) AS m(old_id, new_id) ON m.old_id = t.id
+  `
+  return { oldIds, newIds }
+}
+
+async function copyQuestionsInTx(
+  tx: Queryable,
+  cleanupId: string,
+  source: DuplicateSource,
+  types: { oldIds: string[]; newIds: string[] },
+): Promise<void> {
+  if (!source.questions) return
+  const rows = await tx<{ id: string }[]>`
+    SELECT id FROM cleanup_questions
+    WHERE cleanup_id = ${source.cleanupId} AND archived_at IS NULL
+    ORDER BY sort_order, id
+    LIMIT ${MAX_EVENT_QUESTIONS}
+  `
+  const oldIds = rows.map((row) => row.id)
+  if (oldIds.length === 0) return
+  const newIds = oldIds.map(() => randomUUID())
+  await tx`
+    INSERT INTO cleanup_questions (
+      id, cleanup_id, ticket_type_id, kind, prompt, help_text, required,
+      options, max_selections, consent_text, show_if, sort_order
+    )
+    SELECT qm.new_id, ${cleanupId}, tm.new_id, q.kind, q.prompt, q.help_text, q.required,
+           q.options, q.max_selections, q.consent_text,
+           CASE
+             WHEN q.show_if IS NULL OR sm.new_id IS NULL THEN NULL
+             ELSE jsonb_set(q.show_if, '{questionId}', to_jsonb(sm.new_id::text))
+           END,
+           q.sort_order
+    FROM cleanup_questions q
+    JOIN unnest(${oldIds}::uuid[], ${newIds}::uuid[]) AS qm(old_id, new_id) ON qm.old_id = q.id
+    LEFT JOIN unnest(${types.oldIds}::uuid[], ${types.newIds}::uuid[]) AS tm(old_id, new_id)
+      ON tm.old_id = q.ticket_type_id
+    LEFT JOIN unnest(${oldIds}::uuid[], ${newIds}::uuid[]) AS sm(old_id, new_id)
+      ON sm.old_id::text = q.show_if ->> 'questionId'
+  `
+}
+
+async function copyPageInTx(
+  tx: Queryable,
+  cleanupId: string,
+  source: DuplicateSource,
+): Promise<void> {
+  if (!source.page) return
+  const rows = await tx<{ theme_accent: string; blocks: unknown; seo: unknown }[]>`
+    SELECT theme_accent, blocks, seo FROM cleanup_pages
+    WHERE cleanup_id = ${source.cleanupId}
+    LIMIT 1
+  `
+  const page = rows[0]
+  if (page === undefined) return
+  const blocks = stripPageBlockMedia(page.blocks)
+  await tx`
+    INSERT INTO cleanup_pages (cleanup_id, status, theme_accent, blocks, seo)
+    VALUES (
+      ${cleanupId},
+      'draft',
+      ${page.theme_accent},
+      ${tx.json(blocks as Parameters<typeof tx.json>[0])},
+      ${tx.json(page.seo as Parameters<typeof tx.json>[0])}
+    )
+  `
+}
+
+async function copyEventExtrasInTx(
+  tx: Queryable,
+  cleanupId: string,
+  source: DuplicateSource,
+): Promise<void> {
+  const types = await copyTicketTypesInTx(tx, cleanupId, source)
+  await copyQuestionsInTx(tx, cleanupId, source, types)
+  await copyPageInTx(tx, cleanupId, source)
 }
 
 async function privateEventBlocksJoin(
@@ -255,6 +381,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           await linkReportsInTx(tx, args.cleanupId, args.linkedReportIds, args.organizerUserId)
           await insertSlotsInTx(tx, args.cleanupId, args.slots)
           await claimEventMediaInTx(tx, args.cleanupId, args.host)
+          if (args.copyFrom !== undefined) {
+            await copyEventExtrasInTx(tx, args.cleanupId, args.copyFrom)
+          }
 
           const created = await readById(tx, args.cleanupId, null)
           if (!created) throw AppError.internal()
@@ -623,6 +752,51 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       }
     },
 
+    async findOrganizationEventsHost(
+      slug: string,
+      viewerId: string | null,
+    ): Promise<OrganizationEventsHost | null> {
+      const rows = await sql<
+        {
+          id: string
+          slug: string
+          name: string
+          logo_key: string | null
+          verified_status: OrgVerificationStatus
+          verified_kind: OrgVerificationKind | null
+          suspended: boolean
+          viewer_is_member: boolean
+        }[]
+      >`
+        SELECT o.id, o.slug, o.name,
+               ${servedKeyExpr(sql, "am")} AS logo_key,
+               o.verified_status, o.verified_kind,
+               (o.suspended_at IS NOT NULL) AS suspended,
+               EXISTS (
+                 SELECT 1 FROM organization_members m
+                 WHERE m.organization_id = o.id AND m.user_id = ${viewerId}::uuid
+               ) AS viewer_is_member
+        FROM organizations o
+        LEFT JOIN media_assets am ON am.id = o.logo_media_id
+        WHERE o.slug = ${slug} AND o.deleted_at IS NULL
+        LIMIT 1
+      `
+      const row = rows[0]
+      if (row === undefined) return null
+      return {
+        organization: {
+          id: row.id,
+          slug: row.slug,
+          name: row.name,
+          logoKey: row.logo_key,
+          verifiedStatus: row.verified_status,
+          verifiedKind: row.verified_kind,
+          suspended: row.suspended,
+        },
+        viewerIsMember: row.viewer_is_member,
+      }
+    },
+
     orgRoleOf(organizationId: string, userId: string): Promise<OrganizationMemberRole | null> {
       return orgStandingOf(sql, organizationId, userId)
     },
@@ -700,6 +874,38 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           ${membershipFilter}
           ${bboxFilter}
           ${visibilityFilter}
+          ${cursorFilter}
+        ${order}
+        LIMIT ${filters.limit + 1}
+      `
+      return paginate(rows, filters.limit, (last) =>
+        encodeTimeCursor({ at: last.scheduled_at, id: last.id }),
+      )
+    },
+
+    async listOrganizationEvents(
+      filters: OrganizationEventsFilters,
+    ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }> {
+      const past = filters.when === "past"
+      const cursor = parseTimeCursor(filters.cursor)
+      const cursorFilter =
+        cursor !== null
+          ? past
+            ? sql`AND (c.scheduled_at, c.id) < (${cursor.at}, ${cursor.id}::uuid)`
+            : sql`AND (c.scheduled_at, c.id) > (${cursor.at}, ${cursor.id}::uuid)`
+          : sql``
+      const order = past
+        ? sql`ORDER BY c.scheduled_at DESC, c.id DESC`
+        : sql`ORDER BY c.scheduled_at ASC, c.id ASC`
+      const rows = await sql<CleanupRowSelect[]>`
+        SELECT ${cleanupColumns(sql, null)}
+        FROM cleanups c
+        JOIN users u ON u.id = c.organizer_user_id
+        ${goingJoin(sql)}
+        ${eventHostJoins(sql)}
+        WHERE c.organization_id = ${filters.organizationId}
+          AND c.visibility = 'public'
+          ${buildWhenFilter(sql, filters.when)}
           ${cursorFilter}
         ${order}
         LIMIT ${filters.limit + 1}
