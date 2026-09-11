@@ -497,6 +497,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       id: host,
       name: "Ledger Host",
       handle: "ledgerhost",
+      organization: null,
     })
   })
 

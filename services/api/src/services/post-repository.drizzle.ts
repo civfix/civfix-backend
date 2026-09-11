@@ -1,4 +1,5 @@
 
+import type postgres from "postgres"
 import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   LinkedEventRef,
@@ -32,6 +33,22 @@ type PostVisibility = (typeof REPORT_VISIBILITY_VALUES)[number]
 export const POSTS_DEFAULT_LIMIT = 20
 
 export const NIL_VIEWER_ID = "00000000-0000-0000-0000-000000000000"
+
+function postColumns(sql: Queryable): postgres.Fragment {
+  return sql`
+    p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
+    p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
+    p.organization_id, p.created_at, p.updated_at
+  `
+}
+
+function organizationRefOf(
+  organizations: ReadonlyMap<string, OrganizationRefDTO>,
+  id: string | null | undefined,
+): OrganizationRefDTO | null {
+  if (id === null || id === undefined) return null
+  return organizations.get(id) ?? null
+}
 
 export interface CreatePostArgs {
   authorId: string
@@ -256,9 +273,13 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return deps.affiliations(userIds, viewerId)
   }
 
-  async function loadOrganizations(ids: string[]): Promise<Map<string, OrganizationRefDTO>> {
+  async function loadOrganizations(
+    ids: readonly (string | null | undefined)[],
+  ): Promise<Map<string, OrganizationRefDTO>> {
     const out = new Map<string, OrganizationRefDTO>()
-    const wanted = [...new Set(ids)]
+    const wanted = [...new Set(ids)].filter(
+      (id): id is string => id !== null && id !== undefined,
+    )
     if (wanted.length === 0) return out
     const rows = await sql<
       {
@@ -626,10 +647,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       ),
     ]
     const readableRefIds = [...refs.values()].filter((r) => !r.deleted).map((r) => r.id)
-    const orgIds = [
-      ...rows.map((r) => r.organization_id).filter((x): x is string => x !== null),
-      ...refsResult.orgIds.values(),
-    ]
+    const orgIds = [...rows.map((r) => r.organization_id), ...refsResult.orgIds.values()]
     const [events, reports, refMedia, organizations, refAffiliations] = await Promise.all([
       loadEvents(eventIds),
       loadReports(reportIds),
@@ -642,8 +660,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       if (ref.deleted) continue
       ref.media = refMedia.get(ref.id) ?? []
       if (ref.author !== null) ref.author = withAffiliation(ref.author, refAffiliations)
-      const refOrgId = refsResult.orgIds.get(ref.id)
-      ref.organization = refOrgId === undefined ? null : (organizations.get(refOrgId) ?? null)
+      ref.organization = organizationRefOf(organizations, refsResult.orgIds.get(ref.id))
       const link = refLinks.get(ref.id)
       if (!link) continue
       const refEvent = link.eventId !== null ? events.get(link.eventId) : undefined
@@ -674,8 +691,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       const dto: PostDTO = {
         id: r.id,
         author,
-        organization:
-          r.organization_id === null ? null : (organizations.get(r.organization_id) ?? null),
+        organization: organizationRefOf(organizations, r.organization_id),
         kind: r.kind,
         body: r.body,
         createdAt: r.created_at.toISOString(),
@@ -947,10 +963,8 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
 
     async getPostDTO(id: string, viewerId: string): Promise<PostDTO | null> {
       const rows = await sql<PostRowSelect[]>`
-        SELECT
-          id, author_id, kind, body, reply_to_id, thread_root_id, repost_of_id, event_id, report_id,
-          like_count, repost_count, reply_count, save_count, created_at, updated_at
-        FROM posts WHERE id = ${id} AND deleted_at IS NULL AND visibility = 'public'
+        SELECT ${postColumns(sql)}
+        FROM posts p WHERE p.id = ${id} AND p.deleted_at IS NULL AND p.visibility = 'public'
       `
       const hydrated = await hydrate(rows, viewerId)
       return hydrated[0] ?? null
@@ -967,10 +981,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
             ? sql`AND EXISTS (SELECT 1 FROM reports fr WHERE fr.id = p.report_id AND fr.status = 'resolved')`
             : sql``
       const rows = await sql<PostRowSelect[]>`
-        SELECT
-          p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
-          p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
-          p.organization_id, p.created_at, p.updated_at
+        SELECT ${postColumns(sql)}
         FROM posts p
         WHERE p.deleted_at IS NULL
           AND p.reply_to_id IS NULL
@@ -1003,10 +1014,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
             ? sql`AND EXISTS (SELECT 1 FROM reports fr WHERE fr.id = p.report_id AND fr.status = 'resolved')`
             : sql``
       const rows = await sql<PostRowSelect[]>`
-        SELECT
-          p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
-          p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
-          p.organization_id, p.created_at, p.updated_at
+        SELECT ${postColumns(sql)}
         FROM posts p
         WHERE p.deleted_at IS NULL
           AND p.reply_to_id IS NULL
@@ -1024,10 +1032,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       const cursorFilter =
         cursor !== null ? sql`AND (p.created_at, p.id) > (${cursor.at}, ${cursor.id}::uuid)` : sql``
       const rows = await sql<PostRowSelect[]>`
-        SELECT
-          p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
-          p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
-          p.organization_id, p.created_at, p.updated_at
+        SELECT ${postColumns(sql)}
         FROM posts p
         WHERE p.reply_to_id = ${postId} AND p.deleted_at IS NULL
           AND p.visibility = 'public'
@@ -1048,10 +1053,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       const cursorFilter =
         cursor !== null ? sql`AND (p.created_at, p.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
       const rows = await sql<PostRowSelect[]>`
-        SELECT
-          p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
-          p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
-          p.organization_id, p.created_at, p.updated_at
+        SELECT ${postColumns(sql)}
         FROM posts p
         WHERE p.author_id = ${authorId} AND p.deleted_at IS NULL AND p.reply_to_id IS NULL
           AND p.visibility = 'public'
@@ -1067,10 +1069,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       const cursorFilter =
         cursor !== null ? sql`AND (ps.created_at, ps.post_id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
       const rows = await sql<(PostRowSelect & { saved_at: Date })[]>`
-        SELECT
-          p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
-          p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
-          p.organization_id, p.created_at, p.updated_at, ps.created_at AS saved_at
+        SELECT ${postColumns(sql)}, ps.created_at AS saved_at
         FROM post_saves ps
         JOIN posts p ON p.id = ps.post_id
         WHERE ps.user_id = ${args.viewerId} AND p.deleted_at IS NULL
