@@ -71,11 +71,12 @@ export function makeMemoryOrgPayoutsRepository(
           row.organizationId === input.organizationId &&
           row.stripePayoutId === input.stripePayoutId,
       )
+      const mirror = mirrorIndex >= 0 ? rows[mirrorIndex] : undefined
       if (mirrorIndex >= 0) rows.splice(mirrorIndex, 1)
       record.stripePayoutId = input.stripePayoutId
-      record.status = input.status
-      record.arrivalDate = input.arrivalDate
-      record.failureMessage = input.failureMessage
+      record.status = mirror?.status ?? input.status
+      record.arrivalDate = mirror?.arrivalDate ?? input.arrivalDate
+      record.failureMessage = mirror?.failureMessage ?? input.failureMessage
       record.updatedAt = input.now
       return Promise.resolve({ ...record })
     },

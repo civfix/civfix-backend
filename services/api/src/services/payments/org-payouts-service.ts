@@ -100,6 +100,41 @@ export function makeOrgPayoutsService(deps: OrgPayoutsServiceDeps): OrgPayoutsSe
     }
   }
 
+  async function settleUnconfirmed(accountId: string, row: OrgPayoutRecord): Promise<void> {
+    if (row.idempotencyKey === null) {
+      throw AppError.conflict(PAYOUT_UNCONFIRMED_MESSAGE)
+    }
+    let submitted
+    try {
+      submitted = await deps.payments.createPayout(accountId, {
+        amountMinor: row.amountMinor,
+        currency: PAYOUT_CURRENCY,
+        idempotencyKey: row.idempotencyKey,
+      })
+    } catch (err) {
+      const failure = payoutFailure(err)
+      if (payoutRefusalCode(failure) === null) {
+        deps.logger?.error(
+          { organizationId: row.organizationId, payoutId: row.id, code: failure.code },
+          "could not settle an unconfirmed org payout: refusing the new request until it resolves",
+        )
+        throw AppError.conflict(PAYOUT_UNCONFIRMED_MESSAGE)
+      }
+      await deps.payouts.markFailed({ id: row.id, failureMessage: failure.message, now: now() })
+      return
+    }
+    await deps.payouts.markSubmitted({
+      id: row.id,
+      organizationId: row.organizationId,
+      stripePayoutId: submitted.id,
+      status: submitted.status,
+      arrivalDate:
+        submitted.arrivalDateSec === null ? null : new Date(submitted.arrivalDateSec * 1000),
+      failureMessage: null,
+      now: now(),
+    })
+  }
+
   return {
     async getBalance(organizationId): Promise<OrgBalanceDTO> {
       const view = await loadView(organizationId)
@@ -129,7 +164,7 @@ export function makeOrgPayoutsService(deps: OrgPayoutsServiceDeps): OrgPayoutsSe
 
       const unconfirmed = await deps.payouts.findUnconfirmed(organizationId)
       if (unconfirmed !== null && unconfirmed.idempotencyKey !== input.idempotencyKey) {
-        throw AppError.conflict(PAYOUT_UNCONFIRMED_MESSAGE)
+        await settleUnconfirmed(accountId, unconfirmed)
       }
 
       const balance = await deps.payments.retrieveBalance(accountId)

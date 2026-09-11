@@ -36,10 +36,14 @@ let sentMail: { to: string; vars: Record<string, unknown> }[]
 let bells: { userId: string; input: CreateNotificationInput }[]
 let tokenSeq: number
 
+const orgAdmins = new Set<string>()
+
 function standingOf(cleanupId: string, userId: string): HostStanding {
   const role =
     repo.members.find((m) => m.cleanupId === cleanupId && m.userId === userId)?.role ?? null
-  return role === null ? NO_HOST_STANDING : { eventRole: role, orgRole: null }
+  const orgRole = orgAdmins.has(userId) ? ("admin" as const) : null
+  if (role === null && orgRole === null) return NO_HOST_STANDING
+  return { eventRole: role, orgRole }
 }
 
 function seedOpenInvites(count: number, cleanupId: string = EVENT): void {
@@ -105,6 +109,7 @@ function makeService(): HostTeamService {
 
 beforeEach(() => {
   repo = new InMemoryHostTeamRepository()
+  orgAdmins.clear()
   clock = new Date("2026-09-06T12:00:00.000Z")
   sentMail = []
   bells = []
@@ -502,6 +507,25 @@ describe("acceptEventTeamInvite", () => {
     repo.seedMember(EVENT, INVITEE, "organizer")
     const result = await service.acceptInvite(EVENT, INVITEE, "token-1-aaaaaaaaaaaaaaaaaaaaaaaa")
     expect(result.role).toBe("organizer")
+  })
+
+  it("refuses to invite anyone into a role that carries powers the inviter lacks", async () => {
+    orgAdmins.add(STRANGER)
+    await expect(
+      service.inviteMember(EVENT, STRANGER, {
+        identifierKind: "email",
+        identifier: "ida@x.org",
+        role: "cohost",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    expect(repo.invites).toHaveLength(0)
+
+    const { invite } = await service.inviteMember(EVENT, STRANGER, {
+      identifierKind: "email",
+      identifier: "ida@x.org",
+      role: "staff",
+    })
+    expect(invite.role).toBe("staff")
   })
 
   it("refuses a self-invite by handle, so manage_team cannot mint the inviter a seat", async () => {

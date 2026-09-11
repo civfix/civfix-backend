@@ -28,7 +28,7 @@ import {
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
 import type { MessageKey } from "../../i18n/renderMessage.js"
 import type { CreateNotificationInput } from "../notification-service.js"
-import { isEventPubliclyVisible, requireCapability } from "./authz.js"
+import { assertMayGrantRole, isEventPubliclyVisible, requireCapability } from "./authz.js"
 import type { EventMediaPresigner } from "./event-media.js"
 import type { HostStandingResolution } from "./host-standing.js"
 import type {
@@ -275,7 +275,8 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
       actorId: string,
       input: Omit<InviteEventTeamMemberRequest, "id">,
     ): Promise<{ ok: true; invite: EventTeamInviteDTO }> {
-      await deps.standing(cleanupId, actorId, "manage_team")
+      const resolution = await deps.standing(cleanupId, actorId, "manage_team")
+      assertMayGrantRole(resolution.standing, input.role)
       const byEmail = input.identifierKind === "email"
       const resolved = byEmail ? null : await deps.repo.resolveUserByHandle(input.identifier)
       if (!byEmail && resolved === null) {

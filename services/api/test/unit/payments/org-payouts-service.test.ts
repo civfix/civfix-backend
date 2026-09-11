@@ -53,6 +53,7 @@ async function harness(
     payoutsEnabled?: boolean
     paymentsEnabled?: boolean
     createPayoutRejectsWith?: Error
+    createPayoutRejectsOnce?: Error
     accountConnected?: boolean
   } = {},
 ): Promise<Harness> {
@@ -68,12 +69,21 @@ async function harness(
   const payoutRepo = makeMemoryOrgPayoutsRepository()
 
   const refusal = options.createPayoutRejectsWith
+  const onceRefusal = options.createPayoutRejectsOnce
+  let refusalsLeft = onceRefusal === undefined ? 0 : 1
   const payments: Payments =
-    refusal === undefined
+    refusal === undefined && onceRefusal === undefined
       ? fake
       : ({
           retrieveBalance: (account: string) => fake.retrieveBalance(account),
-          createPayout: () => Promise.reject(refusal),
+          createPayout: (account: string, payoutInput: unknown) => {
+            if (refusal !== undefined) return Promise.reject(refusal)
+            if (refusalsLeft > 0) {
+              refusalsLeft -= 1
+              return Promise.reject(onceRefusal)
+            }
+            return fake.createPayout(account, payoutInput as never)
+          },
           listPayouts: (account: string) => fake.listPayouts(account, {}),
         } as unknown as Payments)
 
@@ -327,6 +337,35 @@ describe("creating a payout", () => {
       }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
     expect(payouts.rows).toHaveLength(1)
+  })
+
+  it("settles the earlier unconfirmed payout and then lets the new request through", async () => {
+    const timeout = Object.assign(new Error("connection error"), {
+      type: "StripeConnectionError",
+    })
+    const { service, payouts } = await harness({
+      availableMinor: 10_000,
+      createPayoutRejectsOnce: timeout,
+    })
+    await expect(
+      service.createPayout(ORG_ID, USER_ID, {
+        amountMinor: 1_000,
+        currency: "USD",
+        idempotencyKey: IDEMPOTENCY_KEY,
+      }),
+    ).rejects.toMatchObject({ code: "PAYMENT_UNAVAILABLE" })
+    expect(payouts.rows[0]?.stripePayoutId).toBeNull()
+
+    const second = await service.createPayout(ORG_ID, USER_ID, {
+      amountMinor: 1_000,
+      currency: "USD",
+      idempotencyKey: SECOND_KEY,
+    })
+
+    expect(payouts.rows).toHaveLength(2)
+    expect(payouts.rows[0]?.stripePayoutId).not.toBeNull()
+    expect(payouts.rows[0]?.idempotencyKey).toBe(IDEMPOTENCY_KEY)
+    expect(second.stripePayoutId).not.toBe(payouts.rows[0]?.stripePayoutId)
   })
 
   it("re-raises the stored refusal on a replay of a failed key", async () => {

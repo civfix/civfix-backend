@@ -52,7 +52,12 @@ import type {
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
-import { hasHostStanding, hostForbiddenCopy, isEventPubliclyVisible } from "./host/authz.js"
+import {
+  assertMayGrantRole,
+  hasHostStanding,
+  hostForbiddenCopy,
+  isEventPubliclyVisible,
+} from "./host/authz.js"
 import {
   assertEventWindow,
   assertGalleryWithinCap,
@@ -1334,7 +1339,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       targetUserId: string,
       role: "cohost" | "staff" | "coordinator" | "member",
     ): Promise<SetMemberRoleResponse> {
-      const { record } = await requireCapabilityOn(id, actorId, "manage_team")
+      const { record, standing } = await requireCapabilityOn(id, actorId, "manage_team")
+      assertMayGrantRole(standing, role)
       if (targetUserId === record.organizerUserId) {
         throw AppError.forbidden("The organizer's role can't be changed.")
       }

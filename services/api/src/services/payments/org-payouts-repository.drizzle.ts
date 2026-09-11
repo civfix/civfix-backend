@@ -97,23 +97,32 @@ export function makeDrizzleOrgPayoutsRepository(sql: Sql): OrgPayoutsRepository 
     },
 
     async markSubmitted(input): Promise<OrgPayoutRecord | null> {
-      await sql`
-        DELETE FROM org_payouts
-         WHERE stripe_payout_id = ${input.stripePayoutId}
-           AND organization_id = ${input.organizationId}
-           AND id <> ${input.id}`
-      const rows = await sql<OrgPayoutRowSelect[]>`
-        UPDATE org_payouts
-           SET stripe_payout_id = ${input.stripePayoutId},
-               status = ${input.status},
-               arrival_date = ${input.arrivalDate},
-               failure_message = ${input.failureMessage},
-               updated_at = ${input.now}
-         WHERE id = ${input.id}
-        RETURNING id, organization_id, stripe_account_id, stripe_payout_id, amount_minor, status,
-                  arrival_date, failure_message, requested_by, idempotency_key, created_at, updated_at`
-      const row = rows[0]
-      return row === undefined ? null : toPayout(row)
+      return sql.begin(async (tx) => {
+        const mirrors = await tx<
+          { status: PayoutStatusValue; arrival_date: Date | null; failure_message: string | null }[]
+        >`
+          DELETE FROM org_payouts
+           WHERE stripe_payout_id = ${input.stripePayoutId}
+             AND organization_id = ${input.organizationId}
+             AND id <> ${input.id}
+          RETURNING status, arrival_date, failure_message`
+        const mirror = mirrors[0]
+        const status = mirror !== undefined ? mirror.status : input.status
+        const arrivalDate = mirror?.arrival_date ?? input.arrivalDate
+        const failureMessage = mirror?.failure_message ?? input.failureMessage
+        const rows = await tx<OrgPayoutRowSelect[]>`
+          UPDATE org_payouts
+             SET stripe_payout_id = ${input.stripePayoutId},
+                 status = ${status},
+                 arrival_date = ${arrivalDate},
+                 failure_message = ${failureMessage},
+                 updated_at = ${input.now}
+           WHERE id = ${input.id}
+          RETURNING id, organization_id, stripe_account_id, stripe_payout_id, amount_minor, status,
+                    arrival_date, failure_message, requested_by, idempotency_key, created_at, updated_at`
+        const row = rows[0]
+        return row === undefined ? null : toPayout(row)
+      })
     },
 
     async markFailed(input): Promise<OrgPayoutRecord | null> {

@@ -482,16 +482,34 @@ describe("setCleanupMemberRole widened to staff", () => {
     expect(audits.some((a) => a.action === "event.team_role_changed")).toBe(true)
   })
 
-  it("refuses to change your OWN role, so an org admin cannot seat themselves a cohost", async () => {
+  it("never grants a role with powers the actor does not hold, to themselves or anyone", async () => {
     const org = repo.seedOrganization({ slug: "bct" })
     repo.seedOrgMember(org.id, ORG, "owner")
     repo.seedOrgMember(org.id, ORG_OWNER, "admin")
     const created = await service.createCleanup(base({ organizationId: org.id }), ORG)
     repo.seedMember(created.id, ORG_OWNER, "member")
+    repo.seedMember(created.id, OUTSIDER, "member")
     await expect(
       service.setMemberRole(created.id, ORG_OWNER, ORG_OWNER, "cohost"),
-    ).rejects.toMatchObject({ code: "CONFLICT" })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    await expect(
+      service.setMemberRole(created.id, ORG_OWNER, OUTSIDER, "cohost"),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
     expect(await repo.roleOf(created.id, ORG_OWNER)).toBe("member")
+    expect(await repo.roleOf(created.id, OUTSIDER)).toBe("member")
+    await service.setMemberRole(created.id, ORG_OWNER, OUTSIDER, "staff")
+    expect(await repo.roleOf(created.id, OUTSIDER)).toBe("staff")
+  })
+
+  it("still refuses to change your own role even when the role itself is grantable", async () => {
+    const org = repo.seedOrganization({ slug: "bct2" })
+    repo.seedOrgMember(org.id, ORG, "owner")
+    repo.seedOrgMember(org.id, ORG_OWNER, "admin")
+    const created = await service.createCleanup(base({ organizationId: org.id }), ORG)
+    repo.seedMember(created.id, ORG_OWNER, "member")
+    await expect(
+      service.setMemberRole(created.id, ORG_OWNER, ORG_OWNER, "staff"),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
   })
 
   it("only the organizer (manage_team) may change roles", async () => {
