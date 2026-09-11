@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process"
-import { mkdirSync, existsSync, readFileSync, rmSync } from "node:fs"
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync } from "node:fs"
 import { connect } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -55,12 +55,28 @@ async function waitForPort(port: number, tries = 30): Promise<void> {
   throw new Error(`tunnel local port ${port} never became reachable`)
 }
 
+const IPV4 = /^\d+\.\d+\.\d+\.\d+$/
+
+function resolvePostgresIp(): string {
+  const raw = ssh(
+    `sudo -n docker inspect -f '{{range $name, $net := .NetworkSettings.Networks}}{{$name}} {{$net.IPAddress}}{{"\\n"}}{{end}}' ${PG_CONTAINER}`,
+  )
+  const attached = raw
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter((parts): parts is [string, string] => parts.length === 2 && IPV4.test(parts[1]!))
+    .map(([network, ip]) => ({ network, ip }))
+  const picked = attached.find((a) => a.network.endsWith("_default")) ?? (attached.length === 1 ? attached[0] : undefined)
+  if (!picked) {
+    throw new Error(`could not pick the postgres bridge IP for ${PG_CONTAINER}; networks reported: ${raw || "(none)"}`)
+  }
+  log(`postgres bridge IP ${picked.ip} on network ${picked.network}`)
+  return picked.ip
+}
+
 async function openTunnel(): Promise<{ databaseUrl: string; close: () => void }> {
   log(`resolving prod Postgres on ${SSH_HOST} (${PG_CONTAINER})…`)
-  const pgIp = ssh(
-    `sudo -n docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${PG_CONTAINER}`,
-  )
-  if (!/^\d+\.\d+\.\d+\.\d+$/.test(pgIp)) throw new Error(`could not resolve postgres bridge IP (got "${pgIp}")`)
+  const pgIp = resolvePostgresIp()
   const pgPass = ssh(`sudo -n docker exec ${PG_CONTAINER} printenv POSTGRES_PASSWORD`)
   if (!pgPass) throw new Error("could not read POSTGRES_PASSWORD from the prod container")
 
@@ -80,10 +96,44 @@ async function openTunnel(): Promise<{ databaseUrl: string; close: () => void }>
   return { databaseUrl, close: () => child.kill() }
 }
 
+const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04])
+const DOWNLOAD_ATTEMPTS = 3
+
+function looksLikeZip(path: string): boolean {
+  const fd = openSync(path, "r")
+  try {
+    const head = Buffer.alloc(ZIP_MAGIC.length)
+    const n = readSync(fd, head, 0, head.length, 0)
+    return n === head.length && head.equals(ZIP_MAGIC)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+function responseSummary(path: string): string {
+  return readFileSync(path, "utf8").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160)
+}
+
+function downloadZip(url: string, zip: string): void {
+  let lastResponse = ""
+  for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
+    const attemptUrl = attempt === 1 ? url : `${url}${url.includes("?") ? "&" : "?"}attempt=${attempt}`
+    execFileSync("curl", ["-fsSL", attemptUrl, "-o", zip], { stdio: ["ignore", "inherit", "inherit"] })
+    if (looksLikeZip(zip)) return
+    lastResponse = responseSummary(zip)
+    warn(`${url}: response is not a zip archive (attempt ${attempt}/${DOWNLOAD_ATTEMPTS}): ${lastResponse}`)
+  }
+  throw new Error(`${url}: never returned a zip archive after ${DOWNLOAD_ATTEMPTS} attempts; last response: ${lastResponse}`)
+}
+
 function fetchSource(job: BoundaryJob, outDir: string): boolean {
+  if (existsSync(join(outDir, "sources", job.sourcePath))) {
+    log(`[${job.layer}] reusing already-extracted ${job.sourcePath}`)
+    return true
+  }
   const zip = join(outDir, "_download.zip")
   try {
-    execFileSync("curl", ["-fsSL", job.sourceUrl, "-o", zip], { stdio: ["ignore", "inherit", "inherit"] })
+    downloadZip(job.sourceUrl, zip)
     try {
       execFileSync("unzip", ["-o", "-q", zip, "-d", join(outDir, "sources")], { stdio: "inherit" })
     } catch (e) {
@@ -140,13 +190,16 @@ async function pruneNonAuthoritative(sql: Sql): Promise<number> {
     `
     if (stale.length === 0) return 0
     const ids = stale.map((s) => s.geoid)
-    await tx`UPDATE reports      SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`UPDATE gov_claims   SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`UPDATE mail_threads SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`DELETE FROM jurisdiction_contacts     WHERE geoid IN ${tx(ids)}`
-    await tx`DELETE FROM outreach_state            WHERE geoid IN ${tx(ids)}`
-    await tx`DELETE FROM report_message_mentions   WHERE geoid IN ${tx(ids)}`
-    await tx`DELETE FROM jurisdictions             WHERE geoid IN ${tx(ids)}`
+    await tx`UPDATE reports         SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
+    await tx`UPDATE cleanups        SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
+    await tx`UPDATE volunteer_hours SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
+    await tx`UPDATE gov_claims      SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
+    await tx`UPDATE mail_threads    SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
+    await tx`DELETE FROM user_jurisdiction_hours     WHERE jurisdiction_geoid IN ${tx(ids)}`
+    await tx`DELETE FROM jurisdiction_contacts       WHERE geoid IN ${tx(ids)}`
+    await tx`DELETE FROM outreach_state              WHERE geoid IN ${tx(ids)}`
+    await tx`DELETE FROM jurisdiction_discovery_tasks WHERE geoid IN ${tx(ids)}`
+    await tx`DELETE FROM jurisdictions               WHERE geoid IN ${tx(ids)}`
     return stale.length
   })
 }
