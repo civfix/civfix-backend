@@ -541,7 +541,7 @@ describe("PostRepository.loadRefs: a hidden original is an unavailable embed", (
   function repoOver(visibility: "public" | "hidden") {
     const fake = makeFakeSql([
       {
-        match: /FROM posts WHERE id = \?/,
+        match: /FROM posts p WHERE p\.id = \?/,
         rows: [
           {
             id: QUOTE,
@@ -557,6 +557,7 @@ describe("PostRepository.loadRefs: a hidden original is an unavailable embed", (
             repost_count: 0,
             reply_count: 0,
             save_count: 0,
+            organization_id: null,
             created_at: AT,
             updated_at: AT,
           },
@@ -684,5 +685,117 @@ describe("PostRepository read paths all exclude non-public posts", () => {
   it("selects visibility on getPostBrief so the service can gate on it", async () => {
     const stmt = await emitted((r) => r.getPostBrief(SUBJECT))
     expect(stmt).toContain("visibility")
+  })
+})
+
+describe("PostRepository organization hydration", () => {
+  const VIEWER = "11111111-1111-1111-1111-111111111111"
+  const POST = "22222222-2222-2222-2222-222222222222"
+  const AUTHOR = "33333333-3333-3333-3333-333333333333"
+  const ORG = "44444444-4444-4444-4444-444444444444"
+  const AT = new Date("2026-09-01T00:00:00.000Z")
+
+  const authorRow = {
+    id: AUTHOR,
+    display_name: "Author",
+    handle: "author",
+    bio: null,
+    followers: 0,
+    following: 0,
+    avatar_r2_key: null,
+    avatar_url: null,
+    is_following: false,
+    deleted_at: null,
+  }
+
+  function postRow(organizationId: string | null) {
+    return {
+      id: POST,
+      author_id: AUTHOR,
+      kind: "post",
+      body: "hello",
+      reply_to_id: null,
+      thread_root_id: null,
+      repost_of_id: null,
+      event_id: null,
+      report_id: null,
+      like_count: 0,
+      repost_count: 0,
+      reply_count: 0,
+      save_count: 0,
+      organization_id: organizationId,
+      created_at: AT,
+      updated_at: AT,
+    }
+  }
+
+  function repoOver(organizationId: string | null) {
+    const fake = makeFakeSql([
+      { match: /FROM posts p WHERE p\.id = \?/, rows: [postRow(organizationId)] },
+      { match: /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/, rows: [authorRow] },
+    ])
+    const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
+      presignMedia: () => Promise.resolve({ url: "u" }),
+      presignAvatar: () => Promise.resolve("a"),
+    })
+    return { repo, fake }
+  }
+
+  function organizationStatements(fake: ReturnType<typeof makeFakeSql>) {
+    return fake.statements.filter((s) => /FROM organizations o/.test(s.sql))
+  }
+
+  it("selects organization_id on every post-listing query, so hydration never batches undefined", async () => {
+    const args = { viewerId: VIEWER, cursor: null, limit: 10 }
+    const cases: Array<[string, (r: ReturnType<typeof makeDrizzlePostRepository>) => Promise<unknown>]> = [
+      ["getPostDTO", (r) => r.getPostDTO(POST, VIEWER)],
+      ["homeFeed", (r) => r.homeFeed({ ...args, filter: "all" })],
+      ["publicFeed", (r) => r.publicFeed({ filter: "all", cursor: null, limit: 10 })],
+      ["listReplies", (r) => r.listReplies(POST, args)],
+      ["listUserPosts", (r) => r.listUserPosts(AUTHOR, args)],
+      ["listSaves", (r) => r.listSaves(args)],
+    ]
+    for (const [name, run] of cases) {
+      const fake = makeFakeSql()
+      const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
+        presignMedia: () => Promise.resolve({ url: "u" }),
+        presignAvatar: () => Promise.resolve("a"),
+      })
+      await run(repo)
+      expect(fake.statements[0]!.sql, `${name} must select organization_id`).toMatch(
+        /p\.organization_id/,
+      )
+    }
+  })
+
+  it("runs NO organizations query for a post published by a user with no organization", async () => {
+    const { repo, fake } = repoOver(null)
+    const dto = await repo.getPostDTO(POST, VIEWER)
+    expect(dto?.organization).toBeNull()
+    expect(organizationStatements(fake)).toHaveLength(0)
+  })
+
+  it("passes exactly the present organization ids, never a hole, to the organizations query", async () => {
+    const { repo, fake } = repoOver(ORG)
+    await repo.getPostDTO(POST, VIEWER)
+    const stmt = organizationStatements(fake)[0]
+    expect(stmt?.values).toEqual([[ORG]])
+  })
+
+  it("drops a missing organization_id column instead of batching undefined", async () => {
+    const fake = makeFakeSql([
+      {
+        match: /FROM posts p WHERE p\.id = \?/,
+        rows: [{ ...postRow(null), organization_id: undefined }],
+      },
+      { match: /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/, rows: [authorRow] },
+    ])
+    const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
+      presignMedia: () => Promise.resolve({ url: "u" }),
+      presignAvatar: () => Promise.resolve("a"),
+    })
+    const dto = await repo.getPostDTO(POST, VIEWER)
+    expect(dto?.organization).toBeNull()
+    expect(organizationStatements(fake)).toHaveLength(0)
   })
 })
