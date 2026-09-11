@@ -152,12 +152,26 @@ describe("createCleanup with host fields", () => {
     ).resolves.toMatchObject({ title: "Same org" })
   })
 
-  it("refuses to link an organization the host is only a plain member of", async () => {
+  it("0.43.0: a plain org MEMBER may host as the organization (host-as-org)", async () => {
     const org = repo.seedOrganization({ slug: "bct" })
     repo.seedOrgMember(org.id, ORG, "member")
+    const created = await service.createCleanup(base({ organizationId: org.id }), ORG)
+    expect(created.organization).toMatchObject({ id: org.id, slug: "bct" })
+  })
+
+  it("refuses to link an organization the host does not belong to at all", async () => {
+    const org = repo.seedOrganization({ slug: "bct" })
     await expect(
       service.createCleanup(base({ organizationId: org.id }), ORG),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
+  })
+
+  it("refuses to link a SUSPENDED organization even to one of its members", async () => {
+    const org = repo.seedOrganization({ slug: "bct", suspended: true })
+    repo.seedOrgMember(org.id, ORG, "member")
+    await expect(
+      service.createCleanup(base({ organizationId: org.id }), ORG),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
   })
 
   it("refuses a donation link from anyone but the organization owner", async () => {

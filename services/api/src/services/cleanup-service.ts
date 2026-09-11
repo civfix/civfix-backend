@@ -28,6 +28,7 @@ import { EVENT_HOURS_MEMBER_CAP } from "./volunteer-hours-service.js"
 import type { OutboundMailService } from "./admin/outbound-mail-service.js"
 import { buildEventPacket } from "./admin/mail-format.js"
 import { PRESIGN_CONCURRENCY, mapWithLimit } from "./media-presign.js"
+import { attachAffiliations, type AffiliationLoader } from "./affiliation.js"
 import {
   CLEANUPS_DEFAULT_LIMIT,
   ATTENDEES_DEFAULT_LIMIT,
@@ -203,7 +204,6 @@ export interface CleanupServiceDeps {
   resolveJurisdictionGeoid?: (lat: number, lng: number) => Promise<string | null>
   resolveJurisdictionCode?: (geoid: string | null) => Promise<number>
   outboundMail?: OutboundMailService
-  isVerified?: (userId: string) => Promise<boolean>
   notifier?: Pick<NotificationService, "createNotification">
   attendeeNotifier?: { eventCancelled(cleanupId: string, reason: string | null): Promise<unknown> }
   counters?: CounterStore
@@ -211,6 +211,7 @@ export interface CleanupServiceDeps {
   logger?: { warn(obj: unknown, msg?: string): void; error(obj: unknown, msg?: string): void }
   newId?: () => string
   enrichDTOs?: (dtos: CleanupDTO[], viewerUserId: string | null) => Promise<CleanupDTO[]>
+  affiliations?: AffiliationLoader
 }
 
 export interface CleanupService {
@@ -372,10 +373,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     if (organization === null) {
       throw AppError.validation({ organizationId: "that organization no longer exists" })
     }
-    if (opts.linking && !can({ eventRole: null, orgRole }, "manage_event")) {
-      throw AppError.forbidden(
-        "Only an owner or admin of that organization can host events for it.",
-      )
+    if (opts.linking && orgRole === null) {
+      throw AppError.forbidden("Only a member of that organization can host events for it.")
     }
     // An operator-suspended org (DECISIONS §32) keeps its existing events but cannot take on new ones:
     // linking is refused, while an unchanged organizationId on an edit passes so the host can still
@@ -1172,7 +1171,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
           })
         }
       }
-      const attendees = views.map((v) => toAttendeeDTO(v, v.isFollowing))
+      const attendees = await attachAffiliations(
+        deps.affiliations,
+        views.map((v) => toAttendeeDTO(v, v.isFollowing)),
+      )
       return { attendees, going: record.going, scope }
     },
 
@@ -1317,18 +1319,20 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       message: string
       actorId: string
     }): Promise<RequestEventResourcesResponse> {
-      if (deps.outboundMail === undefined || deps.isVerified === undefined) {
+      if (deps.outboundMail === undefined) {
         throw AppError.internal("Event resource requests are not available")
       }
-      const { record } = await requireCapabilityOn(
+      const { record, standing } = await requireCapabilityOn(
         input.cleanupId,
         input.actorId,
         "request_resources",
       )
-      const verified = await deps.isVerified(input.actorId)
-      if (!verified) {
-        throw AppError.forbidden("Only identity-verified hosts can request resources.")
+      if (record.organization === null) {
+        throw AppError.forbidden(
+          "Only an event hosted by an organization can request city resources.",
+        )
       }
+      assertCapability(record, standing, "manage_event")
 
       assertNoSlur(input.message, "message")
 

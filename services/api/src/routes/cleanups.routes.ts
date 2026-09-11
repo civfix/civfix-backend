@@ -57,7 +57,6 @@ import { makeGeoidResolver } from "../services/route-geo-helpers.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
-import { makeDrizzleVerificationRepository } from "../services/verification-repository.drizzle.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { perHost, perIdentity } from "../plugins/rate-limit.js"
@@ -72,7 +71,6 @@ export interface CleanupServiceOverrides {
   audit?: CleanupServiceDeps["audit"]
   newId?: CleanupServiceDeps["newId"]
   outboundMail?: CleanupServiceDeps["outboundMail"]
-  isVerified?: CleanupServiceDeps["isVerified"]
   notifier?: CleanupServiceDeps["notifier"]
   attendeeNotifier?: CleanupServiceDeps["attendeeNotifier"]
   counters?: CleanupServiceDeps["counters"]
@@ -219,8 +217,7 @@ export async function registerCleanupRoutes(
                 MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
               },
             }),
-            isVerified: (userId: string) =>
-              makeDrizzleVerificationRepository(container.getDb().sql).isVerified(userId),
+            affiliations: container.getAffiliationLoader(),
             notifier: makeRouteNotificationService(container, app.log),
             attendeeNotifier: makeCommsRuntime(container, app.log).lanes,
             counters: lazyCounters,
@@ -231,7 +228,6 @@ export async function registerCleanupRoutes(
           }),
       ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
       ...(overrides?.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
-      ...(overrides?.isVerified !== undefined ? { isVerified: overrides.isVerified } : {}),
       ...(overrides?.notifier !== undefined ? { notifier: overrides.notifier } : {}),
       ...(overrides?.attendeeNotifier !== undefined
         ? { attendeeNotifier: overrides.attendeeNotifier }
