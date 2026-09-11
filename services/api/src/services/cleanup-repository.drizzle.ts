@@ -1,6 +1,11 @@
 
 import { randomUUID } from "node:crypto"
-import { AppError, MAX_LINKED_REPORTS } from "@civfix/shared"
+import {
+  AppError,
+  MAX_EVENT_QUESTIONS,
+  MAX_LINKED_REPORTS,
+  MAX_TICKET_TYPES_PER_EVENT,
+} from "@civfix/shared"
 import type postgres from "postgres"
 import type { Queryable, Sql } from "../db/client.js"
 import {
@@ -141,7 +146,10 @@ async function copyTicketTypesInTx(
 ): Promise<{ oldIds: string[]; newIds: string[] }> {
   if (!source.ticketTypes) return { oldIds: [], newIds: [] }
   const rows = await tx<{ id: string }[]>`
-    SELECT id FROM cleanup_ticket_types WHERE cleanup_id = ${source.cleanupId}
+    SELECT id FROM cleanup_ticket_types
+    WHERE cleanup_id = ${source.cleanupId}
+    ORDER BY sort_order, id
+    LIMIT ${MAX_TICKET_TYPES_PER_EVENT}
   `
   const oldIds = rows.map((row) => row.id)
   if (oldIds.length === 0) return { oldIds, newIds: [] }
@@ -172,6 +180,8 @@ async function copyQuestionsInTx(
   const rows = await tx<{ id: string }[]>`
     SELECT id FROM cleanup_questions
     WHERE cleanup_id = ${source.cleanupId} AND archived_at IS NULL
+    ORDER BY sort_order, id
+    LIMIT ${MAX_EVENT_QUESTIONS}
   `
   const oldIds = rows.map((row) => row.id)
   if (oldIds.length === 0) return
@@ -193,7 +203,7 @@ async function copyQuestionsInTx(
     LEFT JOIN unnest(${types.oldIds}::uuid[], ${types.newIds}::uuid[]) AS tm(old_id, new_id)
       ON tm.old_id = q.ticket_type_id
     LEFT JOIN unnest(${oldIds}::uuid[], ${newIds}::uuid[]) AS sm(old_id, new_id)
-      ON sm.old_id = (q.show_if ->> 'questionId')::uuid
+      ON sm.old_id::text = q.show_if ->> 'questionId'
   `
 }
 
