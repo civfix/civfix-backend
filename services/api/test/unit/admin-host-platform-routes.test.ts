@@ -464,7 +464,7 @@ describe("admin org management (0.41.0)", () => {
       actorId: OPERATOR,
       meta: { reason: "partner onboarding", ownerUserId: HOST },
     })
-    expect(h.notes).toEqual([{ userId: HOST, type: "system" }])
+    expect(h.notes).toEqual([{ userId: HOST, type: "org_invite" }])
   })
 
   it("422s a missing reason or unknown owner, 409s a taken slug", async () => {
@@ -670,7 +670,10 @@ describe("admin org management (0.41.0)", () => {
     })
     const after = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}` })
     expect((after.json() as { owner: { id: string } }).owner).toMatchObject({ id: SECOND })
-    expect(h.notes).toEqual([{ userId: HOST, type: "system" }, { userId: SECOND, type: "system" }])
+    expect(h.notes).toEqual([
+      { userId: HOST, type: "org_invite" },
+      { userId: SECOND, type: "org_invite" },
+    ])
   })
 
   it("lists an org's events as admin rows with the `when` facet, 404s an unknown org", async () => {

@@ -45,7 +45,6 @@ const EXPECTED_TABLES = [
   "user_blocks",
   "boundary_vintage",
   "reference_counters",
-  "user_verification",
   "inbound_emails",
   "chat_message_reactions",
   "chat_message_mentions",
@@ -543,12 +542,6 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   { table: "moderation_items", column: "subject_type", mirror: schema.MODERATION_SUBJECT_TYPE_VALUES },
   { table: "user_moderation", column: "account_status", mirror: schema.USER_ACCOUNT_STATUS_VALUES },
   { table: "user_moderation", column: "risk", mirror: schema.USER_RISK_VALUES },
-  {
-    table: "user_verification",
-    column: "status",
-    mirror: schema.VERIFICATION_STATUS_VALUES,
-    omitted: ["unverified"],
-  },
   { table: "cleanups", column: "visibility", mirror: schema.EVENT_VISIBILITY_VALUES },
   { table: "organizations", column: "verified_status", mirror: schema.ORG_VERIFICATION_STATUS_VALUES },
   { table: "organizations", column: "verified_kind", mirror: schema.ORG_VERIFICATION_KIND_VALUES },
@@ -699,23 +692,6 @@ describe.skipIf(!pg)("schema: enum mirrors match the DDL CHECK constraints", () 
         VALUES (gen_random_uuid(), 'image', 'uploads/purpose-bogus', 'ready', 'avatar')
       `,
     ).rejects.toMatchObject({ code: "23514" })
-  })
-
-  it("the documented omission is genuinely REJECTED: user_verification.status = 'unverified'", async () => {
-    const [u] = await h.sql<{ id: string }[]>`
-      INSERT INTO users (display_name) VALUES ('Verification Omission') RETURNING id
-    `
-    await expect(
-      h.sql`INSERT INTO user_verification (user_id, status) VALUES (${u!.id}, 'unverified')`,
-    ).rejects.toMatchObject({ code: "23514" })
-    for (const status of ["pending", "verified", "rejected"]) {
-      const rows = await h.sql<{ status: string }[]>`
-        INSERT INTO user_verification (user_id, status) VALUES (${u!.id}, ${status})
-        ON CONFLICT (user_id) DO UPDATE SET status = EXCLUDED.status
-        RETURNING status
-      `
-      expect(rows[0]!.status).toBe(status)
-    }
   })
 
   it("every Drizzle-mirror index exists in the live database (F152 parity)", async () => {

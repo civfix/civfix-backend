@@ -20,6 +20,8 @@ import { mediaBoundElsewhere } from "../media-bindings.js"
 import { writeHostAudit } from "./host-audit.js"
 import type {
   AcceptOrganizationInviteOutcome,
+  DeclineOrganizationInviteOutcome,
+  PendingOrganizationInviteRecord,
   AddOrganizationMemberOutcome,
   AdminActorView,
   AdminAddMemberArgs,
@@ -514,16 +516,11 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           display_name: string
           handle: string | null
           bio: string | null
-          verified: boolean
           role: OrganizationMemberRole
           joined_at: Date
         }[]
       >`
-        SELECT m.user_id, u.display_name, u.handle, u.bio, m.role, m.joined_at,
-               EXISTS (
-                 SELECT 1 FROM user_verification v
-                 WHERE v.user_id = u.id AND v.status = 'verified'
-               ) AS verified
+        SELECT m.user_id, u.display_name, u.handle, u.bio, m.role, m.joined_at
         FROM organization_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.organization_id = ${args.organizationId}
@@ -538,7 +535,6 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             displayName: r.display_name,
             handle: r.handle,
             bio: r.bio,
-            verified: r.verified,
           },
           role: r.role,
           joinedAt: r.joined_at,
@@ -558,16 +554,11 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           display_name: string
           handle: string | null
           bio: string | null
-          verified: boolean
           role: OrganizationMemberRole
           joined_at: Date
         }[]
       >`
-        SELECT m.user_id, u.display_name, u.handle, u.bio, m.role, m.joined_at,
-               EXISTS (
-                 SELECT 1 FROM user_verification v
-                 WHERE v.user_id = u.id AND v.status = 'verified'
-               ) AS verified
+        SELECT m.user_id, u.display_name, u.handle, u.bio, m.role, m.joined_at
         FROM organization_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.organization_id = ${organizationId} AND m.user_id = ${userId}
@@ -581,7 +572,6 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           displayName: r.display_name,
           handle: r.handle,
           bio: r.bio,
-          verified: r.verified,
         },
         role: r.role,
         joinedAt: r.joined_at,
@@ -726,6 +716,10 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           `
           return still.length > 0 ? "owner" : "not_member"
         }
+        await tx`
+          UPDATE users SET primary_organization_id = NULL
+          WHERE id = ${args.userId} AND primary_organization_id = ${args.organizationId}
+        `
         await writeHostAudit(tx, {
           actorId: args.actorId,
           action: "org.member_removed",
@@ -1239,17 +1233,174 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       })
     },
 
+    async listPendingInvitesForUser(args: {
+      userId: string
+      now: Date
+      limit: number
+    }): Promise<PendingOrganizationInviteRecord[]> {
+      const rows = await sql<
+        {
+          id: string
+          role: OrganizationInviteRole
+          created_at: Date
+          expires_at: Date
+          invited_by_id: string | null
+          invited_by_name: string | null
+          invited_by_handle: string | null
+          invited_by_bio: string | null
+          organization_id: string
+          organization_slug: string
+          organization_name: string
+          organization_logo_key: string | null
+          organization_verified_status: OrgVerificationStatus
+          organization_verified_kind: OrgVerificationKind | null
+        }[]
+      >`
+        SELECT
+          i.id,
+          i.role,
+          i.created_at,
+          i.expires_at,
+          iu.id AS invited_by_id,
+          iu.display_name AS invited_by_name,
+          iu.handle AS invited_by_handle,
+          iu.bio AS invited_by_bio,
+          o.id AS organization_id,
+          o.slug AS organization_slug,
+          o.name AS organization_name,
+          ${servedKeyExpr(sql, "am")} AS organization_logo_key,
+          o.verified_status AS organization_verified_status,
+          o.verified_kind AS organization_verified_kind
+        FROM organization_invites i
+        JOIN organizations o ON o.id = i.organization_id
+        LEFT JOIN users iu ON iu.id = i.invited_by
+        LEFT JOIN media_assets am ON am.id = o.logo_media_id
+        WHERE i.status = 'pending'
+          AND i.expires_at > ${args.now}
+          AND o.deleted_at IS NULL
+          AND o.suspended_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM organization_members m
+            WHERE m.organization_id = i.organization_id AND m.user_id = ${args.userId}
+          )
+          AND (
+            i.user_id = ${args.userId}
+            OR (
+              i.email IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM users u
+                WHERE u.id = ${args.userId}
+                  AND u.email = i.email
+                  AND u.email_verified = true
+                  AND u.deleted_at IS NULL
+              )
+            )
+          )
+        ORDER BY i.created_at DESC, i.id DESC
+        LIMIT ${args.limit}
+      `
+      return rows.map((r) => ({
+        id: r.id,
+        role: r.role,
+        createdAt: r.created_at,
+        expiresAt: r.expires_at,
+        invitedBy:
+          r.invited_by_id === null
+            ? null
+            : {
+                id: r.invited_by_id,
+                displayName: r.invited_by_name ?? "",
+                handle: r.invited_by_handle,
+                bio: r.invited_by_bio,
+              },
+        organization: {
+          id: r.organization_id,
+          slug: r.organization_slug,
+          name: r.organization_name,
+          logoKey: r.organization_logo_key,
+          verifiedStatus: r.organization_verified_status,
+          verifiedKind: r.organization_verified_kind,
+          suspended: false,
+        },
+      }))
+    },
+
+    async declineInviteTx(args: {
+      inviteId: string
+      userId: string
+      now: Date
+    }): Promise<DeclineOrganizationInviteOutcome> {
+      return sql.begin(async (tx): Promise<DeclineOrganizationInviteOutcome> => {
+        const rows = await tx<
+          {
+            id: string
+            organization_id: string
+            email: string | null
+            user_id: string | null
+            status: OrganizationInviteStatus
+            expires_at: Date
+          }[]
+        >`
+          SELECT id, organization_id, email, user_id, status, expires_at
+          FROM organization_invites
+          WHERE id = ${args.inviteId}
+          LIMIT 1 FOR UPDATE
+        `
+        const invite = rows[0]
+        if (invite === undefined || invite.status !== "pending") return "invalid"
+        const addressed =
+          invite.user_id !== null && invite.user_id === args.userId
+            ? true
+            : invite.email === null
+              ? false
+              : (
+                  await tx<{ one: number }[]>`
+                    SELECT 1 AS one FROM users
+                    WHERE id = ${args.userId}
+                      AND email = ${invite.email}
+                      AND email_verified = true
+                      AND deleted_at IS NULL
+                    LIMIT 1
+                  `
+                ).length > 0
+        if (!addressed) return "invalid"
+        if (invite.expires_at.getTime() <= args.now.getTime()) {
+          await tx`UPDATE organization_invites SET status = 'expired' WHERE id = ${invite.id}`
+          return "expired"
+        }
+        await tx`
+          UPDATE organization_invites
+          SET status = 'declined', user_id = ${args.userId}
+          WHERE id = ${invite.id}
+        `
+        await writeHostAudit(tx, {
+          actorId: args.userId,
+          action: "org.invite_declined",
+          target: `organization:${invite.organization_id}`,
+          meta: { inviteId: invite.id },
+        })
+        return "declined"
+      })
+    },
+
     async acceptInviteTx(args: {
-      tokenHash: string
+      by: { tokenHash: string } | { inviteId: string }
       userId: string
       now: Date
     }): Promise<AcceptOrganizationInviteOutcome> {
+      const byToken = "tokenHash" in args.by
       return sql.begin(async (tx): Promise<AcceptOrganizationInviteOutcome> => {
-        const found = await tx<{ id: string; organization_id: string }[]>`
-          SELECT id, organization_id FROM organization_invites
-          WHERE token_hash = ${args.tokenHash}
-          LIMIT 1
-        `
+        const found = byToken
+          ? await tx<{ id: string; organization_id: string }[]>`
+              SELECT id, organization_id FROM organization_invites
+              WHERE token_hash = ${(args.by as { tokenHash: string }).tokenHash}
+              LIMIT 1
+            `
+          : await tx<{ id: string; organization_id: string }[]>`
+              SELECT id, organization_id FROM organization_invites
+              WHERE id = ${(args.by as { inviteId: string }).inviteId}
+              LIMIT 1
+            `
         const hit = found[0]
         if (hit === undefined) return { kind: "invalid" }
         // Lock order: organizations -> organization_members -> organization_invites.
@@ -1264,12 +1415,13 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           {
             id: string
             email: string | null
+            user_id: string | null
             role: OrganizationInviteRole
             status: OrganizationInviteStatus
             expires_at: Date
           }[]
         >`
-          SELECT id, email, role, status, expires_at FROM organization_invites
+          SELECT id, email, user_id, role, status, expires_at FROM organization_invites
           WHERE id = ${hit.id}
           LIMIT 1 FOR UPDATE
         `
@@ -1280,17 +1432,26 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           return { kind: "expired" }
         }
         // The invite is a claim on the account that signs in with the invited address (verified), the
-        // same rule cleanup_team_invites applies - never on whoever holds the link.
-        if (invite.email !== null) {
-          const match = await tx<{ one: number }[]>`
-            SELECT 1 AS one FROM users
-            WHERE id = ${args.userId}
-              AND email = ${invite.email}
-              AND email_verified = true
-              AND deleted_at IS NULL
-            LIMIT 1
-          `
-          if (match.length === 0) return { kind: "wrong_recipient" }
+        // same rule cleanup_team_invites applies - never on whoever holds the link. The id-addressed
+        // path has no token to prove anything, so the seat itself is the claim: the row must name this
+        // account, or carry an address this account has verified.
+        const addressed =
+          invite.user_id !== null && invite.user_id === args.userId
+            ? true
+            : invite.email === null
+              ? false
+              : (
+                  await tx<{ one: number }[]>`
+                    SELECT 1 AS one FROM users
+                    WHERE id = ${args.userId}
+                      AND email = ${invite.email}
+                      AND email_verified = true
+                      AND deleted_at IS NULL
+                    LIMIT 1
+                  `
+                ).length > 0
+        if (byToken ? invite.email !== null && !addressed : !addressed) {
+          return { kind: "wrong_recipient" }
         }
         if (orgRow.suspended) return { kind: "suspended" }
         const inserted = await tx<{ user_id: string }[]>`

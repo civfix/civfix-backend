@@ -25,7 +25,6 @@ import {
   OAuthProviderSchema,
   PostKindSchema,
   PrioritySchema,
-  VerificationStatusSchema,
   RegisterPushTokenRequestSchema,
   ReportCategorySchema,
   ReportStatusSchema,
@@ -85,7 +84,6 @@ import {
   MAIL_THREAD_STATUS_VALUES,
   MEDIA_KIND_VALUES,
   MEDIA_STATUS_VALUES,
-  VERIFICATION_STATUS_VALUES,
   MODERATION_KIND_VALUES,
   MODERATION_SUBJECT_TYPE_VALUES,
   MODERATION_PRIORITY_VALUES,
@@ -107,6 +105,7 @@ import {
   EVENT_VISIBILITY_VALUES,
   ORGANIZATION_MEMBER_ROLE_VALUES,
   ORG_VERIFICATION_STATUS_VALUES,
+  ORGANIZATION_INVITE_STATUS_VALUES,
   ORG_VERIFICATION_KIND_VALUES,
   EVENT_TEAM_ROLE_VALUES,
   EVENT_TEAM_INVITE_STATUS_VALUES,
@@ -167,7 +166,6 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ["DiscoveryStatus", DISCOVERY_STATUS_VALUES, DiscoveryStatusSchema.options],
     ["GovMethod", GOV_METHOD_VALUES, GovMethodSchema.options],
     ["GovClaimStatus", GOV_CLAIM_STATUS_VALUES, GovClaimStatusSchema.options],
-    ["VerificationStatus", VERIFICATION_STATUS_VALUES, VerificationStatusSchema.options],
     ["UserStatus", USER_ACCOUNT_STATUS_VALUES, UserStatusSchema.options],
     ["Risk", USER_RISK_VALUES, RiskSchema.options],
     ["ModerationKind", MODERATION_KIND_VALUES, ModerationKindSchema.options],
@@ -238,7 +236,7 @@ describe("schema enum tuples mirror @civfix/shared", () => {
   })
 
   it("NotificationType carries the five social-feed post interaction values (in order)", () => {
-    expect(NOTIFICATION_TYPE_VALUES.slice(-9, -4)).toEqual([
+    expect(NOTIFICATION_TYPE_VALUES.slice(-10, -5)).toEqual([
       "post_like",
       "post_repost",
       "post_reply",
@@ -251,17 +249,19 @@ describe("schema enum tuples mirror @civfix/shared", () => {
   })
 
   it("NotificationType carries the two service-hours values (LAST, in order)", () => {
-    expect(NOTIFICATION_TYPE_VALUES.slice(-4, -2)).toEqual(["cleanup_slot", "hours_logged"])
+    expect(NOTIFICATION_TYPE_VALUES.slice(-5, -3)).toEqual(["cleanup_slot", "hours_logged"])
     for (const t of ["cleanup_slot", "hours_logged"]) {
       expect(NotificationTypeSchema.options).toContain(t)
     }
   })
 
-  it("NotificationType carries the host-broadcast value, then the event-team-invite value LAST", () => {
-    expect(NOTIFICATION_TYPE_VALUES.at(-2)).toBe("event_broadcast")
-    expect(NotificationTypeSchema.options.at(-2)).toBe("event_broadcast")
-    expect(NOTIFICATION_TYPE_VALUES.at(-1)).toBe("event_team_invite")
-    expect(NotificationTypeSchema.options.at(-1)).toBe("event_team_invite")
+  it("NotificationType keeps broadcast, then event-team-invite, then org_invite LAST", () => {
+    expect(NOTIFICATION_TYPE_VALUES.at(-3)).toBe("event_broadcast")
+    expect(NotificationTypeSchema.options.at(-3)).toBe("event_broadcast")
+    expect(NOTIFICATION_TYPE_VALUES.at(-2)).toBe("event_team_invite")
+    expect(NotificationTypeSchema.options.at(-2)).toBe("event_team_invite")
+    expect(NOTIFICATION_TYPE_VALUES.at(-1)).toBe("org_invite")
+    expect(NotificationTypeSchema.options.at(-1)).toBe("org_invite")
   })
 
   it("CleanupMemberRole appends coordinator LAST and EventTeamRole stays its invitable subset", () => {
@@ -284,8 +284,12 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ])
   })
 
-  it("MediaPurpose matches the shared enum exactly", () => {
-    expect([...MEDIA_PURPOSE_VALUES]).toEqual([...MediaPurposeSchema.options])
+  // The DB value set is a SUPERSET of the client-facing one by exactly one value: 'verification' is
+  // written only by the server (organization-repository claims org verification documents with it, and
+  // media-authorization denies it on every public path), and 0.43.0 dropped it from the shared enum
+  // when the per-user "verified neighbor" queue was retired. Every other value must still match, in
+  // order, or a purpose the client can ask for is one the column would reject.
+  it("MediaPurpose is the shared enum plus the server-only 'verification' purpose", () => {
     expect([...MEDIA_PURPOSE_VALUES]).toEqual([
       "report",
       "verification",
@@ -293,6 +297,19 @@ describe("schema enum tuples mirror @civfix/shared", () => {
       "event_cover",
       "event_gallery",
       "org_logo",
+    ])
+    expect(MEDIA_PURPOSE_VALUES.filter((v) => v !== "verification")).toEqual([
+      ...MediaPurposeSchema.options,
+    ])
+  })
+
+  it("OrganizationInviteStatus appends declined LAST, distinct from revoked", () => {
+    expect([...ORGANIZATION_INVITE_STATUS_VALUES]).toEqual([
+      "pending",
+      "accepted",
+      "revoked",
+      "expired",
+      "declined",
     ])
   })
 
