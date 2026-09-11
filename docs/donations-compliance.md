@@ -17,6 +17,16 @@ disclosed `application_fee` on top. This is what makes the money-transmission an
 structurally simple, and it is why there is deliberately **no refund API** on the civfix side: an
 organization refunds from its own dashboard and civfix only reacts.
 
+Payouts follow the same line and change nothing about it (0.43.0, DECISIONS §34). `getOrgBalance`,
+`createOrgPayout` and `listOrgPayouts` all execute ON the connected account through the `Payments`
+seam (`retrieveBalance`, `createPayout`, `listPayouts`, each sent with the Stripe-Account header), so
+a payout is the ORGANIZATION moving its own money to its own bank. civfix never holds a balance,
+never becomes a payer, and `org_payouts` is an audit mirror of the Stripe object rather than a ledger
+anything reconciles against. The connected accounts are Stripe **Standard**, where the default
+automatic schedule usually leaves `available` at ~0 — which is why `OrgBalanceDTO` ships the payout
+schedule next to the balances, so the client can disable the button and say why instead of surfacing
+a processor error after the fact.
+
 ---
 
 ## 2. Rule → code path → test
@@ -165,6 +175,11 @@ objects referenced by rows in tables the worker does not know about.
   in any retention lane.
 - It will not refund a donation. There is no civfix code path that moves money back to a donor.
 - It will not log a Stripe error's `raw` object, and it never puts a card number in an error message.
+- It will not store or show a processor's own payout-failure prose. `org_payouts.failure_message` is
+  always civfix-authored copy, because Stripe's text can name the connected account and its bank.
+- It will not move the same payout twice. The `org_payouts` row is written BEFORE Stripe is called,
+  `(organization_id, idempotency_key)` is unique, and the Stripe call carries the same key, so a
+  client retry and a crash mid-call both replay the first payout instead of paying out again.
 
 ---
 
