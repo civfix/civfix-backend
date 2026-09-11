@@ -21,6 +21,8 @@ interface FakeConfig {
   briefs?: Record<string, PostBrief>
   members?: Set<string>
   attachableReports?: Set<string>
+  /** `${organizationId}:${userId}` pairs the author may publish as. */
+  orgMembers?: Set<string>
   likeCreated?: boolean
 }
 
@@ -58,6 +60,8 @@ function fakeRepo(cfg: FakeConfig = {}): PostRepository & { created: CreatePostA
     deleted,
     getPostBrief: (id) => Promise.resolve(cfg.briefs?.[id] ?? null),
     actorNameOf: () => Promise.resolve("Actor Zed"),
+    canPostAsOrganization: (organizationId: string, userId: string) =>
+      Promise.resolve(cfg.orgMembers?.has(`${organizationId}:${userId}`) ?? false),
     isEventMember: (eventId, userId) =>
       Promise.resolve(cfg.members?.has(`${eventId}:${userId}`) ?? false),
     isReportAttachable: (reportId) => Promise.resolve(cfg.attachableReports?.has(reportId) ?? false),
@@ -163,6 +167,52 @@ describe("PostService validation + authorization", () => {
     )
     expect(repo.created).toHaveLength(1)
     expect(repo.created[0]!.eventId).toBe("evt-1")
+  })
+
+  it("posts as an organization the author belongs to, and persists the link", async () => {
+    const repo = fakeRepo({ orgMembers: new Set(["org-1:u1"]) })
+    const svc = makePostService({ repo, sql: throwingSql })
+    await svc.createPost(
+      {
+        kind: "post",
+        body: "x",
+        organizationId: "org-1",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
+      "u1",
+    )
+    expect(repo.created).toHaveLength(1)
+    expect(repo.created[0]!.organizationId).toBe("org-1")
+    expect(repo.created[0]!.authorId).toBe("u1")
+  })
+
+  it("403s posting as an organization the author does not belong to, and writes nothing", async () => {
+    const repo = fakeRepo({ orgMembers: new Set(["org-1:someone-else"]) })
+    const svc = makePostService({ repo, sql: throwingSql })
+    await expect(
+      svc.createPost(
+        {
+          kind: "post",
+          body: "x",
+          organizationId: "org-1",
+          mediaUploadIds: [],
+          mentionedUserIds: [],
+        },
+        "u1",
+      ),
+    ).rejects.toMatchObject({ httpStatus: 403 })
+    expect(repo.created).toHaveLength(0)
+  })
+
+  it("leaves organizationId null on a personal post", async () => {
+    const repo = fakeRepo()
+    const svc = makePostService({ repo, sql: throwingSql })
+    await svc.createPost(
+      { kind: "post", body: "x", mediaUploadIds: [], mentionedUserIds: [] },
+      "u1",
+    )
+    expect(repo.created[0]!.organizationId).toBeNull()
   })
 
   it("rejects an attached report that is not attachable (404)", async () => {
