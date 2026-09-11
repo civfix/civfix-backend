@@ -6,6 +6,7 @@ import type {
   AdminUserListItemDTO,
   AdminUserListQuery,
   AdminUserListResponse,
+  OrganizationMemberRole,
   Risk,
   Role,
   UserEventItemDTO,
@@ -43,10 +44,16 @@ export interface AdminUserRecord {
   risk: Risk
   flagged: boolean
   flagReason: string | null
-  verified: boolean
   reportVerified: boolean
   avatarUrl: string | null
   deletedAt: Date | null
+}
+
+export interface AdminUserOrganizationRecord {
+  id: string
+  slug: string
+  name: string
+  role: OrganizationMemberRole
 }
 
 export interface UserReportRecord {
@@ -114,10 +121,7 @@ export interface AdminUserRepository {
     input: { status: UserStatus; reason: string | null; actorId: string | null },
   ): Promise<boolean>
   applyRole(id: string, input: { role: Role; actorId: string | null }): Promise<boolean>
-  setVerified(
-    id: string,
-    input: { verified: boolean; actorId: string | null },
-  ): Promise<boolean>
+  listUserOrganizations(id: string): Promise<AdminUserOrganizationRecord[]>
   setReportVerified(
     id: string,
     input: { value: boolean; actorId: string | null },
@@ -172,7 +176,6 @@ export interface AdminUserService {
     input: { status: UserStatus; reason: string | null; actorId: string | null },
   ): Promise<{ revokedSessions: number }>
   setRole(id: string, input: { role: Role; actorId: string | null }): Promise<void>
-  setVerified(id: string, input: { verified: boolean; actorId: string | null }): Promise<void>
   setReportVerified(id: string, input: { value: boolean; actorId: string | null }): Promise<void>
   removeMessage(
     userId: string,
@@ -230,12 +233,13 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       const ref = now()
       const record = await deps.repo.getUser(id)
       if (!record) throw AppError.notFound("User not found")
+      const organizations = await deps.repo.listUserOrganizations(id)
       return {
         ...toListItem(record, ref),
         role: record.role,
         messages: record.messages,
-        verificationStatus: record.verified ? "verified" : "unverified",
         reportVerified: record.reportVerified,
+        organizations,
       }
     },
 
@@ -346,14 +350,6 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         id,
         input.role,
       )
-    },
-
-    async setVerified(
-      id: string,
-      input: { verified: boolean; actorId: string | null },
-    ): Promise<void> {
-      const ok = await deps.repo.setVerified(id, input)
-      if (!ok) throw AppError.notFound("User not found")
     },
 
     async setReportVerified(

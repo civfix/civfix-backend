@@ -12,6 +12,7 @@ import type { PaymentsEnv } from "../../env/payments-env.js"
 import type {
   DonationDisputeStateValue,
   DonationStatusValue,
+  PayoutStatusValue,
 } from "../../db/schema/types-payments.js"
 import { drainTable, registerRetentionLane } from "../host/retention-lanes.js"
 import {
@@ -22,6 +23,8 @@ import {
 import type { DonationRepository, StripeEventRepository } from "./donation-repository.drizzle.js"
 import { makeDrizzleOrgPaymentsRepository } from "./org-payments-repository.drizzle.js"
 import type { OrgPaymentsRepository } from "./org-payments-repository.drizzle.js"
+import { makeDrizzleOrgPayoutsRepository } from "./org-payouts-repository.drizzle.js"
+import type { OrgPayoutsRepository } from "./org-payouts-repository.types.js"
 import { makeDrizzleEligibilityRepository } from "./eligibility-repository.drizzle.js"
 import { makeEligibilityService, type EligibilityService } from "./eligibility-service.js"
 import { makeOrgPaymentsService, type OrgPaymentsService } from "./org-payments-service.js"
@@ -68,6 +71,9 @@ export const RECEIPT_EVIDENCE_SOURCES: readonly string[] = ["irs_pub78", "irs_eo
 
 export const MAX_RECEIPT_EVIDENCE_CHECKS = 20
 
+export const PAYOUT_WEBHOOK_FAILURE_MESSAGE =
+  "The bank rejected this payout. Check the payout details in Stripe, then try again."
+
 export interface PaymentsRuntime {
   sql: Sql
   env: PaymentsEnv
@@ -75,6 +81,7 @@ export interface PaymentsRuntime {
   donations: DonationRepository
   events: StripeEventRepository
   orgs: OrgPaymentsRepository
+  payouts: OrgPayoutsRepository
   orgPayments: OrgPaymentsService
   eligibility: EligibilityService
   payments: Payments
@@ -101,6 +108,7 @@ export function makePaymentsRuntime(
     donations,
     events: makeDrizzleStripeEventRepository(sql),
     orgs,
+    payouts: makeDrizzleOrgPayoutsRepository(sql),
     orgPayments: makeOrgPaymentsService({
       repo: orgs,
       payments: container.payments,
@@ -225,6 +233,13 @@ export async function processStripeEvent(
       case "charge.dispute.funds_withdrawn":
       case "charge.dispute.funds_reinstated": {
         await syncDispute(runtime, object, logger)
+        break
+      }
+      case "payout.paid":
+      case "payout.failed":
+      case "payout.canceled":
+      case "payout.updated": {
+        await syncPayout(runtime, event.accountId, object, logger)
         break
       }
       case "radar.early_fraud_warning.created": {
@@ -449,6 +464,60 @@ export async function syncRefunds(
         "application fee refund failed: civfix is holding a fee on refunded money",
       )
     }
+  }
+}
+
+const PAYOUT_STATUS_BY_PROVIDER: Readonly<Record<string, PayoutStatusValue>> = {
+  pending: "pending",
+  in_transit: "in_transit",
+  paid: "paid",
+  failed: "failed",
+  canceled: "canceled",
+}
+
+export function payoutStatusOf(status: string | null): PayoutStatusValue {
+  return status === null ? "pending" : (PAYOUT_STATUS_BY_PROVIDER[status] ?? "pending")
+}
+
+export async function syncPayout(
+  runtime: PaymentsRuntime,
+  accountId: string | null,
+  payoutObject: unknown,
+  logger?: FastifyBaseLogger,
+): Promise<void> {
+  if (accountId === null) return
+  const stripePayoutId = readString(payoutObject, "id")
+  if (stripePayoutId === null) return
+  const amountMinor = readNumber(payoutObject, "amount")
+  if (amountMinor === null || amountMinor <= 0) return
+
+  const organizationId = await runtime.orgs.findOrgIdByStripeAccount(accountId)
+  if (organizationId === null) {
+    logger?.warn({ stripePayoutId }, "payout webhook for an account civfix does not know (skipped)")
+    return
+  }
+
+  const status = payoutStatusOf(readString(payoutObject, "status"))
+  const arrivalSec = readNumber(payoutObject, "arrival_date")
+  const createdSec = readNumber(payoutObject, "created")
+
+  await runtime.payouts.upsertFromProvider({
+    organizationId,
+    stripeAccountId: accountId,
+    stripePayoutId,
+    amountMinor,
+    status,
+    arrivalDate: arrivalSec === null || arrivalSec <= 0 ? null : new Date(arrivalSec * 1000),
+    failureMessage: status === "failed" ? PAYOUT_WEBHOOK_FAILURE_MESSAGE : null,
+    createdAt: createdSec === null ? runtime.now() : new Date(createdSec * 1000),
+    now: runtime.now(),
+  })
+
+  if (status === "failed") {
+    logger?.error(
+      { organizationId, stripePayoutId },
+      "a payout on an organization's connected account failed: the money stayed on the account",
+    )
   }
 }
 

@@ -28,7 +28,6 @@ function row(over: Partial<MemberRowSelect> = {}): MemberRowSelect {
     bio: "finds bugs",
     avatar_url: "https://cdn.example/grace.jpg",
     user_deleted_at: null,
-    verified: true,
     is_following: true,
     blocked_pair: false,
     ...over,
@@ -43,7 +42,6 @@ describe("toMemberView", () => {
     expect(view.user.name).toBe("Grace Hopper")
     expect(view.user.handle).toBe("grace")
     expect(view.user.bio).toBe("finds bugs")
-    expect(view.user.verified).toBe(true)
     expect(view.user.isFollowing).toBe(true)
     expect(view.user.deleted).toBeUndefined()
   })
@@ -63,7 +61,6 @@ describe("toMemberView", () => {
     expect(view.user.handle).toBeNull()
     expect(view.user.bio).toBeNull()
     expect(view.user.avatarUrl).toBeUndefined()
-    expect(view.user.verified).toBeUndefined()
   })
 
   it("hides a blocked pair behind the shared hidden identity", () => {
@@ -73,7 +70,6 @@ describe("toMemberView", () => {
     expect(view.user.handle).toBeNull()
     expect(view.user.bio).toBeNull()
     expect(view.user.avatarUrl).toBeUndefined()
-    expect(view.user.verified).toBeUndefined()
     // Hidden is NOT deleted: the account exists, this viewer just may not see it.
     expect(view.user.deleted).toBeUndefined()
   })
@@ -83,11 +79,10 @@ describe("toMemberView", () => {
       row({ blocked_pair: true, user_deleted_at: new Date("2026-07-01T00:00:00.000Z") }),
     )
     expect(view.user.deleted).toBe(true)
-    expect(view.user.verified).toBeUndefined()
   })
 
-  it("keeps an unverified live member unbadged", () => {
-    expect(toMemberView(row({ verified: false })).user.verified).toBeUndefined()
+  it("carries no affiliation of its own - the roster route batches that in", () => {
+    expect(toMemberView(row()).user.organization).toBeUndefined()
   })
 
   it("carries owner and admin roles through for the roster's role labels", () => {

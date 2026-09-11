@@ -129,6 +129,7 @@ export interface UserRecord {
   allowDirectMessages: boolean
   showVolunteerHours: boolean | null
   locale: string
+  primaryOrganizationId: string | null
   createdAt: Date
   deletedAt: Date | null
 }
@@ -167,11 +168,17 @@ export interface UpdateSettingsInput {
   allowDirectMessages?: boolean
   locale?: string
   showVolunteerHours?: boolean
+  primaryOrganizationId?: string | null
 }
+
+export const PRIMARY_ORGANIZATION_NOT_A_MEMBER =
+  "Pick an organization you belong to, or clear the selection."
+
 
 export class InMemoryUserStore implements UserStore {
   private readonly byId = new Map<string, UserRecord>()
   private readonly statuses = new Map<string, AccountStatus>()
+  private readonly memberships = new Map<string, Set<string>>()
   private readonly now: () => Date
 
   constructor(opts: { now?: () => Date } = {}) {
@@ -224,6 +231,7 @@ export class InMemoryUserStore implements UserStore {
       allowDirectMessages: true,
       showVolunteerHours: null,
       locale: "en",
+      primaryOrganizationId: null,
       createdAt: new Date(),
       deletedAt: null,
     }
@@ -283,6 +291,15 @@ export class InMemoryUserStore implements UserStore {
   updateSettings(id: string, input: UpdateSettingsInput): Promise<UserRecord> {
     const row = this.byId.get(id)
     if (!row) throw new Error("InMemoryUserStore.updateSettings: user not found")
+    if (
+      input.primaryOrganizationId !== undefined &&
+      input.primaryOrganizationId !== null &&
+      !(this.memberships.get(id) ?? new Set<string>()).has(input.primaryOrganizationId)
+    ) {
+      return Promise.reject(
+        AppError.validation({ primaryOrganizationId: PRIMARY_ORGANIZATION_NOT_A_MEMBER }),
+      )
+    }
     const next: UserRecord = {
       ...row,
       ...(input.allowDirectMessages !== undefined
@@ -292,9 +309,19 @@ export class InMemoryUserStore implements UserStore {
       ...(input.showVolunteerHours !== undefined
         ? { showVolunteerHours: input.showVolunteerHours }
         : {}),
+      ...(input.primaryOrganizationId !== undefined
+        ? { primaryOrganizationId: input.primaryOrganizationId }
+        : {}),
     }
     this.byId.set(id, next)
     return Promise.resolve({ ...next })
+  }
+
+  /** Seed the organizations a user may pin as their affiliation (tests). */
+  seedMembership(userId: string, organizationId: string): void {
+    const set = this.memberships.get(userId) ?? new Set<string>()
+    set.add(organizationId)
+    this.memberships.set(userId, set)
   }
 
   softDeleteAndAnonymize(id: string): Promise<UserRecord> {
@@ -309,6 +336,7 @@ export class InMemoryUserStore implements UserStore {
       displayName: DELETED_USER_LABEL,
       handle: generateTombstoneHandle(),
       avatarUrl: null,
+      primaryOrganizationId: null,
     }
     this.byId.set(id, next)
     return Promise.resolve({ ...next })

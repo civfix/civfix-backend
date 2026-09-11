@@ -11,6 +11,8 @@ import { normalizeEin } from "../payments/eligibility-sources.js"
 import type { SetEinInput } from "../payments/eligibility-repository.drizzle.js"
 import type {
   AcceptOrganizationInviteOutcome,
+  DeclineOrganizationInviteOutcome,
+  PendingOrganizationInviteRecord,
   AddOrganizationMemberOutcome,
   AdminActorView,
   AdminAddMemberArgs,
@@ -907,12 +909,94 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     return Promise.resolve("revoked")
   }
 
+  /** The drizzle rule verbatim: the row names this account, or carries an address it has verified. */
+  private inviteAddressesUser(
+    invite: { email: string | null; userId: string | null },
+    userId: string,
+  ): boolean {
+    if (invite.userId !== null && invite.userId === userId) return true
+    if (invite.email === null) return false
+    const user = this.users.get(userId)
+    return (
+      user !== undefined &&
+      user.deletedAt === null &&
+      user.email !== null &&
+      user.emailVerified &&
+      user.email.toLowerCase() === invite.email.toLowerCase()
+    )
+  }
+
+  listPendingInvitesForUser(args: {
+    userId: string
+    now: Date
+    limit: number
+  }): Promise<PendingOrganizationInviteRecord[]> {
+    const out: PendingOrganizationInviteRecord[] = []
+    for (const invite of [...this.invites].reverse()) {
+      if (invite.status !== "pending") continue
+      if (invite.expiresAt.getTime() <= args.now.getTime()) continue
+      const org = this.organizations.get(invite.organizationId)
+      if (org === undefined || org.deletedAt !== null || org.suspendedAt !== null) continue
+      if (
+        this.members.some((m) => m.organizationId === org.id && m.userId === args.userId)
+      ) {
+        continue
+      }
+      if (!this.inviteAddressesUser(invite, args.userId)) continue
+      const inviter = invite.invitedBy === null ? null : this.personOf(invite.invitedBy)
+      out.push({
+        id: invite.id,
+        role: invite.role,
+        createdAt: invite.createdAt,
+        expiresAt: invite.expiresAt,
+        invitedBy: inviter,
+        organization: {
+          id: org.id,
+          slug: org.slug,
+          name: org.name,
+          logoKey: null,
+          verifiedStatus: org.verifiedStatus,
+          verifiedKind: org.verifiedKind,
+          suspended: false,
+        },
+      })
+      if (out.length >= args.limit) break
+    }
+    return Promise.resolve(out)
+  }
+
+  declineInviteTx(args: {
+    inviteId: string
+    userId: string
+    now: Date
+  }): Promise<DeclineOrganizationInviteOutcome> {
+    const invite = this.invites.find((i) => i.id === args.inviteId)
+    if (invite === undefined || invite.status !== "pending") return Promise.resolve("invalid")
+    if (!this.inviteAddressesUser(invite, args.userId)) return Promise.resolve("invalid")
+    if (invite.expiresAt.getTime() <= args.now.getTime()) {
+      invite.status = "expired"
+      return Promise.resolve("expired")
+    }
+    invite.status = "declined"
+    invite.userId = args.userId
+    this.audits.push({
+      actorId: args.userId,
+      action: "org.invite_declined",
+      target: `organization:${invite.organizationId}`,
+      meta: { inviteId: invite.id },
+    })
+    return Promise.resolve("declined")
+  }
+
   acceptInviteTx(args: {
-    tokenHash: string
+    by: { tokenHash: string } | { inviteId: string }
     userId: string
     now: Date
   }): Promise<AcceptOrganizationInviteOutcome> {
-    const invite = this.invites.find((i) => i.tokenHash === args.tokenHash)
+    const byToken = "tokenHash" in args.by
+    const invite = byToken
+      ? this.invites.find((i) => i.tokenHash === (args.by as { tokenHash: string }).tokenHash)
+      : this.invites.find((i) => i.id === (args.by as { inviteId: string }).inviteId)
     if (invite === undefined || invite.status !== "pending") return Promise.resolve({ kind: "invalid" })
     const org = this.organizations.get(invite.organizationId)
     if (org === undefined || org.deletedAt !== null) return Promise.resolve({ kind: "invalid" })
@@ -920,18 +1004,9 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       invite.status = "expired"
       return Promise.resolve({ kind: "expired" })
     }
-    if (invite.email !== null) {
-      // The drizzle rule verbatim: the session's account must hold the invited address AND have verified it.
-      const user = this.users.get(args.userId)
-      if (
-        user === undefined ||
-        user.deletedAt !== null ||
-        user.email === null ||
-        !user.emailVerified ||
-        user.email.toLowerCase() !== invite.email.toLowerCase()
-      ) {
-        return Promise.resolve({ kind: "wrong_recipient" })
-      }
+    const addressed = this.inviteAddressesUser(invite, args.userId)
+    if (byToken ? invite.email !== null && !addressed : !addressed) {
+      return Promise.resolve({ kind: "wrong_recipient" })
     }
     if (org.suspendedAt !== null) return Promise.resolve({ kind: "suspended" })
     const existing = this.members.find(

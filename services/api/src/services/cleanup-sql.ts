@@ -42,7 +42,6 @@ export interface CleanupRowSelect {
   org_display_name: string
   org_handle: string | null
   org_bio: string | null
-  org_verified: boolean
   ends_at: Date | null
   timezone: string | null
   visibility: EventVisibility
@@ -80,7 +79,6 @@ export function toRecord(r: CleanupRowSelect): CleanupRecord {
     displayName: r.org_display_name,
     handle: r.org_handle,
     bio: r.org_bio,
-    verified: r.org_verified,
   }
   const organization: CleanupOrganizationView | null =
     r.organization_id !== null && r.organization_slug !== null && r.organization_name !== null
@@ -182,11 +180,7 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     ${distExpr} AS dist,
     u.display_name AS org_display_name,
     u.handle AS org_handle,
-    u.bio AS org_bio,
-    EXISTS (
-      SELECT 1 FROM user_verification v
-      WHERE v.user_id = c.organizer_user_id AND v.status = 'verified'
-    ) AS org_verified
+    u.bio AS org_bio
   `
 }
 

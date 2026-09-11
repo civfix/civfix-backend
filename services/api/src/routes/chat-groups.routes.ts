@@ -143,6 +143,7 @@ export async function registerChatGroupRoutes(
     const mutes = getMutes()
     return makeChatGroupService({
       groups: getGroups(),
+      ...(overrides?.groups ? {} : { affiliations: container.getAffiliationLoader() }),
       ...(mutes
         ? { isMutedFor: (userId, groupId) => mutes.isMuted(userId, "group", groupId) }
         : {}),

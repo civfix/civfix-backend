@@ -93,9 +93,13 @@ export async function registerSocialRoutes(
       ? undefined
       : (viewerId: string, targetId: string) =>
           container.getBlocksRepo().blockState(viewerId, targetId)
+    const affiliations = app.socialOverrides
+      ? undefined
+      : container.getAffiliationLoader()
     return makeSocialService({
       repo: repo(),
       logger: app.log,
+      ...(affiliations !== undefined ? { affiliations } : {}),
       ...(cache !== undefined ? { suggestionsCache: cache } : {}),
       ...(n !== undefined ? { notifier: n } : {}),
       ...(presignAvatar !== undefined ? { presignAvatar } : {}),

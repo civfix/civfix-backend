@@ -12,7 +12,6 @@ export const CERTIFICATE_MESSAGE_KEYS = [
   "certificate.doc.pdf_title",
   "certificate.header.number",
   "certificate.holder.eyebrow",
-  "certificate.holder.verified",
   "certificate.holder.period",
   "certificate.holder.issued",
   "certificate.summary.total_hours",
@@ -68,7 +67,6 @@ export interface TranscriptHolder {
   userId: string
   displayName: string
   handle: string | null
-  verified: boolean
 }
 
 export interface TranscriptModelRow {
@@ -211,7 +209,6 @@ export function ledgerFingerprint(model: TranscriptModel): string {
     locale: model.locale,
     name: model.holder.displayName,
     handle: model.holder.handle,
-    verified: model.holder.verified,
     total: model.totalHours.toFixed(2),
     count: model.entryCount,
     rows: model.rows.map((row) => [row.id, row.hours.toFixed(2), row.occurredAt]),

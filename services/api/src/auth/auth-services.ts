@@ -163,5 +163,6 @@ export function toUserDTO(user: UserRecord, now: Date = new Date()): UserDTO {
     role: user.role,
     createdAt: user.createdAt.toISOString(),
     locale: resolveLocale(user.locale),
+    primaryOrganizationId: user.primaryOrganizationId,
   }
 }

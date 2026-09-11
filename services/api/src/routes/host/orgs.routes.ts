@@ -1,11 +1,14 @@
 import {
+  AcceptMyOrgInviteRequestSchema,
   AcceptOrganizationInviteRequestSchema,
+  DeclineMyOrgInviteRequestSchema,
   ApplyOrganizationVerificationRequestSchema,
   CreateOrganizationRequestSchema,
   GetOrganizationRequestSchema,
   GetOrganizationVerificationRequestSchema,
   InviteOrganizationMemberRequestSchema,
   IdSchema,
+  ListOrganizationEventsRequestSchema,
   ListOrganizationInvitesRequestSchema,
   ListOrganizationMembersRequestSchema,
   OrgSlugSchema,
@@ -13,11 +16,15 @@ import {
   RevokeOrganizationInviteRequestSchema,
   SetOrganizationMemberRoleRequestSchema,
   UpdateOrganizationRequestSchema,
+  type AcceptMyOrgInviteResponse,
   type AcceptOrganizationInviteResponse,
+  type DeclineMyOrgInviteResponse,
+  type ListMyOrgInvitesResponse,
   type GetOrganizationResponse,
   type GetOrganizationVerificationResponse,
   type InviteOrganizationMemberResponse,
   type ListMyOrganizationsResponse,
+  type ListOrganizationEventsResponse,
   type ListOrganizationInvitesResponse,
   type ListOrganizationMembersResponse,
   type RemoveOrganizationMemberResponse,
@@ -39,6 +46,8 @@ import {
   type OrganizationService,
   type OrganizationServiceDeps,
 } from "../../services/host/organization-service.js"
+import { makeContainerCleanupService } from "../cleanups.routes.js"
+import { CLEANUPS_DEFAULT_LIMIT } from "../../services/cleanup-service.js"
 import { makeDrizzleOrganizationRepository } from "../../services/host/organization-repository.drizzle.js"
 import type { OrganizationRepository } from "../../services/host/organization-repository.types.js"
 import { makeEligibilityBootstrap } from "../../services/payments/eligibility-bootstrap.js"
@@ -70,10 +79,20 @@ const OrgMemberParamsSchema = z.object({ id: IdSchema, userId: IdSchema }).stric
 
 const OrgInviteParamsSchema = z.object({ id: IdSchema, inviteId: IdSchema }).strict()
 
+const MyOrgInviteParamsSchema = z.object({ inviteId: IdSchema }).strict()
+
 const OrgSlugParamsSchema = z.object({ slug: OrgSlugSchema }).strict()
 
 const OrgMembersQuerySchema = z
   .object({ cursor: z.string().optional(), limit: z.string().optional() })
+  .strict()
+
+const OrgEventsQuerySchema = z
+  .object({
+    when: z.string().optional(),
+    cursor: z.string().optional(),
+    limit: z.string().optional(),
+  })
   .strict()
 
 export const CREATE_ORG_RATE_LIMIT = perIdentity({ max: 5, timeWindow: "1 hour" })
@@ -136,6 +155,7 @@ export function makeContainerOrganizationService(
     repo: makeDrizzleOrganizationRepository(sql),
     counters: container.getCounterStore(),
     presignLogo: (key: string) => container.storage.presignGet(key, MEDIA_GET_URL_TTL_SEC),
+    affiliations: container.getAffiliationLoader(),
     onNonprofitVerified: bootstrap.onNonprofitVerified,
     mailer: container.mailer,
     // Lazy so the notification service is only built on the admin decide path that needs it.
@@ -192,6 +212,35 @@ export async function registerHostOrgRoutes(
         request.auth?.userId ?? null,
       )
       reply.status(200).send(dto)
+    },
+  )
+
+  route(
+    app,
+    "listOrganizationEvents",
+    { config: { rateLimit: PUBLIC_ORG_READ_RATE_LIMIT } },
+    async (request, reply) => {
+      const { slug } = parse(OrgSlugParamsSchema, request.params)
+      const q = parse(OrgEventsQuerySchema, request.query ?? {})
+      const validated = parse(ListOrganizationEventsRequestSchema, {
+        slug,
+        ...(q.when !== undefined ? { when: q.when } : {}),
+        ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
+        ...(q.limit !== undefined ? { limit: q.limit } : {}),
+      })
+      const payload: ListOrganizationEventsResponse = await makeContainerCleanupService(
+        app,
+        container,
+      ).listOrganizationEvents(
+        validated.slug,
+        { userId: request.auth?.userId ?? null },
+        {
+          when: validated.when,
+          cursor: validated.cursor ?? null,
+          limit: validated.limit ?? CLEANUPS_DEFAULT_LIMIT,
+        },
+      )
+      reply.status(200).send(payload)
     },
   )
 
@@ -277,6 +326,46 @@ export async function registerHostOrgRoutes(
       const payload: AcceptOrganizationInviteResponse = await service().acceptInvite(
         userId,
         body.token,
+      )
+      reply.status(200).send(payload)
+    },
+  )
+
+  // The invitee's own inbox (DECISIONS §34). No :id and no token: the row is addressed to the
+  // session's account (by user_id, or by an address it has verified), which IS the authorization.
+  route(app, "listMyOrgInvites", async (request, reply) => {
+    const userId = requireAuth(request)
+    const payload: ListMyOrgInvitesResponse = await service().listMyInvites(userId)
+    reply.status(200).send(payload)
+  })
+
+  route(
+    app,
+    "acceptMyOrgInvite",
+    { preHandler: csrfProtect, config: { rateLimit: ORG_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { inviteId } = parse(MyOrgInviteParamsSchema, request.params)
+      const body = parse(AcceptMyOrgInviteRequestSchema, { inviteId })
+      const payload: AcceptMyOrgInviteResponse = await service().acceptMyInvite(
+        userId,
+        body.inviteId,
+      )
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "declineMyOrgInvite",
+    { preHandler: csrfProtect, config: { rateLimit: ORG_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { inviteId } = parse(MyOrgInviteParamsSchema, request.params)
+      const body = parse(DeclineMyOrgInviteRequestSchema, { inviteId })
+      const payload: DeclineMyOrgInviteResponse = await service().declineMyInvite(
+        userId,
+        body.inviteId,
       )
       reply.status(200).send(payload)
     },

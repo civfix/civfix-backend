@@ -36,10 +36,14 @@ let sentMail: { to: string; vars: Record<string, unknown> }[]
 let bells: { userId: string; input: CreateNotificationInput }[]
 let tokenSeq: number
 
+const orgAdmins = new Set<string>()
+
 function standingOf(cleanupId: string, userId: string): HostStanding {
   const role =
     repo.members.find((m) => m.cleanupId === cleanupId && m.userId === userId)?.role ?? null
-  return role === null ? NO_HOST_STANDING : { eventRole: role, orgRole: null }
+  const orgRole = orgAdmins.has(userId) ? ("admin" as const) : null
+  if (role === null && orgRole === null) return NO_HOST_STANDING
+  return { eventRole: role, orgRole }
 }
 
 function seedOpenInvites(count: number, cleanupId: string = EVENT): void {
@@ -105,6 +109,7 @@ function makeService(): HostTeamService {
 
 beforeEach(() => {
   repo = new InMemoryHostTeamRepository()
+  orgAdmins.clear()
   clock = new Date("2026-09-06T12:00:00.000Z")
   sentMail = []
   bells = []
@@ -502,6 +507,45 @@ describe("acceptEventTeamInvite", () => {
     repo.seedMember(EVENT, INVITEE, "organizer")
     const result = await service.acceptInvite(EVENT, INVITEE, "token-1-aaaaaaaaaaaaaaaaaaaaaaaa")
     expect(result.role).toBe("organizer")
+  })
+
+  it("0.43.0: an org admin seats nobody on the event team, in any role", async () => {
+    orgAdmins.add(STRANGER)
+    expect(can({ eventRole: null, orgRole: "admin" }, "manage_team")).toBe(false)
+    for (const role of ["cohost", "coordinator", "staff"] as const) {
+      await expect(
+        service.inviteMember(EVENT, STRANGER, {
+          identifierKind: "email",
+          identifier: "ida@x.org",
+          role,
+        }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    }
+    expect(repo.invites).toHaveLength(0)
+  })
+
+  it("refuses a self-invite by handle, so manage_team cannot mint the inviter a seat", async () => {
+    repo.seedUser({ id: ORGANIZER, handle: "olive", email: "olive@x.org" })
+    await expect(
+      service.inviteMember(EVENT, ORGANIZER, {
+        identifierKind: "handle",
+        identifier: "olive",
+        role: "cohost",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    expect(repo.invites).toHaveLength(0)
+  })
+
+  it("refuses to let the inviter accept their own emailed invite", async () => {
+    await service.inviteMember(EVENT, ORGANIZER, {
+      identifierKind: "email",
+      identifier: "olive@x.org",
+      role: "cohost",
+    })
+    repo.seedUser({ id: ORGANIZER, handle: "olive", email: "olive@x.org" })
+    await expect(
+      service.acceptInvite(EVENT, ORGANIZER, "token-1-aaaaaaaaaaaaaaaaaaaaaaaa"),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 
   it("an email-only invite is bound to that address, not to whoever holds the link", async () => {

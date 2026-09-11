@@ -40,7 +40,6 @@ export function toAttendeePersonDTO(view: CleanupPersonView, isFollowing: boolea
     followers: 0,
     following: 0,
     isFollowing,
-    ...(view.verified ? { verified: true } : {}),
   }
 }
 

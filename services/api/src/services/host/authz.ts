@@ -1,5 +1,10 @@
-import { AppError, type EventVisibility, type HostCapability } from "@civfix/shared"
-import { can, type HostStanding } from "@civfix/shared/host"
+import {
+  AppError,
+  type CleanupMemberRole,
+  type EventVisibility,
+  type HostCapability,
+} from "@civfix/shared"
+import { can, hostCapabilities, type HostStanding } from "@civfix/shared/host"
 import type { Queryable } from "../../db/client.js"
 import { hostStandingOf, orgStandingOf, type HostStandingResolution } from "./host-standing.js"
 
@@ -22,6 +27,7 @@ const FORBIDDEN_COPY: Record<HostCapability, string> = {
   request_resources: "Only the event organizer can request city resources.",
   manage_payments: "Only the organization owner can manage payments.",
   view_donations: "Only organization admins can view donations.",
+  manage_org_members: "Only organization admins can manage members.",
 }
 
 export function hostForbiddenCopy(capability: HostCapability): string {
@@ -30,6 +36,16 @@ export function hostForbiddenCopy(capability: HostCapability): string {
 
 export function isEventPubliclyVisible(visibility: EventVisibility): boolean {
   return visibility === "public" || visibility === "unlisted"
+}
+
+export function assertMayGrantRole(actor: HostStanding, role: CleanupMemberRole): void {
+  const granted = hostCapabilities({ eventRole: role, orgRole: null })
+  const held = hostCapabilities(actor)
+  for (const capability of granted) {
+    if (!held.has(capability)) {
+      throw AppError.forbidden("You can't give someone a role with powers you don't hold yourself.")
+    }
+  }
 }
 
 export function hasHostStanding(standing: HostStanding): boolean {

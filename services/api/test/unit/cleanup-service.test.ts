@@ -38,6 +38,7 @@ function baseInput(over: Partial<CreateCleanupRequest> = {}): CreateCleanupReque
     scheduledAt: over.scheduledAt ?? new Date(Date.now() + 86_400_000).toISOString(),
     ...(over.bring !== undefined ? { bring: over.bring } : {}),
     ...(over.address !== undefined ? { address: over.address } : {}),
+    ...(over.organizationId !== undefined ? { organizationId: over.organizationId } : {}),
   }
 }
 
@@ -620,9 +621,11 @@ describe("requestResources (D19 event resource request)", () => {
     text: string
   }
 
-  function harness(opts: { verified: boolean; contact?: { geoid: string; email: string } | null }) {
+  function harness(opts: { contact?: { geoid: string; email: string } | null }) {
     const r = new InMemoryCleanupRepository()
     r.seedUser({ id: ORG, displayName: "Olive Organizer", handle: "olive" })
+    const organization = r.seedOrganization({ name: "Ballona Creek Trust" })
+    r.seedOrgMember(organization.id, ORG, "member")
     const sends: EventSend[] = []
     if (opts.contact) {
       r.jurisdictionContacts.set(opts.contact.geoid, {
@@ -634,7 +637,6 @@ describe("requestResources (D19 event resource request)", () => {
     const svc = makeCleanupService({
       repo: r,
       counters,
-      isVerified: () => Promise.resolve(opts.verified),
       outboundMail: {
         sendEventToJurisdiction: (input) => {
           sends.push({
@@ -672,26 +674,32 @@ describe("requestResources (D19 event resource request)", () => {
       repo: r,
       counters: { incr: () => Promise.resolve(1), incrBy: () => Promise.resolve(1) },
     })
-    return { repo: r, svc, sends, creator }
+    return { repo: r, svc, sends, creator, organizationId: organization.id }
   }
 
   async function seedEvent(
     r: InMemoryCleanupRepository,
     creator: CleanupService,
     geoid: string | null,
+    organizationId?: string,
   ): Promise<string> {
-    const dto = await creator.createCleanup(baseInput({ title: "Park Cleanup" }), ORG)
+    const dto = await creator.createCleanup(
+      baseInput({
+        title: "Park Cleanup",
+        ...(organizationId !== undefined ? { organizationId } : {}),
+      }),
+      ORG,
+    )
     const stored = r.cleanups.get(dto.id)
     if (stored) stored.jurisdictionGeoid = geoid
     return dto.id
   }
 
-  it("happy path: verified host -> event thread send + resource_request timeline row", async () => {
-    const { repo: r, svc, sends, creator } = harness({
-      verified: true,
+  it("happy path: org-hosted event -> event thread send + resource_request timeline row", async () => {
+    const { repo: r, svc, sends, creator, organizationId } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
-    const id = await seedEvent(r, creator, "0644000")
+    const id = await seedEvent(r, creator, "0644000", organizationId)
     const res = await svc.requestResources({ cleanupId: id, message: "Need 20 trash bags.", actorId: ORG })
     expect(res).toEqual({ ok: true })
 
@@ -707,11 +715,10 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("F068: 422s a slur in the message and neither sends nor writes a timeline row", async () => {
-    const { repo: r, svc, sends, creator } = harness({
-      verified: true,
+    const { repo: r, svc, sends, creator, organizationId } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
-    const id = await seedEvent(r, creator, "0644000")
+    const id = await seedEvent(r, creator, "0644000", organizationId)
     await expect(
       svc.requestResources({ cleanupId: id, message: "please send bags nigger", actorId: ORG }),
     ).rejects.toMatchObject({ code: "VALIDATION" })
@@ -721,17 +728,16 @@ describe("requestResources (D19 event resource request)", () => {
 
 
   it("M20: a FRESH event does not reset the host's budget (the old cleanupId-keyed bypass)", async () => {
-    const { repo: r, svc, sends, creator } = harness({
-      verified: true,
+    const { repo: r, svc, sends, creator, organizationId } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     for (let i = 0; i < RESOURCE_REQUEST_PER_HOST_PER_DAY; i += 1) {
-      const id = await seedEvent(r, creator, "0644000")
+      const id = await seedEvent(r, creator, "0644000", organizationId)
       await svc.requestResources({ cleanupId: id, message: `Need bags ${i}.`, actorId: ORG })
     }
     expect(sends).toHaveLength(RESOURCE_REQUEST_PER_HOST_PER_DAY)
 
-    const fresh = await seedEvent(r, creator, "0644000")
+    const fresh = await seedEvent(r, creator, "0644000", organizationId)
     await expect(
       svc.requestResources({ cleanupId: fresh, message: "One more.", actorId: ORG }),
     ).rejects.toMatchObject({ code: "RATE_LIMITED" })
@@ -739,8 +745,7 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("M20: caps a single jurisdiction per hour across DIFFERENT hosts (colluding accounts)", async () => {
-    const { repo: r, svc, sends } = harness({
-      verified: true,
+    const { repo: r, svc, sends, organizationId } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     let host = 0
@@ -748,7 +753,11 @@ describe("requestResources (D19 event resource request)", () => {
       if (i % RESOURCE_REQUEST_PER_HOST_PER_DAY === 0) host += 1
       const organizer = `${host}${ORG.slice(1)}`
       r.seedUser({ id: organizer, displayName: `Host ${host}`, handle: `h${host}` })
-      const dto = await svc.createCleanup(baseInput({ title: "Park Cleanup" }), organizer)
+      r.seedOrgMember(organizationId, organizer, "member")
+      const dto = await svc.createCleanup(
+        baseInput({ title: "Park Cleanup", organizationId }),
+        organizer,
+      )
       const stored = r.cleanups.get(dto.id)
       if (stored) stored.jurisdictionGeoid = "0644000"
       await svc.requestResources({ cleanupId: dto.id, message: "Need bags.", actorId: organizer })
@@ -757,7 +766,11 @@ describe("requestResources (D19 event resource request)", () => {
 
     const nextHost = "9" + ORG.slice(1)
     r.seedUser({ id: nextHost, displayName: "Host 9", handle: "h9" })
-    const dto = await svc.createCleanup(baseInput({ title: "Park Cleanup" }), nextHost)
+    r.seedOrgMember(organizationId, nextHost, "member")
+    const dto = await svc.createCleanup(
+      baseInput({ title: "Park Cleanup", organizationId }),
+      nextHost,
+    )
     const stored = r.cleanups.get(dto.id)
     if (stored) stored.jurisdictionGeoid = "0644000"
     await expect(
@@ -767,11 +780,10 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("M20: a rejected request (403) costs the host nothing", async () => {
-    const { repo: r, svc, sends, creator } = harness({
-      verified: true,
+    const { repo: r, svc, sends, creator, organizationId } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
-    const id = await seedEvent(r, creator, "0644000")
+    const id = await seedEvent(r, creator, "0644000", organizationId)
     await expect(
       svc.requestResources({ cleanupId: id, message: "hi", actorId: ALICE }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
@@ -782,20 +794,18 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("403s a non-host (and sends nothing)", async () => {
-    const { repo: r, svc, sends, creator } = harness({
-      verified: true,
+    const { repo: r, svc, sends, creator, organizationId } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
-    const id = await seedEvent(r, creator, "0644000")
+    const id = await seedEvent(r, creator, "0644000", organizationId)
     await expect(
       svc.requestResources({ cleanupId: id, message: "hi", actorId: ALICE }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
     expect(sends).toHaveLength(0)
   })
 
-  it("403s a host who is NOT identity-verified", async () => {
+  it("403s a personal (org-less) event: city resources are an organization's ask", async () => {
     const { repo: r, svc, sends, creator } = harness({
-      verified: false,
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     const id = await seedEvent(r, creator, "0644000")
@@ -805,9 +815,22 @@ describe("requestResources (D19 event resource request)", () => {
     expect(sends).toHaveLength(0)
   })
 
+  it("403s an org member who only has a plain seat on the event (no manage_event)", async () => {
+    const { repo: r, svc, sends, creator, organizationId } = harness({
+      contact: { geoid: "0644000", email: "events@lacity.gov" },
+    })
+    const id = await seedEvent(r, creator, "0644000", organizationId)
+    r.seedUser({ id: ALICE, displayName: "Alice", handle: "alice" })
+    r.seedOrgMember(organizationId, ALICE, "member")
+    await expect(
+      svc.requestResources({ cleanupId: id, message: "hi", actorId: ALICE }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    expect(sends).toHaveLength(0)
+  })
+
   it("422 NOT_ROUTABLE when the jurisdiction has no contact on file", async () => {
-    const { repo: r, svc, sends, creator } = harness({ verified: true, contact: null })
-    const id = await seedEvent(r, creator, "0644000")
+    const { repo: r, svc, sends, creator, organizationId } = harness({ contact: null })
+    const id = await seedEvent(r, creator, "0644000", organizationId)
     await expect(
       svc.requestResources({ cleanupId: id, message: "hi", actorId: ORG }),
     ).rejects.toMatchObject({ code: "NOT_ROUTABLE" })

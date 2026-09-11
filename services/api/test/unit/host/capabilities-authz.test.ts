@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest"
 import type { CleanupMemberRole, HostCapability, OrganizationMemberRole } from "@civfix/shared"
 import { HOST_CAPABILITY_VALUES } from "@civfix/shared"
-import { can, hostCapabilities, NO_HOST_STANDING } from "@civfix/shared/host"
+import { can, hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import {
+  assertMayGrantRole,
   hasHostStanding,
   hostForbiddenCopy,
   isEventPubliclyVisible,
@@ -29,9 +30,13 @@ describe("host capability matrix (backend realm)", () => {
 
   it("organizer holds every event-lane capability", () => {
     const caps = hostCapabilities({ eventRole: "organizer", orgRole: null })
+    const orgLaneOnly: HostCapability[] = [
+      "manage_payments",
+      "view_donations",
+      "manage_org_members",
+    ]
     for (const capability of HOST_CAPABILITY_VALUES) {
-      const paymentsOnly = capability === "manage_payments" || capability === "view_donations"
-      expect(caps.has(capability), capability).toBe(!paymentsOnly)
+      expect(caps.has(capability), capability).toBe(!orgLaneOnly.includes(capability))
     }
   })
 
@@ -110,14 +115,24 @@ describe("host capability matrix (backend realm)", () => {
     expect(owner.has("manage_team")).toBe(true)
     expect(owner.has("cancel_event")).toBe(true)
     expect(owner.has("manage_payments")).toBe(true)
+    expect(owner.has("manage_org_members")).toBe(true)
   })
 
-  it("org admin gets the cohost set minus export, plus view_donations", () => {
+  it("org admin gets the cohost set minus export and manage_team, plus the org roster", () => {
     const admin = hostCapabilities({ eventRole: null, orgRole: "admin" })
     expect(admin.has("export")).toBe(false)
     expect(admin.has("manage_event")).toBe(true)
     expect(admin.has("view_donations")).toBe(true)
     expect(admin.has("manage_payments")).toBe(false)
+    expect(admin.has("manage_org_members")).toBe(true)
+    expect(admin.has("manage_team")).toBe(false)
+  })
+
+  it("the org roster token never leaks the event-team token: an admin cannot seat a cohost", () => {
+    const admin: HostStanding = { eventRole: null, orgRole: "admin" }
+    expect(can(admin, "manage_team")).toBe(false)
+    expect(() => assertMayGrantRole(admin, "cohost")).toThrow()
+    expect(can({ eventRole: null, orgRole: "member" }, "manage_org_members")).toBe(false)
   })
 
   it("an event staffer who is also an org owner gets the union, not the smaller set", () => {

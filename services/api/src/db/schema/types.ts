@@ -100,6 +100,7 @@ export const NOTIFICATION_TYPE_VALUES = [
   "hours_logged",
   "event_broadcast",
   "event_team_invite",
+  "org_invite",
 ] as const
 
 export const POST_KIND_VALUES = ["post", "repost", "quote", "reply"] as const

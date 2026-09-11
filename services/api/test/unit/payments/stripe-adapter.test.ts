@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest"
 import type Stripe from "stripe"
 import {
+  balanceMinorOf,
   isAlreadyRefundedError,
   modeOfSecretKey,
   splitBalanceTransactionFees,
   StripePayments,
+  toPayoutRecord,
+  toPayoutSchedule,
 } from "../../../src/adapters/payments.stripe.js"
 
 function adapter(client: unknown, secretKey = "rk_test_123"): StripePayments {
@@ -247,5 +250,143 @@ describe("application fee refund error classification", () => {
     ).toBe(false)
     expect(isAlreadyRefundedError(new Error("boom"))).toBe(false)
     expect(isAlreadyRefundedError(null)).toBe(false)
+  })
+})
+
+describe("payouts run on the connected account", () => {
+  const account = {
+    id: "acct_1",
+    payouts_enabled: true,
+    settings: { payouts: { schedule: { interval: "daily", delay_days: 2 } } },
+  }
+
+  it("sums only the requested currency and reads the schedule off the account", async () => {
+    const balanceCalls: unknown[] = []
+    const stripe = adapter({
+      balance: {
+        retrieve: (params: unknown, options: unknown) => {
+          balanceCalls.push(options)
+          void params
+          return Promise.resolve({
+            available: [
+              { amount: 4_000, currency: "usd" },
+              { amount: 900, currency: "cad" },
+            ],
+            pending: [{ amount: 1_500, currency: "usd" }],
+          })
+        },
+      },
+      accounts: { retrieve: () => Promise.resolve(account) },
+    })
+
+    const balance = await stripe.retrieveBalance("acct_1")
+    expect(balance).toEqual({
+      availableMinor: 4_000,
+      pendingMinor: 1_500,
+      currency: "usd",
+      payoutsEnabled: true,
+      payoutSchedule: { interval: "daily", delayDays: 2 },
+    })
+    expect(balanceCalls).toEqual([{ stripeAccount: "acct_1" }])
+  })
+
+  it("creates the payout on the connected account under the caller's idempotency key", async () => {
+    const calls: { params: unknown; options: unknown }[] = []
+    const stripe = adapter({
+      payouts: {
+        create: (params: unknown, options: unknown) => {
+          calls.push({ params, options })
+          return Promise.resolve({
+            id: "po_1",
+            amount: 4_000,
+            currency: "usd",
+            status: "pending",
+            arrival_date: 1_800_000_000,
+            created: 1_700_000_000,
+            failure_message: null,
+          })
+        },
+      },
+    })
+
+    const payout = await stripe.createPayout("acct_1", {
+      amountMinor: 4_000,
+      currency: "usd",
+      idempotencyKey: "key-1",
+    })
+
+    expect(calls).toEqual([
+      {
+        params: { amount: 4_000, currency: "usd" },
+        options: { stripeAccount: "acct_1", idempotencyKey: "key-1" },
+      },
+    ])
+    expect(payout).toEqual({
+      id: "po_1",
+      amountMinor: 4_000,
+      currency: "usd",
+      status: "pending",
+      arrivalDateSec: 1_800_000_000,
+      createdSec: 1_700_000_000,
+      failureMessage: null,
+    })
+  })
+
+  it("maps a stripe refusal to civfix copy and never leaks the account id", async () => {
+    const stripe = adapter({
+      payouts: {
+        create: () =>
+          Promise.reject(
+            Object.assign(new Error("Insufficient funds in acct_1234567890"), {
+              type: "StripeInvalidRequestError",
+              code: "balance_insufficient",
+            }),
+          ),
+      },
+    })
+
+    await expect(
+      stripe.createPayout("acct_1", { amountMinor: 100, currency: "usd", idempotencyKey: "k" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    await expect(
+      stripe.createPayout("acct_1", { amountMinor: 100, currency: "usd", idempotencyKey: "k" }),
+    ).rejects.not.toMatchObject({ message: expect.stringContaining("acct_") })
+  })
+
+  it("pages payouts on the connected account", async () => {
+    const calls: { params: unknown; options: unknown }[] = []
+    const stripe = adapter({
+      payouts: {
+        list: (params: unknown, options: unknown) => {
+          calls.push({ params, options })
+          return Promise.resolve({
+            data: [{ id: "po_2", amount: 10, currency: "usd", status: "paid", created: 2 }],
+            has_more: true,
+          })
+        },
+      },
+    })
+
+    const page = await stripe.listPayouts("acct_1", { limit: 5, startingAfter: "po_1" })
+    expect(calls).toEqual([
+      {
+        params: { limit: 5, starting_after: "po_1" },
+        options: { stripeAccount: "acct_1" },
+      },
+    ])
+    expect(page.nextCursor).toBe("po_2")
+    expect(page.items[0]?.status).toBe("paid")
+  })
+
+  it("keeps an unknown status and a missing schedule from becoming a lie", () => {
+    expect(toPayoutRecord({ id: "po_3", status: "reversed" }).status).toBe("pending")
+    expect(toPayoutRecord({ id: "po_3", arrival_date: 0 }).arrivalDateSec).toBeNull()
+    expect(toPayoutSchedule({})).toBeNull()
+    expect(toPayoutSchedule({ settings: { payouts: { schedule: { interval: "hourly" } } } })).toBeNull()
+    expect(
+      toPayoutSchedule({ settings: { payouts: { schedule: { interval: "manual" } } } }),
+    ).toEqual({ interval: "manual" })
+    expect(balanceMinorOf(undefined, "usd")).toBe(0)
+    expect(balanceMinorOf([{ amount: "5", currency: "usd" }], "usd")).toBe(0)
   })
 })

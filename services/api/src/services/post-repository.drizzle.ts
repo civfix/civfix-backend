@@ -4,6 +4,7 @@ import type {
   LinkedEventRef,
   LinkedReportRef,
   MediaDTO,
+  OrganizationRefDTO,
   PersonDTO,
   PostDTO,
   PostRefDTO,
@@ -17,6 +18,12 @@ import { goingScalar } from "./cleanup-sql.js"
 import { servedKeyExpr } from "./media-served-key.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
+import {
+  NO_AFFILIATIONS,
+  withAffiliation,
+  type AffiliationLoader,
+  type PrimaryAffiliations,
+} from "./affiliation.js"
 import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
 
 type PostKind = (typeof POST_KIND_VALUES)[number]
@@ -36,6 +43,7 @@ export interface CreatePostArgs {
   reportId: string | null
   mediaUploadIds: string[]
   mentionedUserIds: string[]
+  organizationId: string | null
 }
 
 export interface PostBrief {
@@ -72,6 +80,7 @@ export interface PublicFeedArgs {
 export interface PostRepository {
   getPostBrief(id: string): Promise<PostBrief | null>
   actorNameOf(userId: string): Promise<string>
+  canPostAsOrganization(organizationId: string, userId: string): Promise<boolean>
   isEventMember(eventId: string, userId: string): Promise<boolean>
   isReportAttachable(reportId: string): Promise<boolean>
 
@@ -108,6 +117,7 @@ interface PostRowSelect {
   repost_count: number
   reply_count: number
   save_count: number
+  organization_id: string | null
   created_at: Date
   updated_at: Date
 }
@@ -119,7 +129,6 @@ interface AuthorRow {
   bio: string | null
   followers: number
   following: number
-  verified: boolean
   avatar_r2_key: string | null
   avatar_url: string | null
   is_following: boolean
@@ -139,7 +148,6 @@ interface EventRow {
   org_name: string
   org_handle: string | null
   org_bio: string | null
-  org_verified: boolean
   org_avatar_url: string | null
 }
 
@@ -173,8 +181,8 @@ interface RefRow {
   display_name: string | null
   handle: string | null
   bio: string | null
-  verified: boolean | null
   avatar_url: string | null
+  organization_id: string | null
 }
 
 interface PostCounts {
@@ -205,6 +213,7 @@ interface MediaRow {
 export interface PostRepoDeps {
   presignMedia: PresignMedia
   presignAvatar: (r2Key: string) => Promise<string>
+  affiliations?: AffiliationLoader
 }
 
 function nameFrom(displayName: string | null, handle: string | null): string {
@@ -239,6 +248,54 @@ export async function tombstonePostInTx(tx: Queryable, postId: string): Promise<
 }
 
 export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRepository {
+  async function loadAffiliations(
+    userIds: string[],
+    viewerId: string,
+  ): Promise<PrimaryAffiliations> {
+    if (deps.affiliations === undefined) return NO_AFFILIATIONS
+    return deps.affiliations(userIds, viewerId)
+  }
+
+  async function loadOrganizations(ids: string[]): Promise<Map<string, OrganizationRefDTO>> {
+    const out = new Map<string, OrganizationRefDTO>()
+    const wanted = [...new Set(ids)]
+    if (wanted.length === 0) return out
+    const rows = await sql<
+      {
+        id: string
+        slug: string
+        name: string
+        verified_status: string
+        verified_kind: OrganizationRefDTO["verifiedKind"]
+        logo_key: string | null
+      }[]
+    >`
+      SELECT o.id, o.slug, o.name, o.verified_status, o.verified_kind,
+             ${servedKeyExpr(sql, "am")} AS logo_key
+      FROM organizations o
+      LEFT JOIN media_assets am ON am.id = o.logo_media_id
+      WHERE o.id = ANY(${wanted}::uuid[]) AND o.deleted_at IS NULL
+    `
+    const keys = [...new Set(rows.map((r) => r.logo_key).filter((k): k is string => k !== null))]
+    const urls = await mapWithLimit(keys, PRESIGN_CONCURRENCY, (key) => deps.presignAvatar(key))
+    const byKey = new Map<string, string>()
+    keys.forEach((key, i) => {
+      const url = urls[i]
+      if (url !== undefined) byKey.set(key, url)
+    })
+    for (const r of rows) {
+      out.set(r.id, {
+        id: r.id,
+        slug: r.slug,
+        name: r.name,
+        logoUrl: r.logo_key === null ? null : (byKey.get(r.logo_key) ?? null),
+        verified: r.verified_status === "verified",
+        verifiedKind: r.verified_kind,
+      })
+    }
+    return out
+  }
+
   async function loadAuthors(
     ids: string[],
     viewerId: string,
@@ -253,7 +310,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         u.bio,
         u.follower_count AS followers,
         u.following_count AS following,
-        EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
         ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
         u.avatar_url,
         u.deleted_at,
@@ -286,12 +342,15 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         followers: identity.deleted ? 0 : Number(r.followers),
         following: identity.deleted ? 0 : Number(r.following),
         isFollowing: identity.deleted ? false : r.is_following,
-        ...(!identity.deleted && r.verified ? { verified: true } : {}),
         ...(identity.deleted ? { deleted: true } : {}),
       }
       return dto
     })
-    for (const dto of resolved) out.set(dto.id, dto)
+    const affiliations = await loadAffiliations(
+      rows.filter((r) => r.deleted_at === null).map((r) => r.id),
+      viewerId,
+    )
+    for (const dto of resolved) out.set(dto.id, withAffiliation(dto, affiliations))
     return out
   }
 
@@ -312,7 +371,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         u.display_name AS org_name,
         u.handle AS org_handle,
         u.bio AS org_bio,
-        EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS org_verified,
         u.avatar_url AS org_avatar_url
       FROM cleanups c
       JOIN users u ON u.id = c.organizer_user_id
@@ -330,7 +388,6 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         followers: 0,
         following: 0,
         isFollowing: false,
-        ...(r.org_verified ? { verified: true } : {}),
       }
       out.set(r.id, {
         id: r.id,
@@ -399,18 +456,22 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     refs: Map<string, PostRefDTO>
     counts: Map<string, PostCounts>
     links: Map<string, RefLink>
+    orgIds: Map<string, string>
+    authorIds: string[]
   }> {
     const out = new Map<string, PostRefDTO>()
     const counts = new Map<string, PostCounts>()
     const links = new Map<string, RefLink>()
-    if (ids.length === 0) return { refs: out, counts, links }
+    const orgIds = new Map<string, string>()
+    const authorIds: string[] = []
+    if (ids.length === 0) return { refs: out, counts, links, orgIds, authorIds }
     const rows = await sql<RefRow[]>`
       SELECT
         p.id, p.kind, p.body, p.event_id, p.report_id,
         p.like_count, p.repost_count, p.reply_count, p.save_count,
         p.created_at, p.deleted_at, p.visibility,
-        u.id AS author_id, u.display_name, u.handle, u.bio, u.avatar_url,
-        EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified
+        p.organization_id,
+        u.id AS author_id, u.display_name, u.handle, u.bio, u.avatar_url
       FROM posts p
       LEFT JOIN users u ON u.id = p.author_id AND u.deleted_at IS NULL
       WHERE p.id = ANY(${ids}::uuid[])
@@ -434,9 +495,10 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
               followers: 0,
               following: 0,
               isFollowing: false,
-              ...(r.verified ? { verified: true } : {}),
             }
           : null
+      if (author !== null) authorIds.push(author.id)
+      if (!deleted && r.organization_id !== null) orgIds.set(r.id, r.organization_id)
       out.set(r.id, {
         id: r.id,
         author,
@@ -463,7 +525,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         })
       }
     }
-    return { refs: out, counts, links }
+    return { refs: out, counts, links, orgIds, authorIds }
   }
 
   async function loadMedia(ids: string[]): Promise<Map<string, MediaDTO[]>> {
@@ -564,15 +626,24 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       ),
     ]
     const readableRefIds = [...refs.values()].filter((r) => !r.deleted).map((r) => r.id)
-    const [events, reports, refMedia] = await Promise.all([
+    const orgIds = [
+      ...rows.map((r) => r.organization_id).filter((x): x is string => x !== null),
+      ...refsResult.orgIds.values(),
+    ]
+    const [events, reports, refMedia, organizations, refAffiliations] = await Promise.all([
       loadEvents(eventIds),
       loadReports(reportIds),
       loadMedia(readableRefIds),
+      loadOrganizations(orgIds),
+      loadAffiliations(refsResult.authorIds, viewerId),
     ])
 
     for (const ref of refs.values()) {
       if (ref.deleted) continue
       ref.media = refMedia.get(ref.id) ?? []
+      if (ref.author !== null) ref.author = withAffiliation(ref.author, refAffiliations)
+      const refOrgId = refsResult.orgIds.get(ref.id)
+      ref.organization = refOrgId === undefined ? null : (organizations.get(refOrgId) ?? null)
       const link = refLinks.get(ref.id)
       if (!link) continue
       const refEvent = link.eventId !== null ? events.get(link.eventId) : undefined
@@ -603,6 +674,8 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       const dto: PostDTO = {
         id: r.id,
         author,
+        organization:
+          r.organization_id === null ? null : (organizations.get(r.organization_id) ?? null),
         kind: r.kind,
         body: r.body,
         createdAt: r.created_at.toISOString(),
@@ -682,6 +755,20 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       return r ? nameFrom(r.display_name, r.handle) : "Someone"
     },
 
+    async canPostAsOrganization(organizationId: string, userId: string): Promise<boolean> {
+      const rows = await sql<{ one: number }[]>`
+        SELECT 1 AS one
+        FROM organization_members m
+        JOIN organizations o ON o.id = m.organization_id
+        WHERE m.organization_id = ${organizationId}
+          AND m.user_id = ${userId}
+          AND o.deleted_at IS NULL
+          AND o.suspended_at IS NULL
+        LIMIT 1
+      `
+      return rows.length > 0
+    },
+
     async isEventMember(eventId: string, userId: string): Promise<boolean> {
       const rows = await sql<{ one: number }[]>`
         SELECT 1 AS one FROM cleanups c
@@ -723,10 +810,13 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
           threadRootId = parent?.thread_root_id ?? parent?.id ?? null
         }
         const inserted = await tx<{ id: string }[]>`
-          INSERT INTO posts (author_id, kind, body, reply_to_id, thread_root_id, repost_of_id, event_id, report_id)
+          INSERT INTO posts (
+            author_id, kind, body, reply_to_id, thread_root_id, repost_of_id, event_id, report_id,
+            organization_id
+          )
           VALUES (
             ${args.authorId}, ${args.kind}, ${args.body}, ${replyToId}, ${threadRootId},
-            ${repostOfId}, ${args.eventId}, ${args.reportId}
+            ${repostOfId}, ${args.eventId}, ${args.reportId}, ${args.organizationId ?? null}
           )
           RETURNING id
         `
@@ -880,7 +970,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         SELECT
           p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
           p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
-          p.created_at, p.updated_at
+          p.organization_id, p.created_at, p.updated_at
         FROM posts p
         WHERE p.deleted_at IS NULL
           AND p.reply_to_id IS NULL
@@ -916,7 +1006,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         SELECT
           p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
           p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
-          p.created_at, p.updated_at
+          p.organization_id, p.created_at, p.updated_at
         FROM posts p
         WHERE p.deleted_at IS NULL
           AND p.reply_to_id IS NULL
@@ -937,7 +1027,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         SELECT
           p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
           p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
-          p.created_at, p.updated_at
+          p.organization_id, p.created_at, p.updated_at
         FROM posts p
         WHERE p.reply_to_id = ${postId} AND p.deleted_at IS NULL
           AND p.visibility = 'public'
@@ -961,7 +1051,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         SELECT
           p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
           p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
-          p.created_at, p.updated_at
+          p.organization_id, p.created_at, p.updated_at
         FROM posts p
         WHERE p.author_id = ${authorId} AND p.deleted_at IS NULL AND p.reply_to_id IS NULL
           AND p.visibility = 'public'
@@ -980,7 +1070,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         SELECT
           p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
           p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
-          p.created_at, p.updated_at, ps.created_at AS saved_at
+          p.organization_id, p.created_at, p.updated_at, ps.created_at AS saved_at
         FROM post_saves ps
         JOIN posts p ON p.id = ps.post_id
         WHERE ps.user_id = ${args.viewerId} AND p.deleted_at IS NULL

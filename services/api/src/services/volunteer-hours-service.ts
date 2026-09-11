@@ -11,6 +11,7 @@ import type {
   MyVolunteerHoursDTO,
   MyVolunteerHoursEntriesQuery,
   MyVolunteerHoursEntriesResponse,
+  OrganizationRefDTO,
   PublicVolunteerHoursQuery,
   PublicVolunteerHoursResponse,
   VolunteerHoursEntryDTO,
@@ -20,6 +21,7 @@ import { can, type HostStanding } from "@civfix/shared/host"
 import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
 import { MIN_EVENT_DURATION_MS } from "./cleanup-rules.js"
 import { mapWithLimit } from "./media-presign.js"
+import type { AffiliationLoader } from "./affiliation.js"
 import type { NotificationService } from "./notification-service.js"
 
 export const LEADERBOARD_DEFAULT_LIMIT = 20
@@ -110,7 +112,12 @@ export interface VolunteerHoursEntryView {
   reportId: string | null
   jurisdictionGeoid: string | null
   jurisdictionName: string | null
-  creditedBy: { id: string; name: string; handle: string | null; verified: boolean } | null
+  creditedBy: {
+    id: string
+    name: string
+    handle: string | null
+    organization: OrganizationRefDTO | null
+  } | null
 }
 
 export interface EventHoursLedgerEntry {
@@ -199,7 +206,7 @@ export interface CleanupHoursLookup {
 export interface VolunteerHoursServiceDeps {
   repo: VolunteerHoursRepository
   cleanups: CleanupHoursLookup
-  isVerified: (userId: string) => Promise<boolean>
+  affiliations?: AffiliationLoader
   isBlockedEitherWay?: (viewerId: string, targetId: string) => Promise<boolean>
   notifier?: Pick<NotificationService, "createNotification">
   moderation?: HoursModerationSink
@@ -260,6 +267,32 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100
 }
 
+export async function entriesWithCreditorAffiliation(
+  load: AffiliationLoader | undefined,
+  views: readonly VolunteerHoursEntryView[],
+  viewerId: string | null,
+): Promise<VolunteerHoursEntryDTO[]> {
+  const dtos = views.map(toVolunteerHoursEntryDTO)
+  if (load === undefined) return dtos
+  const creditorIds = views
+    .map((v) => v.creditedBy?.id)
+    .filter((id): id is string => id !== undefined)
+  if (creditorIds.length === 0) return dtos
+  const affiliations = await load(creditorIds, viewerId)
+  if (affiliations.size === 0) return dtos
+  return dtos.map((dto) =>
+    dto.creditedBy === undefined || dto.creditedBy === null
+      ? dto
+      : {
+          ...dto,
+          creditedBy: {
+            ...dto.creditedBy,
+            organization: affiliations.get(dto.creditedBy.id) ?? null,
+          },
+        },
+  )
+}
+
 export function toVolunteerHoursEntryDTO(view: VolunteerHoursEntryView): VolunteerHoursEntryDTO {
   return {
     id: view.id,
@@ -281,7 +314,7 @@ export function toVolunteerHoursEntryDTO(view: VolunteerHoursEntryView): Volunte
             id: view.creditedBy.id,
             name: view.creditedBy.name,
             ...(view.creditedBy.handle !== null ? { handle: view.creditedBy.handle } : {}),
-            verified: view.creditedBy.verified,
+            organization: view.creditedBy.organization,
           },
         }
       : {}),
@@ -376,7 +409,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         deps.repo.totalHoursFor(userId),
       ])
       return {
-        items: page.items.map(toVolunteerHoursEntryDTO),
+        items: await entriesWithCreditorAffiliation(deps.affiliations, page.items, userId),
         nextCursor: page.nextCursor,
         totalHours,
       }
@@ -419,7 +452,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         visible: true,
         totalHours: totals.totalHours,
         byJurisdiction: totals.byJurisdiction,
-        items: page.items.map(toVolunteerHoursEntryDTO),
+        items: await entriesWithCreditorAffiliation(deps.affiliations, page.items, viewerId),
         reportHours: 0,
         nextCursor: page.nextCursor,
       }
@@ -462,10 +495,6 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       const actorStanding = await standingFor(input.cleanupId, input.actorId)
       if (!can(actorStanding, "manage_event")) {
         throw AppError.forbidden("Only the event hosts can log volunteer hours.")
-      }
-      const verified = await deps.isVerified(input.actorId)
-      if (!verified) {
-        throw AppError.forbidden("Only verified hosts can log volunteer hours.")
       }
       if (cleanup.status !== "done") {
         throw AppError.conflict("Volunteer hours can only be logged for a completed event.")

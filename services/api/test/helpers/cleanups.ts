@@ -14,6 +14,7 @@ import type {
   CompleteCleanupOutcome,
   CreateCleanupTxArgs,
   DesiredSlot,
+  DuplicateSource,
   EventSlotView,
   LinkedEventView,
   LinkedReportView,
@@ -21,6 +22,8 @@ import type {
   ListAttendeesArgs,
   ListCleanupsFilters,
   NearPoint,
+  OrganizationEventsFilters,
+  OrganizationEventsHost,
   RemoveMemberOutcome,
   SlotReconcileResult,
   UpdateCleanupPatch,
@@ -29,6 +32,7 @@ import { isCleanupTerminal } from "../../src/services/cleanup-service.js"
 import {
   LINKED_EVENTS_PER_REPORT_CAP,
   MAX_EVENTS_PER_REPORT,
+  stripPageBlockMedia,
 } from "../../src/services/cleanup-repository.drizzle.js"
 import { MAX_LINKED_REPORTS } from "@civfix/shared"
 import type {
@@ -95,6 +99,34 @@ interface StoredOrganization {
   verifiedStatus: OrgVerificationStatus
   verifiedKind: OrgVerificationKind | null
   suspended: boolean
+  deleted: boolean
+}
+
+interface StoredTicketType {
+  id: string
+  cleanupId: string
+  name: string
+  capacity: number | null
+  reservedSeats: number
+  salesOpensAt: Date | null
+  salesClosesAt: Date | null
+  accessCodeHash: string | null
+}
+
+interface StoredQuestion {
+  id: string
+  cleanupId: string
+  ticketTypeId: string | null
+  prompt: string
+  showIfQuestionId: string | null
+  archived: boolean
+}
+
+interface StoredPage {
+  cleanupId: string
+  status: string
+  themeAccent: string
+  blocks: unknown[]
 }
 
 interface StoredOrgMember {
@@ -187,6 +219,9 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   readonly links: StoredLink[] = []
   readonly slots: StoredSlot[] = []
   readonly slotClaims: StoredSlotClaim[] = []
+  readonly ticketTypes: StoredTicketType[] = []
+  readonly questions: StoredQuestion[] = []
+  readonly pages: StoredPage[] = []
   readonly timeline: {
     cleanupId: string
     kind: string
@@ -368,7 +403,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
 
   private orgViewOf(organizationId: string): CleanupOrganizationView | null {
     const org = this.organizations.get(organizationId)
-    if (org === undefined) return null
+    if (org === undefined || org.deleted) return null
     return {
       id: org.id,
       slug: org.slug,
@@ -431,8 +466,62 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     }
     this.linkInner(cleanup.id, args.linkedReportIds, args.organizerUserId)
     for (const slot of args.slots) this.insertSlot(cleanup.id, slot)
+    if (args.copyFrom !== undefined) this.copyEventExtras(cleanup.id, args.copyFrom)
     if (idem !== undefined) this.idempotentCleanups.set(this.idempotencyKeyOf(idem), cleanup.id)
     return Promise.resolve({ record: this.toRecord(cleanup, null), replayed: false })
+  }
+
+  private copyEventExtras(cleanupId: string, source: DuplicateSource): void {
+    const typeIds = new Map<string, string>()
+    if (source.ticketTypes) {
+      for (const type of this.ticketTypes.filter((t) => t.cleanupId === source.cleanupId)) {
+        const id = randomUUID()
+        typeIds.set(type.id, id)
+        const now = this.now().getTime()
+        this.ticketTypes.push({
+          ...type,
+          id,
+          cleanupId,
+          reservedSeats: 0,
+          salesOpensAt:
+            type.salesOpensAt !== null && type.salesOpensAt.getTime() > now
+              ? type.salesOpensAt
+              : null,
+          salesClosesAt:
+            type.salesClosesAt !== null && type.salesClosesAt.getTime() > now
+              ? type.salesClosesAt
+              : null,
+        })
+      }
+    }
+    if (source.questions) {
+      const live = this.questions.filter((q) => q.cleanupId === source.cleanupId && !q.archived)
+      const questionIds = new Map(live.map((q) => [q.id, randomUUID()]))
+      for (const question of live) {
+        this.questions.push({
+          ...question,
+          id: questionIds.get(question.id) as string,
+          cleanupId,
+          ticketTypeId:
+            question.ticketTypeId === null ? null : (typeIds.get(question.ticketTypeId) ?? null),
+          showIfQuestionId:
+            question.showIfQuestionId === null
+              ? null
+              : (questionIds.get(question.showIfQuestionId) ?? null),
+        })
+      }
+    }
+    if (source.page) {
+      const page = this.pages.find((p) => p.cleanupId === source.cleanupId)
+      if (page !== undefined) {
+        this.pages.push({
+          cleanupId,
+          status: "draft",
+          themeAccent: page.themeAccent,
+          blocks: page.blocks.map((block) => stripPageBlockMedia(block)),
+        })
+      }
+    }
   }
 
   private idempotencyKeyOf(idem: { key: string; scope: string; userOrAnon: string }): string {
@@ -489,6 +578,24 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(this.orgViewOf(organizationId))
   }
 
+  findOrganizationEventsHost(
+    slug: string,
+    viewerId: string | null,
+  ): Promise<OrganizationEventsHost | null> {
+    const org = [...this.organizations.values()].find(
+      (o) => !o.deleted && o.slug.toLowerCase() === slug.toLowerCase(),
+    )
+    if (org === undefined) return Promise.resolve(null)
+    const organization = this.orgViewOf(org.id)
+    if (organization === null) return Promise.resolve(null)
+    return Promise.resolve({
+      organization,
+      viewerIsMember:
+        viewerId !== null &&
+        this.orgMembers.some((m) => m.organizationId === org.id && m.userId === viewerId),
+    })
+  }
+
   orgRoleOf(organizationId: string, userId: string): Promise<OrganizationMemberRole | null> {
     const member = this.orgMembers.find(
       (m) => m.organizationId === organizationId && m.userId === userId,
@@ -525,9 +632,49 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       verifiedStatus: over.verifiedStatus ?? "unverified",
       verifiedKind: over.verifiedKind ?? null,
       suspended: over.suspended ?? false,
+      deleted: over.deleted ?? false,
     }
     this.organizations.set(org.id, org)
     return org
+  }
+
+  seedTicketType(over: Partial<StoredTicketType> & { cleanupId: string }): StoredTicketType {
+    const type: StoredTicketType = {
+      id: over.id ?? randomUUID(),
+      cleanupId: over.cleanupId,
+      name: over.name ?? "General admission",
+      capacity: over.capacity ?? null,
+      reservedSeats: over.reservedSeats ?? 0,
+      salesOpensAt: over.salesOpensAt ?? null,
+      salesClosesAt: over.salesClosesAt ?? null,
+      accessCodeHash: over.accessCodeHash ?? null,
+    }
+    this.ticketTypes.push(type)
+    return type
+  }
+
+  seedQuestion(over: Partial<StoredQuestion> & { cleanupId: string }): StoredQuestion {
+    const question: StoredQuestion = {
+      id: over.id ?? randomUUID(),
+      cleanupId: over.cleanupId,
+      ticketTypeId: over.ticketTypeId ?? null,
+      prompt: over.prompt ?? "Any accessibility needs?",
+      showIfQuestionId: over.showIfQuestionId ?? null,
+      archived: over.archived ?? false,
+    }
+    this.questions.push(question)
+    return question
+  }
+
+  seedPage(over: Partial<StoredPage> & { cleanupId: string }): StoredPage {
+    const page: StoredPage = {
+      cleanupId: over.cleanupId,
+      status: over.status ?? "published",
+      themeAccent: over.themeAccent ?? "bloom",
+      blocks: over.blocks ?? [],
+    }
+    this.pages.push(page)
+    return page
   }
 
   seedOrgMember(organizationId: string, userId: string, role: OrganizationMemberRole): void {
@@ -781,6 +928,42 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     )
     const records = items.map((c) => this.toRecord(c, null))
     return Promise.resolve({ records, nextCursor })
+  }
+
+  listOrganizationEvents(
+    filters: OrganizationEventsFilters,
+  ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }> {
+    const nowMs = this.now().getTime()
+    const past = filters.when === "past"
+    const matching = [...this.cleanups.values()].filter((c) => {
+      if (c.organizationId !== filters.organizationId) return false
+      if (c.visibility !== "public") return false
+      const at = c.scheduledAt.getTime()
+      if (past) return at < nowMs && c.status !== "cancelled"
+      if (at < nowMs - IN_PROGRESS_GRACE_HOURS * 60 * 60 * 1000) return false
+      if (!(at >= nowMs || c.status === "active")) return false
+      return c.status !== "cancelled" && c.status !== "done"
+    })
+    matching.sort((a, b) => {
+      const cmp = a.scheduledAt.getTime() - b.scheduledAt.getTime()
+      if (cmp !== 0) return past ? -cmp : cmp
+      const idCmp = a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+      return past ? -idCmp : idCmp
+    })
+    const cursor = parseTimeCursor(filters.cursor)
+    const after =
+      cursor !== null
+        ? matching.filter((c) => {
+            const t = c.scheduledAt.getTime()
+            const ct = cursor.at.getTime()
+            if (past) return t < ct || (t === ct && c.id < cursor.id)
+            return t > ct || (t === ct && c.id > cursor.id)
+          })
+        : matching
+    const { items, nextCursor } = pageWith(after, filters.limit, (last) =>
+      encodeTimeCursor({ at: last.scheduledAt, id: last.id }),
+    )
+    return Promise.resolve({ records: items.map((c) => this.toRecord(c, null)), nextCursor })
   }
 
   isMember(cleanupId: string, userId: string): Promise<boolean> {

@@ -86,6 +86,11 @@ export function makePostService(deps: PostServiceDeps): PostService {
       if (input.kind === "repost") {
         throw AppError.validation({ kind: "Use POST /posts/:id/repost to repost." })
       }
+      if (input.organizationId !== undefined) {
+        if (!(await deps.repo.canPostAsOrganization(input.organizationId, authorId))) {
+          throw AppError.forbidden("You can only post as an organization you belong to.")
+        }
+      }
       if (input.replyToId !== undefined && input.repostOfId !== undefined) {
         throw AppError.validation({
           replyToId: "A post is either a reply or a quote, not both.",
@@ -132,6 +137,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
         reportId: input.reportId ?? null,
         mediaUploadIds: input.mediaUploadIds,
         mentionedUserIds: mentions.map((m) => m.id),
+        organizationId: input.organizationId ?? null,
       })
 
       const actorName = await deps.repo.actorNameOf(authorId)

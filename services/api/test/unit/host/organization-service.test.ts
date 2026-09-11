@@ -237,7 +237,7 @@ describe("membership", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 
-  it("403s a plain member trying to manage the team", async () => {
+  it("403s a plain member trying to change a role", async () => {
     const id = await seeded()
     await expect(
       service.setMemberRole(id, MEMBER, ADMIN, "member"),
@@ -269,15 +269,77 @@ describe("membership", () => {
     })
   })
 
-  it("org membership is owner-managed: an admin holds no manage_team", async () => {
+  it("0.43.0: an org ADMIN holds manage_org_members and may seat a collaborator", async () => {
+    const id = await seeded()
+    const result = await service.inviteMember(id, ADMIN, {
+      identifierKind: "handle",
+      identifier: "sam",
+      role: "member",
+    })
+    expect(result.invited).toBe(true)
+    expect(result.member?.person.id).toBe(STRANGER)
+    expect(result.member?.role).toBe("member")
+  })
+
+  it("a plain MEMBER holds no manage_org_members and cannot seat anyone", async () => {
     const id = await seeded()
     await expect(
-      service.inviteMember(id, ADMIN, {
+      service.inviteMember(id, MEMBER, {
         identifierKind: "handle",
         identifier: "sam",
         role: "member",
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
+  })
+
+  it("0.43.0: an org ADMIN lists, revokes and removes on the org roster", async () => {
+    const id = await seeded()
+    await service.inviteMember(id, ADMIN, {
+      identifierKind: "email",
+      identifier: "sam@x.org",
+      role: "member",
+    })
+    const listed = await service.listInvites(id, ADMIN)
+    expect(listed.items).toHaveLength(1)
+    const inviteId = listed.items[0]?.id ?? ""
+    await expect(service.revokeInvite(id, ADMIN, inviteId)).resolves.toEqual({ ok: true })
+    expect(repo.invites.find((i) => i.id === inviteId)?.status).toBe("revoked")
+    await expect(service.removeMember(id, ADMIN, MEMBER)).resolves.toEqual({ ok: true })
+    expect(repo.members.some((m) => m.userId === MEMBER)).toBe(false)
+  })
+
+  it("0.43.0: role changes stay OWNER-only, and the owner role is never grantable", async () => {
+    const id = await seeded()
+    await expect(service.setMemberRole(id, ADMIN, MEMBER, "admin")).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    expect(repo.members.find((m) => m.userId === MEMBER)?.role).toBe("member")
+    await service.setMemberRole(id, OWNER, MEMBER, "admin")
+    expect(repo.members.find((m) => m.userId === MEMBER)?.role).toBe("admin")
+    const page = await service.listMembers(id, ADMIN, { cursor: null, limit: 25 })
+    expect(page.items.filter((m) => m.role === "owner").map((m) => m.person.id)).toEqual([OWNER])
+  })
+
+  it("a plain MEMBER cannot list or revoke invitations", async () => {
+    const id = await seeded()
+    await service.inviteMember(id, OWNER, {
+      identifierKind: "email",
+      identifier: "sam@x.org",
+      role: "member",
+    })
+    const inviteId = (await service.listInvites(id, OWNER)).items[0]?.id ?? ""
+    await expect(service.listInvites(id, MEMBER)).rejects.toMatchObject({ code: "FORBIDDEN" })
+    await expect(service.revokeInvite(id, MEMBER, inviteId)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+  })
+
+  it("a plain MEMBER cannot remove anyone but themselves", async () => {
+    const id = await seeded()
+    await expect(service.removeMember(id, MEMBER, ADMIN)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    await expect(service.removeMember(id, MEMBER, MEMBER)).resolves.toEqual({ ok: true })
   })
 })
 
@@ -705,7 +767,7 @@ describe("org invites (0.41.0)", () => {
     // Both got the email; the account additionally got a best-effort in-app note.
     expect(mails.map((m) => m.to).sort()).toEqual(["mel@x.org", "nobody@example.com"])
     expect(notes).toEqual([
-      { userId: MEMBER, type: "system", title: "You've been invited to join Ballona Creek Trust" },
+      { userId: MEMBER, type: "org_invite", title: "You've been invited to join Ballona Creek Trust" },
     ])
     // Re-inviting either is the same silent success.
     for (const identifier of ["mel@x.org", "nobody@example.com"]) {
@@ -918,7 +980,7 @@ describe("org invites (0.41.0)", () => {
     const dto = await service.createOrganization(base(), OWNER)
     await service.inviteMember(dto.id, OWNER, { identifierKind: "handle", identifier: "adam", role: "admin" })
     expect(notes).toEqual([
-      { userId: ADMIN, type: "system", title: "You've been added to Ballona Creek Trust" },
+      { userId: ADMIN, type: "org_invite", title: "You've been added to Ballona Creek Trust" },
     ])
   })
 })

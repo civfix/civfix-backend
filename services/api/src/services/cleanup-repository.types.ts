@@ -99,7 +99,6 @@ export interface CleanupPersonView {
   displayName: string
   handle: string | null
   bio: string | null
-  verified?: boolean
 }
 
 export interface AttendeeView extends CleanupPersonView {
@@ -170,6 +169,13 @@ export interface CleanupIdempotency {
   userOrAnon: string
 }
 
+export interface DuplicateSource {
+  cleanupId: string
+  ticketTypes: boolean
+  questions: boolean
+  page: boolean
+}
+
 export interface CreateCleanupTxArgs {
   cleanupId: string
   organizerUserId: string
@@ -189,6 +195,7 @@ export interface CreateCleanupTxArgs {
   slots: DesiredSlot[]
   host: EventHostWrite
   idempotency?: CleanupIdempotency
+  copyFrom?: DuplicateSource
 }
 
 export interface CreateCleanupOutcome {
@@ -242,6 +249,18 @@ export interface CleanupBBox {
   north: number
 }
 
+export interface OrganizationEventsHost {
+  organization: CleanupOrganizationView
+  viewerIsMember: boolean
+}
+
+export interface OrganizationEventsFilters {
+  organizationId: string
+  when: "upcoming" | "past"
+  cursor: string | null
+  limit: number
+}
+
 export interface ListCleanupsFilters {
   when: "upcoming" | "past" | "attending" | undefined
   bbox: CleanupBBox | undefined
@@ -272,11 +291,18 @@ export interface CleanupRepository {
   findCleanupByPageSlug(slug: string): Promise<CleanupRecord | null>
   galleryKeysFor(cleanupId: string): Promise<string[]>
   loadOrganizationRef(organizationId: string): Promise<CleanupOrganizationView | null>
+  findOrganizationEventsHost(
+    slug: string,
+    viewerId: string | null,
+  ): Promise<OrganizationEventsHost | null>
   orgRoleOf(organizationId: string, userId: string): Promise<OrganizationMemberRole | null>
   standingOf(cleanupId: string, userId: string): Promise<HostStanding>
   standingsOf(cleanupIds: string[], userId: string): Promise<Map<string, HostStanding>>
   listCleanups(
     filters: ListCleanupsFilters,
+  ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }>
+  listOrganizationEvents(
+    filters: OrganizationEventsFilters,
   ): Promise<{ records: CleanupRecord[]; nextCursor: string | null }>
   isMember(cleanupId: string, userId: string): Promise<boolean>
   roleOf(cleanupId: string, userId: string): Promise<CleanupMemberRole | null>

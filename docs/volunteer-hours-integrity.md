@@ -1,7 +1,10 @@
 # Volunteer-hours integrity (civfix-backend)
 
 **Audience:** internal (engineering + operators). Not served publicly.
-**Last updated:** 2026-09-02 (audit H9).
+**Last updated:** 2026-09-10 (0.43.0: the "verified neighbor" actor gate was
+retired; the crediting gate is now host standing alone - `manage_event` on the
+event, which an organizer, a co-host, or an owner/admin of the hosting
+organization holds).
 
 Volunteer hours are the input to `POST /v1/me/volunteer-hours/certificates`, which mints a signed,
 publicly verifiable PDF transcript that residents hand to schools and courts. Hours are supplied by
@@ -11,7 +14,7 @@ the rules below.
 ## The gap this closes
 
 Before this change the only anti-inflation control was **"another host must credit you"** — a host
-could not credit themselves. Two identity-verified accounts satisfy that for each other:
+could not credit themselves. Two ordinary accounts satisfy that for each other:
 
 1. A creates an event scheduled an hour ago (backdating up to 24 h is allowed).
 2. B joins; A promotes B to co-host.

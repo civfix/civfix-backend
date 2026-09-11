@@ -5,6 +5,7 @@ import { clampLimit, decodeCursor } from "./pagination.js"
 import { paginate } from "../../db/cursor-helpers.js"
 import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import type {
+  AdminUserOrganizationRecord,
   AdminUserRecord,
   AdminUserRepository,
   ListUsersArgs,
@@ -16,12 +17,15 @@ import type {
   AdminReportStatus,
   AdminUserCounts,
   CleanupMemberRole,
+  OrganizationMemberRole,
   ReportCategory,
   Risk,
   Role,
   UserStatus,
 } from "@civfix/shared"
 import { likeContains } from "./like.js"
+
+export const ADMIN_USER_ORGANIZATIONS_LIMIT = 25
 
 const EPOCH = new Date(0)
 
@@ -67,7 +71,6 @@ interface UserRowSelect {
   risk: Risk
   flagged: boolean
   flag_reason: string | null
-  verified: boolean
   report_verified: boolean
   avatar_url: string | null
   deleted_at: Date | null
@@ -92,7 +95,6 @@ function toRecord(r: UserRowSelect): AdminUserRecord {
     risk: r.risk,
     flagged: r.flagged,
     flagReason: r.flag_reason,
-    verified: r.verified,
     reportVerified: r.report_verified,
     avatarUrl: r.avatar_url,
     deletedAt: r.deleted_at,
@@ -137,9 +139,6 @@ function userSelect(
       COALESCE(um.risk, 'low') AS risk,
       COALESCE(um.flagged, false) AS flagged,
       um.flag_reason,
-      EXISTS (
-        SELECT 1 FROM user_verification uv WHERE uv.user_id = u.id AND uv.status = 'verified'
-      ) AS verified,
       COALESCE(um.report_verified, false) AS report_verified
     FROM users u
     LEFT JOIN user_moderation um ON um.user_id = u.id
@@ -504,41 +503,16 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       })
     },
 
-    async setVerified(
-      id: string,
-      input: { verified: boolean; actorId: string | null },
-    ): Promise<boolean> {
-      return sql.begin(async (tx) => {
-        const exists = await tx<{ id: string }[]>`
-          SELECT id FROM users WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
-        `
-        if (exists.length === 0) return false
-        const prior = await tx<{ status: string }[]>`
-          SELECT status FROM user_verification WHERE user_id = ${id} LIMIT 1
-        `
-        const priorStatus = prior[0]?.status ?? "unverified"
-        if (input.verified) {
-          await tx`
-            INSERT INTO user_verification (user_id, status, reviewed_by, reviewed_at, updated_at)
-            VALUES (${id}, 'verified', ${input.actorId}, now(), now())
-            ON CONFLICT (user_id) DO UPDATE SET
-              status = 'verified',
-              reviewed_by = ${input.actorId},
-              reviewed_at = now(),
-              rejection_reason = NULL,
-              updated_at = now()
-          `
-        } else {
-          await tx`DELETE FROM user_verification WHERE user_id = ${id}`
-        }
-        await writeAudit(tx, {
-          actorId: input.actorId,
-          action: input.verified ? "user.verified" : "user.unverified",
-          target: `user:${id}`,
-          meta: { priorStatus },
-        })
-        return true
-      })
+    async listUserOrganizations(id: string): Promise<AdminUserOrganizationRecord[]> {
+      const rows = await sql<{ id: string; slug: string; name: string; role: OrganizationMemberRole }[]>`
+        SELECT o.id, o.slug, o.name, m.role
+        FROM organization_members m
+        JOIN organizations o ON o.id = m.organization_id
+        WHERE m.user_id = ${id} AND o.deleted_at IS NULL
+        ORDER BY m.joined_at ASC, o.id ASC
+        LIMIT ${ADMIN_USER_ORGANIZATIONS_LIMIT}
+      `
+      return rows.map((r) => ({ id: r.id, slug: r.slug, name: r.name, role: r.role }))
     },
 
     async setReportVerified(

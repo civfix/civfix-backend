@@ -1,6 +1,7 @@
 import type Stripe from "stripe"
 import { WebhookSignatureError } from "@civfix/shared/interfaces"
 import type {
+  AccountBalance,
   AccountLink,
   ApplicationFeeRecord,
   ApplicationFeeRefund,
@@ -10,6 +11,7 @@ import type {
   CreateAccountLinkInput,
   CreateConnectedAccountInput,
   CreateDonationCheckoutInput,
+  CreatePayoutInput,
   DonationCheckoutSession,
   DonationPaymentStatus,
   DonationSessionStatus,
@@ -22,8 +24,13 @@ import type {
   PaymentsPage,
   PaymentsWebhookEvent,
   PaymentsWebhookScope,
+  PayoutInterval,
+  PayoutRecord,
+  PayoutRecordStatus,
+  PayoutSchedule,
+  ListPayoutsInput,
 } from "@civfix/shared/interfaces"
-import { paymentFailure } from "../errors/payment-failure.js"
+import { paymentFailure, payoutFailure } from "../errors/payment-failure.js"
 
 export const STRIPE_DEFAULT_API_VERSION = "2026-08-26.dahlia"
 
@@ -160,6 +167,75 @@ const ALREADY_REFUNDED_SIGNALS = [
   "cannot refund more",
   "no remaining amount",
 ] as const
+
+export const PAYOUT_CURRENCY = "usd"
+
+const PAYOUT_STATUSES: readonly PayoutRecordStatus[] = [
+  "pending",
+  "in_transit",
+  "paid",
+  "failed",
+  "canceled",
+]
+
+const PAYOUT_INTERVALS: readonly PayoutInterval[] = ["daily", "weekly", "monthly", "manual"]
+
+interface StripeBalanceEntry {
+  amount?: unknown
+  currency?: unknown
+}
+
+interface StripePayoutLike {
+  id: string
+  amount?: unknown
+  currency?: unknown
+  status?: unknown
+  arrival_date?: unknown
+  created?: unknown
+  failure_message?: unknown
+}
+
+interface StripePayoutSettingsLike {
+  settings?: { payouts?: { schedule?: { interval?: unknown; delay_days?: unknown } | null } | null } | null
+}
+
+export function balanceMinorOf(
+  entries: readonly StripeBalanceEntry[] | undefined,
+  currency: string,
+): number {
+  if (entries === undefined) return 0
+  let total = 0
+  for (const entry of entries) {
+    if (entry.currency !== currency) continue
+    if (typeof entry.amount === "number" && Number.isFinite(entry.amount)) total += entry.amount
+  }
+  return total
+}
+
+export function toPayoutSchedule(source: StripePayoutSettingsLike): PayoutSchedule | null {
+  const schedule = source.settings?.payouts?.schedule
+  if (schedule === undefined || schedule === null) return null
+  const interval = PAYOUT_INTERVALS.find((known) => known === schedule.interval)
+  if (interval === undefined) return null
+  const delayDays = schedule.delay_days
+  return typeof delayDays === "number" && Number.isFinite(delayDays)
+    ? { interval, delayDays }
+    : { interval }
+}
+
+export function toPayoutRecord(payout: StripePayoutLike): PayoutRecord {
+  const arrival = payout.arrival_date
+  const created = payout.created
+  return {
+    id: payout.id,
+    amountMinor: typeof payout.amount === "number" ? payout.amount : 0,
+    currency: typeof payout.currency === "string" ? payout.currency : PAYOUT_CURRENCY,
+    status: PAYOUT_STATUSES.find((known) => known === payout.status) ?? "pending",
+    arrivalDateSec: typeof arrival === "number" && arrival > 0 ? arrival : null,
+    createdSec: typeof created === "number" ? created : 0,
+    failureMessage: typeof payout.failure_message === "string" ? payout.failure_message : null,
+  }
+}
 
 export function isAlreadyRefundedError(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false
@@ -523,6 +599,61 @@ export class StripePayments implements Payments {
       if (isAlreadyRefundedError(err)) {
         return { id: applicationFeeId, amountMinor: 0, status: "skipped" }
       }
+      throw paymentFailure(err)
+    }
+  }
+
+  async retrieveBalance(accountId: string): Promise<AccountBalance> {
+    const stripe = await this.stripe()
+    try {
+      const [balance, account] = await Promise.all([
+        stripe.balance.retrieve({}, { stripeAccount: accountId }),
+        stripe.accounts.retrieve(accountId),
+      ])
+      return {
+        availableMinor: balanceMinorOf(balance.available, PAYOUT_CURRENCY),
+        pendingMinor: balanceMinorOf(balance.pending, PAYOUT_CURRENCY),
+        currency: PAYOUT_CURRENCY,
+        payoutsEnabled: (account as StripeAccountLike).payouts_enabled === true,
+        payoutSchedule: toPayoutSchedule(account as StripePayoutSettingsLike),
+      }
+    } catch (err) {
+      throw paymentFailure(err)
+    }
+  }
+
+  async createPayout(accountId: string, input: CreatePayoutInput): Promise<PayoutRecord> {
+    const stripe = await this.stripe()
+    try {
+      const payout = await stripe.payouts.create(
+        { amount: input.amountMinor, currency: input.currency },
+        { stripeAccount: accountId, idempotencyKey: input.idempotencyKey },
+      )
+      return toPayoutRecord(payout as StripePayoutLike)
+    } catch (err) {
+      throw payoutFailure(err)
+    }
+  }
+
+  async listPayouts(
+    accountId: string,
+    input: ListPayoutsInput,
+  ): Promise<PaymentsPage<PayoutRecord>> {
+    const stripe = await this.stripe()
+    try {
+      const page = await stripe.payouts.list(
+        {
+          limit: input.limit ?? STRIPE_LIST_PAGE_LIMIT,
+          ...(input.startingAfter !== undefined && input.startingAfter !== null
+            ? { starting_after: input.startingAfter }
+            : {}),
+        },
+        { stripeAccount: accountId },
+      )
+      const items = page.data.map((payout) => toPayoutRecord(payout as StripePayoutLike))
+      const last = items[items.length - 1]
+      return { items, nextCursor: page.has_more && last !== undefined ? last.id : null }
+    } catch (err) {
       throw paymentFailure(err)
     }
   }

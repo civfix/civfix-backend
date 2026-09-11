@@ -114,7 +114,6 @@ export interface MemberRowSelect {
   bio: string | null
   avatar_url: string | null
   user_deleted_at: Date | null
-  verified: boolean
   is_following: boolean
   blocked_pair: boolean
 }
@@ -138,7 +137,6 @@ export function toMemberView(r: MemberRowSelect): GroupMemberView {
     followers: 0,
     following: 0,
     isFollowing: r.is_following,
-    ...(r.verified && hidden === null && !author.deleted ? { verified: true } : {}),
     ...(author.deleted ? { deleted: true } : {}),
   }
   return { user, role: r.role, joinedAt: r.joined_at }
@@ -188,7 +186,6 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       u.bio,
       u.avatar_url,
       u.deleted_at AS user_deleted_at,
-      EXISTS (SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified') AS verified,
       ${followingExpr} AS is_following,
       ${blockedPair} AS blocked_pair
     `

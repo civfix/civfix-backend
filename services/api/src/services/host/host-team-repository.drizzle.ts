@@ -288,16 +288,11 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           display_name: string
           handle: string | null
           bio: string | null
-          verified: boolean
           role: CleanupMemberRole
           joined_at: Date | null
         }[]
       >`
-        SELECT u.id, u.display_name, u.handle, u.bio, m.role, m.joined_at,
-               EXISTS (
-                 SELECT 1 FROM user_verification v
-                 WHERE v.user_id = u.id AND v.status = 'verified'
-               ) AS verified
+        SELECT u.id, u.display_name, u.handle, u.bio, m.role, m.joined_at
         FROM cleanup_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.cleanup_id = ${cleanupId} AND m.role <> 'member'
@@ -315,7 +310,6 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           displayName: r.display_name,
           handle: r.handle,
           bio: r.bio,
-          verified: r.verified,
         },
         role: r.role,
         joinedAt: r.joined_at,
@@ -463,10 +457,11 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
             status: EventTeamInviteStatus
             invited_user_id: string | null
             invited_email: string | null
+            invited_by: string | null
             expires_at: Date
           }[]
         >`
-          SELECT id, role, status, invited_user_id, invited_email, expires_at
+          SELECT id, role, status, invited_user_id, invited_email, invited_by, expires_at
           FROM cleanup_team_invites
           WHERE token_hash = ${args.tokenHash} AND cleanup_id = ${args.cleanupId}
           LIMIT 1
@@ -474,6 +469,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         `
         const invite = rows[0]
         if (invite === undefined || invite.status !== "pending") return { kind: "invalid" }
+        if (invite.invited_by === args.userId) return { kind: "wrong_recipient" }
         if (invite.expires_at.getTime() <= args.now.getTime()) {
           await tx`
             UPDATE cleanup_team_invites

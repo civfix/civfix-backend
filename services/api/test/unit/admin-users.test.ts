@@ -139,6 +139,32 @@ describe("admin users detail + sub-lists", () => {
     expect(detail.messages).toBe(2)
   })
 
+  it("detail carries the user's organization memberships (0.43.0), oldest first", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "u-1" })
+    repo.seedUserOrganizations("u-1", [
+      { id: "org-1", slug: "ballona-creek-trust", name: "Ballona Creek Trust", role: "owner" },
+      { id: "org-2", slug: "heal-the-bay", name: "Heal the Bay", role: "member" },
+    ])
+    const detail = await svc.get("u-1")
+    expect(detail.organizations).toEqual([
+      { id: "org-1", slug: "ballona-creek-trust", name: "Ballona Creek Trust", role: "owner" },
+      { id: "org-2", slug: "heal-the-bay", name: "Heal the Bay", role: "member" },
+    ])
+  })
+
+  it("detail carries an empty organizations list for someone who belongs to none", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "u-1" })
+    expect((await svc.get("u-1")).organizations).toEqual([])
+  })
+
+  it("the detail no longer reports a verification status (the neighbor queue is retired)", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "u-1" })
+    expect("verificationStatus" in (await svc.get("u-1"))).toBe(false)
+  })
+
   it("detail throws notFound for an unknown user", async () => {
     const { svc } = harness()
     await expect(svc.get("nope")).rejects.toMatchObject({ httpStatus: 404 })

@@ -4,6 +4,7 @@ import {
   UpdateCleanupRequestSchema,
   CancelCleanupRequestSchema,
   ClaimEventSlotRequestSchema,
+  DuplicateCleanupRequestSchema,
   CompleteCleanupRequestSchema,
   GetEventIcsRequestSchema,
   ListCleanupsRequestSchema,
@@ -52,12 +53,10 @@ import {
 } from "../services/chat-repository.drizzle.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { buildIcs } from "@civfix/shared/ics"
-import type { CounterStore } from "../abuse/counter-store.js"
 import { makeGeoidResolver } from "../services/route-geo-helpers.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
-import { makeDrizzleVerificationRepository } from "../services/verification-repository.drizzle.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { perHost, perIdentity } from "../plugins/rate-limit.js"
@@ -72,7 +71,6 @@ export interface CleanupServiceOverrides {
   audit?: CleanupServiceDeps["audit"]
   newId?: CleanupServiceDeps["newId"]
   outboundMail?: CleanupServiceDeps["outboundMail"]
-  isVerified?: CleanupServiceDeps["isVerified"]
   notifier?: CleanupServiceDeps["notifier"]
   attendeeNotifier?: CleanupServiceDeps["attendeeNotifier"]
   counters?: CleanupServiceDeps["counters"]
@@ -161,12 +159,72 @@ export const UpdateCleanupBodySchema = trimTextFields(
   .superRefine((data, ctx) => refineScheduledAt(data.scheduledAt, ctx, { rejectPast: false }))
   .transform(dropBlankBringItems)
 
+export const DuplicateCleanupBodySchema = DuplicateCleanupRequestSchema.superRefine((data, ctx) =>
+  refineScheduledAt(data.scheduledAt, ctx, { rejectPast: true }),
+)
+
 export const CancelCleanupBodySchema = trimTextFields(CancelCleanupRequestSchema, "reason")
 
 export const RequestEventResourcesBodySchema = trimTextFields(
   RequestEventResourcesRequestSchema,
   "message",
 )
+
+export function makeContainerCleanupService(
+  app: FastifyInstance,
+  container: Container,
+): CleanupService {
+  const overrides = app.cleanupOverrides
+  const repo: CleanupRepository =
+    overrides !== undefined ? overrides.repo : makeDrizzleCleanupRepository(container.getDb().sql)
+
+  return makeCleanupService({
+    repo,
+    ...(overrides?.presignThumb !== undefined
+      ? { presignThumb: overrides.presignThumb }
+      : overrides
+        ? {}
+        : {
+            presignThumb: (thumbKey: string) =>
+              container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC),
+          }),
+    ...(overrides
+      ? {}
+      : {
+          resolveJurisdictionGeoid: makeGeoidResolver(container),
+          resolveJurisdictionCode: (geoid: string | null) =>
+            resolveJurisdictionCode(container.getDb().sql, geoid),
+          outboundMail: makeOutboundMailService({
+            repo: makeDrizzleMailRepository(container.getDb().sql),
+            mailer: container.mailer,
+            env: {
+              MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
+              MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
+            },
+          }),
+          affiliations: container.getAffiliationLoader(),
+          notifier: makeRouteNotificationService(container, app.log),
+          attendeeNotifier: makeCommsRuntime(container, app.log).lanes,
+          counters: container.getCounterStore(),
+          jobs: container.jobs,
+          presignEventMedia: makeEventMediaPresigner(container.storage),
+          audit: makeHostAuditSink(container.getDb().sql, app.log),
+          enrichDTOs: (dtos, viewerUserId) => enrichCleanupDTOs(container, dtos, viewerUserId),
+        }),
+    ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
+    ...(overrides?.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
+    ...(overrides?.notifier !== undefined ? { notifier: overrides.notifier } : {}),
+    ...(overrides?.attendeeNotifier !== undefined
+      ? { attendeeNotifier: overrides.attendeeNotifier }
+      : {}),
+    ...(overrides?.counters !== undefined ? { counters: overrides.counters } : {}),
+    ...(overrides?.presignEventMedia !== undefined
+      ? { presignEventMedia: overrides.presignEventMedia }
+      : {}),
+    ...(overrides?.audit !== undefined ? { audit: overrides.audit } : {}),
+    logger: app.log,
+  })
+}
 
 export async function registerCleanupRoutes(
   app: FastifyInstance,
@@ -191,64 +249,22 @@ export async function registerCleanupRoutes(
     ))
   }
 
-  const lazyCounters: CounterStore = container.getCounterStore()
-
   function service(): CleanupService {
-    const overrides = app.cleanupOverrides
-    return makeCleanupService({
-      repo: repo(),
-      ...(overrides?.presignThumb !== undefined
-        ? { presignThumb: overrides.presignThumb }
-        : overrides
-          ? {}
-          : {
-              presignThumb: (thumbKey: string) =>
-                container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC),
-            }),
-      ...(overrides
-        ? {}
-        : {
-            resolveJurisdictionGeoid: makeGeoidResolver(container),
-            resolveJurisdictionCode: (geoid: string | null) =>
-              resolveJurisdictionCode(container.getDb().sql, geoid),
-            outboundMail: makeOutboundMailService({
-              repo: makeDrizzleMailRepository(container.getDb().sql),
-              mailer: container.mailer,
-              env: {
-                MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
-                MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
-              },
-            }),
-            isVerified: (userId: string) =>
-              makeDrizzleVerificationRepository(container.getDb().sql).isVerified(userId),
-            notifier: makeRouteNotificationService(container, app.log),
-            attendeeNotifier: makeCommsRuntime(container, app.log).lanes,
-            counters: lazyCounters,
-            jobs: container.jobs,
-            presignEventMedia: makeEventMediaPresigner(container.storage),
-            audit: makeHostAuditSink(container.getDb().sql, app.log),
-            enrichDTOs: (dtos, viewerUserId) => enrichCleanupDTOs(container, dtos, viewerUserId),
-          }),
-      ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
-      ...(overrides?.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
-      ...(overrides?.isVerified !== undefined ? { isVerified: overrides.isVerified } : {}),
-      ...(overrides?.notifier !== undefined ? { notifier: overrides.notifier } : {}),
-      ...(overrides?.attendeeNotifier !== undefined
-        ? { attendeeNotifier: overrides.attendeeNotifier }
-        : {}),
-      ...(overrides?.counters !== undefined ? { counters: overrides.counters } : {}),
-      ...(overrides?.presignEventMedia !== undefined
-        ? { presignEventMedia: overrides.presignEventMedia }
-        : {}),
-      ...(overrides?.audit !== undefined ? { audit: overrides.audit } : {}),
-      logger: app.log,
-    })
+    return makeContainerCleanupService(app, container)
   }
 
   route(app, "createCleanup", { preHandler: csrfProtect, config: { rateLimit: CREATE_CLEANUP_RATE_LIMIT } }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(CreateCleanupBodySchema, request.body)
     const dto: CleanupDTO = await service().createCleanup(body, userId)
+    reply.status(201).send(dto)
+  })
+
+  route(app, "duplicateCleanup", { preHandler: csrfProtect, config: { rateLimit: CREATE_CLEANUP_RATE_LIMIT } }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const { id } = parse(CleanupIdParamsSchema, request.params)
+    const body = parse(DuplicateCleanupBodySchema, { ...(request.body as object), id })
+    const dto: GetCleanupResponse = await service().duplicateCleanup(userId, body)
     reply.status(201).send(dto)
   })
 

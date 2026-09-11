@@ -30,6 +30,7 @@ export const users = pgTable(
     followingCount: integer("following_count").notNull().default(0),
     lastActivityGeom: geometry("last_activity_geom", { subtype: "Point", srid: 4326 }),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
+    primaryOrganizationId: uuid("primary_organization_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },

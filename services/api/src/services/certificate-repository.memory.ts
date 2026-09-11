@@ -30,11 +30,10 @@ import {
 } from "./certificate-service.js"
 import type { TranscriptModel } from "./certificate-model.js"
 
-/** What a test registers so `findHolder` can answer, mirroring the users + user_verification read. */
+/** What a test registers so `findHolder` can answer, mirroring the users read. */
 export interface MemoryCertificateHolder {
   displayName: string
   handle?: string | null
-  verified?: boolean
   locale?: string
   /** `users.deleted_at IS NOT NULL`: cannot issue, and its live certificates verify as account_closed. */
   deleted?: boolean
@@ -150,7 +149,6 @@ export class InMemoryCertificateRepository implements CertificateRepository {
       userId,
       displayName: holder.displayName,
       handle: holder.handle ?? null,
-      verified: holder.verified === true,
       locale: holder.locale ?? "en",
     })
   }

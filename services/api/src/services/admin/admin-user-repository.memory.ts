@@ -16,6 +16,7 @@
 import { randomUUID } from "node:crypto"
 import { pageInMemoryById } from "./pagination.js"
 import type {
+  AdminUserOrganizationRecord,
   AdminUserRecord,
   AdminUserRepository,
   ListUsersArgs,
@@ -40,6 +41,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
   readonly reports = new Map<string, UserReportRecord[]>()
   readonly events = new Map<string, UserEventRecord[]>()
   readonly messages = new Map<string, UserMessageRecord[]>()
+  readonly organizations = new Map<string, AdminUserOrganizationRecord[]>()
   /** Recorded audit rows. */
   readonly audits: RecordedUserAudit[] = []
 
@@ -62,7 +64,6 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     risk?: AdminUserRecord["risk"]
     flagged?: boolean
     flagReason?: string | null
-    verified?: boolean
     reportVerified?: boolean
     avatarUrl?: string | null
     deletedAt?: Date | null
@@ -87,7 +88,6 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       risk: input.risk ?? "low",
       flagged: input.flagged ?? false,
       flagReason: input.flagReason ?? null,
-      verified: input.verified ?? false,
       reportVerified: input.reportVerified ?? false,
       avatarUrl: input.avatarUrl ?? null,
       deletedAt: input.deletedAt ?? null,
@@ -289,19 +289,13 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     return true
   }
 
-  async setVerified(
-    id: string,
-    input: { verified: boolean; actorId: string | null },
-  ): Promise<boolean> {
-    const r = this.users.get(id)
-    if (!r) return false
-    r.verified = input.verified
-    this.audits.push({
-      action: input.verified ? "user.verified" : "user.unverified",
-      target: `user:${id}`,
-      meta: {},
-    })
-    return true
+  listUserOrganizations(id: string): Promise<AdminUserOrganizationRecord[]> {
+    return Promise.resolve([...(this.organizations.get(id) ?? [])])
+  }
+
+  /** Seed the organization memberships the Users detail page lists. */
+  seedUserOrganizations(userId: string, orgs: AdminUserOrganizationRecord[]): void {
+    this.organizations.set(userId, orgs)
   }
 
   async setReportVerified(

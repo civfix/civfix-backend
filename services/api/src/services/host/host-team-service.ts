@@ -19,10 +19,16 @@ import { can } from "@civfix/shared/host"
 import { InMemoryCounterStore, type CounterStore } from "../../abuse/counter-store.js"
 import { generateToken, sha256Hex } from "../../auth/crypto.js"
 import { toAttendeePersonDTO } from "../cleanup-dto.js"
+import {
+  NO_AFFILIATIONS,
+  withAffiliation,
+  type AffiliationLoader,
+  type PrimaryAffiliations,
+} from "../affiliation.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
 import type { MessageKey } from "../../i18n/renderMessage.js"
 import type { CreateNotificationInput } from "../notification-service.js"
-import { isEventPubliclyVisible, requireCapability } from "./authz.js"
+import { assertMayGrantRole, isEventPubliclyVisible, requireCapability } from "./authz.js"
 import type { EventMediaPresigner } from "./event-media.js"
 import type { HostStandingResolution } from "./host-standing.js"
 import type {
@@ -85,6 +91,7 @@ export interface HostTeamServiceDeps {
   mailer?: HostTeamMailer
   notifier?: HostTeamNotifier
   presignEventMedia?: EventMediaPresigner
+  affiliations?: AffiliationLoader
   eventTitleOf?: (cleanupId: string) => Promise<string | null>
   webOrigin?: string
   logger?: { warn(obj: unknown, msg?: string): void }
@@ -126,14 +133,23 @@ export function maskEmail(email: string): string {
   return `${head}•••@${domainHead}•••${tld}`
 }
 
-function toInviteDTO(record: EventTeamInviteRecord): EventTeamInviteDTO {
+function toInviteDTO(
+  record: EventTeamInviteRecord,
+  affiliations: PrimaryAffiliations = NO_AFFILIATIONS,
+): EventTeamInviteDTO {
   return {
     id: record.id,
     role: record.role,
     status: record.status,
-    invitee: record.invitee === null ? null : toAttendeePersonDTO(record.invitee, false),
+    invitee:
+      record.invitee === null
+        ? null
+        : withAffiliation(toAttendeePersonDTO(record.invitee, false), affiliations),
     maskedEmail: record.invitedEmail === null ? null : maskEmail(record.invitedEmail),
-    invitedBy: record.invitedBy === null ? null : toAttendeePersonDTO(record.invitedBy, false),
+    invitedBy:
+      record.invitedBy === null
+        ? null
+        : withAffiliation(toAttendeePersonDTO(record.invitedBy, false), affiliations),
     createdAt: record.createdAt.toISOString(),
     expiresAt: record.expiresAt.toISOString(),
     acceptedAt: record.acceptedAt === null ? null : record.acceptedAt.toISOString(),
@@ -143,6 +159,7 @@ function toInviteDTO(record: EventTeamInviteRecord): EventTeamInviteDTO {
 function toPendingInviteDTO(
   record: PendingInviteForUserRecord,
   coverThumbUrl: string | null,
+  affiliations: PrimaryAffiliations = NO_AFFILIATIONS,
 ): PendingEventTeamInviteDTO {
   return {
     id: record.id,
@@ -156,7 +173,10 @@ function toPendingInviteDTO(
       coverThumbUrl,
       address: record.event.address,
     },
-    invitedBy: record.invitedBy === null ? null : toAttendeePersonDTO(record.invitedBy, false),
+    invitedBy:
+      record.invitedBy === null
+        ? null
+        : withAffiliation(toAttendeePersonDTO(record.invitedBy, false), affiliations),
     createdAt: record.createdAt.toISOString(),
     expiresAt: record.expiresAt.toISOString(),
   }
@@ -164,12 +184,15 @@ function toPendingInviteDTO(
 
 function toMemberDTO(
   record: EventTeamMemberRecord,
-  opts: { canManage: boolean; actorId: string },
+  opts: { canManage: boolean; actorId: string; affiliations?: PrimaryAffiliations },
 ): EventTeamMemberDTO {
   const manageable =
     opts.canManage && record.role !== "organizer" && record.person.id !== opts.actorId
   return {
-    person: toAttendeePersonDTO(record.person, false),
+    person: withAffiliation(
+      toAttendeePersonDTO(record.person, false),
+      opts.affiliations ?? NO_AFFILIATIONS,
+    ),
     role: record.role,
     joinedAt: record.joinedAt === null ? null : record.joinedAt.toISOString(),
     canRemove: manageable,
@@ -233,9 +256,17 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
         deps.repo.listTeam(cleanupId, TEAM_MEMBER_CAP),
         deps.repo.listInvites(cleanupId, TEAM_INVITE_LIST_CAP),
       ])
+      const affiliations = deps.affiliations
+        ? await deps.affiliations([
+            ...members.map((m) => m.person.id),
+            ...invites.flatMap((i) =>
+              [i.invitee?.id, i.invitedBy?.id].filter((id): id is string => id !== undefined),
+            ),
+          ], actorId)
+        : NO_AFFILIATIONS
       return {
-        members: members.map((m) => toMemberDTO(m, { canManage, actorId })),
-        invites: invites.map(toInviteDTO),
+        members: members.map((m) => toMemberDTO(m, { canManage, actorId, affiliations })),
+        invites: invites.map((i) => toInviteDTO(i, affiliations)),
       }
     },
 
@@ -244,13 +275,17 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
       actorId: string,
       input: Omit<InviteEventTeamMemberRequest, "id">,
     ): Promise<{ ok: true; invite: EventTeamInviteDTO }> {
-      await deps.standing(cleanupId, actorId, "manage_team")
+      const resolution = await deps.standing(cleanupId, actorId, "manage_team")
+      assertMayGrantRole(resolution.standing, input.role)
       const byEmail = input.identifierKind === "email"
       const resolved = byEmail ? null : await deps.repo.resolveUserByHandle(input.identifier)
       if (!byEmail && resolved === null) {
         throw AppError.notFound("No account matches that handle.")
       }
       const invitedUserId = resolved?.userId ?? null
+      if (invitedUserId === actorId) {
+        throw AppError.conflict("You can't invite yourself to an event team.")
+      }
       const typedEmail = byEmail ? input.identifier.toLowerCase() : null
       const notifyAt = typedEmail ?? resolved?.email ?? null
       const alreadyOpen = await deps.repo.findOpenInvite({
@@ -360,9 +395,15 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
               forceSigned: !isEventPubliclyVisible(record.event.visibility),
             }),
       )
+      const affiliations = deps.affiliations
+        ? await deps.affiliations(
+            items.map((i) => i.invitedBy?.id).filter((id): id is string => id !== undefined),
+            userId,
+          )
+        : NO_AFFILIATIONS
       return {
         items: items.map((record, index) =>
-          toPendingInviteDTO(record, coverUrls[index] ?? null),
+          toPendingInviteDTO(record, coverUrls[index] ?? null, affiliations),
         ),
         nextCursor,
       }

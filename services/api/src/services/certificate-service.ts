@@ -85,12 +85,11 @@ export interface CertificateStorage {
 
 // ---- repository contract ------------------------------------------------------------------------
 
-/** The holder identity frozen onto the document, read from `users` (+ `user_verification`). */
+/** The holder identity frozen onto the document, read from `users`. */
 export interface CertificateHolder {
   userId: string
   displayName: string
   handle: string | null
-  verified: boolean
   /** `users.locale`; the default when the request does not pin one. */
   locale: string
 }
@@ -342,7 +341,6 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
         userId,
         displayName: holder.displayName,
         handle: holder.handle,
-        verified: holder.verified,
       },
       rows: page.items.map(toLedgerRow),
       totals: { entryCount: page.entryCount, totalHours: page.totalHours },
@@ -415,7 +413,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
           locale,
           holderName: holder.displayName,
           holderHandle: holder.handle,
-          holderVerified: holder.verified,
+          holderVerified: false,
           totalHours: model.totalHours,
           entryCount: model.entryCount,
           periodStart: model.periodStart !== null ? new Date(model.periodStart) : null,

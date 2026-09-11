@@ -8,6 +8,14 @@ export const DONATION_STATUS_VALUES = [
 
 export const DONATION_DISPUTE_STATE_VALUES = ["none", "open", "won", "lost", "warning"] as const
 
+export const PAYOUT_STATUS_VALUES = [
+  "pending",
+  "in_transit",
+  "paid",
+  "failed",
+  "canceled",
+] as const
+
 export const ORG_PAYMENTS_STATE_VALUES = [
   "not_started",
   "onboarding",
@@ -93,6 +101,7 @@ export const RECONCILIATION_STATUS_VALUES = ["ok", "diverged", "failed"] as cons
 
 export type DonationStatusValue = (typeof DONATION_STATUS_VALUES)[number]
 export type DonationDisputeStateValue = (typeof DONATION_DISPUTE_STATE_VALUES)[number]
+export type PayoutStatusValue = (typeof PAYOUT_STATUS_VALUES)[number]
 export type OrgPaymentsStateValue = (typeof ORG_PAYMENTS_STATE_VALUES)[number]
 export type DonateStateValue = (typeof DONATE_STATE_VALUES)[number]
 export type EligibilityVerdictValue = (typeof ELIGIBILITY_VERDICT_VALUES)[number]

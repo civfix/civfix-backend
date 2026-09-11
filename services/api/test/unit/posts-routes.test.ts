@@ -68,7 +68,13 @@ class InMemoryPostRepository implements PostRepository {
   /** `${eventId}:${userId}` pairs the author may attach. */
   readonly eventMembers = new Set<string>()
   readonly attachableReports = new Set<string>()
+  /** `${organizationId}:${userId}` pairs the author may publish as. */
+  readonly orgMembers = new Set<string>()
   private seq = 0
+
+  canPostAsOrganization(organizationId: string, userId: string): Promise<boolean> {
+    return Promise.resolve(this.orgMembers.has(`${organizationId}:${userId}`))
+  }
 
   /** Insert a post directly (seeding), returning its id. */
   seed(post: Partial<StoredPost> & { authorId: string }): string {

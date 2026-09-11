@@ -72,17 +72,13 @@ function makeService(opts: {
   view: CleanupHoursView | null
   members?: string[]
   cohosts?: string[]
-  verified?: boolean | Record<string, boolean>
   notifier?: Pick<NotificationService, "createNotification">
   moderation?: HoursModerationSink
   weeklyFlagHours?: number
 }): VolunteerHoursService {
-  const verified = opts.verified ?? true
   return makeVolunteerHoursService({
     repo: opts.repo,
     cleanups: makeCleanups(opts.view, opts.members ?? [], opts.cohosts ?? []),
-    isVerified: (userId: string) =>
-      Promise.resolve(typeof verified === "boolean" ? verified : (verified[userId] ?? false)),
     ...(opts.notifier !== undefined ? { notifier: opts.notifier } : {}),
     ...(opts.moderation !== undefined ? { moderation: opts.moderation } : {}),
     ...(opts.weeklyFlagHours !== undefined ? { weeklyFlagHours: opts.weeklyFlagHours } : {}),
@@ -214,14 +210,13 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     expect((await repo.totalsFor(BOB)).totalHours).toBe(0)
   })
 
-  it("M21: a DIFFERENT verified host may still credit the organizer (the second-party path)", async () => {
+  it("M21: a DIFFERENT host may still credit the organizer (the second-party path)", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({
       repo,
       view: doneEvent,
       members: [HOST, BOB],
       cohosts: [BOB],
-      verified: { [BOB]: true },
     })
 
     const result = await service.logEventHours({
@@ -258,14 +253,13 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     expect((await repo.totalsFor(CAROL)).totalHours).toBe(2)
   })
 
-  it("a VERIFIED cohost can log hours (D4: actor gate is organizer|cohost)", async () => {
+  it("a cohost can log hours (D4: the actor gate is organizer|cohost standing, nothing else)", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({
       repo,
       view: doneEvent,
       members: [HOST, BOB, CAROL],
       cohosts: [BOB],
-      verified: { [BOB]: true },
     })
     const result = await service.logEventHours({
       cleanupId: CLEANUP,
@@ -284,23 +278,26 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
   })
 
-  it("rejects an unverified ACTOR even when the organizer is verified (D4 rule change)", async () => {
+  it("0.43.0: identity verification is retired, so a plain cohost credits without one", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({
       repo,
       view: doneEvent,
       members: [HOST, BOB],
       cohosts: [BOB],
-      verified: { [HOST]: true },
     })
-    await expect(
-      service.logEventHours({ cleanupId: CLEANUP, actorId: BOB, entries: flat([HOST], 1) }),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    const result = await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: BOB,
+      entries: flat([HOST], 1),
+    })
+    expect(result.credited).toBe(1)
+    expect((await repo.totalsFor(HOST)).totalHours).toBe(1)
   })
 
-  it("rejects an unverified organizer (403)", async () => {
+  it("rejects the organizer crediting themselves (403)", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
-    const service = makeService({ repo, view: doneEvent, members: [HOST], verified: false })
+    const service = makeService({ repo, view: doneEvent, members: [HOST] })
     await expect(
       service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([HOST], 1) }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
@@ -564,9 +561,9 @@ describe("volunteer hours: leaderboard", () => {
   it("ranks users by hours desc with correct rank numbers", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
-    repo.seedUser(HOST, { name: "Ann", handle: "ann", avatarUrl: null, verified: true })
-    repo.seedUser(BOB, { name: "Bob", handle: "bob", avatarUrl: null, verified: false })
-    repo.seedUser(CAROL, { name: "Carol", handle: null, avatarUrl: null, verified: false })
+    repo.seedUser(HOST, { name: "Ann", handle: "ann", avatarUrl: null })
+    repo.seedUser(BOB, { name: "Bob", handle: "bob", avatarUrl: null })
+    repo.seedUser(CAROL, { name: "Carol", handle: null, avatarUrl: null })
 
     await repo.logEventHours({
       actorId: HOST,
@@ -599,16 +596,14 @@ describe("volunteer hours: leaderboard", () => {
       [3, HOST, 1],
     ])
     expect(page.entries[1]?.handle).toBe("bob")
-    expect(page.entries[1]?.verified).toBe(false)
-    expect(page.entries[0]?.verified).toBe(false)
   })
 
   it("paginates via limit/offset and reports the next offset", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
-    repo.seedUser(HOST, { name: "Ann", handle: null, avatarUrl: null, verified: false })
-    repo.seedUser(BOB, { name: "Bob", handle: null, avatarUrl: null, verified: false })
-    repo.seedUser(CAROL, { name: "Carol", handle: null, avatarUrl: null, verified: false })
+    repo.seedUser(HOST, { name: "Ann", handle: null, avatarUrl: null })
+    repo.seedUser(BOB, { name: "Bob", handle: null, avatarUrl: null })
+    repo.seedUser(CAROL, { name: "Carol", handle: null, avatarUrl: null })
     await repo.logEventHours({
       actorId: HOST,
       cleanupId: CLEANUP,
@@ -631,19 +626,17 @@ describe("volunteer hours: leaderboard", () => {
   it("C18: excludes an explicit opt-OUT and keeps a never-chosen (NULL) user on the board", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
-    repo.seedUser(HOST, { name: "Ann", handle: null, avatarUrl: null, verified: false })
+    repo.seedUser(HOST, { name: "Ann", handle: null, avatarUrl: null })
     repo.seedUser(BOB, {
       name: "Bob",
       handle: null,
       avatarUrl: null,
-      verified: false,
       showVolunteerHours: true,
     })
     repo.seedUser(CAROL, {
       name: "Carol",
       handle: null,
       avatarUrl: null,
-      verified: false,
       showVolunteerHours: false,
     })
     await repo.logEventHours({
@@ -672,7 +665,7 @@ describe("volunteer hours: leaderboard", () => {
       [BOB, "Bob"],
       [CAROL, "Carol"],
     ] as const) {
-      repo.seedUser(id, { name, handle: null, avatarUrl: null, verified: false })
+      repo.seedUser(id, { name, handle: null, avatarUrl: null })
     }
     await repo.logEventHours({
       actorId: HOST,
@@ -708,7 +701,7 @@ describe("volunteer hours: leaderboard", () => {
   it("the 3-row Discovery preview pays for NO extras (limit below the threshold)", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
-    repo.seedUser(HOST, { name: "Ann", handle: null, avatarUrl: null, verified: false })
+    repo.seedUser(HOST, { name: "Ann", handle: null, avatarUrl: null })
     await repo.logEventHours({
       actorId: BOB,
       cleanupId: CLEANUP,
@@ -731,7 +724,7 @@ describe("volunteer hours: leaderboard", () => {
       [BOB, "Bob"],
       [CAROL, "Carol"],
     ] as const) {
-      repo.seedUser(id, { name, handle: null, avatarUrl: null, verified: false })
+      repo.seedUser(id, { name, handle: null, avatarUrl: null })
     }
     await repo.logEventHours({
       actorId: HOST,
@@ -866,7 +859,6 @@ describe("volunteer hours: hours_logged notifications", () => {
     const service = makeVolunteerHoursService({
       repo,
       cleanups: makeCleanups(doneEvent, [HOST, BOB, CAROL, DAVE]),
-      isVerified: () => Promise.resolve(true),
       notifier,
       logger: { warn: (obj) => warnings.push(obj) },
     })
