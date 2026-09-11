@@ -20,7 +20,7 @@ export function hostAnalyticsCacheKey(args: {
 
 export function makeHostAnalyticsCache(deps: HostAnalyticsCacheDeps) {
   return {
-    async getOrSet<T>(key: string, compute: () => Promise<T>): Promise<T> {
+    async getOrSet<T>(key: string, compute: () => Promise<T>, ttlSeconds?: number): Promise<T> {
       try {
         const hit = await deps.cache.get(key)
         if (hit !== null) return JSON.parse(hit) as T
@@ -29,7 +29,7 @@ export function makeHostAnalyticsCache(deps: HostAnalyticsCacheDeps) {
       }
       const value = await compute()
       try {
-        await deps.cache.set(key, JSON.stringify(value), deps.ttlSeconds)
+        await deps.cache.set(key, JSON.stringify(value), ttlSeconds ?? deps.ttlSeconds)
       } catch (err) {
         deps.logger?.warn({ err, key }, "host analytics cache write failed (ignored)")
       }

@@ -5,6 +5,9 @@ import { writeAudit } from "../admin/audit.js"
 import { makeRouteNotificationService } from "../route-notifier.js"
 import { makeDrizzleAnalyticsRepository } from "./analytics-repository.drizzle.js"
 import { makeAnalyticsService, type AnalyticsService } from "./analytics-service.js"
+import { makeInsightsService, type InsightsService } from "./insights-service.js"
+import { makeDrizzleHostRegistrationRepository } from "./registration-repository.drizzle.js"
+import { makeDrizzleDonationRepository } from "../payments/donation-repository.drizzle.js"
 import { makeHostAnalyticsCache } from "./host-analytics-cache.js"
 import { makeDrizzleBroadcastRepository } from "./broadcast-repository.drizzle.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
@@ -40,6 +43,7 @@ export interface CommsRuntime {
   lanes: BroadcastLanes
   metrics: MetricsService
   analytics: AnalyticsService
+  insights: InsightsService
   exports: HostExportService
 }
 
@@ -169,14 +173,24 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     ...(logger !== undefined ? { logger } : {}),
   })
 
+  const analyticsRepo = makeDrizzleAnalyticsRepository(sql)
+  const analyticsCache = makeHostAnalyticsCache({
+    cache: container.getCache(),
+    ttlSeconds: env.HOST_ANALYTICS_CACHE_TTL_SEC,
+    ...(logger !== undefined ? { logger } : {}),
+  })
+
   const analytics = makeAnalyticsService({
-    analytics: makeDrizzleAnalyticsRepository(sql),
+    analytics: analyticsRepo,
     metrics: metricsRepo,
-    cache: makeHostAnalyticsCache({
-      cache: container.getCache(),
-      ttlSeconds: env.HOST_ANALYTICS_CACHE_TTL_SEC,
-      ...(logger !== undefined ? { logger } : {}),
-    }),
+    cache: analyticsCache,
+  })
+
+  const insights = makeInsightsService({
+    analytics: analyticsRepo,
+    registrations: makeDrizzleHostRegistrationRepository(sql),
+    donations: makeDrizzleDonationRepository(sql),
+    cache: analyticsCache,
   })
 
   const exports = makeHostExportService({
@@ -199,5 +213,5 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     ...(logger !== undefined ? { logger } : {}),
   })
 
-  return { repo, metricsRepo, broadcasts, pipeline, lanes, metrics, analytics, exports }
+  return { repo, metricsRepo, broadcasts, pipeline, lanes, metrics, analytics, insights, exports }
 }

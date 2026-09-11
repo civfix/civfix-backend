@@ -19,12 +19,13 @@ import {
   bestDayTime,
   breakdown,
   dailySeries,
+  enumerateDays,
   funnel,
-  repeatAttendanceRate,
   seriesClosure,
   suppressCount,
   suppressRate,
   type DayCount,
+  type DayRange,
   type DerivedBreakdownRow,
   type DerivedPanel,
   type KeyCount,
@@ -46,6 +47,8 @@ const PORTFOLIO_RANGE_DAYS: Record<PortfolioAnalyticsRange, number | null> = {
 }
 
 const ALL_RANGE_DAYS = 365
+
+const EXACT_K = 1
 
 export interface AnalyticsServiceDeps {
   analytics: AnalyticsRepository
@@ -312,39 +315,59 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
           deps.analytics.portfolioDayTime(cleanupIds),
           deps.metrics.readMany(cleanupIds, ["registrations"], window.from, window.to),
         ])
-        const closure = closureOf(seriesOf(metricRows, "registrations"), window)
-        const registrationsPublishable = closureAllowsTotal(closure)
-        const best = registrationsPublishable ? bestDayTime(dayTime) : null
         return {
           generatedAt: now().toISOString(),
           range,
           k: ANALYTICS_SUPPRESSION_K,
           totals: {
             events: totals.events,
-            registrations: registrationsPublishable
-              ? suppressCount(totals.registrations).value
-              : null,
-            checkIns: suppressCount(totals.checkIns).value,
-            uniqueAttendees: suppressCount(totals.uniqueAttendees).value,
+            registrations: totals.registrations,
+            checkIns: totals.checkIns,
+            uniqueAttendees: totals.uniqueAttendees,
           },
-          series: toSeries(closure.daily),
-          byEvent: toPanel(breakdown(byEvent, { totalPublishable: registrationsPublishable })),
-          repeatAttendance: toSuppressedRate(
-            repeatAttendanceRate(totals.repeatAttendees, totals.uniqueAttendees),
-            totals.repeatAttendees,
-            totals.uniqueAttendees,
-          ),
-          averageCheckInRate: registrationsPublishable
-            ? toRate(totals.checkIns, totals.registrations)
-            : emptyRate(),
-          bestDayTime:
-            best === null
-              ? null
-              : { weekday: best.weekday, hour: best.hour, value: best.value, suppressed: false },
+          series: exactSeries(seriesOf(metricRows, "registrations"), window),
+          byEvent: exactPanel(byEvent),
+          repeatAttendance: exactRate(totals.repeatAttendees, totals.uniqueAttendees),
+          averageCheckInRate: exactRate(totals.checkIns, totals.registrations),
+          bestDayTime: toBestDayTime(bestDayTime(dayTime, EXACT_K)),
         }
       })
     },
   }
+}
+
+function exactSeries(points: readonly DayCount[], window: DayRange): SeriesPoint[] {
+  const byDay = new Map<string, number>()
+  for (const point of points) byDay.set(point.day, (byDay.get(point.day) ?? 0) + point.count)
+  return enumerateDays(window).map((day) => ({
+    day,
+    value: byDay.get(day) ?? 0,
+    suppressed: false,
+  }))
+}
+
+function exactPanel(rows: readonly KeyCount[]): Panel {
+  return {
+    panelSuppressed: false,
+    rows: rows.map((row) => ({
+      key: row.key,
+      label: row.key,
+      value: row.count,
+      suppressed: false,
+    })),
+  }
+}
+
+function exactRate(numerator: number, denominator: number): SuppressedRate {
+  return toSuppressedRate(suppressRate(numerator, denominator, EXACT_K), numerator, denominator)
+}
+
+function toBestDayTime(
+  best: { weekday: number; hour: number; value: number } | null,
+): HostedEventsAnalyticsResponse["bestDayTime"] {
+  return best === null
+    ? null
+    : { weekday: best.weekday, hour: best.hour, value: best.value, suppressed: false }
 }
 
 function closureOf(points: readonly DayCount[], window: { from: string; to: string }) {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import type { CheckinMethod } from "@civfix/shared"
 import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
 import {
+  ARRIVAL_BUCKET_MINUTES,
   buildCheckinResult,
   emptyCheckinResult,
   waitlistEntryAsRegistration,
@@ -52,6 +53,20 @@ interface MemoryGuest {
 }
 
 const MAX_TICKET_TYPES = 20
+
+const ARRIVAL_BUCKET_MS = ARRIVAL_BUCKET_MINUTES * 60_000
+
+function arrivalBuckets(seats: readonly { checkedInAt: Date | null }[]): { at: Date; count: number }[] {
+  const byBucket = new Map<number, number>()
+  for (const seat of seats) {
+    if (seat.checkedInAt === null) continue
+    const at = Math.floor(seat.checkedInAt.getTime() / ARRIVAL_BUCKET_MS) * ARRIVAL_BUCKET_MS
+    byBucket.set(at, (byBucket.get(at) ?? 0) + 1)
+  }
+  return [...byBucket]
+    .sort((a, b) => a[0] - b[0])
+    .map(([at, count]) => ({ at: new Date(at), count }))
+}
 
 function subjectMatches(record: { userId: string | null; guestId: string | null }, subject: RegistrationSubject): boolean {
   return subject.kind === "user" ? record.userId === subject.userId : record.guestId === subject.guestId
@@ -1094,7 +1109,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
           .reduce((sum, w) => sum + w.partySize, 0),
         capacity: type.capacity,
       })),
-      arrivals: [],
+      arrivals: arrivalBuckets(seats),
     }
   }
 

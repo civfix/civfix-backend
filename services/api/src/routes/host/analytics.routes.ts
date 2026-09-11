@@ -1,24 +1,33 @@
 import {
+  AppError,
   EventAnalyticsRequestSchema,
+  GetEventInsightsRequestSchema,
   HostedEventsAnalyticsRequestSchema,
   type AnalyticsRange,
   type PortfolioAnalyticsRange,
 } from "@civfix/shared"
+import { can } from "@civfix/shared/host"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"
 import { perIdentity } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
 import { parse } from "../_validate.js"
-import { requireCapability, requireOrgCapability } from "../../services/host/authz.js"
+import {
+  hostForbiddenCopy,
+  requireCapability,
+  requireOrgCapability,
+} from "../../services/host/authz.js"
 import { makeCommsRuntime } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
 import type { AnalyticsService } from "../../services/host/analytics-service.js"
+import type { InsightsService } from "../../services/host/insights-service.js"
 
 export const ANALYTICS_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 export interface HostAnalyticsOverrides {
   analytics: AnalyticsService
+  insights: InsightsService
 }
 
 declare module "fastify" {
@@ -43,6 +52,12 @@ export async function registerHostAnalyticsRoutes(
     const override = app.hostAnalyticsOverrides
     if (override) return override.analytics
     return (cached ??= makeCommsRuntime(container, app.log)).analytics
+  }
+
+  function insights(): InsightsService {
+    const override = app.hostAnalyticsOverrides
+    if (override) return override.insights
+    return (cached ??= makeCommsRuntime(container, app.log)).insights
   }
 
   async function eventScope(
@@ -85,6 +100,28 @@ export async function registerHostAnalyticsRoutes(
   route(app, "eventAnalyticsSources", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
     const scope = await eventScope(request)
     reply.status(200).send(await analytics().sources(scope.cleanupId, scope.range, scope.viewerScope))
+  })
+
+  route(app, "getEventInsights", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const params = parse(GetEventInsightsRequestSchema, request.params)
+    const resolution = await requireCapability(
+      container.getDb().sql,
+      params.id,
+      userId,
+      "view_analytics",
+    )
+    if (!can(resolution.standing, "view_roster")) {
+      throw AppError.forbidden(hostForbiddenCopy("view_roster"))
+    }
+    const viewerScope = `${resolution.standing.eventRole ?? "none"}:${resolution.standing.orgRole ?? "none"}`
+    reply.status(200).send(
+      await insights().insights(params.id, {
+        userId,
+        canViewDonations: can(resolution.standing, "view_donations"),
+        viewerScope,
+      }),
+    )
   })
 
   route(app, "hostedEventsAnalytics", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
