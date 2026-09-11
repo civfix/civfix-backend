@@ -30,6 +30,7 @@ import {
   toEventRegistrationDTO,
 } from "./registration-dto.js"
 import { enqueueWaitlistPromotion } from "./waitlist-promotion.js"
+import { NO_AFFILIATIONS, withAffiliation, type AffiliationLoader } from "../affiliation.js"
 import type { TicketTokenSigner } from "./ticket-token.js"
 import type {
   ConsentWrite,
@@ -93,6 +94,7 @@ export interface RegistrationServiceDeps {
   counters?: CounterStore
   audit?: RegistrationAudit
   teamUserIds?: (cleanupId: string) => Promise<string[]>
+  affiliations?: AffiliationLoader
   now?: () => Date
   newId?: () => string
   logger?: { warn(obj: unknown, msg?: string): void }
@@ -414,8 +416,18 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
           meta: { rows: page.rows.length, surface: "roster" },
         })
       }
+      const items = page.rows.map((record) => toEventRegistrationDTO(record, projection))
+      const affiliations = deps.affiliations
+        ? await deps.affiliations(
+            items.map((i) => i.person?.id).filter((id): id is string => id != null),
+          )
+        : NO_AFFILIATIONS
       return {
-        items: page.rows.map((record) => toEventRegistrationDTO(record, projection)),
+        items: items.map((item) =>
+          item.person === null || item.person === undefined
+            ? item
+            : { ...item, person: withAffiliation(item.person, affiliations) },
+        ),
         nextCursor: page.nextCursor,
         ...(page.total !== undefined ? { total: page.total } : {}),
       }

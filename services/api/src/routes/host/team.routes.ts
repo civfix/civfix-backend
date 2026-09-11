@@ -107,6 +107,7 @@ export async function registerHostTeamRoutes(
       mailer: container.mailer,
       notifier: makeRouteNotificationService(container, app.log),
       presignEventMedia: makeEventMediaPresigner(container.storage),
+      affiliations: container.getAffiliationLoader(),
       eventTitleOf: async (cleanupId: string) => {
         const rows = await sql<{ title: string }[]>`
           SELECT title FROM cleanups WHERE id = ${cleanupId} LIMIT 1

@@ -232,23 +232,15 @@ export function makeDrizzleCertificateRepository(sql: Sql): CertificateRepositor
       `
     },
 
-    /**
-     * Holder identity frozen onto the document. `verified` is the same `user_verification.status =
-     * 'verified'` EXISTS the ledger read uses, so "identity-verified community member" means exactly what
-     * it means everywhere else. A tombstoned account cannot issue.
-     */
+    /** Holder identity frozen onto the document. A tombstoned account cannot issue. */
     async findHolder(userId: string): Promise<CertificateHolder | null> {
       const rows = await sql<
-        { display_name: string; handle: string | null; locale: string; verified: boolean }[]
+        { display_name: string; handle: string | null; locale: string }[]
       >`
         SELECT
           u.display_name,
           u.handle,
-          u.locale,
-          EXISTS (
-            SELECT 1 FROM user_verification uv
-            WHERE uv.user_id = u.id AND uv.status = 'verified'
-          ) AS verified
+          u.locale
         FROM users u
         WHERE u.id = ${userId} AND u.deleted_at IS NULL
         LIMIT 1
@@ -259,7 +251,6 @@ export function makeDrizzleCertificateRepository(sql: Sql): CertificateRepositor
         userId,
         displayName: row.display_name,
         handle: row.handle,
-        verified: row.verified,
         locale: row.locale,
       }
     },

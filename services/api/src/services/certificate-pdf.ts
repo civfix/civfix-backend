@@ -46,7 +46,6 @@ const COLOR = {
   rule: "#BDB5A6",
   hairline: "#ECE5D8",
   accent: "#F0685C",
-  verified: "#2F7D46",
 } as const
 
 const COL = {
@@ -216,12 +215,6 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
       )
       y += 14
     }
-    if (model.holder.verified) {
-      drawCheck(x, y + 2)
-      const verified = t("certificate.holder.verified")
-      line(fontFor(verified, "bold"), 9, COLOR.verified, verified, x + 12, y, { width: 278 })
-    }
-
     const rx = 366
     const rw = 176
     const period =
@@ -230,16 +223,6 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
         : "—"
     labelledValue(rx, top + 14, rw, t("certificate.holder.period"), period)
     labelledValue(rx, top + 48, rw, t("certificate.holder.issued"), issuedLabel)
-  }
-
-  function drawCheck(x: number, y: number): void {
-    doc
-      .moveTo(x, y + 4)
-      .lineTo(x + 2.6, y + 6.8)
-      .lineTo(x + 8, y + 0.8)
-      .lineWidth(1.4)
-      .strokeColor(COLOR.verified)
-      .stroke()
   }
 
   function labelledValue(x: number, y: number, w: number, label: string, value: string): void {

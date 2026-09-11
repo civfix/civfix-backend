@@ -288,16 +288,11 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           display_name: string
           handle: string | null
           bio: string | null
-          verified: boolean
           role: CleanupMemberRole
           joined_at: Date | null
         }[]
       >`
-        SELECT u.id, u.display_name, u.handle, u.bio, m.role, m.joined_at,
-               EXISTS (
-                 SELECT 1 FROM user_verification v
-                 WHERE v.user_id = u.id AND v.status = 'verified'
-               ) AS verified
+        SELECT u.id, u.display_name, u.handle, u.bio, m.role, m.joined_at
         FROM cleanup_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.cleanup_id = ${cleanupId} AND m.role <> 'member'
@@ -315,7 +310,6 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           displayName: r.display_name,
           handle: r.handle,
           bio: r.bio,
-          verified: r.verified,
         },
         role: r.role,
         joinedAt: r.joined_at,

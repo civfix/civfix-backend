@@ -33,7 +33,6 @@ export interface ReportMemberRowSelect {
   bio: string | null
   avatar_url: string | null
   user_deleted_at: Date | null
-  verified: boolean
   is_following: boolean
   blocked_pair: boolean
 }
@@ -57,7 +56,6 @@ export function toReportParticipantDTO(r: ReportMemberRowSelect): ReportChatPart
     followers: 0,
     following: 0,
     isFollowing: r.is_following,
-    ...(r.verified && hidden === null && !author.deleted ? { verified: true } : {}),
     ...(author.deleted ? { deleted: true } : {}),
   }
   return { user, role: r.role, joinedAt: r.joined_at }
@@ -220,8 +218,6 @@ export function makeReportChatRepository(
           u.avatar_url,
           u.deleted_at AS user_deleted_at,
           EXISTS (
-            SELECT 1 FROM user_verification v WHERE v.user_id = u.id AND v.status = 'verified'
-          ) AS verified,
           EXISTS (
             SELECT 1 FROM follows_people f
             WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id

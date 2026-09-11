@@ -344,12 +344,11 @@ describe("ledgerFingerprint", () => {
     expect(ledgerFingerprint(edited)).not.toBe(ledgerFingerprint(base()))
   })
 
-  it("changes on a rename, a handle change and a verification change", () => {
+  it("changes on a rename and on a handle change", () => {
     const fp = ledgerFingerprint(base())
     for (const holder of [
       { ...HOLDER, displayName: "Jane Q. Doe" },
       { ...HOLDER, handle: "janedoe" },
-      { ...HOLDER, verified: false },
     ]) {
       const model = { ...base(), holder }
       expect(ledgerFingerprint(model)).not.toBe(fp)

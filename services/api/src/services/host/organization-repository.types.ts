@@ -7,7 +7,10 @@ import type {
   OrgVerificationStatus,
   SocialLinks,
 } from "@civfix/shared"
-import type { CleanupPersonView } from "../cleanup-repository.types.js"
+import type {
+  CleanupOrganizationView,
+  CleanupPersonView,
+} from "../cleanup-repository.types.js"
 
 export interface OrganizationRecord {
   id: string
@@ -243,6 +246,18 @@ export type CreateOrganizationInviteOutcome =
 
 export type RevokeOrganizationInviteOutcome = "revoked" | "not_found"
 
+export type DeclineOrganizationInviteOutcome = "declined" | "invalid" | "expired"
+
+/** One row of the invitee's own org-invite inbox (GET /me/org-invites). */
+export interface PendingOrganizationInviteRecord {
+  id: string
+  role: OrganizationInviteRole
+  createdAt: Date
+  expiresAt: Date
+  invitedBy: CleanupPersonView | null
+  organization: CleanupOrganizationView
+}
+
 /** `role` is the SEATED role: for an existing member that is their current role, never an upgrade from the invite. */
 export type AcceptOrganizationInviteOutcome =
   | { kind: "accepted"; organizationId: string; role: OrganizationMemberRole; alreadyMember: boolean }
@@ -343,8 +358,19 @@ export interface OrganizationRepository {
     now: Date
   }): Promise<RevokeOrganizationInviteOutcome>
   acceptInviteTx(args: {
-    tokenHash: string
+    by: { tokenHash: string } | { inviteId: string }
     userId: string
     now: Date
   }): Promise<AcceptOrganizationInviteOutcome>
+  /** The invitee's own open invites: addressed to their id OR their verified email. Bounded by `limit`. */
+  listPendingInvitesForUser(args: {
+    userId: string
+    now: Date
+    limit: number
+  }): Promise<PendingOrganizationInviteRecord[]>
+  declineInviteTx(args: {
+    inviteId: string
+    userId: string
+    now: Date
+  }): Promise<DeclineOrganizationInviteOutcome>
 }

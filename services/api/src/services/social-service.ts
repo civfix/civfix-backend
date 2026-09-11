@@ -12,6 +12,7 @@ import type {
   UserProfileDTO,
 } from "@civfix/shared"
 import { toCleanupDTO, type CleanupRecord } from "./cleanup-service.js"
+import { attachAffiliations, type AffiliationLoader } from "./affiliation.js"
 
 export const PEOPLE_DEFAULT_LIMIT = 20
 
@@ -50,7 +51,6 @@ export interface PersonView {
   bio: string | null
   followers: number
   following: number
-  verified: boolean
   avatarR2Key: string | null
   avatarUrl: string | null
   socialLinks: SocialLinks | null
@@ -154,6 +154,7 @@ export interface SocialServiceDeps {
     targetId: string,
   ) => Promise<{ blockedByViewer: boolean; blockedByTarget: boolean }>
   presignAvatar?: (avatarKey: string) => Promise<string>
+  affiliations?: AffiliationLoader
   volunteerHoursTotalFor?: (userId: string) => Promise<number>
   logger?: { warn(obj: unknown, msg: string): void }
 }
@@ -201,7 +202,6 @@ export function toPersonDTO(view: PersonView, isFollowing: boolean): PersonDTO {
     followers: view.followers,
     following: view.following,
     isFollowing,
-    verified: view.verified,
   }
 }
 
@@ -273,7 +273,11 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       cursor: req.cursor ?? null,
       limit: req.limit ?? PEOPLE_DEFAULT_LIMIT,
     })
-    return { items: items.map((it) => toPersonDTO(it, it.isFollowing)), nextCursor }
+    const people = await attachAffiliations(
+      deps.affiliations,
+      items.map((it) => toPersonDTO(it, it.isFollowing)),
+    )
+    return { items: people, nextCursor }
   }
 
   async function buildProfile(
@@ -304,6 +308,8 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       view.avatarR2Key !== null
         ? await presignAvatar(view.avatarR2Key)
         : (view.avatarUrl ?? undefined)
+    const affiliations = deps.affiliations ? await deps.affiliations([view.id]) : undefined
+    const organization = affiliations?.get(view.id) ?? null
     return {
       id: view.id,
       name: view.displayName,
@@ -314,7 +320,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       followers: view.followers,
       following: view.following,
       isFollowing,
-      verified: view.verified,
+      organization,
       ...(view.socialLinks ? { socialLinks: view.socialLinks } : {}),
       pastEvents,
       upcomingEvents,
@@ -339,7 +345,6 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       followers: 0,
       following: 0,
       isFollowing: false,
-      verified: view.verified,
       pastEvents: [],
       upcomingEvents: [],
       stats: { reports: 0, fixed: 0, cleanups: 0 },
@@ -370,7 +375,10 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         limit: req.limit ?? PEOPLE_DEFAULT_LIMIT,
       })
       return {
-        items: items.map((it) => toPersonDTO(it, it.isFollowing)),
+        items: await attachAffiliations(
+          deps.affiliations,
+          items.map((it) => toPersonDTO(it, it.isFollowing)),
+        ),
         nextCursor,
       }
     },
@@ -382,7 +390,10 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         viewerId,
         limit: Math.max(limit, SUGGESTIONS_CACHE_LIMIT),
       })
-      const results = items.map((it) => toPersonDTO(it, it.isFollowing))
+      const results = await attachAffiliations(
+        deps.affiliations,
+        items.map((it) => toPersonDTO(it, it.isFollowing)),
+      )
       await writeSuggestionsCache(viewerId, results)
       return { results: results.slice(0, limit) }
     },

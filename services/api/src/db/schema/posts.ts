@@ -11,6 +11,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core"
 import { cleanups } from "./cleanups.js"
+import { organizations } from "./organizations.js"
 import { reports } from "./reports.js"
 import { users } from "./users.js"
 import type { POST_KIND_VALUES, REPORT_VISIBILITY_VALUES } from "./types.js"
@@ -41,6 +42,9 @@ export const posts = pgTable(
     }),
     eventId: uuid("event_id").references(() => cleanups.id, { onDelete: "set null" }),
     reportId: uuid("report_id").references(() => reports.id, { onDelete: "set null" }),
+    organizationId: uuid("organization_id").references(() => organizations.id, {
+      onDelete: "set null",
+    }),
     likeCount: integer("like_count").notNull().default(0),
     repostCount: integer("repost_count").notNull().default(0),
     replyCount: integer("reply_count").notNull().default(0),
@@ -71,6 +75,9 @@ export const posts = pgTable(
     index("posts_toplevel_recent_idx")
       .on(t.createdAt.desc(), t.id.desc())
       .where(sql`deleted_at IS NULL AND reply_to_id IS NULL`),
+    index("posts_organization_created_idx")
+      .on(t.organizationId, t.createdAt.desc())
+      .where(sql`${t.organizationId} IS NOT NULL AND deleted_at IS NULL`),
     uniqueIndex("posts_repost_unique_idx")
       .on(t.authorId, t.repostOfId)
       .where(sql`kind = 'repost' AND deleted_at IS NULL`),

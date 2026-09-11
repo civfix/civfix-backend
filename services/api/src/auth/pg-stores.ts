@@ -34,6 +34,7 @@ import {
   type SessionRecord,
   type SessionStore,
   type UpdateProfileInput,
+  PRIMARY_ORGANIZATION_NOT_A_MEMBER,
   type UpdateSettingsInput,
   type UserRecord,
   type UserStore,
@@ -271,6 +272,26 @@ export class PgUserStore implements UserStore {
     if (input.allowDirectMessages !== undefined) set.allowDirectMessages = input.allowDirectMessages
     if (input.locale !== undefined) set.locale = input.locale
     if (input.showVolunteerHours !== undefined) set.showVolunteerHours = input.showVolunteerHours
+    if (input.primaryOrganizationId !== undefined) {
+      if (input.primaryOrganizationId !== null) {
+        const member = await this.db.execute<{ one: number }>(sql`
+          SELECT 1 AS one
+          FROM organization_members m
+          JOIN organizations o ON o.id = m.organization_id
+          WHERE m.user_id = ${id}
+            AND m.organization_id = ${input.primaryOrganizationId}
+            AND o.deleted_at IS NULL
+            AND o.suspended_at IS NULL
+          LIMIT 1
+        `)
+        if (member.length === 0) {
+          throw AppError.validation({
+            primaryOrganizationId: PRIMARY_ORGANIZATION_NOT_A_MEMBER,
+          })
+        }
+      }
+      set.primaryOrganizationId = input.primaryOrganizationId
+    }
     if (Object.keys(set).length === 0) {
       const current = await this.findById(id)
       if (!current) throw new Error("PgUserStore.updateSettings: user not found")
@@ -512,6 +533,7 @@ export class PgUserStore implements UserStore {
           socialLinks: null,
           lastActivityGeom: null,
           lastActivityAt: null,
+          primaryOrganizationId: null,
         })
         .where(eq(users.id, id))
         .returning()
@@ -564,33 +586,7 @@ export class PgUserStore implements UserStore {
         WHERE meta->>'reporterUserId' = ${id}
       `)
 
-      const verificationMedia = await tx.execute<{
-        r2_key: string
-        served_key: string | null
-        thumb_key: string | null
-      }>(sql`
-        DELETE FROM media_assets
-        WHERE purpose = 'verification'
-          AND id IN (
-            SELECT (doc->>'mediaId')::uuid
-            FROM user_verification uv,
-                 jsonb_array_elements(uv.documents) AS doc
-            WHERE uv.user_id = ${id} AND doc->>'mediaId' IS NOT NULL
-          )
-        RETURNING r2_key, served_key, thumb_key
-      `)
-      await tx.execute(sql`
-        UPDATE user_verification
-        SET note = NULL, rejection_reason = NULL, documents = '[]'::jsonb, updated_at = now()
-        WHERE user_id = ${id}
-      `)
-
-      const objectKeys = [
-        ...certificates.map((c) => c.r2Key),
-        ...verificationMedia.flatMap((m) =>
-          [m.r2_key, m.served_key, m.thumb_key].filter((k): k is string => k !== null),
-        ),
-      ]
+      const objectKeys = [...certificates.map((c) => c.r2Key)]
       return { record: toUserRecord(r), objectKeys, moved, releasedTicketTypeIds }
     })
 
@@ -760,6 +756,7 @@ interface UserRowLike {
   allowDirectMessages: boolean
   showVolunteerHours: boolean | null
   locale: string
+  primaryOrganizationId: string | null
   createdAt: Date
   deletedAt: Date | null
 }
@@ -778,6 +775,7 @@ function toUserRecord(r: UserRowLike): UserRecord {
     allowDirectMessages: r.allowDirectMessages,
     showVolunteerHours: r.showVolunteerHours,
     locale: r.locale,
+    primaryOrganizationId: r.primaryOrganizationId,
     createdAt: r.createdAt,
     deletedAt: r.deletedAt,
   }

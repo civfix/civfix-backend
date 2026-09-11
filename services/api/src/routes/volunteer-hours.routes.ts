@@ -29,7 +29,6 @@ import { makeDrizzleModerationRepository } from "../services/admin/moderation-re
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { hostStandingOf } from "../services/host/host-standing.js"
 import { NO_HOST_STANDING } from "@civfix/shared/host"
-import { makeDrizzleVerificationRepository } from "../services/verification-repository.drizzle.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import type { NotificationService } from "../services/notification-service.js"
 import { route } from "../versioning/route.js"
@@ -38,7 +37,6 @@ import { parse } from "./_validate.js"
 export interface VolunteerHoursOverrides {
   repo: VolunteerHoursRepository
   cleanups?: CleanupHoursLookup
-  isVerified?: (userId: string) => Promise<boolean>
   notifier?: Pick<NotificationService, "createNotification">
   moderation?: HoursModerationSink
 }
@@ -114,13 +112,6 @@ export async function registerVolunteerHoursRoutes(
     }
   }
 
-  function isVerified(): (userId: string) => Promise<boolean> {
-    const overrides = app.volunteerOverrides
-    if (overrides?.isVerified) return overrides.isVerified
-    return (userId: string) =>
-      makeDrizzleVerificationRepository(container.getDb().sql).isVerified(userId)
-  }
-
   function notifier(): Pick<NotificationService, "createNotification"> | undefined {
     const overrides = app.volunteerOverrides
     if (overrides) return overrides.notifier
@@ -149,7 +140,7 @@ export async function registerVolunteerHoursRoutes(
     return makeVolunteerHoursService({
       repo: repo(),
       cleanups: cleanupLookup(),
-      isVerified: isVerified(),
+      ...(app.volunteerOverrides ? {} : { affiliations: container.getAffiliationLoader() }),
       ...(bells !== undefined ? { notifier: bells } : {}),
       ...(moderation !== undefined ? { moderation } : {}),
       ...(isBlockedEitherWay !== undefined ? { isBlockedEitherWay } : {}),

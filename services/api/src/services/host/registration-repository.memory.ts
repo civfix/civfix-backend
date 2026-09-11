@@ -485,7 +485,6 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
               handle: null,
               bio: null,
               avatarUrl: null,
-              verified: false,
               deletedAt: null,
             }
           : null,

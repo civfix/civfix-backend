@@ -17,6 +17,7 @@ import {
   type NotificationType,
   type OrganizationDTO,
   type OrganizationInviteDTO,
+  type PendingOrganizationInviteDTO,
   type OrganizationMemberDTO,
   type OrganizationMemberRole,
   type OrganizationVerificationDTO,
@@ -28,7 +29,12 @@ import { can } from "@civfix/shared/host"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { InMemoryCounterStore, type CounterStore } from "../../abuse/counter-store.js"
 import { generateToken, sha256Hex } from "../../auth/crypto.js"
-import { toAttendeePersonDTO } from "../cleanup-dto.js"
+import { toAttendeePersonDTO, toOrganizationRef } from "../cleanup-dto.js"
+import {
+  NO_AFFILIATIONS,
+  withAffiliation,
+  type AffiliationLoader,
+} from "../affiliation.js"
 import { hostForbiddenCopy } from "./authz.js"
 import { assertSlugAllowed } from "./slugs.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
@@ -67,6 +73,9 @@ export const ORG_INVITE_TOKEN_BYTES = 32
 
 export const ORG_INVITE_LIST_CAP = 100
 
+/** The invitee's own inbox is a short triage list, not a feed: newest 20 open invites. */
+export const MY_ORG_INVITES_CAP = 20
+
 export const ADMIN_ORGS_DEFAULT_LIMIT = 25
 
 const fallbackCounters = new InMemoryCounterStore()
@@ -99,6 +108,7 @@ export interface OrganizationServiceDeps {
   now?: () => Date
   newId?: () => string
   newToken?: () => string
+  affiliations?: AffiliationLoader
   onNonprofitVerified?: NonprofitVerifiedHook
   mailer?: OrganizationMailer
   notifier?: OrganizationNotifier
@@ -158,6 +168,9 @@ export interface OrganizationService {
   listInvites(id: string, actorId: string): Promise<{ items: OrganizationInviteDTO[] }>
   revokeInvite(id: string, actorId: string, inviteId: string): Promise<{ ok: true }>
   acceptInvite(userId: string, token: string): Promise<AcceptOrganizationInviteResponse>
+  listMyInvites(userId: string): Promise<{ items: PendingOrganizationInviteDTO[] }>
+  acceptMyInvite(userId: string, inviteId: string): Promise<AcceptOrganizationInviteResponse>
+  declineMyInvite(userId: string, inviteId: string): Promise<{ ok: true }>
   setMemberRole(
     id: string,
     actorId: string,
@@ -343,6 +356,48 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     return toOrganizationDTO(record, await logoUrlOf(record))
   }
 
+  async function presignLogoKeys(
+    keys: readonly (string | null)[],
+  ): Promise<ReadonlyMap<string, string>> {
+    const out = new Map<string, string>()
+    const presign = deps.presignLogo
+    if (presign === undefined) return out
+    const wanted = [...new Set(keys.filter((k): k is string => k !== null))]
+    const urls = await mapWithLimit(wanted, PRESIGN_CONCURRENCY, (key) => presign(key))
+    wanted.forEach((key, i) => {
+      const url = urls[i]
+      if (url !== undefined) out.set(key, url)
+    })
+    return out
+  }
+
+  /**
+   * The one seating path behind both invite doors: the emailed token link and the in-app inbox.
+   * Identical outcomes, identical copy - only the way the row is found differs.
+   */
+  async function seatFromInvite(
+    userId: string,
+    by: { tokenHash: string } | { inviteId: string },
+  ): Promise<AcceptOrganizationInviteResponse> {
+    const outcome = await deps.repo.acceptInviteTx({ by, userId, now: now() })
+    // Same shape as event team invites: an unknown, revoked or already-used invite and one opened by
+    // the wrong account all read "no longer valid" (non-probing); only expiry is named.
+    if (outcome.kind === "invalid" || outcome.kind === "wrong_recipient") {
+      throw AppError.notFound("That invitation is no longer valid.")
+    }
+    if (outcome.kind === "expired") throw AppError.conflict("That invitation has expired.")
+    if (outcome.kind === "suspended") {
+      throw AppError.conflict(
+        "This organization is suspended, so it can't take on new members right now.",
+      )
+    }
+    const record = await deps.repo.findOrganizationById(outcome.organizationId, userId)
+    if (record === null) notFoundOrganization()
+    // `role` is the SEATED role (an existing member keeps theirs), so an owner who accepted an
+    // invite to their own org reads `owner` here, matching `organization.myRole`.
+    return { ok: true, organization: await dto(record), role: outcome.role }
+  }
+
   async function requireOrgCapability(
     organizationId: string,
     actorId: string,
@@ -426,7 +481,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     if (deps.notifier === undefined) return
     try {
       await deps.notifier.createNotification(userId, {
-        type: "system",
+        type: "org_invite",
         title:
           role === "owner"
             ? `You're now the owner of ${org.name}`
@@ -489,10 +544,10 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     if (deps.notifier === undefined) return
     try {
       await deps.notifier.createNotification(userId, {
-        type: "system",
+        type: "org_invite",
         title: `You've been invited to join ${org.name}`,
-        body: `Accept the invitation from the email we sent you to join as ${role === "admin" ? "an admin" : "a member"}. It expires in 14 days.`,
-        link: "/manage/org-invites/accept",
+        body: `Open your event dashboard to accept or decline joining as ${role === "admin" ? "an admin" : "a member"}. It expires in 14 days.`,
+        link: "/dashboard",
       })
     } catch (err) {
       deps.logger?.warn?.({ err, userId, organization: org.name }, "org invite notification failed (suppressed)")
@@ -646,9 +701,12 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         limit: page.limit,
       })
       const canManage = record.myRole === "owner" || record.myRole === "admin"
+      const affiliations = deps.affiliations
+        ? await deps.affiliations(items.map((m) => m.person.id))
+        : NO_AFFILIATIONS
       return {
         items: items.map((member) => ({
-          person: toAttendeePersonDTO(member.person, false),
+          person: withAffiliation(toAttendeePersonDTO(member.person, false), affiliations),
           role: member.role,
           joinedAt: member.joinedAt.toISOString(),
           canRemove: canManage && member.role !== "owner" && member.person.id !== actorId,
@@ -762,28 +820,56 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       return { ok: true }
     },
 
-    async acceptInvite(userId: string, token: string): Promise<AcceptOrganizationInviteResponse> {
-      const outcome = await deps.repo.acceptInviteTx({
-        tokenHash: await sha256Hex(token),
+    async listMyInvites(userId: string): Promise<{ items: PendingOrganizationInviteDTO[] }> {
+      const records = await deps.repo.listPendingInvitesForUser({
         userId,
         now: now(),
+        limit: MY_ORG_INVITES_CAP,
       })
-      // Same shape as event team invites: an unknown, revoked or already-used token and a token opened
-      // by the wrong account all read "no longer valid" (non-probing); only expiry is named.
-      if (outcome.kind === "invalid" || outcome.kind === "wrong_recipient") {
-        throw AppError.notFound("That invitation is no longer valid.")
+      if (records.length === 0) return { items: [] }
+      const inviterIds = records
+        .map((r) => r.invitedBy?.id)
+        .filter((id): id is string => id !== undefined)
+      const affiliations = deps.affiliations
+        ? await deps.affiliations(inviterIds)
+        : NO_AFFILIATIONS
+      const logoUrls = await presignLogoKeys(records.map((r) => r.organization.logoKey))
+      return {
+        items: records.map((record) => ({
+          id: record.id,
+          organization: toOrganizationRef(
+            record.organization,
+            record.organization.logoKey === null
+              ? null
+              : (logoUrls.get(record.organization.logoKey) ?? null),
+          ),
+          role: record.role,
+          invitedBy:
+            record.invitedBy === null
+              ? null
+              : withAffiliation(toAttendeePersonDTO(record.invitedBy, false), affiliations),
+          createdAt: record.createdAt.toISOString(),
+          expiresAt: record.expiresAt.toISOString(),
+        })),
       }
-      if (outcome.kind === "expired") throw AppError.conflict("That invitation has expired.")
-      if (outcome.kind === "suspended") {
-        throw AppError.conflict(
-          "This organization is suspended, so it can't take on new members right now.",
-        )
-      }
-      const record = await deps.repo.findOrganizationById(outcome.organizationId, userId)
-      if (record === null) notFoundOrganization()
-      // `role` is the SEATED role (an existing member keeps theirs), so an owner who accepted an
-      // invite to their own org reads `owner` here, matching `organization.myRole`.
-      return { ok: true, organization: await dto(record), role: outcome.role }
+    },
+
+    async acceptMyInvite(
+      userId: string,
+      inviteId: string,
+    ): Promise<AcceptOrganizationInviteResponse> {
+      return seatFromInvite(userId, { inviteId })
+    },
+
+    async declineMyInvite(userId: string, inviteId: string): Promise<{ ok: true }> {
+      const outcome = await deps.repo.declineInviteTx({ inviteId, userId, now: now() })
+      if (outcome === "invalid") throw AppError.notFound("That invitation is no longer valid.")
+      if (outcome === "expired") throw AppError.conflict("That invitation has expired.")
+      return { ok: true }
+    },
+
+    async acceptInvite(userId: string, token: string): Promise<AcceptOrganizationInviteResponse> {
+      return seatFromInvite(userId, { tokenHash: await sha256Hex(token) })
     },
 
     async setMemberRole(

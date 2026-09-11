@@ -26,7 +26,6 @@ import { registerSocialRoutes } from "./social.routes.js"
 import { registerPostRoutes } from "./posts.routes.js"
 import { registerVolunteerHoursRoutes } from "./volunteer-hours.routes.js"
 import { registerServiceHoursCertificateRoutes } from "./service-hours-certificates.routes.js"
-import { registerVerificationRoutes } from "./verification.routes.js"
 import { registerNotificationRoutes } from "./notifications.routes.js"
 import { registerConversationRoutes } from "./conversations.routes.js"
 import { registerAdminRoutes } from "./admin/index.js"
@@ -72,7 +71,6 @@ export async function registerRoutes(
   await registerPostRoutes(app, container)
   await registerVolunteerHoursRoutes(app, container)
   await registerServiceHoursCertificateRoutes(app, container)
-  await registerVerificationRoutes(app, container)
   await registerNotificationRoutes(app, container)
 
   await registerConversationRoutes(app, container)

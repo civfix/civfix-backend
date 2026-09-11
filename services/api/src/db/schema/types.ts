@@ -100,6 +100,7 @@ export const NOTIFICATION_TYPE_VALUES = [
   "hours_logged",
   "event_broadcast",
   "event_team_invite",
+  "org_invite",
 ] as const
 
 export const POST_KIND_VALUES = ["post", "repost", "quote", "reply"] as const
@@ -133,13 +134,6 @@ export const DISCOVERY_STATUS_VALUES = ["open", "in_progress", "done"] as const
 export const GOV_METHOD_VALUES = ["email", "cold_outreach"] as const
 
 export const GOV_CLAIM_STATUS_VALUES = ["pending", "approved", "rejected"] as const
-
-export const VERIFICATION_STATUS_VALUES = [
-  "unverified",
-  "pending",
-  "verified",
-  "rejected",
-] as const
 
 export const USER_ACCOUNT_STATUS_VALUES = ["active", "suspended", "review", "banned"] as const
 

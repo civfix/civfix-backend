@@ -464,9 +464,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
   it("listEntries joins out the event title, reference code, jurisdiction name and creditedBy", async () => {
     const host = await newUser("Ledger Host")
     const alice = await newUser("Ledger Alice")
-    await h.sql`
-      INSERT INTO user_verification (user_id, status) VALUES (${host}, 'verified')
-    `
     await h.sql`UPDATE users SET handle = 'ledgerhost' WHERE id = ${host}`
     const cleanupId = randomUUID()
     await h.sql`
@@ -500,7 +497,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       id: host,
       name: "Ledger Host",
       handle: "ledgerhost",
-      verified: true,
     })
   })
 
@@ -660,7 +656,6 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
         listMemberIds: () => Promise.resolve([]),
         roleOf: () => Promise.resolve(null),
       },
-      isVerified: () => Promise.resolve(true),
     })
     const viewer = await newUser("Public Viewer")
 

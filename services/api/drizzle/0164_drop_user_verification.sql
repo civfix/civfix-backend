@@ -1,0 +1,75 @@
+-- =============================================================================
+-- 0164_drop_user_verification.sql
+-- -----------------------------------------------------------------------------
+-- Retire "verified neighbor" (@civfix/shared 0.43.0, DECISIONS §34).
+--
+-- The identity-verification queue introduced by 0016 was a cosmetic trust mark
+-- with no role attached: a row with status='verified' lit a badge next to a
+-- person's name and gated two host actions. Both gates now have a real policy
+-- (organization affiliation + host capabilities), the badge is replaced by the
+-- person's primary organization affiliation, and the shared contract has
+-- dropped PersonDTO.verified, LeaderboardEntryDTO.verified,
+-- VolunteerHoursCreditor.verified and AdminUserDTO.verificationStatus. Nothing
+-- reads user_verification after this release, so the table goes.
+--
+-- CONTRACT step, and it is destructive: there is no down migration and the
+-- rows are not archived anywhere. That is deliberate. The table's only
+-- non-derivable content was `note`, `documents` and `rejection_reason` from the
+-- long-removed in-app application flow; `documents` is a WRITE-ONLY jsonb of
+-- media ids and is excluded from the data export by name
+-- (docs/erasure-behavior.md, data-export-service.ts). Dropping it removes a
+-- PII surface rather than creating one.
+--
+-- The paired media_assets.purpose value 'verification' STAYS. It is not the
+-- user queue's: org_verifications documents are claimed with that purpose
+-- (organization-repository.drizzle.ts claimVerificationDocumentsInTx) and
+-- media-authorization.ts denies it on every public media path. ORGANIZATION
+-- verification is kept in full by this release; only the per-user queue is
+-- retired.
+--
+-- media_assets rows left with purpose='verification' that belonged to the old
+-- user queue are NOT rewritten here: they are already unreachable from any read
+-- path, they stay denied on the public media path, and the hourly orphan sweep
+-- (media_assets_orphan_sweep_idx) deliberately excludes that purpose, so they
+-- keep the treatment they have today. Rewriting them would be an unbounded
+-- UPDATE on a hot table inside the deploy transaction.
+--
+-- PRE-DEPLOY INVENTORY (operator, once per environment, before this file runs).
+-- No code path has written user_verification.documents since the in-app
+-- application flow was removed - the admin set-verified action writes only
+-- (user_id, status, reviewed_by, reviewed_at) - so the expected result is zero
+-- rows. Run it anyway, because after the DROP the object keys are no longer
+-- recoverable and the account-erasure path that used to purge them
+-- (auth/pg-stores.ts) goes with this release:
+--
+--     SELECT m.id, m.r2_key, m.served_key, m.thumb_key
+--     FROM media_assets m
+--     WHERE m.purpose = 'verification'
+--       AND m.id IN (
+--         SELECT (doc->>'mediaId')::uuid
+--         FROM user_verification uv,
+--              jsonb_array_elements(uv.documents) AS doc
+--         WHERE doc->>'mediaId' IS NOT NULL
+--       );
+--
+-- Any rows it returns are identity documents: delete the objects from R2 and
+-- the rows from media_assets by hand before merging.
+--
+-- Lock: DROP TABLE takes ACCESS EXCLUSIVE on user_verification only. The table
+-- is 1:1 with users, has no dependents (no other table references it), and no
+-- live statement touches it once this release is deployed, so the lock is
+-- taken and released immediately. The FK it holds on users is dropped with it;
+-- users itself is not rewritten.
+--
+-- CANONICAL DDL: hand-authored source of truth. Mirror: schema/user_verification.ts
+-- is DELETED with this file and unregistered from schema/index.ts;
+-- VERIFICATION_STATUS_VALUES is removed from schema/types.ts and from the
+-- MIRRORED_CHECKS/EXPECTED_TABLES lists in test/integration/schema.test.ts.
+--
+-- Conventions: DROP TABLE IF EXISTS (idempotent); one concern per file; one
+-- transaction per file. Forward-only, no down.
+--
+-- Ordering rules: requires 0016_user_verification.sql (the table).
+-- =============================================================================
+
+DROP TABLE IF EXISTS user_verification;

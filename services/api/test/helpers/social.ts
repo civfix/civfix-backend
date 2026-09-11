@@ -21,7 +21,6 @@ interface StoredUser {
   handle: string | null
   bio: string | null
   deletedAt: Date | null
-  verified?: boolean
   avatarUrl?: string | null
   showVolunteerHours?: boolean | null
 }
@@ -53,7 +52,6 @@ export class InMemorySocialRepository implements SocialRepository {
       bio: over.bio ?? null,
       deletedAt: over.deletedAt ?? null,
       showVolunteerHours: over.showVolunteerHours ?? null,
-      ...(over.verified !== undefined ? { verified: over.verified } : {}),
       ...(over.avatarUrl !== undefined ? { avatarUrl: over.avatarUrl } : {}),
     }
     this.users.set(user.id, user)
@@ -91,7 +89,6 @@ export class InMemorySocialRepository implements SocialRepository {
       bio: u.bio,
       followers: this.followerCounts.get(u.id) ?? 0,
       following: this.followingCounts.get(u.id) ?? 0,
-      verified: u.verified ?? false,
       avatarR2Key: null,
       avatarUrl: u.avatarUrl ?? null,
       socialLinks: null,

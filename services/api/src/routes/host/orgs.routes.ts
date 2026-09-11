@@ -1,5 +1,7 @@
 import {
+  AcceptMyOrgInviteRequestSchema,
   AcceptOrganizationInviteRequestSchema,
+  DeclineMyOrgInviteRequestSchema,
   ApplyOrganizationVerificationRequestSchema,
   CreateOrganizationRequestSchema,
   GetOrganizationRequestSchema,
@@ -13,7 +15,10 @@ import {
   RevokeOrganizationInviteRequestSchema,
   SetOrganizationMemberRoleRequestSchema,
   UpdateOrganizationRequestSchema,
+  type AcceptMyOrgInviteResponse,
   type AcceptOrganizationInviteResponse,
+  type DeclineMyOrgInviteResponse,
+  type ListMyOrgInvitesResponse,
   type GetOrganizationResponse,
   type GetOrganizationVerificationResponse,
   type InviteOrganizationMemberResponse,
@@ -69,6 +74,8 @@ const OrgIdParamsSchema = z.object({ id: IdSchema }).strict()
 const OrgMemberParamsSchema = z.object({ id: IdSchema, userId: IdSchema }).strict()
 
 const OrgInviteParamsSchema = z.object({ id: IdSchema, inviteId: IdSchema }).strict()
+
+const MyOrgInviteParamsSchema = z.object({ inviteId: IdSchema }).strict()
 
 const OrgSlugParamsSchema = z.object({ slug: OrgSlugSchema }).strict()
 
@@ -136,6 +143,7 @@ export function makeContainerOrganizationService(
     repo: makeDrizzleOrganizationRepository(sql),
     counters: container.getCounterStore(),
     presignLogo: (key: string) => container.storage.presignGet(key, MEDIA_GET_URL_TTL_SEC),
+    affiliations: container.getAffiliationLoader(),
     onNonprofitVerified: bootstrap.onNonprofitVerified,
     mailer: container.mailer,
     // Lazy so the notification service is only built on the admin decide path that needs it.
@@ -277,6 +285,46 @@ export async function registerHostOrgRoutes(
       const payload: AcceptOrganizationInviteResponse = await service().acceptInvite(
         userId,
         body.token,
+      )
+      reply.status(200).send(payload)
+    },
+  )
+
+  // The invitee's own inbox (DECISIONS §34). No :id and no token: the row is addressed to the
+  // session's account (by user_id, or by an address it has verified), which IS the authorization.
+  route(app, "listMyOrgInvites", async (request, reply) => {
+    const userId = requireAuth(request)
+    const payload: ListMyOrgInvitesResponse = await service().listMyInvites(userId)
+    reply.status(200).send(payload)
+  })
+
+  route(
+    app,
+    "acceptMyOrgInvite",
+    { preHandler: csrfProtect, config: { rateLimit: ORG_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { inviteId } = parse(MyOrgInviteParamsSchema, request.params)
+      const body = parse(AcceptMyOrgInviteRequestSchema, { inviteId })
+      const payload: AcceptMyOrgInviteResponse = await service().acceptMyInvite(
+        userId,
+        body.inviteId,
+      )
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "declineMyOrgInvite",
+    { preHandler: csrfProtect, config: { rateLimit: ORG_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { inviteId } = parse(MyOrgInviteParamsSchema, request.params)
+      const body = parse(DeclineMyOrgInviteRequestSchema, { inviteId })
+      const payload: DeclineMyOrgInviteResponse = await service().declineMyInvite(
+        userId,
+        body.inviteId,
       )
       reply.status(200).send(payload)
     },

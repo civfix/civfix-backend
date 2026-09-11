@@ -6,7 +6,6 @@ import {
   SetRoleRequestSchema,
   SetUserReportVerifiedRequestSchema,
   SetUserStatusRequestSchema,
-  SetUserVerifiedRequestSchema,
   UserSubListQuerySchema,
   type AdminUserDTO,
   type AdminUserListResponse,
@@ -133,13 +132,6 @@ export async function registerAdminUsersRoutes(
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SetRoleRequestSchema, request)
     await service().setRole(id, { role: body.role, actorId })
-    sendOk(reply)
-  })
-
-  route(app, "setUserVerified", { preHandler: csrfProtect }, async (request, reply) => {
-    const actorId = requireOperator(request)
-    const { id, body } = parseBodyWithId(SetUserVerifiedRequestSchema, request)
-    await service().setVerified(id, { verified: body.verified, actorId })
     sendOk(reply)
   })
 

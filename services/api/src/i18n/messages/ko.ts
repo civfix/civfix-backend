@@ -86,7 +86,6 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "certificate.doc.pdf_title": "civfix 봉사 시간 — {{name}} — {{code}}",
   "certificate.header.number": "증명서 번호",
   "certificate.holder.eyebrow": "발급 대상",
-  "certificate.holder.verified": "신원이 확인된 커뮤니티 회원",
   "certificate.holder.period": "봉사 기간",
   "certificate.holder.issued": "발급일",
   "certificate.summary.total_hours": "총 시간",
@@ -105,7 +104,7 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "certificate.activity.report": "확인된 제보 {{ref}}",
   "certificate.activity.manual": "조정",
   "certificate.attestation.body":
-    "이 증명서는 civfix의 자원봉사 시간 기록에서 생성되었어요. 행사 시간은 해당 행사의 주최자가 입력하며, 주최자는 신원이 확인된 조직자여야 하고 자신에게 시간을 인정할 수 없어요. 공식 기록은 civfix가 보관하는 기록이며, 아래 주소에서 이 문서를 확인할 수 있어요.",
+    "이 증명서는 civfix의 자원봉사 시간 기록에서 생성되었어요. 행사 시간은 해당 행사의 주최자가 입력하며, 주최자는 해당 행사의 관리 권한을 가진 사람이어야 하고 자신에게 시간을 인정할 수 없어요. 공식 기록은 civfix가 보관하는 기록이며, 아래 주소에서 이 문서를 확인할 수 있어요.",
   "certificate.seal.line": "확인된 기록",
   "certificate.issuer.line": "civfix 발급 · civfix.org",
   "certificate.issuer.generated": "생성 {{timestamp}}",

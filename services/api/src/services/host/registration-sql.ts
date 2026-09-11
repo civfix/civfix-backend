@@ -241,7 +241,6 @@ export interface RegistrationRowSelect {
   person_handle: string | null
   person_bio: string | null
   person_avatar_url: string | null
-  person_verified: boolean | null
   person_deleted_at: Date | null
 }
 
@@ -253,7 +252,6 @@ function toIdentity(r: RegistrationRowSelect): RegistrantIdentity | null {
     handle: r.person_handle,
     bio: r.person_bio,
     avatarUrl: r.person_avatar_url,
-    verified: r.person_verified === true,
     deletedAt: r.person_deleted_at,
   }
 }
@@ -308,9 +306,6 @@ export function registrationColumns(tag: Queryable) {
     u.handle AS person_handle,
     u.bio AS person_bio,
     u.avatar_url AS person_avatar_url,
-    (r.user_id IS NOT NULL AND EXISTS (
-      SELECT 1 FROM user_verification v WHERE v.user_id = r.user_id AND v.status = 'verified'
-    )) AS person_verified,
     u.deleted_at AS person_deleted_at
   `
 }
@@ -372,7 +367,6 @@ export interface WaitlistRowSelect {
   person_handle: string | null
   person_bio: string | null
   person_avatar_url: string | null
-  person_verified: boolean | null
   person_deleted_at: Date | null
 }
 
@@ -394,7 +388,6 @@ export function toWaitlistRecord(r: WaitlistRowSelect): WaitlistRecord {
             handle: r.person_handle,
             bio: r.person_bio,
             avatarUrl: r.person_avatar_url,
-            verified: r.person_verified === true,
             deletedAt: r.person_deleted_at,
           },
     partySize: r.party_size,
@@ -425,9 +418,6 @@ export function waitlistColumns(tag: Queryable) {
     u.handle AS person_handle,
     u.bio AS person_bio,
     u.avatar_url AS person_avatar_url,
-    (w.user_id IS NOT NULL AND EXISTS (
-      SELECT 1 FROM user_verification v WHERE v.user_id = w.user_id AND v.status = 'verified'
-    )) AS person_verified,
     u.deleted_at AS person_deleted_at
   `
 }

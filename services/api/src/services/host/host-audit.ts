@@ -27,6 +27,7 @@ export type HostAuditAction =
   | "org.invite_created"
   | "org.invite_revoked"
   | "org.invite_accepted"
+  | "org.invite_declined"
   | "org.detail_viewed"
   | "org.verifications_viewed"
   | "org.list_viewed"

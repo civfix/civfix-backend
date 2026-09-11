@@ -45,6 +45,7 @@ export const ORGANIZATION_INVITE_STATUS_VALUES = [
   "accepted",
   "revoked",
   "expired",
+  "declined",
 ] as const
 
 export const EVENT_CONSENT_SUBJECT_TYPE_VALUES = ["user", "guest"] as const

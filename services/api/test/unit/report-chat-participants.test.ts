@@ -28,7 +28,6 @@ function row(over: Partial<ReportMemberRowSelect> = {}): ReportMemberRowSelect {
     bio: "counts things",
     avatar_url: "https://cdn.example/ada.jpg",
     user_deleted_at: null,
-    verified: true,
     is_following: true,
     blocked_pair: false,
     ...over,
@@ -46,7 +45,6 @@ describe("toReportParticipantDTO", () => {
     expect(dto.user.handle).toBe("ada")
     expect(dto.user.bio).toBe("counts things")
     expect(dto.user.isFollowing).toBe(true)
-    expect(dto.user.verified).toBe(true)
     expect(dto.user.deleted).toBeUndefined()
   })
 
@@ -69,7 +67,6 @@ describe("toReportParticipantDTO", () => {
     expect(dto.user.handle).toBeNull()
     expect(dto.user.bio).toBeNull()
     expect(dto.user.avatarUrl).toBeUndefined()
-    expect(dto.user.verified).toBeUndefined()
   })
 
   it("hides a blocked pair behind the shared hidden identity", () => {
@@ -80,7 +77,6 @@ describe("toReportParticipantDTO", () => {
     expect(dto.user.handle).toBeNull()
     expect(dto.user.bio).toBeNull()
     expect(dto.user.avatarUrl).toBeUndefined()
-    expect(dto.user.verified).toBeUndefined()
     // Hidden is NOT deleted: the account still exists, this viewer just may not see it.
     expect(dto.user.deleted).toBeUndefined()
   })
