@@ -1,6 +1,6 @@
 
 import { randomUUID } from "node:crypto"
-import { AppError, MAX_BRING_ITEMS, MAX_EVENT_SLOTS } from "@civfix/shared"
+import { AppError, ErrorCode, MAX_BRING_ITEMS, MAX_EVENT_SLOTS } from "@civfix/shared"
 import { can, hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
@@ -10,6 +10,7 @@ import type {
   CleanupDTO,
   CleanupStatus,
   CreateCleanupRequest,
+  DuplicateCleanupRequest,
   EventKind,
   EventSlotDTO,
   EventSlotInput,
@@ -43,6 +44,7 @@ import type {
   CleanupRecord,
   CleanupRepository,
   DesiredSlot,
+  DuplicateSource,
   EventHostWrite,
   LinkedReportView,
   ListCleanupsFilters,
@@ -127,6 +129,20 @@ function assertDonationsAllowed(
   if (!can({ eventRole: null, orgRole }, "manage_payments")) {
     throw AppError.forbidden(hostForbiddenCopy("manage_payments"))
   }
+}
+
+const HOST_REFUSAL_CODES = new Set<ErrorCode>([
+  ErrorCode.FORBIDDEN,
+  ErrorCode.CONFLICT,
+  ErrorCode.VALIDATION,
+])
+
+function isHostRefusal(err: unknown): boolean {
+  return err instanceof AppError && HOST_REFUSAL_CODES.has(err.code)
+}
+
+function futureOrNull(at: Date | null, now: Date): string | null {
+  return at !== null && at.getTime() > now.getTime() ? at.toISOString() : null
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -215,6 +231,7 @@ export interface CleanupServiceDeps {
 
 export interface CleanupService {
   createCleanup(input: CreateCleanupRequest, organizerUserId: string): Promise<CleanupDTO>
+  duplicateCleanup(actorId: string, input: DuplicateCleanupRequest): Promise<CleanupDTO>
   updateCleanup(
     id: string,
     patch: UpdateCleanupPatchRequest,
@@ -225,6 +242,11 @@ export interface CleanupService {
   listCleanups(
     req: ListCleanupsRequest,
     viewer: CleanupViewer,
+  ): Promise<{ items: CleanupDTO[]; nextCursor: string | null }>
+  listOrganizationEvents(
+    slug: string,
+    viewer: CleanupViewer,
+    query: { when: "upcoming" | "past"; cursor: string | null; limit: number },
   ): Promise<{ items: CleanupDTO[]; nextCursor: string | null }>
   getCleanup(id: string, viewer: CleanupViewer): Promise<CleanupDTO>
   joinCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }>
@@ -491,6 +513,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
   function notFoundCleanup(): never {
     throw AppError.notFound("Cleanup not found")
+  }
+
+  function notFoundOrganization(): never {
+    throw AppError.notFound("Organization not found")
   }
 
   async function notifyRoleChange(
@@ -762,11 +788,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     })
   }
 
-  return {
-    async createCleanup(
-      input: CreateCleanupRequest,
-      organizerUserId: string,
-    ): Promise<CleanupDTO> {
+  async function createEvent(
+    input: CreateCleanupRequest,
+    organizerUserId: string,
+    copyFrom?: DuplicateSource,
+  ): Promise<CleanupDTO> {
       assertEventTextClean(input)
       clampBring(input.bring)
       const linkedReportIds = clampLinkIds(input.linkedReportIds ?? [])
@@ -812,6 +838,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         linkedReportIds,
         slots,
         host,
+        ...(copyFrom !== undefined ? { copyFrom } : {}),
         ...(input.idempotencyKey !== undefined
           ? {
               idempotency: {
@@ -837,6 +864,83 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         }),
         organizerUserId,
       )
+  }
+
+  async function resolveDuplicateOrganization(
+    organizationId: string | null,
+    actorId: string,
+  ): Promise<{ organizationId: string | null; donations: boolean }> {
+    if (organizationId === null) return { organizationId: null, donations: false }
+    let resolved: {
+      organization: CleanupOrganizationView | null
+      orgRole: OrganizationMemberRole | null
+    }
+    try {
+      resolved = await organizationFor(organizationId, actorId, { linking: true })
+    } catch (err) {
+      if (!isHostRefusal(err)) throw err
+      return { organizationId: null, donations: false }
+    }
+    try {
+      assertDonationsAllowed(resolved.organization, resolved.orgRole)
+    } catch (err) {
+      if (!isHostRefusal(err)) throw err
+      return { organizationId, donations: false }
+    }
+    return { organizationId, donations: true }
+  }
+
+  return {
+    createCleanup(input: CreateCleanupRequest, organizerUserId: string): Promise<CleanupDTO> {
+      return createEvent(input, organizerUserId)
+    },
+
+    async duplicateCleanup(actorId: string, input: DuplicateCleanupRequest): Promise<CleanupDTO> {
+      const { record: source } = await requireCapabilityOn(input.id, actorId, "manage_event")
+      const link = await resolveDuplicateOrganization(source.organizationId, actorId)
+      const now = new Date()
+      const scheduledAt = new Date(input.scheduledAt)
+      const sourceDurationMs =
+        source.endsAt === null ? null : source.endsAt.getTime() - source.scheduledAt.getTime()
+      const endsAt =
+        input.endsAt !== undefined
+          ? (input.endsAt ?? null)
+          : sourceDurationMs === null
+            ? null
+            : new Date(scheduledAt.getTime() + sourceDurationMs).toISOString()
+      const slots = await deps.repo.listSlots(source.id, null)
+      const copy: CreateCleanupRequest = {
+        title: source.title,
+        type: source.type,
+        eventKind: source.eventKind,
+        ...(source.description !== null ? { description: source.description } : {}),
+        lat: source.lat,
+        lng: source.lng,
+        scheduledAt: scheduledAt.toISOString(),
+        ...(source.bring !== null ? { bring: source.bring } : {}),
+        ...(source.address !== null ? { address: source.address } : {}),
+        slots: slots.map((slot) => ({
+          title: slot.title,
+          description: slot.description,
+          capacity: slot.capacity,
+          sortOrder: slot.sortOrder,
+        })),
+        endsAt,
+        timezone: source.timezone,
+        visibility: source.visibility,
+        donationUrl: link.donations ? source.donationUrl : null,
+        registrationOpensAt: futureOrNull(source.registrationOpensAt, now),
+        registrationClosesAt: futureOrNull(source.registrationClosesAt, now),
+        organizationId: link.organizationId,
+        reminderOffsetsMinutes: source.reminderOffsetsMin,
+        hostReplyTo: source.hostReplyTo,
+      }
+      return createEvent(copy, actorId, {
+        cleanupId: source.id,
+        ticketTypes: input.includeTicketTypes,
+        questions: input.includeQuestions,
+        page: input.includePage,
+      })
     },
 
     async updateCleanup(
@@ -1086,6 +1190,51 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
             slotCount: slotCounts.get(record.id) ?? 0,
             myCapabilities: capabilityList(standing),
             coverUrl: coverUrls.get(record.id) ?? null,
+          },
+        )
+      })
+      return { items: await enrichDTOs(items, viewer.userId), nextCursor }
+    },
+
+    async listOrganizationEvents(
+      slug: string,
+      viewer: CleanupViewer,
+      query: { when: "upcoming" | "past"; cursor: string | null; limit: number },
+    ): Promise<{ items: CleanupDTO[]; nextCursor: string | null }> {
+      const host = await deps.repo.findOrganizationEventsHost(slug, viewer.userId)
+      if (host === null) notFoundOrganization()
+      if (host.organization.suspended && !host.viewerIsMember) notFoundOrganization()
+
+      const { records, nextCursor } = await deps.repo.listOrganizationEvents({
+        organizationId: host.organization.id,
+        when: query.when,
+        cursor: query.cursor,
+        limit: query.limit,
+      })
+      const ids = records.map((r) => r.id)
+      const presign = deps.presignEventMedia
+      const [standingsById, linkedByCleanup, slotCounts, coverUrls, organizationLogoUrl] =
+        await Promise.all([
+          standingsOf(ids, viewer.userId),
+          hydrateLinkedReportsForMany(records),
+          deps.repo.slotCountsFor(ids),
+          hydrateCoverUrls(records),
+          host.organization.logoKey === null || presign === undefined
+            ? Promise.resolve(null)
+            : presign(host.organization.logoKey, { forceSigned: false }),
+        ])
+      const items = records.map((record) => {
+        const standing = standingsById.get(record.id) ?? NO_HOST_STANDING
+        return toCleanupDTO(
+          record,
+          hasHostStanding(standing),
+          linkedByCleanup.get(record.id) ?? [],
+          standing.eventRole,
+          {
+            slotCount: slotCounts.get(record.id) ?? 0,
+            myCapabilities: capabilityList(standing),
+            coverUrl: coverUrls.get(record.id) ?? null,
+            organizationLogoUrl,
           },
         )
       })
