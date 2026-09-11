@@ -356,6 +356,7 @@ a failed lane is logged and the next lane still runs.
 |---|---|---|
 | `donations` | **none, ever.** Contact columns (`donor_email`, `donor_name`) NULLed at `charged_at + 7y` | `schema/donations.ts` |
 | `donation_refunds` / `donation_disputes` | none, ever | `schema/donation_refunds.ts` |
+| `org_payouts` | **none, ever.** The audit mirror of a money movement carries no contact data at all: an org id, a Stripe payout id, an amount and a status. `requested_by` is a plain user FK with `ON DELETE SET NULL`, so account erasure anonymizes the actor without touching the financial record | `schema/org_payouts.ts` |
 | `stripe_events` | deleted at `received_at + 400d` | `schema/stripe_events.ts` |
 | `org_eligibility_checks` | deleted at the per-row `retention_until` (7 y; 10 y OFAC) | `schema/org_eligibility_checks.ts` |
 | `eligibility_source_revisions` | deleted at `retention_until`, **object before row** | `schema/eligibility_source_revisions.ts` |
