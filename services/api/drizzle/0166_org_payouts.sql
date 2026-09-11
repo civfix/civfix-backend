@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0167_org_payouts.sql
+-- 0166_org_payouts.sql
 -- -----------------------------------------------------------------------------
 -- An AUDIT MIRROR of the Stripe Payout objects on an organization's connected
 -- account (0.43.0, DECISIONS §34). It is not a ledger civfix reconciles against
