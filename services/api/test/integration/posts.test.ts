@@ -352,6 +352,10 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     await h.sql`UPDATE posts SET created_at = created_at + interval '1 minute' WHERE id = ${latest.id}`
     await reply(second.id, "not the author", other)
     await reply(latest.id, "deeper", author)
+    await h.sql`
+      UPDATE posts SET created_at = date_trunc('milliseconds', created_at)
+      WHERE id IN (${first.id}, ${second.id})
+    `
 
     const page = await svc.listReplies(post.id, other, {})
     expect(page.items.map((p) => p.id)).toEqual([first.id, second.id])
