@@ -34,6 +34,8 @@ import type {
   PostBrief,
   PostListArgs,
   PostRepository,
+  RepliesPage,
+  ReplyListArgs,
 } from "../../src/services/post-repository.drizzle.js"
 
 const throwingSql = (() => {
@@ -298,9 +300,23 @@ class InMemoryPostRepository implements PostRepository {
     return Promise.resolve(this.page(this.byFilter(args.filter), "", args))
   }
 
-  listReplies(postId: string, args: PostListArgs): Promise<FeedPage> {
+  listReplies(postId: string, args: ReplyListArgs): Promise<RepliesPage> {
     const rows = [...this.posts.values()].filter((p) => p.replyToId === postId && p.deletedAt === null)
-    return Promise.resolve(this.page(rows, args.viewerId, args))
+    const page = this.page(rows, args.viewerId, args)
+    const authorReplies = page.items.flatMap((reply) => {
+      const answer = this.latestAnswerBy(args.focalAuthorId, reply.id)
+      return answer === null ? [] : [this.dto(answer, args.viewerId)]
+    })
+    return Promise.resolve({ ...page, authorReplies })
+  }
+
+  private latestAnswerBy(authorId: string, parentId: string): StoredPost | null {
+    let latest: StoredPost | null = null
+    for (const p of this.posts.values()) {
+      if (p.authorId !== authorId || p.replyToId !== parentId || p.deletedAt !== null) continue
+      if (latest === null || p.createdAt.getTime() > latest.createdAt.getTime()) latest = p
+    }
+    return latest
   }
 
   listUserPosts(authorId: string, args: PostListArgs): Promise<FeedPage> {
@@ -1076,6 +1092,72 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
     })
     expect(page2.json().items.map((p: PostDTO) => p.id)).toEqual([ids[0]])
     expect(page2.json().nextCursor).toBeNull()
+  })
+
+  it("inlines the focal author's most recent live answer under each listed reply, and nothing else", async () => {
+    const h = await makeHarness()
+    const author = await h.signIn("thread-author@example.com", "ThreadAuthor")
+    const other = await h.signIn("thread-other@example.com", "ThreadOther")
+    const parent = h.repo.seed({ authorId: author.userId, body: "parent" })
+    const first = h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: parent, body: "first" })
+    const second = h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: parent, body: "second" })
+    h.repo.seed({ authorId: author.userId, kind: "reply", replyToId: first, body: "older answer" })
+    const latest = h.repo.seed({ authorId: author.userId, kind: "reply", replyToId: first, body: "latest answer" })
+    h.repo.seed({
+      authorId: author.userId,
+      kind: "reply",
+      replyToId: first,
+      body: "deleted answer",
+      deletedAt: new Date(),
+    })
+    h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: second, body: "not the author" })
+    h.repo.seed({ authorId: author.userId, kind: "reply", replyToId: latest, body: "deeper" })
+
+    const res = await h.app.inject({
+      method: "GET",
+      url: `/v1/posts/${parent}/replies`,
+      headers: bearer(other),
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().items.map((p: PostDTO) => p.id)).toEqual([second, first])
+    expect(res.json().authorReplies.map((p: PostDTO) => p.id)).toEqual([latest])
+    expect(res.json().authorReplies[0].replyToId).toBe(first)
+    expect(res.json().authorReplies[0].author.id).toBe(author.userId)
+  })
+
+  it("answers only the replies on the requested page, and a reply's own thread answers relative to ITS author", async () => {
+    const h = await makeHarness()
+    const author = await h.signIn("page-author@example.com", "PageAuthor")
+    const other = await h.signIn("page-other@example.com", "PageOther")
+    const parent = h.repo.seed({ authorId: author.userId, body: "parent" })
+    const first = h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: parent, body: "first" })
+    const second = h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: parent, body: "second" })
+    const answer = h.repo.seed({ authorId: author.userId, kind: "reply", replyToId: first, body: "answer" })
+    const otherAnswer = h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: answer, body: "back at you" })
+
+    const newest = await h.app.inject({
+      method: "GET",
+      url: `/v1/posts/${parent}/replies?limit=1`,
+      headers: bearer(other),
+    })
+    expect(newest.json().items.map((p: PostDTO) => p.id)).toEqual([second])
+    expect(newest.json().authorReplies).toEqual([])
+
+    const rest = await h.app.inject({
+      method: "GET",
+      url: `/v1/posts/${parent}/replies?limit=1&cursor=${encodeURIComponent(newest.json().nextCursor)}`,
+      headers: bearer(other),
+    })
+    expect(rest.json().items.map((p: PostDTO) => p.id)).toEqual([first])
+    expect(rest.json().authorReplies.map((p: PostDTO) => p.id)).toEqual([answer])
+
+    const inner = await h.app.inject({
+      method: "GET",
+      url: `/v1/posts/${first}/replies`,
+      headers: bearer(author),
+    })
+    expect(inner.json().items.map((p: PostDTO) => p.id)).toEqual([answer])
+    expect(inner.json().authorReplies.map((p: PostDTO) => p.id)).toEqual([otherAnswer])
   })
 
   it("404s replies of a post the viewer cannot read", async () => {
