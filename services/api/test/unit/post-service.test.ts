@@ -10,6 +10,7 @@ import {
   type CreatePostArgs,
   type PostBrief,
   type PostRepository,
+  type ReplyListArgs,
 } from "../../src/services/post-repository.drizzle.js"
 import type { PostNotifier } from "../../src/services/notification-service.js"
 
@@ -82,7 +83,7 @@ function fakeRepo(cfg: FakeConfig = {}): PostRepository & { created: CreatePostA
     getPostDTO: (id) => Promise.resolve(dto(id)),
     homeFeed: () => Promise.resolve({ items: [], nextCursor: null }),
     publicFeed: () => Promise.resolve({ items: [], nextCursor: null }),
-    listReplies: () => Promise.resolve({ items: [], nextCursor: null }),
+    listReplies: () => Promise.resolve({ items: [], nextCursor: null, authorReplies: [] }),
     listUserPosts: () => Promise.resolve({ items: [], nextCursor: null }),
     listSaves: () => Promise.resolve({ items: [], nextCursor: null }),
   }
@@ -283,6 +284,161 @@ describe("PostService validation + authorization", () => {
     expect(reposted).toHaveLength(0)
     await expect(svc.repostPost("shell", "other")).resolves.toMatchObject({ id: "orig" })
     expect(reposted).toEqual([{ postId: "shell", userId: "other" }])
+  })
+})
+
+describe("PostService listReplies names the focal author whose answers get inlined", () => {
+  const brief = (over: Partial<PostBrief>): PostBrief => ({
+    id: "p1",
+    authorId: "author",
+    kind: "post",
+    replyToId: null,
+    repostOfId: null,
+    deletedAt: null,
+    visibility: "public",
+    ...over,
+  })
+
+  function recording(briefs: Record<string, PostBrief>) {
+    const calls: Array<{ postId: string; args: ReplyListArgs }> = []
+    const repo: PostRepository = {
+      ...fakeRepo({ briefs }),
+      listReplies: (postId, args) => {
+        calls.push({ postId, args })
+        return Promise.resolve({ items: [], nextCursor: null, authorReplies: [] })
+      },
+    }
+    return { repo, calls }
+  }
+
+  it("passes the post's own author, the viewer and the page window through", async () => {
+    const { repo, calls } = recording({ p1: brief({ authorId: "origAuthor" }) })
+    const svc = makePostService({ repo, sql: throwingSql })
+    await svc.listReplies("p1", "viewer", { limit: 5, cursor: "c1" })
+    expect(calls).toEqual([
+      { postId: "p1", args: { viewerId: "viewer", focalAuthorId: "origAuthor", cursor: "c1", limit: 5 } },
+    ])
+  })
+
+  it("resolves a repost shell to its original, so the ORIGINAL's author is the one whose answers inline", async () => {
+    const { repo, calls } = recording({
+      shell: brief({ id: "shell", authorId: "booster", kind: "repost", repostOfId: "orig" }),
+      orig: brief({ id: "orig", authorId: "origAuthor" }),
+    })
+    const svc = makePostService({ repo, sql: throwingSql })
+    await svc.listReplies("shell", "viewer", {})
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ postId: "orig", args: { focalAuthorId: "origAuthor" } })
+  })
+})
+
+describe("PostRepository listReplies inlines the focal author's latest answers", () => {
+  const VIEWER = "11111111-1111-1111-1111-111111111111"
+  const PARENT = "22222222-2222-2222-2222-222222222222"
+  const AUTHOR = "33333333-3333-3333-3333-333333333333"
+  const OTHER = "44444444-4444-4444-4444-444444444444"
+  const FIRST = "55555555-5555-5555-5555-555555555555"
+  const SECOND = "66666666-6666-6666-6666-666666666666"
+  const ANSWER = "77777777-7777-7777-7777-777777777777"
+  const AT = new Date("2026-09-01T00:00:00.000Z")
+
+  const person = (id: string, handle: string) => ({
+    id,
+    display_name: handle,
+    handle,
+    bio: null,
+    followers: 0,
+    following: 0,
+    avatar_r2_key: null,
+    avatar_url: null,
+    is_following: false,
+    deleted_at: null,
+  })
+
+  function postRow(id: string, authorId: string, replyToId: string) {
+    return {
+      id,
+      author_id: authorId,
+      kind: "reply",
+      body: id,
+      reply_to_id: replyToId,
+      thread_root_id: PARENT,
+      repost_of_id: null,
+      event_id: null,
+      report_id: null,
+      like_count: 0,
+      repost_count: 0,
+      reply_count: 0,
+      save_count: 0,
+      organization_id: null,
+      created_at: AT,
+      updated_at: AT,
+    }
+  }
+
+  const LIST = /WHERE p\.reply_to_id = \? AND p\.deleted_at IS NULL/
+  const ANSWERS = /SELECT DISTINCT ON \(p\.reply_to_id\)[\s\S]*WHERE p\.reply_to_id = ANY\(\?::uuid\[\]\)\s+AND p\.author_id = \?/
+  const AUTHORS = /LEFT JOIN media_assets am ON am\.id = u\.avatar_media_id/
+
+  function repoOver(listRows: unknown[], answerRows: unknown[]) {
+    const fake = makeFakeSql([
+      { match: LIST, rows: listRows },
+      { match: ANSWERS, rows: answerRows },
+      { match: AUTHORS, rows: [person(AUTHOR, "author"), person(OTHER, "other")] },
+    ])
+    const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
+      presignMedia: () => Promise.resolve({ url: "u" }),
+      presignAvatar: () => Promise.resolve("a"),
+    })
+    return { repo, fake }
+  }
+
+  const args = { viewerId: VIEWER, focalAuthorId: AUTHOR, cursor: null, limit: 10 }
+
+  it("asks for exactly the page's reply ids and the focal author, and splits the answers out of the page", async () => {
+    const { repo, fake } = repoOver(
+      [postRow(FIRST, OTHER, PARENT), postRow(SECOND, OTHER, PARENT)],
+      [postRow(ANSWER, AUTHOR, FIRST)],
+    )
+    const page = await repo.listReplies(PARENT, args)
+    const answers = fake.statements.filter((s) => ANSWERS.test(s.sql))
+    expect(answers).toHaveLength(1)
+    expect(answers[0]!.values).toEqual([[FIRST, SECOND], AUTHOR])
+    expect(answers[0]!.sql).toMatch(/deleted_at IS NULL/)
+    expect(answers[0]!.sql).toMatch(/visibility = 'public'/)
+    expect(answers[0]!.sql).toMatch(/ORDER BY p\.reply_to_id, p\.created_at DESC, p\.id DESC/)
+    expect(page.items.map((p) => p.id)).toEqual([FIRST, SECOND])
+    expect(page.authorReplies.map((p) => p.id)).toEqual([ANSWER])
+    expect(page.authorReplies[0]).toMatchObject({ replyToId: FIRST, author: { id: AUTHOR } })
+    expect(page.nextCursor).toBeNull()
+  })
+
+  it("hydrates the page and its answers in ONE batch, not one per array", async () => {
+    const { repo, fake } = repoOver(
+      [postRow(FIRST, OTHER, PARENT)],
+      [postRow(ANSWER, AUTHOR, FIRST)],
+    )
+    await repo.listReplies(PARENT, args)
+    expect(fake.statements.filter((s) => AUTHORS.test(s.sql))).toHaveLength(1)
+  })
+
+  it("never runs the answers query for an empty page", async () => {
+    const { repo, fake } = repoOver([], [])
+    const page = await repo.listReplies(PARENT, args)
+    expect(page).toEqual({ items: [], nextCursor: null, authorReplies: [] })
+    expect(fake.statements.some((s) => ANSWERS.test(s.sql))).toBe(false)
+  })
+
+  it("keeps the overflow row out of both the page and the answers lookup", async () => {
+    const { repo, fake } = repoOver(
+      [postRow(FIRST, OTHER, PARENT), postRow(SECOND, OTHER, PARENT)],
+      [],
+    )
+    const page = await repo.listReplies(PARENT, { ...args, limit: 1 })
+    expect(page.items.map((p) => p.id)).toEqual([FIRST])
+    expect(page.nextCursor).not.toBeNull()
+    const answers = fake.statements.filter((s) => ANSWERS.test(s.sql))
+    expect(answers[0]!.values).toEqual([[FIRST], AUTHOR])
   })
 })
 
@@ -671,7 +827,7 @@ describe("PostRepository read paths all exclude non-public posts", () => {
       ["getPostDTO", (r) => r.getPostDTO(SUBJECT, VIEWER)],
       ["homeFeed", (r) => r.homeFeed({ ...args, filter: "all" })],
       ["publicFeed", (r) => r.publicFeed({ filter: "all", cursor: null, limit: 10 })],
-      ["listReplies", (r) => r.listReplies(SUBJECT, args)],
+      ["listReplies", (r) => r.listReplies(SUBJECT, { ...args, focalAuthorId: VIEWER })],
       ["listUserPosts", (r) => r.listUserPosts(SUBJECT, args)],
       ["listSaves", (r) => r.listSaves(args)],
     ]
@@ -751,7 +907,7 @@ describe("PostRepository organization hydration", () => {
       ["getPostDTO", (r) => r.getPostDTO(POST, VIEWER)],
       ["homeFeed", (r) => r.homeFeed({ ...args, filter: "all" })],
       ["publicFeed", (r) => r.publicFeed({ filter: "all", cursor: null, limit: 10 })],
-      ["listReplies", (r) => r.listReplies(POST, args)],
+      ["listReplies", (r) => r.listReplies(POST, { ...args, focalAuthorId: AUTHOR })],
       ["listUserPosts", (r) => r.listUserPosts(AUTHOR, args)],
       ["listSaves", (r) => r.listSaves(args)],
     ]

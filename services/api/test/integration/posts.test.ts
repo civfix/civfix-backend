@@ -333,6 +333,47 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect((await svc.listReplies(parent.id, other, {})).items).toHaveLength(2)
   })
 
+  it("listReplies inlines the focal author's most recent live answer to each reply on the page", async () => {
+    const svc = makeService()
+    const author = await newUser("Answering Author")
+    const other = await newUser("Answered Other")
+    const reply = (replyToId: string, body: string, by: string) =>
+      svc.createPost({ kind: "reply", replyToId, body, mediaUploadIds: [], mentionedUserIds: [] }, by)
+
+    const post = await svc.createPost(
+      { kind: "post", body: "root", mediaUploadIds: [], mentionedUserIds: [] },
+      author,
+    )
+    const first = await reply(post.id, "first", other)
+    const second = await reply(post.id, "second", other)
+    await h.sql`UPDATE posts SET created_at = created_at + interval '1 second' WHERE id = ${second.id}`
+    const older = await reply(first.id, "older answer", author)
+    const latest = await reply(first.id, "latest answer", author)
+    await h.sql`UPDATE posts SET created_at = created_at + interval '1 minute' WHERE id = ${latest.id}`
+    await reply(second.id, "not the author", other)
+    await reply(latest.id, "deeper", author)
+
+    const page = await svc.listReplies(post.id, other, {})
+    expect(page.items.map((p) => p.id)).toEqual([first.id, second.id])
+    expect(page.authorReplies.map((p) => p.id)).toEqual([latest.id])
+    expect(page.authorReplies[0]?.replyToId).toBe(first.id)
+    expect(page.authorReplies[0]?.author.id).toBe(author)
+
+    const head = await svc.listReplies(post.id, other, { limit: 1 })
+    expect(head.items.map((p) => p.id)).toEqual([first.id])
+    expect(head.authorReplies.map((p) => p.id)).toEqual([latest.id])
+    const tail = await svc.listReplies(post.id, other, { limit: 1, cursor: head.nextCursor ?? undefined })
+    expect(tail.items.map((p) => p.id)).toEqual([second.id])
+    expect(tail.authorReplies).toEqual([])
+
+    await svc.deletePost(latest.id, author)
+    expect((await svc.listReplies(post.id, other, {})).authorReplies.map((p) => p.id)).toEqual([older.id])
+
+    const inner = await svc.listReplies(first.id, author, {})
+    expect(inner.items.map((p) => p.id)).toEqual([older.id])
+    expect(inner.authorReplies).toEqual([])
+  })
+
   // --- post media: the 0054 CHECK bug + the claim predicate --------------------------------------
   // Every createPost in this file used to pass mediaUploadIds: [], so the claim path
   // (`UPDATE media_assets SET post_id = $1, purpose = 'post'`) was NEVER exercised — and it could not

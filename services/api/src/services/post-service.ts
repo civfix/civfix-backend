@@ -9,6 +9,7 @@ import {
   type FeedPage,
   type PostBrief,
   type PostRepository,
+  type RepliesPage,
 } from "./post-repository.drizzle.js"
 import type { PostNotifier } from "./notification-service.js"
 
@@ -28,7 +29,7 @@ export interface PostService {
   createPost(input: PostComposeInput, authorId: string): Promise<PostDTO>
   getPost(id: string, viewerId: string): Promise<PostDTO>
   deletePost(id: string, viewerId: string): Promise<{ ok: true }>
-  listReplies(postId: string, viewerId: string, pagination: PaginationQuery): Promise<FeedPage>
+  listReplies(postId: string, viewerId: string, pagination: PaginationQuery): Promise<RepliesPage>
   likePost(id: string, viewerId: string): Promise<PostDTO>
   unlikePost(id: string, viewerId: string): Promise<PostDTO>
   savePost(id: string, viewerId: string): Promise<PostDTO>
@@ -177,10 +178,11 @@ export function makePostService(deps: PostServiceDeps): PostService {
       postId: string,
       viewerId: string,
       pagination: PaginationQuery,
-    ): Promise<FeedPage> {
+    ): Promise<RepliesPage> {
       const subject = await requireReadable(postId, viewerId)
       return deps.repo.listReplies(subject.id, {
         viewerId,
+        focalAuthorId: subject.authorId,
         cursor: pagination.cursor ?? null,
         limit: pagination.limit ?? POSTS_DEFAULT_LIMIT,
       })

@@ -85,6 +85,14 @@ export interface PostListArgs {
   limit: number
 }
 
+export interface ReplyListArgs extends PostListArgs {
+  focalAuthorId: string
+}
+
+export interface RepliesPage extends FeedPage {
+  authorReplies: PostDTO[]
+}
+
 export interface HomeFeedArgs extends PostListArgs {
   filter: "all" | "events" | "fixes"
 }
@@ -115,7 +123,7 @@ export interface PostRepository {
   getPostDTO(id: string, viewerId: string): Promise<PostDTO | null>
   homeFeed(args: HomeFeedArgs): Promise<FeedPage>
   publicFeed(args: PublicFeedArgs): Promise<FeedPage>
-  listReplies(postId: string, args: PostListArgs): Promise<FeedPage>
+  listReplies(postId: string, args: ReplyListArgs): Promise<RepliesPage>
   listUserPosts(authorId: string, args: PostListArgs): Promise<FeedPage>
   listSaves(args: PostListArgs): Promise<FeedPage>
 }
@@ -703,6 +711,22 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
+  async function latestAnswersByAuthor(
+    parentIds: string[],
+    authorId: string,
+  ): Promise<PostRowSelect[]> {
+    if (parentIds.length === 0) return []
+    return sql<PostRowSelect[]>`
+      SELECT DISTINCT ON (p.reply_to_id) ${postColumns(sql)}
+      FROM posts p
+      WHERE p.reply_to_id = ANY(${parentIds}::uuid[])
+        AND p.author_id = ${authorId}
+        AND p.deleted_at IS NULL
+        AND p.visibility = 'public'
+      ORDER BY p.reply_to_id, p.created_at DESC, p.id DESC
+    `
+  }
+
   async function pageOf(rows: PostRowSelect[], limit: number, viewerId: string): Promise<FeedPage> {
     const { items: pageRows, nextCursor } = paginate(rows, limit, (r) => ({
       at: r.created_at,
@@ -1014,7 +1038,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       return pageOf(rows, args.limit, NIL_VIEWER_ID)
     },
 
-    async listReplies(postId: string, args: PostListArgs): Promise<FeedPage> {
+    async listReplies(postId: string, args: ReplyListArgs): Promise<RepliesPage> {
       const cursor = parseTimeCursor(args.cursor, { direction: "asc" })
       const cursorFilter =
         cursor !== null ? sql`AND (p.created_at, p.id) > (${cursor.at}, ${cursor.id}::uuid)` : sql``
@@ -1032,7 +1056,21 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         ORDER BY p.created_at ASC, p.id ASC
         LIMIT ${args.limit + 1}
       `
-      return pageOf(rows, args.limit, args.viewerId)
+      const { items: pageRows, nextCursor } = paginate(rows, args.limit, (r) => ({
+        at: r.created_at,
+        id: r.id,
+      }))
+      const answerRows = await latestAnswersByAuthor(
+        pageRows.map((r) => r.id),
+        args.focalAuthorId,
+      )
+      const pageIds = new Set(pageRows.map((r) => r.id))
+      const hydrated = await hydrate([...pageRows, ...answerRows], args.viewerId)
+      return {
+        items: hydrated.filter((post) => pageIds.has(post.id)),
+        nextCursor,
+        authorReplies: hydrated.filter((post) => !pageIds.has(post.id)),
+      }
     },
 
     async listUserPosts(authorId: string, args: PostListArgs): Promise<FeedPage> {
