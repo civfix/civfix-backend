@@ -7,6 +7,7 @@ import { mailFailure } from "../../adapters/mail-failure.js"
 import { isWithinQuietHours, pushGateAllows, type PushGateMode } from "../notification-helpers.js"
 import type { NotificationService } from "../notification-service.js"
 import { mapWithLimit } from "../media-presign.js"
+import { makeInsightsGeneration } from "./host-analytics-cache.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 import type {
   BroadcastRecord,
@@ -147,6 +148,10 @@ export function usesPerRecipientVar(text: string): boolean {
 export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
   const now = deps.now ?? (() => new Date())
   const { repo, config } = deps
+  const insights = makeInsightsGeneration({
+    cache: deps.cache,
+    ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+  })
 
   async function killed(record: BroadcastRecord): Promise<boolean> {
     if (config.killSwitch) return true
@@ -169,6 +174,7 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
       finishedAt: now(),
     })
     await repo.refreshCounts(record.id)
+    await insights.bumpInsightsGeneration(record.cleanupId)
     await deps.audit("event.broadcast_killed", record.createdBy, `broadcast:${record.id}`, {
       cleanupId: record.cleanupId,
       kind: record.kind,
@@ -219,6 +225,7 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
     const recipientCount = memberIds.length + guestIds.length
     if (recipientCount > config.maxRecipients) {
       await repo.transition(record.id, ["sending"], "failed", { finishedAt: now() })
+      await insights.bumpInsightsGeneration(record.cleanupId)
       deps.logger?.error(
         { evt: "broadcast.failed", broadcastId: record.id, recipientCount, reason: "too_many" },
         "broadcast refused: audience above the platform cap",
@@ -228,6 +235,7 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
     if (recipientCount === 0) {
       await repo.markPlanned(record.id, { recipientCount: 0, plannedAt: now() })
       await repo.transition(record.id, ["sending"], "sent", { finishedAt: now() })
+      await insights.bumpInsightsGeneration(record.cleanupId)
       return { kind: "empty", recipients: 0 }
     }
 
@@ -263,6 +271,7 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
       if (!withinBudget) {
         await repo.suppressRemaining(record.id, "cap")
         await repo.transition(record.id, ["sending"], "failed", { finishedAt: now() })
+        await insights.bumpInsightsGeneration(record.cleanupId)
         deps.logger?.warn(
           { evt: "broadcast.failed", broadcastId: record.id, reason: "recipients_per_day" },
           "broadcast refused: host daily recipient budget exhausted",
@@ -271,6 +280,7 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
       }
     }
 
+    await insights.bumpInsightsGeneration(record.cleanupId)
     const chunkNos = await repo.listPendingChunks(record.id)
     for (const chunkNo of chunkNos) {
       await deps.enqueueChunk(record.id, chunkNo)
@@ -373,10 +383,11 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
     const counts = await repo.deliveryCounts(record.id)
     if (counts.pending > 0) return
     const allFailed = counts.sent === 0 && counts.failed > 0
-    await repo.transition(record.id, ["sending"], allFailed ? "failed" : "sent", {
+    const finished = await repo.transition(record.id, ["sending"], allFailed ? "failed" : "sent", {
       finishedAt: now(),
     })
     await repo.refreshCounts(record.id)
+    if (finished !== null) await insights.bumpInsightsGeneration(record.cleanupId)
   }
 
   function pushMode(record: BroadcastRecord): PushGateMode {
@@ -747,6 +758,7 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
         await repo.suppressRemaining(id, "cap")
         await repo.transition(id, ["sending"], "failed", { finishedAt: at })
         await repo.refreshCounts(id)
+        await insights.bumpInsightsGeneration(moved.cleanupId)
         deps.logger?.warn(
           { evt: "broadcast.failed", broadcastId: id, reason: err.kind },
           "scheduled broadcast refused at release: send-slot cap",

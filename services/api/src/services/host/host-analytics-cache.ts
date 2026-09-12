@@ -25,6 +25,12 @@ export interface InsightsGeneration {
 
 export type InsightsInvalidator = Pick<InsightsGeneration, "bumpInsightsGeneration">
 
+export const NOOP_INSIGHTS_INVALIDATOR: InsightsInvalidator = {
+  bumpInsightsGeneration(): Promise<void> {
+    return Promise.resolve()
+  },
+}
+
 export function hostAnalyticsCacheKey(args: {
   endpoint: string
   scope: string

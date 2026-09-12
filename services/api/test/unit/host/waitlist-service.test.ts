@@ -25,6 +25,7 @@ interface Harness {
   advance(ms: number): void
   enqueued: string[]
   notified: string[]
+  bumped: string[]
 }
 
 function build(): Harness {
@@ -34,6 +35,7 @@ function build(): Harness {
   const clock = (): Date => new Date(state.base + state.tick++)
   const enqueued: string[] = []
   const notified: string[] = []
+  const bumped: string[] = []
   const seats = (partySize: number): SeatDraft[] =>
     Array.from({ length: partySize }, () => {
       const id = randomUUID()
@@ -42,7 +44,13 @@ function build(): Harness {
 
   const service = makeWaitlistService({
     repo,
-    registrations: { buildSeatDrafts: seats, signalTeam: () => Promise.resolve() },
+    registrations: {
+      buildSeatDrafts: seats,
+      eventChanged: (cleanupId: string) => {
+        bumped.push(cleanupId)
+        return Promise.resolve()
+      },
+    },
     jobs: {
       enqueue: (name) => {
         enqueued.push(name)
@@ -70,6 +78,7 @@ function build(): Harness {
     },
     enqueued,
     notified,
+    bumped,
   }
 }
 
@@ -307,5 +316,54 @@ describe("waitlist service", () => {
     await expect(
       h.service.join({ id: EVENT, ticketTypeId: type.id, partySize: 1 }, { kind: "user", userId: ALICE }),
     ).rejects.toBeInstanceOf(AppError)
+  })
+
+  it("bumps the insights generation on join, promote, claim and leave", async () => {
+    const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 2, waitlistEnabled: true })
+    const joined = await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "user", userId: ALICE },
+    )
+    expect(h.bumped).toEqual([EVENT])
+
+    await h.service.runPromote({ ticketTypeId: type.id })
+    expect(h.bumped).toEqual([EVENT, EVENT])
+
+    await h.service.claim(
+      { id: EVENT, waitlistId: joined.entry.id },
+      { kind: "user", userId: ALICE },
+    )
+    expect(h.bumped).toEqual([EVENT, EVENT, EVENT])
+
+    await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "user", userId: BOB },
+    )
+    h.bumped.length = 0
+    await h.service.leave({ id: EVENT, ticketTypeId: type.id }, { kind: "user", userId: BOB })
+    expect(h.bumped).toEqual([EVENT])
+  })
+
+  it("bumps the insights generation when the host promotes an entry", async () => {
+    const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 1, waitlistEnabled: true })
+    const joined = await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "user", userId: ALICE },
+    )
+    h.bumped.length = 0
+
+    await h.service.promote({ id: EVENT, waitlistId: joined.entry.id }, HOST)
+    expect(h.bumped).toEqual([EVENT])
+  })
+
+  it("leaves the insights generation alone when a waitlist mutation changes nothing", async () => {
+    const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 1, waitlistEnabled: true })
+    await h.service.leave({ id: EVENT, ticketTypeId: type.id }, { kind: "user", userId: ALICE })
+    expect(h.bumped).toEqual([])
+
+    await expect(
+      h.service.promote({ id: EVENT, waitlistId: randomUUID() }, HOST),
+    ).rejects.toBeInstanceOf(AppError)
+    expect(h.bumped).toEqual([])
   })
 })

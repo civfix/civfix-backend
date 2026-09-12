@@ -14,7 +14,6 @@ import type {
   UndoEventCheckInResponse,
 } from "@civfix/shared"
 import { sha256Hex } from "../../auth/crypto.js"
-import type { InsightsInvalidator } from "./host-analytics-cache.js"
 import { toEventRegistrationDTO, toSeatDTO } from "./registration-dto.js"
 import type {
   CheckinResultRecord,
@@ -33,8 +32,7 @@ export interface GuestTicketLookup {
 export interface CheckinServiceDeps {
   repo: HostRegistrationRepository
   tokens: TicketTokenSigner
-  registrations: Pick<RegistrationService, "signalTeam">
-  insightsInvalidator?: InsightsInvalidator
+  registrations: Pick<RegistrationService, "eventChanged">
   guestByManageToken?: GuestTicketLookup
   publicApiUrl?: string
   audit?: RegistrationAudit
@@ -72,10 +70,6 @@ function toCheckinResultDTO(record: CheckinResultRecord): CheckinResultDTO {
 
 export function makeCheckinService(deps: CheckinServiceDeps): CheckinService {
   const now = deps.now ?? (() => new Date())
-
-  async function bumpInsights(cleanupId: string): Promise<void> {
-    await deps.insightsInvalidator?.bumpInsightsGeneration(cleanupId)
-  }
 
   async function buildTicket(
     cleanupId: string,
@@ -128,8 +122,7 @@ export function makeCheckinService(deps: CheckinServiceDeps): CheckinService {
           target: `seat:${record.seat?.id ?? "unknown"}`,
           meta: { cleanupId: input.id, method: "scan" },
         })
-        await bumpInsights(input.id)
-        await deps.registrations.signalTeam(input.id)
+        await deps.registrations.eventChanged(input.id)
       }
       return toCheckinResultDTO(record)
     },
@@ -150,8 +143,7 @@ export function makeCheckinService(deps: CheckinServiceDeps): CheckinService {
           target: `seat:${input.seatId}`,
           meta: { cleanupId: input.id, method: input.method },
         })
-        await bumpInsights(input.id)
-        await deps.registrations.signalTeam(input.id)
+        await deps.registrations.eventChanged(input.id)
       }
       return toCheckinResultDTO(record)
     },
@@ -165,8 +157,7 @@ export function makeCheckinService(deps: CheckinServiceDeps): CheckinService {
         target: `seat:${input.seatId}`,
         meta: { cleanupId: input.id },
       })
-      await bumpInsights(input.id)
-      await deps.registrations.signalTeam(input.id)
+      await deps.registrations.eventChanged(input.id)
       return { ok: true, seat: toSeatDTO(seat) }
     },
 
@@ -186,8 +177,7 @@ export function makeCheckinService(deps: CheckinServiceDeps): CheckinService {
           target: `cleanup:${input.id}`,
           meta: { marked },
         })
-        await bumpInsights(input.id)
-        await deps.registrations.signalTeam(input.id)
+        await deps.registrations.eventChanged(input.id)
       }
       return { ok: true, marked }
     },

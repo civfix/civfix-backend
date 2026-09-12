@@ -42,9 +42,8 @@ function build(): Harness {
   const service = makeCheckinService({
     repo,
     tokens,
-    registrations: { signalTeam: () => Promise.resolve() },
-    insightsInvalidator: {
-      bumpInsightsGeneration: (cleanupId) => {
+    registrations: {
+      eventChanged: (cleanupId: string) => {
         bumped.push(cleanupId)
         return Promise.resolve()
       },

@@ -3,6 +3,7 @@ import { BROADCAST_VARS } from "@civfix/shared/host"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { Mailer, OutboundEmail, SentMail } from "@civfix/shared/interfaces"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
+import { insightsGenerationKey } from "../../src/services/host/host-analytics-cache.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
 import {
@@ -775,5 +776,31 @@ describe("broadcast schedule sweep", () => {
     const result = await h.pipeline.sweep()
     expect(result.released).toBe(1)
     expect((await h.repo.findById(record.id))?.plannedAt).not.toBeNull()
+  })
+})
+
+describe("broadcast insights invalidation", () => {
+  it("bumps the event insights generation when the send finishes", async () => {
+    const h = harness({ members: 5 })
+    const id = await draftSending(h)
+    await h.pipeline.plan(id)
+    const planned = Number(await h.cache.get(insightsGenerationKey(EVENT)))
+
+    for (const chunk of [...h.chunks]) await h.pipeline.runChunk(id, chunk.chunkNo)
+
+    expect((await h.repo.findById(id))?.status).toBe("sent")
+    expect(Number(await h.cache.get(insightsGenerationKey(EVENT)))).toBeGreaterThan(planned)
+  })
+
+  it("leaves the generation alone while the send is still draining", async () => {
+    const h = harness({ members: 5 })
+    const id = await draftSending(h)
+    await h.pipeline.plan(id)
+    const planned = await h.cache.get(insightsGenerationKey(EVENT))
+
+    await h.pipeline.runChunk(id, 0)
+
+    expect((await h.repo.findById(id))?.status).toBe("sending")
+    expect(await h.cache.get(insightsGenerationKey(EVENT))).toBe(planned)
   })
 })

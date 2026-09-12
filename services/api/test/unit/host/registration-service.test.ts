@@ -455,6 +455,53 @@ describe("registration service", () => {
       /temporarily unavailable/u,
     )
   })
+
+  it("bumps the insights generation on a host transfer, cancel and remove", async () => {
+    const from = h.repo.seedTicketType({ cleanupId: EVENT, name: "Morning", capacity: 5 })
+    const to = h.repo.seedTicketType({ cleanupId: EVENT, name: "Afternoon", capacity: 5 })
+    const one = await h.service.register(request({ ticketTypeId: from.id }), {
+      kind: "user",
+      userId: USER,
+    })
+    const two = await h.service.register(request({ ticketTypeId: from.id }), {
+      kind: "user",
+      userId: OTHER,
+    })
+    h.bumped.length = 0
+
+    await h.service.transfer(
+      { id: EVENT, registrationId: one.registration?.id as string, ticketTypeId: to.id },
+      OTHER,
+    )
+    expect(h.bumped).toEqual([EVENT])
+
+    await h.service.cancel(
+      { id: EVENT, registrationId: one.registration?.id as string },
+      USER,
+      true,
+    )
+    expect(h.bumped).toEqual([EVENT, EVENT])
+
+    await h.service.remove(
+      { id: EVENT, registrationId: two.registration?.id as string, ban: false },
+      OTHER,
+    )
+    expect(h.bumped).toEqual([EVENT, EVENT, EVENT])
+  })
+
+  it("leaves the insights generation alone when a host mutation changes nothing", async () => {
+    const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 5 })
+    const registered = await h.service.register(request({ ticketTypeId: type.id }), {
+      kind: "user",
+      userId: USER,
+    })
+    const registrationId = registered.registration?.id as string
+    await h.service.cancel({ id: EVENT, registrationId }, USER, true)
+    h.bumped.length = 0
+
+    await h.service.cancel({ id: EVENT, registrationId }, USER, true)
+    expect(h.bumped).toEqual([])
+  })
 })
 
 describe("registration questions: which questions a registration must answer", () => {
@@ -558,4 +605,5 @@ describe("registration questions: which questions a registration must answer", (
     expect(res.outcome).toBe("answers_invalid")
     expect(res.fields?.[TIER_Q]).toBe("unknown question")
   })
+
 })
