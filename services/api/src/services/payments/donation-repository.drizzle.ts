@@ -163,6 +163,57 @@ export interface AdminDonationOrgTotalsRow {
   lastChargedAt: Date | null
 }
 
+export interface EventDonationTotals extends DonationSummary {
+  lastChargedAt: Date | null
+}
+
+interface DonationSummaryRowSelect {
+  donation_count: string | number
+  gross_minor: string | number
+  platform_fee_minor: string | number
+  processor_fee_minor: string | number
+  net_minor: string | number
+  refunded_minor: string | number
+  disputed_count: string | number
+}
+
+function donationSummaryColumns(tag: Sql) {
+  return tag`COUNT(*) AS donation_count,
+             COALESCE(SUM(amount_minor), 0) AS gross_minor,
+             COALESCE(SUM(fee_platform_minor - fee_refunded_minor), 0) AS platform_fee_minor,
+             COALESCE(SUM(COALESCE(fee_stripe_minor, 0)), 0) AS processor_fee_minor,
+             COALESCE(SUM(amount_minor - fee_platform_minor - COALESCE(fee_stripe_minor, 0) - refunded_total_minor), 0) AS net_minor,
+             COALESCE(SUM(refunded_total_minor), 0) AS refunded_minor,
+             COUNT(*) FILTER (WHERE dispute_state <> 'none') AS disputed_count`
+}
+
+function settledDonations(tag: Sql) {
+  return tag`status IN ('succeeded','partially_refunded','refunded')`
+}
+
+function toDonationSummary(row: DonationSummaryRowSelect | undefined): DonationSummary {
+  if (row === undefined) {
+    return {
+      donationCount: 0,
+      grossMinor: 0,
+      platformFeeMinor: 0,
+      processorFeeMinor: 0,
+      netMinor: 0,
+      refundedMinor: 0,
+      disputedCount: 0,
+    }
+  }
+  return {
+    donationCount: requiredNum(row.donation_count),
+    grossMinor: requiredNum(row.gross_minor),
+    platformFeeMinor: requiredNum(row.platform_fee_minor),
+    processorFeeMinor: requiredNum(row.processor_fee_minor),
+    netMinor: requiredNum(row.net_minor),
+    refundedMinor: requiredNum(row.refunded_minor),
+    disputedCount: requiredNum(row.disputed_count),
+  }
+}
+
 export interface DonationSummary {
   donationCount: number
   grossMinor: number
@@ -231,6 +282,7 @@ export interface DonationRepository {
   }): Promise<void>
   listForOrg(query: OrgDonationListQuery): Promise<DonationListRow[]>
   summaryForOrg(input: { organizationId: string; from?: Date; to?: Date }): Promise<DonationSummary>
+  eventTotals(eventId: string): Promise<EventDonationTotals>
   listForUser(input: { userId: string; cursor?: string; limit: number }): Promise<DonationListRow[]>
   listForAdmin(query: AdminDonationListQuery): Promise<DonationListRow[]>
   adminTotals(query: AdminDonationListQuery): Promise<{
@@ -758,39 +810,25 @@ export function makeDrizzleDonationRepository(sql: Sql): DonationRepository {
     },
 
     async summaryForOrg({ organizationId, from, to }) {
-      const rows = await sql<
-        {
-          donation_count: string | number
-          gross_minor: string | number
-          platform_fee_minor: string | number
-          processor_fee_minor: string | number
-          net_minor: string | number
-          refunded_minor: string | number
-          disputed_count: string | number
-        }[]
-      >`
-        SELECT COUNT(*) AS donation_count,
-               COALESCE(SUM(amount_minor), 0) AS gross_minor,
-               COALESCE(SUM(fee_platform_minor - fee_refunded_minor), 0) AS platform_fee_minor,
-               COALESCE(SUM(COALESCE(fee_stripe_minor, 0)), 0) AS processor_fee_minor,
-               COALESCE(SUM(amount_minor - fee_platform_minor - COALESCE(fee_stripe_minor, 0) - refunded_total_minor), 0) AS net_minor,
-               COALESCE(SUM(refunded_total_minor), 0) AS refunded_minor,
-               COUNT(*) FILTER (WHERE dispute_state <> 'none') AS disputed_count
+      const rows = await sql<DonationSummaryRowSelect[]>`
+        SELECT ${donationSummaryColumns(sql)}
           FROM donations
          WHERE organization_id = ${organizationId}
-           AND status IN ('succeeded','partially_refunded','refunded')
+           AND ${settledDonations(sql)}
            AND (${from ?? null}::timestamptz IS NULL OR charged_at >= ${from ?? null})
            AND (${to ?? null}::timestamptz IS NULL OR charged_at <= ${to ?? null})`
+      return toDonationSummary(rows[0])
+    },
+
+    async eventTotals(eventId) {
+      const rows = await sql<(DonationSummaryRowSelect & { last_charged_at: Date | null })[]>`
+        SELECT ${donationSummaryColumns(sql)},
+               MAX(charged_at) AS last_charged_at
+          FROM donations
+         WHERE event_id = ${eventId}
+           AND ${settledDonations(sql)}`
       const row = rows[0]
-      return {
-        donationCount: row === undefined ? 0 : requiredNum(row.donation_count),
-        grossMinor: row === undefined ? 0 : requiredNum(row.gross_minor),
-        platformFeeMinor: row === undefined ? 0 : requiredNum(row.platform_fee_minor),
-        processorFeeMinor: row === undefined ? 0 : requiredNum(row.processor_fee_minor),
-        netMinor: row === undefined ? 0 : requiredNum(row.net_minor),
-        refundedMinor: row === undefined ? 0 : requiredNum(row.refunded_minor),
-        disputedCount: row === undefined ? 0 : requiredNum(row.disputed_count),
-      }
+      return { ...toDonationSummary(row), lastChargedAt: row?.last_charged_at ?? null }
     },
 
     async listForUser({ userId, cursor, limit }) {

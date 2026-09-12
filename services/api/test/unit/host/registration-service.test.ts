@@ -25,6 +25,7 @@ interface Harness {
   signals: string[]
   audits: string[]
   notifications: { userId: string; title: string }[]
+  bumped: string[]
 }
 
 function build(): Harness {
@@ -33,6 +34,7 @@ function build(): Harness {
   const signals: string[] = []
   const audits: string[] = []
   const notifications: { userId: string; title: string }[] = []
+  const bumped: string[] = []
   const service = makeRegistrationService({
     repo,
     tokens,
@@ -58,8 +60,14 @@ function build(): Harness {
       audits.push(input.action)
       return Promise.resolve()
     },
+    insightsInvalidator: {
+      bumpInsightsGeneration: (cleanupId) => {
+        bumped.push(cleanupId)
+        return Promise.resolve()
+      },
+    },
   })
-  return { repo, service, signals, audits, notifications }
+  return { repo, service, signals, audits, notifications, bumped }
 }
 
 function request(over: Partial<RegisterForEventRequest> = {}): RegisterForEventRequest {
@@ -363,6 +371,17 @@ describe("registration service", () => {
     )
   })
 
+  it("bumps the insights generation for a walk-up and not for a refused one", async () => {
+    h.repo.seedTicketType({ cleanupId: EVENT, capacity: 10, maxPartySize: 4 })
+    await h.service.walkup({ id: EVENT, name: "Ada", partySize: 2, checkInNow: true }, OTHER)
+    expect(h.bumped).toEqual([EVENT])
+
+    const full = build()
+    full.repo.seedTicketType({ cleanupId: EVENT, capacity: 0 })
+    await full.service.walkup({ id: EVENT, name: "Ada", partySize: 1, checkInNow: false }, OTHER)
+    expect(full.bumped).toEqual([])
+  })
+
   it("leaves no guest row behind when a walk-up is refused", async () => {
     h.repo.seedTicketType({ cleanupId: EVENT, capacity: 0 })
     const refused = await h.service.walkup({ id: EVENT, name: "Ada", partySize: 1, checkInNow: false }, OTHER)
@@ -435,6 +454,53 @@ describe("registration service", () => {
     await expect(broken.register(request(), { kind: "user", userId: OTHER })).rejects.toThrow(
       /temporarily unavailable/u,
     )
+  })
+
+  it("bumps the insights generation on a host transfer, cancel and remove", async () => {
+    const from = h.repo.seedTicketType({ cleanupId: EVENT, name: "Morning", capacity: 5 })
+    const to = h.repo.seedTicketType({ cleanupId: EVENT, name: "Afternoon", capacity: 5 })
+    const one = await h.service.register(request({ ticketTypeId: from.id }), {
+      kind: "user",
+      userId: USER,
+    })
+    const two = await h.service.register(request({ ticketTypeId: from.id }), {
+      kind: "user",
+      userId: OTHER,
+    })
+    h.bumped.length = 0
+
+    await h.service.transfer(
+      { id: EVENT, registrationId: one.registration?.id as string, ticketTypeId: to.id },
+      OTHER,
+    )
+    expect(h.bumped).toEqual([EVENT])
+
+    await h.service.cancel(
+      { id: EVENT, registrationId: one.registration?.id as string },
+      USER,
+      true,
+    )
+    expect(h.bumped).toEqual([EVENT, EVENT])
+
+    await h.service.remove(
+      { id: EVENT, registrationId: two.registration?.id as string, ban: false },
+      OTHER,
+    )
+    expect(h.bumped).toEqual([EVENT, EVENT, EVENT])
+  })
+
+  it("leaves the insights generation alone when a host mutation changes nothing", async () => {
+    const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 5 })
+    const registered = await h.service.register(request({ ticketTypeId: type.id }), {
+      kind: "user",
+      userId: USER,
+    })
+    const registrationId = registered.registration?.id as string
+    await h.service.cancel({ id: EVENT, registrationId }, USER, true)
+    h.bumped.length = 0
+
+    await h.service.cancel({ id: EVENT, registrationId }, USER, true)
+    expect(h.bumped).toEqual([])
   })
 })
 
@@ -539,4 +605,5 @@ describe("registration questions: which questions a registration must answer", (
     expect(res.outcome).toBe("answers_invalid")
     expect(res.fields?.[TIER_Q]).toBe("unknown question")
   })
+
 })

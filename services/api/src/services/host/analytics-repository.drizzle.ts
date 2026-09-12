@@ -1,5 +1,10 @@
+import type { BroadcastKind, CleanupStatus, RegistrationSource } from "@civfix/shared"
 import type { DayCount, DayTimeCount, KeyCount } from "@civfix/shared/host"
 import type { Sql } from "../../db/client.js"
+
+export const INSIGHTS_TREND_LIMIT = 400
+
+export const INSIGHTS_SOURCE_LIMIT = 10
 
 export interface EventKpiRow {
   registered: number
@@ -8,6 +13,74 @@ export interface EventKpiRow {
   cancelled: number
   noShow: number
   capacity: number | null
+}
+
+export interface EventClockRecord {
+  status: CleanupStatus
+  scheduledAt: Date
+  endsAt: Date | null
+  completedAt: Date | null
+  registrationClosesAt: Date | null
+  timezone: string | null
+}
+
+interface EventClockRowSelect {
+  status: CleanupStatus
+  scheduled_at: Date
+  ends_at: Date | null
+  completed_at: Date | null
+  registration_closes_at: Date | null
+  timezone: string | null
+}
+
+function eventClockColumns(tag: Sql) {
+  return tag`status, scheduled_at, ends_at, completed_at, registration_closes_at, timezone`
+}
+
+export interface SeatTrendPoint {
+  day: string
+  added: number
+  removed: number
+}
+
+export interface SourceSeats {
+  source: RegistrationSource
+  seats: number
+}
+
+export interface EventBroadcastRecord {
+  id: string
+  kind: BroadcastKind
+  finishedAt: Date | null
+  recipients: number
+  sent: number
+  failed: number
+  suppressed: number
+}
+
+interface EventBroadcastRowSelect {
+  id: string
+  kind: BroadcastKind
+  finished_at: Date | null
+  recipient_count: number
+  sent_count: number
+  failed_count: number
+  suppressed_count: number
+}
+
+function eventBroadcastColumns(tag: Sql) {
+  return tag`id, kind, finished_at, recipient_count, sent_count, failed_count, suppressed_count`
+}
+
+export interface EventHoursTotals {
+  credited: number
+  attendeesCredited: number
+  attendeesCheckedIn: number
+}
+
+export interface ReturningAttendees {
+  seats: number
+  ofRegistered: number
 }
 
 export interface PortfolioTotals {
@@ -33,6 +106,15 @@ export interface AnalyticsRepository {
   portfolioByEvent(cleanupIds: readonly string[], limit: number): Promise<KeyCount[]>
   portfolioDayTime(cleanupIds: readonly string[]): Promise<DayTimeCount[]>
   broadcastsSent(cleanupId: string, from: string, to: string): Promise<number>
+  eventClock(cleanupId: string): Promise<EventClockRecord | null>
+  seatTrend(cleanupId: string, timezone: string): Promise<SeatTrendPoint[]>
+  registrationsBySource(cleanupId: string): Promise<SourceSeats[]>
+  broadcastsForEvent(cleanupId: string, limit: number): Promise<EventBroadcastRecord[]>
+  eventHoursTotals(cleanupId: string): Promise<EventHoursTotals>
+  returningAttendees(
+    cleanupId: string,
+    hostedEventIds: readonly string[],
+  ): Promise<ReturningAttendees>
 }
 
 export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
@@ -244,6 +326,134 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
            AND b.finished_at >= ${from}::date
            AND b.finished_at < (${to}::date + 1)`
       return Number(rows[0]?.n ?? 0)
+    },
+
+    async eventClock(cleanupId) {
+      const rows = await sql<EventClockRowSelect[]>`
+        SELECT ${eventClockColumns(sql)} FROM cleanups WHERE id = ${cleanupId}`
+      const row = rows[0]
+      if (row === undefined) return null
+      return {
+        status: row.status,
+        scheduledAt: row.scheduled_at,
+        endsAt: row.ends_at,
+        completedAt: row.completed_at,
+        registrationClosesAt: row.registration_closes_at,
+        timezone: row.timezone,
+      }
+    },
+
+    async seatTrend(cleanupId, timezone) {
+      const rows = await sql<{ day: string; added: string; removed: string }[]>`
+        WITH moves AS (
+          SELECT (registered_at AT TIME ZONE ${timezone})::date AS at, party_size AS added, 0 AS removed
+            FROM cleanup_registrations
+           WHERE cleanup_id = ${cleanupId}
+          UNION ALL
+          SELECT (cancelled_at AT TIME ZONE ${timezone})::date AS at, 0 AS added, party_size AS removed
+            FROM cleanup_registrations
+           WHERE cleanup_id = ${cleanupId} AND status = 'cancelled' AND cancelled_at IS NOT NULL
+        ),
+        days AS (
+          SELECT at, sum(added) AS added, sum(removed) AS removed
+            FROM moves
+           GROUP BY at
+           ORDER BY at DESC
+           LIMIT ${INSIGHTS_TREND_LIMIT}
+        )
+        SELECT to_char(at, 'YYYY-MM-DD') AS day,
+               added::text AS added,
+               removed::text AS removed
+          FROM days
+         ORDER BY at ASC`
+      return rows.map((row) => ({
+        day: row.day,
+        added: Number(row.added),
+        removed: Number(row.removed),
+      }))
+    },
+
+    async registrationsBySource(cleanupId) {
+      const rows = await sql<{ source: RegistrationSource; seats: string }[]>`
+        SELECT source, COALESCE(sum(party_size), 0)::text AS seats
+          FROM cleanup_registrations
+         WHERE cleanup_id = ${cleanupId} AND status = 'registered'
+         GROUP BY source
+         ORDER BY COALESCE(sum(party_size), 0) DESC, source ASC
+         LIMIT ${INSIGHTS_SOURCE_LIMIT}`
+      return rows.map((row) => ({ source: row.source, seats: Number(row.seats) }))
+    },
+
+    async broadcastsForEvent(cleanupId, limit) {
+      const rows = await sql<EventBroadcastRowSelect[]>`
+        SELECT ${eventBroadcastColumns(sql)}
+          FROM broadcasts
+         WHERE cleanup_id = ${cleanupId} AND status IN ('sending','sent','failed')
+         ORDER BY created_at DESC, id DESC
+         LIMIT ${limit}`
+      return rows.map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        finishedAt: row.finished_at,
+        recipients: row.recipient_count,
+        sent: row.sent_count,
+        failed: row.failed_count,
+        suppressed: row.suppressed_count,
+      }))
+    },
+
+    async eventHoursTotals(cleanupId) {
+      const rows = await sql<
+        { credited: string; attendees_credited: string; attendees_checked_in: string }[]
+      >`
+        SELECT COALESCE(sum(h.hours), 0)::text AS credited,
+               count(DISTINCT h.user_id)::text AS attendees_credited,
+               (SELECT count(DISTINCT r.user_id)
+                  FROM cleanup_registration_seats s
+                  JOIN cleanup_registrations r ON r.id = s.registration_id
+                 WHERE s.cleanup_id = ${cleanupId}
+                   AND s.status = 'active'
+                   AND s.checked_in_at IS NOT NULL
+                   AND r.user_id IS NOT NULL)::text AS attendees_checked_in
+          FROM volunteer_hours h
+         WHERE h.cleanup_id = ${cleanupId} AND h.source = 'event' AND h.voided_at IS NULL`
+      const row = rows[0]
+      return {
+        credited: Number(row?.credited ?? 0),
+        attendeesCredited: Number(row?.attendees_credited ?? 0),
+        attendeesCheckedIn: Number(row?.attendees_checked_in ?? 0),
+      }
+    },
+
+    async returningAttendees(cleanupId, hostedEventIds) {
+      if (hostedEventIds.length === 0) return { seats: 0, ofRegistered: 0 }
+      const rows = await sql<{ seats: string; of_registered: string }[]>`
+        WITH prior AS (
+          SELECT c.id
+            FROM cleanups c
+           WHERE c.id = ANY(${[...hostedEventIds]}::uuid[])
+             AND c.id <> ${cleanupId}
+             AND c.scheduled_at < (SELECT s.scheduled_at FROM cleanups s WHERE s.id = ${cleanupId})
+        ),
+        roster AS (
+          SELECT r.party_size,
+                 (r.user_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM cleanup_registrations p
+                     WHERE p.user_id = r.user_id
+                       AND p.status = 'registered'
+                       AND p.cleanup_id IN (SELECT id FROM prior)
+                 )) AS returning
+            FROM cleanup_registrations r
+           WHERE r.cleanup_id = ${cleanupId} AND r.status = 'registered'
+        )
+        SELECT COALESCE(sum(party_size) FILTER (WHERE returning), 0)::text AS seats,
+               COALESCE(sum(party_size), 0)::text AS of_registered
+          FROM roster`
+      const row = rows[0]
+      return {
+        seats: Number(row?.seats ?? 0),
+        ofRegistered: Number(row?.of_registered ?? 0),
+      }
     },
 
     async portfolioDayTime(cleanupIds) {

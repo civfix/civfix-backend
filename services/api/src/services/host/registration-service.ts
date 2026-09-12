@@ -30,6 +30,7 @@ import {
   toEventRegistrationDTO,
 } from "./registration-dto.js"
 import { enqueueWaitlistPromotion } from "./waitlist-promotion.js"
+import type { InsightsInvalidator } from "./host-analytics-cache.js"
 import { NO_AFFILIATIONS, withAffiliation, type AffiliationLoader } from "../affiliation.js"
 import type { TicketTokenSigner } from "./ticket-token.js"
 import type {
@@ -93,6 +94,7 @@ export interface RegistrationServiceDeps {
   userChannel?: UserChannel
   counters?: CounterStore
   audit?: RegistrationAudit
+  insightsInvalidator?: InsightsInvalidator
   teamUserIds?: (cleanupId: string) => Promise<string[]>
   affiliations?: AffiliationLoader
   now?: () => Date
@@ -136,7 +138,7 @@ export interface RegistrationService {
     input: CreateWalkupRegistrationRequest,
     actorId: string,
   ): Promise<CreateWalkupRegistrationResponse>
-  signalTeam(cleanupId: string): Promise<void>
+  eventChanged(cleanupId: string): Promise<void>
   buildSeatDrafts(partySize: number, attendeeNames: readonly string[] | undefined): SeatDraft[]
   consentWriteOf(consent: EventConsentInput | undefined): ConsentWrite | null
   assertInputValid(input: {
@@ -204,7 +206,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
     }
   }
 
-  async function signalTeam(cleanupId: string): Promise<void> {
+  async function publishToTeam(cleanupId: string): Promise<void> {
     if (deps.userChannel === undefined || deps.teamUserIds === undefined) return
     try {
       const ids = (await deps.teamUserIds(cleanupId)).slice(0, HOST_TEAM_SIGNAL_CAP)
@@ -213,6 +215,11 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
     } catch (err) {
       deps.logger?.warn({ err, cleanupId }, "host signal: publish failed (suppressed)")
     }
+  }
+
+  async function eventChanged(cleanupId: string): Promise<void> {
+    await deps.insightsInvalidator?.bumpInsightsGeneration(cleanupId)
+    await publishToTeam(cleanupId)
   }
 
   async function reserveFlipBudget(subject: RegistrationSubject): Promise<void> {
@@ -338,7 +345,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
       }
       if (outcome.kind === "registered") {
         await notifyRegistered(subject, registration, event.title)
-        await signalTeam(input.id)
+        await eventChanged(input.id)
       }
       return {
         outcome: outcome.kind,
@@ -364,7 +371,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
         now: now(),
       })
       if (joined.kind === "joined" || joined.kind === "already_waiting") {
-        await signalTeam(input.id)
+        await eventChanged(input.id)
         return {
           outcome: "waitlisted",
           registration: null,
@@ -381,7 +388,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
     buildSeatDrafts,
     consentWriteOf,
     assertInputValid,
-    signalTeam,
+    eventChanged,
 
     async register(input, subject): Promise<RegisterForEventResponse> {
       await reserveFlipBudget(subject)
@@ -485,7 +492,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
       if (outcome.kind === "already_cancelled") return { ok: true, registration: null }
 
       await enqueueWaitlistPromotion(deps.jobs, [outcome.ticketTypeId], deps.logger)
-      await signalTeam(input.id)
+      await eventChanged(input.id)
       if (byHost) {
         await deps.audit?.({
           actorId,
@@ -511,7 +518,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
       if (outcome.kind === "not_found") throw AppError.notFound("Registration not found")
       if (outcome.kind === "cancelled") {
         await enqueueWaitlistPromotion(deps.jobs, [outcome.ticketTypeId], deps.logger)
-        await signalTeam(input.id)
+        await eventChanged(input.id)
       }
       await deps.audit?.({
         actorId,
@@ -531,7 +538,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
       })
       switch (outcome.kind) {
         case "transferred":
-          await signalTeam(input.id)
+          await eventChanged(input.id)
           await deps.audit?.({
             actorId,
             action: "event.attendee_transferred",
@@ -615,7 +622,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
         target: `registration:${registration.id}`,
         meta: { cleanupId: input.id, partySize: input.partySize },
       })
-      await signalTeam(input.id)
+      await eventChanged(input.id)
 
       const reloaded = await deps.repo.findRegistration(input.id, registration.id)
       return {

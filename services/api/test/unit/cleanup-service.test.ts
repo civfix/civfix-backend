@@ -1734,3 +1734,52 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     expect(bells).toEqual([ALICE])
   })
 })
+
+describe("insights invalidation", () => {
+  function invalidatingService(): { svc: CleanupService; bumped: string[] } {
+    const bumped: string[] = []
+    const svc = makeCleanupService({
+      repo,
+      counters: new InMemoryCounterStore(),
+      insightsInvalidator: {
+        bumpInsightsGeneration: (cleanupId) => {
+          bumped.push(cleanupId)
+          return Promise.resolve()
+        },
+      },
+    })
+    return { svc, bumped }
+  }
+
+  it("bumps the insights generation when the host cancels the event", async () => {
+    const { svc, bumped } = invalidatingService()
+    const created = await svc.createCleanup(baseInput(), ORG)
+
+    await svc.cancelCleanup(created.id, null, ORG)
+
+    expect(bumped).toEqual([created.id])
+  })
+
+  it("bumps the insights generation when the host completes the event", async () => {
+    const { svc, bumped } = invalidatingService()
+    const created = await svc.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
+
+    await svc.completeCleanup(created.id, null, ORG)
+
+    expect(bumped).toEqual([created.id])
+  })
+
+  it("leaves the generation alone when the status flip is refused", async () => {
+    const { svc, bumped } = invalidatingService()
+    const created = await svc.createCleanup(baseInput(), ORG)
+
+    await expect(svc.cancelCleanup(created.id, null, ALICE)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    await expect(svc.completeCleanup(created.id, null, ORG)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+
+    expect(bumped).toEqual([])
+  })
+})

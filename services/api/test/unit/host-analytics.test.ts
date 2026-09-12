@@ -46,6 +46,21 @@ function analyticsRepo(overrides: Partial<AnalyticsRepository> = {}): AnalyticsR
     portfolioByEvent: () => Promise.resolve([{ key: "Beach Cleanup", count: 20 }]),
     portfolioDayTime: () => Promise.resolve([{ weekday: 6, hour: 9, count: 20 }]),
     broadcastsSent: () => Promise.resolve(4),
+    eventClock: () =>
+      Promise.resolve({
+        status: "active" as const,
+        scheduledAt: new Date("2026-02-14T17:00:00Z"),
+        endsAt: null,
+        completedAt: null,
+        registrationClosesAt: null,
+        timezone: "UTC",
+      }),
+    seatTrend: () => Promise.resolve([{ day: "2026-02-09", added: 20, removed: 0 }]),
+    registrationsBySource: () => Promise.resolve([{ source: "self" as const, seats: 20 }]),
+    broadcastsForEvent: () => Promise.resolve([]),
+    eventHoursTotals: () =>
+      Promise.resolve({ credited: 0, attendeesCredited: 0, attendeesCheckedIn: 0 }),
+    returningAttendees: () => Promise.resolve({ seats: 0, ofRegistered: 0 }),
     ...overrides,
   }
 }
@@ -272,7 +287,7 @@ describe("host analytics envelopes", () => {
     expect(byChannel.get("push")).toBeNull()
   })
 
-  it("gates the portfolio totals on the same closure as its own series", async () => {
+  it("publishes every portfolio day exactly, sub-k days included", async () => {
     const { service } = build({}, [
       { cleanupId: EVENT, day: "2026-02-08", metric: "registrations", bucket: "", value: 6 },
       { cleanupId: EVENT, day: "2026-02-09", metric: "registrations", bucket: "", value: 2 },
@@ -284,15 +299,47 @@ describe("host analytics envelopes", () => {
       "90d",
       "self",
     )
-    expect(payload.series.filter((p) => p.value !== null).map((p) => p.value)).toEqual([6, 7])
-    expect(payload.totals.registrations).toBeNull()
-    expect(payload.averageCheckInRate.suppressed).toBe(true)
-    expect(payload.byEvent.panelSuppressed).toBe(true)
-    expect(payload.byEvent.rows).toEqual([])
-    expect(payload.bestDayTime).toBeNull()
+    expect(payload.series.filter((p) => p.value !== 0).map((p) => p.value)).toEqual([6, 2, 7])
+    expect(payload.series.every((p) => p.suppressed === false)).toBe(true)
+    expect(payload.totals.registrations).toBe(20)
+    expect(payload.averageCheckInRate.suppressed).toBe(false)
+    expect(payload.averageCheckInRate.numerator).toBe(12)
+    expect(payload.byEvent.panelSuppressed).toBe(false)
+    expect(payload.byEvent.rows.find((r) => r.key === "Beach Cleanup")?.value).toBe(20)
+    expect(payload.bestDayTime).toMatchObject({ weekday: 6, hour: 9, suppressed: false })
   })
 
-  it("publishes the portfolio totals when its series published nothing to pin", async () => {
+  it("publishes a sub-k portfolio breakdown row rather than hiding it", async () => {
+    const { service } = build({
+      portfolioTotals: () =>
+        Promise.resolve({
+          events: 2,
+          registrations: 5,
+          checkIns: 3,
+          uniqueAttendees: 4,
+          repeatAttendees: 1,
+        }),
+      portfolioByEvent: () =>
+        Promise.resolve([
+          { key: "Beach Cleanup", count: 4 },
+          { key: "Park Cleanup", count: 1 },
+        ]),
+    })
+    const payload = await service.portfolio(
+      "00000000-0000-0000-0000-0000000000aa",
+      null,
+      "90d",
+      "self",
+    )
+    expect(payload.totals.registrations).toBe(5)
+    expect(payload.totals.uniqueAttendees).toBe(4)
+    expect(payload.byEvent.rows.map((row) => row.value)).toEqual([4, 1])
+    expect(payload.byEvent.rows.every((row) => row.suppressed === false)).toBe(true)
+    expect(payload.repeatAttendance.value).toBeCloseTo(1 / 4, 4)
+    expect(payload.repeatAttendance.suppressed).toBe(false)
+  })
+
+  it("still echoes k on the portfolio envelope for older clients", async () => {
     const { service } = build()
     const payload = await service.portfolio(
       "00000000-0000-0000-0000-0000000000aa",
@@ -300,9 +347,28 @@ describe("host analytics envelopes", () => {
       "90d",
       "self",
     )
-    expect(payload.series.every((p) => p.value === null)).toBe(true)
-    expect(payload.totals.registrations).toBe(20)
-    expect(payload.byEvent.rows.find((r) => r.key === "Beach Cleanup")?.value).toBe(20)
+    expect(payload.k).toBe(5)
+  })
+
+  it("keeps a rate null when its denominator is zero", async () => {
+    const { service } = build({
+      portfolioTotals: () =>
+        Promise.resolve({
+          events: 0,
+          registrations: 0,
+          checkIns: 0,
+          uniqueAttendees: 0,
+          repeatAttendees: 0,
+        }),
+    })
+    const payload = await service.portfolio(
+      "00000000-0000-0000-0000-0000000000aa",
+      null,
+      "90d",
+      "self",
+    )
+    expect(payload.averageCheckInRate.value).toBeNull()
+    expect(payload.repeatAttendance.value).toBeNull()
   })
 
   it("suppresses a whole panel when its total is below k", async () => {

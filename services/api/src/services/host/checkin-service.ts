@@ -32,7 +32,7 @@ export interface GuestTicketLookup {
 export interface CheckinServiceDeps {
   repo: HostRegistrationRepository
   tokens: TicketTokenSigner
-  registrations: Pick<RegistrationService, "signalTeam">
+  registrations: Pick<RegistrationService, "eventChanged">
   guestByManageToken?: GuestTicketLookup
   publicApiUrl?: string
   audit?: RegistrationAudit
@@ -122,7 +122,7 @@ export function makeCheckinService(deps: CheckinServiceDeps): CheckinService {
           target: `seat:${record.seat?.id ?? "unknown"}`,
           meta: { cleanupId: input.id, method: "scan" },
         })
-        await deps.registrations.signalTeam(input.id)
+        await deps.registrations.eventChanged(input.id)
       }
       return toCheckinResultDTO(record)
     },
@@ -143,7 +143,7 @@ export function makeCheckinService(deps: CheckinServiceDeps): CheckinService {
           target: `seat:${input.seatId}`,
           meta: { cleanupId: input.id, method: input.method },
         })
-        await deps.registrations.signalTeam(input.id)
+        await deps.registrations.eventChanged(input.id)
       }
       return toCheckinResultDTO(record)
     },
@@ -157,7 +157,7 @@ export function makeCheckinService(deps: CheckinServiceDeps): CheckinService {
         target: `seat:${input.seatId}`,
         meta: { cleanupId: input.id },
       })
-      await deps.registrations.signalTeam(input.id)
+      await deps.registrations.eventChanged(input.id)
       return { ok: true, seat: toSeatDTO(seat) }
     },
 
@@ -177,7 +177,7 @@ export function makeCheckinService(deps: CheckinServiceDeps): CheckinService {
           target: `cleanup:${input.id}`,
           meta: { marked },
         })
-        await deps.registrations.signalTeam(input.id)
+        await deps.registrations.eventChanged(input.id)
       }
       return { ok: true, marked }
     },

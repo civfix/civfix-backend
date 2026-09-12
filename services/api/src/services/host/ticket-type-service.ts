@@ -13,6 +13,7 @@ import { sha256Hex } from "../../auth/crypto.js"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import { toTicketTypeDTO } from "./registration-dto.js"
+import type { InsightsInvalidator } from "./host-analytics-cache.js"
 import type { HostRegistrationRepository } from "./registration-repository.types.js"
 
 export const HOST_TICKET_TYPE_COUNTER_KEY = "host:ticketTypes"
@@ -24,6 +25,7 @@ export const HOST_TICKET_TYPE_WINDOW_SECONDS = 60 * 60
 export interface TicketTypeServiceDeps {
   repo: HostRegistrationRepository
   counters?: CounterStore
+  insightsInvalidator?: InsightsInvalidator
   now?: () => Date
   logger?: { warn(obj: unknown, msg?: string): void }
 }
@@ -76,6 +78,10 @@ export function makeTicketTypeService(deps: TicketTypeServiceDeps): TicketTypeSe
     if (used > HOST_TICKET_TYPE_MAX_PER_HOUR) {
       throw AppError.rateLimited("Too many ticket type changes. Try again later.")
     }
+  }
+
+  async function eventChanged(cleanupId: string): Promise<void> {
+    await deps.insightsInvalidator?.bumpInsightsGeneration(cleanupId)
   }
 
   return {
@@ -131,6 +137,7 @@ export function makeTicketTypeService(deps: TicketTypeServiceDeps): TicketTypeSe
 
       switch (outcome.kind) {
         case "created":
+          await eventChanged(input.id)
           return toTicketTypeDTO(outcome.record, now())
         case "name_taken":
           throw nameTakenError()
@@ -187,6 +194,7 @@ export function makeTicketTypeService(deps: TicketTypeServiceDeps): TicketTypeSe
 
       switch (outcome.kind) {
         case "updated":
+          await eventChanged(input.id)
           return toTicketTypeDTO(outcome.record, now())
         case "name_taken":
           throw nameTakenError()
@@ -211,6 +219,7 @@ export function makeTicketTypeService(deps: TicketTypeServiceDeps): TicketTypeSe
           "This ticket type has registrations. Close sales instead of deleting it.",
         )
       }
+      await eventChanged(input.id)
       return { ok: true }
     },
 
@@ -221,6 +230,7 @@ export function makeTicketTypeService(deps: TicketTypeServiceDeps): TicketTypeSe
           ticketTypeIds: "must list every ticket type on this event exactly once",
         })
       }
+      await eventChanged(input.id)
       const at = now()
       return { items: outcome.items.map((record) => toTicketTypeDTO(record, at)) }
     },

@@ -6,6 +6,11 @@ import { writeAudit } from "../admin/audit.js"
 import type { HostCapability } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
 import { hostStandingOf } from "./host-standing.js"
+import {
+  makeInsightsGeneration,
+  NOOP_INSIGHTS_INVALIDATOR,
+  type InsightsInvalidator,
+} from "./host-analytics-cache.js"
 import { requireCapability, resolveVisibleStanding } from "./authz.js"
 import { makeCheckinService, type CheckinService } from "./checkin-service.js"
 import { makePageService, type PageService } from "./page-service.js"
@@ -39,6 +44,7 @@ export interface HostRegistrationOverrides {
     hash: string,
   ) => Promise<{ id: string; cleanupId: string; cancelledAt: Date | null } | null>
   teamUserIds?: (cleanupId: string) => Promise<string[]>
+  insightsInvalidator?: InsightsInvalidator
   audit?: RegistrationAudit
   now?: () => Date
   newId?: () => string
@@ -135,6 +141,14 @@ export function makeContainerRegistrationServices(
 
   const notifier = lazyNotifier(container, logger)
   const counters = overrides?.counters ?? container.getCounterStore()
+  const insightsInvalidator: InsightsInvalidator =
+    overrides?.insightsInvalidator ??
+    (sql === undefined
+      ? NOOP_INSIGHTS_INVALIDATOR
+      : makeInsightsGeneration({
+          cache: container.getCache(),
+          ...(logger !== undefined ? { logger } : {}),
+        }))
 
   const registrations = makeRegistrationService({
     repo,
@@ -144,6 +158,7 @@ export function makeContainerRegistrationServices(
     userChannel: container.userChannel,
     counters,
     ...(audit !== undefined ? { audit } : {}),
+    insightsInvalidator,
     ...(teamUserIds !== undefined ? { teamUserIds } : {}),
     ...(sql === undefined ? {} : { affiliations: container.getAffiliationLoader() }),
     ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
@@ -158,6 +173,7 @@ export function makeContainerRegistrationServices(
     tickets: makeTicketTypeService({
       repo,
       counters,
+      insightsInvalidator,
       ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
       ...(logger !== undefined ? { logger } : {}),
     }),

@@ -35,7 +35,7 @@ export const WAITLIST_DEFAULT_LIMIT = 25
 
 export interface WaitlistServiceDeps {
   repo: HostRegistrationRepository
-  registrations: Pick<RegistrationService, "buildSeatDrafts" | "signalTeam">
+  registrations: Pick<RegistrationService, "buildSeatDrafts" | "eventChanged">
   jobs?: Jobs
   notifier?: RegistrationNotifier
   audit?: RegistrationAudit
@@ -106,7 +106,7 @@ export function makeWaitlistService(deps: WaitlistServiceDeps): WaitlistService 
       switch (outcome.kind) {
         case "joined":
         case "already_waiting":
-          await deps.registrations.signalTeam(input.id)
+          await deps.registrations.eventChanged(input.id)
           return { entry: toWaitlistEntryDTO(outcome.entry) }
         case "already_registered":
           throw AppError.conflict("You are already registered for this event.")
@@ -133,7 +133,7 @@ export function makeWaitlistService(deps: WaitlistServiceDeps): WaitlistService 
         now: now(),
       })
       await enqueuePromote(releasedTicketTypeIds)
-      if (left > 0) await deps.registrations.signalTeam(input.id)
+      if (left > 0) await deps.registrations.eventChanged(input.id)
       return { ok: true }
     },
 
@@ -161,7 +161,7 @@ export function makeWaitlistService(deps: WaitlistServiceDeps): WaitlistService 
         now: now(),
       })
       if (outcome.kind === "claimed") {
-        await deps.registrations.signalTeam(input.id)
+        await deps.registrations.eventChanged(input.id)
         return { outcome: "claimed", registrationId: outcome.registration.id }
       }
       if (outcome.kind === "expired") await enqueuePromote([entry.ticketTypeId])
@@ -189,7 +189,7 @@ export function makeWaitlistService(deps: WaitlistServiceDeps): WaitlistService 
         target: `waitlist:${offer.waitlistId}`,
         meta: { cleanupId: input.id, ticketTypeId: entry.ticketTypeId },
       })
-      await deps.registrations.signalTeam(input.id)
+      await deps.registrations.eventChanged(input.id)
 
       const promoted = await deps.repo.findWaitlistEntry(input.id, offer.waitlistId)
       if (promoted === null) throw AppError.notFound("Waitlist entry not found")
@@ -207,7 +207,7 @@ export function makeWaitlistService(deps: WaitlistServiceDeps): WaitlistService 
         if (offer === null) break
         offered += 1
         await notifyOffered(offer)
-        await deps.registrations.signalTeam(offer.cleanupId)
+        await deps.registrations.eventChanged(offer.cleanupId)
       }
       return offered
     },

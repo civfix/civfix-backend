@@ -16,17 +16,25 @@ const NOW = new Date("2026-01-01T12:00:00.000Z")
 interface Harness {
   repo: InMemoryHostRegistrationRepository
   service: TicketTypeService
+  bumped: string[]
 }
 
 function build(): Harness {
   const repo = new InMemoryHostRegistrationRepository()
   repo.seedEvent({ cleanupId: EVENT })
+  const bumped: string[] = []
   const service = makeTicketTypeService({
     repo,
     counters: new InMemoryCounterStore(() => NOW.getTime()),
+    insightsInvalidator: {
+      bumpInsightsGeneration: (cleanupId) => {
+        bumped.push(cleanupId)
+        return Promise.resolve()
+      },
+    },
     now: () => NOW,
   })
-  return { repo, service }
+  return { repo, service, bumped }
 }
 
 const base = {
@@ -243,5 +251,38 @@ describe("ticket type service", () => {
     const stored = h.repo.ticketTypes.get(created.id)
     expect(stored?.accessCodeSet).toBe(true)
     expect(await sha256Hex("open-sesame")).toBeTypeOf("string")
+  })
+
+  it("bumps the insights generation on a capacity edit, a create, a reorder and a delete", async () => {
+    const created = await h.service.create({ ...base, name: "General", capacity: 2 }, HOST)
+    expect(h.bumped).toEqual([EVENT])
+
+    await h.service.update(
+      { id: EVENT, ticketTypeId: created.id, capacity: 8, visibility: "public" },
+      HOST,
+    )
+    expect(h.bumped).toEqual([EVENT, EVENT])
+
+    const second = await h.service.create({ ...base, name: "VIP", capacity: 1 }, HOST)
+    h.bumped.length = 0
+
+    await h.service.reorder({ id: EVENT, ticketTypeIds: [second.id, created.id] })
+    expect(h.bumped).toEqual([EVENT])
+
+    await h.service.remove({ id: EVENT, ticketTypeId: second.id })
+    expect(h.bumped).toEqual([EVENT, EVENT])
+  })
+
+  it("leaves the insights generation alone when a ticket type write is refused", async () => {
+    await h.service.create({ ...base, name: "General", capacity: 2 }, HOST)
+    h.bumped.length = 0
+
+    await expect(h.service.create({ ...base, name: "general" }, HOST)).rejects.toBeInstanceOf(
+      AppError,
+    )
+    await expect(
+      h.service.remove({ id: EVENT, ticketTypeId: randomUUID() }),
+    ).rejects.toBeInstanceOf(AppError)
+    expect(h.bumped).toEqual([])
   })
 })

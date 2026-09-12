@@ -22,6 +22,7 @@ interface Harness {
   repo: InMemoryHostRegistrationRepository
   service: CheckinService
   audits: string[]
+  bumped: string[]
 }
 
 function seats(partySize: number, name: string | null = null): SeatDraft[] {
@@ -37,10 +38,16 @@ function build(): Harness {
   repo.seedEvent({ cleanupId: EVENT })
   repo.seedEvent({ cleanupId: OTHER_EVENT })
   const audits: string[] = []
+  const bumped: string[] = []
   const service = makeCheckinService({
     repo,
     tokens,
-    registrations: { signalTeam: () => Promise.resolve() },
+    registrations: {
+      eventChanged: (cleanupId: string) => {
+        bumped.push(cleanupId)
+        return Promise.resolve()
+      },
+    },
     guestByManageToken: async (hash) => {
       const known = await sha256Hex("guest-manage-token")
       return hash === known
@@ -53,7 +60,7 @@ function build(): Harness {
     },
     now: () => NOW,
   })
-  return { repo, service, audits }
+  return { repo, service, audits, bumped }
 }
 
 async function register(
@@ -205,5 +212,29 @@ describe("check-in service", () => {
     await expect(
       h.service.guestTicket({ token: "x".repeat(32) }),
     ).rejects.toBeInstanceOf(AppError)
+  })
+
+  it("bumps the insights generation on every attendance change", async () => {
+    const { seatIds } = await register(h.repo, EVENT, 2)
+    const seatId = seatIds[0] as string
+
+    await h.service.checkIn({ id: EVENT, seatId, method: "manual" }, STAFF)
+    expect(h.bumped).toEqual([EVENT])
+
+    await h.service.undo({ id: EVENT, seatId }, STAFF)
+    expect(h.bumped).toEqual([EVENT, EVENT])
+
+    await h.service.scan({ id: EVENT, token: tokens.tokenFor(seatId) }, STAFF)
+    expect(h.bumped).toEqual([EVENT, EVENT, EVENT])
+
+    await h.service.markNoShows({ id: EVENT, all: true }, STAFF)
+    expect(h.bumped).toEqual([EVENT, EVENT, EVENT, EVENT])
+  })
+
+  it("leaves the insights generation alone when nothing changed", async () => {
+    await register(h.repo, EVENT)
+    await h.service.scan({ id: EVENT, token: "AAAAAAAAAAAAAAAAAAAAAAAAAA" }, STAFF)
+    await h.service.markNoShows({ id: EVENT, all: false, seatIds: [randomUUID()] }, STAFF)
+    expect(h.bumped).toEqual([])
   })
 })

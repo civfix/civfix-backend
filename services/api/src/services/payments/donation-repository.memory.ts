@@ -26,6 +26,10 @@ const EMPTY_SUMMARY: DonationSummary = {
   disputedCount: 0,
 }
 
+function isSettled(status: DonationStatusValue): boolean {
+  return status === "succeeded" || status === "partially_refunded" || status === "refunded"
+}
+
 interface MemoryRefund {
   refundId: string
   donationId: string
@@ -35,6 +39,26 @@ interface MemoryRefund {
 }
 
 type MemoryDonationRow = DonationListRow & { idempotencyOwnerKey?: string }
+
+function summarize(settled: readonly MemoryDonationRow[]): DonationSummary {
+  if (settled.length === 0) return { ...EMPTY_SUMMARY }
+  return {
+    donationCount: settled.length,
+    grossMinor: settled.reduce((sum, row) => sum + row.amountMinor, 0),
+    platformFeeMinor: settled.reduce(
+      (sum, row) => sum + row.feePlatformMinor - row.feeRefundedMinor,
+      0,
+    ),
+    processorFeeMinor: settled.reduce((sum, row) => sum + (row.feeStripeMinor ?? 0), 0),
+    netMinor: settled.reduce(
+      (sum, row) =>
+        sum + row.amountMinor - row.feePlatformMinor - (row.feeStripeMinor ?? 0) - row.refundedTotalMinor,
+      0,
+    ),
+    refundedMinor: settled.reduce((sum, row) => sum + row.refundedTotalMinor, 0),
+    disputedCount: settled.filter((row) => row.disputeState !== "none").length,
+  }
+}
 
 export interface MemoryDonationSeed {
   donations?: MemoryDonationRow[]
@@ -330,25 +354,19 @@ export function makeMemoryDonationRepository(
     },
 
     summaryForOrg({ organizationId }) {
-      const settled = rows.filter(
-        (row) => row.organizationId === organizationId && row.status !== "pending" && row.status !== "failed",
-      )
-      if (settled.length === 0) return Promise.resolve({ ...EMPTY_SUMMARY })
+      const settled = rows.filter((row) => row.organizationId === organizationId && isSettled(row.status))
+      return Promise.resolve(summarize(settled))
+    },
+
+    eventTotals(eventId: string) {
+      const settled = rows.filter((row) => row.eventId === eventId && isSettled(row.status))
+      const chargedAt = settled
+        .map((row) => row.chargedAt)
+        .filter((at): at is Date => at !== null)
+        .sort((a, b) => b.getTime() - a.getTime())
       return Promise.resolve({
-        donationCount: settled.length,
-        grossMinor: settled.reduce((sum, row) => sum + row.amountMinor, 0),
-        platformFeeMinor: settled.reduce(
-          (sum, row) => sum + row.feePlatformMinor - row.feeRefundedMinor,
-          0,
-        ),
-        processorFeeMinor: settled.reduce((sum, row) => sum + (row.feeStripeMinor ?? 0), 0),
-        netMinor: settled.reduce(
-          (sum, row) =>
-            sum + row.amountMinor - row.feePlatformMinor - (row.feeStripeMinor ?? 0) - row.refundedTotalMinor,
-          0,
-        ),
-        refundedMinor: settled.reduce((sum, row) => sum + row.refundedTotalMinor, 0),
-        disputedCount: settled.filter((row) => row.disputeState !== "none").length,
+        ...summarize(settled),
+        lastChargedAt: chargedAt[0] ?? null,
       })
     },
 
