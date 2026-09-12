@@ -1,16 +1,25 @@
 name: Deploy (staging)
 
-# Deploys the civfix backend to the STAGING VPS (193.122.142.107) by SSHing in and running the on-box
-# deploy script (/opt/civfix/infra/ops/deploy.sh). That script git-pulls the infra repo (single `main`
-# branch — the same tree prod runs; the box's env marker at /etc/civfix/env selects env/staging.sh and
-# secrets/staging/) + this backend (at CIVFIX_REF, which env/staging.sh defaults to `dev`), SOPS-decrypts
-# the secrets, then rebuilds and blue/green swaps the docker compose stack. The build happens ON the VPS;
-# this workflow only triggers it and then proves the public API stayed up. Mirrors deploy.yml (prod).
+# Deploys the civfix backend to the STAGING VPS (193.122.142.107). TWO jobs, in order:
+#
+#   1. `images`  builds the api + media-worker images for this commit and pushes them to GHCR
+#                (build-images.yml). This is the ONLY build of this release — production is later
+#                promoted onto these exact digests rather than rebuilding.
+#   2. `deploy`  SSHes the box, whose forced command runs /opt/civfix/infra/ops/deploy.sh. That script
+#                git-pulls the infra repo (single `main` branch — the same tree prod runs; the box's env
+#                marker at /etc/civfix/env selects env/staging.sh and secrets/staging/) + this backend
+#                (at CIVFIX_REF, which env/staging.sh defaults to `main`), PULLS the images job 1 just
+#                published, SOPS-decrypts the secrets, then blue/green swaps the compose stack.
+#
+# The build no longer happens on the VPS. Job 1 must therefore SUCCEED before job 2 runs: deploy.sh fails
+# closed when no published image exists for the commit, rather than quietly building one.
+# Mirrors deploy.yml (prod). Issue: https://github.com/civfix/issue-tracker/issues/108
 #
 # Triggers:
-#   - Every push to dev (staging tracks pre-release code).
+#   - Every push to main. `main` IS the staging lane — there is no `dev` branch any more; feature
+#     branches PR into main, and prod is promoted from a `v*` release cut off main.
 #   - Manually via the Actions "Run workflow" button (workflow_dispatch).
-# Both deploy the staging env's CIVFIX_REF (from env/staging.sh, default `dev`); the SSH forced command
+# Both deploy the staging env's CIVFIX_REF (from env/staging.sh, default `main`); the SSH forced command
 # ignores any client-sent command, so a deploy can never target an arbitrary ref.
 #
 # !! MERGE ORDER !! The availability assertion below REQUIRES the civfix-infra blue/green deploy
@@ -32,25 +41,46 @@ name: Deploy (staging)
 #   STAGING_DEPLOY_SSH_KEY  Private half of the dedicated staging CI deploy key (ed25519). Its public half
 #                           is the `deployer` user on the staging VPS, whose authorized_keys forces this
 #                           key to run ONLY `sudo -n -u civfix -H /opt/civfix/infra/ops/deploy.sh`
-#                           (sudoers-scoped). A leaked key can at most trigger a staging deploy of `dev`.
+#                           (sudoers-scoped). A leaked key can at most trigger a staging deploy of `main`.
 #
 # The staging VPS IP and its SSH host key are pinned below (neither is secret).
 
 on:
   push:
-    branches: [dev]
+    branches: [main]
   workflow_dispatch:
 
-# One staging deploy at a time; never cancel an in-flight deploy.
-concurrency:
-  group: deploy-staging
-  cancel-in-progress: false
+permissions:
+  contents: read
 
+# NOTE THE SCOPE: the serialization is on the `deploy` JOB, not on the workflow.
+#
+# It has to be. Workflow-level concurrency queues the whole RUN, and a queued run starts none of its
+# jobs — including its image build. So while one box was waiting for the image of a newer commit (it
+# deploys the branch tip, not the commit that triggered the run), the run that would have built that
+# image could not start until the waiting deploy finished. The wait could never succeed, and every
+# back-to-back merge burned the full retry budget and then failed.
+#
+# Scoped to the job, a second merge's `images` job builds immediately and in parallel, the first box's
+# bounded wait finds the image and completes, and the second deploy then runs on its own. Only the boxes
+# are serialized, which is the only thing that actually needs to be.
 jobs:
+  # The release artifacts. `deploy` needs this: the box pulls what this job pushed.
+  images:
+    name: release images
+    uses: ./.github/workflows/build-images.yml
+    permissions:
+      contents: read
+      packages: write
+
   deploy:
     name: ssh deploy + availability assertion
+    needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
     # No checkout: the VPS pulls the code itself; this job only needs to SSH in.
     env:
       DEPLOY_HOST: 193.122.142.107
@@ -124,7 +154,7 @@ jobs:
             done ) &
           PROBE=$!
 
-          # No remote command is passed: the deploy key's forced command runs deploy.sh (CIVFIX_REF=dev).
+          # No remote command is passed: the deploy key's forced command runs deploy.sh (CIVFIX_REF=main).
           # Its stdout/stderr stream here and its exit code becomes `rc`, which the assertion step
           # turns into a job failure. Keepalives keep the connection up during the (quiet) build.
           if ssh -i ~/.ssh/deploy_key \

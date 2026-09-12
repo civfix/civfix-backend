@@ -47,8 +47,15 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 
 # ----------------------------------------------------------------------------------------------------
 FROM base AS runtime
+# SERVICE_VERSION is the RELEASE IDENTITY and it is baked in at BUILD time on purpose. It is the
+# GlitchTip `release` (src/server.ts), so without it every production error report is tagged "0.0.0" and
+# cannot be attributed to a build. It belongs to the IMAGE rather than to the deploy because the image is
+# promoted: staging and prod run the same artifact and must therefore report the same version. CI passes
+# the full commit sha (.github/workflows/build-images.yml); a local `docker build` leaves the dev default.
+ARG SERVICE_VERSION=0.0.0
 ENV NODE_ENV=production \
-    PORT=8080
+    PORT=8080 \
+    SERVICE_VERSION=${SERVICE_VERSION}
 # Run as the unprivileged `node` user that the base image already provides.
 WORKDIR /app
 # Copy only the pruned deployment (dist + drizzle SQL + prod node_modules incl. @civfix/shared).

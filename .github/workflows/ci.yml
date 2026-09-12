@@ -1,5 +1,12 @@
 name: CI
 
+# Every branch PRs into main — main is both the staging lane and the only PR target
+# (issue civfix/issue-tracker#108).
+#
+# `dev` is still listed ONLY for the duration of the lane cutover. A `pull_request` trigger is evaluated
+# from the MERGE commit, so the moment this file says `[main]` a PR into `dev` runs no CI at all — which
+# would have left the cutover PRs themselves unvalidated. Drop `dev` in the same change that deletes the
+# branch.
 on:
   pull_request:
     branches: [main, dev]

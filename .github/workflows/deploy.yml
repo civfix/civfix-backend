@@ -7,11 +7,24 @@ name: Deploy (production)
 # swaps the docker compose stack. The build happens ON the VPS (4-vCPU arm64 box); this workflow only
 # triggers it and then proves the public API stayed up.
 #
+# PRODUCTION IS PROMOTED, NOT BUILT. A merge to main deploys STAGING (deploy-staging.yml) and publishes
+# the release images; this workflow takes those exact digests and puts them in front of production.
+# Nothing is compiled here. Issue: https://github.com/civfix/issue-tracker/issues/108
+#
 # Triggers:
-#   - Every push to main (so a merged change ships to prod, as it did before the infra split).
-#   - Manually via the Actions "Run workflow" button (workflow_dispatch).
-# Both always deploy origin/main — the on-box deploy.sh checks out CIVFIX_REF (default main); the SSH
-# forced command ignores any client-sent command, so a deploy can never target an arbitrary ref.
+#   - A PUBLISHED GitHub release whose tag matches `v*`. Cutting a release IS the production deploy.
+#   - Manually via the Actions "Run workflow" button (workflow_dispatch), which re-deploys the current
+#     newest release — the recovery path when a deploy failed after the release was already published.
+# Neither carries a ref: the SSH forced command discards any client-sent command, and the on-box
+# deploy.sh resolves env/prod.sh's CIVFIX_REF=@latest-release to the highest `v*` tag MERGED INTO
+# origin/main. Production therefore cannot run code that did not go through the staging lane.
+#
+# BECAUSE THE BOX RESOLVES "NEWEST RELEASE" ITSELF, the promote job below refuses to run when the tag
+# being released is not the newest one. Publishing a release for an older tag would otherwise deploy the
+# NEWER code while reporting success against the older tag — a silent wrong-deploy, and exactly the shape
+# a panicked "re-release the last good version" rollback takes. Roll back on the box instead:
+#   sudo -u civfix CIVFIX_REF=<tag|sha> /opt/civfix/infra/ops/deploy.sh
+# or, for a bad-but-healthy release, ops/rollback.sh (~10s, flips back to the retired color).
 #
 # !! MERGE ORDER !! The availability assertion below REQUIRES the civfix-infra blue/green deploy
 # (two api colors, Caddy active health checks with health_interval 2s / health_timeout 1s, and
@@ -51,18 +64,141 @@ name: Deploy (production)
 # firewalled to key-only/no-root and ingress 80/443 is Cloudflare-only).
 
 on:
-  push:
-    branches: [main]
+  release:
+    # `released`, NOT `published`: `published` also fires for a PRERELEASE, so cutting v1.3.0-rc.1 to
+    # rehearse would deploy production. The regex guard below is the second, independent line of defence.
+    types: [released]
   workflow_dispatch:
 
-# One production deploy at a time; never cancel an in-flight deploy.
+permissions:
+  contents: read
+
+# One production deploy at a time; never cancel an in-flight deploy. Scoped to the whole run here, unlike
+# the staging workflow: nothing in this run BUILDS anything (promote only re-tags existing digests), so
+# queuing a run cannot starve a job another run is waiting on.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
 
 jobs:
+  # Everything that can refuse the deploy happens HERE, before a single byte moves on the box.
+  promote:
+    name: verify + promote the release images
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the release, and prove it is the one the box will deploy
+        id: resolve
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # --force so a moved tag is picked up rather than silently kept at its old commit; the
+          # explicit refspec because a release event checks out the TAG, leaving no origin/main to
+          # compare against.
+          git fetch --quiet --force --tags origin '+refs/heads/main:refs/remotes/origin/main'
+
+          # THE SAME SELECTION THE BOX MAKES — civfix-infra env/prod.sh CIVFIX_RELEASE_TAG_REGEX and
+          # ops/deploy.sh. Keep this regex byte-identical to that one: the box resolves the release
+          # independently, so if the two rules disagree this job blesses one commit and the box deploys
+          # another.
+          #
+          # git sorts the whole `v*` set and the grep filters afterwards; that is sound because
+          # filtering preserves relative order, so the first surviving line is still the highest. The
+          # regex is what excludes prereleases — git's -v:refname ranks `v2.0.0-beta.1` ABOVE `v2.0.0`,
+          # the opposite of semver. The glob alone is not a release rule either: `v*` also matches
+          # `vtest` and `v1.2`, which would outrank every real release and wedge this job permanently.
+          RELEASE_RE='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          # `|| true`: under `set -euo pipefail` a grep that matches nothing exits 1 and errexit kills
+          # the step AT THIS ASSIGNMENT, making the ::error:: annotation below unreachable — the job
+          # would fail with a bare exit code and no explanation. The guard reports it instead.
+          newest="$(git tag --list 'v*' --sort=-v:refname --merged origin/main | grep -E "$RELEASE_RE" | head -n 1)" || true
+          [ -n "$newest" ] || { echo "::error::no release tag matching $RELEASE_RE is merged into origin/main." >&2; exit 1; }
+
+          tag="${EVENT_TAG:-$newest}"
+
+          if ! printf '%s' "$tag" | grep -qE "$RELEASE_RE"; then
+            echo "::error::'$tag' is not a vMAJOR.MINOR.PATCH release tag; refusing to deploy production." >&2
+            echo "::error::Prereleases are excluded by design — they never reach prod." >&2
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$tag" origin/main; then
+            echo "::error::tag '$tag' is not merged into main. Production only runs code that went through" >&2
+            echo "::error::the staging lane. Merge it to main first." >&2
+            exit 1
+          fi
+
+          if [ "$tag" != "$newest" ]; then
+            echo "::error::'$tag' is not the newest release ('$newest' is), and the box always deploys the" >&2
+            echo "::error::newest. Running this would deploy $newest while reporting $tag. To put an older" >&2
+            echo "::error::release back in production, do it on the box:" >&2
+            echo "::error::  sudo -u civfix CIVFIX_REF=$tag /opt/civfix/infra/ops/deploy.sh" >&2
+            exit 1
+          fi
+
+          sha="$(git rev-list -n 1 "$tag")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "deploying $tag ($sha)"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote the staging images to this release
+        # NO REBUILD, BY DESIGN. `imagetools create` adds a tag to a manifest that already exists in the
+        # registry — a registry-side operation, no pull, no push of layers — so the bytes production runs
+        # are provably the bytes staging exercised. A missing image means this commit never completed a
+        # staging build, and the deploy is refused here rather than half-way through on the box.
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Promoting \`$TAG\` to production"
+            echo
+            echo "| image | digest |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for image in api media-worker; do
+            src="ghcr.io/civfix/$image:sha-$SHA"
+            if ! digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$src" 2>/dev/null)"; then
+              echo "::error::no published image $src." >&2
+              echo "::error::Commit $SHA never finished a staging build, so there is nothing to promote." >&2
+              echo "::error::Check the 'Deploy (staging)' run for that commit." >&2
+              exit 1
+            fi
+            echo "$image: $digest"
+            # `:$TAG` is the durable, immutable record of this release. `:prod` is a MOVING tag and is
+            # for humans reading the package list only — nothing consumes it: the box pulls
+            # `sha-<40>` and immediately re-pins to the digest (civfix-infra/ops/deploy.sh). Never make
+            # anything depend on `:prod`.
+            docker buildx imagetools create \
+              --tag "ghcr.io/civfix/$image:$TAG" \
+              --tag "ghcr.io/civfix/$image:prod" \
+              "ghcr.io/civfix/$image@$digest"
+            echo "| \`ghcr.io/civfix/$image\` | \`$digest\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
   deploy:
     name: ssh deploy + availability assertion
+    needs: promote
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # No checkout: the VPS pulls the code itself; this job only needs to SSH in.
