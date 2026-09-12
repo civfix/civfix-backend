@@ -25,6 +25,7 @@ interface Harness {
   signals: string[]
   audits: string[]
   notifications: { userId: string; title: string }[]
+  bumped: string[]
 }
 
 function build(): Harness {
@@ -33,6 +34,7 @@ function build(): Harness {
   const signals: string[] = []
   const audits: string[] = []
   const notifications: { userId: string; title: string }[] = []
+  const bumped: string[] = []
   const service = makeRegistrationService({
     repo,
     tokens,
@@ -58,8 +60,14 @@ function build(): Harness {
       audits.push(input.action)
       return Promise.resolve()
     },
+    insightsInvalidator: {
+      bumpInsightsGeneration: (cleanupId) => {
+        bumped.push(cleanupId)
+        return Promise.resolve()
+      },
+    },
   })
-  return { repo, service, signals, audits, notifications }
+  return { repo, service, signals, audits, notifications, bumped }
 }
 
 function request(over: Partial<RegisterForEventRequest> = {}): RegisterForEventRequest {
@@ -361,6 +369,17 @@ describe("registration service", () => {
     expect(walkupIdempotencyKey(OTHER, "Ada", 2, NOW)).toBe(
       walkupIdempotencyKey(OTHER, "ada", 2, new Date(NOW.getTime() + 500)),
     )
+  })
+
+  it("bumps the insights generation for a walk-up and not for a refused one", async () => {
+    h.repo.seedTicketType({ cleanupId: EVENT, capacity: 10, maxPartySize: 4 })
+    await h.service.walkup({ id: EVENT, name: "Ada", partySize: 2, checkInNow: true }, OTHER)
+    expect(h.bumped).toEqual([EVENT])
+
+    const full = build()
+    full.repo.seedTicketType({ cleanupId: EVENT, capacity: 0 })
+    await full.service.walkup({ id: EVENT, name: "Ada", partySize: 1, checkInNow: false }, OTHER)
+    expect(full.bumped).toEqual([])
   })
 
   it("leaves no guest row behind when a walk-up is refused", async () => {

@@ -6,6 +6,7 @@ import {
   MAX_INSIGHTS_TREND_DAYS,
   type ArrivalOffsetBucket,
   type EventInsights,
+  type EventInsightsClock,
   type EventInsightsMoney,
   type EventInsightsReturning,
   type EventPhase,
@@ -93,17 +94,26 @@ function arrivalBuckets(
 ): ArrivalOffsetBucket[] {
   const byOffset = new Map<number, number>()
   for (const bucket of arrivals) {
-    const raw = Math.round((bucket.at.getTime() - startsAt.getTime()) / 60_000)
-    const offsetMin = Math.min(
-      Math.max(raw, INSIGHTS_ARRIVAL_MIN_OFFSET_MIN),
-      INSIGHTS_ARRIVAL_MAX_OFFSET_MIN,
-    )
+    const offsetMin = Math.round((bucket.at.getTime() - startsAt.getTime()) / 60_000)
+    if (offsetMin < INSIGHTS_ARRIVAL_MIN_OFFSET_MIN) continue
+    if (offsetMin > INSIGHTS_ARRIVAL_MAX_OFFSET_MIN) continue
     byOffset.set(offsetMin, (byOffset.get(offsetMin) ?? 0) + bucket.count)
   }
   return [...byOffset]
     .sort((a, b) => a[0] - b[0])
     .slice(0, MAX_INSIGHTS_ARRIVAL_BUCKETS)
     .map(([offsetMin, seats]) => ({ offsetMin, seats }))
+}
+
+function clockOf(clock: EventClockRecord): EventInsightsClock {
+  return {
+    status: clock.status,
+    startsAt: clock.scheduledAt.toISOString(),
+    endsAt: clock.endsAt?.toISOString() ?? null,
+    completedAt: clock.completedAt?.toISOString() ?? null,
+    registrationClosesAt: clock.registrationClosesAt?.toISOString() ?? null,
+    timezone: clock.timezone ?? "UTC",
+  }
 }
 
 function ticketTypes(counters: CheckinCountersRecord): InsightsTicketType[] {
@@ -120,6 +130,21 @@ function ticketTypes(counters: CheckinCountersRecord): InsightsTicketType[] {
 export function makeInsightsService(deps: InsightsServiceDeps): InsightsService {
   const now = deps.now ?? (() => new Date())
 
+  async function returningOf(
+    cleanupId: string,
+    viewer: InsightsViewer,
+    phase: EventPhase,
+  ): Promise<EventInsightsReturning | null> {
+    if (phase !== "ended") return null
+    const hostedEventIds = await deps.analytics.hostedEventIds(
+      viewer.userId,
+      null,
+      INSIGHTS_PORTFOLIO_EVENT_LIMIT,
+    )
+    if (hostedEventIds.length < INSIGHTS_RETURNING_MIN_EVENTS) return null
+    return deps.analytics.returningAttendees(cleanupId, hostedEventIds)
+  }
+
   async function compute(
     cleanupId: string,
     viewer: InsightsViewer,
@@ -127,20 +152,15 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
     phase: EventPhase,
     at: Date,
   ): Promise<EventInsights> {
-    const [counters, trend, bySource, broadcasts, hours, hostedEventIds, money] = await Promise.all([
+    const [counters, trend, bySource, broadcasts, hours, returning, money] = await Promise.all([
       deps.registrations.checkinCounters(cleanupId),
       deps.analytics.seatTrend(cleanupId, clock.timezone ?? "UTC"),
       deps.analytics.registrationsBySource(cleanupId),
       deps.analytics.broadcastsForEvent(cleanupId, MAX_INSIGHTS_BROADCASTS),
       deps.analytics.eventHoursTotals(cleanupId),
-      deps.analytics.hostedEventIds(viewer.userId, null, INSIGHTS_PORTFOLIO_EVENT_LIMIT),
+      returningOf(cleanupId, viewer, phase),
       viewer.canViewDonations ? deps.donations.eventTotals(cleanupId) : Promise.resolve(null),
     ])
-
-    const returning: EventInsightsReturning | null =
-      hostedEventIds.length < INSIGHTS_RETURNING_MIN_EVENTS
-        ? null
-        : await deps.analytics.returningAttendees(cleanupId, hostedEventIds)
 
     const coarsened = at.getTime() - endOf(clock) > CHECKIN_COARSEN_DAYS * DAY_MS
 
@@ -174,14 +194,7 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
     return {
       generatedAt: at.toISOString(),
       phase,
-      clock: {
-        status: clock.status,
-        startsAt: clock.scheduledAt.toISOString(),
-        endsAt: clock.endsAt?.toISOString() ?? null,
-        completedAt: clock.completedAt?.toISOString() ?? null,
-        registrationClosesAt: clock.registrationClosesAt?.toISOString() ?? null,
-        timezone: clock.timezone ?? "UTC",
-      },
+      clock: clockOf(clock),
       seats: {
         registered: counters.registered,
         capacity: counters.capacity,
@@ -220,16 +233,19 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
         },
         at.getTime(),
       )
-      return deps.cache.getOrSet(
+      const generation = await deps.cache.generationOf(cleanupId)
+      const rollups = await deps.cache.getOrSet(
         hostAnalyticsCacheKey({
           endpoint: "insights",
           scope: cleanupId,
-          range: "event",
+          range: phase === "ended" ? "event:ended" : "event",
           viewerScope: `${viewer.viewerScope}:${viewer.userId}`,
+          generation,
         }),
         () => compute(cleanupId, viewer, clock, phase, at),
         phase === "live" ? INSIGHTS_LIVE_CACHE_TTL_SEC : INSIGHTS_CACHE_TTL_SEC,
       )
+      return { ...rollups, phase, clock: clockOf(clock) }
     },
   }
 }

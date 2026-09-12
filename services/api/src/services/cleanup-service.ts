@@ -66,6 +66,7 @@ import {
 } from "./host/event-fields.js"
 import { assertSlugAllowed } from "./host/slugs.js"
 import { NULL_HOST_AUDIT_SINK, type HostAuditSink } from "./host/host-audit.js"
+import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import {
   MIN_EVENT_DURATION_MS,
   SCHEDULE_MAX_BACKDATE_MS,
@@ -229,6 +230,7 @@ export interface CleanupServiceDeps {
   attendeeNotifier?: { eventCancelled(cleanupId: string, reason: string | null): Promise<unknown> }
   counters?: CounterStore
   jobs?: Jobs
+  insightsInvalidator?: InsightsInvalidator
   logger?: { warn(obj: unknown, msg?: string): void; error(obj: unknown, msg?: string): void }
   newId?: () => string
   enrichDTOs?: (dtos: CleanupDTO[], viewerUserId: string | null) => Promise<CleanupDTO[]>
@@ -1097,6 +1099,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         throw AppError.conflict("A completed event can't be cancelled.")
       }
 
+      await deps.insightsInvalidator?.bumpInsightsGeneration(id)
+
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
       if (outcome === "cancelled") await dispatchCancelFanout(record, cleanReason, requesterUserId)
@@ -1141,6 +1145,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
           `This event can be marked complete ${MIN_EVENT_DURATION_MS / 60_000} minutes after its start time.`,
         )
       }
+      await deps.insightsInvalidator?.bumpInsightsGeneration(id)
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()

@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto"
 import { describe, expect, it } from "vitest"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
-import { makeHostAnalyticsCache } from "../../src/services/host/host-analytics-cache.js"
+import {
+  makeHostAnalyticsCache,
+  type HostAnalyticsCache,
+} from "../../src/services/host/host-analytics-cache.js"
 import { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
 import { makeMemoryDonationRepository } from "../../src/services/payments/donation-repository.memory.js"
 import type { DonationListRow } from "../../src/services/payments/donation-repository.drizzle.js"
@@ -25,6 +28,7 @@ const HOST = "00000000-0000-0000-0000-0000000000aa"
 const STAFF = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 const STARTS_AT = new Date("2026-03-07T17:00:00.000Z")
 const LIVE_NOW = new Date("2026-03-07T18:00:00.000Z")
+const ENDED_NOW = new Date(STARTS_AT.getTime() + 30 * 3_600_000)
 
 const tokens = makeTicketTokenSigner("host-insights-test-secret-long-enough")
 
@@ -138,25 +142,28 @@ interface Harness {
   service: InsightsService
   registrations: InMemoryHostRegistrationRepository
   cache: RecordingCache
+  analyticsCache: HostAnalyticsCache
 }
 
 function build(
   overrides: Partial<AnalyticsRepository> = {},
   now: Date = LIVE_NOW,
   donations: DonationListRow[] = [DONATION],
+  shared?: RecordingCache,
 ): Harness {
   const registrations = new InMemoryHostRegistrationRepository()
   registrations.tokenHashResolver = (seatId) => tokens.hashFor(seatId)
   registrations.seedEvent({ cleanupId: EVENT, scheduledAt: STARTS_AT })
-  const cache = new RecordingCache(() => now.getTime())
+  const cache = shared ?? new RecordingCache(() => now.getTime())
+  const analyticsCache = makeHostAnalyticsCache({ cache, ttlSeconds: 120 })
   const service = makeInsightsService({
     analytics: analyticsRepo(overrides),
     registrations,
     donations: makeMemoryDonationRepository({ donations }),
-    cache: makeHostAnalyticsCache({ cache, ttlSeconds: 120 }),
+    cache: analyticsCache,
     now: () => now,
   })
-  return { service, registrations, cache }
+  return { service, registrations, cache, analyticsCache }
 }
 
 async function register(
@@ -265,9 +272,9 @@ describe("event insights", () => {
     expect(payload.arrivals).toEqual([{ offsetMin: 15, seats: 2 }])
   })
 
-  it("clamps an arrival far outside the window into the edge bucket", async () => {
+  it("drops an arrival that falls outside the offset window instead of clamping it", async () => {
     const h = build()
-    const seatIds = await register(h.registrations, 1)
+    const seatIds = await register(h.registrations, 2)
     await h.registrations.checkInSeat({
       cleanupId: EVENT,
       seatId: seatIds[0] as string,
@@ -275,8 +282,29 @@ describe("event insights", () => {
       method: "manual",
       now: new Date(STARTS_AT.getTime() + 10 * 3_600_000),
     })
+    await h.registrations.checkInSeat({
+      cleanupId: EVENT,
+      seatId: seatIds[1] as string,
+      actorId: STAFF,
+      method: "manual",
+      now: new Date(STARTS_AT.getTime() + 20 * 60_000),
+    })
     const payload = await h.service.insights(EVENT, VIEWER)
-    expect(payload.arrivals).toEqual([{ offsetMin: 240, seats: 1 }])
+    expect(payload.arrivals).toEqual([{ offsetMin: 15, seats: 1 }])
+  })
+
+  it("drops an arrival recorded long before the doors open", async () => {
+    const h = build()
+    const seatIds = await register(h.registrations, 1)
+    await h.registrations.checkInSeat({
+      cleanupId: EVENT,
+      seatId: seatIds[0] as string,
+      actorId: STAFF,
+      method: "manual",
+      now: new Date(STARTS_AT.getTime() - 5 * 3_600_000),
+    })
+    const payload = await h.service.insights(EVENT, VIEWER)
+    expect(payload.arrivals).toEqual([])
   })
 
   it("returns no arrivals once check-in times have been coarsened", async () => {
@@ -339,29 +367,44 @@ describe("event insights", () => {
   })
 
   it("reports no returning volunteers until the host has a second event", async () => {
-    const h = build({ hostedEventIds: () => Promise.resolve([EVENT]) })
+    const h = build({ hostedEventIds: () => Promise.resolve([EVENT]) }, ENDED_NOW)
     const payload = await h.service.insights(EVENT, VIEWER)
     expect(payload.returning).toBeNull()
   })
 
   it("reports returning volunteers once the host has more than one event", async () => {
-    const h = build()
+    const h = build({}, ENDED_NOW)
     const payload = await h.service.insights(EVENT, VIEWER)
     expect(payload.returning).toEqual({ seats: 3, ofRegistered: 8 })
+  })
+
+  it("leaves the host portfolio unread until the event has ended", async () => {
+    let portfolioReads = 0
+    const hostedEventIds = (): Promise<string[]> => {
+      portfolioReads += 1
+      return Promise.resolve([EVENT, OTHER_EVENT])
+    }
+    const live = build({ hostedEventIds })
+    expect((await live.service.insights(EVENT, VIEWER)).returning).toBeNull()
+    expect(portfolioReads).toBe(0)
+
+    const ended = build({ hostedEventIds }, ENDED_NOW)
+    expect((await ended.service.insights(EVENT, VIEWER)).returning).not.toBeNull()
+    expect(portfolioReads).toBe(1)
   })
 
   it("caches a live event for seconds and a settled one for minutes", async () => {
     const live = build()
     await live.service.insights(EVENT, VIEWER)
-    expect(live.cache.ttls.get(`hostan:v1:insights:${EVENT}:event:organizer:none:${HOST}`)).toBe(
+    expect(live.cache.ttls.get(`hostan:v1:insights:${EVENT}:event:organizer:none:${HOST}:g0`)).toBe(
       INSIGHTS_LIVE_CACHE_TTL_SEC,
     )
 
     const ended = build({}, new Date(STARTS_AT.getTime() + 30 * 3_600_000))
     await ended.service.insights(EVENT, VIEWER)
-    expect(ended.cache.ttls.get(`hostan:v1:insights:${EVENT}:event:organizer:none:${HOST}`)).toBe(
-      INSIGHTS_CACHE_TTL_SEC,
-    )
+    expect(
+      ended.cache.ttls.get(`hostan:v1:insights:${EVENT}:event:ended:organizer:none:${HOST}:g0`),
+    ).toBe(INSIGHTS_CACHE_TTL_SEC)
   })
 
   it("keeps one viewer's payload out of another viewer's cache entry", async () => {
@@ -420,5 +463,70 @@ describe("event insights", () => {
       { source: "self", seats: 6 },
       { source: "walkup", seats: 2 },
     ])
+  })
+  it("serves the cached rollups but reports the phase and clock live", async () => {
+    const shared = new RecordingCache(() => LIVE_NOW.getTime())
+    const live = build({}, LIVE_NOW, [DONATION], shared)
+    await register(live.registrations, 2)
+    const first = await live.service.insights(EVENT, VIEWER)
+    expect(first.phase).toBe("live")
+    expect(first.seats.registered).toBe(2)
+
+    const cancelled = build(
+      { eventClock: () => Promise.resolve(clockRecord({ status: "cancelled" })) },
+      LIVE_NOW,
+      [DONATION],
+      shared,
+    )
+    const second = await cancelled.service.insights(EVENT, VIEWER)
+    expect(second.seats.registered).toBe(2)
+    expect(second.phase).toBe("cancelled")
+    expect(second.clock.status).toBe("cancelled")
+  })
+
+  it("recomputes once the event generation has been bumped", async () => {
+    const shared = new RecordingCache(() => LIVE_NOW.getTime())
+    const first = build({}, LIVE_NOW, [DONATION], shared)
+    await register(first.registrations, 2)
+    expect((await first.service.insights(EVENT, VIEWER)).seats.registered).toBe(2)
+
+    const stale = build({}, LIVE_NOW, [DONATION], shared)
+    expect((await stale.service.insights(EVENT, VIEWER)).seats.registered).toBe(2)
+
+    await first.analyticsCache.bumpInsightsGeneration(EVENT)
+    const fresh = build({}, LIVE_NOW, [DONATION], shared)
+    expect((await fresh.service.insights(EVENT, VIEWER)).seats.registered).toBe(0)
+  })
+
+  it("keys the cached payload by the event generation", async () => {
+    const h = build()
+    await h.analyticsCache.bumpInsightsGeneration(EVENT)
+    await h.service.insights(EVENT, VIEWER)
+    expect([...h.cache.ttls.keys()]).toContain(
+      `hostan:v1:insights:${EVENT}:event:organizer:none:${HOST}:g1`,
+    )
+  })
+
+  it("leaves another event's generation alone when one event is bumped", async () => {
+    const shared = new RecordingCache(() => LIVE_NOW.getTime())
+    const first = build({}, LIVE_NOW, [DONATION], shared)
+    await register(first.registrations, 2)
+    await first.service.insights(EVENT, VIEWER)
+
+    await first.analyticsCache.bumpInsightsGeneration(OTHER_EVENT)
+    const after = build({}, LIVE_NOW, [DONATION], shared)
+    expect((await after.service.insights(EVENT, VIEWER)).seats.registered).toBe(2)
+  })
+  it("never serves a pre-ended payload once the event has ended", async () => {
+    const shared = new RecordingCache(() => ENDED_NOW.getTime())
+    const live = build({}, LIVE_NOW, [DONATION], shared)
+    await register(live.registrations, 2)
+    expect((await live.service.insights(EVENT, VIEWER)).returning).toBeNull()
+
+    const ended = build({}, ENDED_NOW, [DONATION], shared)
+    expect((await ended.service.insights(EVENT, VIEWER)).returning).toEqual({
+      seats: 3,
+      ofRegistered: 8,
+    })
   })
 })

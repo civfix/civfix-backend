@@ -30,6 +30,7 @@ import {
   toEventRegistrationDTO,
 } from "./registration-dto.js"
 import { enqueueWaitlistPromotion } from "./waitlist-promotion.js"
+import type { InsightsInvalidator } from "./host-analytics-cache.js"
 import { NO_AFFILIATIONS, withAffiliation, type AffiliationLoader } from "../affiliation.js"
 import type { TicketTokenSigner } from "./ticket-token.js"
 import type {
@@ -93,6 +94,7 @@ export interface RegistrationServiceDeps {
   userChannel?: UserChannel
   counters?: CounterStore
   audit?: RegistrationAudit
+  insightsInvalidator?: InsightsInvalidator
   teamUserIds?: (cleanupId: string) => Promise<string[]>
   affiliations?: AffiliationLoader
   now?: () => Date
@@ -615,6 +617,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
         target: `registration:${registration.id}`,
         meta: { cleanupId: input.id, partySize: input.partySize },
       })
+      await deps.insightsInvalidator?.bumpInsightsGeneration(input.id)
       await signalTeam(input.id)
 
       const reloaded = await deps.repo.findRegistration(input.id, registration.id)

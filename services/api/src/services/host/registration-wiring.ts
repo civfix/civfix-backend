@@ -6,6 +6,7 @@ import { writeAudit } from "../admin/audit.js"
 import type { HostCapability } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
 import { hostStandingOf } from "./host-standing.js"
+import { makeInsightsGeneration, type InsightsInvalidator } from "./host-analytics-cache.js"
 import { requireCapability, resolveVisibleStanding } from "./authz.js"
 import { makeCheckinService, type CheckinService } from "./checkin-service.js"
 import { makePageService, type PageService } from "./page-service.js"
@@ -135,6 +136,13 @@ export function makeContainerRegistrationServices(
 
   const notifier = lazyNotifier(container, logger)
   const counters = overrides?.counters ?? container.getCounterStore()
+  const insightsInvalidator: InsightsInvalidator | undefined =
+    sql === undefined
+      ? undefined
+      : makeInsightsGeneration({
+          cache: container.getCache(),
+          ...(logger !== undefined ? { logger } : {}),
+        })
 
   const registrations = makeRegistrationService({
     repo,
@@ -144,6 +152,7 @@ export function makeContainerRegistrationServices(
     userChannel: container.userChannel,
     counters,
     ...(audit !== undefined ? { audit } : {}),
+    ...(insightsInvalidator !== undefined ? { insightsInvalidator } : {}),
     ...(teamUserIds !== undefined ? { teamUserIds } : {}),
     ...(sql === undefined ? {} : { affiliations: container.getAffiliationLoader() }),
     ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
@@ -178,6 +187,7 @@ export function makeContainerRegistrationServices(
       repo,
       tokens,
       registrations,
+      ...(insightsInvalidator !== undefined ? { insightsInvalidator } : {}),
       ...(container.env.PUBLIC_API_URL.length > 0
         ? { publicApiUrl: container.env.PUBLIC_API_URL }
         : {}),

@@ -42,6 +42,7 @@ import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.dri
 import { makeHostAuditSink } from "../services/host/host-audit.js"
 import { enrichCleanupDTOs } from "../services/cleanup-enrichment.js"
 import { makeCommsRuntime } from "../services/host/comms-wiring.js"
+import { makeInsightsGeneration } from "../services/host/host-analytics-cache.js"
 import { makeEventMediaPresigner } from "../services/host/event-media.js"
 import {
   SCHEDULE_MAX_AHEAD_MS,
@@ -205,6 +206,10 @@ export function makeContainerCleanupService(
           affiliations: container.getAffiliationLoader(),
           notifier: makeRouteNotificationService(container, app.log),
           attendeeNotifier: makeCommsRuntime(container, app.log).lanes,
+          insightsInvalidator: makeInsightsGeneration({
+            cache: container.getCache(),
+            logger: app.log,
+          }),
           counters: container.getCounterStore(),
           jobs: container.jobs,
           presignEventMedia: makeEventMediaPresigner(container.storage),
