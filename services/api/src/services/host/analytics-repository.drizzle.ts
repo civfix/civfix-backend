@@ -353,12 +353,19 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           SELECT (cancelled_at AT TIME ZONE ${timezone})::date AS at, 0 AS added, party_size AS removed
             FROM cleanup_registrations
            WHERE cleanup_id = ${cleanupId} AND status = 'cancelled' AND cancelled_at IS NOT NULL
+        ),
+        days AS (
+          SELECT at, sum(added) AS added, sum(removed) AS removed
+            FROM moves
+           GROUP BY at
+           ORDER BY at DESC
+           LIMIT ${INSIGHTS_TREND_LIMIT}
         )
         SELECT to_char(at, 'YYYY-MM-DD') AS day,
-               sum(added)::text AS added,
-               sum(removed)::text AS removed
-          FROM moves
-         GROUP BY 1 ORDER BY 1 LIMIT ${INSIGHTS_TREND_LIMIT}`
+               added::text AS added,
+               removed::text AS removed
+          FROM days
+         ORDER BY at ASC`
       return rows.map((row) => ({
         day: row.day,
         added: Number(row.added),
@@ -371,7 +378,9 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
         SELECT source, COALESCE(sum(party_size), 0)::text AS seats
           FROM cleanup_registrations
          WHERE cleanup_id = ${cleanupId} AND status = 'registered'
-         GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT ${INSIGHTS_SOURCE_LIMIT}`
+         GROUP BY source
+         ORDER BY COALESCE(sum(party_size), 0) DESC, source ASC
+         LIMIT ${INSIGHTS_SOURCE_LIMIT}`
       return rows.map((row) => ({ source: row.source, seats: Number(row.seats) }))
     },
 
@@ -419,14 +428,20 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     async returningAttendees(cleanupId, hostedEventIds) {
       if (hostedEventIds.length === 0) return { seats: 0, ofRegistered: 0 }
       const rows = await sql<{ seats: string; of_registered: string }[]>`
-        WITH roster AS (
+        WITH prior AS (
+          SELECT c.id
+            FROM cleanups c
+           WHERE c.id = ANY(${[...hostedEventIds]}::uuid[])
+             AND c.id <> ${cleanupId}
+             AND c.scheduled_at < (SELECT s.scheduled_at FROM cleanups s WHERE s.id = ${cleanupId})
+        ),
+        roster AS (
           SELECT r.party_size,
                  (r.user_id IS NOT NULL AND EXISTS (
                     SELECT 1 FROM cleanup_registrations p
                      WHERE p.user_id = r.user_id
-                       AND p.cleanup_id <> ${cleanupId}
                        AND p.status = 'registered'
-                       AND p.cleanup_id = ANY(${[...hostedEventIds]}::uuid[])
+                       AND p.cleanup_id IN (SELECT id FROM prior)
                  )) AS returning
             FROM cleanup_registrations r
            WHERE r.cleanup_id = ${cleanupId} AND r.status = 'registered'
