@@ -50,11 +50,20 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# One staging deploy at a time; never cancel an in-flight deploy.
-concurrency:
-  group: deploy-staging
-  cancel-in-progress: false
+permissions:
+  contents: read
 
+# NOTE THE SCOPE: the serialization is on the `deploy` JOB, not on the workflow.
+#
+# It has to be. Workflow-level concurrency queues the whole RUN, and a queued run starts none of its
+# jobs — including its image build. So while one box was waiting for the image of a newer commit (it
+# deploys the branch tip, not the commit that triggered the run), the run that would have built that
+# image could not start until the waiting deploy finished. The wait could never succeed, and every
+# back-to-back merge burned the full retry budget and then failed.
+#
+# Scoped to the job, a second merge's `images` job builds immediately and in parallel, the first box's
+# bounded wait finds the image and completes, and the second deploy then runs on its own. Only the boxes
+# are serialized, which is the only thing that actually needs to be.
 jobs:
   # The release artifacts. `deploy` needs this: the box pulls what this job pushed.
   images:
@@ -69,6 +78,9 @@ jobs:
     needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
     # No checkout: the VPS pulls the code itself; this job only needs to SSH in.
     env:
       DEPLOY_HOST: 193.122.142.107

@@ -70,7 +70,12 @@ on:
     types: [released]
   workflow_dispatch:
 
-# One production deploy at a time; never cancel an in-flight deploy.
+permissions:
+  contents: read
+
+# One production deploy at a time; never cancel an in-flight deploy. Scoped to the whole run here, unlike
+# the staging workflow: nothing in this run BUILDS anything (promote only re-tags existing digests), so
+# queuing a run cannot starve a job another run is waiting on.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -108,12 +113,16 @@ jobs:
           # independently, so if the two rules disagree this job blesses one commit and the box deploys
           # another.
           #
-          # Filter BEFORE sorting, not after. git's -v:refname ranks `v2.0.0-beta.1` ABOVE `v2.0.0` (the
-          # opposite of semver), so sorting first and filtering later picks the prerelease. And the glob
-          # alone is not a release rule: `v*` also matches `vtest` and `v1.2`, either of which would
-          # outrank every real release and wedge this job permanently.
+          # git sorts the whole `v*` set and the grep filters afterwards; that is sound because
+          # filtering preserves relative order, so the first surviving line is still the highest. The
+          # regex is what excludes prereleases — git's -v:refname ranks `v2.0.0-beta.1` ABOVE `v2.0.0`,
+          # the opposite of semver. The glob alone is not a release rule either: `v*` also matches
+          # `vtest` and `v1.2`, which would outrank every real release and wedge this job permanently.
           RELEASE_RE='^v[0-9]+\.[0-9]+\.[0-9]+$'
-          newest="$(git tag --list 'v*' --sort=-v:refname --merged origin/main | grep -E "$RELEASE_RE" | head -n 1)"
+          # `|| true`: under `set -euo pipefail` a grep that matches nothing exits 1 and errexit kills
+          # the step AT THIS ASSIGNMENT, making the ::error:: annotation below unreachable — the job
+          # would fail with a bare exit code and no explanation. The guard reports it instead.
+          newest="$(git tag --list 'v*' --sort=-v:refname --merged origin/main | grep -E "$RELEASE_RE" | head -n 1)" || true
           [ -n "$newest" ] || { echo "::error::no release tag matching $RELEASE_RE is merged into origin/main." >&2; exit 1; }
 
           tag="${EVENT_TAG:-$newest}"
