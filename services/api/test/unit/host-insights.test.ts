@@ -317,6 +317,21 @@ describe("event insights", () => {
     })
   })
 
+  it("nets below zero once a donation has been fully refunded", async () => {
+    const h = build({}, LIVE_NOW, [
+      { ...DONATION, status: "refunded", refundedTotalMinor: 5000, feeRefundedMinor: 100 },
+    ])
+    const payload = await h.service.insights(EVENT, VIEWER)
+    expect(payload.money).toEqual({
+      currency: "USD",
+      donationCount: 1,
+      grossMinor: 5000,
+      netMinor: -275,
+      refundedMinor: 5000,
+      lastChargedAt: "2026-03-06T12:00:00.000Z",
+    })
+  })
+
   it("leaves donations off an event that has none", async () => {
     const h = build({}, LIVE_NOW, [{ ...DONATION, eventId: OTHER_EVENT }])
     const payload = await h.service.insights(EVENT, VIEWER)

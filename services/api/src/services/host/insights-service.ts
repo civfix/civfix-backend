@@ -166,7 +166,7 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
             currency: "USD",
             donationCount: money.donationCount,
             grossMinor: money.grossMinor,
-            netMinor: Math.max(money.netMinor, 0),
+            netMinor: money.netMinor,
             refundedMinor: money.refundedMinor,
             lastChargedAt: money.lastChargedAt?.toISOString() ?? null,
           }
