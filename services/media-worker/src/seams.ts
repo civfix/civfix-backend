@@ -52,7 +52,7 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
   await initErrorReporting({
     ...(source.GLITCHTIP_DSN ? { dsn: source.GLITCHTIP_DSN } : {}),
     environment: source.NODE_ENV ?? "development",
-    release: `media-worker@${process.env.SERVICE_VERSION || "0.0.0"}`,
+    release: `media-worker@${source.SERVICE_VERSION ?? "0.0.0"}`,
   })
 
   const localStorageDir = (source.LOCAL_STORAGE_DIR ?? "").trim()

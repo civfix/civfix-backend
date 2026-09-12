@@ -41,7 +41,7 @@ name: Deploy (staging)
 #   STAGING_DEPLOY_SSH_KEY  Private half of the dedicated staging CI deploy key (ed25519). Its public half
 #                           is the `deployer` user on the staging VPS, whose authorized_keys forces this
 #                           key to run ONLY `sudo -n -u civfix -H /opt/civfix/infra/ops/deploy.sh`
-#                           (sudoers-scoped). A leaked key can at most trigger a staging deploy of `dev`.
+#                           (sudoers-scoped). A leaked key can at most trigger a staging deploy of `main`.
 #
 # The staging VPS IP and its SSH host key are pinned below (neither is secret).
 
@@ -142,7 +142,7 @@ jobs:
             done ) &
           PROBE=$!
 
-          # No remote command is passed: the deploy key's forced command runs deploy.sh (CIVFIX_REF=dev).
+          # No remote command is passed: the deploy key's forced command runs deploy.sh (CIVFIX_REF=main).
           # Its stdout/stderr stream here and its exit code becomes `rc`, which the assertion step
           # turns into a job failure. Keepalives keep the connection up during the (quiet) build.
           if ssh -i ~/.ssh/deploy_key \

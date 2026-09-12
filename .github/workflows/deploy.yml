@@ -65,7 +65,9 @@ name: Deploy (production)
 
 on:
   release:
-    types: [published]
+    # `released`, NOT `published`: `published` also fires for a PRERELEASE, so cutting v1.3.0-rc.1 to
+    # rehearse would deploy production. The regex guard below is the second, independent line of defence.
+    types: [released]
   workflow_dispatch:
 
 # One production deploy at a time; never cancel an in-flight deploy.
@@ -101,20 +103,26 @@ jobs:
           # compare against.
           git fetch --quiet --force --tags origin '+refs/heads/main:refs/remotes/origin/main'
 
-          # The same selection the box makes (civfix-infra env/prod.sh + ops/deploy.sh): highest `v*` tag
-          # merged into main, semver-sorted. -v:refname is load-bearing — lexically, v1.9.0 > v1.10.0.
-          newest="$(git tag --list 'v*' --sort=-v:refname --merged origin/main | head -n 1)"
-          [ -n "$newest" ] || { echo "::error::no v* tag is merged into origin/main." >&2; exit 1; }
+          # THE SAME SELECTION THE BOX MAKES — civfix-infra env/prod.sh CIVFIX_RELEASE_TAG_REGEX and
+          # ops/deploy.sh. Keep this regex byte-identical to that one: the box resolves the release
+          # independently, so if the two rules disagree this job blesses one commit and the box deploys
+          # another.
+          #
+          # Filter BEFORE sorting, not after. git's -v:refname ranks `v2.0.0-beta.1` ABOVE `v2.0.0` (the
+          # opposite of semver), so sorting first and filtering later picks the prerelease. And the glob
+          # alone is not a release rule: `v*` also matches `vtest` and `v1.2`, either of which would
+          # outrank every real release and wedge this job permanently.
+          RELEASE_RE='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          newest="$(git tag --list 'v*' --sort=-v:refname --merged origin/main | grep -E "$RELEASE_RE" | head -n 1)"
+          [ -n "$newest" ] || { echo "::error::no release tag matching $RELEASE_RE is merged into origin/main." >&2; exit 1; }
 
           tag="${EVENT_TAG:-$newest}"
 
-          case "$tag" in
-            v*) ;;
-            *)
-              echo "::error::release tag '$tag' is not a v* release tag; refusing to deploy production." >&2
-              exit 1
-              ;;
-          esac
+          if ! printf '%s' "$tag" | grep -qE "$RELEASE_RE"; then
+            echo "::error::'$tag' is not a vMAJOR.MINOR.PATCH release tag; refusing to deploy production." >&2
+            echo "::error::Prereleases are excluded by design — they never reach prod." >&2
+            exit 1
+          fi
 
           if ! git merge-base --is-ancestor "$tag" origin/main; then
             echo "::error::tag '$tag' is not merged into main. Production only runs code that went through" >&2
@@ -168,6 +176,10 @@ jobs:
               exit 1
             fi
             echo "$image: $digest"
+            # `:$TAG` is the durable, immutable record of this release. `:prod` is a MOVING tag and is
+            # for humans reading the package list only — nothing consumes it: the box pulls
+            # `sha-<40>` and immediately re-pins to the digest (civfix-infra/ops/deploy.sh). Never make
+            # anything depend on `:prod`.
             docker buildx imagetools create \
               --tag "ghcr.io/civfix/$image:$TAG" \
               --tag "ghcr.io/civfix/$image:prod" \
