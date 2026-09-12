@@ -96,7 +96,10 @@ jobs:
           EVENT_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          git fetch --quiet --prune --prune-tags --tags --force origin '+refs/heads/main:refs/remotes/origin/main'
+          # --force so a moved tag is picked up rather than silently kept at its old commit; the
+          # explicit refspec because a release event checks out the TAG, leaving no origin/main to
+          # compare against.
+          git fetch --quiet --force --tags origin '+refs/heads/main:refs/remotes/origin/main'
 
           # The same selection the box makes (civfix-infra env/prod.sh + ops/deploy.sh): highest `v*` tag
           # merged into main, semver-sorted. -v:refname is load-bearing — lexically, v1.9.0 > v1.10.0.
