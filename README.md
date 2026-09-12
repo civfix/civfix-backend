@@ -222,19 +222,30 @@ environments: the box picks its environment from a host marker file (`/etc/civfi
 `env/prod.sh` + `secrets/prod/` on the production box (`ssh civfix`) and `env/staging.sh` +
 `secrets/staging/` on the staging box (`ssh civfix-dev`). There is no per-environment infra branch.
 
-This repo provides only the two service **Dockerfiles** (`services/{api,media-worker}/Dockerfile`); the
-infra compose sets each image's `build.context` to a checkout of this repo and builds the images ON the
-VPS.
+This repo provides the two service **Dockerfiles** (`services/{api,media-worker}/Dockerfile`) AND the
+workflow that builds them. The images are built once per commit by
+`.github/workflows/build-images.yml` — natively on arm64, to match the Oracle Ampere boxes — and pushed
+to `ghcr.io/civfix/{api,media-worker}` as `sha-<commit>`. The VPS pulls them; it no longer compiles.
+The infra compose still carries each image's `build.context`, which is the escape hatch
+(`CIVFIX_ALLOW_LOCAL_BUILD=1`) rather than the normal path.
 
 Build contexts are the REPO ROOT (the services are pnpm-workspace packages that need the root
 manifests + lockfile + the root `.npmrc`, so the in-image `pnpm install` resolves `@civfix/shared`
 from `repo.civfix.org`); each service's `Dockerfile` header documents this.
 
-In normal operation the deploy is CI-driven: a push to `main` runs `.github/workflows/deploy.yml`
-(prod), a push to `dev` runs `.github/workflows/deploy-staging.yml` (staging), and both SSH in under a
-forced command that runs the same on-box script. The manual equivalent, for infra-only changes and
-recovery, is a single command on either box (it pulls civfix-infra + this repo, decrypts secrets,
-builds, and brings the stack up — see civfix-infra/README.md):
+In normal operation the deploy is CI-driven, and **staging and production are the same artifact**
+(issue [civfix/issue-tracker#108](https://github.com/civfix/issue-tracker/issues/108)):
+
+| | trigger | workflow | what runs |
+| --- | --- | --- | --- |
+| staging | push to `main` | `deploy-staging.yml` | builds + pushes the release images, then deploys them |
+| production | a published `v*` release | `deploy.yml` | re-tags **those same digests** and deploys them |
+
+There is no `dev` branch: feature branches PR into `main`, `main` is the staging lane, and cutting a
+GitHub release is the production deploy. Both workflows SSH in under a forced command that runs the same
+on-box script. The manual equivalent, for infra-only changes and recovery, is a single command on either
+box (it pulls civfix-infra + this repo, decrypts secrets, pulls the release images, and brings the stack
+up — see civfix-infra/README.md):
 
 ```
 sudo -u civfix /opt/civfix/infra/ops/deploy.sh

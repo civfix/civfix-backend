@@ -1,0 +1,158 @@
+name: Build release images
+
+# Builds the two artifacts a civfix-backend release consists of — the api and the media-worker — and
+# pushes them to GHCR. This is the ONLY place either image is built: the VPS deploy pulls what this
+# workflow produced (civfix-infra ops/deploy.sh) instead of rebuilding from source on the box, so
+# staging and production run byte-identical bytes rather than two builds of one commit.
+# Issue: https://github.com/civfix/issue-tracker/issues/108
+#
+# THIS WORKFLOW NEVER TRIGGERS ITSELF. It is `workflow_call` only (plus a manual dispatch), and
+# deploy-staging.yml calls it on every push to main. Giving it its own `push` trigger would race that
+# caller and build every commit twice.
+#
+# NATIVE ARM64, NOT QEMU. Both VPSes are Oracle Ampere (arm64) boxes. `ubuntu-24.04-arm` is a GitHub
+# larger runner (available on the Team plan, billed per-minute rather than from the free allotment) and
+# builds ~5-10x faster than cross-building an image with this much native compilation in it — the
+# media-worker alone pulls a static ffmpeg and builds sharp/libvips bindings. `platform` is an input so
+# a future amd64 box is a one-line change at the call site rather than a rewrite.
+#
+# TAGGING. The immutable tag is `sha-<full 40-char commit sha>`, and that shape is a CROSS-REPO CONTRACT:
+# civfix-infra's ops/deploy.sh reconstructs exactly this tag from the commit it checked out. Do not
+# shorten it, do not switch to a `metadata-action` tag scheme, and do not remove it — a deploy that
+# cannot find its own release image fails closed and refuses to deploy. `main` is a moving convenience
+# tag for humans; nothing reads it.
+#
+# Required: nothing. GITHUB_TOKEN with `packages: write` publishes to ghcr.io/civfix/*, and
+# @civfix/shared installs anonymously from the public-read registry via the committed .npmrc.
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: Target platform for the release images.
+        type: string
+        default: linux/arm64
+      runner:
+        description: Runner that matches `platform` (native build, no emulation).
+        type: string
+        default: ubuntu-24.04-arm
+    outputs:
+      api-digest:
+        description: Immutable digest of the api image this run pushed.
+        value: ${{ jobs.build.outputs.api-digest }}
+      media-worker-digest:
+        description: Immutable digest of the media-worker image this run pushed.
+        value: ${{ jobs.build.outputs.media-worker-digest }}
+      sha:
+        description: Commit the images were built from.
+        value: ${{ jobs.build.outputs.sha }}
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Target platform for the release images.
+        type: string
+        default: linux/arm64
+      runner:
+        description: Runner that matches `platform` (native build, no emulation).
+        type: string
+        default: ubuntu-24.04-arm
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-images-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: api + media-worker (${{ inputs.platform }})
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    outputs:
+      api-digest: ${{ steps.api.outputs.digest }}
+      media-worker-digest: ${{ steps.media-worker.outputs.digest }}
+      sha: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the runner really is the target architecture
+        # A native build silently becoming an emulated one (a mistyped runner label falling back to
+        # x86) would produce images the arm64 boxes cannot run, and the failure would not surface until
+        # a deploy on the VPS. Fail here instead.
+        env:
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          case "$PLATFORM:$arch" in
+            linux/arm64:aarch64 | linux/amd64:x86_64) ;;
+            *)
+              echo "::error::runner arch '$arch' does not match requested platform '$PLATFORM'." >&2
+              exit 1
+              ;;
+          esac
+          echo "native build: $PLATFORM on $arch"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Both images take the REPO ROOT as their build context: the services are pnpm workspace packages
+      # that need the root manifests, pnpm-lock.yaml, .npmrc and packages/ to resolve @civfix/shared.
+      # See the header of each Dockerfile.
+      - name: Build + push api
+        id: api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/api/Dockerfile
+          platforms: ${{ inputs.platform }}
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/civfix/api:sha-${{ github.sha }}
+            ghcr.io/civfix/api:main
+          build-args: |
+            SERVICE_VERSION=${{ github.sha }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+
+      - name: Build + push media-worker
+        id: media-worker
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/media-worker/Dockerfile
+          platforms: ${{ inputs.platform }}
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/civfix/media-worker:sha-${{ github.sha }}
+            ghcr.io/civfix/media-worker:main
+          build-args: |
+            SERVICE_VERSION=${{ github.sha }}
+          cache-from: type=gha,scope=media-worker
+          cache-to: type=gha,scope=media-worker,mode=max
+
+      - name: Summary
+        env:
+          API_DIGEST: ${{ steps.api.outputs.digest }}
+          WORKER_DIGEST: ${{ steps.media-worker.outputs.digest }}
+        run: |
+          {
+            echo "### Release images"
+            echo
+            echo "Commit \`${GITHUB_SHA}\`"
+            echo
+            echo "| image | digest |"
+            echo "| --- | --- |"
+            echo "| \`ghcr.io/civfix/api\` | \`${API_DIGEST}\` |"
+            echo "| \`ghcr.io/civfix/media-worker\` | \`${WORKER_DIGEST}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

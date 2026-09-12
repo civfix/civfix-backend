@@ -103,7 +103,11 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 
 # ----------------------------------------------------------------------------------------------------
 FROM base AS runtime
-ENV NODE_ENV=production
+# Same contract as the api image: the release identity is a property of the promoted artifact, not of the
+# deploy that placed it. Read by src/seams.ts as the GlitchTip `release`.
+ARG SERVICE_VERSION=0.0.0
+ENV NODE_ENV=production \
+    SERVICE_VERSION=${SERVICE_VERSION}
 WORKDIR /app
 RUN apt-get update \
  && apt-get install -y --no-install-recommends util-linux \

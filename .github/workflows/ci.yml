@@ -1,8 +1,10 @@
 name: CI
 
+# Every branch PRs into main — `dev` is gone (issue civfix/issue-tracker#108), so main is both the
+# staging lane and the only PR target.
 on:
   pull_request:
-    branches: [main, dev]
+    branches: [main]
 
 # Cancel superseded runs on the same ref.
 concurrency:
