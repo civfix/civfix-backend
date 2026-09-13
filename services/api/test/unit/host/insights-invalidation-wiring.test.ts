@@ -12,7 +12,13 @@ import {
 import {
   makeHostAnalyticsCache,
   makeInsightsGeneration,
+  type InsightsGeneration,
 } from "../../../src/services/host/host-analytics-cache.js"
+import {
+  makeCleanupService,
+  type CleanupService,
+} from "../../../src/services/cleanup-service.js"
+import { InMemoryCleanupRepository } from "../../helpers/cleanups.js"
 import {
   makeInsightsService,
   type InsightsService,
@@ -169,5 +175,136 @@ describe("insights invalidation through the composed host services", () => {
     const after = await h.insights.insights(EVENT, VIEWER)
     expect(after.seats.registered).toBe(2)
     expect(after.seats.waitlisted).toBe(0)
+  })
+})
+
+const SLOT_EVENT = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+const ORGANIZER = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+const VOLUNTEER = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+const OTHER_VOLUNTEER = "11111111-1111-4111-8111-111111111111"
+const FUTURE = new Date(Date.now() + 7 * 86_400_000)
+const PAST = new Date(Date.now() - 30 * 86_400_000)
+
+interface CleanupHarness {
+  repo: InMemoryCleanupRepository
+  service: CleanupService
+  generation: InsightsGeneration
+}
+
+function buildCleanupHarness(
+  over: { status?: "upcoming" | "done" | "cancelled"; scheduledAt?: Date } = {},
+): CleanupHarness {
+  const repo = new InMemoryCleanupRepository()
+  const generation = makeInsightsGeneration({ cache: new InMemoryCacheClient(() => NOW.getTime()) })
+  repo.seedUser({ id: ORGANIZER, displayName: "Olive Organizer", handle: "olive-insights" })
+  repo.seedUser({ id: VOLUNTEER, displayName: "Vic Volunteer", handle: "vic-insights" })
+  repo.seedUser({ id: OTHER_VOLUNTEER, displayName: "Van Volunteer", handle: "van-insights" })
+  repo.seedCleanup({
+    id: SLOT_EVENT,
+    organizerUserId: ORGANIZER,
+    scheduledAt: over.scheduledAt ?? FUTURE,
+    ...(over.status !== undefined ? { status: over.status } : {}),
+  })
+  const service = makeCleanupService({
+    repo,
+    counters: new InMemoryCounterStore(() => NOW.getTime()),
+    insightsInvalidator: generation,
+  })
+  return { repo, service, generation }
+}
+
+describe("insights invalidation through the cleanup service", () => {
+  it("bumps on a slot claim, a slot move and a release", async () => {
+    const h = buildCleanupHarness()
+    const grill = h.repo.seedSlot({ cleanupId: SLOT_EVENT, title: "Grill" })
+    const gate = h.repo.seedSlot({ cleanupId: SLOT_EVENT, title: "Gate" })
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe("0")
+
+    await h.service.claimEventSlot(SLOT_EVENT, VOLUNTEER, grill.id)
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe("1")
+
+    await h.service.claimEventSlot(SLOT_EVENT, VOLUNTEER, gate.id)
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe("2")
+
+    await h.service.claimEventSlot(SLOT_EVENT, VOLUNTEER, null)
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe("3")
+  })
+
+  it("bumps when a volunteer joins and leaves the event", async () => {
+    const h = buildCleanupHarness()
+
+    await h.service.joinCleanup(SLOT_EVENT, VOLUNTEER)
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe("1")
+
+    await h.service.leaveCleanup(SLOT_EVENT, VOLUNTEER)
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe("2")
+  })
+
+  it("bumps when a host removes an attendee", async () => {
+    const h = buildCleanupHarness()
+    h.repo.seedMember(SLOT_EVENT, VOLUNTEER, "member")
+
+    await h.service.removeMember(SLOT_EVENT, ORGANIZER, VOLUNTEER)
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe("1")
+  })
+
+  it("does not bump when the slot is already full", async () => {
+    const h = buildCleanupHarness()
+    const grill = h.repo.seedSlot({ cleanupId: SLOT_EVENT, title: "Grill", capacity: 1 })
+    await h.service.claimEventSlot(SLOT_EVENT, VOLUNTEER, grill.id)
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe("1")
+
+    await expect(
+      h.service.claimEventSlot(SLOT_EVENT, OTHER_VOLUNTEER, grill.id),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe("1")
+  })
+
+  it("does not bump when the event has already ended", async () => {
+    const h = buildCleanupHarness({ scheduledAt: PAST })
+    const grill = h.repo.seedSlot({ cleanupId: SLOT_EVENT, title: "Grill" })
+
+    await expect(h.service.claimEventSlot(SLOT_EVENT, VOLUNTEER, grill.id)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    await expect(h.service.joinCleanup(SLOT_EVENT, VOLUNTEER)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe("0")
+  })
+
+  it("does not bump when the event is closed", async () => {
+    const h = buildCleanupHarness({ status: "cancelled" })
+    const grill = h.repo.seedSlot({ cleanupId: SLOT_EVENT, title: "Grill" })
+
+    await expect(h.service.claimEventSlot(SLOT_EVENT, VOLUNTEER, grill.id)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    await expect(h.service.claimEventSlot(SLOT_EVENT, VOLUNTEER, null)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    await expect(h.service.joinCleanup(SLOT_EVENT, VOLUNTEER)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    await expect(h.service.leaveCleanup(SLOT_EVENT, VOLUNTEER)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe("0")
+  })
+
+  it("does not bump when a removed attendee tries the slot door", async () => {
+    const h = buildCleanupHarness()
+    const grill = h.repo.seedSlot({ cleanupId: SLOT_EVENT, title: "Grill" })
+    h.repo.seedMember(SLOT_EVENT, VOLUNTEER, "member")
+    await h.service.removeMember(SLOT_EVENT, ORGANIZER, VOLUNTEER)
+    const afterRemoval = await h.generation.generationOf(SLOT_EVENT)
+
+    await expect(h.service.claimEventSlot(SLOT_EVENT, VOLUNTEER, grill.id)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    await expect(h.service.joinCleanup(SLOT_EVENT, VOLUNTEER)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    expect(await h.generation.generationOf(SLOT_EVENT)).toBe(afterRemoval)
   })
 })

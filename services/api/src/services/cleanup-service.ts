@@ -1400,6 +1400,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       }
       if (outcome === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
       if (outcome === "ended") throw eventEndedError()
+      await deps.insightsInvalidator?.bumpInsightsGeneration(id)
       const going = await deps.repo.goingCount(id)
       return { joined: true, going }
     },
@@ -1414,6 +1415,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const outcome = await deps.repo.leaveCleanup(id, userId)
       if (outcome === "not_found") notFoundCleanup()
       if (outcome === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
+      await deps.insightsInvalidator?.bumpInsightsGeneration(id)
       const going = await deps.repo.goingCount(id)
       return { joined: false, going }
     },
@@ -1535,6 +1537,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         throw AppError.notFound("That person isn't attending this event.")
       }
 
+      await deps.insightsInvalidator?.bumpInsightsGeneration(id)
+
       await audit.record({
         actorId,
         action: "event.attendee_removed",
@@ -1579,6 +1583,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (outcome.kind === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
       if (outcome.kind === "ended") throw eventEndedError()
       if (outcome.kind === "full") throw AppError.conflict("That slot is already full.")
+
+      await deps.insightsInvalidator?.bumpInsightsGeneration(id)
 
       const updated = await deps.repo.findCleanupById(id, null)
       if (!updated) notFoundCleanup()
