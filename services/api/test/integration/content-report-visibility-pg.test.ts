@@ -123,6 +123,26 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
     await rejects404(gate.assertReportable("message", ABSENT, member))
   })
 
+  it("message: a DM is reportable by either participant and by nobody else", async () => {
+    const a = await newUser("dm a")
+    const b = await newUser("dm b")
+    const outsider = await newUser("dm outsider")
+    const [thread] = await h.sql<{ id: string }[]>`
+      INSERT INTO dm_threads (user_lo, user_hi)
+      VALUES (LEAST(${a}::uuid, ${b}::uuid), GREATEST(${a}::uuid, ${b}::uuid))
+      RETURNING id
+    `
+    const [message] = await h.sql<{ id: string }[]>`
+      INSERT INTO dm_messages (thread_id, sender_id, body, kind)
+      VALUES (${thread!.id}, ${a}, 'hey', 'text')
+      RETURNING id
+    `
+
+    await expect(gate.assertReportable("message", message!.id, b)).resolves.toBeUndefined()
+    await expect(gate.assertReportable("message", message!.id, a)).resolves.toBeUndefined()
+    await rejects404(gate.assertReportable("message", message!.id, outsider))
+  })
+
   it("F052: a soft-deleted message stays reportable by a room member (hit-and-run abuse)", async () => {
     const owner = await newUser("hr owner")
     const member = await newUser("hr member")

@@ -81,6 +81,20 @@ describe.skipIf(!pg)("F160: batched destination refs match the per-item lookup",
     return m!.id
   }
 
+  async function newDmMessage(senderId: string, peerId: string): Promise<string> {
+    const [t] = await h.sql<{ id: string }[]>`
+      INSERT INTO dm_threads (user_lo, user_hi)
+      VALUES (LEAST(${senderId}::uuid, ${peerId}::uuid), GREATEST(${senderId}::uuid, ${peerId}::uuid))
+      RETURNING id
+    `
+    const [m] = await h.sql<{ id: string }[]>`
+      INSERT INTO dm_messages (thread_id, sender_id, body, kind)
+      VALUES (${t!.id}, ${senderId}, 'hello', 'text')
+      RETURNING id
+    `
+    return m!.id
+  }
+
   async function newMedia(binding: {
     reportId?: string
     chatMessageId?: string
@@ -222,6 +236,75 @@ describe.skipIf(!pg)("F160: batched destination refs match the per-item lookup",
     const batched = statements.filter((q) => /=\s*ANY\(/i.test(q) && /chat_messages/i.test(q))
     expect(batched.length).toBeGreaterThan(0)
     expect(batched.length).toBeLessThanOrEqual(2)
+  })
+
+  it("W7: a `message` subject resolves its room exactly like a `chat` subject", async () => {
+    const author = await newUser("Msg author")
+    const peer = await newUser("Msg peer")
+    const reportId = await newReport()
+    const cleanupId = await newCleanup(author)
+    const reportMsg = await newChatMessage(author, { reportId })
+    const eventMsg = await newChatMessage(author, { cleanupId })
+    const dmMsg = await newDmMessage(author, peer)
+
+    const ids = [
+      await openItem("message", reportMsg),
+      await openItem("message", eventMsg),
+      await openItem("message", dmMsg),
+    ]
+
+    const { records } = await repo.listOpen({ q: null, filter: "all", cursor: null, limit: 25 })
+    expect(records.map((r) => r.id).sort()).toEqual([...ids].sort())
+
+    for (const record of records) {
+      const single = await repo.getItem(record.id)
+      expect({ kind: record.destinationKind, id: record.destinationId }).toEqual({
+        kind: single!.destinationKind,
+        id: single!.destinationId,
+      })
+    }
+
+    const bySubject = new Map(records.map((r) => [r.subjectId, r]))
+    expect(bySubject.get(reportMsg)).toMatchObject({
+      destinationKind: "report",
+      destinationId: reportId,
+    })
+    expect(bySubject.get(eventMsg)).toMatchObject({
+      destinationKind: "event",
+      destinationId: cleanupId,
+    })
+    expect(bySubject.get(dmMsg)).toMatchObject({ destinationKind: null, destinationId: null })
+  })
+
+  it("W7: chat and message subjects share ONE batched chat_messages lookup", async () => {
+    const author = await newUser("Batch author")
+    const reportId = await newReport()
+    for (let i = 0; i < 3; i++) {
+      await openItem("chat", await newChatMessage(author, { reportId }))
+      await openItem("message", await newChatMessage(author, { reportId }))
+    }
+
+    const statements: string[] = []
+    const spy = postgres(h.uri, {
+      max: 1,
+      onnotice: () => {},
+      debug: (_conn: number, query: string) => {
+        statements.push(query)
+      },
+    }) as Sql
+    try {
+      const spied = makeDrizzleModerationRepository(spy)
+      const { records } = await spied.listOpen({ q: null, filter: "all", cursor: null, limit: 25 })
+      expect(records).toHaveLength(6)
+      expect(records.every((r) => r.destinationId === reportId)).toBe(true)
+    } finally {
+      await spy.end()
+    }
+
+    const batched = statements.filter(
+      (q) => /=\s*ANY\(/i.test(q) && /chat_messages/i.test(q),
+    )
+    expect(batched).toHaveLength(1)
   })
 
   it("issues no per-row destination lookup when the page has no chat/photo subjects", async () => {

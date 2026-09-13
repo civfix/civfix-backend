@@ -1,6 +1,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import { withPg, type PgHarness } from "../helpers/pg.js"
+import { randomUUID } from "node:crypto"
+import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import {
   insertModerationItem,
   makeDrizzleModerationRepository,
@@ -38,6 +39,82 @@ async function insertUser(h: PgHarness, handle: string): Promise<string> {
     INSERT INTO users (display_name, handle) VALUES (${`User ${handle}`}, ${handle}) RETURNING id
   `
   return rows[0]!.id
+}
+
+async function insertGroup(h: PgHarness, ownerId: string): Promise<string> {
+  const rows = await h.sql<{ id: string }[]>`
+    INSERT INTO chat_groups (name, owner_id, visibility)
+    VALUES ('Neighbors', ${ownerId}, 'private')
+    RETURNING id
+  `
+  return rows[0]!.id
+}
+
+async function insertGroupMessage(
+  h: PgHarness,
+  groupId: string,
+  senderId: string,
+): Promise<string> {
+  const rows = await h.sql<{ id: string }[]>`
+    INSERT INTO chat_messages (group_id, sender_id, body, kind)
+    VALUES (${groupId}, ${senderId}, 'reported content', 'text')
+    RETURNING id
+  `
+  return rows[0]!.id
+}
+
+async function insertDmMessage(
+  h: PgHarness,
+  senderId: string,
+  peerId: string,
+): Promise<string> {
+  const thread = await h.sql<{ id: string }[]>`
+    INSERT INTO dm_threads (user_lo, user_hi)
+    VALUES (
+      LEAST(${senderId}::uuid, ${peerId}::uuid),
+      GREATEST(${senderId}::uuid, ${peerId}::uuid)
+    )
+    RETURNING id
+  `
+  const rows = await h.sql<{ id: string }[]>`
+    INSERT INTO dm_messages (thread_id, sender_id, body, kind)
+    VALUES (${thread[0]!.id}, ${senderId}, 'reported dm', 'text')
+    RETURNING id
+  `
+  return rows[0]!.id
+}
+
+async function insertMedia(
+  h: PgHarness,
+  binding: { reportId?: string; postId?: string; chatMessageId?: string },
+): Promise<string> {
+  const rows = await h.sql<{ id: string }[]>`
+    INSERT INTO media_assets (
+      upload_id, kind, r2_key, status, purpose, report_id, post_id, chat_message_id
+    )
+    VALUES (
+      ${randomUUID()}, 'image', ${`m/${randomUUID()}.jpg`}, 'ready', 'report',
+      ${binding.reportId ?? null}, ${binding.postId ?? null}, ${binding.chatMessageId ?? null}
+    )
+    RETURNING id
+  `
+  return rows[0]!.id
+}
+
+async function messageDeletedAt(
+  h: PgHarness,
+  table: "chat_messages" | "dm_messages",
+  messageId: string,
+): Promise<Date | null> {
+  const rows =
+    table === "chat_messages"
+      ? await h.sql<{ deleted_at: Date | null }[]>`
+          SELECT deleted_at FROM chat_messages WHERE id = ${messageId}
+        `
+      : await h.sql<{ deleted_at: Date | null }[]>`
+          SELECT deleted_at FROM dm_messages WHERE id = ${messageId}
+        `
+  return rows[0]!.deleted_at
 }
 
 describe.skipIf(!pg)("admin moderation repository (integration: real schema)", () => {
@@ -396,6 +473,165 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
       note: null,
     })
     expect(record?.restoredUserId).toBe(userId)
+  })
+
+  async function photoAuthorId(mediaId: string): Promise<string | null> {
+    const id = (await repo.createItem({
+      kind: "image",
+      subjectType: "photo",
+      subjectId: mediaId,
+      flag: "User report",
+      reason: "nsfw",
+    }))!
+    const record = await repo.getItem(id)
+    return record?.user?.id ?? null
+  }
+
+  it("W7: a reported GROUP chat message resolves its sender and Remove tombstones chat_messages", async () => {
+    const sender = await insertUser(h, testHandle())
+    const groupId = await insertGroup(h, sender)
+    const messageId = await insertGroupMessage(h, groupId, sender)
+
+    const id = (await repo.createItem({
+      kind: "user_report",
+      subjectType: "message",
+      subjectId: messageId,
+      flag: "User report",
+      reason: "harassment",
+    }))!
+
+    expect((await repo.getItem(id))?.user?.id).toBe(sender)
+
+    await repo.remove(id, { actorId: null, reason: "harassment" })
+
+    expect(await messageDeletedAt(h, "chat_messages", messageId)).not.toBeNull()
+
+    const [um] = await h.sql<{ strikes: number; removals: number }[]>`
+      SELECT strikes, removals FROM user_moderation WHERE user_id = ${sender}
+    `
+    expect(um?.strikes).toBe(1)
+    expect(um?.removals).toBe(1)
+  })
+
+  it("W7: a reported DM still resolves its sender and Remove tombstones dm_messages", async () => {
+    const sender = await insertUser(h, testHandle())
+    const peer = await insertUser(h, testHandle())
+    const messageId = await insertDmMessage(h, sender, peer)
+
+    const id = (await repo.createItem({
+      kind: "user_report",
+      subjectType: "message",
+      subjectId: messageId,
+      flag: "User report",
+      reason: "harassment",
+    }))!
+
+    expect((await repo.getItem(id))?.user?.id).toBe(sender)
+
+    await repo.remove(id, { actorId: null, reason: "harassment" })
+
+    expect(await messageDeletedAt(h, "dm_messages", messageId)).not.toBeNull()
+  })
+
+  it("W7: an appeal overturn restores a tombstoned GROUP chat message", async () => {
+    const sender = await insertUser(h, testHandle())
+    const groupId = await insertGroup(h, sender)
+    const messageId = await insertGroupMessage(h, groupId, sender)
+
+    const removalId = (await repo.createItem({
+      kind: "user_report",
+      subjectType: "message",
+      subjectId: messageId,
+      flag: "User report",
+      reason: "harassment",
+    }))!
+    await repo.remove(removalId, { actorId: null, reason: "harassment" })
+    expect(await messageDeletedAt(h, "chat_messages", messageId)).not.toBeNull()
+
+    const appealId = await insertModerationItem(h.sql, {
+      kind: "appeal",
+      subjectType: "message",
+      subjectId: messageId,
+      flag: "Removal appeal",
+      reason: "User requests review",
+    })
+    await repo.decideAppeal(appealId, { decision: "overturn", actorId: null, note: null })
+
+    expect(await messageDeletedAt(h, "chat_messages", messageId)).toBeNull()
+  })
+
+  it("W7: a reported photo resolves the author of every binding that identifies its uploader", async () => {
+    const postAuthor = await insertUser(h, testHandle())
+    const [post] = await h.sql<{ id: string }[]>`
+      INSERT INTO posts (author_id, kind, body) VALUES (${postAuthor}, 'post', 'with photo')
+      RETURNING id
+    `
+    const postPhoto = await insertMedia(h, { postId: post!.id })
+
+    const chatSender = await insertUser(h, testHandle())
+    const groupId = await insertGroup(h, chatSender)
+    const chatPhoto = await insertMedia(h, {
+      chatMessageId: await insertGroupMessage(h, groupId, chatSender),
+    })
+
+    const dmSender = await insertUser(h, testHandle())
+    const dmPeer = await insertUser(h, testHandle())
+    const dmPhoto = await insertMedia(h, {
+      chatMessageId: await insertDmMessage(h, dmSender, dmPeer),
+    })
+
+    const reporter = await insertUser(h, testHandle())
+    const reportPhoto = await insertMedia(h, {
+      reportId: await insertReport(h, { status: "published", reporterUserId: reporter }),
+    })
+
+    const avatarOwner = await insertUser(h, testHandle())
+    const avatarPhoto = await insertMedia(h, {})
+    await h.sql`UPDATE users SET avatar_media_id = ${avatarPhoto} WHERE id = ${avatarOwner}`
+
+    const bindings: Array<[string, string]> = [
+      [postPhoto, postAuthor],
+      [chatPhoto, chatSender],
+      [dmPhoto, dmSender],
+      [reportPhoto, reporter],
+      [avatarPhoto, avatarOwner],
+    ]
+
+    for (const [mediaId, authorId] of bindings) {
+      expect(await photoAuthorId(mediaId)).toBe(authorId)
+    }
+  })
+
+  it("W7: a reported photo whose only binding is a PROXY-owned surface resolves no author", async () => {
+    const groupOwner = await insertUser(h, testHandle())
+    const groupAvatarPhoto = await insertMedia(h, {})
+    const avatarGroupId = await insertGroup(h, groupOwner)
+    await h.sql`
+      UPDATE chat_groups SET avatar_media_id = ${groupAvatarPhoto} WHERE id = ${avatarGroupId}
+    `
+
+    const orgCreator = await insertUser(h, testHandle())
+    const orgLogoPhoto = await insertMedia(h, {})
+    await h.sql`
+      INSERT INTO organizations (slug, name, created_by, logo_media_id)
+      VALUES (${`org-${randomUUID().slice(0, 8)}`}, 'Cleanup Collective', ${orgCreator}, ${orgLogoPhoto})
+    `
+
+    const organizer = await insertUser(h, testHandle())
+    const eventCoverPhoto = await insertMedia(h, {})
+    await h.sql`
+      INSERT INTO cleanups (organizer_user_id, title, type, geom, scheduled_at, status, cover_media_id)
+      VALUES (
+        ${organizer}, 'Beach cleanup', 'site',
+        ST_SetSRID(ST_MakePoint(-118.49, 34.0), 4326), now(), 'upcoming', ${eventCoverPhoto}
+      )
+    `
+
+    const unboundPhoto = await insertMedia(h, {})
+
+    for (const mediaId of [groupAvatarPhoto, orgLogoPhoto, eventCoverPhoto, unboundPhoto]) {
+      expect(await photoAuthorId(mediaId)).toBeNull()
+    }
   })
 
   it("backfillFromHeldReports creates one item per held report lacking an open item", async () => {
