@@ -44,6 +44,7 @@ interface StoredPerson {
   displayName: string
   handle: string | null
   email: string | null
+  avatarUrl: string | null
 }
 
 const ROLE_ORDER: Record<CleanupMemberRole, number> = {
@@ -93,6 +94,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
       displayName: over.displayName ?? "Member",
       handle: over.handle ?? null,
       email: over.email ?? null,
+      avatarUrl: over.avatarUrl ?? null,
     }
     this.users.set(person.id, person)
     return person
@@ -146,6 +148,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
       displayName: stored.displayName,
       handle: stored.handle,
       bio: null,
+      avatarUrl: stored.avatarUrl,
     }
   }
 

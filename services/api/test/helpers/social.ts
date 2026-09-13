@@ -444,6 +444,7 @@ export function makeCleanupRecord(over: Partial<CleanupRecord> & { organizerUser
       displayName: "Organizer",
       handle: null,
       bio: null,
+      avatarUrl: null,
     },
     endsAt: over.endsAt ?? null,
     timezone: over.timezone ?? null,

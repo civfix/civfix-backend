@@ -572,11 +572,12 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           display_name: string
           handle: string | null
           bio: string | null
+          avatar_url: string | null
           role: OrganizationMemberRole
           joined_at: Date
         }[]
       >`
-        SELECT m.user_id, u.display_name, u.handle, u.bio, m.role, m.joined_at
+        SELECT m.user_id, u.display_name, u.handle, u.bio, u.avatar_url, m.role, m.joined_at
         FROM organization_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.organization_id = ${args.organizationId}
@@ -591,6 +592,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             displayName: r.display_name,
             handle: r.handle,
             bio: r.bio,
+            avatarUrl: r.avatar_url,
           },
           role: r.role,
           joinedAt: r.joined_at,
@@ -610,11 +612,12 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           display_name: string
           handle: string | null
           bio: string | null
+          avatar_url: string | null
           role: OrganizationMemberRole
           joined_at: Date
         }[]
       >`
-        SELECT m.user_id, u.display_name, u.handle, u.bio, m.role, m.joined_at
+        SELECT m.user_id, u.display_name, u.handle, u.bio, u.avatar_url, m.role, m.joined_at
         FROM organization_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.organization_id = ${organizationId} AND m.user_id = ${userId}
@@ -628,6 +631,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           displayName: r.display_name,
           handle: r.handle,
           bio: r.bio,
+          avatarUrl: r.avatar_url,
         },
         role: r.role,
         joinedAt: r.joined_at,
@@ -1317,6 +1321,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           invited_by_name: string | null
           invited_by_handle: string | null
           invited_by_bio: string | null
+          invited_by_avatar_url: string | null
           organization_id: string
           organization_slug: string
           organization_name: string
@@ -1334,6 +1339,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           iu.display_name AS invited_by_name,
           iu.handle AS invited_by_handle,
           iu.bio AS invited_by_bio,
+          iu.avatar_url AS invited_by_avatar_url,
           o.id AS organization_id,
           o.slug AS organization_slug,
           o.name AS organization_name,
@@ -1369,6 +1375,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
                 displayName: r.invited_by_name ?? "",
                 handle: r.invited_by_handle,
                 bio: r.invited_by_bio,
+                avatarUrl: r.invited_by_avatar_url,
               },
         organization: {
           id: r.organization_id,
@@ -1748,10 +1755,12 @@ interface InviteRowSelect {
   user_name: string | null
   user_handle: string | null
   user_bio: string | null
+  user_avatar_url: string | null
   invited_by_id: string | null
   invited_by_name: string | null
   invited_by_handle: string | null
   invited_by_bio: string | null
+  invited_by_avatar_url: string | null
 }
 
 function inviteColumns(sql: Queryable) {
@@ -1767,10 +1776,12 @@ function inviteColumns(sql: Queryable) {
     au.display_name AS user_name,
     au.handle AS user_handle,
     au.bio AS user_bio,
+    au.avatar_url AS user_avatar_url,
     iu.id AS invited_by_id,
     iu.display_name AS invited_by_name,
     iu.handle AS invited_by_handle,
-    iu.bio AS invited_by_bio
+    iu.bio AS invited_by_bio,
+    iu.avatar_url AS invited_by_avatar_url
   `
 }
 
@@ -1787,6 +1798,7 @@ function toInviteRecord(row: InviteRowSelect): OrganizationInviteRecord {
             displayName: row.user_name ?? "Unknown",
             handle: row.user_handle,
             bio: row.user_bio,
+            avatarUrl: row.user_avatar_url,
           },
     role: row.role,
     status: row.status,
@@ -1798,6 +1810,7 @@ function toInviteRecord(row: InviteRowSelect): OrganizationInviteRecord {
             displayName: row.invited_by_name ?? "Unknown",
             handle: row.invited_by_handle,
             bio: row.invited_by_bio,
+            avatarUrl: row.invited_by_avatar_url,
           },
     createdAt: row.created_at,
     expiresAt: row.expires_at,

@@ -40,9 +40,11 @@ interface InviteRowSelect {
   invitee_id: string | null
   invitee_name: string | null
   invitee_handle: string | null
+  invitee_avatar_url: string | null
   inviter_id: string | null
   inviter_name: string | null
   inviter_handle: string | null
+  inviter_avatar_url: string | null
 }
 
 function inviteColumns(sql: Queryable) {
@@ -58,9 +60,11 @@ function inviteColumns(sql: Queryable) {
     iu.id AS invitee_id,
     iu.display_name AS invitee_name,
     iu.handle AS invitee_handle,
+    iu.avatar_url AS invitee_avatar_url,
     bu.id AS inviter_id,
     bu.display_name AS inviter_name,
-    bu.handle AS inviter_handle
+    bu.handle AS inviter_handle,
+    bu.avatar_url AS inviter_avatar_url
   `
 }
 
@@ -78,6 +82,7 @@ function toInviteRecord(row: InviteRowSelect): EventTeamInviteRecord {
             displayName: row.invitee_name ?? "Unknown",
             handle: row.invitee_handle,
             bio: null,
+            avatarUrl: row.invitee_avatar_url,
           },
     invitedEmail: row.invited_email,
     invitedBy:
@@ -88,6 +93,7 @@ function toInviteRecord(row: InviteRowSelect): EventTeamInviteRecord {
             displayName: row.inviter_name ?? "Unknown",
             handle: row.inviter_handle,
             bio: null,
+            avatarUrl: row.inviter_avatar_url,
           },
     createdAt: row.created_at,
     expiresAt: row.expires_at,
@@ -111,6 +117,7 @@ interface PendingInviteForUserRowSelect {
   inviter_id: string | null
   inviter_name: string | null
   inviter_handle: string | null
+  inviter_avatar_url: string | null
 }
 
 function toPendingInviteForUser(row: PendingInviteForUserRowSelect): PendingInviteForUserRecord {
@@ -135,6 +142,7 @@ function toPendingInviteForUser(row: PendingInviteForUserRowSelect): PendingInvi
             displayName: row.inviter_name ?? "Unknown",
             handle: row.inviter_handle,
             bio: null,
+            avatarUrl: row.inviter_avatar_url,
           },
     createdAt: row.created_at,
     expiresAt: row.expires_at,
@@ -288,11 +296,12 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           display_name: string
           handle: string | null
           bio: string | null
+          avatar_url: string | null
           role: CleanupMemberRole
           joined_at: Date | null
         }[]
       >`
-        SELECT u.id, u.display_name, u.handle, u.bio, m.role, m.joined_at
+        SELECT u.id, u.display_name, u.handle, u.bio, u.avatar_url, m.role, m.joined_at
         FROM cleanup_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.cleanup_id = ${cleanupId} AND m.role <> 'member'
@@ -310,6 +319,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           displayName: r.display_name,
           handle: r.handle,
           bio: r.bio,
+          avatarUrl: r.avatar_url,
         },
         role: r.role,
         joinedAt: r.joined_at,
@@ -536,7 +546,8 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           ${servedKeyExpr(sql, "ma")} AS cover_key,
           bu.id AS inviter_id,
           bu.display_name AS inviter_name,
-          bu.handle AS inviter_handle
+          bu.handle AS inviter_handle,
+          bu.avatar_url AS inviter_avatar_url
         FROM cleanup_team_invites i
         JOIN cleanups c ON c.id = i.cleanup_id
         LEFT JOIN media_assets ma ON ma.id = c.cover_media_id

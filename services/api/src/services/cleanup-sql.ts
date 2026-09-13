@@ -45,6 +45,7 @@ export interface CleanupRowSelect {
   org_display_name: string
   org_handle: string | null
   org_bio: string | null
+  org_avatar_url: string | null
   ends_at: Date | null
   timezone: string | null
   visibility: EventVisibility
@@ -72,6 +73,7 @@ export interface AttendeeRowSelect {
   display_name: string
   handle: string | null
   bio: string | null
+  avatar_url: string | null
   role: CleanupMemberRole
   is_following: boolean
 }
@@ -82,6 +84,7 @@ export function toRecord(r: CleanupRowSelect): CleanupRecord {
     displayName: r.org_display_name,
     handle: r.org_handle,
     bio: r.org_bio,
+    avatarUrl: r.org_avatar_url,
   }
   const organization: CleanupOrganizationView | null =
     r.organization_id !== null && r.organization_slug !== null && r.organization_name !== null
@@ -183,7 +186,8 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     ${distExpr} AS dist,
     u.display_name AS org_display_name,
     u.handle AS org_handle,
-    u.bio AS org_bio
+    u.bio AS org_bio,
+    u.avatar_url AS org_avatar_url
   `
 }
 

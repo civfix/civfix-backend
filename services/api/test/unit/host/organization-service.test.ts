@@ -31,7 +31,13 @@ function base(over: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   repo = new InMemoryOrganizationRepository()
-  repo.seedUser({ id: OWNER, displayName: "Olive Owner", handle: "olive", email: "olive@x.org" })
+  repo.seedUser({
+    id: OWNER,
+    displayName: "Olive Owner",
+    handle: "olive",
+    email: "olive@x.org",
+    avatarUrl: "https://cdn.civfix.test/olive.jpg",
+  })
   repo.seedUser({ id: ADMIN, displayName: "Adam Admin", handle: "adam", email: "adam@x.org" })
   repo.seedUser({ id: MEMBER, displayName: "Mel Member", handle: "mel", email: "mel@x.org" })
   repo.seedUser({ id: STRANGER, displayName: "Sam Stranger", handle: "sam" })
@@ -140,6 +146,15 @@ describe("membership", () => {
     })
     expect(repo.members.some((m) => m.userId === STRANGER)).toBe(false)
     expect(repo.invites).toHaveLength(1)
+  })
+
+  it("carries each member's custom profile picture, and omits it when they have none", async () => {
+    const id = await seeded()
+    const page = await service.listMembers(id, OWNER, { cursor: null, limit: 25 })
+    const owner = page.items.find((m) => m.person.id === OWNER)
+    const member = page.items.find((m) => m.person.id === MEMBER)
+    expect(owner?.person.avatarUrl).toBe("https://cdn.civfix.test/olive.jpg")
+    expect(member?.person).not.toHaveProperty("avatarUrl")
   })
 
   it("never names the account behind an email: a hit and a miss answer with the same shape", async () => {

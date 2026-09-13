@@ -37,6 +37,7 @@ export function toAttendeePersonDTO(view: CleanupPersonView, isFollowing: boolea
     handle: view.handle,
     bio: view.bio,
     avatar: avatarGradient(view.id),
+    ...(view.avatarUrl !== null ? { avatarUrl: view.avatarUrl } : {}),
     followers: 0,
     following: 0,
     isFollowing,

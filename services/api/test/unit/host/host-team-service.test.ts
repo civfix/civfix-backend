@@ -114,7 +114,12 @@ beforeEach(() => {
   sentMail = []
   bells = []
   tokenSeq = 0
-  repo.seedUser({ id: ORGANIZER, displayName: "Olive Organizer", handle: "olive" })
+  repo.seedUser({
+    id: ORGANIZER,
+    displayName: "Olive Organizer",
+    handle: "olive",
+    avatarUrl: "https://cdn.civfix.test/olive.jpg",
+  })
   repo.seedUser({ id: COHOST, displayName: "Cody Cohost", handle: "cody" })
   repo.seedUser({ id: STAFF, displayName: "Sasha Staff", handle: "sasha" })
   repo.seedUser({ id: INVITEE, displayName: "Ida Invitee", handle: "ida", email: "ida@x.org" })
@@ -155,6 +160,14 @@ describe("listEventTeam", () => {
 
   it("404s a stranger before it ever says forbidden", async () => {
     await expect(service.listTeam(EVENT, STRANGER)).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+
+  it("carries each member's custom profile picture, and omits it when they have none", async () => {
+    const payload = await service.listTeam(EVENT, ORGANIZER)
+    const organizer = payload.members.find((m) => m.person.id === ORGANIZER)
+    const staff = payload.members.find((m) => m.person.id === STAFF)
+    expect(organizer?.person.avatarUrl).toBe("https://cdn.civfix.test/olive.jpg")
+    expect(staff?.person).not.toHaveProperty("avatarUrl")
   })
 })
 

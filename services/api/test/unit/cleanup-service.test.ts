@@ -313,6 +313,19 @@ describe("getCleanup", () => {
       service.getCleanup("00000000-0000-0000-0000-000000000000", { userId: null }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
+
+  it("carries the organizer's custom profile picture, and omits it when they have none", async () => {
+    repo.seedUser({ id: ORG, displayName: "Olive Organizer", avatarUrl: "https://cdn.test/o.jpg" })
+    const withPhoto = await service.createCleanup(baseInput(), ORG)
+    expect((await service.getCleanup(withPhoto.id, { userId: null })).organizer.avatarUrl).toBe(
+      "https://cdn.test/o.jpg",
+    )
+
+    repo.seedUser({ id: ALICE, displayName: "Alice" })
+    const withoutPhoto = await service.createCleanup(baseInput(), ALICE)
+    const dto = await service.getCleanup(withoutPhoto.id, { userId: null })
+    expect(dto.organizer).not.toHaveProperty("avatarUrl")
+  })
 })
 
 describe("listCleanups filters", () => {
@@ -613,6 +626,15 @@ describe("listAttendees (who's going)", () => {
     expect(res.going).toBe(4)
     expect(res.attendees.map((p) => p.name)).toEqual(["Alice", "Carol"])
     expect(res.attendees.every((p) => p.isFollowing)).toBe(true)
+  })
+
+  it("carries each attendee's custom profile picture, and omits it when they have none", async () => {
+    const created = await setupEvent()
+    repo.seedUser({ id: ALICE, displayName: "Alice", avatarUrl: "https://cdn.test/alice.jpg" })
+
+    const res = await service.listAttendees(created.id, { userId: ALICE })
+    expect(res.attendees.find((p) => p.id === ALICE)?.avatarUrl).toBe("https://cdn.test/alice.jpg")
+    expect(res.attendees.find((p) => p.id === BOB)).not.toHaveProperty("avatarUrl")
   })
 
   it("an anonymous viewer sees no names but the real going count", async () => {

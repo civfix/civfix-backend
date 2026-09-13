@@ -4,6 +4,7 @@ import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
+import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import { HIDDEN_USER_LABEL } from "../../src/services/hidden-identity.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
@@ -80,6 +81,28 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
   async function joinCleanup(cleanupId: string, userId: string, role: string): Promise<void> {
     await h.sql`
       INSERT INTO cleanup_members (cleanup_id, user_id, role) VALUES (${cleanupId}, ${userId}, ${role})
+    `
+  }
+
+  async function newReport(reporterId: string): Promise<string> {
+    const [r] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (
+        reporter_user_id, idempotency_key, geom, geom_source, category, status, visibility, h3_cell
+      )
+      VALUES (
+        ${reporterId}, gen_random_uuid(),
+        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
+        'manual', 'trash', 'published', 'public', 'h0'
+      )
+      RETURNING id
+    `
+    return r!.id
+  }
+
+  async function joinReportChat(reportId: string, userId: string, role: string): Promise<void> {
+    await h.sql`
+      INSERT INTO report_chat_members (report_id, user_id, role)
+      VALUES (${reportId}, ${userId}, ${role})
     `
   }
 
@@ -172,6 +195,7 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
       const open = await repo.listAttendees(args)
       expect(open).toHaveLength(3)
       expect(open.find((a) => a.id === other)!.displayName).toBe("RosterOther")
+      expect(open.find((a) => a.id === other)!.avatarUrl).toBe("https://cdn.example/RosterOther.jpg")
 
       for (const direction of BOTH_BLOCK_DIRECTIONS) {
         await withBlockDirection(direction, viewer, other, async () => {
@@ -182,10 +206,48 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
           expect(redacted.displayName).toBe(HIDDEN_USER_LABEL)
           expect(redacted.handle).toBeNull()
           expect(redacted.bio).toBeNull()
+          expect(redacted.avatarUrl).toBeNull()
           expect(redacted.role).toBe("member")
 
           expect(roster.find((a) => a.id === viewer)!.displayName).toBe("RosterViewer")
           expect(roster.find((a) => a.id === organizer)!.displayName).toBe("RosterOrg")
+        })
+      }
+    })
+  })
+
+  describe("report chat participant list (CVX-034)", () => {
+    it("returns the roster with avatars and redacts a blocked participant in BOTH directions", async () => {
+      const owner = await newUser("ChatOwner")
+      const viewer = await newUser("ChatViewer")
+      const other = await newUser("ChatOther")
+      const reportId = await newReport(owner)
+      await joinReportChat(reportId, owner, "owner")
+      await joinReportChat(reportId, viewer, "member")
+      await joinReportChat(reportId, other, "member")
+      const repo = makeReportChatRepository(h.sql)
+
+      const open = await repo.listMembers(reportId, viewer)
+      expect(open).toHaveLength(3)
+      expect(open[0]!.role).toBe("owner")
+      const openOther = open.find((m) => m.user.id === other)!
+      expect(openOther.user.name).toBe("ChatOther")
+      expect(openOther.user.avatarUrl).toBe("https://cdn.example/ChatOther.jpg")
+
+      for (const direction of BOTH_BLOCK_DIRECTIONS) {
+        await withBlockDirection(direction, viewer, other, async () => {
+          const roster = await repo.listMembers(reportId, viewer)
+          expect(roster).toHaveLength(3)
+
+          const redacted = roster.find((m) => m.user.id === other)!
+          expect(redacted.user.name).toBe(HIDDEN_USER_LABEL)
+          expect(redacted.user.handle).toBeNull()
+          expect(redacted.user.bio).toBeNull()
+          expect(redacted.user.avatarUrl).toBeUndefined()
+          expect(redacted.role).toBe("member")
+
+          expect(roster.find((m) => m.user.id === viewer)!.user.name).toBe("ChatViewer")
+          expect(roster.find((m) => m.user.id === owner)!.user.name).toBe("ChatOwner")
         })
       }
     })
