@@ -12,7 +12,7 @@ import type {
   CleanupPersonView,
 } from "../cleanup-repository.types.js"
 
-export interface OrganizationRecord {
+export interface OrganizationBaseRecord {
   id: string
   slug: string
   name: string
@@ -35,6 +35,13 @@ export interface OrganizationRecord {
   eventCount: number
   myRole: OrganizationMemberRole | null
 }
+
+export interface OrgHoursTotals {
+  volunteerHours: number
+  volunteerCount: number
+}
+
+export interface OrganizationRecord extends OrganizationBaseRecord, OrgHoursTotals {}
 
 export interface OrganizationMemberRecord {
   person: CleanupPersonView
@@ -79,7 +86,7 @@ export interface AdminOrgVerificationRecord extends OrgVerificationRecord {
 }
 
 /** Operator-facing extras on an org row: the owner and the donation/payout state, read in one query. */
-export interface AdminOrganizationRecord extends OrganizationRecord {
+export interface AdminOrganizationRecord extends OrganizationBaseRecord {
   owner: AdminActorView | null
   donationsEnabled: boolean
   paymentsState: OrgPaymentsState | null

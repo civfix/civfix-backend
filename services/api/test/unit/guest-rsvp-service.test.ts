@@ -196,6 +196,27 @@ describe("guest rsvp: requesting a code", () => {
     })
   })
 
+  it("refuses an event that has already ended, even though nobody marked it complete", async () => {
+    const startedAt = new Date(Date.parse("2026-08-24T09:00:00.000Z"))
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      scheduledAt: startedAt,
+      endsAt: new Date(Date.parse("2026-08-24T12:00:00.000Z")),
+    })
+
+    await expect(h.service.requestCode(emailRequest(), ctx)).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "This event has already ended.",
+    })
+    expect(h.mailer.sent).toHaveLength(0)
+
+    h.repo.seedEvent({ id: EVENT_ID, scheduledAt: startedAt, endsAt: null })
+    await expect(h.service.requestCode(emailRequest(), ctx)).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "This event has already ended.",
+    })
+  })
+
   it("holds a 60s per-contact cooldown and lets the same contact resend once it lapses", async () => {
     await h.service.requestCode(emailRequest(), ctx)
     await expect(h.service.requestCode(emailRequest(), ctx)).rejects.toMatchObject({

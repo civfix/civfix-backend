@@ -27,6 +27,8 @@ import { toHoursAnomalyModerationItem } from "../services/volunteer-hours-anomal
 import { makeModerationService } from "../services/admin/moderation-service.js"
 import { makeDrizzleModerationRepository } from "../services/admin/moderation-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
+import { makeInsightsGeneration } from "../services/host/host-analytics-cache.js"
+import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { hostStandingOf } from "../services/host/host-standing.js"
 import { NO_HOST_STANDING } from "@civfix/shared/host"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
@@ -140,7 +142,17 @@ export async function registerVolunteerHoursRoutes(
     return makeVolunteerHoursService({
       repo: repo(),
       cleanups: cleanupLookup(),
-      ...(app.volunteerOverrides ? {} : { affiliations: container.getAffiliationLoader() }),
+      ...(app.volunteerOverrides
+        ? {}
+        : {
+            affiliations: container.getAffiliationLoader(),
+            presignOrgLogo: (key: string) =>
+              container.storage.presignGet(key, MEDIA_GET_URL_TTL_SEC),
+            insightsInvalidator: makeInsightsGeneration({
+              cache: container.getCache(),
+              logger: app.log,
+            }),
+          }),
       ...(bells !== undefined ? { notifier: bells } : {}),
       ...(moderation !== undefined ? { moderation } : {}),
       ...(isBlockedEitherWay !== undefined ? { isBlockedEitherWay } : {}),

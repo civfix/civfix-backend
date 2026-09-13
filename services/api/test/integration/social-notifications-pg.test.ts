@@ -120,7 +120,11 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       { title: "Newer Sweep", type: "site", eventKind: "cleanup", lat: 34.1, lng: -118.1, scheduledAt: "2025-03-01T10:00:00.000Z" },
       organizer,
     )
-    await cleanupService.joinCleanup(older.id, attendee)
+    await h.sql`
+      INSERT INTO cleanup_members (cleanup_id, user_id, role)
+      VALUES (${older.id}, ${attendee}, 'member')
+      ON CONFLICT DO NOTHING
+    `
 
     const socialService = makeSocialService({ repo: socialRepo })
 

@@ -9,7 +9,7 @@ import {
   parseNameCursor,
   parseTimeCursor,
 } from "../../db/cursor-helpers.js"
-import { isCleanupTerminal } from "../cleanup-rules.js"
+import { hasEventEnded, isCleanupTerminal } from "../cleanup-rules.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup } from "../media-bindings.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./event-media.js"
 import { deterministicUuid } from "../deterministic-uuid.js"
@@ -1628,12 +1628,23 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     }): Promise<JoinWaitlistOutcome> {
       try {
         return await sql.begin(async (tx) => {
-          const locked = await tx<{ status: EventRegistrationContext["status"] }[]>`
-            SELECT status FROM cleanups WHERE id = ${args.cleanupId} LIMIT 1 FOR SHARE
+          const locked = await tx<
+            {
+              status: EventRegistrationContext["status"]
+              scheduled_at: Date
+              ends_at: Date | null
+              now: Date
+            }[]
+          >`
+            SELECT status, scheduled_at, ends_at, now() AS now FROM cleanups
+             WHERE id = ${args.cleanupId} LIMIT 1 FOR SHARE
           `
           const event = locked[0]
           if (event === undefined) return { kind: "not_found" as const }
           if (isCleanupTerminal(event.status)) return { kind: "closed" as const }
+          if (hasEventEnded({ scheduledAt: event.scheduled_at, endsAt: event.ends_at }, event.now)) {
+            return { kind: "ended" as const }
+          }
 
           const typeRows = await tx<
             {

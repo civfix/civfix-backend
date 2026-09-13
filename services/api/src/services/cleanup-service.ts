@@ -1,6 +1,12 @@
 
 import { randomUUID } from "node:crypto"
-import { AppError, ErrorCode, MAX_BRING_ITEMS, MAX_EVENT_SLOTS } from "@civfix/shared"
+import {
+  AppError,
+  ErrorCode,
+  MAX_BRING_ITEMS,
+  MAX_EVENT_SLOTS,
+  MIN_SLOT_DURATION_MINUTES,
+} from "@civfix/shared"
 import { can, hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
@@ -25,6 +31,7 @@ import type {
 } from "@civfix/shared"
 import type { Jobs } from "@civfix/shared/interfaces"
 import type { NotificationService } from "./notification-service.js"
+import type { MessageKey } from "../i18n/messages/en.js"
 import { EVENT_HOURS_MEMBER_CAP } from "./volunteer-hours-service.js"
 import type { OutboundMailService } from "./admin/outbound-mail-service.js"
 import { buildEventPacket } from "./admin/mail-format.js"
@@ -47,6 +54,7 @@ import type {
   DesiredSlot,
   DuplicateSource,
   EventHostWrite,
+  EventSlotView,
   LinkedReportView,
   ListCleanupsFilters,
   SlotReconcileResult,
@@ -70,8 +78,10 @@ import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import {
   MIN_EVENT_DURATION_MS,
   SCHEDULE_MAX_BACKDATE_MS,
+  eventEndedError,
   isCleanupTerminal,
 } from "./cleanup-rules.js"
+import type { EventWindow } from "./cleanup-rules.js"
 import {
   CLEANUP_GUEST_UPDATE_FANOUT_JOB,
   type GuestUpdateFanoutJob,
@@ -188,7 +198,11 @@ const SLOT_FLIP_WINDOW_SEC = 60 * 60
 export const MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW = 20
 const MEMBERSHIP_FLIP_WINDOW_SEC = 60 * 60
 
-const CANCEL_FANOUT_MEMBER_CAP = 2000
+export const CANCEL_FANOUT_MEMBER_CAP = 2000
+
+interface SlotFanoutBudget {
+  remaining: number
+}
 
 const CANCEL_FANOUT_CONCURRENCY = 8
 
@@ -713,10 +727,39 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     return ids
   }
 
+  function slotWindowOf(slot: EventSlotInput): { startsAt: Date | null; endsAt: Date | null } {
+    const startsAt = slot.startsAt != null ? new Date(slot.startsAt) : null
+    const endsAt = slot.endsAt != null ? new Date(slot.endsAt) : null
+    return { startsAt, endsAt }
+  }
+
+  function assertSlotInsideEvent(
+    title: string,
+    window: { startsAt: Date; endsAt: Date },
+    event: EventWindow,
+  ): void {
+    if (event.endsAt === null) {
+      throw AppError.validation({
+        slots: "set an end time for the event before adding timed slots",
+      })
+    }
+    if (window.startsAt < event.scheduledAt || window.endsAt > event.endsAt) {
+      throw AppError.validation({
+        slots: `slot "${title}" falls outside the event's start and end`,
+      })
+    }
+    if (window.endsAt.getTime() - window.startsAt.getTime() < MIN_SLOT_DURATION_MINUTES * 60_000) {
+      throw AppError.validation({
+        slots: `slot "${title}" must last at least ${MIN_SLOT_DURATION_MINUTES} minutes`,
+      })
+    }
+  }
+
   function toDesiredSlots(
     slots: EventSlotInput[],
     status: CleanupStatus | null,
     opts: { keepIds: boolean },
+    window: EventWindow,
   ): DesiredSlot[] {
     if (status !== null && isCleanupTerminal(status)) {
       throw AppError.validation({ slots: "slots can't be changed after an event is completed" })
@@ -726,7 +769,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     }
     const seen = new Set<string>()
     for (const slot of slots) {
-      const key = slot.title.trim().toLowerCase()
+      const { startsAt, endsAt } = slotWindowOf(slot)
+      if (startsAt !== null && endsAt !== null) {
+        assertSlotInsideEvent(slot.title, { startsAt, endsAt }, window)
+      }
+      const key = `${slot.title.trim().toLowerCase()}|${startsAt?.getTime() ?? ""}|${endsAt?.getTime() ?? ""}`
       if (seen.has(key)) {
         throw AppError.validation({ slots: `duplicate slot title: ${slot.title}` })
       }
@@ -739,6 +786,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       title: slot.title,
       description: slot.description ?? null,
       capacity: slot.capacity ?? null,
+      ...slotWindowOf(slot),
       sortOrder: slot.sortOrder ?? index,
     }))
   }
@@ -763,16 +811,19 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     return views.map(toEventSlotDTO)
   }
 
-  async function notifySlotRemoved(
+  async function notifySlotClaimants(
     cleanup: { id: string; title: string },
-    removed: SlotReconcileResult["removed"],
+    entries: SlotReconcileResult["removed"],
+    keys: { titleKey: MessageKey; bodyKey: MessageKey },
+    budget: SlotFanoutBudget,
   ): Promise<void> {
     const notifier = deps.notifier
     if (notifier === undefined) return
     const targets: { userId: string; slot: string }[] = []
-    for (const entry of removed) {
+    for (const entry of entries) {
       for (const userId of entry.claimantUserIds) {
-        if (targets.length >= CANCEL_FANOUT_MEMBER_CAP) break
+        if (budget.remaining <= 0) break
+        budget.remaining -= 1
         targets.push({ userId, slot: entry.title })
       }
     }
@@ -780,8 +831,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       try {
         await notifier.createNotification(userId, {
           type: "cleanup_slot",
-          titleKey: "notification.cleanup_slot.removed.title",
-          bodyKey: "notification.cleanup_slot.removed.body",
+          titleKey: keys.titleKey,
+          bodyKey: keys.bodyKey,
           vars: { slot, title: cleanup.title },
           link: `/cleanups/${cleanup.id}`,
         })
@@ -792,6 +843,35 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         )
       }
     })
+  }
+
+  async function notifySlotChanges(
+    cleanup: { id: string; title: string },
+    diff: SlotReconcileResult,
+  ): Promise<void> {
+    const budget: SlotFanoutBudget = { remaining: CANCEL_FANOUT_MEMBER_CAP }
+    if (diff.removed.length > 0) {
+      await notifySlotClaimants(
+        cleanup,
+        diff.removed,
+        {
+          titleKey: "notification.cleanup_slot.removed.title",
+          bodyKey: "notification.cleanup_slot.removed.body",
+        },
+        budget,
+      )
+    }
+    if (diff.rescheduled.length > 0) {
+      await notifySlotClaimants(
+        cleanup,
+        diff.rescheduled,
+        {
+          titleKey: "notification.cleanup_slot.moved.title",
+          bodyKey: "notification.cleanup_slot.moved.body",
+        },
+        budget,
+      )
+    }
   }
 
   async function createEvent(
@@ -806,7 +886,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       throw AppError.validation({ linkedReportIds: "only cleanup events can link reports" })
     }
     await assertReportsLinkable(linkedReportIds)
-    const slots = toDesiredSlots(input.slots ?? [], null, { keepIds: false })
+    const slots = toDesiredSlots(input.slots ?? [], null, { keepIds: false }, {
+      scheduledAt: new Date(input.scheduledAt),
+      endsAt: input.endsAt != null ? new Date(input.endsAt) : null,
+    })
 
     const host = await resolveHostWrite({
       patch: { ...input, scheduledAt: input.scheduledAt },
@@ -915,6 +998,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
             ? null
             : new Date(scheduledAt.getTime() + sourceDurationMs).toISOString()
       const slots = await deps.repo.listSlots(source.id, null)
+      const shiftMs = scheduledAt.getTime() - source.scheduledAt.getTime()
+      const shifted = (at: Date | null): string | null =>
+        at === null ? null : new Date(at.getTime() + shiftMs).toISOString()
       const copy: CreateCleanupRequest = {
         title: source.title,
         type: source.type,
@@ -929,6 +1015,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
           title: slot.title,
           description: slot.description,
           capacity: slot.capacity,
+          startsAt: shifted(slot.startsAt),
+          endsAt: shifted(slot.endsAt),
           sortOrder: slot.sortOrder,
         })),
         endsAt,
@@ -998,10 +1086,40 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         await assertReportsLinkable(desiredLinks)
       }
 
+      const effectiveWindow: EventWindow = {
+        scheduledAt: patch.scheduledAt !== undefined ? new Date(patch.scheduledAt) : current.scheduledAt,
+        endsAt:
+          patch.endsAt !== undefined
+            ? (patch.endsAt != null ? new Date(patch.endsAt) : null)
+            : current.endsAt,
+      }
+      const windowMoved =
+        effectiveWindow.scheduledAt.getTime() !== current.scheduledAt.getTime() ||
+        (effectiveWindow.endsAt?.getTime() ?? null) !== (current.endsAt?.getTime() ?? null)
+
       const desiredSlots =
         patch.slots !== undefined
-          ? toDesiredSlots(patch.slots, current.status, { keepIds: true })
+          ? toDesiredSlots(patch.slots, current.status, { keepIds: true }, effectiveWindow)
           : null
+
+      if (desiredSlots === null && windowMoved) {
+        const timed = (await deps.repo.listSlots(id, null)).filter(
+          (slot): slot is EventSlotView & { startsAt: Date; endsAt: Date } =>
+            slot.startsAt !== null && slot.endsAt !== null,
+        )
+        const outside = timed.some(
+          (slot) =>
+            effectiveWindow.endsAt === null ||
+            slot.startsAt < effectiveWindow.scheduledAt ||
+            slot.endsAt > effectiveWindow.endsAt,
+        )
+        if (outside) {
+          throw AppError.validation({
+            scheduledAt:
+              "timed slots would fall outside the new start and end; update the slots in the same save",
+          })
+        }
+      }
 
       if (desiredSlots !== null) {
         const existingSlotIds = new Set((await deps.repo.listSlots(id, null)).map((s) => s.id))
@@ -1054,8 +1172,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
-      if (slotDiff !== null && slotDiff.removed.length > 0) {
-        await notifySlotRemoved(record, slotDiff.removed)
+      if (slotDiff !== null) {
+        await notifySlotChanges(record, slotDiff)
       }
       if (!isCleanupTerminal(record.status) && guestVisibleChange(current, patch)) {
         await dispatchGuestUpdateFanout(record.id)
@@ -1281,6 +1399,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         throw AppError.forbidden("A host removed you from this event, so you can't rejoin it.")
       }
       if (outcome === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
+      if (outcome === "ended") throw eventEndedError()
+      await deps.insightsInvalidator?.bumpInsightsGeneration(id)
       const going = await deps.repo.goingCount(id)
       return { joined: true, going }
     },
@@ -1295,6 +1415,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const outcome = await deps.repo.leaveCleanup(id, userId)
       if (outcome === "not_found") notFoundCleanup()
       if (outcome === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
+      await deps.insightsInvalidator?.bumpInsightsGeneration(id)
       const going = await deps.repo.goingCount(id)
       return { joined: false, going }
     },
@@ -1416,6 +1537,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         throw AppError.notFound("That person isn't attending this event.")
       }
 
+      await deps.insightsInvalidator?.bumpInsightsGeneration(id)
+
       await audit.record({
         actorId,
         action: "event.attendee_removed",
@@ -1458,7 +1581,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         throw AppError.forbidden("A host removed you from this event, so you can't rejoin it.")
       }
       if (outcome.kind === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
+      if (outcome.kind === "ended") throw eventEndedError()
       if (outcome.kind === "full") throw AppError.conflict("That slot is already full.")
+
+      await deps.insightsInvalidator?.bumpInsightsGeneration(id)
 
       const updated = await deps.repo.findCleanupById(id, null)
       if (!updated) notFoundCleanup()

@@ -13,6 +13,8 @@ const pg = await withPg()
 const tokens = makeTicketTokenSigner("integration-waitlist-secret-long-enough")
 const FUTURE = new Date(Date.now() + 7 * 86_400_000)
 const CLAIM_WINDOW_MS = 60 * 60 * 1000
+const PAST = new Date(Date.now() - 30 * 86_400_000)
+const STALE_APP_CLOCK = new Date(Date.now() - 60 * 86_400_000)
 
 describe.skipIf(!pg)("waitlist promotion (integration)", () => {
   let h: PgHarness
@@ -34,13 +36,13 @@ describe.skipIf(!pg)("waitlist promotion (integration)", () => {
     return (u as { id: string }).id
   }
 
-  async function newCleanup(organizerId: string): Promise<string> {
+  async function newCleanup(organizerId: string, scheduledAt: Date = FUTURE): Promise<string> {
     const id = randomUUID()
     await h.sql`
       INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
       VALUES (
         ${id}, ${organizerId}, 'site', 'Waitlist sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), ${FUTURE}, 'upcoming'
+        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), ${scheduledAt}, 'upcoming'
       )
     `
     return id
@@ -68,6 +70,28 @@ describe.skipIf(!pg)("waitlist promotion (integration)", () => {
     `
     return (rows[0] as { reserved_seats: number }).reserved_seats
   }
+
+  it("refuses a waitlist join on an ended event using the DB clock, not the caller's", async () => {
+    const organizer = await newUser("Stale Clock Organizer")
+    const cleanupId = await newCleanup(organizer, PAST)
+    const ticketTypeId = await newTicketType(cleanupId, 1)
+    const userId = await newUser("Stale Clock Joiner")
+
+    const outcome = await repo.joinWaitlist({
+      cleanupId,
+      ticketTypeId,
+      subject: { kind: "user", userId },
+      partySize: 1,
+      accessCodeHash: null,
+      now: STALE_APP_CLOCK,
+    })
+
+    expect(outcome).toEqual({ kind: "ended" })
+    const rows = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM cleanup_waitlist WHERE ticket_type_id = ${ticketTypeId}
+    `
+    expect(rows[0]?.n).toBe(0)
+  })
 
   it("offers two different people under two concurrent promoters", async () => {
     const organizer = await newUser("Organizer")

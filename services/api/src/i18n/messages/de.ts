@@ -69,6 +69,9 @@ export const de: Partial<Record<MessageKey, string>> = {
 
   "notification.cleanup_slot.removed.title": "Deine Rolle im Event hat sich geändert",
   "notification.cleanup_slot.removed.body": 'Die Rolle "{{slot}}" wurde aus {{title}} entfernt.',
+  "notification.cleanup_slot.moved.title": "Deine Schichtzeit hat sich geändert",
+  "notification.cleanup_slot.moved.body":
+    'Die Schicht "{{slot}}" bei {{title}} hat eine neue Zeit. Öffne das Event, um sie zu prüfen.',
 
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Dein civfix-Anmeldecode",

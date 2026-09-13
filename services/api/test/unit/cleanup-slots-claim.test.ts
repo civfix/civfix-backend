@@ -336,6 +336,70 @@ describe("closed events (B28e)", () => {
       expect(await repo.slotOf(id, MEMBER)).toBe(slot.id)
     })
   }
+
+  it("409s a claim on an event that has already ended (the slot door auto-RSVPs)", async () => {
+    const id = seedEvent()
+    repo.cleanups.get(id)!.scheduledAt = new Date(Date.now() - 5 * 60 * 60 * 1000)
+    repo.cleanups.get(id)!.endsAt = new Date(Date.now() - 4 * 60 * 60 * 1000)
+    const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
+
+    await expect(service.claimEventSlot(id, OUTSIDER, slot.id)).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "This event has already ended.",
+    })
+    expect(await repo.isMember(id, OUTSIDER)).toBe(false)
+    expect(repo.slotClaims).toEqual([])
+  })
+
+  it("lets an attendee claim a shift whose WINDOW has passed while the event runs (D22)", async () => {
+    const id = seedEvent()
+    const startedAt = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    repo.cleanups.get(id)!.scheduledAt = startedAt
+    repo.cleanups.get(id)!.endsAt = new Date(Date.now() + 2 * 60 * 60 * 1000)
+    const slot = repo.seedSlot({
+      cleanupId: id,
+      title: "Morning sweep",
+      startsAt: startedAt,
+      endsAt: new Date(startedAt.getTime() + 60 * 60 * 1000),
+    })
+
+    const dto = await service.claimEventSlot(id, OUTSIDER, slot.id)
+    expect(dto.slots.map((s) => [s.title, s.mine ?? false, s.claimed])).toEqual([
+      ["Morning sweep", true, 1],
+    ])
+    expect(dto.slots[0]?.startsAt).toBe(startedAt.toISOString())
+    expect(dto.slots[0]?.endsAt).toBe(new Date(startedAt.getTime() + 60 * 60 * 1000).toISOString())
+  })
+
+  it("409s that same past-window shift once the EVENT has ended", async () => {
+    const id = seedEvent()
+    const startedAt = new Date(Date.now() - 5 * 60 * 60 * 1000)
+    repo.cleanups.get(id)!.scheduledAt = startedAt
+    repo.cleanups.get(id)!.endsAt = new Date(Date.now() - 4 * 60 * 60 * 1000)
+    const slot = repo.seedSlot({
+      cleanupId: id,
+      title: "Morning sweep",
+      startsAt: startedAt,
+      endsAt: new Date(startedAt.getTime() + 60 * 60 * 1000),
+    })
+
+    await expect(service.claimEventSlot(id, OUTSIDER, slot.id)).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "This event has already ended.",
+    })
+    expect(repo.slotClaims).toEqual([])
+  })
+
+  it("still releases a slot after the event has ended", async () => {
+    const id = seedEvent()
+    const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
+    await service.claimEventSlot(id, MEMBER, slot.id)
+    repo.cleanups.get(id)!.scheduledAt = new Date(Date.now() - 5 * 60 * 60 * 1000)
+    repo.cleanups.get(id)!.endsAt = new Date(Date.now() - 4 * 60 * 60 * 1000)
+
+    await service.claimEventSlot(id, MEMBER, null)
+    expect(await repo.slotOf(id, MEMBER)).toBeNull()
+  })
 })
 
 describe("leaving and removal free the seat (B28d)", () => {

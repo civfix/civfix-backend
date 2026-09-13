@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryOrganizationRepository } from "../../../src/services/host/organization-repository.memory.js"
+import { makeDrizzleOrganizationRepository } from "../../../src/services/host/organization-repository.drizzle.js"
+import { makeFakeSql, type SqlHandler } from "../../helpers/fake-sql.js"
+import type { Sql } from "../../../src/db/client.js"
 import {
   makeOrganizationService,
   ORGS_CREATED_PER_DAY,
@@ -1268,5 +1271,108 @@ describe("admin org management (0.41.0)", () => {
     await expect(
       service.adminRemoveMember(dto.id, OPERATOR, { userId: ADMIN, reason: "again" }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
+  })
+})
+
+describe("#110: volunteer hours on the organization page", () => {
+  it("publishes the org's credited hours and the number of people behind them", async () => {
+    const dto = await service.createOrganization(base(), OWNER)
+    repo.volunteerHours.set(dto.id, { hours: 512.5, volunteers: 84 })
+
+    const read = await service.getOrganizationBySlug("ballona-creek-trust", OWNER)
+    expect(read.volunteerHours).toBe(512.5)
+    expect(read.volunteerCount).toBe(84)
+  })
+
+  it("reads zero for an organization that has never credited an hour", async () => {
+    await service.createOrganization(base(), OWNER)
+    const read = await service.getOrganizationBySlug("ballona-creek-trust", OWNER)
+    expect(read.volunteerHours).toBe(0)
+    expect(read.volunteerCount).toBe(0)
+  })
+})
+
+const ORG_ROW_ID = "66666666-6666-4666-8666-666666666666"
+
+function flatten(statement: { sql: string } | undefined): string {
+  return (statement?.sql ?? "").replace(/\s+/g, " ")
+}
+
+function orgRowSql(): SqlHandler {
+  return { match: /FROM organizations o/, rows: [{ id: ORG_ROW_ID }] }
+}
+
+describe("#110: the organization total honours the public hours opt-out", () => {
+  it("counts only volunteers whose public hours are not switched off", async () => {
+    const fake = makeFakeSql([orgRowSql()])
+    await makeDrizzleOrganizationRepository(fake.sql as unknown as Sql).findOrganizationBySlug(
+      "ballona-creek-trust",
+      null,
+    )
+    const totals = flatten(fake.statements[1])
+
+    expect(totals).toContain("u.show_volunteer_hours IS NOT FALSE")
+    expect(totals).toContain("COALESCE(sum(vh.hours), 0)::float8")
+    expect(totals).toContain("count(DISTINCT vh.user_id)::int")
+    expect(totals).toContain("vh.source = 'event'")
+    expect(totals).toContain("vh.voided_at IS NULL")
+  })
+
+  it("reads both totals ONCE per page, grouped, instead of per row", async () => {
+    const fake = makeFakeSql([orgRowSql()])
+    await makeDrizzleOrganizationRepository(fake.sql as unknown as Sql).listMyOrganizations(
+      OWNER,
+      50,
+    )
+
+    expect(fake.statements).toHaveLength(2)
+    expect(flatten(fake.statements[0])).not.toContain("sum(vh.hours)")
+    const totals = flatten(fake.statements[1])
+    expect(totals).toContain("c.organization_id = ANY(")
+    expect(totals).toContain("GROUP BY c.organization_id")
+    expect(fake.statements[1]?.values).toEqual([[ORG_ROW_ID]])
+  })
+
+  it("skips the totals query entirely when the page is empty", async () => {
+    const fake = makeFakeSql()
+    const page = await makeDrizzleOrganizationRepository(
+      fake.sql as unknown as Sql,
+    ).listMyOrganizations(OWNER, 50)
+
+    expect(page).toEqual([])
+    expect(fake.statements).toHaveLength(1)
+  })
+
+  it("never computes the totals on the operator list, which does not emit them", async () => {
+    const fake = makeFakeSql([orgRowSql()])
+    const { items } = await makeDrizzleOrganizationRepository(
+      fake.sql as unknown as Sql,
+    ).adminListOrganizations({ cursor: null, limit: 50 })
+
+    expect(items).toHaveLength(1)
+    expect(items[0]).not.toHaveProperty("volunteerHours")
+    expect(items[0]).not.toHaveProperty("volunteerCount")
+    for (const statement of fake.statements) {
+      expect(flatten(statement)).not.toContain("sum(vh.hours)")
+    }
+  })
+})
+
+describe("#110: the volunteer totals on the my-organizations list", () => {
+  it("emits each organization's own credited hours and volunteer count", async () => {
+    const first = await service.createOrganization(base(), OWNER)
+    const second = await service.createOrganization(
+      base({ name: "Heal the Bay", slug: "heal-the-bay" }),
+      OWNER,
+    )
+    repo.volunteerHours.set(first.id, { hours: 512.5, volunteers: 84 })
+
+    const mine = await service.listMyOrganizations(OWNER)
+
+    expect(mine.map((o) => [o.slug, o.volunteerHours, o.volunteerCount])).toEqual([
+      ["ballona-creek-trust", 512.5, 84],
+      ["heal-the-bay", 0, 0],
+    ])
+    expect(second.id).not.toBe(first.id)
   })
 })

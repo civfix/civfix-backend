@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import type { CheckinMethod } from "@civfix/shared"
 import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
+import { hasEventEnded } from "../cleanup-rules.js"
 import {
   ARRIVAL_BUCKET_MINUTES,
   buildCheckinResult,
@@ -56,6 +57,8 @@ const MAX_TICKET_TYPES = 20
 
 const ARRIVAL_BUCKET_MS = ARRIVAL_BUCKET_MINUTES * 60_000
 
+const SEEDED_EVENT_LEAD_MS = 7 * 24 * 60 * 60 * 1000
+
 function arrivalBuckets(seats: readonly { checkedInAt: Date | null }[]): { at: Date; count: number }[] {
   const byBucket = new Map<number, number>()
   for (const seat of seats) {
@@ -102,7 +105,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       referenceCode: null,
       lat: 34,
       lng: -118,
-      scheduledAt: new Date("2026-01-01T17:00:00.000Z"),
+      scheduledAt: new Date(Date.now() + SEEDED_EVENT_LEAD_MS),
       endsAt: null,
       timezone: null,
       address: null,
@@ -733,6 +736,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     const event = this.events.get(args.cleanupId)
     if (event === undefined) return { kind: "not_found" }
     if (event.status === "done" || event.status === "cancelled") return { kind: "closed" }
+    if (hasEventEnded(event, args.now)) return { kind: "ended" }
     const type = this.ticketTypes.get(args.ticketTypeId)
     if (type === undefined || type.cleanupId !== args.cleanupId) {
       return { kind: "ticket_type_not_found" }

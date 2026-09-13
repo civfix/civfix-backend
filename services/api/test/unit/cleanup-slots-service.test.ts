@@ -21,7 +21,11 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import { MAX_EVENT_SLOTS, type AppError } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import { makeCleanupService, type CleanupService } from "../../src/services/cleanup-service.js"
+import {
+  CANCEL_FANOUT_MEMBER_CAP,
+  makeCleanupService,
+  type CleanupService,
+} from "../../src/services/cleanup-service.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 
 const ORG = "11111111-1111-1111-1111-111111111111"
@@ -278,8 +282,8 @@ describe("updateCleanup — the reconcile diff (B23)", () => {
         repo.reconcileSlots(
           id,
           [
-            { title: "Grill", description: null, capacity: null, sortOrder: 0 },
-            { title: "GRILL", description: null, capacity: null, sortOrder: 1 },
+            { title: "Grill", description: null, capacity: null, startsAt: null, endsAt: null, sortOrder: 0 },
+            { title: "GRILL", description: null, capacity: null, startsAt: null, endsAt: null, sortOrder: 1 },
           ],
           ORG,
         ))(),
@@ -602,5 +606,395 @@ describe("read shapes (B29a)", () => {
     expect(rows).toContainEqual([MEMBER, "Grill"])
     // An attendee who RSVP'd without picking a shift carries an explicit null, not a missing key.
     expect(rows).toContainEqual([ORG, null])
+  })
+})
+
+describe("slot windows (0167)", () => {
+  const EVENT_START = FUTURE
+  const EVENT_END = new Date(FUTURE.getTime() + 4 * 60 * 60 * 1000)
+  const at = (hours: number): string =>
+    new Date(EVENT_START.getTime() + hours * 60 * 60 * 1000).toISOString()
+
+  function seedTimedEvent(id: string = CLEANUP_ID): string {
+    repo.seedCleanup({ id, organizerUserId: ORG, scheduledAt: EVENT_START, endsAt: EVENT_END })
+    repo.seedMember(id, COHOST, "cohost")
+    repo.seedMember(id, MEMBER, "member")
+    return id
+  }
+
+  it("accepts a window inside the event and round-trips it onto the DTO", async () => {
+    const id = seedTimedEvent()
+    const dto = await service.updateCleanup(
+      id,
+      { slots: [{ title: "Sweep", startsAt: at(0), endsAt: at(2) }] },
+      ORG,
+    )
+    expect(dto.slots.map((s) => [s.title, s.startsAt, s.endsAt])).toEqual([
+      ["Sweep", at(0), at(2)],
+    ])
+  })
+
+  it("leaves an untimed slot's window keys OFF the DTO entirely", async () => {
+    const id = seedTimedEvent()
+    const dto = await service.updateCleanup(id, { slots: [{ title: "Grill" }] }, ORG)
+    expect(dto.slots[0]?.startsAt).toBeUndefined()
+    expect(dto.slots[0]?.endsAt).toBeUndefined()
+  })
+
+  it("422s a timed slot on an event with NO end time, naming what to fix", async () => {
+    const id = seedEvent()
+    await expect(
+      service.updateCleanup(id, { slots: [{ title: "Sweep", startsAt: at(0), endsAt: at(2) }] }, ORG),
+    ).rejects.toSatisfy(
+      (err: unknown) =>
+        fieldsOf(err).slots === "set an end time for the event before adding timed slots",
+    )
+    expect(repo.slots).toEqual([])
+  })
+
+  it("422s a timed slot on a create whose endsAt is null", async () => {
+    await expect(
+      service.createCleanup(
+        {
+          title: "Sweep",
+          type: "site",
+          eventKind: "cleanup",
+          lat: 34,
+          lng: -118.49,
+          scheduledAt: EVENT_START.toISOString(),
+          endsAt: null,
+          slots: [{ title: "Sweep", startsAt: at(0), endsAt: at(2) }],
+        },
+        ORG,
+      ),
+    ).rejects.toSatisfy(
+      (err: unknown) =>
+        fieldsOf(err).slots === "set an end time for the event before adding timed slots",
+    )
+  })
+
+  it("422s a window that starts before the event does, naming the slot", async () => {
+    const id = seedTimedEvent()
+    await expect(
+      service.updateCleanup(id, { slots: [{ title: "Sweep", startsAt: at(-1), endsAt: at(1) }] }, ORG),
+    ).rejects.toSatisfy(
+      (err: unknown) => fieldsOf(err).slots === `slot "Sweep" falls outside the event's start and end`,
+    )
+    expect(repo.slots).toEqual([])
+  })
+
+  it("422s a window that runs past the event's end", async () => {
+    const id = seedTimedEvent()
+    await expect(
+      service.updateCleanup(id, { slots: [{ title: "Sweep", startsAt: at(3), endsAt: at(5) }] }, ORG),
+    ).rejects.toSatisfy(
+      (err: unknown) => fieldsOf(err).slots === `slot "Sweep" falls outside the event's start and end`,
+    )
+  })
+
+  it("422s a shift shorter than the creditable-event minimum", async () => {
+    const id = seedTimedEvent()
+    const startsAt = at(0)
+    const endsAt = new Date(EVENT_START.getTime() + 10 * 60 * 1000).toISOString()
+    await expect(
+      service.updateCleanup(id, { slots: [{ title: "Sweep", startsAt, endsAt }] }, ORG),
+    ).rejects.toSatisfy(
+      (err: unknown) => fieldsOf(err).slots === `slot "Sweep" must last at least 15 minutes`,
+    )
+  })
+
+  it("accepts the SAME title at two different windows (that is what a shift is)", async () => {
+    const id = seedTimedEvent()
+    const dto = await service.updateCleanup(
+      id,
+      {
+        slots: [
+          { title: "Sweep", startsAt: at(0), endsAt: at(2), sortOrder: 0 },
+          { title: "Sweep", startsAt: at(2), endsAt: at(4), sortOrder: 1 },
+        ],
+      },
+      ORG,
+    )
+    expect(dto.slots.map((s) => [s.title, s.startsAt])).toEqual([
+      ["Sweep", at(0)],
+      ["Sweep", at(2)],
+    ])
+  })
+
+  it("still 422s the same title at the SAME window", async () => {
+    const id = seedTimedEvent()
+    await expect(
+      service.updateCleanup(
+        id,
+        {
+          slots: [
+            { title: "Sweep", startsAt: at(0), endsAt: at(2) },
+            { title: "sweep", startsAt: at(0), endsAt: at(2) },
+          ],
+        },
+        ORG,
+      ),
+    ).rejects.toSatisfy((err: unknown) => fieldsOf(err).slots === "duplicate slot title: sweep")
+    expect(repo.slots).toEqual([])
+  })
+
+  it("still 422s two UNTIMED slots sharing a title (0063's rule survives the wider key)", async () => {
+    const id = seedTimedEvent()
+    await expect(
+      service.updateCleanup(id, { slots: [{ title: "Grill" }, { title: "GRILL" }] }, ORG),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+  })
+
+  it("SWAPS the windows of two same-titled shifts in one save", async () => {
+    const id = seedTimedEvent()
+    const morning = repo.seedSlot({
+      cleanupId: id,
+      title: "Sweep",
+      startsAt: new Date(at(0)),
+      endsAt: new Date(at(2)),
+      sortOrder: 0,
+    })
+    const afternoon = repo.seedSlot({
+      cleanupId: id,
+      title: "Sweep",
+      startsAt: new Date(at(2)),
+      endsAt: new Date(at(4)),
+      sortOrder: 1,
+    })
+
+    const dto = await service.updateCleanup(
+      id,
+      {
+        slots: [
+          { id: morning.id, title: "Sweep", startsAt: at(2), endsAt: at(4), sortOrder: 0 },
+          { id: afternoon.id, title: "Sweep", startsAt: at(0), endsAt: at(2), sortOrder: 1 },
+        ],
+      },
+      ORG,
+    )
+
+    expect(dto.slots.map((s) => [s.id, s.startsAt])).toEqual([
+      [morning.id, at(2)],
+      [afternoon.id, at(0)],
+    ])
+  })
+
+  it("REMOVES a shift and re-adds one at the same title AND window in one save", async () => {
+    const id = seedTimedEvent()
+    const old = repo.seedSlot({
+      cleanupId: id,
+      title: "Sweep",
+      startsAt: new Date(at(0)),
+      endsAt: new Date(at(2)),
+    })
+
+    const dto = await service.updateCleanup(
+      id,
+      { slots: [{ title: "Sweep", startsAt: at(0), endsAt: at(2), capacity: 5 }] },
+      ORG,
+    )
+
+    expect(dto.slots.map((s) => [s.title, s.startsAt, s.capacity])).toEqual([["Sweep", at(0), 5]])
+    expect(dto.slots[0]?.id).not.toBe(old.id)
+  })
+
+  it("422s on scheduledAt when the event window shrinks past a timed slot and slots are OMITTED", async () => {
+    const id = seedTimedEvent()
+    repo.seedSlot({
+      cleanupId: id,
+      title: "Sweep",
+      startsAt: new Date(at(3)),
+      endsAt: new Date(at(4)),
+    })
+
+    await expect(
+      service.updateCleanup(id, { endsAt: at(2) }, ORG),
+    ).rejects.toSatisfy(
+      (err: unknown) =>
+        fieldsOf(err).scheduledAt ===
+        "timed slots would fall outside the new start and end; update the slots in the same save",
+    )
+    expect(repo.cleanups.get(id)?.endsAt).toEqual(EVENT_END)
+  })
+
+  it("422s the same way when the event's end is cleared entirely", async () => {
+    const id = seedTimedEvent()
+    repo.seedSlot({
+      cleanupId: id,
+      title: "Sweep",
+      startsAt: new Date(at(0)),
+      endsAt: new Date(at(2)),
+    })
+    await expect(service.updateCleanup(id, { endsAt: null }, ORG)).rejects.toSatisfy(
+      (err: unknown) =>
+        fieldsOf(err).scheduledAt ===
+        "timed slots would fall outside the new start and end; update the slots in the same save",
+    )
+  })
+
+  it("moves the event freely when only UNTIMED slots exist", async () => {
+    const id = seedTimedEvent()
+    repo.seedSlot({ cleanupId: id, title: "Grill" })
+    const dto = await service.updateCleanup(id, { endsAt: at(2) }, ORG)
+    expect(dto.endsAt).toBe(at(2))
+  })
+
+  it("accepts a reschedule that carries the shifted slots in the SAME save", async () => {
+    const id = seedTimedEvent()
+    const slot = repo.seedSlot({
+      cleanupId: id,
+      title: "Sweep",
+      startsAt: new Date(at(3)),
+      endsAt: new Date(at(4)),
+    })
+
+    const dto = await service.updateCleanup(
+      id,
+      {
+        endsAt: at(2),
+        slots: [{ id: slot.id, title: "Sweep", startsAt: at(0), endsAt: at(1) }],
+      },
+      ORG,
+    )
+    expect(dto.endsAt).toBe(at(2))
+    expect(dto.slots.map((s) => [s.startsAt, s.endsAt])).toEqual([[at(0), at(1)]])
+  })
+
+  it("rings every claimant of a MOVED shift exactly once, actor excluded", async () => {
+    const id = seedTimedEvent()
+    const slot = repo.seedSlot({
+      cleanupId: id,
+      title: "Sweep",
+      startsAt: new Date(at(0)),
+      endsAt: new Date(at(2)),
+    })
+    await service.claimEventSlot(id, MEMBER, slot.id)
+    await service.claimEventSlot(id, COHOST, slot.id)
+    await service.claimEventSlot(id, ORG, slot.id)
+
+    const bells: { userId: string; titleKey?: string; vars?: Record<string, unknown> }[] = []
+    const notified = makeCleanupService({
+      repo,
+      counters,
+      notifier: {
+        createNotification: (userId, input) => {
+          bells.push({
+            userId,
+            ...(input.titleKey !== undefined ? { titleKey: input.titleKey } : {}),
+            ...(input.vars !== undefined ? { vars: input.vars } : {}),
+          })
+          return Promise.resolve({ id: "n1" } as never)
+        },
+      },
+    })
+
+    await notified.updateCleanup(
+      id,
+      { slots: [{ id: slot.id, title: "Sweep", startsAt: at(2), endsAt: at(4) }] },
+      ORG,
+    )
+
+    expect(bells.map((b) => b.userId).sort()).toEqual([COHOST, MEMBER].sort())
+    expect(bells.every((b) => b.titleKey === "notification.cleanup_slot.moved.title")).toBe(true)
+    expect(bells[0]?.vars).toMatchObject({ slot: "Sweep" })
+  })
+
+  it("rings NOBODY when the shift keeps its window (a rename is not a reschedule)", async () => {
+    const id = seedTimedEvent()
+    const slot = repo.seedSlot({
+      cleanupId: id,
+      title: "Sweep",
+      startsAt: new Date(at(0)),
+      endsAt: new Date(at(2)),
+    })
+    await service.claimEventSlot(id, MEMBER, slot.id)
+
+    const bells: string[] = []
+    const notified = makeCleanupService({
+      repo,
+      counters,
+      notifier: {
+        createNotification: (userId) => {
+          bells.push(userId)
+          return Promise.resolve({ id: "n1" } as never)
+        },
+      },
+    })
+
+    await notified.updateCleanup(
+      id,
+      { slots: [{ id: slot.id, title: "Morning sweep", startsAt: at(0), endsAt: at(2), capacity: 9 }] },
+      ORG,
+    )
+    expect(bells).toEqual([])
+  })
+
+  it("spends ONE fan-out budget across the removed and moved bells in a single save", async () => {
+    const id = seedTimedEvent()
+    const slot = repo.seedSlot({
+      cleanupId: id,
+      title: "Sweep",
+      startsAt: new Date(at(0)),
+      endsAt: new Date(at(2)),
+    })
+    const crowd = (prefix: string): string[] =>
+      Array.from({ length: CANCEL_FANOUT_MEMBER_CAP }, (_, i) => `${prefix}-${i}`)
+    repo.reconcileSlots = () =>
+      Promise.resolve({
+        added: [],
+        updated: [slot.id],
+        removed: [{ slotId: "removed-slot", title: "Grill", claimantUserIds: crowd("gone") }],
+        rescheduled: [{ slotId: slot.id, title: "Sweep", claimantUserIds: crowd("moved") }],
+      })
+
+    const bells: string[] = []
+    const notified = makeCleanupService({
+      repo,
+      counters,
+      notifier: {
+        createNotification: (userId) => {
+          bells.push(userId)
+          return Promise.resolve({ id: "n1" } as never)
+        },
+      },
+    })
+
+    await notified.updateCleanup(
+      id,
+      { slots: [{ id: slot.id, title: "Sweep", startsAt: at(2), endsAt: at(4) }] },
+      ORG,
+    )
+
+    expect(bells).toHaveLength(CANCEL_FANOUT_MEMBER_CAP)
+    expect(bells.every((userId) => userId.startsWith("gone-"))).toBe(true)
+  })
+
+  it("rings nobody for a moved shift that has no claimants", async () => {
+    const id = seedTimedEvent()
+    const slot = repo.seedSlot({
+      cleanupId: id,
+      title: "Sweep",
+      startsAt: new Date(at(0)),
+      endsAt: new Date(at(2)),
+    })
+
+    const bells: string[] = []
+    const notified = makeCleanupService({
+      repo,
+      counters,
+      notifier: {
+        createNotification: (userId) => {
+          bells.push(userId)
+          return Promise.resolve({ id: "n1" } as never)
+        },
+      },
+    })
+
+    await notified.updateCleanup(
+      id,
+      { slots: [{ id: slot.id, title: "Sweep", startsAt: at(2), endsAt: at(4) }] },
+      ORG,
+    )
+    expect(bells).toEqual([])
   })
 })

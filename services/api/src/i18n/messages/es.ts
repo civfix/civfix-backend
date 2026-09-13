@@ -68,6 +68,9 @@ export const es: Partial<Record<MessageKey, string>> = {
 
   "notification.cleanup_slot.removed.title": "Tu rol en el evento cambió",
   "notification.cleanup_slot.removed.body": 'Se eliminó el rol "{{slot}}" de {{title}}.',
+  "notification.cleanup_slot.moved.title": "El horario de tu turno cambió",
+  "notification.cleanup_slot.moved.body":
+    'El turno "{{slot}}" de {{title}} tiene un horario nuevo. Abre el evento para verlo.',
 
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Tu código de acceso a civfix",

@@ -1,4 +1,10 @@
-import { AppError, MAX_EVENT_HOURS, MAX_EVENT_HOURS_ENTRIES, MIN_EVENT_HOURS } from "@civfix/shared"
+import {
+  AppError,
+  avatarGradient,
+  MAX_EVENT_HOURS,
+  MAX_EVENT_HOURS_ENTRIES,
+  MIN_EVENT_HOURS,
+} from "@civfix/shared"
 import type {
   CleanupMemberRole,
   CleanupStatus,
@@ -12,6 +18,7 @@ import type {
   MyVolunteerHoursEntriesQuery,
   MyVolunteerHoursEntriesResponse,
   OrganizationRefDTO,
+  OrgHoursDTO,
   PublicVolunteerHoursQuery,
   PublicVolunteerHoursResponse,
   VolunteerHoursEntryDTO,
@@ -20,8 +27,10 @@ import type {
 import { can, type HostStanding } from "@civfix/shared/host"
 import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
 import { MIN_EVENT_DURATION_MS } from "./cleanup-rules.js"
-import { mapWithLimit } from "./media-presign.js"
+import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
 import type { AffiliationLoader } from "./affiliation.js"
+import type { TopVolunteerRow } from "./host/analytics-repository.drizzle.js"
+import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import type { NotificationService } from "./notification-service.js"
 
 export const LEADERBOARD_DEFAULT_LIMIT = 20
@@ -35,6 +44,8 @@ export const HOURS_ENTRIES_DEFAULT_LIMIT = 20
 export const HOURS_ENTRIES_MAX_LIMIT = 50
 
 export const LEADERBOARD_EXTRAS_MIN_LIMIT = 25
+
+export const MAX_ORG_CHIPS_FETCH = 20
 
 export const HOURS_NOTIFY_CONCURRENCY = 8
 
@@ -168,9 +179,39 @@ export interface CertificateEntriesPage {
   entryCount: number
 }
 
+export interface OrgHoursView {
+  organizationId: string
+  slug: string
+  name: string
+  logoKey: string | null
+  verified: boolean
+  verifiedKind: OrganizationRefDTO["verifiedKind"]
+  hours: number
+}
+
+export interface MyVolunteerHoursTotals {
+  totalHours: number
+  byJurisdiction: MyVolunteerHoursDTO["byJurisdiction"]
+  byOrganization: OrgHoursView[]
+}
+
+export type OrgLogoPresigner = (key: string) => Promise<string>
+
+export function leaderboardEntryOf(row: TopVolunteerRow, rank: number): LeaderboardEntryDTO {
+  return {
+    rank,
+    userId: row.userId,
+    name: row.name,
+    ...(row.handle !== null ? { handle: row.handle } : {}),
+    avatar: avatarGradient(row.userId),
+    ...(row.avatarUrl !== null ? { avatarUrl: row.avatarUrl } : {}),
+    hours: round2(row.hours),
+  }
+}
+
 export interface VolunteerHoursRepository {
   logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult>
-  totalsFor(userId: string): Promise<MyVolunteerHoursDTO>
+  totalsFor(userId: string): Promise<MyVolunteerHoursTotals>
   totalHoursFor(userId: string): Promise<number>
   leaderboard(
     geoid: string,
@@ -207,6 +248,8 @@ export interface VolunteerHoursServiceDeps {
   repo: VolunteerHoursRepository
   cleanups: CleanupHoursLookup
   affiliations?: AffiliationLoader
+  presignOrgLogo?: OrgLogoPresigner
+  insightsInvalidator?: InsightsInvalidator
   isBlockedEitherWay?: (viewerId: string, targetId: string) => Promise<boolean>
   notifier?: Pick<NotificationService, "createNotification">
   moderation?: HoursModerationSink
@@ -257,6 +300,7 @@ function neutralPublicHours(): PublicVolunteerHoursResponse {
     visible: true,
     totalHours: 0,
     byJurisdiction: [],
+    byOrganization: [],
     items: [],
     reportHours: 0,
     nextCursor: null,
@@ -334,6 +378,33 @@ function toEventHoursRow(entry: EventHoursLedgerEntry): {
 }
 
 export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): VolunteerHoursService {
+  async function organizationChips(views: readonly OrgHoursView[]): Promise<OrgHoursDTO[]> {
+    const presign = deps.presignOrgLogo
+    const keys =
+      presign === undefined
+        ? []
+        : [...new Set(views.map((v) => v.logoKey).filter((k): k is string => k !== null))]
+    const byKey = new Map<string, string>()
+    if (presign !== undefined && keys.length > 0) {
+      const urls = await mapWithLimit(keys, PRESIGN_CONCURRENCY, (key) => presign(key))
+      keys.forEach((key, i) => {
+        const url = urls[i]
+        if (url !== undefined) byKey.set(key, url)
+      })
+    }
+    return views.map((view) => ({
+      organization: {
+        id: view.organizationId,
+        slug: view.slug,
+        name: view.name,
+        logoUrl: view.logoKey === null ? null : (byKey.get(view.logoKey) ?? null),
+        verified: view.verified,
+        verifiedKind: view.verifiedKind,
+      },
+      hours: round2(view.hours),
+    }))
+  }
+
   async function standingFor(cleanupId: string, userId: string): Promise<HostStanding> {
     if (deps.cleanups.standingOf !== undefined) {
       return deps.cleanups.standingOf(cleanupId, userId)
@@ -395,8 +466,13 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
   }
 
   return {
-    getMyHours(userId: string): Promise<MyVolunteerHoursDTO> {
-      return deps.repo.totalsFor(userId)
+    async getMyHours(userId: string): Promise<MyVolunteerHoursDTO> {
+      const totals = await deps.repo.totalsFor(userId)
+      return {
+        totalHours: totals.totalHours,
+        byJurisdiction: totals.byJurisdiction,
+        byOrganization: await organizationChips(totals.byOrganization),
+      }
     },
 
     async getMyHoursEntries(
@@ -452,6 +528,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         visible: true,
         totalHours: totals.totalHours,
         byJurisdiction: totals.byJurisdiction,
+        byOrganization: await organizationChips(totals.byOrganization),
         items: await entriesWithCreditorAffiliation(deps.affiliations, page.items, viewerId),
         reportHours: 0,
         nextCursor: page.nextCursor,
@@ -553,6 +630,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         dailyCapHours: DAILY_HOURS_CAP,
         weeklyFlagHours: deps.weeklyFlagHours ?? WEEKLY_HOURS_FLAG_DEFAULT,
       })
+      await deps.insightsInvalidator?.bumpInsightsGeneration(input.cleanupId)
       await reportAnomalies(result.anomalies, input.cleanupId)
       await notifyHoursLogged(
         { id: input.cleanupId, title: cleanup.title },

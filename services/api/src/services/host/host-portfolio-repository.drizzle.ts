@@ -39,11 +39,17 @@ export interface ListHostedEventsArgs {
   limit: number
 }
 
+export interface HostPortfolioKpisArgs {
+  userId: string
+  organizationId: string | null
+  now: Date
+}
+
 export interface HostPortfolioRepository {
   listHostedEvents(
     args: ListHostedEventsArgs,
   ): Promise<{ items: HostedEventRecord[]; nextCursor: string | null }>
-  kpisFor(userId: string, now: Date): Promise<HostPortfolioKpiRecord>
+  kpisFor(args: HostPortfolioKpisArgs): Promise<HostPortfolioKpiRecord>
 }
 
 interface HostedEventRowSelect {
@@ -97,6 +103,9 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
     WHERE om.user_id = ${userId} AND om.role <> 'member'
   )`
 
+  const orgFilter = (organizationId: string | null) =>
+    organizationId !== null ? sql`AND c.organization_id = ${organizationId}` : sql``
+
   return {
     async listHostedEvents(
       args: ListHostedEventsArgs,
@@ -115,10 +124,6 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
           : past
             ? sql`AND c.scheduled_at < now()`
             : sql``
-      const orgFilter =
-        args.organizationId !== null
-          ? sql`AND c.organization_id = ${args.organizationId}`
-          : sql``
       const order = past
         ? sql`ORDER BY c.scheduled_at DESC, c.id DESC`
         : sql`ORDER BY c.scheduled_at ASC, c.id ASC`
@@ -154,7 +159,7 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
         LEFT JOIN organizations o ON o.id = c.organization_id AND o.deleted_at IS NULL
         WHERE TRUE
           ${whenFilter}
-          ${orgFilter}
+          ${orgFilter(args.organizationId)}
           ${cursorFilter}
         ${order}
         LIMIT ${args.limit + 1}
@@ -164,16 +169,18 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
       )
     },
 
-    async kpisFor(userId: string, now: Date): Promise<HostPortfolioKpiRecord> {
+    async kpisFor(args: HostPortfolioKpisArgs): Promise<HostPortfolioKpiRecord> {
       const rows = await sql<{ events_hosted: number; upcoming_events: number }[]>`
-        WITH hosted AS ${hostedIds(userId)}
+        WITH hosted AS ${hostedIds(args.userId)}
         SELECT
           count(*)::int AS events_hosted,
           count(*) FILTER (
-            WHERE c.scheduled_at >= ${now} AND c.status <> 'cancelled'
+            WHERE c.scheduled_at >= ${args.now} AND c.status <> 'cancelled'
           )::int AS upcoming_events
         FROM hosted h
         JOIN cleanups c ON c.id = h.id
+        WHERE TRUE
+          ${orgFilter(args.organizationId)}
       `
       const row = rows[0]
       return {

@@ -1,12 +1,19 @@
 import { AppError, avatarGradient } from "@civfix/shared"
-import type { LeaderboardEntryDTO, MyVolunteerHoursDTO, VolunteerHoursSource } from "@civfix/shared"
+import type {
+  LeaderboardEntryDTO,
+  OrganizationRefDTO,
+  OrgVerificationStatus,
+  VolunteerHoursSource,
+} from "@civfix/shared"
 import type { Queryable, Sql } from "../db/client.js"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
+import { servedKeyExpr } from "./media-served-key.js"
 import {
   DAILY_HOURS_CAP,
   EVENT_HOURS_MEMBER_CAP,
   ITEMISED_SOURCES,
+  MAX_ORG_CHIPS_FETCH,
   RECIPROCAL_LOOKBACK_MS,
   WEEKLY_HOURS_FLAG_DEFAULT,
 } from "./volunteer-hours-service.js"
@@ -19,6 +26,8 @@ import type {
   ListEntriesArgs,
   LogEventHoursArgs,
   LogEventHoursResult,
+  MyVolunteerHoursTotals,
+  OrgHoursView,
   VolunteerHoursAnomaly,
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
@@ -44,6 +53,28 @@ interface LedgerRow {
   creditor_id: string | null
   creditor_name: string | null
   creditor_handle: string | null
+}
+
+interface OrgHoursRow {
+  id: string
+  slug: string
+  name: string
+  logo_key: string | null
+  verified_status: OrgVerificationStatus
+  verified_kind: OrganizationRefDTO["verifiedKind"]
+  hours: number
+}
+
+function toOrgHoursView(r: OrgHoursRow): OrgHoursView {
+  return {
+    organizationId: r.id,
+    slug: r.slug,
+    name: r.name,
+    logoKey: r.logo_key,
+    verified: r.verified_status === "verified",
+    verifiedKind: r.verified_kind,
+    hours: r.hours,
+  }
 }
 
 function toEntryView(r: LedgerRow): VolunteerHoursEntryView {
@@ -306,7 +337,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       })
     },
 
-    async totalsFor(userId: string): Promise<MyVolunteerHoursDTO> {
+    async totalsFor(userId: string): Promise<MyVolunteerHoursTotals> {
       const rows = await sql<{ geoid: string; name: string | null; hours: number }[]>`
         SELECT
           ujh.jurisdiction_geoid AS geoid,
@@ -318,8 +349,30 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         ORDER BY ujh.total_hours DESC, ujh.jurisdiction_geoid
       `
       const byJurisdiction = rows.map((r) => ({ geoid: r.geoid, name: r.name, hours: r.hours }))
+      const orgRows = await sql<OrgHoursRow[]>`
+        SELECT
+          o.id,
+          o.slug,
+          o.name,
+          ${servedKeyExpr(sql, "am")} AS logo_key,
+          o.verified_status,
+          o.verified_kind,
+          sum(vh.hours)::float8 AS hours
+        FROM volunteer_hours vh
+        JOIN cleanups c ON c.id = vh.cleanup_id
+        JOIN organizations o ON o.id = c.organization_id
+        LEFT JOIN media_assets am ON am.id = o.logo_media_id
+        WHERE vh.user_id = ${userId}
+          AND vh.source = 'event'
+          AND vh.voided_at IS NULL
+          AND o.deleted_at IS NULL
+          AND o.suspended_at IS NULL
+        GROUP BY o.id, o.slug, o.name, am.id, o.verified_status, o.verified_kind
+        ORDER BY sum(vh.hours) DESC, o.id
+        LIMIT ${MAX_ORG_CHIPS_FETCH}
+      `
       const totalHours = await computeTotalHours(sql, userId)
-      return { totalHours, byJurisdiction }
+      return { totalHours, byJurisdiction, byOrganization: orgRows.map(toOrgHoursView) }
     },
 
     async totalHoursFor(userId: string): Promise<number> {

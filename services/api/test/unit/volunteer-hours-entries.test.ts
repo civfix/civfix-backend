@@ -297,6 +297,7 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
       visible: true,
       totalHours: 0,
       byJurisdiction: [],
+      byOrganization: [],
       items: [],
       reportHours: 0,
       nextCursor: null,

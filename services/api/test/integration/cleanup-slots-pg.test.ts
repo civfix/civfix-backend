@@ -52,17 +52,41 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
   async function newSlot(
     cleanupId: string,
-    over: { title?: string; capacity?: number | null; sortOrder?: number } = {},
+    over: {
+      title?: string
+      capacity?: number | null
+      sortOrder?: number
+      startsAt?: Date | null
+      endsAt?: Date | null
+    } = {},
   ): Promise<string> {
     const [row] = await h.sql<{ id: string }[]>`
-      INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, sort_order)
+      INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, starts_at, ends_at, sort_order)
       VALUES (
         ${cleanupId}, ${over.title ?? "Grill"}, NULL,
-        ${over.capacity === undefined ? null : over.capacity}, ${over.sortOrder ?? 0}
+        ${over.capacity === undefined ? null : over.capacity},
+        ${over.startsAt ?? null}, ${over.endsAt ?? null}, ${over.sortOrder ?? 0}
       )
       RETURNING id
     `
     return row!.id
+  }
+
+  const SHIFT_MS = 2 * 60 * 60 * 1000
+  const MORNING = { startsAt: FUTURE, endsAt: new Date(FUTURE.getTime() + SHIFT_MS) }
+  const AFTERNOON = {
+    startsAt: new Date(FUTURE.getTime() + SHIFT_MS),
+    endsAt: new Date(FUTURE.getTime() + 2 * SHIFT_MS),
+  }
+
+  async function windowsOf(cleanupId: string): Promise<[string, string, number | null, number | null][]> {
+    const board = await repo.listSlots(cleanupId, null)
+    return board.map((s) => [
+      s.id,
+      s.title,
+      s.startsAt?.getTime() ?? null,
+      s.endsAt?.getTime() ?? null,
+    ])
   }
 
   async function claimCount(slotId: string): Promise<number> {
@@ -90,6 +114,8 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       title: over.title ?? "Grill",
       description: over.description ?? null,
       capacity: over.capacity ?? null,
+      startsAt: over.startsAt ?? null,
+      endsAt: over.endsAt ?? null,
       sortOrder: over.sortOrder ?? 0,
       ...(over.id !== undefined ? { id: over.id } : {}),
     }
@@ -431,6 +457,109 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
     expect(result.removed.map((r) => r.slotId)).toEqual([drop])
     expect(await titlesOf(cleanupId)).toEqual([[keep, "Registration"]])
+  })
+
+  it("reconcileSlots SWAPS the WINDOWS of two same-titled shifts in one save (0167)", async () => {
+    const org = await newUser("Window Swap Host")
+    const cleanupId = await newCleanup(org)
+    const first = await newSlot(cleanupId, { title: "Sweep", sortOrder: 0, ...MORNING })
+    const second = await newSlot(cleanupId, { title: "Sweep", sortOrder: 1, ...AFTERNOON })
+
+    const result = await repo.reconcileSlots(
+      cleanupId,
+      [
+        slot({ id: first, title: "Sweep", sortOrder: 0, ...AFTERNOON }),
+        slot({ id: second, title: "Sweep", sortOrder: 1, ...MORNING }),
+      ],
+      org,
+    )
+
+    expect(result.updated.sort()).toEqual([first, second].sort())
+    expect(result.removed).toEqual([])
+    expect(await windowsOf(cleanupId)).toEqual([
+      [first, "Sweep", AFTERNOON.startsAt.getTime(), AFTERNOON.endsAt.getTime()],
+      [second, "Sweep", MORNING.startsAt.getTime(), MORNING.endsAt.getTime()],
+    ])
+  })
+
+  it("the same title at two DIFFERENT windows coexists on one event (0167)", async () => {
+    const org = await newUser("Two Shift Host")
+    const cleanupId = await newCleanup(org)
+    const morning = await newSlot(cleanupId, { title: "Sweep", sortOrder: 0, ...MORNING })
+
+    const result = await repo.reconcileSlots(
+      cleanupId,
+      [
+        slot({ id: morning, title: "Sweep", sortOrder: 0, ...MORNING }),
+        slot({ title: "SWEEP", sortOrder: 1, ...AFTERNOON }),
+      ],
+      org,
+    )
+
+    expect(result.added).toHaveLength(1)
+    expect(await windowsOf(cleanupId)).toEqual([
+      [morning, "Sweep", MORNING.startsAt.getTime(), MORNING.endsAt.getTime()],
+      [result.added[0], "SWEEP", AFTERNOON.startsAt.getTime(), AFTERNOON.endsAt.getTime()],
+    ])
+  })
+
+  it("two UNTIMED same-title slots are still a 23505, mapped to the named 422 (0167)", async () => {
+    const org = await newUser("Untimed Dup Host")
+    const cleanupId = await newCleanup(org)
+    const untimed = await newSlot(cleanupId, { title: "Sweep" })
+
+    await expect(newSlot(cleanupId, { title: "SWEEP" })).rejects.toMatchObject({ code: "23505" })
+    await expect(
+      repo.reconcileSlots(
+        cleanupId,
+        [
+          slot({ id: untimed, title: "Sweep", sortOrder: 0 }),
+          slot({ title: "SWEEP", sortOrder: 1 }),
+        ],
+        org,
+      ),
+    ).rejects.toMatchObject({ code: "VALIDATION", fields: { slots: "duplicate slot title" } })
+    expect(await windowsOf(cleanupId)).toEqual([[untimed, "Sweep", null, null]])
+  })
+
+  it("a reconcile that only changes capacity leaves the window untouched (0167)", async () => {
+    const org = await newUser("Capacity Only Host")
+    const cleanupId = await newCleanup(org)
+    const shift = await newSlot(cleanupId, { title: "Sweep", capacity: 2, ...MORNING })
+    const claimant = await newUser("Kept claimant")
+    await repo.claimSlot(cleanupId, claimant, shift)
+
+    const result = await repo.reconcileSlots(
+      cleanupId,
+      [slot({ id: shift, title: "Sweep", capacity: 6, sortOrder: 0, ...MORNING })],
+      org,
+    )
+
+    expect(result.updated).toEqual([shift])
+    expect(result.rescheduled).toEqual([])
+    expect(await windowsOf(cleanupId)).toEqual([
+      [shift, "Sweep", MORNING.startsAt.getTime(), MORNING.endsAt.getTime()],
+    ])
+    const board = await repo.listSlots(cleanupId, null)
+    expect(board.map((s) => [s.capacity, s.claimed])).toEqual([[6, 1]])
+  })
+
+  it("reconcileSlots RENAMES a kept shift onto the title AND window of one it removes (0167)", async () => {
+    const org = await newUser("Window Rename Host")
+    const cleanupId = await newCleanup(org)
+    const keep = await newSlot(cleanupId, { title: "Grill", sortOrder: 0, ...MORNING })
+    const drop = await newSlot(cleanupId, { title: "Sweep", sortOrder: 1, ...AFTERNOON })
+
+    const result = await repo.reconcileSlots(
+      cleanupId,
+      [slot({ id: keep, title: "Sweep", sortOrder: 0, ...AFTERNOON })],
+      org,
+    )
+
+    expect(result.removed.map((r) => r.slotId)).toEqual([drop])
+    expect(await windowsOf(cleanupId)).toEqual([
+      [keep, "Sweep", AFTERNOON.startsAt.getTime(), AFTERNOON.endsAt.getTime()],
+    ])
   })
 
   it("a duplicate title inside the desired set is a NAMED 422, never a leaked 23505", async () => {

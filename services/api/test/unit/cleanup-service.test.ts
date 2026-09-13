@@ -12,6 +12,7 @@ import {
   type CleanupService,
 } from "../../src/services/cleanup-service.js"
 import { CLEANUP_GUEST_UPDATE_FANOUT_JOB } from "../../src/services/guest-rsvp-service.js"
+import { IN_PROGRESS_GRACE_HOURS } from "../../src/services/cleanup-rules.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { CreateCleanupRequest } from "@civfix/shared"
@@ -159,6 +160,71 @@ describe("joinCleanup / leaveCleanup", () => {
     const other = await scoped.createCleanup(baseInput(), ORG)
     await expect(scoped.joinCleanup(other.id, ALICE)).resolves.toMatchObject({ joined: true })
     await expect(scoped.joinCleanup(created.id, BOB)).resolves.toMatchObject({ joined: true })
+  })
+
+  it("refuses to join an event whose endsAt is in the past (409 CONFLICT)", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
+    repo.cleanups.get(created.id)!.endsAt = new Date(Date.now() - 60 * 60 * 1000)
+
+    await expect(service.joinCleanup(created.id, ALICE)).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "This event has already ended.",
+    })
+    expect(await repo.isMember(created.id, ALICE)).toBe(false)
+  })
+
+  it("refuses to join when endsAt is null and the start is older than the grace window", async () => {
+    const stale = new Date(Date.now() - (IN_PROGRESS_GRACE_HOURS + 1) * 60 * 60 * 1000)
+    const created = await service.createCleanup(
+      baseInput({ scheduledAt: stale.toISOString() }),
+      ORG,
+    )
+    repo.cleanups.get(created.id)!.scheduledAt = stale
+
+    await expect(service.joinCleanup(created.id, ALICE)).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "This event has already ended.",
+    })
+    expect(await repo.isMember(created.id, ALICE)).toBe(false)
+  })
+
+  it("still accepts a join for an event that started an hour ago with no endsAt", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
+    repo.cleanups.get(created.id)!.scheduledAt = new Date(Date.now() - 60 * 60 * 1000)
+
+    await expect(service.joinCleanup(created.id, ALICE)).resolves.toEqual({
+      joined: true,
+      going: 2,
+    })
+  })
+
+  it("lets an attendee leave an event that has already ended", async () => {
+    const created = await service.createCleanup(baseInput(), ORG)
+    await service.joinCleanup(created.id, ALICE)
+    repo.cleanups.get(created.id)!.endsAt = new Date(Date.now() - 60 * 60 * 1000)
+    repo.cleanups.get(created.id)!.scheduledAt = new Date(Date.now() - 3 * 60 * 60 * 1000)
+
+    await expect(service.leaveCleanup(created.id, ALICE)).resolves.toEqual({
+      joined: false,
+      going: 1,
+    })
+    expect(await repo.isMember(created.id, ALICE)).toBe(false)
+  })
+
+  it("a completed or cancelled event still reports the closed message, not the ended one", async () => {
+    const done = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
+    repo.cleanups.get(done.id)!.status = "done"
+    await expect(service.joinCleanup(done.id, ALICE)).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "This event is closed.",
+    })
+
+    const cancelled = await service.createCleanup(baseInput(), ORG)
+    repo.cleanups.get(cancelled.id)!.status = "cancelled"
+    await expect(service.joinCleanup(cancelled.id, ALICE)).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "This event is closed.",
+    })
   })
 })
 

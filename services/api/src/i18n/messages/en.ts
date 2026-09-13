@@ -102,6 +102,10 @@ export const en = {
   "notification.cleanup_slot.removed.title": "Your event role changed",
   "notification.cleanup_slot.removed.body": 'The "{{slot}}" role was removed from {{title}}.',
 
+  "notification.cleanup_slot.moved.title": "Your shift time changed",
+  "notification.cleanup_slot.moved.body":
+    'The "{{slot}}" shift at {{title}} has a new time. Open the event to check it.',
+
   // ---- Service-hours transcript / certificate (P5) ------------------------------------------------
   // Every chrome string the SERVER-RENDERED PDF prints (services/certificate-pdf.ts). This is an
   // official document a volunteer hands to a school, an employer or a court, so the register is plain

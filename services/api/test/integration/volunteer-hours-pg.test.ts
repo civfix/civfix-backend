@@ -681,6 +681,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       visible: true,
       totalHours: 0,
       byJurisdiction: [],
+      byOrganization: [],
       items: [],
       reportHours: 0,
       nextCursor: null,

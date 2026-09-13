@@ -78,6 +78,24 @@ export interface EventHoursTotals {
   attendeesCheckedIn: number
 }
 
+export interface TopVolunteerRow {
+  userId: string
+  name: string
+  handle: string | null
+  avatarUrl: string | null
+  hours: number
+}
+
+export interface PortfolioHoursTotals {
+  credited: number
+  volunteersCredited: number
+}
+
+export const ZERO_PORTFOLIO_HOURS_TOTALS: PortfolioHoursTotals = Object.freeze({
+  credited: 0,
+  volunteersCredited: 0,
+})
+
 export interface ReturningAttendees {
   seats: number
   ofRegistered: number
@@ -111,6 +129,8 @@ export interface AnalyticsRepository {
   registrationsBySource(cleanupId: string): Promise<SourceSeats[]>
   broadcastsForEvent(cleanupId: string, limit: number): Promise<EventBroadcastRecord[]>
   eventHoursTotals(cleanupId: string): Promise<EventHoursTotals>
+  topVolunteers(cleanupIds: readonly string[], limit: number): Promise<TopVolunteerRow[]>
+  hoursTotals(cleanupIds: readonly string[]): Promise<PortfolioHoursTotals>
   returningAttendees(
     cleanupId: string,
     hostedEventIds: readonly string[],
@@ -425,6 +445,56 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
       }
     },
 
+    async topVolunteers(cleanupIds, limit) {
+      if (cleanupIds.length === 0) return []
+      const rows = await sql<
+        {
+          user_id: string
+          name: string
+          handle: string | null
+          avatar_url: string | null
+          hours: number
+        }[]
+      >`
+        SELECT vh.user_id,
+               u.display_name AS name,
+               u.handle,
+               u.avatar_url,
+               sum(vh.hours)::float8 AS hours
+          FROM volunteer_hours vh
+          JOIN users u ON u.id = vh.user_id
+         WHERE vh.cleanup_id = ANY(${[...cleanupIds]}::uuid[])
+           AND vh.source = 'event'
+           AND vh.voided_at IS NULL
+           AND u.deleted_at IS NULL
+         GROUP BY vh.user_id, u.display_name, u.handle, u.avatar_url
+         ORDER BY sum(vh.hours) DESC, vh.user_id
+         LIMIT ${limit}`
+      return rows.map((row) => ({
+        userId: row.user_id,
+        name: row.name,
+        handle: row.handle,
+        avatarUrl: row.avatar_url,
+        hours: row.hours,
+      }))
+    },
+
+    async hoursTotals(cleanupIds) {
+      if (cleanupIds.length === 0) return { ...ZERO_PORTFOLIO_HOURS_TOTALS }
+      const rows = await sql<{ credited: number; volunteers_credited: number }[]>`
+        SELECT COALESCE(sum(vh.hours), 0)::float8 AS credited,
+               count(DISTINCT vh.user_id)::int AS volunteers_credited
+          FROM volunteer_hours vh
+         WHERE vh.cleanup_id = ANY(${[...cleanupIds]}::uuid[])
+           AND vh.source = 'event'
+           AND vh.voided_at IS NULL`
+      const row = rows[0]
+      return {
+        credited: Number(row?.credited ?? 0),
+        volunteersCredited: Number(row?.volunteers_credited ?? 0),
+      }
+    },
+
     async returningAttendees(cleanupId, hostedEventIds) {
       if (hostedEventIds.length === 0) return { seats: 0, ofRegistered: 0 }
       const rows = await sql<{ seats: string; of_registered: string }[]>`
@@ -442,11 +512,11 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
                      WHERE p.user_id = r.user_id
                        AND p.status = 'registered'
                        AND p.cleanup_id IN (SELECT id FROM prior)
-                 )) AS returning
+                 )) AS is_returning
             FROM cleanup_registrations r
            WHERE r.cleanup_id = ${cleanupId} AND r.status = 'registered'
         )
-        SELECT COALESCE(sum(party_size) FILTER (WHERE returning), 0)::text AS seats,
+        SELECT COALESCE(sum(party_size) FILTER (WHERE is_returning), 0)::text AS seats,
                COALESCE(sum(party_size), 0)::text AS of_registered
           FROM roster`
       const row = rows[0]

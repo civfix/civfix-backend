@@ -43,6 +43,7 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
           title: string
           status: CleanupStatus
           scheduled_at: Date
+          ends_at: Date | null
           address: string | null
           timezone: string | null
           lng: number
@@ -54,6 +55,7 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
           c.title,
           c.status,
           c.scheduled_at,
+          c.ends_at,
           c.address,
           c.timezone,
           ST_X(c.geom) AS lng,
@@ -69,6 +71,7 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
         title: row.title,
         status: row.status,
         scheduledAt: row.scheduled_at,
+        endsAt: row.ends_at,
         address: row.address,
         timezone: row.timezone,
         lat: row.lat,

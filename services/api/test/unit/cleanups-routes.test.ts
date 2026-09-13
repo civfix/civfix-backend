@@ -1225,6 +1225,106 @@ describe("GET /cleanups/:id/ics", () => {
     expect(res.statusCode).toBe(404)
   })
 
+  describe("a claimed shift becomes the calendar entry", () => {
+    const stamp = (iso: string): string => `${iso.slice(0, 19).replace(/[-:]/g, "")}Z`
+
+    async function eventWithClaimedShift(
+      h: Harness,
+    ): Promise<{ id: string; slotStart: string; slotEnd: string; eventEnd: string }> {
+      const start = Date.parse(FUTURE)
+      const slotStart = new Date(start + 60 * 60 * 1000).toISOString()
+      const slotEnd = new Date(start + 2 * 60 * 60 * 1000).toISOString()
+      const eventEnd = new Date(start + 4 * 60 * 60 * 1000).toISOString()
+      const created = await h.app.inject({
+        method: "POST",
+        url: "/v1/cleanups",
+        headers: auth(h.token),
+        payload: {
+          title: "Sweep",
+          type: "site",
+          lat: 34,
+          lng: -118.49,
+          scheduledAt: FUTURE,
+          endsAt: eventEnd,
+          slots: [{ title: "Morning sweep", startsAt: slotStart, endsAt: slotEnd }],
+        },
+      })
+      const id = created.json().id as string
+      const slotId = created.json().slots[0].id as string
+      const claimed = await h.app.inject({
+        method: "PUT",
+        url: `/v1/cleanups/${id}/slot`,
+        headers: auth(h.token),
+        payload: { slotId },
+      })
+      expect(claimed.statusCode).toBe(200)
+      return { id, slotStart, slotEnd, eventEnd }
+    }
+
+    it("uses the viewer's own shift for DTSTART/DTEND and suffixes the summary", async () => {
+      const h = await makeHarness()
+      const { id, slotStart, slotEnd } = await eventWithClaimedShift(h)
+
+      const res = await h.app.inject({
+        method: "GET",
+        url: `/v1/cleanups/${id}/ics`,
+        headers: auth(h.token),
+      })
+      expect(res.statusCode).toBe(200)
+      const ics = (res.json() as { ics: string }).ics
+      expect(ics).toContain(`DTSTART:${stamp(slotStart)}`)
+      expect(ics).toContain(`DTEND:${stamp(slotEnd)}`)
+      expect(ics).toContain("SUMMARY:Sweep — Morning sweep")
+    })
+
+    it("gives anyone WITHOUT that claim the event's own window and plain title", async () => {
+      const h = await makeHarness()
+      const { id, eventEnd } = await eventWithClaimedShift(h)
+
+      const res = await h.app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
+      expect(res.statusCode).toBe(200)
+      const ics = (res.json() as { ics: string }).ics
+      expect(ics).toContain(`DTSTART:${stamp(FUTURE)}`)
+      expect(ics).toContain(`DTEND:${stamp(eventEnd)}`)
+      expect(ics).toContain("SUMMARY:Sweep")
+      expect(ics).not.toContain("Morning sweep")
+    })
+
+    it("ignores an UNTIMED role: a role is not a calendar window", async () => {
+      const h = await makeHarness()
+      const created = await h.app.inject({
+        method: "POST",
+        url: "/v1/cleanups",
+        headers: auth(h.token),
+        payload: {
+          title: "Sweep",
+          type: "site",
+          lat: 34,
+          lng: -118.49,
+          scheduledAt: FUTURE,
+          slots: [{ title: "Grill" }],
+        },
+      })
+      const id = created.json().id as string
+      await h.app.inject({
+        method: "PUT",
+        url: `/v1/cleanups/${id}/slot`,
+        headers: auth(h.token),
+        payload: { slotId: created.json().slots[0].id },
+      })
+
+      const res = await h.app.inject({
+        method: "GET",
+        url: `/v1/cleanups/${id}/ics`,
+        headers: auth(h.token),
+      })
+      const ics = (res.json() as { ics: string }).ics
+      expect(ics).toContain(`DTSTART:${stamp(FUTURE)}`)
+      expect(ics).toContain("SUMMARY:Sweep")
+      expect(ics).not.toContain("Grill")
+    })
+  })
+
   it("rides the event visibility gate: a private event 404s for a stranger", async () => {
     const { app, token } = await makeHarness()
     const id = await createCleanup(app, token)

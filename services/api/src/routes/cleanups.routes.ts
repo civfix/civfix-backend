@@ -360,15 +360,20 @@ export async function registerCleanupRoutes(
   route(app, "getEventIcs", { config: { rateLimit: EVENT_ICS_RATE_LIMIT } }, async (request, reply) => {
     const { id } = parse(GetEventIcsRequestSchema, request.params)
     const event = await service().getCleanup(id, viewerOf(request))
+    const mine = event.slots.find(
+      (slot): slot is typeof slot & { startsAt: string; endsAt: string } =>
+        slot.mine === true && slot.startsAt != null && slot.endsAt != null,
+    )
+    const endsAt = mine !== undefined ? mine.endsAt : event.endsAt
     const payload: GetEventIcsResponse = {
       ics: buildIcs({
         uid: `cleanup-${event.id}@civfix.org`,
-        title: event.title,
-        startsAt: event.scheduledAt,
+        title: mine !== undefined ? `${event.title} — ${mine.title}` : event.title,
+        startsAt: mine !== undefined ? mine.startsAt : event.scheduledAt,
         ...(event.description !== undefined && event.description !== null
           ? { description: event.description }
           : {}),
-        ...(event.endsAt !== null && event.endsAt !== undefined ? { endsAt: event.endsAt } : {}),
+        ...(endsAt !== null && endsAt !== undefined ? { endsAt } : {}),
         ...(event.timezone !== null && event.timezone !== undefined
           ? { timezone: event.timezone }
           : {}),

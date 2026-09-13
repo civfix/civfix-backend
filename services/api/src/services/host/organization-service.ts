@@ -43,6 +43,7 @@ import type {
   AdminOrganizationRecord,
   AdminOrgListQuery,
   AdminOrgVerificationRecord,
+  OrganizationBaseRecord,
   OrganizationInviteRecord,
   OrganizationOwnerRecord,
   OrganizationRecord,
@@ -260,6 +261,8 @@ export function toOrganizationDTO(
     createdAt: record.createdAt.toISOString(),
     memberCount: record.memberCount,
     eventCount: record.eventCount,
+    volunteerHours: record.volunteerHours,
+    volunteerCount: record.volunteerCount,
     myRole: record.myRole,
     suspended: record.suspendedAt !== null,
   }
@@ -290,7 +293,7 @@ function toInviteDTO(record: OrganizationInviteRecord): OrganizationInviteDTO {
  * admin plane keeps working, but self-service settings, team changes, verification applications and
  * invite acceptance are refused until an operator lifts the flag.
  */
-function assertNotSuspended(record: OrganizationRecord): void {
+function assertNotSuspended(record: OrganizationBaseRecord): void {
   if (record.suspendedAt === null) return
   throw AppError.forbidden(
     record.suspendedReason === null || record.suspendedReason.length === 0
@@ -347,7 +350,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
   const newToken = deps.newToken ?? (() => generateToken(ORG_INVITE_TOKEN_BYTES))
   const webBase = () => (deps.webOrigin ?? "https://civfix.org").replace(/\/+$/, "")
 
-  async function logoUrlOf(record: OrganizationRecord): Promise<string | null> {
+  async function logoUrlOf(record: OrganizationBaseRecord): Promise<string | null> {
     if (record.logoKey === null || deps.presignLogo === undefined) return null
     return deps.presignLogo(record.logoKey)
   }

@@ -46,7 +46,7 @@ import { smsFailureKind } from "../errors/sms-failure.js"
 import { mapWithLimit } from "./media-presign.js"
 import { renderMessage } from "../i18n/renderMessage.js"
 import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
-import { isCleanupTerminal } from "./cleanup-rules.js"
+import { eventEndedError, hasEventEnded, isCleanupTerminal } from "./cleanup-rules.js"
 import { enqueueWaitlistPromotion } from "./host/waitlist-promotion.js"
 import { formatEventWhen } from "./host/broadcast-render.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
@@ -137,6 +137,7 @@ export interface GuestEventView {
   title: string
   status: CleanupStatus
   scheduledAt: Date
+  endsAt: Date | null
   address: string | null
   timezone: string | null
   lat: number
@@ -488,6 +489,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     const event = await deps.repo.findEvent(cleanupId)
     if (event === null) throw AppError.notFound("Event not found")
     if (isCleanupTerminal(event.status)) throw eventClosedError()
+    if (hasEventEnded(event, new Date(now()))) throw eventEndedError()
     return event
   }
 

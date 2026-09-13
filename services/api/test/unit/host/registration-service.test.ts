@@ -104,6 +104,55 @@ describe("registration service", () => {
     expect(h.notifications).toHaveLength(1)
   })
 
+  it("refuses a self-registration once the event has ended, while the host walk-up still lands", async () => {
+    h.repo.seedEvent({
+      cleanupId: EVENT,
+      scheduledAt: new Date(NOW.getTime() - 3 * 60 * 60 * 1000),
+      endsAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+    })
+    h.repo.seedTicketType({ cleanupId: EVENT, capacity: 10, maxPartySize: 4 })
+
+    await expect(h.service.register(request(), { kind: "user", userId: USER })).rejects.toMatchObject(
+      {
+        code: "CONFLICT",
+        message: "This event has already ended.",
+        fields: { event: "ended" },
+      },
+    )
+    expect(h.repo.registrations.size).toBe(0)
+
+    const walkup = await h.service.walkup(
+      { id: EVENT, name: "Ada", partySize: 1, checkInNow: true },
+      OTHER,
+    )
+    expect(walkup.outcome).toBe("registered")
+  })
+
+  it("refuses a self-registration when endsAt is null and the start is past the grace window", async () => {
+    h.repo.seedEvent({
+      cleanupId: EVENT,
+      scheduledAt: new Date(NOW.getTime() - 25 * 60 * 60 * 1000),
+      endsAt: null,
+    })
+    h.repo.seedTicketType({ cleanupId: EVENT, capacity: 10 })
+
+    await expect(h.service.register(request(), { kind: "user", userId: USER })).rejects.toMatchObject(
+      { code: "CONFLICT", message: "This event has already ended." },
+    )
+  })
+
+  it("still registers someone for an event that started an hour ago with no endsAt", async () => {
+    h.repo.seedEvent({
+      cleanupId: EVENT,
+      scheduledAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+      endsAt: null,
+    })
+    h.repo.seedTicketType({ cleanupId: EVENT, capacity: 10 })
+
+    const result = await h.service.register(request(), { kind: "user", userId: USER })
+    expect(result.outcome).toBe("registered")
+  })
+
   it("replays the same idempotency key instead of double booking", async () => {
     const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 10 })
     const input = request({ idempotencyKey: "stable-key-1234" })

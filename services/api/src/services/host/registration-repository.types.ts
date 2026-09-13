@@ -305,6 +305,7 @@ export type JoinWaitlistOutcome =
   | { kind: "waitlist_disabled" }
   | { kind: "ticket_type_not_found" }
   | { kind: "closed" }
+  | { kind: "ended" }
   | { kind: "not_found" }
 
 export interface WaitlistOffer {

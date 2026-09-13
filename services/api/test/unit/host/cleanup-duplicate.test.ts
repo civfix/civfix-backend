@@ -139,6 +139,56 @@ describe("duplicateCleanup content", () => {
     expect(copy.endsAt).toBe(endsAt)
   })
 
+  it("carries a shift's WINDOW onto the copy, shifted by the same delta as the start (#109)", async () => {
+    const source = seedSource()
+    const sourceStart = repo.cleanups.get(source.id)!.scheduledAt
+    repo.seedSlot({
+      cleanupId: source.id,
+      title: "Morning sweep",
+      startsAt: new Date(sourceStart.getTime() + HOUR_MS),
+      endsAt: new Date(sourceStart.getTime() + 2 * HOUR_MS),
+    })
+    const scheduledAt = futureIso(9 * DAY_MS)
+    const delta = Date.parse(scheduledAt) - sourceStart.getTime()
+
+    const copy = await service.duplicateCleanup(ORG, request({ id: source.id, scheduledAt }))
+
+    expect(copy.slots.map((s) => [s.startsAt, s.endsAt])).toEqual([
+      [
+        new Date(sourceStart.getTime() + HOUR_MS + delta).toISOString(),
+        new Date(sourceStart.getTime() + 2 * HOUR_MS + delta).toISOString(),
+      ],
+    ])
+  })
+
+  it("leaves an untimed role untimed on the copy", async () => {
+    const source = seedSource()
+    repo.seedSlot({ cleanupId: source.id, title: "Grill" })
+    const copy = await service.duplicateCleanup(ORG, request({ id: source.id }))
+    expect(copy.slots[0]?.startsAt).toBeUndefined()
+    expect(copy.slots[0]?.endsAt).toBeUndefined()
+  })
+
+  it("422s a duplicate whose explicit endsAt is shorter than the shifted shifts need", async () => {
+    const source = seedSource()
+    const sourceStart = repo.cleanups.get(source.id)!.scheduledAt
+    repo.seedSlot({
+      cleanupId: source.id,
+      title: "Afternoon sweep",
+      startsAt: new Date(sourceStart.getTime() + 2 * HOUR_MS),
+      endsAt: new Date(sourceStart.getTime() + 3 * HOUR_MS),
+    })
+    const scheduledAt = futureIso(9 * DAY_MS)
+    const endsAt = new Date(Date.parse(scheduledAt) + HOUR_MS).toISOString()
+
+    await expect(
+      service.duplicateCleanup(ORG, request({ id: source.id, scheduledAt, endsAt })),
+    ).rejects.toMatchObject({
+      code: "VALIDATION",
+      fields: { slots: `slot "Afternoon sweep" falls outside the event's start and end` },
+    })
+  })
+
   it("keeps registration windows that are still ahead and drops the ones that are not", async () => {
     const opensAt = new Date(Date.now() + 2 * DAY_MS)
     const source = seedSource({

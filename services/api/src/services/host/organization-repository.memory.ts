@@ -31,6 +31,7 @@ import type {
   CreateOrganizationInviteOutcome,
   DecideOrgVerificationArgs,
   DecideOrgVerificationOutcome,
+  OrganizationBaseRecord,
   OrganizationInviteRecord,
   OrganizationMemberRecord,
   OrganizationOwnerRecord,
@@ -128,6 +129,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
   eligibilityEinSink: ((input: SetEinInput) => void) | null = null
   readonly users = new Map<string, StoredPerson>()
   readonly eventCounts = new Map<string, number>()
+  readonly volunteerHours = new Map<string, { hours: number; volunteers: number }>()
   readonly audits: {
     actorId: string
     action: string
@@ -164,7 +166,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     return this.users.get(userId) ?? this.seedUser({ id: userId })
   }
 
-  private toRecord(org: StoredOrganization, viewerId: string | null): OrganizationRecord {
+  private toBaseRecord(org: StoredOrganization, viewerId: string | null): OrganizationBaseRecord {
     return {
       id: org.id,
       slug: org.slug,
@@ -190,6 +192,15 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
           ? null
           : (this.members.find((m) => m.organizationId === org.id && m.userId === viewerId)?.role ??
             null),
+    }
+  }
+
+  private toRecord(org: StoredOrganization, viewerId: string | null): OrganizationRecord {
+    const totals = this.volunteerHours.get(org.id)
+    return {
+      ...this.toBaseRecord(org, viewerId),
+      volunteerHours: totals?.hours ?? 0,
+      volunteerCount: totals?.volunteers ?? 0,
     }
   }
 
@@ -625,7 +636,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
   private toAdminOrganizationRecord(org: StoredOrganization): AdminOrganizationRecord {
     const owner = this.members.find((m) => m.organizationId === org.id && m.role === "owner")
     return {
-      ...this.toRecord(org, null),
+      ...this.toBaseRecord(org, null),
       owner: owner === undefined ? null : this.actorOf(owner.userId),
       donationsEnabled: this.donationsEnabled.get(org.id) ?? false,
       paymentsState: this.paymentsStates.get(org.id) ?? null,

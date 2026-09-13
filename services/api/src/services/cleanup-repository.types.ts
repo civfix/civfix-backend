@@ -113,6 +113,8 @@ export interface EventSlotView {
   title: string
   description: string | null
   capacity: number | null
+  startsAt: Date | null
+  endsAt: Date | null
   sortOrder: number
   claimed: number
   mine: boolean
@@ -123,6 +125,8 @@ export interface DesiredSlot {
   title: string
   description: string | null
   capacity: number | null
+  startsAt: Date | null
+  endsAt: Date | null
   sortOrder: number
 }
 
@@ -130,6 +134,7 @@ export interface SlotReconcileResult {
   added: string[]
   updated: string[]
   removed: { slotId: string; title: string; claimantUserIds: string[] }[]
+  rescheduled: { slotId: string; title: string; claimantUserIds: string[] }[]
 }
 
 export type ClaimSlotOutcome =
@@ -139,6 +144,7 @@ export type ClaimSlotOutcome =
   | { kind: "slot_not_found" }
   | { kind: "banned" }
   | { kind: "closed" }
+  | { kind: "ended" }
   | { kind: "full" }
 
 export interface ListAttendeesArgs {
@@ -215,6 +221,8 @@ export interface UpdateCleanupPatch extends EventHostWrite {
   bring?: string[] | null
   jurisdictionGeoid?: string | null
 }
+
+export type JoinCleanupOutcome = "joined" | "not_found" | "banned" | "closed" | "ended"
 
 export type LeaveCleanupOutcome = "left" | "not_found" | "closed"
 
@@ -318,10 +326,7 @@ export interface CleanupRepository {
   listMemberIds(cleanupId: string, limit: number): Promise<string[]>
   goingCount(cleanupId: string): Promise<number>
   organizerOf(cleanupId: string): Promise<string | null>
-  joinCleanupTx(
-    cleanupId: string,
-    userId: string,
-  ): Promise<"joined" | "not_found" | "banned" | "closed">
+  joinCleanupTx(cleanupId: string, userId: string): Promise<JoinCleanupOutcome>
   leaveCleanup(cleanupId: string, userId: string): Promise<LeaveCleanupOutcome>
   cancelCleanupTx(
     id: string,
