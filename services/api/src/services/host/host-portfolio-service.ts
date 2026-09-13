@@ -59,15 +59,19 @@ export function makeHostPortfolioService(
       },
     ): Promise<ListMyHostedEventsResponse> {
       const limit = query.limit ?? HOSTED_EVENTS_DEFAULT_LIMIT
+      const organizationId = query.orgId ?? null
       const { items, nextCursor } = await deps.repo.listHostedEvents({
         userId,
         when: query.when ?? "upcoming",
-        organizationId: query.orgId ?? null,
+        organizationId,
         cursor: query.cursor ?? null,
         limit,
       })
       const ids = items.map((r) => r.id)
-      const [counts, kpiBase] = await Promise.all([deps.counts(ids), deps.repo.kpisFor(userId, now())])
+      const [counts, kpiBase] = await Promise.all([
+        deps.counts(ids),
+        deps.repo.kpisFor({ userId, organizationId, now: now() }),
+      ])
 
       const presign = deps.presignEventMedia
       const coverUrls = await mapWithLimit(items, PRESIGN_CONCURRENCY, (record) =>

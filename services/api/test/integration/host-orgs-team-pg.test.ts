@@ -631,9 +631,21 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
     expect(row?.orgRole).toBe("owner")
     expect(row?.orgId).toBe(orgId)
 
-    const kpis = await portfolio.kpisFor(orgOwner, new Date())
+    const kpis = await portfolio.kpisFor({
+      userId: orgOwner,
+      organizationId: null,
+      now: new Date(),
+    })
     expect(kpis.eventsHosted).toBeGreaterThanOrEqual(1)
     expect(kpis.upcomingEvents).toBeGreaterThanOrEqual(1)
+
+    const otherOrgId = await newOrg(orgOwner, `portfolio-other-${randomUUID().slice(0, 8)}`)
+    const scoped = await portfolio.kpisFor({
+      userId: orgOwner,
+      organizationId: otherOrgId,
+      now: new Date(),
+    })
+    expect(scoped).toEqual({ eventsHosted: 0, upcomingEvents: 0 })
   })
 
   it("#110: totals the org's hours for everyone but the volunteers who opted out", async () => {
