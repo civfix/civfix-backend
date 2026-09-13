@@ -39,6 +39,7 @@ import type {
   DesiredSlot,
   DuplicateSource,
   EventSlotView,
+  JoinCleanupOutcome,
   LinkedEventView,
   LinkedReportView,
   ListAttendeesArgs,
@@ -51,7 +52,7 @@ import type {
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
-import { isCleanupTerminal } from "./cleanup-rules.js"
+import { hasEventEnded, isCleanupTerminal } from "./cleanup-rules.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import {
   buildBboxFilter,
@@ -87,7 +88,21 @@ const PG_UNIQUE_VIOLATION = "23505"
 export const LINKED_EVENTS_PER_REPORT_CAP = 20
 export const MAX_EVENTS_PER_REPORT = 50
 
-const SLOT_TITLE_INDEX = "cleanup_slots_cleanup_title_uidx"
+const SLOT_TITLE_INDEX = "cleanup_slots_cleanup_title_window_uidx"
+
+export interface SlotIdentity {
+  title: string
+  startsAt: Date | null
+  endsAt: Date | null
+}
+
+export function slotWindowKey(slot: Pick<SlotIdentity, "startsAt" | "endsAt">): string {
+  return `${slot.startsAt?.getTime() ?? ""}|${slot.endsAt?.getTime() ?? ""}`
+}
+
+export function slotIdentityKey(slot: SlotIdentity): string {
+  return `${slot.title.trim().toLowerCase()}|${slotWindowKey(slot)}`
+}
 
 function isSlotTitleConflict(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false
@@ -1043,15 +1058,20 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return rows[0]?.organizer_user_id ?? null
     },
 
-    async joinCleanupTx(
-      cleanupId: string,
-      userId: string,
-    ): Promise<"joined" | "not_found" | "banned" | "closed"> {
+    async joinCleanupTx(cleanupId: string, userId: string): Promise<JoinCleanupOutcome> {
       return sql.begin(async (tx) => {
         const locked = await tx<
-          { status: CleanupStatus; visibility: EventVisibility; organization_id: string | null }[]
+          {
+            status: CleanupStatus
+            visibility: EventVisibility
+            organization_id: string | null
+            scheduled_at: Date
+            ends_at: Date | null
+            now: Date
+          }[]
         >`
-          SELECT status, visibility, organization_id FROM cleanups
+          SELECT status, visibility, organization_id, scheduled_at, ends_at, now() AS now
+          FROM cleanups
           WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
         `
         const cleanup = locked[0]
@@ -1068,6 +1088,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           return "not_found"
         }
         if (isCleanupTerminal(cleanup.status)) return "closed"
+        if (hasEventEnded({ scheduledAt: cleanup.scheduled_at, endsAt: cleanup.ends_at }, cleanup.now)) {
+          return "ended"
+        }
         const banned = await tx<{ one: number }[]>`
           SELECT 1 AS one FROM cleanup_bans
           WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
@@ -1261,10 +1284,14 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     ): Promise<SlotReconcileResult> {
       try {
         return await sql.begin(async (tx) => {
-          const existing = await tx<{ id: string; title: string }[]>`
-            SELECT id, title FROM cleanup_slots WHERE cleanup_id = ${cleanupId}
+          const existing = await tx<
+            { id: string; title: string; starts_at: Date | null; ends_at: Date | null }[]
+          >`
+            SELECT id, title, starts_at, ends_at FROM cleanup_slots WHERE cleanup_id = ${cleanupId}
           `
-          const have = new Map(existing.map((r) => [r.id, r.title]))
+          const have = new Map<string, SlotIdentity>(
+            existing.map((r) => [r.id, { title: r.title, startsAt: r.starts_at, endsAt: r.ends_at }]),
+          )
 
           for (const slot of desired) {
             if (slot.id !== undefined && !have.has(slot.id)) {
@@ -1294,21 +1321,44 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             for (const slotId of toRemove) {
               removed.push({
                 slotId,
-                title: have.get(slotId) ?? "",
+                title: have.get(slotId)?.title ?? "",
                 claimantUserIds: (bySlot.get(slotId) ?? []).filter((u) => u !== actorId),
               })
             }
           }
 
-          const renaming = desired
-            .filter((s): s is DesiredSlot & { id: string } => s.id !== undefined)
-            .filter((s) => have.get(s.id) !== s.title)
-            .map((s) => s.id)
-          if (renaming.length > 0) {
+          const kept = desired.filter((s): s is DesiredSlot & { id: string } => s.id !== undefined)
+          const changed = (slot: DesiredSlot & { id: string }, keyOf: (s: SlotIdentity) => string): boolean => {
+            const before = have.get(slot.id)
+            return before === undefined || keyOf(before) !== keyOf(slot)
+          }
+          const rekeying = kept.filter((s) => changed(s, slotIdentityKey)).map((s) => s.id)
+          if (rekeying.length > 0) {
             await tx`
               UPDATE cleanup_slots SET title = id::text
-              WHERE cleanup_id = ${cleanupId} AND id = ANY(${renaming}::uuid[])
+              WHERE cleanup_id = ${cleanupId} AND id = ANY(${rekeying}::uuid[])
             `
+          }
+
+          const movedIds = kept.filter((s) => changed(s, slotWindowKey)).map((s) => s.id)
+          const rescheduled: SlotReconcileResult["rescheduled"] = []
+          if (movedIds.length > 0) {
+            const claimants = await tx<{ slot_id: string; user_id: string }[]>`
+              SELECT slot_id, user_id FROM cleanup_slot_claims
+              WHERE cleanup_id = ${cleanupId} AND slot_id = ANY(${movedIds}::uuid[])
+            `
+            const bySlot = new Map<string, string[]>()
+            for (const c of claimants) {
+              if (c.user_id === actorId) continue
+              const list = bySlot.get(c.slot_id)
+              if (list) list.push(c.user_id)
+              else bySlot.set(c.slot_id, [c.user_id])
+            }
+            for (const slot of kept) {
+              const userIds = bySlot.get(slot.id)
+              if (userIds === undefined || userIds.length === 0) continue
+              rescheduled.push({ slotId: slot.id, title: slot.title, claimantUserIds: userIds })
+            }
           }
 
           const added: string[] = []
@@ -1320,20 +1370,25 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
                   title = ${slot.title},
                   description = ${slot.description},
                   capacity = ${slot.capacity},
+                  starts_at = ${slot.startsAt},
+                  ends_at = ${slot.endsAt},
                   sort_order = ${slot.sortOrder}
                 WHERE id = ${slot.id} AND cleanup_id = ${cleanupId}
               `
               updated.push(slot.id)
             } else {
               const [row] = await tx<{ id: string }[]>`
-                INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, sort_order)
-                VALUES (${cleanupId}, ${slot.title}, ${slot.description}, ${slot.capacity}, ${slot.sortOrder})
+                INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, starts_at, ends_at, sort_order)
+                VALUES (
+                  ${cleanupId}, ${slot.title}, ${slot.description}, ${slot.capacity},
+                  ${slot.startsAt}, ${slot.endsAt}, ${slot.sortOrder}
+                )
                 RETURNING id
               `
               if (row) added.push(row.id)
             }
           }
-          return { added, updated, removed }
+          return { added, updated, removed, rescheduled }
         })
       } catch (err) {
         if (isSlotTitleConflict(err)) {
@@ -1350,9 +1405,17 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     ): Promise<ClaimSlotOutcome> {
       return sql.begin(async (tx) => {
         const locked = await tx<
-          { status: CleanupStatus; visibility: EventVisibility; organization_id: string | null }[]
+          {
+            status: CleanupStatus
+            visibility: EventVisibility
+            organization_id: string | null
+            scheduled_at: Date
+            ends_at: Date | null
+            now: Date
+          }[]
         >`
-          SELECT status, visibility, organization_id FROM cleanups
+          SELECT status, visibility, organization_id, scheduled_at, ends_at, now() AS now
+          FROM cleanups
           WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
         `
         const cleanup = locked[0]
@@ -1369,6 +1432,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           return { kind: "not_found" }
         }
         if (isCleanupTerminal(cleanup.status)) return { kind: "closed" }
+        if (hasEventEnded({ scheduledAt: cleanup.scheduled_at, endsAt: cleanup.ends_at }, cleanup.now)) {
+          return { kind: "ended" }
+        }
 
         const banned = await tx<{ one: number }[]>`
           SELECT 1 AS one FROM cleanup_bans
@@ -1522,8 +1588,11 @@ async function insertSlotsInTx(
   if (slots.length === 0) return
   for (const slot of slots) {
     await tx`
-      INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, sort_order)
-      VALUES (${cleanupId}, ${slot.title}, ${slot.description}, ${slot.capacity}, ${slot.sortOrder})
+      INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, starts_at, ends_at, sort_order)
+      VALUES (
+        ${cleanupId}, ${slot.title}, ${slot.description}, ${slot.capacity},
+        ${slot.startsAt}, ${slot.endsAt}, ${slot.sortOrder}
+      )
     `
   }
 }
@@ -1542,12 +1611,14 @@ async function loadSlots(
       title: string
       description: string | null
       capacity: number | null
+      starts_at: Date | null
+      ends_at: Date | null
       sort_order: number
       claimed: number
       mine: boolean
     }[]
   >`
-    SELECT s.cleanup_id, s.id, s.title, s.description, s.capacity, s.sort_order,
+    SELECT s.cleanup_id, s.id, s.title, s.description, s.capacity, s.starts_at, s.ends_at, s.sort_order,
            COALESCE(c.n, 0)::int AS claimed,
            (mine.user_id IS NOT NULL) AS mine
     FROM cleanup_slots s
@@ -1569,6 +1640,8 @@ async function loadSlots(
       title: r.title,
       description: r.description,
       capacity: r.capacity,
+      startsAt: r.starts_at,
+      endsAt: r.ends_at,
       sortOrder: r.sort_order,
       claimed: r.claimed,
       mine: r.mine,

@@ -1,5 +1,6 @@
 
 import { afterAll, describe, expect, it } from "vitest"
+import { randomUUID } from "node:crypto"
 import { getTableName, is } from "drizzle-orm"
 import { PgTable, getTableConfig } from "drizzle-orm/pg-core"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -517,6 +518,110 @@ describe.skipIf(!pg)("schema (0061): users.show_volunteer_hours is a NULLable tr
   })
 })
 
+
+describe.skipIf(!pg)("schema (0167): cleanup_slots carries an optional time window", () => {
+  const h = pg as PgHarness
+
+  async function newSlotHost(): Promise<string> {
+    const id = randomUUID()
+    const [host] = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name) VALUES ('Slot Window Host') RETURNING id
+    `
+    await h.sql`
+      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
+      VALUES (
+        ${id}, ${host!.id}, 'site', 'Window sweep',
+        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), now() + interval '7 days', 'upcoming'
+      )
+    `
+    return id
+  }
+
+  it("added starts_at and ends_at as NULLable timestamptz with no default", async () => {
+    const rows = await h.sql<
+      { column_name: string; data_type: string; is_nullable: string; column_default: string | null }[]
+    >`
+      SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'cleanup_slots'
+        AND column_name IN ('starts_at', 'ends_at')
+      ORDER BY column_name
+    `
+    expect(rows.map((r) => r.column_name)).toEqual(["ends_at", "starts_at"])
+    for (const row of rows) {
+      expect(row.data_type).toBe("timestamp with time zone")
+      expect(row.is_nullable).toBe("YES")
+      expect(row.column_default).toBeNull()
+    }
+  })
+
+  it("enforces cleanup_slots_window_chk: both-or-neither, and ends_at after starts_at", async () => {
+    const cleanupId = await newSlotHost()
+    const start = new Date(Date.now() + 8 * 86_400_000)
+    const end = new Date(start.getTime() + 3_600_000)
+
+    await h.sql`
+      INSERT INTO cleanup_slots (cleanup_id, title, starts_at, ends_at)
+      VALUES (${cleanupId}, 'Whole event', NULL, NULL)
+    `
+    await h.sql`
+      INSERT INTO cleanup_slots (cleanup_id, title, starts_at, ends_at)
+      VALUES (${cleanupId}, 'Morning shift', ${start}, ${end})
+    `
+    for (const [startsAt, endsAt] of [
+      [start, null],
+      [null, end],
+      [end, start],
+      [start, start],
+    ] as [Date | null, Date | null][]) {
+      await expect(
+        h.sql`
+          INSERT INTO cleanup_slots (cleanup_id, title, starts_at, ends_at)
+          VALUES (${cleanupId}, ${`Bad ${randomUUID().slice(0, 8)}`}, ${startsAt}, ${endsAt})
+        `,
+      ).rejects.toMatchObject({ code: "23514" })
+    }
+  })
+
+  it("swapped the title index for the (cleanup, title, window) one", async () => {
+    const rows = await h.sql<{ indexname: string }[]>`
+      SELECT indexname FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'cleanup_slots'
+        AND indexname IN (
+          'cleanup_slots_cleanup_title_uidx',
+          'cleanup_slots_cleanup_title_window_uidx'
+        )
+    `
+    expect(rows.map((r) => r.indexname)).toEqual(["cleanup_slots_cleanup_title_window_uidx"])
+  })
+
+  it("keys uniqueness on the window, so the same title at two times coexists", async () => {
+    const cleanupId = await newSlotHost()
+    const start = new Date(Date.now() + 8 * 86_400_000)
+    const end = new Date(start.getTime() + 3_600_000)
+    const later = new Date(end.getTime() + 3_600_000)
+
+    await h.sql`
+      INSERT INTO cleanup_slots (cleanup_id, title, starts_at, ends_at)
+      VALUES (${cleanupId}, 'Sweep', ${start}, ${end})
+    `
+    await h.sql`
+      INSERT INTO cleanup_slots (cleanup_id, title, starts_at, ends_at)
+      VALUES (${cleanupId}, 'SWEEP', ${end}, ${later})
+    `
+    await expect(
+      h.sql`
+        INSERT INTO cleanup_slots (cleanup_id, title, starts_at, ends_at)
+        VALUES (${cleanupId}, 'sweep', ${start}, ${end})
+      `,
+    ).rejects.toMatchObject({ code: "23505" })
+    await h.sql`
+      INSERT INTO cleanup_slots (cleanup_id, title) VALUES (${cleanupId}, 'Sweep')
+    `
+    await expect(
+      h.sql`INSERT INTO cleanup_slots (cleanup_id, title) VALUES (${cleanupId}, 'SWEEP')`,
+    ).rejects.toMatchObject({ code: "23505" })
+  })
+})
 
 interface MirroredCheck {
   table: string

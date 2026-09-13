@@ -7,6 +7,7 @@ import type {
   CleanupOrganizationView,
   CreateCleanupOutcome,
   ClaimSlotOutcome,
+  JoinCleanupOutcome,
   CleanupBBox,
   CleanupPersonView,
   CleanupRecord,
@@ -32,6 +33,8 @@ import { isCleanupTerminal } from "../../src/services/cleanup-service.js"
 import {
   LINKED_EVENTS_PER_REPORT_CAP,
   MAX_EVENTS_PER_REPORT,
+  slotIdentityKey,
+  slotWindowKey,
   stripPageBlockMedia,
 } from "../../src/services/cleanup-repository.drizzle.js"
 import { MAX_LINKED_REPORTS } from "@civfix/shared"
@@ -56,7 +59,7 @@ import {
   parseTimeCursor,
 } from "../../src/db/cursor-helpers.js"
 import { isPubliclyVisibleStatus } from "../../src/services/report-visibility.js"
-import { MIN_EVENT_DURATION_MS } from "../../src/services/cleanup-rules.js"
+import { MIN_EVENT_DURATION_MS, hasEventEnded } from "../../src/services/cleanup-rules.js"
 
 interface StoredCleanup {
   id: string
@@ -180,6 +183,8 @@ interface StoredSlot {
   title: string
   description: string | null
   capacity: number | null
+  startsAt: Date | null
+  endsAt: Date | null
   sortOrder: number
 }
 
@@ -536,6 +541,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       title: slot.title,
       description: slot.description,
       capacity: slot.capacity,
+      startsAt: slot.startsAt,
+      endsAt: slot.endsAt,
       sortOrder: slot.sortOrder,
     })
     return id
@@ -548,6 +555,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       title: over.title ?? "Registration table",
       description: over.description ?? null,
       capacity: over.capacity ?? null,
+      startsAt: over.startsAt ?? null,
+      endsAt: over.endsAt ?? null,
       sortOrder: over.sortOrder ?? 0,
     }
     this.slots.push(slot)
@@ -1042,14 +1051,12 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(c ? c.organizerUserId : null)
   }
 
-  joinCleanupTx(
-    cleanupId: string,
-    userId: string,
-  ): Promise<"joined" | "not_found" | "banned" | "closed"> {
+  joinCleanupTx(cleanupId: string, userId: string): Promise<JoinCleanupOutcome> {
     const cleanup = this.cleanups.get(cleanupId)
     if (cleanup === undefined) return Promise.resolve("not_found")
     if (this.privateBlocksJoin(cleanup, userId)) return Promise.resolve("not_found")
     if (isCleanupTerminal(cleanup.status)) return Promise.resolve("closed")
+    if (hasEventEnded(cleanup, this.now())) return Promise.resolve("ended")
     if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
       return Promise.resolve("banned")
     }
@@ -1158,6 +1165,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
         title: s.title,
         description: s.description,
         capacity: s.capacity,
+        startsAt: s.startsAt,
+        endsAt: s.endsAt,
         sortOrder: s.sortOrder,
         claimed: this.slotClaims.filter((c) => c.slotId === s.id).length,
         mine: viewerId !== null
@@ -1207,7 +1216,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
 
     const seenTitles = new Set<string>()
     for (const slot of desired) {
-      const key = slot.title.toLowerCase()
+      const key = slotIdentityKey(slot)
       if (seenTitles.has(key)) throw AppError.validation({ slots: "duplicate slot title" })
       seenTitles.add(key)
     }
@@ -1230,21 +1239,34 @@ export class InMemoryCleanupRepository implements CleanupRepository {
 
     const added: string[] = []
     const updated: string[] = []
+    const rescheduled: SlotReconcileResult["rescheduled"] = []
     for (const slot of desired) {
       if (slot.id !== undefined) {
         const row = this.slots.find((s) => s.id === slot.id && s.cleanupId === cleanupId)
         if (row) {
+          const moved = slotWindowKey(row) !== slotWindowKey(slot)
+          const claimantUserIds = moved
+            ? this.slotClaims
+                .filter((c) => c.slotId === row.id)
+                .map((c) => c.userId)
+                .filter((u) => u !== actorId)
+            : []
           row.title = slot.title
           row.description = slot.description
           row.capacity = slot.capacity
+          row.startsAt = slot.startsAt
+          row.endsAt = slot.endsAt
           row.sortOrder = slot.sortOrder
           updated.push(row.id)
+          if (claimantUserIds.length > 0) {
+            rescheduled.push({ slotId: row.id, title: row.title, claimantUserIds })
+          }
         }
       } else {
         added.push(this.insertSlot(cleanupId, slot))
       }
     }
-    return Promise.resolve({ added, updated, removed })
+    return Promise.resolve({ added, updated, removed, rescheduled })
   }
 
   claimSlot(cleanupId: string, userId: string, slotId: string): Promise<ClaimSlotOutcome> {
@@ -1254,6 +1276,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (isCleanupTerminal(cleanup.status)) {
       return Promise.resolve({ kind: "closed" })
     }
+    if (hasEventEnded(cleanup, this.now())) return Promise.resolve({ kind: "ended" })
     if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
       return Promise.resolve({ kind: "banned" })
     }

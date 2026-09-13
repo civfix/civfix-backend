@@ -21,6 +21,7 @@ import type {
 import type { Jobs } from "@civfix/shared/interfaces"
 import type { UserChannel } from "@civfix/shared/interfaces"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
+import { eventEndedError, hasEventEnded } from "../cleanup-rules.js"
 import { sha256Hex } from "../../auth/crypto.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import { validateAnswers } from "./question-validation.js"
@@ -305,6 +306,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
   ): Promise<RegisterForEventResponse> {
     const event = await deps.repo.eventContext(input.id)
     if (event === null) throw AppError.notFound("Cleanup not found")
+    if (source === "self" && hasEventEnded(event, now())) throw eventEndedError()
 
     const questions = await deps.repo.listQuestions(input.id, {
       ticketTypeId: input.ticketTypeId ?? null,

@@ -347,3 +347,114 @@ describe("the other cleanup reads carry the slot fields", () => {
     expect(res.json().code).toBe("VALIDATION")
   })
 })
+
+describe("slot windows over the wire", () => {
+  const START = new Date(Date.parse(FUTURE))
+  const at = (hours: number): string =>
+    new Date(START.getTime() + hours * 60 * 60 * 1000).toISOString()
+
+  it("accepts startsAt/endsAt on create and echoes them on the board", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/cleanups",
+      headers: auth(token),
+      payload: {
+        title: "Sweep",
+        type: "site",
+        lat: 34,
+        lng: -118.49,
+        scheduledAt: FUTURE,
+        endsAt: at(4),
+        slots: [{ title: "Morning sweep", startsAt: at(0), endsAt: at(2) }],
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    expect(res.json().slots).toEqual([
+      expect.objectContaining({ title: "Morning sweep", startsAt: at(0), endsAt: at(2) }),
+    ])
+  })
+
+  it("422s a lone startsAt against the `endsAt` path, not the whole object", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/cleanups",
+      headers: auth(token),
+      payload: {
+        title: "Sweep",
+        type: "site",
+        lat: 34,
+        lng: -118.49,
+        scheduledAt: FUTURE,
+        endsAt: at(4),
+        slots: [{ title: "Morning sweep", startsAt: at(0) }],
+      },
+    })
+    expect(res.statusCode).toBe(422)
+    const body = res.json() as { code: string; fields: Record<string, string> }
+    expect(body.code).toBe("VALIDATION")
+    expect(body.fields["slots.0.endsAt"]).toBe("set both a start and an end, or neither")
+  })
+
+  it("422s a shift shorter than the contract's minimum before the service ever runs", async () => {
+    const { app, token } = await makeHarness()
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/cleanups",
+      headers: auth(token),
+      payload: {
+        title: "Sweep",
+        type: "site",
+        lat: 34,
+        lng: -118.49,
+        scheduledAt: FUTURE,
+        endsAt: at(4),
+        slots: [
+          {
+            title: "Morning sweep",
+            startsAt: at(0),
+            endsAt: new Date(START.getTime() + 5 * 60 * 1000).toISOString(),
+          },
+        ],
+      },
+    })
+    expect(res.statusCode).toBe(422)
+    expect((res.json() as { fields: Record<string, string> }).fields["slots.0.endsAt"]).toBe(
+      "must be at least 15 minutes after startsAt",
+    )
+  })
+
+  it("PATCH accepts the window too (the same schema backs both writes)", async () => {
+    const { app, token } = await makeHarness()
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/cleanups",
+      headers: auth(token),
+      payload: {
+        title: "Sweep",
+        type: "site",
+        lat: 34,
+        lng: -118.49,
+        scheduledAt: FUTURE,
+        endsAt: at(4),
+        slots: [{ title: "Morning sweep" }],
+      },
+    })
+    const id = created.json().id as string
+    const slotId = created.json().slots[0].id as string
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(token),
+      payload: {
+        slots: [{ id: slotId, title: "Morning sweep", startsAt: at(0), endsAt: at(2) }],
+      },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().slots).toEqual([
+      expect.objectContaining({ id: slotId, startsAt: at(0), endsAt: at(2) }),
+    ])
+  })
+})

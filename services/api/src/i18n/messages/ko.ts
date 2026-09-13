@@ -68,6 +68,9 @@ export const ko: Partial<Record<MessageKey, string>> = {
 
   "notification.cleanup_slot.removed.title": "이벤트 역할이 변경되었어요",
   "notification.cleanup_slot.removed.body": '{{title}}에서 "{{slot}}" 역할이 삭제되었어요.',
+  "notification.cleanup_slot.moved.title": "교대 시간이 변경되었어요",
+  "notification.cleanup_slot.moved.body":
+    '{{title}}의 "{{slot}}" 교대 시간이 바뀌었어요. 이벤트를 열어 확인해 주세요.',
 
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "civfix 로그인 코드",

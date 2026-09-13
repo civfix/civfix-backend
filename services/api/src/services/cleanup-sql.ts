@@ -16,6 +16,9 @@ import type {
   OrgVerificationStatus,
 } from "@civfix/shared"
 import { servedKeyExpr } from "./media-served-key.js"
+import { IN_PROGRESS_GRACE_HOURS } from "./cleanup-rules.js"
+
+export { IN_PROGRESS_GRACE_HOURS }
 
 export interface CleanupRowSelect {
   id: string
@@ -213,8 +216,6 @@ export function goingJoin(sql: Queryable) {
       ${activeGuestCountScalar(sql)} AS guest_count
   ) g ON true`
 }
-
-export const IN_PROGRESS_GRACE_HOURS = 24
 
 export function buildWhenFilter(sql: Sql, when: "upcoming" | "past" | "attending" | undefined) {
   if (when === "upcoming" || when === "attending")

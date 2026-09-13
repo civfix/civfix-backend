@@ -61,6 +61,8 @@ export function toEventSlotDTO(view: EventSlotView): EventSlotDTO {
     title: view.title,
     ...(view.description !== null ? { description: view.description } : {}),
     ...(view.capacity !== null ? { capacity: view.capacity } : {}),
+    ...(view.startsAt !== null ? { startsAt: view.startsAt.toISOString() } : {}),
+    ...(view.endsAt !== null ? { endsAt: view.endsAt.toISOString() } : {}),
     claimed: view.claimed,
     sortOrder: view.sortOrder,
     ...(view.mine ? { mine: true } : {}),

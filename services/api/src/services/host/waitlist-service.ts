@@ -1,4 +1,5 @@
 import { AppError } from "@civfix/shared"
+import { eventEndedError } from "../cleanup-rules.js"
 import type {
   ClaimWaitlistOfferRequest,
   ClaimWaitlistOfferResponse,
@@ -120,6 +121,8 @@ export function makeWaitlistService(deps: WaitlistServiceDeps): WaitlistService 
           throw AppError.notFound("Ticket type not found")
         case "closed":
           throw AppError.conflict("This event is closed.")
+        case "ended":
+          throw eventEndedError()
         case "not_found":
           throw AppError.notFound("Cleanup not found")
       }

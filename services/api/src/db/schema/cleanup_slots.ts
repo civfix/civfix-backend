@@ -21,9 +21,10 @@
  * cleanup_slot_claims. joinCleanupTx already takes FOR SHARE on cleanups first, so a claim transaction
  * that starts anywhere else can deadlock ABBA against it.
  *
- * CANONICAL DDL: drizzle/0063_cleanup_slots.sql. The expression unique index
- * cleanup_slots_cleanup_title_uidx (cleanup_id, lower(title)) is deliberately NOT mirrored here —
- * functional indexes stay SQL-only in this repo.
+ * CANONICAL DDL: drizzle/0063_cleanup_slots.sql, extended by drizzle/0167_cleanup_slot_windows.sql.
+ * The expression unique index cleanup_slots_cleanup_title_window_uidx
+ * (cleanup_id, lower(title), COALESCE(starts_at, '-infinity'), COALESCE(ends_at, 'infinity')) is
+ * deliberately NOT mirrored here — functional indexes stay SQL-only in this repo.
  */
 
 import { sql } from "drizzle-orm"
@@ -57,11 +58,17 @@ export const cleanupSlots = pgTable(
     // NULL = unlimited. Lowering it below the current claim count does NOT evict anyone: the slot
     // simply refuses new claims until it drains.
     capacity: integer("capacity"),
+    startsAt: timestamp("starts_at", { withTimezone: true }),
+    endsAt: timestamp("ends_at", { withTimezone: true }),
     sortOrder: smallint("sort_order").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     check("cleanup_slots_capacity_positive", sql`${t.capacity} IS NULL OR ${t.capacity} > 0`),
+    check(
+      "cleanup_slots_window_chk",
+      sql`(${t.startsAt} IS NULL) = (${t.endsAt} IS NULL) AND (${t.endsAt} IS NULL OR ${t.endsAt} > ${t.startsAt})`,
+    ),
     // The ordered read for one event's slot list (also the batched multi-event load).
     index("cleanup_slots_cleanup_idx").on(t.cleanupId, t.sortOrder, t.id),
     // Redundant-looking, but load-bearing: the FK target for cleanup_slot_claims' composite reference.
