@@ -17,6 +17,11 @@ import {
   type ModerationUserSnapshot,
 } from "./moderation-service.js"
 
+type SubjectType = ModerationItemRecord["subjectType"]
+
+function isMessageSubject(subjectType: SubjectType): boolean {
+  return subjectType === "chat" || subjectType === "message"
+}
 
 function itemColumns(sql: Queryable): SqlFragment {
   return sql`
@@ -28,7 +33,7 @@ function itemColumns(sql: Queryable): SqlFragment {
 function destinationRefColumn(sql: Queryable): SqlFragment {
   return sql`
     CASE
-      WHEN subject_type = 'chat' THEN (
+      WHEN subject_type IN ('chat', 'message') THEN (
         SELECT CASE
           WHEN cm.report_id IS NOT NULL THEN 'report:' || cm.report_id::text
           WHEN cm.cleanup_id IS NOT NULL THEN 'event:' || cm.cleanup_id::text
@@ -111,7 +116,7 @@ function refFor(reportId: string | null, cleanupId: string | null): string | nul
 
 async function attachDestinationRefs(sql: Queryable, page: ModerationItemRow[]): Promise<void> {
   const chatIds = page
-    .filter((r) => r.subject_type === "chat")
+    .filter((r) => isMessageSubject(r.subject_type))
     .map((r) => r.subject_id)
   const photoIds = page
     .filter((r) => r.subject_type === "photo")
@@ -137,7 +142,7 @@ async function attachDestinationRefs(sql: Queryable, page: ModerationItemRow[]):
     for (const r of rows) byId.set(r.id, refFor(r.report_id, r.cleanup_id))
   }
   for (const row of page) {
-    if (row.subject_type === "chat" || row.subject_type === "photo") {
+    if (isMessageSubject(row.subject_type) || row.subject_type === "photo") {
       row.destination_ref = byId.get(row.subject_id) ?? null
     }
   }
@@ -563,8 +568,6 @@ async function resolveItem(
   return rows[0] ?? null
 }
 
-type SubjectType = ModerationItemRecord["subjectType"]
-
 async function resolveSubjectAuthor(
   tx: Queryable,
   subjectType: SubjectType,
@@ -587,11 +590,8 @@ async function resolveSubjectAuthor(
         SELECT sender_id FROM chat_messages WHERE id = ${subjectId} LIMIT 1`
       return r[0]?.sender_id ?? null
     }
-    case "message": {
-      const r = await tx<{ sender_id: string | null }[]>`
-        SELECT sender_id FROM dm_messages WHERE id = ${subjectId} LIMIT 1`
-      return r[0]?.sender_id ?? null
-    }
+    case "message":
+      return resolveMessageAuthor(tx, subjectId)
     case "event": {
       const r = await tx<{ organizer_user_id: string | null }[]>`
         SELECT organizer_user_id FROM cleanups WHERE id = ${subjectId} LIMIT 1`
@@ -602,17 +602,62 @@ async function resolveSubjectAuthor(
         SELECT author_id FROM posts WHERE id = ${subjectId} LIMIT 1`
       return r[0]?.author_id ?? null
     }
-    case "photo": {
-      const r = await tx<{ reporter_user_id: string | null }[]>`
-        SELECT rep.reporter_user_id
-        FROM media_assets m
-        LEFT JOIN reports rep ON rep.id = m.report_id
-        WHERE m.id = ${subjectId} LIMIT 1`
-      return r[0]?.reporter_user_id ?? null
-    }
+    case "photo":
+      return resolveMediaAuthor(tx, subjectId)
     default:
       return null
   }
+}
+
+interface MessageLocation {
+  table: "dm_messages" | "chat_messages"
+  senderId: string | null
+  deletedAt: Date | null
+}
+
+async function locateMessage(tx: Queryable, messageId: string): Promise<MessageLocation | null> {
+  const rows = await tx<
+    {
+      source: MessageLocation["table"]
+      sender_id: string | null
+      deleted_at: Date | null
+    }[]
+  >`
+    SELECT 'dm_messages' AS source, sender_id, deleted_at
+      FROM dm_messages WHERE id = ${messageId}
+    UNION ALL
+    SELECT 'chat_messages' AS source, sender_id, deleted_at
+      FROM chat_messages WHERE id = ${messageId}
+    LIMIT 1`
+  const row = rows[0]
+  if (!row) return null
+  return { table: row.source, senderId: row.sender_id, deletedAt: row.deleted_at }
+}
+
+async function resolveMessageAuthor(tx: Queryable, messageId: string): Promise<string | null> {
+  const located = await locateMessage(tx, messageId)
+  return located?.senderId ?? null
+}
+
+async function resolveMediaAuthor(tx: Queryable, mediaId: string): Promise<string | null> {
+  const rows = await tx<{ author_id: string | null }[]>`
+    SELECT COALESCE(
+      (SELECT dm.sender_id FROM dm_messages dm
+        WHERE dm.id = m.chat_message_id
+          AND (m.chat_message_created_at IS NULL OR dm.created_at = m.chat_message_created_at)
+        LIMIT 1),
+      (SELECT cm.sender_id FROM chat_messages cm
+        WHERE cm.id = m.chat_message_id
+          AND (m.chat_message_created_at IS NULL OR cm.created_at = m.chat_message_created_at)
+        LIMIT 1),
+      (SELECT p.author_id FROM posts p WHERE p.id = m.post_id),
+      (SELECT rep.reporter_user_id FROM reports rep WHERE rep.id = m.report_id),
+      (SELECT u.id FROM users u WHERE u.avatar_media_id = m.id ORDER BY u.id LIMIT 1)
+    ) AS author_id
+    FROM media_assets m
+    WHERE m.id = ${mediaId}
+    LIMIT 1`
+  return rows[0]?.author_id ?? null
 }
 
 async function buildUserSnapshot(
@@ -680,12 +725,8 @@ async function restoreSubject(
         WHERE id = ${subjectId} AND deleted_at IS NOT NULL RETURNING id`
       return rows.length > 0
     }
-    case "message": {
-      const rows = await tx<{ id: string }[]>`
-        UPDATE dm_messages SET deleted_at = NULL
-        WHERE id = ${subjectId} AND deleted_at IS NOT NULL RETURNING id`
-      return rows.length > 0
-    }
+    case "message":
+      return restoreMessage(tx, subjectId)
     case "profile":
     case "user": {
       const rows = await tx<{ user_id: string }[]>`
@@ -701,6 +742,34 @@ async function restoreSubject(
     default:
       return false
   }
+}
+
+async function restoreMessage(tx: Queryable, messageId: string): Promise<boolean> {
+  const located = await locateMessage(tx, messageId)
+  if (!located || located.deletedAt === null) return false
+  const rows =
+    located.table === "dm_messages"
+      ? await tx<{ id: string }[]>`
+          UPDATE dm_messages SET deleted_at = NULL
+          WHERE id = ${messageId} AND deleted_at IS NOT NULL RETURNING id`
+      : await tx<{ id: string }[]>`
+          UPDATE chat_messages SET deleted_at = NULL
+          WHERE id = ${messageId} AND deleted_at IS NOT NULL RETURNING id`
+  return rows.length > 0
+}
+
+async function tombstoneMessage(tx: Queryable, messageId: string): Promise<boolean> {
+  const located = await locateMessage(tx, messageId)
+  if (!located || located.deletedAt !== null) return false
+  const rows =
+    located.table === "dm_messages"
+      ? await tx<{ id: string }[]>`
+          UPDATE dm_messages SET deleted_at = now()
+          WHERE id = ${messageId} AND deleted_at IS NULL RETURNING id`
+      : await tx<{ id: string }[]>`
+          UPDATE chat_messages SET deleted_at = now()
+          WHERE id = ${messageId} AND deleted_at IS NULL RETURNING id`
+  return rows.length > 0
 }
 
 async function tombstoneSubject(
@@ -724,12 +793,8 @@ async function tombstoneSubject(
         WHERE id = ${subjectId} AND deleted_at IS NULL RETURNING id`
       return rows.length > 0
     }
-    case "message": {
-      const rows = await tx<{ id: string }[]>`
-        UPDATE dm_messages SET deleted_at = now()
-        WHERE id = ${subjectId} AND deleted_at IS NULL RETURNING id`
-      return rows.length > 0
-    }
+    case "message":
+      return tombstoneMessage(tx, subjectId)
     case "photo": {
       const rows = await tx<{ id: string }[]>`
         UPDATE media_assets SET status = 'rejected'
