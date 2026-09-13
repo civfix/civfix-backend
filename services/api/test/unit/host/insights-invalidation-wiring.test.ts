@@ -50,6 +50,7 @@ function analyticsStub(): InsightsServiceDeps["analytics"] {
       Promise.resolve({ credited: 0, attendeesCredited: 0, attendeesCheckedIn: 0 }),
     returningAttendees: () => Promise.resolve({ seats: 0, ofRegistered: 0 }),
     hostedEventIds: () => Promise.resolve([EVENT]),
+    topVolunteers: () => Promise.resolve([]),
   }
 }
 

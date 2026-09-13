@@ -40,11 +40,13 @@ import type {
   CreateOrganizationInviteOutcome,
   DecideOrgVerificationArgs,
   DecideOrgVerificationOutcome,
+  OrganizationBaseRecord,
   OrganizationInviteRecord,
   OrganizationMemberRecord,
   OrganizationOwnerRecord,
   OrganizationRecord,
   OrganizationRepository,
+  OrgHoursTotals,
   OrgMemberIdentifier,
   OrgVerificationRecord,
   RemoveOrganizationMemberOutcome,
@@ -104,6 +106,43 @@ interface OrganizationRowSelect {
   my_role: OrganizationMemberRole | null
 }
 
+interface OrgHoursRowSelect {
+  organization_id: string
+  volunteer_hours: number
+  volunteer_count: number
+}
+
+const NO_ORG_HOURS: OrgHoursTotals = { volunteerHours: 0, volunteerCount: 0 }
+
+async function readOrgHours(
+  tag: Queryable,
+  organizationIds: readonly string[],
+): Promise<Map<string, OrgHoursTotals>> {
+  const totals = new Map<string, OrgHoursTotals>()
+  if (organizationIds.length === 0) return totals
+  const rows = await tag<OrgHoursRowSelect[]>`
+    SELECT
+      c.organization_id,
+      COALESCE(sum(vh.hours), 0)::float8 AS volunteer_hours,
+      count(DISTINCT vh.user_id)::int AS volunteer_count
+    FROM volunteer_hours vh
+    JOIN cleanups c ON c.id = vh.cleanup_id
+    JOIN users u ON u.id = vh.user_id
+    WHERE c.organization_id = ANY(${[...organizationIds]}::uuid[])
+      AND vh.source = 'event'
+      AND vh.voided_at IS NULL
+      AND u.show_volunteer_hours IS NOT FALSE
+    GROUP BY c.organization_id
+  `
+  for (const row of rows) {
+    totals.set(row.organization_id, {
+      volunteerHours: Number(row.volunteer_hours),
+      volunteerCount: Number(row.volunteer_count),
+    })
+  }
+  return totals
+}
+
 interface AdminOrganizationRowSelect extends OrganizationRowSelect {
   owner_id: string | null
   owner_name: string | null
@@ -113,7 +152,7 @@ interface AdminOrganizationRowSelect extends OrganizationRowSelect {
   payments_state: OrgPaymentsState | null
 }
 
-function toOrganizationRecord(row: OrganizationRowSelect): OrganizationRecord {
+function toOrganizationBaseRecord(row: OrganizationRowSelect): OrganizationBaseRecord {
   return {
     id: row.id,
     slug: row.slug,
@@ -138,9 +177,16 @@ function toOrganizationRecord(row: OrganizationRowSelect): OrganizationRecord {
   }
 }
 
+function toOrganizationRecord(
+  row: OrganizationRowSelect,
+  hours: OrgHoursTotals | undefined,
+): OrganizationRecord {
+  return { ...toOrganizationBaseRecord(row), ...(hours ?? NO_ORG_HOURS) }
+}
+
 function toAdminOrganizationRecord(row: AdminOrganizationRowSelect): AdminOrganizationRecord {
   return {
-    ...toOrganizationRecord(row),
+    ...toOrganizationBaseRecord(row),
     owner:
       row.owner_id === null
         ? null
@@ -317,7 +363,10 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       WHERE o.id = ${id} AND o.deleted_at IS NULL
       LIMIT 1
     `
-    return rows[0] ? toOrganizationRecord(rows[0]) : null
+    const row = rows[0]
+    if (row === undefined) return null
+    const hours = await readOrgHours(tag, [row.id])
+    return toOrganizationRecord(row, hours.get(row.id))
   }
 
   async function adminRowFor(
@@ -430,7 +479,10 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         WHERE o.slug = ${slug} AND o.deleted_at IS NULL
         LIMIT 1
       `
-      return rows[0] ? toOrganizationRecord(rows[0]) : null
+      const row = rows[0]
+      if (row === undefined) return null
+      const hours = await readOrgHours(sql, [row.id])
+      return toOrganizationRecord(row, hours.get(row.id))
     },
 
     async listMyOrganizations(userId: string, limit: number): Promise<OrganizationRecord[]> {
@@ -443,7 +495,11 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         ORDER BY o.name ASC, o.id ASC
         LIMIT ${limit}
       `
-      return rows.map(toOrganizationRecord)
+      const hours = await readOrgHours(
+        sql,
+        rows.map((row) => row.id),
+      )
+      return rows.map((row) => toOrganizationRecord(row, hours.get(row.id)))
     },
 
     async updateOrganizationTx(

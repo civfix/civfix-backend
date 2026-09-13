@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { describe, expect, it } from "vitest"
+import { avatarGradient, MAX_INSIGHTS_TOP_VOLUNTEERS } from "@civfix/shared"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import {
   makeHostAnalyticsCache,
@@ -91,6 +92,7 @@ function analyticsRepo(overrides: Partial<AnalyticsRepository> = {}): InsightsAn
       Promise.resolve({ credited: 12.5, attendeesCredited: 3, attendeesCheckedIn: 5 }),
     returningAttendees: () => Promise.resolve({ seats: 3, ofRegistered: 8 }),
     hostedEventIds: () => Promise.resolve([EVENT, OTHER_EVENT]),
+    topVolunteers: () => Promise.resolve([]),
     ...overrides,
   }
 }
@@ -528,5 +530,73 @@ describe("event insights", () => {
       seats: 3,
       ofRegistered: 8,
     })
+  })
+})
+
+describe("#110: top volunteers on the ended event console", () => {
+  const ADA = "11111111-1111-4111-8111-111111111111"
+  const GRACE = "22222222-2222-4222-8222-222222222222"
+  const LIN = "33333333-3333-4333-8333-333333333333"
+
+  const ROWS = [
+    { userId: ADA, name: "Ada", handle: "ada", avatarUrl: "https://cdn/ada.png", hours: 6 },
+    { userId: GRACE, name: "Grace", handle: null, avatarUrl: null, hours: 4.5 },
+    { userId: LIN, name: "Lin", handle: "lin", avatarUrl: null, hours: 2 },
+  ]
+
+  function recordingTopVolunteers() {
+    const calls: { cleanupIds: readonly string[]; limit: number }[] = []
+    return {
+      calls,
+      topVolunteers: (cleanupIds: readonly string[], limit: number) => {
+        calls.push({ cleanupIds, limit })
+        return Promise.resolve(ROWS)
+      },
+    }
+  }
+
+  it("leaves the panel empty and asks the database nothing before the event ends", async () => {
+    for (const at of [new Date(STARTS_AT.getTime() - 3 * 3_600_000), LIVE_NOW]) {
+      const spy = recordingTopVolunteers()
+      const h = build({ topVolunteers: spy.topVolunteers }, at)
+      const payload = await h.service.insights(EVENT, VIEWER)
+      expect(payload.topVolunteers).toEqual([])
+      expect(spy.calls).toEqual([])
+    }
+  })
+
+  it("ranks the credited volunteers 1..n and bounds the query by MAX_INSIGHTS_TOP_VOLUNTEERS", async () => {
+    const spy = recordingTopVolunteers()
+    const h = build({ topVolunteers: spy.topVolunteers }, ENDED_NOW)
+    const payload = await h.service.insights(EVENT, VIEWER)
+
+    expect(spy.calls).toEqual([{ cleanupIds: [EVENT], limit: MAX_INSIGHTS_TOP_VOLUNTEERS }])
+    expect(payload.topVolunteers.map((entry) => [entry.rank, entry.userId, entry.hours])).toEqual([
+      [1, ADA, 6],
+      [2, GRACE, 4.5],
+      [3, LIN, 2],
+    ])
+    expect(payload.topVolunteers[0]?.handle).toBe("ada")
+    expect(payload.topVolunteers[0]?.avatarUrl).toBe("https://cdn/ada.png")
+    expect(payload.topVolunteers[1]?.handle).toBeUndefined()
+    expect(payload.topVolunteers[1]?.avatarUrl).toBeUndefined()
+    for (const entry of payload.topVolunteers) {
+      expect(entry.avatar).toEqual(avatarGradient(entry.userId))
+    }
+  })
+
+  it("serves the new hours after a generation bump rather than the cached panel", async () => {
+    const shared = new RecordingCache(() => ENDED_NOW.getTime())
+    const before = build({ topVolunteers: () => Promise.resolve([]) }, ENDED_NOW, [DONATION], shared)
+    expect((await before.service.insights(EVENT, VIEWER)).topVolunteers).toEqual([])
+
+    await before.analyticsCache.bumpInsightsGeneration(EVENT)
+    const after = build(
+      { topVolunteers: () => Promise.resolve(ROWS.slice(0, 1)) },
+      ENDED_NOW,
+      [DONATION],
+      shared,
+    )
+    expect((await after.service.insights(EVENT, VIEWER)).topVolunteers).toHaveLength(1)
   })
 })

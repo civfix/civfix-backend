@@ -9,6 +9,7 @@ import {
   type VolunteerHoursService,
 } from "../../src/services/volunteer-hours-service.js"
 import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
+import type { InsightsInvalidator } from "../../src/services/host/host-analytics-cache.js"
 import type { NotificationService } from "../../src/services/notification-service.js"
 import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
@@ -75,6 +76,8 @@ function makeService(opts: {
   notifier?: Pick<NotificationService, "createNotification">
   moderation?: HoursModerationSink
   weeklyFlagHours?: number
+  insightsInvalidator?: InsightsInvalidator
+  presignOrgLogo?: (key: string) => Promise<string>
 }): VolunteerHoursService {
   return makeVolunteerHoursService({
     repo: opts.repo,
@@ -82,7 +85,22 @@ function makeService(opts: {
     ...(opts.notifier !== undefined ? { notifier: opts.notifier } : {}),
     ...(opts.moderation !== undefined ? { moderation: opts.moderation } : {}),
     ...(opts.weeklyFlagHours !== undefined ? { weeklyFlagHours: opts.weeklyFlagHours } : {}),
+    ...(opts.insightsInvalidator !== undefined
+      ? { insightsInvalidator: opts.insightsInvalidator }
+      : {}),
+    ...(opts.presignOrgLogo !== undefined ? { presignOrgLogo: opts.presignOrgLogo } : {}),
   })
+}
+
+function makeInvalidatorSpy(): InsightsInvalidator & { bumped: string[] } {
+  const bumped: string[] = []
+  return {
+    bumped,
+    bumpInsightsGeneration: (cleanupId: string) => {
+      bumped.push(cleanupId)
+      return Promise.resolve()
+    },
+  }
 }
 
 interface RecordingModeration extends HoursModerationSink {
@@ -1046,5 +1064,235 @@ describe("volunteer hours: totalsFor aggregates per jurisdiction", () => {
       { geoid: GEOID_B, name: "Oakland", hours: 0.1 },
     ])
     expect(await repo.totalHoursFor(HOST)).toBe(2.1)
+  })
+})
+
+describe("#110: hours grouped by the organization that hosted the event", () => {
+  const ORG_A = "cccccccc-cccc-cccc-cccc-cccccccccc01"
+  const ORG_B = "cccccccc-cccc-cccc-cccc-cccccccccc02"
+  const CLEANUP_A1 = "dddddddd-dddd-dddd-dddd-dddddddddd01"
+  const CLEANUP_A2 = "dddddddd-dddd-dddd-dddd-dddddddddd02"
+  const CLEANUP_B1 = "dddddddd-dddd-dddd-dddd-dddddddddd03"
+  const CLEANUP_SOLO = "dddddddd-dddd-dddd-dddd-dddddddddd04"
+
+  function seedPortfolio(repo: InMemoryVolunteerHoursRepository): void {
+    repo.seedOrganization({ id: ORG_A, slug: "coast-guard", name: "Coast Guard", verified: true })
+    repo.seedOrganization({ id: ORG_B, slug: "river-keepers", name: "River Keepers" })
+    for (const [cleanupId, organizationId] of [
+      [CLEANUP_A1, ORG_A],
+      [CLEANUP_A2, ORG_A],
+      [CLEANUP_B1, ORG_B],
+      [CLEANUP_SOLO, null],
+    ] as const) {
+      repo.seedCleanup(cleanupId, {
+        title: "Sweep",
+        referenceCode: null,
+        scheduledAt: SCHEDULED_AT,
+        organizationId,
+      })
+    }
+  }
+
+  async function credit(
+    repo: InMemoryVolunteerHoursRepository,
+    cleanupId: string,
+    hours: number,
+  ): Promise<void> {
+    await repo.logEventHours({
+      actorId: HOST,
+      cleanupId,
+      geoid: GEOID_A,
+      entries: [{ userId: BOB, hours }],
+    })
+  }
+
+  it("groups every credited event under its host org, hours descending", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedPortfolio(repo)
+    await credit(repo, CLEANUP_B1, 5)
+    await credit(repo, CLEANUP_A1, 4)
+    await credit(repo, CLEANUP_A2, 3)
+
+    const hours = await makeService({ repo, view: null }).getMyHours(BOB)
+    expect(hours.byOrganization.map((row) => [row.organization.slug, row.hours])).toEqual([
+      ["coast-guard", 7],
+      ["river-keepers", 5],
+    ])
+    expect(hours.byOrganization[0]?.organization.verified).toBe(true)
+    expect(hours.byOrganization[1]?.organization.verified).toBe(false)
+  })
+
+  it("keeps an event with no host org out of the chips while counting it in the total", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedPortfolio(repo)
+    await credit(repo, CLEANUP_A1, 2)
+    await credit(repo, CLEANUP_SOLO, 6)
+
+    const hours = await makeService({ repo, view: null }).getMyHours(BOB)
+    expect(hours.totalHours).toBe(8)
+    expect(hours.byOrganization.map((row) => row.organization.id)).toEqual([ORG_A])
+    expect(hours.byOrganization[0]?.hours).toBe(2)
+  })
+
+  it("drops an organization once its only credited entry is voided", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedPortfolio(repo)
+    await credit(repo, CLEANUP_A1, 2)
+    await credit(repo, CLEANUP_B1, 3)
+    const page = await repo.listEntries({ userId: BOB, cursor: null, limit: 50 })
+    const orgAEntry = page.items.find((item) => item.cleanupId === CLEANUP_A1)
+    expect(orgAEntry).toBeDefined()
+    repo.voidEntry(orgAEntry!.id)
+
+    const hours = await makeService({ repo, view: null }).getMyHours(BOB)
+    expect(hours.byOrganization.map((row) => row.organization.id)).toEqual([ORG_B])
+  })
+
+  it("hides a soft-deleted or suspended organization without changing the total", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    repo.seedOrganization({ id: ORG_A, slug: "coast-guard", name: "Coast Guard", deleted: true })
+    repo.seedOrganization({ id: ORG_B, slug: "river-keepers", name: "River Keepers", suspended: true })
+    repo.seedCleanup(CLEANUP_A1, {
+      title: "Sweep",
+      referenceCode: null,
+      scheduledAt: SCHEDULED_AT,
+      organizationId: ORG_A,
+    })
+    repo.seedCleanup(CLEANUP_B1, {
+      title: "Sweep",
+      referenceCode: null,
+      scheduledAt: SCHEDULED_AT,
+      organizationId: ORG_B,
+    })
+    await credit(repo, CLEANUP_A1, 2)
+    await credit(repo, CLEANUP_B1, 3)
+
+    const hours = await makeService({ repo, view: null }).getMyHours(BOB)
+    expect(hours.totalHours).toBe(5)
+    expect(hours.byOrganization).toEqual([])
+  })
+
+  it("presigns the org logo once per key and leaves a logo-less org null", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    repo.seedOrganization({
+      id: ORG_A,
+      slug: "coast-guard",
+      name: "Coast Guard",
+      logoKey: "media/coast-guard.png",
+    })
+    repo.seedOrganization({ id: ORG_B, slug: "river-keepers", name: "River Keepers" })
+    repo.seedCleanup(CLEANUP_A1, {
+      title: "Sweep",
+      referenceCode: null,
+      scheduledAt: SCHEDULED_AT,
+      organizationId: ORG_A,
+    })
+    repo.seedCleanup(CLEANUP_A2, {
+      title: "Sweep",
+      referenceCode: null,
+      scheduledAt: SCHEDULED_AT,
+      organizationId: ORG_A,
+    })
+    repo.seedCleanup(CLEANUP_B1, {
+      title: "Sweep",
+      referenceCode: null,
+      scheduledAt: SCHEDULED_AT,
+      organizationId: ORG_B,
+    })
+    await credit(repo, CLEANUP_A1, 4)
+    await credit(repo, CLEANUP_A2, 4)
+    await credit(repo, CLEANUP_B1, 1)
+
+    const asked: string[] = []
+    const service = makeService({
+      repo,
+      view: null,
+      presignOrgLogo: (key) => {
+        asked.push(key)
+        return Promise.resolve(`https://cdn.example/${key}`)
+      },
+    })
+    const hours = await service.getMyHours(BOB)
+
+    expect(asked).toEqual(["media/coast-guard.png"])
+    expect(hours.byOrganization[0]?.organization.logoUrl).toBe(
+      "https://cdn.example/media/coast-guard.png",
+    )
+    expect(hours.byOrganization[1]?.organization.logoUrl).toBeNull()
+  })
+
+  it("serves the chips on a public profile whose owner never chose a visibility", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedPortfolio(repo)
+    repo.seedUser(BOB, { name: "Bob", handle: null, avatarUrl: null })
+    await credit(repo, CLEANUP_A1, 4)
+
+    const service = makeService({ repo, view: null })
+    const own = await service.getMyHours(BOB)
+    const publicView = await service.getPublicHours({ id: BOB }, CAROL)
+
+    expect(publicView.visible).toBe(true)
+    expect(publicView.byOrganization).toEqual(own.byOrganization)
+  })
+
+  it("publishes no organization at all for a profile opted out of public hours", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    seedPortfolio(repo)
+    repo.seedUser(BOB, {
+      name: "Bob",
+      handle: null,
+      avatarUrl: null,
+      showVolunteerHours: false,
+    })
+    await credit(repo, CLEANUP_A1, 4)
+
+    const publicView = await makeService({ repo, view: null }).getPublicHours({ id: BOB }, CAROL)
+    expect(publicView.totalHours).toBe(0)
+    expect(publicView.byOrganization).toEqual([])
+  })
+})
+
+describe("#110: logging hours refreshes the host console", () => {
+  it("bumps the insights generation for that event exactly once, after the ledger write", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    repo.seedCleanup(CLEANUP, { title: "Sweep", referenceCode: null, scheduledAt: SCHEDULED_AT })
+    const invalidator = makeInvalidatorSpy()
+    const service = makeService({
+      repo,
+      view: eventOfLength(4),
+      members: [HOST, BOB],
+      insightsInvalidator: invalidator,
+    })
+
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 2) })
+
+    expect(invalidator.bumped).toEqual([CLEANUP])
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(2)
+  })
+
+  it("still credits the ledger when no invalidator is wired", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    repo.seedCleanup(CLEANUP, { title: "Sweep", referenceCode: null, scheduledAt: SCHEDULED_AT })
+    const service = makeService({ repo, view: eventOfLength(4), members: [HOST, BOB] })
+
+    const result = await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: flat([BOB], 2),
+    })
+    expect(result.credited).toBe(1)
+  })
+
+  it("caps an attendee who worked one shift by the whole event window, not the shift", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    repo.seedCleanup(CLEANUP, { title: "Sweep", referenceCode: null, scheduledAt: SCHEDULED_AT })
+    const service = makeService({ repo, view: eventOfLength(6), members: [HOST, BOB] })
+
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 7) })
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(7)
+
+    await expect(
+      service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 7.5) }),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
   })
 })

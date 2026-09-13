@@ -1,5 +1,6 @@
 import {
   ANALYTICS_SUPPRESSION_K,
+  MAX_PORTFOLIO_TOP_VOLUNTEERS,
   type AnalyticsRange,
   type BreakdownRow,
   type EventAnalyticsBroadcastsResponse,
@@ -32,6 +33,7 @@ import {
   type SeriesClosure,
 } from "@civfix/shared/host"
 import type { AnalyticsRepository } from "./analytics-repository.drizzle.js"
+import { leaderboardEntryOf } from "../volunteer-hours-service.js"
 import type { MetricRow, MetricsRepository } from "./metrics-repository.drizzle.js"
 import { hostAnalyticsCacheKey, type HostAnalyticsCache } from "./host-analytics-cache.js"
 
@@ -309,11 +311,13 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
           organizationId,
           PORTFOLIO_EVENT_LIMIT,
         )
-        const [totals, byEvent, dayTime, metricRows] = await Promise.all([
+        const [totals, byEvent, dayTime, metricRows, hours, topVolunteers] = await Promise.all([
           deps.analytics.portfolioTotals(cleanupIds),
           deps.analytics.portfolioByEvent(cleanupIds, 50),
           deps.analytics.portfolioDayTime(cleanupIds),
           deps.metrics.readMany(cleanupIds, ["registrations"], window.from, window.to),
+          deps.analytics.hoursTotals(cleanupIds),
+          deps.analytics.topVolunteers(cleanupIds, MAX_PORTFOLIO_TOP_VOLUNTEERS),
         ])
         return {
           generatedAt: now().toISOString(),
@@ -325,6 +329,9 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
             checkIns: totals.checkIns,
             uniqueAttendees: totals.uniqueAttendees,
           },
+          totalHours: round2(hours.credited),
+          volunteersCredited: hours.volunteersCredited,
+          topVolunteers: topVolunteers.map((row, index) => leaderboardEntryOf(row, index + 1)),
           series: exactSeries(seriesOf(metricRows, "registrations"), window),
           byEvent: exactPanel(byEvent),
           repeatAttendance: exactRate(totals.repeatAttendees, totals.uniqueAttendees),
@@ -334,6 +341,10 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
       })
     },
   }
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
 }
 
 function exactSeries(points: readonly DayCount[], window: DayRange): SeriesPoint[] {

@@ -3,6 +3,7 @@ import {
   MAX_INSIGHTS_ARRIVAL_BUCKETS,
   MAX_INSIGHTS_BROADCASTS,
   MAX_INSIGHTS_TICKET_TYPES,
+  MAX_INSIGHTS_TOP_VOLUNTEERS,
   MAX_INSIGHTS_TREND_DAYS,
   type ArrivalOffsetBucket,
   type EventInsights,
@@ -13,6 +14,7 @@ import {
   type InsightsBroadcast,
   type InsightsSourceCount,
   type InsightsTicketType,
+  type LeaderboardEntryDTO,
   type SeatPoint,
 } from "@civfix/shared"
 import { eventPhase, DEFAULT_DURATION_MS } from "@civfix/shared/host"
@@ -22,6 +24,7 @@ import type {
   SeatTrendPoint,
 } from "./analytics-repository.drizzle.js"
 import { hostAnalyticsCacheKey, type HostAnalyticsCache } from "./host-analytics-cache.js"
+import { leaderboardEntryOf } from "../volunteer-hours-service.js"
 import type { CheckinCountersRecord, HostRegistrationRepository } from "./registration-repository.types.js"
 import { CHECKIN_COARSEN_DAYS } from "./registration-retention.js"
 import type { DonationRepository } from "../payments/donation-repository.drizzle.js"
@@ -49,6 +52,7 @@ type InsightsAnalyticsRepository = Pick<
   | "eventHoursTotals"
   | "returningAttendees"
   | "hostedEventIds"
+  | "topVolunteers"
 >
 
 export interface InsightsServiceDeps {
@@ -145,6 +149,15 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
     return deps.analytics.returningAttendees(cleanupId, hostedEventIds)
   }
 
+  async function topVolunteersOf(
+    cleanupId: string,
+    phase: EventPhase,
+  ): Promise<LeaderboardEntryDTO[]> {
+    if (phase !== "ended") return []
+    const rows = await deps.analytics.topVolunteers([cleanupId], MAX_INSIGHTS_TOP_VOLUNTEERS)
+    return rows.map((row, index) => leaderboardEntryOf(row, index + 1))
+  }
+
   async function compute(
     cleanupId: string,
     viewer: InsightsViewer,
@@ -152,15 +165,17 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
     phase: EventPhase,
     at: Date,
   ): Promise<EventInsights> {
-    const [counters, trend, bySource, broadcasts, hours, returning, money] = await Promise.all([
-      deps.registrations.checkinCounters(cleanupId),
-      deps.analytics.seatTrend(cleanupId, clock.timezone ?? "UTC"),
-      deps.analytics.registrationsBySource(cleanupId),
-      deps.analytics.broadcastsForEvent(cleanupId, MAX_INSIGHTS_BROADCASTS),
-      deps.analytics.eventHoursTotals(cleanupId),
-      returningOf(cleanupId, viewer, phase),
-      viewer.canViewDonations ? deps.donations.eventTotals(cleanupId) : Promise.resolve(null),
-    ])
+    const [counters, trend, bySource, broadcasts, hours, topVolunteers, returning, money] =
+      await Promise.all([
+        deps.registrations.checkinCounters(cleanupId),
+        deps.analytics.seatTrend(cleanupId, clock.timezone ?? "UTC"),
+        deps.analytics.registrationsBySource(cleanupId),
+        deps.analytics.broadcastsForEvent(cleanupId, MAX_INSIGHTS_BROADCASTS),
+        deps.analytics.eventHoursTotals(cleanupId),
+        topVolunteersOf(cleanupId, phase),
+        returningOf(cleanupId, viewer, phase),
+        viewer.canViewDonations ? deps.donations.eventTotals(cleanupId) : Promise.resolve(null),
+      ])
 
     const coarsened = at.getTime() - endOf(clock) > CHECKIN_COARSEN_DAYS * DAY_MS
 
@@ -214,6 +229,7 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
         attendeesCredited: hours.attendeesCredited,
         attendeesCheckedIn: hours.attendeesCheckedIn,
       },
+      topVolunteers,
       money: donations,
       returning,
     }

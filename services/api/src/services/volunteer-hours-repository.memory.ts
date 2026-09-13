@@ -10,6 +10,7 @@ import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
 import {
   DAILY_HOURS_CAP,
   ITEMISED_SOURCES,
+  MAX_ORG_CHIPS_FETCH,
   RECIPROCAL_LOOKBACK_MS,
   WEEKLY_HOURS_FLAG_DEFAULT,
 } from "./volunteer-hours-service.js"
@@ -22,6 +23,8 @@ import type {
   ListEntriesArgs,
   LogEventHoursArgs,
   LogEventHoursResult,
+  MyVolunteerHoursTotals,
+  OrgHoursView,
   VolunteerHoursAnomaly,
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
@@ -40,6 +43,18 @@ export interface MemoryCleanupMeta {
   title: string | null
   referenceCode: string | null
   scheduledAt: Date | null
+  organizationId?: string | null
+}
+
+export interface MemoryOrganization {
+  id: string
+  slug: string
+  name: string
+  logoKey?: string | null
+  verified?: boolean
+  verifiedKind?: OrganizationRefDTO["verifiedKind"]
+  deleted?: boolean
+  suspended?: boolean
 }
 
 interface LedgerEntry {
@@ -72,6 +87,7 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
   private readonly users = new Map<string, MemoryLeaderboardUser>()
   private readonly jurisdictionNames = new Map<string, string>()
   private readonly cleanups = new Map<string, MemoryCleanupMeta>()
+  private readonly organizations = new Map<string, MemoryOrganization>()
   private readonly entries: LedgerEntry[] = []
   private readonly now: () => Date
   private readonly newId: () => string
@@ -91,6 +107,10 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
 
   seedCleanup(cleanupId: string, meta: MemoryCleanupMeta): void {
     this.cleanups.set(cleanupId, meta)
+  }
+
+  seedOrganization(org: MemoryOrganization): void {
+    this.organizations.set(org.id, org)
   }
 
   voidEntry(entryId: string): void {
@@ -263,7 +283,37 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
     return anomalies
   }
 
-  totalsFor(userId: string): Promise<MyVolunteerHoursDTO> {
+  private organizationHoursFor(userId: string): OrgHoursView[] {
+    const hoursByOrg = new Map<string, number>()
+    for (const entry of this.entries) {
+      if (entry.userId !== userId) continue
+      if (entry.source !== "event" || entry.voidedAt !== undefined) continue
+      if (entry.cleanupId === null) continue
+      const organizationId = this.cleanups.get(entry.cleanupId)?.organizationId ?? null
+      if (organizationId === null) continue
+      const org = this.organizations.get(organizationId)
+      if (org === undefined || org.deleted === true || org.suspended === true) continue
+      hoursByOrg.set(organizationId, (hoursByOrg.get(organizationId) ?? 0) + entry.hours)
+    }
+    const views: OrgHoursView[] = []
+    for (const [organizationId, hours] of hoursByOrg) {
+      const org = this.organizations.get(organizationId)
+      if (org === undefined) continue
+      views.push({
+        organizationId,
+        slug: org.slug,
+        name: org.name,
+        logoKey: org.logoKey ?? null,
+        verified: org.verified ?? false,
+        verifiedKind: org.verifiedKind ?? null,
+        hours: round2(hours),
+      })
+    }
+    views.sort((a, b) => b.hours - a.hours || a.organizationId.localeCompare(b.organizationId))
+    return views.slice(0, MAX_ORG_CHIPS_FETCH)
+  }
+
+  totalsFor(userId: string): Promise<MyVolunteerHoursTotals> {
     const byJurisdiction: MyVolunteerHoursDTO["byJurisdiction"] = []
     for (const [key, total] of this.rollup) {
       const parsed = this.parseKey(key)
@@ -275,7 +325,11 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
       })
     }
     byJurisdiction.sort((a, b) => b.hours - a.hours || a.geoid.localeCompare(b.geoid))
-    return Promise.resolve({ totalHours: this.computeTotalHours(userId), byJurisdiction })
+    return Promise.resolve({
+      totalHours: this.computeTotalHours(userId),
+      byJurisdiction,
+      byOrganization: this.organizationHoursFor(userId),
+    })
   }
 
   totalHoursFor(userId: string): Promise<number> {

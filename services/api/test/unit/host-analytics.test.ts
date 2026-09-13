@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest"
+import {
+  avatarGradient,
+  HostedEventsAnalyticsResponseSchema,
+  MAX_PORTFOLIO_TOP_VOLUNTEERS,
+} from "@civfix/shared"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import {
   hostAnalyticsCacheKey,
@@ -61,6 +66,8 @@ function analyticsRepo(overrides: Partial<AnalyticsRepository> = {}): AnalyticsR
     eventHoursTotals: () =>
       Promise.resolve({ credited: 0, attendeesCredited: 0, attendeesCheckedIn: 0 }),
     returningAttendees: () => Promise.resolve({ seats: 0, ofRegistered: 0 }),
+    topVolunteers: () => Promise.resolve([]),
+    hoursTotals: () => Promise.resolve({ credited: 0, volunteersCredited: 0 }),
     ...overrides,
   }
 }
@@ -565,5 +572,81 @@ describe("host analytics cache", () => {
     }
     const cache = makeHostAnalyticsCache({ cache: broken, ttlSeconds: 60 })
     expect(await cache.getOrSet("k", () => Promise.resolve(42))).toBe(42)
+  })
+})
+
+describe("#110: portfolio hours and top volunteers", () => {
+  const OWNER = "00000000-0000-0000-0000-0000000000aa"
+  const ADA = "11111111-1111-4111-8111-111111111111"
+  const GRACE = "22222222-2222-4222-8222-222222222222"
+
+  it("publishes the lifetime hours, the people credited and the ranked top volunteers", async () => {
+    const { service } = build({
+      hoursTotals: () => Promise.resolve({ credited: 486.755, volunteersCredited: 96 }),
+      topVolunteers: () =>
+        Promise.resolve([
+          { userId: ADA, name: "Ada", handle: "ada", avatarUrl: null, hours: 41 },
+          { userId: GRACE, name: "Grace", handle: null, avatarUrl: null, hours: 22.5 },
+        ]),
+    })
+    const payload = await service.portfolio(OWNER, null, "all", "self")
+
+    expect(payload.totalHours).toBe(486.76)
+    expect(payload.volunteersCredited).toBe(96)
+    expect(payload.topVolunteers.map((entry) => [entry.rank, entry.userId, entry.hours])).toEqual([
+      [1, ADA, 41],
+      [2, GRACE, 22.5],
+    ])
+    expect(payload.topVolunteers[0]?.avatar).toEqual(avatarGradient(ADA))
+  })
+
+  it("bounds the top-volunteer query by MAX_PORTFOLIO_TOP_VOLUNTEERS over the hosted events", async () => {
+    const asked: { cleanupIds: readonly string[]; limit: number }[] = []
+    const { service } = build({
+      topVolunteers: (cleanupIds, limit) => {
+        asked.push({ cleanupIds, limit })
+        return Promise.resolve([])
+      },
+    })
+    await service.portfolio(OWNER, null, "all", "self")
+    expect(asked).toEqual([{ cleanupIds: [EVENT], limit: MAX_PORTFOLIO_TOP_VOLUNTEERS }])
+  })
+
+  it("reports zero hours and no volunteers for a host with no events", async () => {
+    const asked: string[][] = []
+    const { service } = build({
+      hostedEventIds: () => Promise.resolve([]),
+      hoursTotals: (cleanupIds) => {
+        asked.push([...cleanupIds])
+        return Promise.resolve({ credited: 0, volunteersCredited: 0 })
+      },
+      topVolunteers: (cleanupIds) => {
+        asked.push([...cleanupIds])
+        return Promise.resolve([])
+      },
+    })
+    const payload = await service.portfolio(OWNER, null, "all", "self")
+
+    expect(payload.totalHours).toBe(0)
+    expect(payload.volunteersCredited).toBe(0)
+    expect(payload.topVolunteers).toEqual([])
+    expect(asked).toEqual([[], []])
+  })
+
+  it("parses a 0.44-shaped payload that predates the hours fields", () => {
+    const legacy = HostedEventsAnalyticsResponseSchema.parse({
+      generatedAt: NOW.toISOString(),
+      range: "all",
+      k: 5,
+      totals: { events: 1, registrations: 20, checkIns: 12, uniqueAttendees: 18 },
+      series: [],
+      byEvent: { panelSuppressed: false, rows: [] },
+      repeatAttendance: { value: null, suppressed: true, numerator: 0, denominator: 0 },
+      averageCheckInRate: { value: null, suppressed: true, numerator: 0, denominator: 0 },
+      bestDayTime: null,
+    })
+    expect(legacy.topVolunteers).toEqual([])
+    expect(legacy.totalHours).toBeUndefined()
+    expect(legacy.volunteersCredited).toBeUndefined()
   })
 })

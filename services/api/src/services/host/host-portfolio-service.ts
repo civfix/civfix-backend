@@ -101,6 +101,7 @@ export function makeHostPortfolioService(
           capacity: record.capacity,
           checkedInCount: rowCounts.checkedIn,
           waitlistCount: rowCounts.waitlisted,
+          hoursCredited: rowCounts.hoursCredited,
           myRole: record.eventRole,
           myCapabilities: [...hostCapabilities(standing)],
           orgId: record.orgId,

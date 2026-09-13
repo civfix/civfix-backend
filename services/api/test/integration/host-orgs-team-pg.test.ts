@@ -6,6 +6,8 @@ import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-reposit
 import { makeDrizzleOrganizationRepository } from "../../src/services/host/organization-repository.drizzle.js"
 import { makeDrizzleHostTeamRepository } from "../../src/services/host/host-team-repository.drizzle.js"
 import { makeDrizzleHostPortfolioRepository } from "../../src/services/host/host-portfolio-repository.drizzle.js"
+import { makeDrizzleAnalyticsRepository } from "../../src/services/host/analytics-repository.drizzle.js"
+import { MAX_INSIGHTS_TOP_VOLUNTEERS } from "@civfix/shared"
 import { hostStandingOf, orgStandingOf } from "../../src/services/host/host-standing.js"
 import type { CleanupRepository } from "../../src/services/cleanup-repository.types.js"
 import type { OrganizationRepository } from "../../src/services/host/organization-repository.types.js"
@@ -632,6 +634,62 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
     const kpis = await portfolio.kpisFor(orgOwner, new Date())
     expect(kpis.eventsHosted).toBeGreaterThanOrEqual(1)
     expect(kpis.upcomingEvents).toBeGreaterThanOrEqual(1)
+  })
+
+  it("#110: totals the org's hours for everyone but the volunteers who opted out", async () => {
+    const owner = await newUser("Hours Owner")
+    const shown = await newUser("Shown Volunteer")
+    const hidden = await newUser("Hidden Volunteer")
+    const gone = await newUser("Departed Volunteer")
+    const orgId = await newOrg(owner, `hours-${randomUUID().slice(0, 8)}`)
+    const eventId = await newEvent(owner, { organizationId: orgId })
+
+    await h.sql`UPDATE users SET show_volunteer_hours = false WHERE id = ${hidden}`
+    await h.sql`UPDATE users SET deleted_at = now() WHERE id = ${gone}`
+    for (const [userId, hours] of [
+      [shown, 4],
+      [hidden, 9],
+      [gone, 2],
+    ] as const) {
+      await h.sql`
+        INSERT INTO volunteer_hours (user_id, cleanup_id, source, hours, logged_by_user_id)
+        VALUES (${userId}, ${eventId}, 'event', ${hours}, ${owner})
+      `
+    }
+    const [voided] = await h.sql<{ id: string }[]>`
+      INSERT INTO volunteer_hours (user_id, cleanup_id, source, hours, logged_by_user_id, voided_at)
+      VALUES (${await newUser("Voided Volunteer")}, ${eventId}, 'event', 5, ${owner}, now())
+      RETURNING id
+    `
+    expect(voided?.id).toBeDefined()
+
+    const record = await orgs.findOrganizationById(orgId, owner)
+    expect(record?.volunteerHours).toBe(6)
+    expect(record?.volunteerCount).toBe(2)
+
+    const quiet = await newOrg(owner, `hours-quiet-${randomUUID().slice(0, 8)}`)
+    const mine = await orgs.listMyOrganizations(owner, 50)
+    const listed = mine.find((o) => o.id === orgId)
+    expect(listed?.volunteerHours).toBe(6)
+    expect(listed?.volunteerCount).toBe(2)
+    expect(mine.find((o) => o.id === quiet)).toMatchObject({
+      volunteerHours: 0,
+      volunteerCount: 0,
+    })
+
+    const admin = await orgs.adminFindOrganization(orgId)
+    expect(admin).not.toBeNull()
+    expect(admin).not.toHaveProperty("volunteerHours")
+    expect(admin).not.toHaveProperty("volunteerCount")
+
+    const analytics = makeDrizzleAnalyticsRepository(h.sql)
+    const totals = await analytics.hoursTotals([eventId])
+    expect(totals.credited).toBe(15)
+    expect(totals.volunteersCredited).toBe(3)
+
+    const top = await analytics.topVolunteers([eventId], MAX_INSIGHTS_TOP_VOLUNTEERS)
+    expect(top.map((row) => row.userId)).toEqual([hidden, shown])
+    expect(top.map((row) => row.hours)).toEqual([9, 4])
   })
 
   it("carries the widened media purposes and keeps the superset CHECK", async () => {
