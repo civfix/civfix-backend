@@ -555,7 +555,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         WHERE i.invited_user_id = ${args.userId}
           AND i.status = 'pending'
           AND i.expires_at > ${args.now}
-          AND c.status <> 'cancelled' AND c.ends_at > now()
+          AND c.status <> 'cancelled' AND c.ends_at > ${args.now}
           ${cursorFilter}
         ORDER BY i.created_at DESC, i.id DESC
         LIMIT ${args.limit + 1}

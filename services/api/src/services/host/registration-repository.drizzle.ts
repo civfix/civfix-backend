@@ -2177,7 +2177,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
               AND s2.checked_in_at IS NULL
               AND s2.no_show_at IS NULL
               AND c.status <> 'cancelled'
-              AND c.ends_at + interval '2 hours' <= ${args.now}
+              AND c.ends_at <= ${args.now} - interval '2 hours'
             ORDER BY s2.created_at
             LIMIT ${args.limit}
          )

@@ -1,10 +1,10 @@
 # Volunteer-hours integrity (civfix-backend)
 
 **Audience:** internal (engineering + operators). Not served publicly.
-**Last updated:** 2026-09-10 (0.43.0: the "verified neighbor" actor gate was
-retired; the crediting gate is now host standing alone - `manage_event` on the
-event, which an organizer, a co-host, or an owner/admin of the hosting
-organization holds).
+**Last updated:** 2026-09-13 (0168: an event's status is a clock reading over
+`scheduled_at`/`ends_at`, `cleanups.ends_at` is NOT NULL, and the retired
+"mark completed" action is gone - so the window cap now falls back to `ends_at`
+and the daily cap keys on the event's own time zone).
 
 Volunteer hours are the input to `POST /v1/me/volunteer-hours/certificates`, which mints a signed,
 publicly verifiable PDF transcript that residents hand to schools and courts. Hours are supplied by
@@ -28,11 +28,25 @@ Every step was legal, every hour landed on a transcript, and nothing was flagged
 
 | # | Rule | Where | Effect when tripped |
 |---|---|---|---|
-| a | A credit is capped at the event's own window: `completed_at - scheduled_at` **+ 1 h grace**, never above `MAX_EVENT_HOURS` (24) | `volunteer-hours-service.ts` (`creditableHoursForEvent`) | `VALIDATION` naming the event's real length |
-| b | One person may hold at most **24 h across every event scheduled on the same UTC day** | `volunteer-hours-repository.drizzle.ts`, inside the crediting transaction under a per-user advisory lock | `CONFLICT` naming what they already hold |
+| a | A credit is capped at the event's own window: `COALESCE(completed_at, ends_at) - scheduled_at` **+ 1 h grace**, never above `MAX_EVENT_HOURS` (24) | `volunteer-hours-service.ts` (`creditableHoursForEvent`, `eventDurationMs`) | `VALIDATION` naming the event's real length |
+| b | One person may hold at most **24 h across every event scheduled on the same local calendar day**, read in the event's own IANA zone (`cleanups.timezone`, falling back to `DEFAULT_EVENT_TIME_ZONE`) | `volunteer-hours-repository.drizzle.ts`, inside the crediting transaction under a per-user advisory lock | `CONFLICT` naming what they already hold |
 | c | Reciprocity inside one event is refused **in both directions** — whoever credits second is the one refused (covers the organizer ↔ promoted-co-host swap) | same transaction | `CONFLICT` |
 | d | Two anomaly signals are **flagged to moderation, never blocked**: >60 h credited in a rolling 7 days, and A↔B crediting each other on *different* events within 30 days | detected in the transaction, filed by `volunteer-hours-anomaly.ts` | an open `moderation_items` row, `kind = 'pattern'`, `subject_type = 'user'` |
-| e | An event that ran for **less than 15 minutes** cannot have hours logged, and cannot be completed before `scheduled_at + 15 min` | `cleanup-rules.ts` (`MIN_EVENT_DURATION_MS`), `completeCleanupTx` | `CONFLICT` |
+| e | Hours can be logged only **once the event has ended** (`now >= ends_at`), and never against an event whose window is **shorter than 15 minutes** | `volunteer-hours-service.ts` (`hasEventEnded`, then the `MIN_EVENT_DURATION_MS` check in `logEventHours`) | `CONFLICT` |
+
+Rule (e)'s 15-minute floor is really enforced at write time: `assertEventWindow`
+(`host/event-fields.ts`) refuses any create or update whose `ends_at` is less than
+`MIN_EVENT_DURATION_MINUTES` after `scheduled_at`, so no persisted event can have a
+sub-15-minute window. The check inside `logEventHours` survives as a defensive
+second gate for legacy rows written before that assertion existed.
+
+**The denominator in rule (a) is fixed the moment the event ends.** Once
+`deriveCleanupStatus` reads `done`, `updateCleanup` refuses any change to `ends_at`
+(as it already refuses the date, title, location and type), so a host cannot widen
+the window a credit is measured against after the fact — the status may never move
+backwards from `done`, and the cap a transcript was printed under stays the cap. An
+event still **underway** may extend `ends_at` (running late is legitimate), bounded
+by `assertEventWindow`'s 15 minute / 24 hour duration limits.
 
 Rule (b) is enforced with `pg_advisory_xact_lock` per credited user, taken in sorted order after the
 per-event lock, so two hosts crediting the same attendee on two different events serialize instead of
@@ -61,7 +75,7 @@ rules — but each is a real edge, so it is written down rather than discovered 
 cross-event detector (d) is the same pairwise shape. Three co-hosts crediting in a
 ring — A→C, C→B, B→A — trip neither: no pair credits *each other*. What still binds
 them is everything that is not about pairs: the per-attendee window cap (a), the
-24 h/UTC-day cap (b), the 15-minute minimum (e), and the rolling 7-day flag (d),
+24 h/day cap (b), the 15-minute minimum (e), and the rolling 7-day flag (d),
 which is per-person and does not care where the hours came from. So a ring can
 still only mint what real events on real days can carry, and a ring running hot
 lands in the moderation queue on the weekly signal. Closing it properly means
@@ -71,11 +85,15 @@ path to buy a bound the caps already provide, so it is **not implemented**. If t
 weekly signal starts firing on rings in practice, the cheap next step is to widen
 the cross-event detector to depth 3 in the same `EXISTS` shape it already uses.
 
-**The daily cap keys on the EVENT's `scheduled_at` UTC date, not on a rolling
-window.** Two overlapping events straddling a UTC midnight can therefore credit one
-person 24 h on each side — 48 h inside roughly 47 wall-clock hours. This matches
-the rule as specified ("24 h per calendar day (UTC)") and is the honest choice for
-the alternative it replaces: keying on the *credit* time would block a host
+**The daily cap keys on the EVENT's `scheduled_at` date in the EVENT's own time
+zone, not on a rolling window.** The date is `(scheduled_at AT TIME ZONE
+COALESCE(cleanups.timezone, DEFAULT_EVENT_TIME_ZONE))::date`, so "the same day"
+means the day the volunteers actually showed up rather than a UTC day that can
+split a West Coast evening in half. Two overlapping events straddling that local
+midnight can still credit one person 24 h on each side — 48 h inside roughly 47
+wall-clock hours — and an event whose host left `timezone` null is read in the
+platform default, which is wrong for a volunteer in another zone by at most the
+offset between the two. Keying on the *credit* time instead would block a host
 legitimately entering last month's events in one sitting. The residue is caught by
 the weekly flag (48 h in two days is well inside a 60 h week, but a repeat of the
 pattern is not).
@@ -88,13 +106,18 @@ to bound the follow-suggestions candidate scan — and it *is* nulled, with the 
 of the tombstone, when the account itself is erased (`auth/pg-stores.ts`). The next
 report or event the user files overwrites it.
 
-## Events completed before migration 0103
+## Events from before migrations 0103 and 0168
 
 `cleanups.completed_at` arrives in `0103` and is **not backfilled** — inventing a completion instant
-would fabricate a fact that ends up printed on a government document. Those rows therefore:
+would fabricate a fact that ends up printed on a government document. `0168` then made `ends_at`
+NOT NULL and filled the rows that had none with `scheduled_at + 4 h`, the same
+`DEFAULT_EVENT_DURATION_MS` a create applies when a host omits an end time.
 
-- keep the original flat `MAX_EVENT_HOURS` ceiling for rule (a), and
-- are exempt from rule (e), because their duration is genuinely unknown.
+So every row now has a window, and rules (a) and (e) apply to all of them: an old row without a
+completion stamp is measured against its `ends_at`, which for a backfilled row is the declared
+default rather than an observed fact. That default is the honest floor available — it never
+claims more than four hours — and it is the only place in these rules where the denominator is a
+convention rather than something a host chose.
 
 Rules (b), (c) and (d) apply to them unchanged.
 
