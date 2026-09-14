@@ -743,7 +743,10 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const outsider = await newUser("Event Outsider", "evtout")
 
     const event = await cleanupSvc.createCleanup(
-      { title: "Park Sweep", type: "site", eventKind: "cleanup", lat: 34.0, lng: -118.0, scheduledAt: "2025-06-01T10:00:00.000Z" },
+      {
+        title: "Park Sweep", type: "site", eventKind: "cleanup", lat: 34.0, lng: -118.0, scheduledAt: "2025-06-01T10:00:00.000Z",
+        slots: [{ title: "General volunteers", capacity: null }],
+      },
       host,
     )
 
@@ -779,7 +782,10 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     await h.sql`INSERT INTO follows_people (follower_id, followee_id) VALUES (${viewer}, ${host})`
 
     const event = await cleanupSvc.createCleanup(
-      { title: "Alley Sweep", type: "site", eventKind: "cleanup", lat: 34.05, lng: -118.25, scheduledAt: "2026-08-01T17:00:00.000Z" },
+      {
+        title: "Alley Sweep", type: "site", eventKind: "cleanup", lat: 34.05, lng: -118.25, scheduledAt: "2026-08-01T17:00:00.000Z",
+        slots: [{ title: "General volunteers", capacity: null }],
+      },
       host,
     )
 

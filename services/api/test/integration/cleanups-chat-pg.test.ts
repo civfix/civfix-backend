@@ -62,6 +62,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         lat: 34.05,
         lng: -118.25,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
         bring: ["gloves"],
         address: "Main gate",
       },
@@ -93,6 +94,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         lat: 34.06,
         lng: -118.26,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )
@@ -115,6 +117,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         lat: 34.07,
         lng: -118.27,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )
@@ -175,6 +178,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
           lat: 34.07,
           lng: -118.27,
           scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+          slots: [{ title: "General volunteers", capacity: null }],
         },
         organizerId,
       )
@@ -212,6 +216,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         lat: 34.09,
         lng: -118.29,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )
@@ -270,6 +275,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
           lat: 34.08,
           lng: -118.28,
           scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+          slots: [{ title: "General volunteers", capacity: null }],
         },
         organizerId,
       )
@@ -331,6 +337,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
           lat: 34.1,
           lng: -118.3,
           scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+          slots: [{ title: "General volunteers", capacity: null }],
         },
         organizerId,
       )
@@ -388,6 +395,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         lat: 34.08,
         lng: -118.28,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )

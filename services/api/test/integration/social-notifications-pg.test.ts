@@ -113,11 +113,17 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     const attendee = await newUser("Profile Attendee", "profatt")
 
     const older = await cleanupService.createCleanup(
-      { title: "Older Sweep", type: "site", eventKind: "cleanup", lat: 34.0, lng: -118.0, scheduledAt: "2025-01-01T10:00:00.000Z" },
+      {
+        title: "Older Sweep", type: "site", eventKind: "cleanup", lat: 34.0, lng: -118.0, scheduledAt: "2025-01-01T10:00:00.000Z",
+        slots: [{ title: "General volunteers", capacity: null }],
+      },
       organizer,
     )
     const newer = await cleanupService.createCleanup(
-      { title: "Newer Sweep", type: "site", eventKind: "cleanup", lat: 34.1, lng: -118.1, scheduledAt: "2025-03-01T10:00:00.000Z" },
+      {
+        title: "Newer Sweep", type: "site", eventKind: "cleanup", lat: 34.1, lng: -118.1, scheduledAt: "2025-03-01T10:00:00.000Z",
+        slots: [{ title: "General volunteers", capacity: null }],
+      },
       organizer,
     )
     await h.sql`
@@ -154,6 +160,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
         lat: 34.0,
         lng: -118.0,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       owner,
     )
@@ -165,6 +172,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
         lat: 34.2,
         lng: -118.2,
         scheduledAt: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       host,
     )
@@ -205,6 +213,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
           lat: 34.0,
           lng: -118.0,
           scheduledAt: new Date(Date.now() - (i + 1) * 86_400_000).toISOString(),
+          slots: [{ title: "General volunteers", capacity: null }],
         },
         owner,
       )

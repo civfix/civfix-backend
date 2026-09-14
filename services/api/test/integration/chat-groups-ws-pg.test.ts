@@ -492,6 +492,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
           lat: 34.05,
           lng: -118.25,
           scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+          slots: [{ title: "General volunteers", capacity: null }],
         },
         organizerId,
       )
