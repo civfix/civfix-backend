@@ -22,6 +22,7 @@
  * database and lives in test/integration/cleanup-slots-pg.test.ts.
  */
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { describe, it, expect, beforeEach } from "vitest"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import {
@@ -74,7 +75,7 @@ beforeEach(() => {
   repo.seedUser({ id: MEMBER, displayName: "Mel Member", handle: "mel" })
   repo.seedUser({ id: OUTSIDER, displayName: "Ollie Outsider", handle: "ollie" })
   counters = new InMemoryCounterStore(() => 0)
-  service = makeCleanupService({ repo, counters })
+  service = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo, counters })
 })
 
 describe("claim", () => {
@@ -446,7 +447,7 @@ describe("the flip budget (B29c)", () => {
     const id = seedEvent()
     const a = repo.seedSlot({ cleanupId: id, title: "Grill", sortOrder: 0 })
     const b = repo.seedSlot({ cleanupId: id, title: "Sign-in", sortOrder: 1 })
-    const limited = makeCleanupService({ repo, counters })
+    const limited = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo, counters })
 
     for (let i = 0; i < SLOT_FLIPS_PER_EVENT_PER_WINDOW; i++) {
       await limited.claimEventSlot(id, MEMBER, i % 2 === 0 ? a.id : b.id)
@@ -459,7 +460,7 @@ describe("the flip budget (B29c)", () => {
   it("is counted per (event, user): another person on the same event is unaffected", async () => {
     const id = seedEvent()
     const slot = repo.seedSlot({ cleanupId: id, title: "Anyone" })
-    const limited = makeCleanupService({ repo, counters })
+    const limited = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo, counters })
 
     for (let i = 0; i < SLOT_FLIPS_PER_EVENT_PER_WINDOW; i++) {
       await limited.claimEventSlot(id, MEMBER, slot.id)
@@ -476,7 +477,7 @@ describe("the flip budget (B29c)", () => {
     const id = seedEvent()
     const slot = repo.seedSlot({ cleanupId: id, title: "Grill", capacity: 1 })
     await service.claimEventSlot(id, COHOST, slot.id)
-    const limited = makeCleanupService({ repo, counters })
+    const limited = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo, counters })
 
     for (let i = 0; i < SLOT_FLIPS_PER_EVENT_PER_WINDOW; i++) {
       await expect(limited.claimEventSlot(id, MEMBER, slot.id)).rejects.toMatchObject({

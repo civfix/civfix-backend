@@ -23,6 +23,7 @@
  * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
  */
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
@@ -483,6 +484,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
     it("POST /messages/reactions works for a cleanup room too (parity, no roomKind stamp)", async () => {
       const organizerId = await newUser("React Org")
       const created = await makeCleanupService({
+        tickets: TEST_TICKET_SIGNER,
         repo: makeDrizzleCleanupRepository(h.sql),
       }).createCleanup(
         {

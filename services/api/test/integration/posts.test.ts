@@ -9,6 +9,7 @@
  * When Docker is unavailable the whole block SKIPS (describe.skipIf) so the local suite stays green.
  */
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { FakePushSender } from "@civfix/shared/fakes"
@@ -738,7 +739,10 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
   it("attaching an event requires membership (member ok, non-member 403)", async () => {
     const svc = makeService()
-    const cleanupSvc = makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) })
+    const cleanupSvc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: makeDrizzleCleanupRepository(h.sql),
+    })
     const host = await newUser("Event Host", "evthost")
     const outsider = await newUser("Event Outsider", "evtout")
 
@@ -776,7 +780,10 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
   it("ANNOUNCE: the organizer can attach the event they just created, and the post lands in the `events` filter", async () => {
     const svc = makeService()
-    const cleanupSvc = makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) })
+    const cleanupSvc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: makeDrizzleCleanupRepository(h.sql),
+    })
     const host = await newUser("Announce Host", "annhost")
     const viewer = await newUser("Announce Viewer", "annview")
     await h.sql`INSERT INTO follows_people (follower_id, followee_id) VALUES (${viewer}, ${host})`

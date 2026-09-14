@@ -1,3 +1,4 @@
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { describe, it, expect, beforeEach } from "vitest"
 import { makeCleanupService, type CleanupService } from "../../src/services/cleanup-service.js"
 import { makeReportService, type ReportService } from "../../src/services/report-service.js"
@@ -45,7 +46,11 @@ beforeEach(() => {
   repo.seedReport({ id: R2, title: "Graffiti", category: "graffiti" })
   repo.seedReport({ id: R3, title: "Held one", status: "held" })
   repo.seedReport({ id: R4, title: "Fixed hazard", category: "hazard", status: "resolved" })
-  service = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
+  service = makeCleanupService({
+    tickets: TEST_TICKET_SIGNER,
+    repo,
+    counters: new InMemoryCounterStore(),
+  })
 })
 
 describe("createCleanup linking", () => {

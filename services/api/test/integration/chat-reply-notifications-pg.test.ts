@@ -15,6 +15,7 @@
  * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
  */
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { FakePushSender } from "@civfix/shared/fakes"
@@ -65,6 +66,7 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
   /** Create a cleanup (organizer joined) and return its id. */
   async function newCleanup(organizerId: string, title: string): Promise<string> {
     const created = await makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo: makeDrizzleCleanupRepository(h.sql),
     }).createCleanup(
       {
@@ -123,7 +125,10 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     const target = await newUser("Muted Target")
     const actor = await newUser("Reply Actor")
     const cleanupId = await newCleanup(target, "Muted-room sweep")
-    await makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) }).joinCleanup(cleanupId, actor)
+    await makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: makeDrizzleCleanupRepository(h.sql),
+    }).joinCleanup(cleanupId, actor)
 
     // Target mutes the room — the normal room/mention bells would be silenced.
     await makeConversationMutesRepository(h.sql).setMuted(target, "cleanup", cleanupId, true)
@@ -171,7 +176,10 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
     const target = await newUser("No-Mentions Target")
     const actor = await newUser("Reply Actor 2")
     const cleanupId = await newCleanup(target, "Prefs sweep")
-    await makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) }).joinCleanup(cleanupId, actor)
+    await makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: makeDrizzleCleanupRepository(h.sql),
+    }).joinCleanup(cleanupId, actor)
 
     const deps = makeBellDeps()
     await deps.notificationService.getPrefs(target) // materialize defaults

@@ -73,8 +73,7 @@ import {
   assertValidTimezone,
 } from "./host/event-fields.js"
 import { assertSlugAllowed } from "./host/slugs.js"
-import { makeTicketTokenSigner, type TicketTokenSigner } from "./host/ticket-token.js"
-import { DEVELOPMENT_TICKET_TOKEN_SECRET } from "../env/registration-env.js"
+import type { TicketTokenSigner } from "./host/ticket-token.js"
 import { NULL_HOST_AUDIT_SINK, type HostAuditSink } from "./host/host-audit.js"
 import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import {
@@ -239,7 +238,7 @@ export interface EventMediaPresigner {
 
 export interface CleanupServiceDeps {
   repo: CleanupRepository
-  tickets?: TicketTokenSigner
+  tickets: TicketTokenSigner
   audit?: HostAuditSink
   presignEventMedia?: EventMediaPresigner
   presignThumb?: (thumbKey: string) => Promise<string>
@@ -310,11 +309,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   const presignThumb = deps.presignThumb ?? ((thumbKey: string) => Promise.resolve(thumbKey))
   const counters = deps.counters ?? fallbackCounters
   const audit = deps.audit ?? NULL_HOST_AUDIT_SINK
-  const tickets = deps.tickets ?? makeTicketTokenSigner(DEVELOPMENT_TICKET_TOKEN_SECRET)
-
   function newSignupSeat(): SignupSeat {
     const seatId = randomUUID()
-    return { seatId, tokenHash: tickets.hashFor(seatId) }
+    return { seatId, tokenHash: deps.tickets.hashFor(seatId) }
   }
 
   const enrichDTOs =

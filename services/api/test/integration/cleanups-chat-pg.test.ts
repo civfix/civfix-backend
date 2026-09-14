@@ -12,6 +12,7 @@
  * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
  */
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
@@ -53,7 +54,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
   it("createCleanupTx inserts the cleanup + organizer membership atomically", async () => {
     const organizerId = await newUser("Org Atomic")
     const repo = makeDrizzleCleanupRepository(h.sql)
-    const service = makeCleanupService({ repo })
+    const service = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo })
 
     const dto = await service.createCleanup(
       {
@@ -86,7 +87,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     const organizerId = await newUser("Org Join")
     const aliceId = await newUser("Alice Join")
     const repo = makeDrizzleCleanupRepository(h.sql)
-    const service = makeCleanupService({ repo })
+    const service = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo })
     const created = await service.createCleanup(
       {
         title: "Join sweep",
@@ -109,7 +110,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
   it("persists chat into the partitioned table and pages history newest-first with a cursor", async () => {
     const organizerId = await newUser("Org Chat")
     const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
-    const cleanupService = makeCleanupService({ repo: cleanupRepo })
+    const cleanupService = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo: cleanupRepo })
     const created = await cleanupService.createCleanup(
       {
         title: "Chat sweep",
@@ -169,7 +170,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
   it("P1-5: a `before` cursor from ANOTHER room cannot seek/leak into this room", async () => {
     const organizerId = await newUser("Org XRoom")
     const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
-    const cleanupService = makeCleanupService({ repo: cleanupRepo })
+    const cleanupService = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo: cleanupRepo })
     const mk = (title: string) =>
       cleanupService.createCleanup(
         {
@@ -209,7 +210,10 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
   it("persists the chat read watermark (cleanup_members.last_read_at) monotonically", async () => {
     const organizerId = await newUser("Org Read")
     const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
-    const created = await makeCleanupService({ repo: cleanupRepo }).createCleanup(
+    const created = await makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: cleanupRepo,
+    }).createCleanup(
       {
         title: "Read sweep",
         type: "site",
@@ -268,7 +272,10 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       const organizerToken = await authServices.sessions.createSession(organizerId, [])
 
       const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
-      const created = await makeCleanupService({ repo: cleanupRepo }).createCleanup(
+      const created = await makeCleanupService({
+        tickets: TEST_TICKET_SIGNER,
+        repo: cleanupRepo,
+      }).createCleanup(
         {
           title: "Route sweep",
           type: "site",
@@ -330,7 +337,10 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       const organizerToken = await authServices.sessions.createSession(organizerId, [])
 
       const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
-      const created = await makeCleanupService({ repo: cleanupRepo }).createCleanup(
+      const created = await makeCleanupService({
+        tickets: TEST_TICKET_SIGNER,
+        repo: cleanupRepo,
+      }).createCleanup(
         {
           title: "Reaction sweep",
           type: "site",
@@ -387,7 +397,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     const aliceId = await newUser("Alice Roles")
     const bobId = await newUser("Bob Roles")
     const repo = makeDrizzleCleanupRepository(h.sql)
-    const service = makeCleanupService({ repo })
+    const service = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo })
     const created = await service.createCleanup(
       {
         title: "Roles sweep",

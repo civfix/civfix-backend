@@ -14,6 +14,7 @@
  * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
  */
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
@@ -62,6 +63,7 @@ describe.skipIf(!pg)("chat replies (integration)", () => {
   /** Create a cleanup (organizer joined) and return its id. */
   async function newCleanup(organizerId: string, title: string): Promise<string> {
     const created = await makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo: makeDrizzleCleanupRepository(h.sql),
     }).createCleanup(
       {

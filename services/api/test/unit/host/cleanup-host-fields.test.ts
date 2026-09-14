@@ -1,3 +1,4 @@
+import { TEST_TICKET_SIGNER } from "../../helpers/ticket-signer.js"
 import { beforeEach, describe, expect, it } from "vitest"
 import type { CreateCleanupRequest } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
@@ -34,6 +35,7 @@ function base(over: Partial<CreateCleanupRequest> = {}): CreateCleanupRequest {
 
 function makeService(): CleanupService {
   return makeCleanupService({
+    tickets: TEST_TICKET_SIGNER,
     repo,
     counters: new InMemoryCounterStore(),
     presignEventMedia: (key, opts) =>
@@ -387,6 +389,7 @@ describe("updateCleanup authorization", () => {
 describe("getCleanup addressing", () => {
   it("resolves a uuid, a reference code and a page slug", async () => {
     const scoped = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       resolveJurisdictionCode: () => Promise.resolve(42),

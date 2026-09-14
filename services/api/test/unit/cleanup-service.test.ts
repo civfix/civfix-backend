@@ -1,3 +1,4 @@
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { describe, it, expect, beforeEach } from "vitest"
 import { FakeJobs } from "@civfix/shared/fakes"
 import {
@@ -49,7 +50,11 @@ function baseInput(over: Partial<CreateCleanupRequest> = {}): CreateCleanupReque
 beforeEach(() => {
   repo = new InMemoryCleanupRepository()
   repo.seedUser({ id: ORG, displayName: "Olive Organizer", handle: "olive" })
-  service = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
+  service = makeCleanupService({
+    tickets: TEST_TICKET_SIGNER,
+    repo,
+    counters: new InMemoryCounterStore(),
+  })
 })
 
 describe("createCleanup", () => {
@@ -87,6 +92,7 @@ describe("createCleanup", () => {
 
   it("resolves the event's jurisdiction + code and getCleanup resolves by reference_code", async () => {
     const scoped = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       counters: new InMemoryCounterStore(),
       repo,
       resolveJurisdictionGeoid: () => Promise.resolve("0644000"),
@@ -146,7 +152,7 @@ describe("joinCleanup / leaveCleanup", () => {
 
   it(`H12: caps join/leave flips at ${MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW} per attendee per event`, async () => {
     const counters = new InMemoryCounterStore()
-    const scoped = makeCleanupService({ repo, counters })
+    const scoped = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo, counters })
     const created = await scoped.createCleanup(baseInput(), ORG)
 
     for (let i = 0; i < MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW; i++) {
@@ -770,6 +776,7 @@ describe("requestResources (D19 event resource request)", () => {
     }
     const counters = new InMemoryCounterStore()
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo: r,
       counters,
       outboundMail: {
@@ -806,6 +813,7 @@ describe("requestResources (D19 event resource request)", () => {
       },
     })
     const creator = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo: r,
       counters: { incr: () => Promise.resolve(1), incrBy: () => Promise.resolve(1) },
     })
@@ -988,6 +996,7 @@ describe("WS4 co-hosts: setMemberRole / removeMember / role-aware reads", () => 
   beforeEach(() => {
     bells = []
     svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       notifier: {
@@ -1219,7 +1228,11 @@ describe("M17: attendee removal is enforceable (cleanup_bans)", () => {
   beforeEach(() => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     repo.seedUser({ id: BOB, displayName: "Bob" })
-    svc = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
+    svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo,
+      counters: new InMemoryCounterStore(),
+    })
   })
 
   it("a removed attendee CANNOT re-join themselves (the removal used to be purely cosmetic)", async () => {
@@ -1289,7 +1302,11 @@ describe("M17: attendee removal is enforceable (cleanup_bans)", () => {
 describe("M18: promote/demote notification bombing", () => {
   it("caps role flips per (event, target) once the two-value idempotency check is defeated", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
-    const svc = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
+    const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo,
+      counters: new InMemoryCounterStore(),
+    })
     const created = await svc.createCleanup(baseInput(), ORG)
     await svc.joinCleanup(created.id, ALICE)
 
@@ -1311,7 +1328,11 @@ describe("M18: promote/demote notification bombing", () => {
   it("the cap is per TARGET — throttling one attendee does not lock out the roster", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     repo.seedUser({ id: BOB, displayName: "Bob" })
-    const svc = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
+    const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo,
+      counters: new InMemoryCounterStore(),
+    })
     const created = await svc.createCleanup(baseInput(), ORG)
     await svc.joinCleanup(created.id, ALICE)
     await svc.joinCleanup(created.id, BOB)
@@ -1402,6 +1423,7 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
       link?: string
     }[] = []
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       notifier: {
@@ -1449,6 +1471,7 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     const bells: { bodyKey?: string; vars?: Record<string, string | number> }[] = []
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       notifier: {
@@ -1479,6 +1502,7 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     const bells: string[] = []
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       notifier: {
@@ -1516,6 +1540,7 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
     const delivered: string[] = []
     const warned: { userId?: string; cleanupId?: string }[] = []
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       logger: {
@@ -1557,6 +1582,7 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
   it("a notifier failure never fails the cancellation itself (best-effort, like every other bell)", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       notifier: { createNotification: () => Promise.reject(new Error("push down")) },
@@ -1670,6 +1696,7 @@ describe("F157: cancellation fan-out leaves the request path", () => {
   function bellHarness(jobs?: FakeJobs) {
     const bells: string[] = []
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       ...(jobs !== undefined ? { jobs } : {}),
@@ -1715,6 +1742,7 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     const bells: string[] = []
     const seen = new Set<string>()
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       jobs,
@@ -1763,6 +1791,7 @@ describe("F157: cancellation fan-out leaves the request path", () => {
     const guestCalls: string[] = []
     const errors: unknown[] = []
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       jobs,
@@ -1810,6 +1839,7 @@ describe("F157: cancellation fan-out leaves the request path", () => {
   it("does not fan out to guests inline when no job queue is wired at all", async () => {
     const guestCalls: string[] = []
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       attendeeNotifier: {
@@ -1829,6 +1859,7 @@ describe("F157: cancellation fan-out leaves the request path", () => {
 
   it("lets a guest-fanout failure escape the JOB path so pg-boss can redeliver", async () => {
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       attendeeNotifier: {
@@ -1875,6 +1906,7 @@ describe("insights invalidation", () => {
   function invalidatingService(): { svc: CleanupService; bumped: string[] } {
     const bumped: string[] = []
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       insightsInvalidator: {

@@ -1,4 +1,5 @@
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
@@ -44,6 +45,7 @@ describe.skipIf(!pg)("around-mode history windows (integration)", () => {
 
   async function newCleanup(organizerId: string, title: string): Promise<string> {
     const created = await makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo: makeDrizzleCleanupRepository(h.sql),
     }).createCleanup(
       {

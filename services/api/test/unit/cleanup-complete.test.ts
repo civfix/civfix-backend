@@ -1,3 +1,4 @@
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { describe, it, expect, beforeEach } from "vitest"
 import { makeCleanupService, type CleanupService } from "../../src/services/cleanup-service.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
@@ -50,7 +51,11 @@ beforeEach(() => {
   repo.seedUser({ id: COHOST, displayName: "Casey Cohost", handle: "casey" })
   repo.seedUser({ id: MEMBER, displayName: "Mel Member", handle: "mel" })
   repo.seedUser({ id: STRANGER, displayName: "Sam Stranger", handle: "sam" })
-  service = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
+  service = makeCleanupService({
+    tickets: TEST_TICKET_SIGNER,
+    repo,
+    counters: new InMemoryCounterStore(),
+  })
 })
 
 describe("completeCleanup — the deprecated no-op contract", () => {
@@ -99,6 +104,7 @@ describe("completeCleanup — the deprecated no-op contract", () => {
   it("logs one deprecation line carrying the caller's user agent", async () => {
     const lines: { cleanupId?: string; userAgent?: string | null }[] = []
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       logger: {
@@ -156,6 +162,7 @@ describe("completeCleanup — B19: completion rings nobody", () => {
   it("emits NO notification, on a first call or a repeat", async () => {
     const bells: string[] = []
     const svc = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       counters: new InMemoryCounterStore(),
       repo,
       notifier: {

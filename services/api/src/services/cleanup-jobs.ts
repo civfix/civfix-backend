@@ -24,6 +24,7 @@ export async function registerCleanupCancelFanoutJob(
     }
     const service = makeCleanupService({
       repo: makeDrizzleCleanupRepository(container.getDb().sql),
+      tickets: container.getTicketTokenSigner(),
       notifier: makeRouteNotificationService(container, logger),
       attendeeNotifier: makeCommsRuntime(container, logger).lanes,
       ...(logger !== undefined ? { logger } : {}),

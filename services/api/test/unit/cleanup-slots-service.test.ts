@@ -20,6 +20,7 @@
  *   - slots are legal on BOTH eventKind values, unlike linkedReportIds.
  */
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { describe, it, expect, beforeEach } from "vitest"
 import { MAX_EVENT_SLOTS, type AppError } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
@@ -84,7 +85,7 @@ beforeEach(() => {
   repo.seedUser({ id: MEMBER, displayName: "Mel Member", handle: "mel" })
   repo.seedUser({ id: OTHER, displayName: "Otto Other", handle: "otto" })
   counters = new InMemoryCounterStore(() => 0)
-  service = makeCleanupService({ repo, counters })
+  service = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo, counters })
 })
 
 describe("createCleanup — slots ride the create transaction (B22)", () => {
@@ -560,6 +561,7 @@ describe("the cleanup_slot bell (B34/B35)", () => {
 
     const bells: { userId: string; type: string; vars?: Record<string, unknown> }[] = []
     const notified = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters,
       notifier: {
@@ -589,6 +591,7 @@ describe("the cleanup_slot bell (B34/B35)", () => {
 
     const bells: string[] = []
     const notified = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters,
       notifier: {
@@ -615,6 +618,7 @@ describe("the cleanup_slot bell (B34/B35)", () => {
 
     const bells: string[] = []
     const notified = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters,
       notifier: {
@@ -637,6 +641,7 @@ describe("the cleanup_slot bell (B34/B35)", () => {
 
     const reached: string[] = []
     const notified = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters,
       notifier: {
@@ -979,6 +984,7 @@ describe("slot windows (0167)", () => {
 
     const bells: { userId: string; titleKey?: string; vars?: Record<string, unknown> }[] = []
     const notified = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters,
       notifier: {
@@ -1016,6 +1022,7 @@ describe("slot windows (0167)", () => {
 
     const bells: string[] = []
     const notified = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters,
       notifier: {
@@ -1054,6 +1061,7 @@ describe("slot windows (0167)", () => {
 
     const bells: string[] = []
     const notified = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters,
       notifier: {
@@ -1085,6 +1093,7 @@ describe("slot windows (0167)", () => {
 
     const bells: string[] = []
     const notified = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters,
       notifier: {

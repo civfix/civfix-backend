@@ -1,3 +1,4 @@
+import { TEST_TICKET_SIGNER } from "../../helpers/ticket-signer.js"
 import { beforeEach, describe, expect, it } from "vitest"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryCleanupRepository } from "../../helpers/cleanups.js"
@@ -32,6 +33,7 @@ beforeEach(() => {
   organizationId = org.id
   repo.seedOrgMember(org.id, MEMBER, "owner")
   service = makeCleanupService({
+    tickets: TEST_TICKET_SIGNER,
     repo,
     counters: new InMemoryCounterStore(),
     presignEventMedia: (key) => {

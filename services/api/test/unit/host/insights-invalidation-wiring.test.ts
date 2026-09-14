@@ -1,3 +1,4 @@
+import { TEST_TICKET_SIGNER } from "../../helpers/ticket-signer.js"
 import { randomUUID } from "node:crypto"
 import { beforeEach, describe, expect, it } from "vitest"
 import { buildContainer } from "../../../src/di.js"
@@ -206,6 +207,7 @@ function buildCleanupHarness(
     ...(over.status !== undefined ? { status: over.status } : {}),
   })
   const service = makeCleanupService({
+    tickets: TEST_TICKET_SIGNER,
     repo,
     counters: new InMemoryCounterStore(() => NOW.getTime()),
     insightsInvalidator: generation,
