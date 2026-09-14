@@ -1583,7 +1583,6 @@ export async function cancelSignupRegistrationIn(
   tx: Queryable,
   args: { cleanupId: string; userId: string; actorId: string | null; now: Date },
 ): Promise<boolean> {
-  if (await eventHasTicketTypes(tx, args.cleanupId)) return false
   const cancelled = await tx<{ id: string }[]>`
     WITH cancelled AS (
       UPDATE cleanup_registrations
@@ -1591,6 +1590,7 @@ export async function cancelSignupRegistrationIn(
        WHERE cleanup_id = ${args.cleanupId}
          AND user_id = ${args.userId}
          AND status = 'registered'
+         AND ticket_type_id IS NULL
       RETURNING id
     ), seats AS (
       UPDATE cleanup_registration_seats s

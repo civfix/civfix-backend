@@ -402,6 +402,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     seatId: string
     now: Date
   }): RegistrationRecord | null {
+    if ([...this.ticketTypes.values()].some((t) => t.cleanupId === args.cleanupId)) return null
     const active = [...this.registrations.values()].find(
       (r) => r.cleanupId === args.cleanupId && r.status === "registered" && r.userId === args.userId,
     )
@@ -456,7 +457,11 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
 
   cancelSignupRegistration(args: { cleanupId: string; userId: string; now: Date }): boolean {
     const active = [...this.registrations.values()].find(
-      (r) => r.cleanupId === args.cleanupId && r.status === "registered" && r.userId === args.userId,
+      (r) =>
+        r.cleanupId === args.cleanupId &&
+        r.status === "registered" &&
+        r.userId === args.userId &&
+        r.ticketTypeId === null,
     )
     if (active === undefined) return false
     active.status = "cancelled"

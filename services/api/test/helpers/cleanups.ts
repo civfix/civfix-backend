@@ -1110,11 +1110,11 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     )
     if (idx >= 0) {
       this.members.splice(idx, 1)
+      this.cancelSignupRegistration(cleanupId, userId)
       if (!this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
         this.bans.push({ cleanupId, userId, bannedByUserId: actorId })
       }
       this.deleteClaim(cleanupId, userId)
-      this.cancelSignupRegistration(cleanupId, userId)
     }
     const going = this.goingOf(cleanupId)
     return Promise.resolve(idx >= 0 ? { kind: "removed", going } : { kind: "not_member", going })
@@ -1169,17 +1169,13 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (cleanup.status === "cancelled") return Promise.resolve("closed")
     const idx = this.members.findIndex((m) => m.cleanupId === cleanupId && m.userId === userId)
     if (idx >= 0) this.members.splice(idx, 1)
-    this.deleteClaim(cleanupId, userId)
     this.cancelSignupRegistration(cleanupId, userId)
+    this.deleteClaim(cleanupId, userId)
     return Promise.resolve("left")
   }
 
-  private hasTicketTypes(cleanupId: string): boolean {
-    return this.ticketTypes.some((t) => t.cleanupId === cleanupId)
-  }
-
   private ensureSignupRegistration(cleanupId: string, userId: string, seat: SignupSeat): void {
-    if (this.registrationSink === null || this.hasTicketTypes(cleanupId)) return
+    if (this.registrationSink === null) return
     this.registrationSink.ensureSignupRegistration({
       cleanupId,
       userId,
@@ -1189,7 +1185,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   }
 
   private cancelSignupRegistration(cleanupId: string, userId: string): void {
-    if (this.registrationSink === null || this.hasTicketTypes(cleanupId)) return
+    if (this.registrationSink === null) return
     this.registrationSink.cancelSignupRegistration({ cleanupId, userId, now: this.now() })
   }
 
@@ -1394,9 +1390,9 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       this.members.push({ cleanupId, userId, role: "member" })
       if (!this.users.has(userId)) this.seedUser({ id: userId })
     }
+    this.ensureSignupRegistration(cleanupId, userId, seat)
     if (current) current.slotId = slotId
     else this.slotClaims.push({ cleanupId, userId, slotId })
-    this.ensureSignupRegistration(cleanupId, userId, seat)
     return Promise.resolve({ kind: "claimed", slotId })
   }
 

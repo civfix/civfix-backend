@@ -15,6 +15,8 @@
  * test/integration/signup-seats-pg.test.ts.
  */
 
+import { TEST_TICKET_SIGNER } from "../../helpers/ticket-signer.js"
+import { randomUUID } from "node:crypto"
 import { beforeEach, describe, expect, it } from "vitest"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import {
@@ -23,11 +25,11 @@ import {
 } from "../../../src/services/cleanup-service.js"
 import { InMemoryCleanupRepository } from "../../helpers/cleanups.js"
 import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import type { TicketTypeRecord } from "../../../src/services/host/registration-repository.types.js"
 import {
   makeCheckinService,
   type CheckinService,
 } from "../../../src/services/host/checkin-service.js"
-import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
 
 const ORG = "11111111-1111-1111-1111-111111111111"
 const MEMBER = "33333333-3333-3333-3333-333333333333"
@@ -35,8 +37,6 @@ const OTHER = "44444444-4444-4444-4444-444444444444"
 
 const CLEANUP_ID = "aaaaaaaa-0000-0000-0000-000000000001"
 const FUTURE = new Date(Date.now() + 7 * 86_400_000)
-
-const tokens = makeTicketTokenSigner("signup-seats-test-secret-long-enough")
 
 let repo: InMemoryCleanupRepository
 let registrations: InMemoryHostRegistrationRepository
@@ -53,6 +53,12 @@ function seedEvent(over: { capacity?: number | null } = {}): string {
   })
   registrations.seedEvent({ cleanupId: CLEANUP_ID, organizerUserId: ORG, ...over })
   return CLEANUP_ID
+}
+
+function seedTicketType(cleanupId: string): TicketTypeRecord {
+  const record = registrations.seedTicketType({ cleanupId, name: "General admission" })
+  repo.seedTicketType({ cleanupId, id: record.id, name: record.name })
+  return record
 }
 
 function activeRegistrationsOf(cleanupId: string, userId: string) {
@@ -79,15 +85,19 @@ async function rosterUserIds(cleanupId: string): Promise<(string | null)[]> {
 beforeEach(() => {
   repo = new InMemoryCleanupRepository()
   registrations = new InMemoryHostRegistrationRepository()
-  registrations.tokenHashResolver = (seatId) => tokens.hashFor(seatId)
+  registrations.tokenHashResolver = (seatId) => TEST_TICKET_SIGNER.hashFor(seatId)
   repo.registrationSink = registrations
   repo.seedUser({ id: ORG, displayName: "Olive Organizer", handle: "olive" })
   repo.seedUser({ id: MEMBER, displayName: "Mel Member", handle: "mel" })
   repo.seedUser({ id: OTHER, displayName: "Ollie Other", handle: "ollie" })
-  service = makeCleanupService({ repo, tickets: tokens, counters: new InMemoryCounterStore(() => 0) })
+  service = makeCleanupService({
+    repo,
+    tickets: TEST_TICKET_SIGNER,
+    counters: new InMemoryCounterStore(() => 0),
+  })
   checkin = makeCheckinService({
     repo: registrations,
-    tokens,
+    tokens: TEST_TICKET_SIGNER,
     registrations: { eventChanged: () => Promise.resolve() },
   })
 })
@@ -178,7 +188,7 @@ describe("signing up for a non-ticketed event", () => {
 describe("a ticketed event", () => {
   it("gets no auto-registration — registerIn owns that path", async () => {
     const id = seedEvent()
-    repo.seedTicketType({ cleanupId: id, name: "General admission" })
+    seedTicketType(id)
     const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
 
     await service.joinCleanup(id, MEMBER)
@@ -186,6 +196,70 @@ describe("a ticketed event", () => {
 
     expect(activeRegistrationsOf(id, MEMBER)).toHaveLength(0)
     expect(await rosterUserIds(id)).toEqual([])
+  })
+
+  it("a plain leave does not cancel a ticketed registration", async () => {
+    const id = seedEvent()
+    const type = seedTicketType(id)
+    const registered = await registrations.registerTx({
+      cleanupId: id,
+      subject: { kind: "user", userId: MEMBER },
+      ticketTypeId: type.id,
+      seats: [{ id: randomUUID(), attendeeName: null, tokenHash: randomUUID() }],
+      accessCodeHash: null,
+      answers: [],
+      consent: null,
+      slotId: null,
+      source: "self",
+      idempotencyKey: "ticketed-leave",
+      waitlistId: null,
+      now: new Date(),
+    })
+    expect(registered.kind).toBe("registered")
+
+    await service.joinCleanup(id, MEMBER)
+    await service.leaveCleanup(id, MEMBER)
+
+    const mine = activeRegistrationsOf(id, MEMBER)
+    expect(mine).toHaveLength(1)
+    expect(mine[0]?.ticketTypeId).toBe(type.id)
+    expect(mine[0]?.seats.map((seat) => seat.status)).toEqual(["active"])
+  })
+})
+
+describe("a ticket type added after plain sign-ups already exist", () => {
+  it("still lets leaving cancel the seat and kills the token", async () => {
+    const id = seedEvent()
+    await service.joinCleanup(id, MEMBER)
+    const ticket = await checkin.myTicket({ id }, MEMBER)
+    const token = ticket.seats[0]?.ticketToken
+    if (token === undefined) throw new Error("expected a ticket token")
+    seedTicketType(id)
+
+    await service.leaveCleanup(id, MEMBER)
+
+    expect(activeRegistrationsOf(id, MEMBER)).toHaveLength(0)
+    const rows = [...registrations.registrations.values()].filter(
+      (r) => r.cleanupId === id && r.userId === MEMBER,
+    )
+    expect(rows.map((r) => r.status)).toEqual(["cancelled"])
+    expect(rows[0]?.seats.map((seat) => seat.status)).toEqual(["cancelled"])
+    expect((await checkin.scan({ id, token }, ORG)).outcome).toBe("cancelled")
+  })
+
+  it("still lets a host removal cancel the seat of the banned attendee", async () => {
+    const id = seedEvent()
+    await service.joinCleanup(id, MEMBER)
+    const ticket = await checkin.myTicket({ id }, MEMBER)
+    const token = ticket.seats[0]?.ticketToken
+    if (token === undefined) throw new Error("expected a ticket token")
+    seedTicketType(id)
+
+    await service.removeMember(id, ORG, MEMBER)
+
+    expect(activeRegistrationsOf(id, MEMBER)).toHaveLength(0)
+    expect((await registrations.checkinCounters(id)).registered).toBe(0)
+    expect((await checkin.scan({ id, token }, ORG)).outcome).toBe("cancelled")
   })
 })
 

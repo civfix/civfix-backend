@@ -6,7 +6,9 @@
  * WHERE status = 'registered' AND user_id IS NOT NULL DO NOTHING` actually resolves the partial unique
  * index (a mis-specified arbiter raises 42P10 at plan time, not at review time), that the seat row
  * satisfies every CHECK on `cleanup_registration_seats`, and that the host's roster query and the
- * scanner's token lookup then find the seat the sign-up minted.
+ * scanner's token lookup then find the seat the sign-up minted. It also pins the two discriminators
+ * the cancel path rests on: a ticket type created AFTER a plain sign-up must not strand an active
+ * seat on a departed attendee, and a genuinely ticketed registration must survive a plain leave.
  *
  * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
  */
@@ -222,6 +224,68 @@ describe.skipIf(!pg)("signup seats (integration)", () => {
     await repo.joinCleanupTx(cleanupId, volunteer, seat())
     expect(await seatRows(cleanupId, volunteer)).toHaveLength(2)
     expect(await rosterUserIds(cleanupId)).toContain(volunteer)
+  })
+
+  it("a ticket type added after the sign-up still lets leaving cancel the seat", async () => {
+    const organizer = await newUser("Olive Organizer")
+    const volunteer = await newUser("Vic Volunteer")
+    const cleanupId = await newCleanup(organizer)
+
+    const minted = seat()
+    await repo.joinCleanupTx(cleanupId, volunteer, minted)
+    await h.sql`
+      INSERT INTO cleanup_ticket_types (cleanup_id, name, sort_order)
+      VALUES (${cleanupId}, ${"General admission"}, 0)
+    `
+
+    expect(await repo.leaveCleanup(cleanupId, volunteer)).toBe("left")
+
+    expect(await seatRows(cleanupId, volunteer)).toEqual([
+      { seat_id: minted.seatId, seat_status: "cancelled", registration_status: "cancelled" },
+    ])
+    const scanned = await host.checkInByToken({
+      cleanupId,
+      tokenHash: minted.tokenHash,
+      actorId: organizer,
+      method: "scan",
+      now: new Date(),
+    })
+    expect(scanned.outcome).toBe("cancelled")
+  })
+
+  it("a plain leave never cancels a ticketed registration", async () => {
+    const organizer = await newUser("Olive Organizer")
+    const volunteer = await newUser("Vic Volunteer")
+    const cleanupId = await newCleanup(organizer)
+    const [type] = await h.sql<{ id: string }[]>`
+      INSERT INTO cleanup_ticket_types (cleanup_id, name, sort_order)
+      VALUES (${cleanupId}, ${"General admission"}, 0)
+      RETURNING id
+    `
+    const [registration] = await h.sql<{ id: string }[]>`
+      INSERT INTO cleanup_registrations (cleanup_id, ticket_type_id, user_id, party_size, status, source)
+      VALUES (${cleanupId}, ${type!.id}, ${volunteer}, 1, 'registered', 'self')
+      RETURNING id
+    `
+    const ticketed = seat()
+    await h.sql`
+      INSERT INTO cleanup_registration_seats (
+        id, cleanup_id, registration_id, seat_index, ticket_token_hash, status
+      ) VALUES (
+        ${ticketed.seatId}, ${cleanupId}, ${registration!.id}, 0, ${ticketed.tokenHash}, 'active'
+      )
+    `
+    await h.sql`
+      INSERT INTO cleanup_members (cleanup_id, user_id, role)
+      VALUES (${cleanupId}, ${volunteer}, 'member')
+      ON CONFLICT DO NOTHING
+    `
+
+    expect(await repo.leaveCleanup(cleanupId, volunteer)).toBe("left")
+
+    expect(await seatRows(cleanupId, volunteer)).toEqual([
+      { seat_id: ticketed.seatId, seat_status: "active", registration_status: "registered" },
+    ])
   })
 
   it("a host removing an attendee cancels the registration too", async () => {
