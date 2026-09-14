@@ -104,7 +104,14 @@ async function createCleanup(
     method: "POST",
     url: "/v1/cleanups",
     headers: auth(token),
-    payload: { title: "Sweep", type: "site", lat: 34, lng: -118.49, scheduledAt },
+    payload: {
+      title: "Sweep",
+      type: "site",
+      lat: 34,
+      lng: -118.49,
+      scheduledAt,
+      slots: [{ title: "Volunteers" }],
+    },
   })
   return res.json().id
 }
@@ -124,6 +131,7 @@ describe("POST /cleanups", () => {
         scheduledAt: FUTURE,
         bring: ["gloves"],
         address: "Lifeguard tower 26",
+        slots: [{ title: "Volunteers" }],
       },
     })
     expect(res.statusCode).toBe(201)
@@ -161,6 +169,7 @@ describe("POST /cleanups", () => {
         address: "North gate, by the oak",
         description: "Bring water and sunscreen.",
         bring: ["gloves", "bags", "grabbers"],
+        slots: [{ title: "Volunteers" }],
       },
     })
     expect(res.statusCode).toBe(201)
@@ -193,7 +202,14 @@ describe("GET /cleanups and /cleanups/:id", () => {
       method: "POST",
       url: "/v1/cleanups",
       headers: auth(token),
-      payload: { title: "Future sweep", type: "site", lat: 34, lng: -118.49, scheduledAt: FUTURE },
+      payload: {
+        title: "Future sweep",
+        type: "site",
+        lat: 34,
+        lng: -118.49,
+        scheduledAt: FUTURE,
+        slots: [{ title: "Volunteers" }],
+      },
     })
     const res = await app.inject({ method: "GET", url: "/v1/cleanups?when=upcoming" })
     expect(res.statusCode).toBe(200)
@@ -249,13 +265,27 @@ describe("GET /cleanups query encoding (the previously-422 client calls)", () =>
       method: "POST",
       url: "/v1/cleanups",
       headers: auth(token),
-      payload: { title: "Near", type: "site", lat: 34.01, lng: -118.49, scheduledAt: FUTURE },
+      payload: {
+        title: "Near",
+        type: "site",
+        lat: 34.01,
+        lng: -118.49,
+        scheduledAt: FUTURE,
+        slots: [{ title: "Volunteers" }],
+      },
     })
     await app.inject({
       method: "POST",
       url: "/v1/cleanups",
       headers: auth(token),
-      payload: { title: "Far", type: "site", lat: 35.5, lng: -118.49, scheduledAt: FUTURE },
+      payload: {
+        title: "Far",
+        type: "site",
+        lat: 35.5,
+        lng: -118.49,
+        scheduledAt: FUTURE,
+        slots: [{ title: "Volunteers" }],
+      },
     })
 
     const res = await app.inject({
@@ -273,13 +303,27 @@ describe("GET /cleanups query encoding (the previously-422 client calls)", () =>
       method: "POST",
       url: "/v1/cleanups",
       headers: auth(token),
-      payload: { title: "Inside", type: "site", lat: 34.0, lng: -118.49, scheduledAt: FUTURE },
+      payload: {
+        title: "Inside",
+        type: "site",
+        lat: 34.0,
+        lng: -118.49,
+        scheduledAt: FUTURE,
+        slots: [{ title: "Volunteers" }],
+      },
     })
     await app.inject({
       method: "POST",
       url: "/v1/cleanups",
       headers: auth(token),
-      payload: { title: "Outside", type: "site", lat: 40.0, lng: -74.0, scheduledAt: FUTURE },
+      payload: {
+        title: "Outside",
+        type: "site",
+        lat: 40.0,
+        lng: -74.0,
+        scheduledAt: FUTURE,
+        slots: [{ title: "Volunteers" }],
+      },
     })
 
     const res = await app.inject({
@@ -1117,7 +1161,14 @@ describe("cleanup state machine + scheduledAt bounds", () => {
       method: "POST",
       url: "/v1/cleanups",
       headers: auth(token),
-      payload: { title: "Just started", type: "site", lat: 34, lng: -118.49, scheduledAt: PAST },
+      payload: {
+        title: "Just started",
+        type: "site",
+        lat: 34,
+        lng: -118.49,
+        scheduledAt: PAST,
+        slots: [{ title: "Volunteers" }],
+      },
     })
     expect(res.statusCode).toBe(201)
   })

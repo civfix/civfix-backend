@@ -5,8 +5,8 @@
  * host-authoring side, where every interesting rule is a REFUSAL that has to happen before a row is
  * touched:
  *
- *   - the reconcile diff itself (add / update / delete, and that `[]` clears the board while OMITTING
- *     the key leaves it alone);
+ *   - the reconcile diff itself (add / update / delete, and that `[]` is REFUSED because every event
+ *     needs at least one slot, while OMITTING the key leaves the board alone);
  *   - a slot id belonging to ANOTHER event is a hard 422, never a quiet re-parent (B23) — the single
  *     nastiest failure mode here, because a silent insert would move someone else's roster row;
  *   - case-insensitive duplicate titles 422 DETERMINISTICALLY, before cleanup_slots_cleanup_title_uidx
@@ -61,6 +61,7 @@ function seedEvent(
     organizerUserId: ORG,
     scheduledAt,
     endsAt: new Date(scheduledAt.getTime() + 4 * 3_600_000),
+    withDefaultSlot: false,
     ...(over.status !== undefined ? { status: over.status } : {}),
     ...(over.eventKind !== undefined ? { eventKind: over.eventKind } : {}),
   })
@@ -148,7 +149,47 @@ describe("createCleanup — slots ride the create transaction (B22)", () => {
     expect(dto.slots[0]?.id).not.toBe("99999999-9999-9999-9999-999999999999")
   })
 
-  it("omitting slots creates an event with none", async () => {
+  it("422s a create with NO slots, naming the field (every event needs a board)", async () => {
+    await expect(
+      service.createCleanup(
+        {
+          title: "Sweep",
+          type: "site",
+          eventKind: "cleanup",
+          lat: 34,
+          lng: -118.49,
+          scheduledAt: FUTURE.toISOString(),
+        },
+        ORG,
+      ),
+    ).rejects.toSatisfy(
+      (err: unknown) => fieldsOf(err).slots === "An event needs at least one signup slot.",
+    )
+    // The refusal precedes every write: no orphan event, no membership.
+    expect(repo.cleanups.size).toBe(0)
+  })
+
+  it("422s an EXPLICITLY empty slots array the same way", async () => {
+    await expect(
+      service.createCleanup(
+        {
+          title: "Sweep",
+          type: "site",
+          eventKind: "cleanup",
+          lat: 34,
+          lng: -118.49,
+          scheduledAt: FUTURE.toISOString(),
+          slots: [],
+        },
+        ORG,
+      ),
+    ).rejects.toSatisfy(
+      (err: unknown) => fieldsOf(err).slots === "An event needs at least one signup slot.",
+    )
+    expect(repo.cleanups.size).toBe(0)
+  })
+
+  it("a single slot is enough", async () => {
     const dto = await service.createCleanup(
       {
         title: "Sweep",
@@ -157,10 +198,58 @@ describe("createCleanup — slots ride the create transaction (B22)", () => {
         lat: 34,
         lng: -118.49,
         scheduledAt: FUTURE.toISOString(),
+        slots: [{ title: "General volunteers" }],
       },
       ORG,
     )
-    expect(dto.slots).toEqual([])
+    expect(dto.slots.map((s) => s.title)).toEqual(["General volunteers"])
+  })
+})
+
+describe("duplicateCleanup — a legacy slot-less source still yields a valid copy", () => {
+  it("synthesizes the default slot when the source board is empty", async () => {
+    const source = repo.seedCleanup({
+      id: CLEANUP_ID,
+      organizerUserId: ORG,
+      scheduledAt: new Date(Date.now() - 8 * 3_600_000),
+      endsAt: new Date(Date.now() - 4 * 3_600_000),
+      capacity: 30,
+      withDefaultSlot: false,
+    })
+
+    const copy = await service.duplicateCleanup(ORG, {
+      id: source.id,
+      scheduledAt: FUTURE.toISOString(),
+      includeTicketTypes: false,
+      includeQuestions: false,
+      includePage: false,
+    })
+
+    expect(copy.slots.map((s) => [s.title, s.capacity, s.startsAt, s.endsAt])).toEqual([
+      ["General volunteers", 30, undefined, undefined],
+    ])
+  })
+
+  it("copies the real board when the source has one", async () => {
+    const source = repo.seedCleanup({
+      id: CLEANUP_ID,
+      organizerUserId: ORG,
+      scheduledAt: FUTURE,
+      endsAt: new Date(FUTURE.getTime() + 4 * 3_600_000),
+      withDefaultSlot: false,
+    })
+    repo.seedSlot({ cleanupId: source.id, title: "Grill", sortOrder: 0 })
+    repo.seedSlot({ cleanupId: source.id, title: "Sign-in", sortOrder: 1 })
+
+    const copy = await service.duplicateCleanup(ORG, {
+      id: source.id,
+      scheduledAt: new Date(FUTURE.getTime() + 7 * 86_400_000).toISOString(),
+      includeTicketTypes: false,
+      includeQuestions: false,
+      includePage: false,
+    })
+
+    expect(copy.slots.map((s) => s.title)).toEqual(["Grill", "Sign-in"])
   })
 })
 
@@ -194,16 +283,18 @@ describe("updateCleanup — the reconcile diff (B23)", () => {
     ])
   })
 
-  it("sending [] deletes every slot; OMITTING the key leaves them untouched", async () => {
+  it("sending [] is REFUSED; OMITTING the key still leaves the board untouched", async () => {
     const id = seedEvent()
     repo.seedSlot({ cleanupId: id, title: "Grill" })
 
     const untouched = await service.updateCleanup(id, { title: "Renamed" }, ORG)
     expect(untouched.slots.map((s) => s.title)).toEqual(["Grill"])
 
-    const cleared = await service.updateCleanup(id, { slots: [] }, ORG)
-    expect(cleared.slots).toEqual([])
-    expect(repo.slots.filter((s) => s.cleanupId === id)).toEqual([])
+    await expect(service.updateCleanup(id, { slots: [] }, ORG)).rejects.toSatisfy(
+      (err: unknown) => fieldsOf(err).slots === "An event needs at least one signup slot.",
+    )
+    // The refusal precedes the reconcile, so nothing was deleted on the way to it.
+    expect(repo.slots.filter((s) => s.cleanupId === id).map((s) => s.title)).toEqual(["Grill"])
   })
 
   it("422s an id that belongs to ANOTHER event and writes NOTHING (never a silent re-parent)", async () => {
@@ -481,7 +572,7 @@ describe("the cleanup_slot bell (B34/B35)", () => {
       },
     })
 
-    await notified.updateCleanup(id, { slots: [] }, ORG)
+    await notified.updateCleanup(id, { slots: [{ title: "Sign-in" }] }, ORG)
 
     expect(bells.map((b) => b.userId).sort()).toEqual([COHOST, MEMBER].sort())
     expect(bells.every((b) => b.type === "cleanup_slot")).toBe(true)
@@ -555,9 +646,9 @@ describe("the cleanup_slot bell (B34/B35)", () => {
       },
     })
 
-    const dto = await notified.updateCleanup(id, { slots: [] }, ORG)
+    const dto = await notified.updateCleanup(id, { slots: [{ title: "Sign-in" }] }, ORG)
     // The edit itself committed...
-    expect(dto.slots).toEqual([])
+    expect(dto.slots.map((s) => s.title)).toEqual(["Sign-in"])
     // ...and the healthy recipient still got their bell (best-effort PER RECIPIENT, not one try/catch
     // around the whole loop).
     expect(reached.sort()).toEqual([COHOST, MEMBER].sort())
@@ -621,7 +712,13 @@ describe("slot windows (0167)", () => {
     new Date(EVENT_START.getTime() + hours * 60 * 60 * 1000).toISOString()
 
   function seedTimedEvent(id: string = CLEANUP_ID): string {
-    repo.seedCleanup({ id, organizerUserId: ORG, scheduledAt: EVENT_START, endsAt: EVENT_END })
+    repo.seedCleanup({
+      id,
+      organizerUserId: ORG,
+      scheduledAt: EVENT_START,
+      endsAt: EVENT_END,
+      withDefaultSlot: false,
+    })
     repo.seedMember(id, COHOST, "cohost")
     repo.seedMember(id, MEMBER, "member")
     return id

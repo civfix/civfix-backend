@@ -27,6 +27,7 @@ function base(over: Partial<CreateCleanupRequest> = {}): CreateCleanupRequest {
     lat: 34.0,
     lng: -118.49,
     scheduledAt: new Date(Date.now() + 86_400_000).toISOString(),
+    slots: [{ title: "Volunteers" }],
     ...over,
   } as CreateCleanupRequest
 }

@@ -34,6 +34,7 @@ function baseInput(over: Partial<CreateCleanupRequest> = {}): CreateCleanupReque
     scheduledAt: over.scheduledAt ?? new Date(Date.now() + 86_400_000).toISOString(),
     ...(over.bring !== undefined ? { bring: over.bring } : {}),
     ...(over.address !== undefined ? { address: over.address } : {}),
+    slots: over.slots ?? [{ title: "Volunteers" }],
   }
 }
 

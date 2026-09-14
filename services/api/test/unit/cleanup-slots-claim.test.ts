@@ -59,6 +59,7 @@ function seedEvent(
     id,
     organizerUserId: ORG,
     scheduledAt: FUTURE,
+    withDefaultSlot: false,
     ...(over.status !== undefined ? { status: over.status } : {}),
   })
   repo.seedMember(id, COHOST, "cohost")

@@ -58,6 +58,7 @@ import {
 import { isPubliclyVisibleStatus } from "../../src/services/report-visibility.js"
 import {
   DEFAULT_EVENT_DURATION_MS,
+  DEFAULT_EVENT_SLOT_TITLE,
   deriveCleanupStatus,
   eventWindowOf,
   hasEventEnded,
@@ -310,7 +311,10 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     )
   }
 
-  seedCleanup(over: Partial<StoredCleanup> & { id?: string }): StoredCleanup {
+  /** `withDefaultSlot: false` reproduces a LEGACY slot-less event — the shape 0169 backfilled away. */
+  seedCleanup(
+    over: Partial<StoredCleanup> & { id?: string; withDefaultSlot?: boolean },
+  ): StoredCleanup {
     const seededStatus = over.status ?? "upcoming"
     const scheduledAt =
       over.scheduledAt ?? new Date(this.now().getTime() + defaultStartOffsetMs(seededStatus))
@@ -352,6 +356,13 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     }
     if (!this.members.some((m) => m.cleanupId === cleanup.id && m.userId === cleanup.organizerUserId)) {
       this.members.push({ cleanupId: cleanup.id, userId: cleanup.organizerUserId, role: "organizer" })
+    }
+    if (over.withDefaultSlot !== false) {
+      this.seedSlot({
+        cleanupId: cleanup.id,
+        title: DEFAULT_EVENT_SLOT_TITLE,
+        capacity: cleanup.capacity,
+      })
     }
     return cleanup
   }
