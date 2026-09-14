@@ -290,6 +290,51 @@ describe("cancelCleanup", () => {
     expect(ok.status).toBe("done")
     expect(ok.description).toBe("post-event notes")
   })
+
+  it("an ended event's endsAt is frozen, so the derived status cannot move backwards", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: ENDED }), ORG)
+    const storedEndsAt = repo.cleanups.get(created.id)!.endsAt
+
+    await expect(
+      service.updateCleanup(
+        created.id,
+        { endsAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString() },
+        ORG,
+      ),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "An event that has ended can't change its end time.",
+    })
+    expect(repo.cleanups.get(created.id)!.endsAt).toEqual(storedEndsAt)
+    expect((await service.getCleanup(created.id, { userId: ORG })).status).toBe("done")
+  })
+
+  it("an ended event accepts a patch that echoes its stored end time", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: ENDED }), ORG)
+    const storedEndsAt = repo.cleanups.get(created.id)!.endsAt
+
+    const echoed = await service.updateCleanup(
+      created.id,
+      { endsAt: storedEndsAt.toISOString(), description: "wrap-up" },
+      ORG,
+    )
+    expect(echoed.description).toBe("wrap-up")
+    expect(echoed.status).toBe("done")
+  })
+
+  it("an underway event can still extend its end time (running late is legitimate)", async () => {
+    const startedAt = new Date(Date.now() - 60 * 60 * 1000)
+    const created = await service.createCleanup(
+      baseInput({ scheduledAt: startedAt.toISOString() }),
+      ORG,
+    )
+    expect(created.status).toBe("active")
+
+    const extendedTo = new Date(startedAt.getTime() + 6 * 60 * 60 * 1000).toISOString()
+    const extended = await service.updateCleanup(created.id, { endsAt: extendedTo }, ORG)
+    expect(extended.endsAt).toBe(extendedTo)
+    expect(extended.status).toBe("active")
+  })
 })
 
 describe("getCleanup", () => {

@@ -1059,7 +1059,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (current.status === "cancelled") {
         throw AppError.conflict("This event has been cancelled and can no longer be edited.")
       }
-      if (deriveCleanupStatus(eventWindowOf(current), Date.now()) === "done") {
+      const hasEnded = deriveCleanupStatus(eventWindowOf(current), Date.now()) === "done"
+      if (hasEnded) {
         const frozen =
           patch.title !== undefined ||
           patch.scheduledAt !== undefined ||
@@ -1093,6 +1094,13 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (patch.endsAt === null) {
         throw AppError.validation({ endsAt: "an event must have an end time" })
       }
+      if (
+        hasEnded &&
+        patch.endsAt !== undefined &&
+        new Date(patch.endsAt).getTime() !== current.endsAt.getTime()
+      ) {
+        throw AppError.conflict("An event that has ended can't change its end time.")
+      }
       const effectiveWindow: EventWindow = {
         status: current.status,
         scheduledAt: patch.scheduledAt !== undefined ? new Date(patch.scheduledAt) : current.scheduledAt,
@@ -1102,10 +1110,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         effectiveWindow.scheduledAt.getTime() !== current.scheduledAt.getTime() ||
         (effectiveWindow.endsAt?.getTime() ?? null) !== (current.endsAt?.getTime() ?? null)
 
-      if (
-        patch.slots !== undefined &&
-        deriveCleanupStatus(eventWindowOf(current), Date.now()) === "done"
-      ) {
+      if (patch.slots !== undefined && hasEnded) {
         throw AppError.validation({ slots: "Slots can't be changed after an event has ended." })
       }
       const desiredSlots =
