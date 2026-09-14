@@ -4,7 +4,7 @@ import {
   MAX_EVENT_DURATION_MINUTES,
   MIN_EVENT_DURATION_MINUTES,
 } from "@civfix/shared"
-import type { CleanupStatus } from "@civfix/shared"
+import type { CleanupStatus, EventSlotInput } from "@civfix/shared"
 import {
   DEFAULT_EVENT_DURATION_MS,
   deriveCleanupStatus,
@@ -27,7 +27,18 @@ export const SCHEDULE_MAX_BACKDATE_MS = 24 * 60 * 60 * 1000
 
 export const DEFAULT_EVENT_SLOT_TITLE = "General volunteers"
 
-export const EVENT_NEEDS_A_SLOT_MESSAGE = "An event needs at least one signup slot."
+export const EVENT_NEEDS_A_SLOT_MESSAGE = "an event needs at least one signup slot"
+
+export function defaultEventSlot(capacity: number | null): EventSlotInput {
+  return {
+    title: DEFAULT_EVENT_SLOT_TITLE,
+    description: null,
+    capacity: capacity !== null && Number.isInteger(capacity) && capacity > 0 ? capacity : null,
+    startsAt: null,
+    endsAt: null,
+    sortOrder: 0,
+  }
+}
 
 export const MIN_EVENT_DURATION_MS = MIN_EVENT_DURATION_MINUTES * 60 * 1000
 

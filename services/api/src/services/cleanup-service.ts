@@ -76,9 +76,9 @@ import { NULL_HOST_AUDIT_SINK, type HostAuditSink } from "./host/host-audit.js"
 import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import {
   DEFAULT_EVENT_DURATION_MS,
-  DEFAULT_EVENT_SLOT_TITLE,
   EVENT_NEEDS_A_SLOT_MESSAGE,
   SCHEDULE_MAX_BACKDATE_MS,
+  defaultEventSlot,
   deriveCleanupStatus,
   eventEndedError,
   eventWindowOf,
@@ -894,7 +894,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     }
     await assertReportsLinkable(linkedReportIds)
     if (input.endsAt === null) throw AppError.validation({ endsAt: "required" })
-    if (input.slots === undefined || input.slots.length === 0) {
+    if (input.slots !== undefined && input.slots.length === 0) {
       throw AppError.validation({ slots: EVENT_NEEDS_A_SLOT_MESSAGE })
     }
     const scheduledAt = new Date(input.scheduledAt)
@@ -902,7 +902,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       input.endsAt !== undefined
         ? new Date(input.endsAt)
         : new Date(scheduledAt.getTime() + DEFAULT_EVENT_DURATION_MS)
-    const slots = toDesiredSlots(input.slots, { keepIds: false }, { scheduledAt, endsAt })
+    const slots = toDesiredSlots(
+      input.slots ?? [defaultEventSlot(null)],
+      { keepIds: false },
+      { scheduledAt, endsAt },
+    )
 
     const host = await resolveHostWrite({
       patch: { ...input, scheduledAt: input.scheduledAt, endsAt: endsAt.toISOString() },
@@ -1030,16 +1034,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
                 endsAt: shifted(slot.endsAt),
                 sortOrder: slot.sortOrder,
               }))
-            : [
-                {
-                  title: DEFAULT_EVENT_SLOT_TITLE,
-                  description: null,
-                  capacity: source.capacity,
-                  startsAt: null,
-                  endsAt: null,
-                  sortOrder: 0,
-                },
-              ],
+            : [defaultEventSlot(source.capacity)],
         endsAt,
         timezone: source.timezone,
         visibility: source.visibility,

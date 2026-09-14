@@ -6,7 +6,9 @@
  * touched:
  *
  *   - the reconcile diff itself (add / update / delete, and that `[]` is REFUSED because every event
- *     needs at least one slot, while OMITTING the key leaves the board alone);
+ *     needs at least one slot, while OMITTING the key leaves the board alone — on create, where there
+ *     is no board yet, an omitted key synthesizes the default slot rather than refusing, because the
+ *     wire schema keeps it optional and released clients still ship without it);
  *   - a slot id belonging to ANOTHER event is a hard 422, never a quiet re-parent (B23) — the single
  *     nastiest failure mode here, because a silent insert would move someone else's roster row;
  *   - case-insensitive duplicate titles 422 DETERMINISTICALLY, before cleanup_slots_cleanup_title_uidx
@@ -149,27 +151,27 @@ describe("createCleanup — slots ride the create transaction (B22)", () => {
     expect(dto.slots[0]?.id).not.toBe("99999999-9999-9999-9999-999999999999")
   })
 
-  it("422s a create with NO slots, naming the field (every event needs a board)", async () => {
-    await expect(
-      service.createCleanup(
-        {
-          title: "Sweep",
-          type: "site",
-          eventKind: "cleanup",
-          lat: 34,
-          lng: -118.49,
-          scheduledAt: FUTURE.toISOString(),
-        },
-        ORG,
-      ),
-    ).rejects.toSatisfy(
-      (err: unknown) => fieldsOf(err).slots === "An event needs at least one signup slot.",
+  it("OMITTING slots synthesizes the default board instead of refusing the create", async () => {
+    const dto = await service.createCleanup(
+      {
+        title: "Sweep",
+        type: "site",
+        eventKind: "cleanup",
+        lat: 34,
+        lng: -118.49,
+        scheduledAt: FUTURE.toISOString(),
+      },
+      ORG,
     )
-    // The refusal precedes every write: no orphan event, no membership.
-    expect(repo.cleanups.size).toBe(0)
+
+    // The key is optional on the wire and released clients omit it when the host skips the slot step,
+    // so a 422 here would dead-end every one of them the moment this ships.
+    expect(dto.slots.map((s) => [s.title, s.capacity, s.startsAt, s.endsAt])).toEqual([
+      ["General volunteers", undefined, undefined, undefined],
+    ])
   })
 
-  it("422s an EXPLICITLY empty slots array the same way", async () => {
+  it("422s an EXPLICITLY empty slots array", async () => {
     await expect(
       service.createCleanup(
         {
@@ -184,7 +186,7 @@ describe("createCleanup — slots ride the create transaction (B22)", () => {
         ORG,
       ),
     ).rejects.toSatisfy(
-      (err: unknown) => fieldsOf(err).slots === "An event needs at least one signup slot.",
+      (err: unknown) => fieldsOf(err).slots === "an event needs at least one signup slot",
     )
     expect(repo.cleanups.size).toBe(0)
   })
@@ -291,7 +293,7 @@ describe("updateCleanup — the reconcile diff (B23)", () => {
     expect(untouched.slots.map((s) => s.title)).toEqual(["Grill"])
 
     await expect(service.updateCleanup(id, { slots: [] }, ORG)).rejects.toSatisfy(
-      (err: unknown) => fieldsOf(err).slots === "An event needs at least one signup slot.",
+      (err: unknown) => fieldsOf(err).slots === "an event needs at least one signup slot",
     )
     // The refusal precedes the reconcile, so nothing was deleted on the way to it.
     expect(repo.slots.filter((s) => s.cleanupId === id).map((s) => s.title)).toEqual(["Grill"])
