@@ -1,9 +1,11 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleAnalyticsRepository } from "../../src/services/admin/analytics-repository.drizzle.js"
 import type { AnalyticsRepository } from "../../src/services/admin/analytics-service.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
+import type { CleanupStatus } from "@civfix/shared"
 
 const pg = await withPg()
 const GEOID = LA_CITY.geoid
@@ -54,30 +56,21 @@ async function insertCleanup(
   h: PgHarness,
   opts: {
     organizerId: string
-    status?: string
+    status?: CleanupStatus
     scheduledAt?: Date
     createdAt?: Date
     bags?: number
     title?: string
   },
 ): Promise<string> {
-  const rows = await h.sql<{ id: string }[]>`
-    INSERT INTO cleanups (
-      organizer_user_id, type, title, geom, scheduled_at, status, bags, created_at
-    )
-    VALUES (
-      ${opts.organizerId},
-      'site',
-      ${opts.title ?? "Cleanup"},
-      ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326),
-      ${opts.scheduledAt ?? new Date()},
-      ${opts.status ?? "upcoming"},
-      ${opts.bags ?? 0},
-      ${opts.createdAt ?? new Date()}
-    )
-    RETURNING id
-  `
-  return rows[0]!.id
+  return await seedCleanup(h.sql, {
+    organizerUserId: opts.organizerId,
+    title: opts.title ?? "Cleanup",
+    scheduledAt: opts.scheduledAt ?? new Date(),
+    status: opts.status,
+    bags: opts.bags ?? 0,
+    createdAt: opts.createdAt ?? new Date(),
+  })
 }
 
 async function addMember(h: PgHarness, cleanupId: string, userId: string): Promise<void> {

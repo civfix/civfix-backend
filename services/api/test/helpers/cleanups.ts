@@ -1,6 +1,7 @@
 
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
+import type { Sql } from "../../src/db/client.js"
 import type {
   AttendeeView,
   CancelCleanupOutcome,
@@ -67,6 +68,63 @@ function defaultStartOffsetMs(status: CleanupRecord["status"]): number {
   if (status === "active") return -3_600_000
   if (status === "done") return -DEFAULT_EVENT_DURATION_MS - 3_600_000
   return 86_400_000
+}
+
+export interface SeedCleanupArgs {
+  organizerUserId: string
+  id?: string
+  type?: CleanupRecord["type"]
+  eventKind?: EventKind
+  title?: string
+  lng?: number
+  lat?: number
+  status?: CleanupRecord["status"]
+  scheduledAt?: Date
+  endsAt?: Date
+  completedAt?: Date | null
+  createdAt?: Date
+  jurisdictionGeoid?: string | null
+  referenceCode?: string | null
+  organizationId?: string | null
+  donationUrl?: string | null
+  coverMediaId?: string | null
+  capacity?: number | null
+  bags?: number
+}
+
+export async function seedCleanup(sql: Sql, args: SeedCleanupArgs): Promise<string> {
+  const id = args.id ?? randomUUID()
+  const status = args.status ?? "upcoming"
+  const scheduledAt = args.scheduledAt ?? new Date(Date.now() + defaultStartOffsetMs(status))
+  const endsAt = args.endsAt ?? new Date(scheduledAt.getTime() + DEFAULT_EVENT_DURATION_MS)
+  await sql`
+    INSERT INTO cleanups (
+      id, organizer_user_id, type, event_kind, title, geom, scheduled_at, ends_at, status,
+      completed_at, created_at, jurisdiction_geoid, reference_code, organization_id,
+      donation_url, cover_media_id, capacity, bags
+    )
+    VALUES (
+      ${id},
+      ${args.organizerUserId},
+      ${args.type ?? "site"},
+      ${args.eventKind ?? "cleanup"},
+      ${args.title ?? "Test cleanup"},
+      ST_SetSRID(ST_MakePoint(${args.lng ?? -118.35}, ${args.lat ?? 34.1}), 4326),
+      ${scheduledAt},
+      ${endsAt},
+      ${status},
+      ${args.completedAt ?? null},
+      ${args.createdAt ?? sql`now()`},
+      ${args.jurisdictionGeoid ?? null},
+      ${args.referenceCode ?? null},
+      ${args.organizationId ?? null},
+      ${args.donationUrl ?? null},
+      ${args.coverMediaId ?? null},
+      ${args.capacity ?? null},
+      ${args.bags ?? 0}
+    )
+  `
+  return id
 }
 
 interface StoredCleanup {

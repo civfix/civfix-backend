@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { randomUUID } from "node:crypto"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
@@ -66,16 +66,12 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
   }
 
   async function newCleanup(organizerId: string): Promise<string> {
-    const id = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${id}, ${organizerId}, 'site', 'Redaction sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-        now() + interval '1 day', 'scheduled'
-      )
-    `
-    return id
+    return await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Redaction sweep",
+      lng: -118.25,
+      lat: 34.05,
+    })
   }
 
   async function joinCleanup(cleanupId: string, userId: string, role: string): Promise<void> {

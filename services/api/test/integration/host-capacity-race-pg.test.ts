@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleHostRegistrationRepository } from "../../src/services/host/registration-repository.drizzle.js"
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import type {
@@ -34,14 +35,13 @@ describe.skipIf(!pg)("registration capacity (integration)", () => {
   }
 
   async function newCleanup(organizerId: string): Promise<string> {
-    const id = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${id}, ${organizerId}, 'site', 'Capacity sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), ${FUTURE}, 'upcoming'
-      )
-    `
+    const id = await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Capacity sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: FUTURE,
+    })
     await h.sql`
       INSERT INTO cleanup_members (cleanup_id, user_id, role)
       VALUES (${id}, ${organizerId}, 'organizer') ON CONFLICT DO NOTHING

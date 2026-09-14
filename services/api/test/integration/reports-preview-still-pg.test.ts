@@ -14,6 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { seedMediaAsset, servedKeyFor } from "../helpers/media-pg.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
@@ -77,15 +78,12 @@ describe.skipIf(!pg)("first-visible-still preview policy (integration)", () => {
 
   /** The event gallery's view of a report (via a cleanup it is linked to). */
   async function galleryThumb(reportId: string, organizerId: string): Promise<string | null> {
-    const cleanupId = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${cleanupId}, ${organizerId}, 'site', 'Preview policy sweep',
-        ST_SetSRID(ST_MakePoint(${PROBE_INSIDE_CITY.lng}, ${PROBE_INSIDE_CITY.lat}), 4326),
-        now() + interval '1 day', 'upcoming'
-      )
-    `
+    const cleanupId = await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Preview policy sweep",
+      lng: PROBE_INSIDE_CITY.lng,
+      lat: PROBE_INSIDE_CITY.lat,
+    })
     await h.sql`
       INSERT INTO cleanup_reports (cleanup_id, report_id, linked_by_user_id)
       VALUES (${cleanupId}, ${reportId}, ${organizerId})

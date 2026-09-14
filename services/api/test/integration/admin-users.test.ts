@@ -20,6 +20,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleAdminUserRepository } from "../../src/services/admin/admin-user-repository.drizzle.js"
 import type { AdminUserRepository } from "../../src/services/admin/admin-user-service.js"
@@ -195,12 +196,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     const u = await insertUser(h, { handle: "sam" })
     await insertReport(h, u)
     const org = await insertUser(h)
-    const cleanup = await h.sql<{ id: string }[]>`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (${org}, 'site', 'Park', ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), now(), 'upcoming')
-      RETURNING id
-    `
-    const cleanupId = cleanup[0]!.id
+    const cleanupId = await seedCleanup(h.sql, { organizerUserId: org, title: "Park" })
     await h.sql`INSERT INTO cleanup_members (cleanup_id, user_id, role) VALUES (${cleanupId}, ${u}, 'member')`
     await h.sql`INSERT INTO chat_messages (cleanup_id, sender_id, body, kind) VALUES (${cleanupId}, ${u}, 'hello', 'text')`
     const group = await h.sql<{ id: string }[]>`

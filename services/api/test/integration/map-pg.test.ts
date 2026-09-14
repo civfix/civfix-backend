@@ -14,8 +14,10 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
+import type { CleanupStatus } from "@civfix/shared"
 import { FakeGeocoder, FakeJobs } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { clientQuery } from "../helpers/query.js"
 import { buildServer } from "../../src/server.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
@@ -106,34 +108,30 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     // Two cleanups inside the LA city box (near PROBE_INSIDE_CITY) and one far outside it.
     const insideLng = PROBE_INSIDE_CITY.lng
     const insideLat = PROBE_INSIDE_CITY.lat
-    const [near1] = await h.sql<{ id: string }[]>`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${organizerId}, 'site', 'Near 1',
-        ST_SetSRID(ST_MakePoint(${insideLng}, ${insideLat}), 4326),
-        now() + interval '7 days', 'upcoming'
-      ) RETURNING id
-    `
-    await h.sql`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${organizerId}, 'site', 'Near 2',
-        ST_SetSRID(ST_MakePoint(${insideLng + 0.01}, ${insideLat + 0.01}), 4326),
-        now() + interval '8 days', 'upcoming'
-      )
-    `
+    const near1Id = await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Near 1",
+      lng: insideLng,
+      lat: insideLat,
+      scheduledAt: new Date(Date.now() + 7 * 86_400_000),
+    })
+    await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Near 2",
+      lng: insideLng + 0.01,
+      lat: insideLat + 0.01,
+      scheduledAt: new Date(Date.now() + 8 * 86_400_000),
+    })
     // Far away (outside the LA city bbox we will query).
-    await h.sql`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${organizerId}, 'site', 'Far',
-        ST_SetSRID(ST_MakePoint(${PROBE_OUTSIDE_ALL.lng}, ${PROBE_OUTSIDE_ALL.lat}), 4326),
-        now() + interval '9 days', 'upcoming'
-      )
-    `
+    await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Far",
+      lng: PROBE_OUTSIDE_ALL.lng,
+      lat: PROBE_OUTSIDE_ALL.lat,
+      scheduledAt: new Date(Date.now() + 9 * 86_400_000),
+    })
 
     // Two members going to near1 (organizer + member).
-    const near1Id = near1!.id
     await h.sql`
       INSERT INTO cleanup_members (cleanup_id, user_id, role) VALUES
         (${near1Id}, ${organizerId}, 'organizer'),
@@ -168,22 +166,24 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     const lng = PROBE_INSIDE_CITY.lng
     const lat = PROBE_INSIDE_CITY.lat
 
-    const insert = async (title: string, offset: string, status: string): Promise<string> => {
-      const [row] = await h.sql<{ id: string }[]>`
-        INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-        VALUES (
-          ${organizerId}, 'site', ${title},
-          ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326),
-          now() + ${offset}::interval, ${status}
-        ) RETURNING id
-      `
-      return row!.id
-    }
+    const insert = async (
+      title: string,
+      offsetMs: number,
+      status: CleanupStatus,
+    ): Promise<string> =>
+      await seedCleanup(h.sql, {
+        organizerUserId: organizerId,
+        title,
+        lng,
+        lat,
+        scheduledAt: new Date(Date.now() + offsetMs),
+        status,
+      })
 
-    const stalePlanned = await insert('Stale Planned', '-3 days', 'upcoming')
-    const finishedFutureDated = await insert('Finished Future Dated', '3 days', 'done')
-    const inProgress = await insert('In Progress', '-2 hours', 'active')
-    const stillPlanned = await insert('Still Planned', '4 days', 'upcoming')
+    const stalePlanned = await insert("Stale Planned", -3 * 86_400_000, "upcoming")
+    const finishedFutureDated = await insert("Finished Future Dated", 3 * 86_400_000, "done")
+    const inProgress = await insert("In Progress", -2 * 3_600_000, "active")
+    const stillPlanned = await insert("Still Planned", 4 * 86_400_000, "upcoming")
 
     const [west, south, east, north] = LA_CITY.bbox
     const bbox = { west, south, east, north }
@@ -195,7 +195,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     expect(noWhen.statusCode).toBe(200)
     const noWhenIds: string[] = noWhen.json().pins.map((pin: { id: string }) => pin.id)
     expect(noWhenIds).not.toContain(stalePlanned)
-    expect(noWhenIds).not.toContain(finishedFutureDated)
+    expect(noWhenIds).toContain(finishedFutureDated)
     expect(noWhenIds).toContain(inProgress)
     expect(noWhenIds).toContain(stillPlanned)
 
@@ -206,7 +206,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     expect(upcoming.statusCode).toBe(200)
     const upcomingIds: string[] = upcoming.json().pins.map((pin: { id: string }) => pin.id)
     expect(upcomingIds).not.toContain(stalePlanned)
-    expect(upcomingIds).not.toContain(finishedFutureDated)
+    expect(upcomingIds).toContain(finishedFutureDated)
     expect(upcomingIds).toContain(inProgress)
     expect(upcomingIds).toContain(stillPlanned)
 
@@ -220,7 +220,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     })
     const listedIds = listed.records.map((r) => r.id)
     expect(listedIds).not.toContain(stalePlanned)
-    expect(listedIds).not.toContain(finishedFutureDated)
+    expect(listedIds).toContain(finishedFutureDated)
     expect(listedIds).toContain(inProgress)
     expect(listedIds).toContain(stillPlanned)
 
@@ -233,7 +233,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     })
     const pastIds = listedPast.records.map((r) => r.id)
     expect(pastIds).toContain(stalePlanned)
-    expect(pastIds).toContain(inProgress)
+    expect(pastIds).not.toContain(inProgress)
     expect(pastIds).not.toContain(finishedFutureDated)
   })
 

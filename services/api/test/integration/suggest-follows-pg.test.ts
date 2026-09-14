@@ -1,6 +1,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import {
   explainSuggestFollows,
   makeDrizzleSocialRepository,
@@ -170,14 +171,14 @@ describe.skipIf(!pg)("H18: follow suggestions are bounded before ranking", () =>
     organizerId: string,
     at: { lat: number; lng: number },
   ): Promise<Date> {
+    const id = await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Sweep",
+      lng: at.lng,
+      lat: at.lat,
+    })
     const [row] = await h.sql<{ created_at: Date }[]>`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${organizerId}, 'site', 'Sweep',
-        ST_SetSRID(ST_MakePoint(${at.lng}, ${at.lat}), 4326),
-        now(), 'upcoming'
-      )
-      RETURNING created_at
+      SELECT created_at FROM cleanups WHERE id = ${id}
     `
     return row!.created_at
   }

@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import {
   insertModerationItem,
   makeDrizzleModerationRepository,
@@ -619,13 +620,13 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
 
     const organizer = await insertUser(h, testHandle())
     const eventCoverPhoto = await insertMedia(h, {})
-    await h.sql`
-      INSERT INTO cleanups (organizer_user_id, title, type, geom, scheduled_at, status, cover_media_id)
-      VALUES (
-        ${organizer}, 'Beach cleanup', 'site',
-        ST_SetSRID(ST_MakePoint(-118.49, 34.0), 4326), now(), 'upcoming', ${eventCoverPhoto}
-      )
-    `
+    await seedCleanup(h.sql, {
+      organizerUserId: organizer,
+      title: "Beach cleanup",
+      lng: -118.49,
+      lat: 34.0,
+      coverMediaId: eventCoverPhoto,
+    })
 
     const unboundPhoto = await insertMedia(h, {})
 

@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.drizzle.js"
 import { DAILY_HOURS_CAP } from "../../src/services/volunteer-hours-service.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
@@ -29,27 +30,26 @@ describe.skipIf(!pg)("H9: volunteer-hours integrity bounds (integration)", () =>
   }
 
   async function newDoneCleanup(organizerId: string, scheduledAt: string): Promise<string> {
-    const id = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (
-        id, organizer_user_id, type, title, geom, scheduled_at, completed_at, status, jurisdiction_geoid
-      )
-      VALUES (
-        ${id}, ${organizerId}, 'site', 'Integrity sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-        ${scheduledAt}::timestamptz,
-        ${scheduledAt}::timestamptz + interval '4 hours',
-        'done', ${GEOID}
-      )
-    `
-    return id
+    const startsAt = new Date(scheduledAt)
+    const endsAt = new Date(startsAt.getTime() + 4 * 60 * 60 * 1000)
+    return await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Integrity sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: startsAt,
+      endsAt,
+      completedAt: endsAt,
+      status: "done",
+      jurisdictionGeoid: GEOID,
+    })
   }
 
-  it("caps one attendee at the daily limit across two events on the SAME UTC day", async () => {
+  it("caps one attendee at the daily limit across two events on the SAME local day", async () => {
     const org = await newUser("Cap Org")
     const alice = await newUser("Cap Alice")
-    const morning = await newDoneCleanup(org, "2026-07-04T06:00:00Z")
-    const evening = await newDoneCleanup(org, "2026-07-04T18:00:00Z")
+    const morning = await newDoneCleanup(org, "2026-07-04T17:00:00Z")
+    const evening = await newDoneCleanup(org, "2026-07-05T01:00:00Z")
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
 
     await repo.logEventHours({
@@ -77,11 +77,11 @@ describe.skipIf(!pg)("H9: volunteer-hours integrity bounds (integration)", () =>
     expect(credited.credited).toBe(1)
   })
 
-  it("does not carry the daily cap across UTC days", async () => {
+  it("does not carry the daily cap across local days", async () => {
     const org = await newUser("Day Org")
     const alice = await newUser("Day Alice")
-    const day1 = await newDoneCleanup(org, "2026-08-04T06:00:00Z")
-    const day2 = await newDoneCleanup(org, "2026-08-05T06:00:00Z")
+    const day1 = await newDoneCleanup(org, "2026-08-04T17:00:00Z")
+    const day2 = await newDoneCleanup(org, "2026-08-05T17:00:00Z")
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
 
     await repo.logEventHours({

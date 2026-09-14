@@ -31,6 +31,7 @@ import type { FastifyInstance } from "fastify"
 import { WsServerMessageSchema } from "@civfix/shared"
 import { FakeMailer, FakePushSender } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { buildServer } from "../../src/server.js"
 import { buildContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
@@ -146,13 +147,10 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
 
   /** Direct-SQL cleanup fixture: organizer + plain members (role 'member'). */
   async function newCleanup(organizerId: string, memberIds: string[] = []): Promise<string> {
-    const [c] = await h.sql<{ id: string }[]>`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (${organizerId}, 'site', 'Poll Cleanup',
-              ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), ${new Date()}, 'upcoming')
-      RETURNING id
-    `
-    const cleanupId = c!.id
+    const cleanupId = await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Poll Cleanup",
+    })
     await h.sql`
       INSERT INTO cleanup_members (cleanup_id, user_id, role) VALUES (${cleanupId}, ${organizerId}, 'organizer')
     `

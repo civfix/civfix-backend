@@ -1,7 +1,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import {
   makeDrizzleCleanupRepository,
   LINKED_EVENTS_PER_REPORT_CAP,
@@ -33,16 +33,14 @@ describe.skipIf(!pg)("cleanup<->report link bounds (integration)", () => {
   }
 
   async function newCleanup(organizerId: string, title: string): Promise<string> {
-    const id = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status, jurisdiction_geoid)
-      VALUES (
-        ${id}, ${organizerId}, 'site', ${title},
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-        now() + interval '2 days', 'upcoming', ${LA_CITY.geoid}
-      )
-    `
-    return id
+    return await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title,
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: new Date(Date.now() + 2 * 86_400_000),
+      jurisdictionGeoid: LA_CITY.geoid,
+    })
   }
 
   async function newPublicReport(title: string): Promise<string> {

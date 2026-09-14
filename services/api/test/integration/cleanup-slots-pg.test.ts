@@ -2,8 +2,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
-import type { CleanupRepository, DesiredSlot } from "../../src/services/cleanup-repository.types.js"
+import type {
+  ClaimSlotOutcome,
+  CleanupRepository,
+  DesiredSlot,
+} from "../../src/services/cleanup-repository.types.js"
+import type { CleanupStatus } from "@civfix/shared"
 
 const pg = await withPg()
 
@@ -28,20 +34,21 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
   }
 
   const FUTURE = new Date(Date.now() + 7 * 86_400_000)
+  const PAST = new Date(Date.now() - 7 * 86_400_000)
 
   async function newCleanup(
     organizerId: string,
-    over: { status?: string } = {},
+    over: { status?: CleanupStatus } = {},
   ): Promise<string> {
-    const id = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${id}, ${organizerId}, 'site', 'Slot sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-        ${FUTURE}, ${over.status ?? "upcoming"}
-      )
-    `
+    const status = over.status ?? "upcoming"
+    const id = await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Slot sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: status === "done" ? PAST : FUTURE,
+      status,
+    })
     await h.sql`
       INSERT INTO cleanup_members (cleanup_id, user_id, role)
       VALUES (${id}, ${organizerId}, 'organizer')
@@ -283,13 +290,17 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     expect(await repo.isMember(open, joiner)).toBe(true)
     expect(await repo.roleOf(open, joiner)).toBe("member")
 
-    for (const status of ["done", "cancelled"]) {
+    const refusals: [CleanupStatus, ClaimSlotOutcome, ClaimSlotOutcome][] = [
+      ["done", { kind: "ended" }, { kind: "released" }],
+      ["cancelled", { kind: "closed" }, { kind: "closed" }],
+    ]
+    for (const [status, claimOutcome, releaseOutcome] of refusals) {
       const closed = await newCleanup(org, { status })
       const closedSlot = await newSlot(closed)
       const latecomer = await newUser(`Late ${status}`)
-      expect(await repo.claimSlot(closed, latecomer, closedSlot)).toEqual({ kind: "closed" })
+      expect(await repo.claimSlot(closed, latecomer, closedSlot)).toEqual(claimOutcome)
       expect(await repo.isMember(closed, latecomer)).toBe(false)
-      expect(await repo.releaseSlot(closed, latecomer)).toEqual({ kind: "closed" })
+      expect(await repo.releaseSlot(closed, latecomer)).toEqual(releaseOutcome)
     }
   })
 

@@ -1,7 +1,9 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
+import type { CleanupStatus } from "@civfix/shared"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleHostRegistrationRepository } from "../../src/services/host/registration-repository.drizzle.js"
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import type {
@@ -34,16 +36,19 @@ describe.skipIf(!pg)("check-in idempotency (integration)", () => {
     return (u as { id: string }).id
   }
 
-  async function newCleanup(organizerId: string, scheduledAt = FUTURE, status = "upcoming"): Promise<string> {
-    const id = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${id}, ${organizerId}, 'site', 'Check-in sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), ${scheduledAt}, ${status}
-      )
-    `
-    return id
+  async function newCleanup(
+    organizerId: string,
+    scheduledAt = FUTURE,
+    status: CleanupStatus = "upcoming",
+  ): Promise<string> {
+    return await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Check-in sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt,
+      status,
+    })
   }
 
   function seats(partySize: number): SeatDraft[] {

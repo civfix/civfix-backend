@@ -2,6 +2,7 @@ import type { BroadcastKind } from "@civfix/shared"
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleBroadcastRepository } from "../../src/services/host/broadcast-repository.drizzle.js"
 import type { BroadcastRepository } from "../../src/services/host/broadcast-repository.js"
 
@@ -31,13 +32,13 @@ describe.skipIf(!pg)("broadcast audience resolution (integration)", () => {
   }
 
   async function newCleanup(organizer: string): Promise<string> {
-    const id = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (${id}, ${organizer}, 'site', 'Beach sweep',
-              ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-              ${new Date(Date.now() + 7 * 86_400_000)}, 'upcoming')`
-    return id
+    return await seedCleanup(h.sql, {
+      organizerUserId: organizer,
+      title: "Beach sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: new Date(Date.now() + 7 * 86_400_000),
+    })
   }
 
   async function register(userId: string): Promise<string> {
