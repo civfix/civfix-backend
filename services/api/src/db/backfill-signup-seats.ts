@@ -13,12 +13,12 @@
  *   DATABASE_URL=postgres://... pnpm db:backfill:signup-seats -- --yes     # commit
  *   DATABASE_URL=postgres://... pnpm db:backfill:signup-seats -- --yes --batch 200
  *
- * Scope: members of events that are not cancelled and have not ended (`ends_at > now()`), that have
- * zero ticket types, where the member holds no active registration. The organizer is excluded — the
- * event-create transaction does not mint a seat for them either, so including them here would make the
- * backfilled events disagree with every event created afterwards. Safe to re-run: the insert carries
- * the same `ON CONFLICT (cleanup_id, user_id) WHERE status = 'registered'` arbiter the runtime path
- * uses, and the candidate query already excludes anyone who has a registration.
+ * Scope: every `cleanup_members` row of an event that is not cancelled and has not ended
+ * (`ends_at > now()`), that has zero ticket types, where the member holds no active registration —
+ * organizers included, because the live `claimSlot` path mints a seat for an organizer who claims
+ * their own shift and 0169 gave every existing member a slot claim. Safe to re-run: the insert
+ * carries the same `ON CONFLICT (cleanup_id, user_id) WHERE status = 'registered'` arbiter the
+ * runtime path uses, and the candidate query already excludes anyone who has a registration.
  */
 
 import { randomUUID } from "node:crypto"
@@ -31,6 +31,12 @@ import { makeTicketTokenSigner } from "../services/host/ticket-token.js"
 type SqlFragment = postgres.Fragment
 
 export const SIGNUP_SEAT_BACKFILL_BATCH = 500
+
+class RehearsalRollback extends Error {
+  constructor(readonly written: number) {
+    super("rehearsal rollback")
+  }
+}
 
 interface CandidateRow {
   cleanup_id: string
@@ -78,7 +84,6 @@ export async function backfillSignupSeats(
 ): Promise<SignupSeatBackfillResult> {
   const batchSize = opts.batchSize ?? SIGNUP_SEAT_BACKFILL_BATCH
   const log = opts.log ?? ((message: string) => console.log(`backfill-signup-seats: ${message}`))
-  const ROLLBACK = Symbol("rollback")
   let scanned = 0
   let created = 0
   let batches = 0
@@ -93,8 +98,7 @@ export async function backfillSignupSeats(
       SELECT m.cleanup_id, m.user_id, m.joined_at
       FROM cleanup_members m
       JOIN cleanups c ON c.id = m.cleanup_id
-      WHERE m.role <> 'organizer'
-        AND c.status <> 'cancelled'
+      WHERE c.status <> 'cancelled'
         AND c.ends_at > now()
         AND NOT EXISTS (
           SELECT 1 FROM cleanup_ticket_types t WHERE t.cleanup_id = m.cleanup_id
@@ -176,11 +180,11 @@ export async function backfillSignupSeats(
             )}
           `
         }
-        if (!opts.commit) throw ROLLBACK
+        if (!opts.commit) throw new RehearsalRollback(seats.length)
         return seats.length
       })
       .catch((err: unknown) => {
-        if (err === ROLLBACK) return page.length
+        if (err instanceof RehearsalRollback) return err.written
         throw err
       })
 

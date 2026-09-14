@@ -19,8 +19,11 @@ attendee ticket, and no way to check anyone in.
 Sign-ups now mint a **free one-seat registration** in the same transaction as the
 membership upsert (`ensureSignupRegistrationIn` in
 `services/api/src/services/cleanup-repository.drizzle.ts`), and leaving or being
-removed cancels it (`cancelSignupRegistrationIn`). Ticketed events are untouched —
-they still go exclusively through `registerIn`.
+removed cancels it (`cancelSignupRegistrationIn`, which matches the attendee's
+active registration on `ticket_type_id IS NULL`). Ticketed events are untouched —
+minting is gated on the event having no ticket types, and the cancel can never
+reach a ticketed registration, which still goes exclusively through `registerIn`
+and `removeRegistration`.
 
 Events that already had members when that shipped still have none of those rows.
 This CLI mints them.
@@ -60,9 +63,15 @@ public data and needs no downtime.
 
 Candidates are `cleanup_members` rows where:
 
-- the member is **not** the organizer — the event-create transaction does not mint
-  a seat for the organizer either, so including them here would make backfilled
-  events disagree with every event created afterwards;
+- the row is any `cleanup_members` row, **organizer included**. The live path has
+  no role test: `claimSlot` runs `ensureSignupRegistrationIn` for whoever claims a
+  shift, so an organizer who claims their own gets a seat, and
+  `0169_default_event_slot.sql` already gave every member of a board-less open
+  event — organizers among them — a claim on the seeded default slot. Excluding
+  organizers here would leave the host of a slot-based event off their own roster
+  while every organizer who claims a shift after the release is on it. The rule is
+  therefore plain membership: every non-guest member of a qualifying event gets one
+  seat;
 - the event is **not cancelled** and **has not ended** (`ends_at > now()`) — a
   finished event's roster is history, and minting seats into it would resurrect
   the no-show sweep's candidate set;
@@ -77,7 +86,9 @@ while the API is serving traffic. `registered_at` and the seat's `created_at` ar
 taken from `cleanup_members.joined_at`, so the roster keeps its real ordering.
 
 Rehearsal mode writes exactly one batch and rolls it back, which is enough to prove
-the arbiter resolves and every CHECK passes against the live schema.
+the arbiter resolves and every CHECK passes against the live schema. The counts it
+reports are the real ones: `seats=` is the number of seat rows the transaction
+actually wrote before the rollback, not the number of candidates it scanned.
 
 ## Where the seat write sits in the lock order
 
@@ -92,18 +103,31 @@ already do, so nothing inverts against them:
 | Transaction | Order |
 |---|---|
 | `joinCleanupTx` | cleanups (FOR SHARE) -> cleanup_members -> registrations -> seats |
-| `claimSlot` | cleanups (FOR SHARE) -> cleanup_members -> cleanup_slots (FOR UPDATE) -> registrations -> seats -> cleanup_slot_claims |
+| `claimSlot` | cleanups (FOR SHARE) -> cleanup_slots (FOR UPDATE) -> cleanup_members -> registrations -> seats -> cleanup_slot_claims |
 | `leaveCleanup` | cleanups (FOR SHARE) -> cleanup_members -> registrations -> seats -> cleanup_slot_claims |
 | `removeMember` | cleanups (FOR NO KEY UPDATE) -> cleanup_members -> registrations -> seats -> cleanup_bans -> cleanup_slot_claims |
 
-`claimSlot` still takes `cleanup_slots` before the registration, which is the
-exception `0063_cleanup_slots.sql` already documents for its auto-RSVP: the seat
-must not be minted on a `slot_not_found` / `full` refusal, and `sql.begin` commits
-on a normal return. The seat write comes AFTER those refusals and BEFORE the slot
-claim, so a concurrent `registerIn(slotId)` for the same person — which goes
-registration first, slot claim second — cannot form an ABBA cycle with it. The
-`cleanup_ticket_types` probe that short-circuits ticketed events is an unlocked
-`SELECT` and takes no row lock.
+`claimSlot` takes `cleanup_slots (FOR UPDATE)` BEFORE `cleanup_members`, ahead of
+the registration and the seat. Slots-before-members is not new and not an
+inversion introduced here: it is the exception `0063_cleanup_slots.sql` already
+documents for the auto-RSVP, because the capacity decision has to be made under the
+slot lock and neither the membership row nor the seat may be written on a
+`slot_not_found` / `full` refusal (`sql.begin` commits on a normal return). The
+seat write therefore comes AFTER those refusals and BEFORE the slot claim, so a
+concurrent `registerIn(slotId)` for the same person — which goes registration
+first, slot claim second — cannot form an ABBA cycle with it.
+
+The `cleanup_ticket_types` probe is an unlocked `SELECT` and takes no row lock of
+its own, but it is not racy either: every minting transaction already holds the
+`cleanups` row `FOR SHARE` when it runs, and `createTicketType` takes that same row
+`FOR NO KEY UPDATE`, which conflicts with `FOR SHARE`. A ticket type therefore
+cannot be created in the window between the probe and the seat insert — the two
+transactions serialize on the `cleanups` row. Cancellation does not depend on the
+probe at all: `cancelSignupRegistrationIn` discriminates on the REGISTRATION row
+(`ticket_type_id IS NULL`), the exact shape the sign-up path mints, so a host who
+adds a ticket type after plain sign-ups exist cannot leave a departed or removed
+attendee holding an active seat and a scannable token, and a genuinely ticketed
+registration is never cancelled by a plain leave.
 
 ## Retention
 
