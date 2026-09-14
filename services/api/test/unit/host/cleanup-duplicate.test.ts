@@ -47,6 +47,7 @@ function seedSource(over: Parameters<InMemoryCleanupRepository["seedCleanup"]>[0
     reminderOffsetsMin: [1440],
     pageSlug: "ballona-sweep",
     referenceCode: "EV-0001",
+    withDefaultSlot: false,
     ...over,
   })
 }

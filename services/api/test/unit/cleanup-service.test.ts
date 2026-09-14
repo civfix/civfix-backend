@@ -42,6 +42,7 @@ function baseInput(over: Partial<CreateCleanupRequest> = {}): CreateCleanupReque
     ...(over.bring !== undefined ? { bring: over.bring } : {}),
     ...(over.address !== undefined ? { address: over.address } : {}),
     ...(over.organizationId !== undefined ? { organizationId: over.organizationId } : {}),
+    slots: over.slots ?? [{ title: "Volunteers" }],
   }
 }
 

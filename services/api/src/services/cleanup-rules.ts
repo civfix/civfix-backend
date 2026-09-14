@@ -25,6 +25,10 @@ export type { EventWindowLike }
 
 export const SCHEDULE_MAX_BACKDATE_MS = 24 * 60 * 60 * 1000
 
+export const DEFAULT_EVENT_SLOT_TITLE = "General volunteers"
+
+export const EVENT_NEEDS_A_SLOT_MESSAGE = "An event needs at least one signup slot."
+
 export const MIN_EVENT_DURATION_MS = MIN_EVENT_DURATION_MINUTES * 60 * 1000
 
 export const MAX_EVENT_DURATION_MS = MAX_EVENT_DURATION_MINUTES * 60 * 1000
