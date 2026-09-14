@@ -274,6 +274,11 @@ export interface ListCleanupsFilters {
   viewerId?: string | null
 }
 
+export interface SignupSeat {
+  seatId: string
+  tokenHash: string
+}
+
 export interface CleanupRepository {
   createCleanupTx(args: CreateCleanupTxArgs): Promise<CreateCleanupOutcome>
   updateCleanup(id: string, patch: UpdateCleanupPatch): Promise<boolean>
@@ -322,7 +327,7 @@ export interface CleanupRepository {
   listMemberIds(cleanupId: string, limit: number): Promise<string[]>
   goingCount(cleanupId: string): Promise<number>
   organizerOf(cleanupId: string): Promise<string | null>
-  joinCleanupTx(cleanupId: string, userId: string): Promise<JoinCleanupOutcome>
+  joinCleanupTx(cleanupId: string, userId: string, seat: SignupSeat): Promise<JoinCleanupOutcome>
   leaveCleanup(cleanupId: string, userId: string): Promise<LeaveCleanupOutcome>
   cancelCleanupTx(
     id: string,
@@ -342,7 +347,12 @@ export interface CleanupRepository {
     desired: DesiredSlot[],
     actorId: string | null,
   ): Promise<SlotReconcileResult>
-  claimSlot(cleanupId: string, userId: string, slotId: string): Promise<ClaimSlotOutcome>
+  claimSlot(
+    cleanupId: string,
+    userId: string,
+    slotId: string,
+    seat: SignupSeat,
+  ): Promise<ClaimSlotOutcome>
   releaseSlot(cleanupId: string, userId: string): Promise<ClaimSlotOutcome>
   slotOf(cleanupId: string, userId: string): Promise<string | null>
   resolveJurisdictionContact(geoid: string | null): Promise<{ contact: string; name: string } | null>

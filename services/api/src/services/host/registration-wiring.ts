@@ -26,7 +26,7 @@ import {
 } from "./registration-service.js"
 import { makeTicketTypeService, type TicketTypeService } from "./ticket-type-service.js"
 import { makeWaitlistService, type WaitlistService } from "./waitlist-service.js"
-import { makeTicketTokenSigner, type TicketTokenSigner } from "./ticket-token.js"
+import type { TicketTokenSigner } from "./ticket-token.js"
 import type { HostRegistrationRepository } from "./registration-repository.types.js"
 
 export interface HostServiceLogger {
@@ -69,10 +69,6 @@ export interface HostRegistrationServices {
   checkin: CheckinService
 }
 
-export function ticketTokenSecretOf(container: Container): string {
-  return container.env.TICKET_TOKEN_SECRET.trim()
-}
-
 export function platformMediaUrlPrefixes(container: Container): string[] {
   const bases = [container.env.R2_PUBLIC_BASE ?? "", container.env.PUBLIC_API_URL]
   return bases
@@ -113,7 +109,7 @@ export function makeContainerRegistrationServices(
   const sql = overrides?.repo === undefined ? container.getDb().sql : undefined
   const repo =
     overrides?.repo ?? makeDrizzleHostRegistrationRepository(sql as Sql)
-  const tokens = overrides?.tokens ?? makeTicketTokenSigner(ticketTokenSecretOf(container))
+  const tokens = overrides?.tokens ?? container.getTicketTokenSigner()
   const audit =
     overrides?.audit ?? (sql === undefined ? undefined : auditWriter(sql, logger))
   const teamUserIds =

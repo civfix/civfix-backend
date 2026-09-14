@@ -48,6 +48,7 @@ import type {
   OrganizationEventsFilters,
   OrganizationEventsHost,
   RemoveMemberOutcome,
+  SignupSeat,
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
@@ -985,8 +986,8 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       actorId: string,
     ): Promise<RemoveMemberOutcome> {
       return sql.begin(async (tx) => {
-        const locked = await tx<{ status: CleanupStatus }[]>`
-          SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR NO KEY UPDATE
+        const locked = await tx<{ status: CleanupStatus; now: Date }[]>`
+          SELECT status, now() AS now FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR NO KEY UPDATE
         `
         const cleanup = locked[0]
         if (cleanup === undefined) return { kind: "not_found" }
@@ -997,6 +998,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           RETURNING user_id
         `
         if (deleted.length > 0) {
+          await cancelSignupRegistrationIn(tx, {
+            cleanupId,
+            userId,
+            actorId,
+            now: cleanup.now,
+          })
           await tx`
             INSERT INTO cleanup_bans (cleanup_id, user_id, banned_by_user_id)
             VALUES (${cleanupId}, ${userId}, ${actorId})
@@ -1067,7 +1074,11 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return rows[0]?.organizer_user_id ?? null
     },
 
-    async joinCleanupTx(cleanupId: string, userId: string): Promise<JoinCleanupOutcome> {
+    async joinCleanupTx(
+      cleanupId: string,
+      userId: string,
+      seat: SignupSeat,
+    ): Promise<JoinCleanupOutcome> {
       return sql.begin(async (tx) => {
         const locked = await tx<
           {
@@ -1109,14 +1120,21 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           VALUES (${cleanupId}, ${userId}, 'member')
           ON CONFLICT (cleanup_id, user_id) DO NOTHING
         `
+        await ensureSignupRegistrationIn(tx, {
+          cleanupId,
+          userId,
+          seatId: seat.seatId,
+          tokenHash: seat.tokenHash,
+          now: cleanup.now,
+        })
         return "joined"
       })
     },
 
     async leaveCleanup(cleanupId: string, userId: string): Promise<LeaveCleanupOutcome> {
       return sql.begin(async (tx) => {
-        const locked = await tx<{ status: CleanupStatus }[]>`
-          SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
+        const locked = await tx<{ status: CleanupStatus; now: Date }[]>`
+          SELECT status, now() AS now FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
         `
         const cleanup = locked[0]
         if (cleanup === undefined) return "not_found"
@@ -1124,6 +1142,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         await tx`
           DELETE FROM cleanup_members WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
         `
+        await cancelSignupRegistrationIn(tx, {
+          cleanupId,
+          userId,
+          actorId: userId,
+          now: cleanup.now,
+        })
         await tx`
           DELETE FROM cleanup_slot_claims WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
         `
@@ -1370,6 +1394,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       cleanupId: string,
       userId: string,
       slotId: string,
+      seat: SignupSeat,
     ): Promise<ClaimSlotOutcome> {
       return sql.begin(async (tx) => {
         const locked = await tx<
@@ -1440,6 +1465,14 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           ON CONFLICT (cleanup_id, user_id) DO NOTHING
         `
 
+        await ensureSignupRegistrationIn(tx, {
+          cleanupId,
+          userId,
+          seatId: seat.seatId,
+          tokenHash: seat.tokenHash,
+          now: cleanup.now,
+        })
+
         await tx`
           INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id)
           VALUES (${cleanupId}, ${userId}, ${slotId})
@@ -1504,6 +1537,71 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       `
     },
   }
+}
+
+async function eventHasTicketTypes(tx: Queryable, cleanupId: string): Promise<boolean> {
+  const rows = await tx<{ one: number }[]>`
+    SELECT 1 AS one FROM cleanup_ticket_types WHERE cleanup_id = ${cleanupId} LIMIT 1
+  `
+  return rows.length > 0
+}
+
+export async function ensureSignupRegistrationIn(
+  tx: Queryable,
+  args: {
+    cleanupId: string
+    userId: string
+    seatId: string
+    tokenHash: string
+    now: Date
+  },
+): Promise<string | null> {
+  if (await eventHasTicketTypes(tx, args.cleanupId)) return null
+  const inserted = await tx<{ id: string }[]>`
+    INSERT INTO cleanup_registrations (
+      cleanup_id, ticket_type_id, user_id, guest_id, party_size, status, source, registered_at
+    ) VALUES (
+      ${args.cleanupId}, NULL, ${args.userId}, NULL, 1, 'registered', 'self', ${args.now}
+    )
+    ON CONFLICT (cleanup_id, user_id) WHERE status = 'registered' AND user_id IS NOT NULL
+    DO NOTHING
+    RETURNING id
+  `
+  const registrationId = inserted[0]?.id
+  if (registrationId === undefined) return null
+  await tx`
+    INSERT INTO cleanup_registration_seats (
+      id, cleanup_id, registration_id, seat_index, attendee_name, ticket_token_hash, status, created_at
+    ) VALUES (
+      ${args.seatId}, ${args.cleanupId}, ${registrationId}, 0, NULL, ${args.tokenHash}, 'active', ${args.now}
+    )
+  `
+  return registrationId
+}
+
+export async function cancelSignupRegistrationIn(
+  tx: Queryable,
+  args: { cleanupId: string; userId: string; actorId: string | null; now: Date },
+): Promise<boolean> {
+  if (await eventHasTicketTypes(tx, args.cleanupId)) return false
+  const cancelled = await tx<{ id: string }[]>`
+    WITH cancelled AS (
+      UPDATE cleanup_registrations
+         SET status = 'cancelled', cancelled_at = ${args.now}, cancelled_by = ${args.actorId}
+       WHERE cleanup_id = ${args.cleanupId}
+         AND user_id = ${args.userId}
+         AND status = 'registered'
+      RETURNING id
+    ), seats AS (
+      UPDATE cleanup_registration_seats s
+         SET status = 'cancelled'
+        FROM cancelled c
+       WHERE s.registration_id = c.id AND s.status = 'active'
+      RETURNING s.id
+    )
+    SELECT id FROM cancelled
+  `
+  return cancelled.length > 0
 }
 
 async function linkReportsInTx(

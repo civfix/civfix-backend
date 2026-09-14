@@ -181,6 +181,7 @@ export function makeContainerCleanupService(
 
   return makeCleanupService({
     repo,
+    tickets: container.getTicketTokenSigner(),
     ...(overrides?.presignThumb !== undefined
       ? { presignThumb: overrides.presignThumb }
       : overrides

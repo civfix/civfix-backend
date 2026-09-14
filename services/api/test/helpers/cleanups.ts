@@ -26,6 +26,7 @@ import type {
   OrganizationEventsFilters,
   OrganizationEventsHost,
   RemoveMemberOutcome,
+  SignupSeat,
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "../../src/services/cleanup-service.js"
@@ -278,8 +279,23 @@ export interface GuestCountSource {
   activeGuestCount(cleanupId: string): number
 }
 
+export interface SignupRegistrationSink {
+  ensureSignupRegistration(args: {
+    cleanupId: string
+    userId: string
+    seatId: string
+    now: Date
+  }): unknown
+  cancelSignupRegistration(args: { cleanupId: string; userId: string; now: Date }): unknown
+}
+
+export function signupSeat(): SignupSeat {
+  return { seatId: randomUUID(), tokenHash: randomUUID() }
+}
+
 export class InMemoryCleanupRepository implements CleanupRepository {
   guestSource: GuestCountSource | null = null
+  registrationSink: SignupRegistrationSink | null = null
   readonly cleanups = new Map<string, StoredCleanup>()
   readonly organizations = new Map<string, StoredOrganization>()
   readonly orgMembers: StoredOrgMember[] = []
@@ -1098,6 +1114,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
         this.bans.push({ cleanupId, userId, bannedByUserId: actorId })
       }
       this.deleteClaim(cleanupId, userId)
+      this.cancelSignupRegistration(cleanupId, userId)
     }
     const going = this.goingOf(cleanupId)
     return Promise.resolve(idx >= 0 ? { kind: "removed", going } : { kind: "not_member", going })
@@ -1130,7 +1147,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(c ? c.organizerUserId : null)
   }
 
-  joinCleanupTx(cleanupId: string, userId: string): Promise<JoinCleanupOutcome> {
+  joinCleanupTx(cleanupId: string, userId: string, seat: SignupSeat): Promise<JoinCleanupOutcome> {
     const cleanup = this.cleanups.get(cleanupId)
     if (cleanup === undefined) return Promise.resolve("not_found")
     if (this.privateBlocksJoin(cleanup, userId)) return Promise.resolve("not_found")
@@ -1142,6 +1159,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (!this.members.some((m) => m.cleanupId === cleanupId && m.userId === userId)) {
       this.members.push({ cleanupId, userId, role: "member" })
     }
+    this.ensureSignupRegistration(cleanupId, userId, seat)
     return Promise.resolve("joined")
   }
 
@@ -1152,7 +1170,27 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const idx = this.members.findIndex((m) => m.cleanupId === cleanupId && m.userId === userId)
     if (idx >= 0) this.members.splice(idx, 1)
     this.deleteClaim(cleanupId, userId)
+    this.cancelSignupRegistration(cleanupId, userId)
     return Promise.resolve("left")
+  }
+
+  private hasTicketTypes(cleanupId: string): boolean {
+    return this.ticketTypes.some((t) => t.cleanupId === cleanupId)
+  }
+
+  private ensureSignupRegistration(cleanupId: string, userId: string, seat: SignupSeat): void {
+    if (this.registrationSink === null || this.hasTicketTypes(cleanupId)) return
+    this.registrationSink.ensureSignupRegistration({
+      cleanupId,
+      userId,
+      seatId: seat.seatId,
+      now: this.now(),
+    })
+  }
+
+  private cancelSignupRegistration(cleanupId: string, userId: string): void {
+    if (this.registrationSink === null || this.hasTicketTypes(cleanupId)) return
+    this.registrationSink.cancelSignupRegistration({ cleanupId, userId, now: this.now() })
   }
 
   private deleteClaim(cleanupId: string, userId: string): string | null {
@@ -1325,7 +1363,12 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve({ added, updated, removed, rescheduled })
   }
 
-  claimSlot(cleanupId: string, userId: string, slotId: string): Promise<ClaimSlotOutcome> {
+  claimSlot(
+    cleanupId: string,
+    userId: string,
+    slotId: string,
+    seat: SignupSeat,
+  ): Promise<ClaimSlotOutcome> {
     const cleanup = this.cleanups.get(cleanupId)
     if (!cleanup) return Promise.resolve({ kind: "not_found" })
     if (this.privateBlocksJoin(cleanup, userId)) return Promise.resolve({ kind: "not_found" })
@@ -1353,6 +1396,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     }
     if (current) current.slotId = slotId
     else this.slotClaims.push({ cleanupId, userId, slotId })
+    this.ensureSignupRegistration(cleanupId, userId, seat)
     return Promise.resolve({ kind: "claimed", slotId })
   }
 

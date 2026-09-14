@@ -396,6 +396,75 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     return outcome
   }
 
+  ensureSignupRegistration(args: {
+    cleanupId: string
+    userId: string
+    seatId: string
+    now: Date
+  }): RegistrationRecord | null {
+    const active = [...this.registrations.values()].find(
+      (r) => r.cleanupId === args.cleanupId && r.status === "registered" && r.userId === args.userId,
+    )
+    if (active !== undefined) return null
+    const id = this.newId()
+    const registration: MemoryRegistration = {
+      id,
+      cleanupId: args.cleanupId,
+      ticketTypeId: null,
+      ticketTypeName: null,
+      userId: args.userId,
+      guestId: null,
+      guestName: null,
+      identity: {
+        userId: args.userId,
+        displayName: "Member",
+        handle: null,
+        bio: null,
+        avatarUrl: null,
+        deletedAt: null,
+      },
+      partySize: 1,
+      status: "registered",
+      source: "self",
+      hostNote: null,
+      registeredAt: args.now,
+      cancelledAt: null,
+      checkedInAt: null,
+      slotId: null,
+      slotTitle: null,
+      seats: [
+        {
+          id: args.seatId,
+          registrationId: id,
+          seatIndex: 0,
+          attendeeName: null,
+          status: "active",
+          checkedInAt: null,
+          checkedInBy: null,
+          checkinMethod: null,
+          checkinCoarsenedAt: null,
+          noShowAt: null,
+        },
+      ],
+      answersPreview: null,
+      answers: [],
+    }
+    this.registrations.set(id, registration)
+    this.members.add(`${args.cleanupId}:${args.userId}`)
+    return this.toRecord(registration)
+  }
+
+  cancelSignupRegistration(args: { cleanupId: string; userId: string; now: Date }): boolean {
+    const active = [...this.registrations.values()].find(
+      (r) => r.cleanupId === args.cleanupId && r.status === "registered" && r.userId === args.userId,
+    )
+    if (active === undefined) return false
+    active.status = "cancelled"
+    active.cancelledAt = args.now
+    for (const seat of active.seats) seat.status = "cancelled"
+    return true
+  }
+
   private toRecord(registration: MemoryRegistration): RegistrationRecord {
     const type = registration.ticketTypeId === null ? null : this.ticketTypes.get(registration.ticketTypeId)
     return {

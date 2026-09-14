@@ -16,6 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { signupSeat } from "../helpers/cleanups.js"
 import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
@@ -431,11 +432,11 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     // M17: the same transaction wrote the ban that makes the removal stick — the self-service join
     // now refuses instead of silently re-creating the membership row.
     expect(await repo.isBanned(created.id, bobId)).toBe(true)
-    expect(await repo.joinCleanupTx(created.id, bobId)).toBe("banned")
+    expect(await repo.joinCleanupTx(created.id, bobId, signupSeat())).toBe("banned")
     expect(await repo.isMember(created.id, bobId)).toBe(false)
     // The organizer lifts it, and only then can Bob RSVP again.
     expect(await repo.unbanMember(created.id, bobId)).toBe(true)
-    expect(await repo.joinCleanupTx(created.id, bobId)).toBe("joined")
+    expect(await repo.joinCleanupTx(created.id, bobId, signupSeat())).toBe("joined")
     expect(await repo.isMember(created.id, bobId)).toBe(true)
     // Direct repo guard: removing the organizer row is refused (and writes no ban).
     expect((await repo.removeMember(created.id, organizerId, organizerId)).kind).toBe("not_member")

@@ -56,6 +56,7 @@ import type {
   EventSlotView,
   LinkedReportView,
   ListCleanupsFilters,
+  SignupSeat,
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
@@ -72,6 +73,8 @@ import {
   assertValidTimezone,
 } from "./host/event-fields.js"
 import { assertSlugAllowed } from "./host/slugs.js"
+import { makeTicketTokenSigner, type TicketTokenSigner } from "./host/ticket-token.js"
+import { DEVELOPMENT_TICKET_TOKEN_SECRET } from "../env/registration-env.js"
 import { NULL_HOST_AUDIT_SINK, type HostAuditSink } from "./host/host-audit.js"
 import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import {
@@ -236,6 +239,7 @@ export interface EventMediaPresigner {
 
 export interface CleanupServiceDeps {
   repo: CleanupRepository
+  tickets?: TicketTokenSigner
   audit?: HostAuditSink
   presignEventMedia?: EventMediaPresigner
   presignThumb?: (thumbKey: string) => Promise<string>
@@ -306,6 +310,12 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   const presignThumb = deps.presignThumb ?? ((thumbKey: string) => Promise.resolve(thumbKey))
   const counters = deps.counters ?? fallbackCounters
   const audit = deps.audit ?? NULL_HOST_AUDIT_SINK
+  const tickets = deps.tickets ?? makeTicketTokenSigner(DEVELOPMENT_TICKET_TOKEN_SECRET)
+
+  function newSignupSeat(): SignupSeat {
+    const seatId = randomUUID()
+    return { seatId, tokenHash: tickets.hashFor(seatId) }
+  }
 
   const enrichDTOs =
     deps.enrichDTOs ?? ((dtos: CleanupDTO[]) => Promise.resolve(dtos))
@@ -1411,7 +1421,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
     async joinCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }> {
       await assertMembershipFlipBudget(id, userId)
-      const outcome = await deps.repo.joinCleanupTx(id, userId)
+      const outcome = await deps.repo.joinCleanupTx(id, userId, newSignupSeat())
       if (outcome === "not_found") notFoundCleanup()
       if (outcome === "banned") {
         throw AppError.forbidden("A host removed you from this event, so you can't rejoin it.")
@@ -1589,7 +1599,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const outcome =
         slotId === null
           ? await deps.repo.releaseSlot(id, userId)
-          : await deps.repo.claimSlot(id, userId, slotId)
+          : await deps.repo.claimSlot(id, userId, slotId, newSignupSeat())
 
       if (outcome.kind === "not_found") notFoundCleanup()
       if (outcome.kind === "slot_not_found") {
