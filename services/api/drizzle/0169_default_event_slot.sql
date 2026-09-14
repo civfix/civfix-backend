@@ -38,7 +38,11 @@
 -- capacity is copied from cleanups.capacity (NULL in essentially every row =
 -- unlimited). That column carries no positivity CHECK while
 -- cleanup_slots_capacity_positive does, so a legacy 0 or negative is mapped to
--- NULL rather than aborting the deploy.
+-- NULL rather than aborting the deploy. Copying it also makes what used to be
+-- an advisory event-level number BINDING on the default slot, so a legacy event
+-- whose membership already exceeds its capacity keeps every backfilled claim
+-- (they are written directly, not through the claim path) and simply sits over
+-- the line -- legal, and no further claim lands until someone leaves.
 --
 -- ONE STATEMENT, ON PURPOSE. The claims ride a data-modifying CTE off the slot
 -- insert's RETURNING, so they attach to the slot THIS migration created and to
@@ -65,7 +69,7 @@ WITH seeded AS (
   RETURNING id, cleanup_id
 )
 INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id, claimed_at)
-SELECT m.cleanup_id, m.user_id, seeded.id, now()
+SELECT m.cleanup_id, m.user_id, seeded.id, COALESCE(m.joined_at, now())
 FROM seeded
 JOIN cleanup_members m ON m.cleanup_id = seeded.cleanup_id
 ON CONFLICT (cleanup_id, user_id) DO NOTHING;

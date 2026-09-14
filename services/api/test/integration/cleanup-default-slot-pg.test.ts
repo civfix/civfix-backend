@@ -8,7 +8,8 @@
  * what it writes:
  *
  *   - an OPEN slot-less event gains exactly one 'General volunteers' slot, untimed, carrying the event's
- *     capacity, and one claim per existing cleanup_members row;
+ *     capacity, and one claim per existing cleanup_members row, each stamped with the moment that member
+ *     actually joined rather than the moment the deploy ran;
  *   - an ENDED slot-less event gains NOTHING — its roster is what credited hours were attested against,
  *     and cleanup-service already refuses every slot edit on it (a cancelled event is skipped for the
  *     same reason, plus the obvious one);
@@ -83,10 +84,10 @@ describe.skipIf(!pg)("0169 default event slot backfill (integration)", () => {
     return id
   }
 
-  async function addMember(cleanupId: string, userId: string): Promise<void> {
+  async function addMember(cleanupId: string, userId: string, joinedAt?: Date): Promise<void> {
     await h.sql`
-      INSERT INTO cleanup_members (cleanup_id, user_id, role)
-      VALUES (${cleanupId}, ${userId}, 'member')
+      INSERT INTO cleanup_members (cleanup_id, user_id, role, joined_at)
+      VALUES (${cleanupId}, ${userId}, 'member', COALESCE(${joinedAt ?? null}::timestamptz, now()))
       ON CONFLICT DO NOTHING
     `
   }
@@ -109,11 +110,16 @@ describe.skipIf(!pg)("0169 default event slot backfill (integration)", () => {
     }))
   }
 
-  async function claimantsOf(cleanupId: string): Promise<string[]> {
-    const rows = await h.sql<{ user_id: string }[]>`
-      SELECT user_id FROM cleanup_slot_claims WHERE cleanup_id = ${cleanupId} ORDER BY user_id
+  async function claimsOf(cleanupId: string): Promise<{ userId: string; claimedAt: Date }[]> {
+    const rows = await h.sql<{ user_id: string; claimed_at: Date }[]>`
+      SELECT user_id, claimed_at
+      FROM cleanup_slot_claims WHERE cleanup_id = ${cleanupId} ORDER BY user_id
     `
-    return rows.map((r) => r.user_id)
+    return rows.map((r) => ({ userId: r.user_id, claimedAt: r.claimed_at }))
+  }
+
+  async function claimantsOf(cleanupId: string): Promise<string[]> {
+    return (await claimsOf(cleanupId)).map((c) => c.userId)
   }
 
   async function runMigration(): Promise<void> {
@@ -124,7 +130,8 @@ describe.skipIf(!pg)("0169 default event slot backfill (integration)", () => {
     const organizer = await newUser("Olive Organizer")
     const member = await newUser("Mel Member")
     const id = await newCleanup(organizer, { capacity: 30 })
-    await addMember(id, member)
+    const joinedAt = new Date(Date.now() - 30 * 86_400_000)
+    await addMember(id, member, joinedAt)
 
     expect(await boardOf(id)).toEqual([])
     await runMigration()
@@ -132,7 +139,29 @@ describe.skipIf(!pg)("0169 default event slot backfill (integration)", () => {
     expect(await boardOf(id)).toEqual([
       { title: "General volunteers", capacity: 30, startsAt: null, endsAt: null },
     ])
-    expect(await claimantsOf(id)).toEqual([organizer, member].sort())
+    const claims = await claimsOf(id)
+    expect(claims.map((c) => c.userId)).toEqual([organizer, member].sort())
+    // The claim is backdated to when the member actually joined, not to when the deploy ran — the
+    // roster is a volunteer-hours record, so a wall-clock stamp would rewrite everyone's history.
+    const memberClaim = claims.find((c) => c.userId === member)
+    expect(memberClaim?.claimedAt.getTime()).toBe(joinedAt.getTime())
+  })
+
+  it("falls back to now() for a legacy member row with no joined_at", async () => {
+    const organizer = await newUser("Olive Organizer")
+    const member = await newUser("Mel Member")
+    const id = await newCleanup(organizer)
+    await addMember(id, member)
+    await h.sql`
+      UPDATE cleanup_members SET joined_at = NULL WHERE cleanup_id = ${id} AND user_id = ${member}
+    `
+
+    const before = new Date()
+    await runMigration()
+
+    const memberClaim = (await claimsOf(id)).find((c) => c.userId === member)
+    expect(memberClaim).toBeDefined()
+    expect(memberClaim!.claimedAt.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000)
   })
 
   it("skips an ENDED slot-less event and a CANCELLED one (their rosters are frozen)", async () => {
