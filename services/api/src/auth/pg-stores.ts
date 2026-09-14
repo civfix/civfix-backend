@@ -1,6 +1,6 @@
 
 import { randomUUID } from "node:crypto"
-import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm"
+import { and, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm"
 import type { Db } from "../db/client.js"
 import {
   cleanups,
@@ -337,7 +337,7 @@ export class PgUserStore implements UserStore {
         JOIN organizations o ON o.id = om.organization_id AND o.deleted_at IS NULL
         JOIN users u ON u.id = om.user_id AND u.deleted_at IS NULL
         WHERE c.organizer_user_id = ${id}
-          AND c.status IN ('upcoming', 'active')
+          AND c.status <> 'cancelled' AND c.ends_at > now()
           AND om.user_id <> ${id}
       ), moved AS (
         UPDATE cleanups c SET organizer_user_id = candidate.new_organizer
@@ -359,7 +359,7 @@ export class PgUserStore implements UserStore {
         FROM cleanups c
         JOIN cleanup_members m ON m.cleanup_id = c.id AND m.role = 'cohost'
         JOIN users u ON u.id = m.user_id AND u.deleted_at IS NULL
-        WHERE c.organizer_user_id = ${id} AND c.status IN ('upcoming', 'active')
+        WHERE c.organizer_user_id = ${id} AND c.status <> 'cancelled' AND c.ends_at > now()
         ORDER BY c.id, m.joined_at ASC NULLS LAST, m.user_id ASC
       ), moved AS (
         UPDATE cleanups c SET organizer_user_id = candidate.new_organizer
@@ -548,7 +548,13 @@ export class PgUserStore implements UserStore {
       await tx
         .update(cleanups)
         .set({ status: "cancelled" })
-        .where(and(eq(cleanups.organizerUserId, id), inArray(cleanups.status, ["upcoming", "active"])))
+        .where(
+          and(
+            eq(cleanups.organizerUserId, id),
+            ne(cleanups.status, "cancelled"),
+            gt(cleanups.endsAt, new Date()),
+          ),
+        )
       const releasedTicketTypeIds = await this.scrubAttendeeContributions(tx, id)
       await tx
         .update(posts)

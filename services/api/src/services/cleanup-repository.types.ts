@@ -25,7 +25,7 @@ export interface CleanupOrganizationView {
 }
 
 export interface CleanupHostFields {
-  endsAt: Date | null
+  endsAt: Date
   timezone: string | null
   visibility: EventVisibility
   coverMediaId: string | null
@@ -87,6 +87,8 @@ export interface LinkedEventView {
   eventKind: EventKind
   status: CleanupStatus
   scheduledAt: Date
+  endsAt: Date | null
+  timezone: string | null
   lat: number
   lng: number
   going: number
@@ -156,7 +158,7 @@ export interface ListAttendeesArgs {
 }
 
 export interface EventHostWrite {
-  endsAt?: Date | null
+  endsAt?: Date
   timezone?: string | null
   visibility?: EventVisibility
   coverMediaId?: string | null
@@ -200,7 +202,7 @@ export interface CreateCleanupTxArgs {
   jurCode: number
   linkedReportIds: string[]
   slots: DesiredSlot[]
-  host: EventHostWrite
+  host: EventHostWrite & { endsAt: Date }
   idempotency?: CleanupIdempotency
   copyFrom?: DuplicateSource
 }
@@ -236,14 +238,7 @@ export type RemoveMemberOutcome =
 export type CancelCleanupOutcome =
   | "cancelled"
   | "already_cancelled"
-  | "already_completed"
-  | "not_found"
-
-export type CompleteCleanupOutcome =
-  | "completed"
-  | "already_completed"
-  | "cancelled"
-  | "too_early"
+  | "already_ended"
   | "not_found"
 
 export interface NearPoint {
@@ -333,10 +328,6 @@ export interface CleanupRepository {
     id: string,
     input: { note: string; body: string; reason: string | null; actorId: string },
   ): Promise<CancelCleanupOutcome>
-  completeCleanupTx(
-    id: string,
-    input: { note: string; actorId: string; now: Date },
-  ): Promise<CompleteCleanupOutcome>
   listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]>
 
 

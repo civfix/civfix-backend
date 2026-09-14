@@ -2,6 +2,9 @@ import type { PageViewSource } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import type { CacheClient } from "../../auth/cache.js"
 import type { MetricUpsert, MetricsRepository } from "./metrics-repository.drizzle.js"
+import { eventDayKey } from "./event-day.js"
+
+export { eventDayKey }
 
 export const METRIC_PAGE_VIEWS = "page_views"
 export const METRIC_SOURCE = "source"
@@ -83,20 +86,6 @@ function hostOf(referrer: string | undefined): string | null {
     return new URL(referrer).hostname.toLowerCase()
   } catch {
     return null
-  }
-}
-
-export function eventDayKey(at: Date, timezone: string | null): string {
-  if (timezone === null || timezone.length === 0) return at.toISOString().slice(0, 10)
-  try {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(at)
-  } catch {
-    return at.toISOString().slice(0, 10)
   }
 }
 

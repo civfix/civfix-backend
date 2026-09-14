@@ -49,12 +49,18 @@ let counters: InMemoryCounterStore
 
 function seedEvent(
   id: string = CLEANUP_ID,
-  over: { status?: "upcoming" | "done" | "cancelled"; eventKind?: "cleanup" | "other_volunteer" } = {},
+  over: {
+    status?: "upcoming" | "cancelled"
+    ended?: boolean
+    eventKind?: "cleanup" | "other_volunteer"
+  } = {},
 ): string {
+  const scheduledAt = over.ended === true ? new Date(Date.now() - 8 * 3_600_000) : FUTURE
   repo.seedCleanup({
     id,
     organizerUserId: ORG,
-    scheduledAt: FUTURE,
+    scheduledAt,
+    endsAt: new Date(scheduledAt.getTime() + 4 * 3_600_000),
     ...(over.status !== undefined ? { status: over.status } : {}),
     ...(over.eventKind !== undefined ? { eventKind: over.eventKind } : {}),
   })
@@ -386,12 +392,11 @@ describe("slot validation happens BEFORE the database is touched (B26)", () => {
     expect(dto.slots.map((s) => s.title)).toEqual(["Damn hard sweep"])
   })
 
-  it("422s slot changes on a DONE event (the roster hours were attested against stops moving)", async () => {
-    const id = seedEvent(CLEANUP_ID, { status: "done" })
+  it("422s slot changes on an ENDED event (the roster hours were attested against stops moving)", async () => {
+    const id = seedEvent(CLEANUP_ID, { ended: true })
     repo.seedSlot({ cleanupId: id, title: "Grill" })
     await expect(service.updateCleanup(id, { slots: [] }, ORG)).rejects.toSatisfy(
-      (err: unknown) =>
-        fieldsOf(err).slots === "slots can't be changed after an event is completed",
+      (err: unknown) => fieldsOf(err).slots === "Slots can't be changed after an event has ended.",
     )
     expect(repo.slots.filter((s) => s.cleanupId === id)).toHaveLength(1)
   })
@@ -403,8 +408,8 @@ describe("slot validation happens BEFORE the database is touched (B26)", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" })
   })
 
-  it("freezes date/title/location/type on a terminal event, text corrections still apply (F015)", async () => {
-    const id = seedEvent(CLEANUP_ID, { status: "done" })
+  it("freezes date/title/location/type on an ended event, text corrections still apply (F015)", async () => {
+    const id = seedEvent(CLEANUP_ID, { ended: true })
     await expect(
       service.updateCleanup(id, { title: "Renamed after the fact" }, ORG),
     ).rejects.toMatchObject({ code: "CONFLICT" })
@@ -641,18 +646,24 @@ describe("slot windows (0167)", () => {
     expect(dto.slots[0]?.endsAt).toBeUndefined()
   })
 
-  it("422s a timed slot on an event with NO end time, naming what to fix", async () => {
-    const id = seedEvent()
-    await expect(
-      service.updateCleanup(id, { slots: [{ title: "Sweep", startsAt: at(0), endsAt: at(2) }] }, ORG),
-    ).rejects.toSatisfy(
-      (err: unknown) =>
-        fieldsOf(err).slots === "set an end time for the event before adding timed slots",
+  it("defaults a create with no endsAt to the 4 h window, so a timed slot inside it is accepted", async () => {
+    const created = await service.createCleanup(
+      {
+        title: "Sweep",
+        type: "site",
+        eventKind: "cleanup",
+        lat: 34,
+        lng: -118.49,
+        scheduledAt: EVENT_START.toISOString(),
+        slots: [{ title: "Sweep", startsAt: at(0), endsAt: at(2) }],
+      },
+      ORG,
     )
-    expect(repo.slots).toEqual([])
+    expect(created.endsAt).toBe(EVENT_END.toISOString())
+    expect(created.slots.map((s) => s.title)).toEqual(["Sweep"])
   })
 
-  it("422s a timed slot on a create whose endsAt is null", async () => {
+  it("422s a create that clears endsAt outright", async () => {
     await expect(
       service.createCleanup(
         {
@@ -667,10 +678,7 @@ describe("slot windows (0167)", () => {
         },
         ORG,
       ),
-    ).rejects.toSatisfy(
-      (err: unknown) =>
-        fieldsOf(err).slots === "set an end time for the event before adding timed slots",
-    )
+    ).rejects.toSatisfy((err: unknown) => fieldsOf(err).endsAt === "required")
   })
 
   it("422s a window that starts before the event does, naming the slot", async () => {
@@ -817,7 +825,7 @@ describe("slot windows (0167)", () => {
     expect(repo.cleanups.get(id)?.endsAt).toEqual(EVENT_END)
   })
 
-  it("422s the same way when the event's end is cleared entirely", async () => {
+  it("422s clearing the event's end entirely — every event must have one", async () => {
     const id = seedTimedEvent()
     repo.seedSlot({
       cleanupId: id,
@@ -826,9 +834,7 @@ describe("slot windows (0167)", () => {
       endsAt: new Date(at(2)),
     })
     await expect(service.updateCleanup(id, { endsAt: null }, ORG)).rejects.toSatisfy(
-      (err: unknown) =>
-        fieldsOf(err).scheduledAt ===
-        "timed slots would fall outside the new start and end; update the slots in the same save",
+      (err: unknown) => fieldsOf(err).endsAt === "an event must have an end time",
     )
   })
 

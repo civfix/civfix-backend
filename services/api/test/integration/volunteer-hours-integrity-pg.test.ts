@@ -187,43 +187,53 @@ describe.skipIf(!pg)("H9: volunteer-hours integrity bounds (integration)", () =>
     })
   })
 
-  it("stamps completed_at when an event is completed, and refuses completion before the minimum window", async () => {
-    const { makeDrizzleCleanupRepository } = await import(
-      "../../src/services/cleanup-repository.drizzle.js"
-    )
-    const { MIN_EVENT_DURATION_MS } = await import("../../src/services/cleanup-rules.js")
-    const org = await newUser("Complete Org")
-    const repo = makeDrizzleCleanupRepository(h.sql)
+  it("keeps a legacy completed_at as the hours window and falls back to ends_at without one", async () => {
+    const { creditableHoursForEvent } = await import("../../src/services/volunteer-hours-service.js")
+    const org = await newUser("Window Org")
 
-    const id = randomUUID()
-    const scheduledAt = new Date()
+    const legacyId = randomUUID()
+    const scheduledAt = new Date(Date.now() - 6 * 60 * 60 * 1000)
+    const endsAt = new Date(scheduledAt.getTime() + 4 * 60 * 60 * 1000)
+    const completedAt = new Date(scheduledAt.getTime() + 2 * 60 * 60 * 1000)
     await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
+      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, ends_at, status, completed_at)
       VALUES (
-        ${id}, ${org}, 'site', 'Timing sweep',
+        ${legacyId}, ${org}, 'site', 'Legacy window',
         ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-        ${scheduledAt}, 'upcoming'
+        ${scheduledAt}, ${endsAt}, 'upcoming', ${completedAt}
+      )
+    `
+    const plainId = randomUUID()
+    await h.sql`
+      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, ends_at, status)
+      VALUES (
+        ${plainId}, ${org}, 'site', 'Plain window',
+        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
+        ${scheduledAt}, ${endsAt}, 'upcoming'
       )
     `
 
-    const tooSoon = await repo.completeCleanupTx(id, {
-      note: "done",
-      actorId: org,
-      now: new Date(scheduledAt.getTime() + MIN_EVENT_DURATION_MS / 2),
-    })
-    expect(tooSoon).toBe("too_early")
-
-    const completedAt = new Date(scheduledAt.getTime() + MIN_EVENT_DURATION_MS * 2)
-    const outcome = await repo.completeCleanupTx(id, {
-      note: "done",
-      actorId: org,
-      now: completedAt,
-    })
-    expect(outcome).toBe("completed")
-
-    const [row] = await h.sql<{ completed_at: Date | null }[]>`
-      SELECT completed_at FROM cleanups WHERE id = ${id}
+    const rows = await h.sql<{ id: string; scheduled_at: Date; ends_at: Date; completed_at: Date | null }[]>`
+      SELECT id, scheduled_at, ends_at, completed_at FROM cleanups
+      WHERE id IN (${legacyId}, ${plainId})
     `
-    expect(row!.completed_at?.toISOString()).toBe(completedAt.toISOString())
+    const byId = new Map(rows.map((r) => [r.id, r]))
+    const legacy = byId.get(legacyId)!
+    const plain = byId.get(plainId)!
+
+    expect(
+      creditableHoursForEvent({
+        scheduledAt: legacy.scheduled_at,
+        endsAt: legacy.ends_at,
+        completedAt: legacy.completed_at,
+      }),
+    ).toBe(3)
+    expect(
+      creditableHoursForEvent({
+        scheduledAt: plain.scheduled_at,
+        endsAt: plain.ends_at,
+        completedAt: plain.completed_at,
+      }),
+    ).toBe(5)
   })
 })

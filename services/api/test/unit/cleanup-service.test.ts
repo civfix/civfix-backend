@@ -12,7 +12,7 @@ import {
   type CleanupService,
 } from "../../src/services/cleanup-service.js"
 import { CLEANUP_GUEST_UPDATE_FANOUT_JOB } from "../../src/services/guest-rsvp-service.js"
-import { IN_PROGRESS_GRACE_HOURS } from "../../src/services/cleanup-rules.js"
+import { DEFAULT_EVENT_DURATION_MS } from "../../src/services/cleanup-rules.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { CreateCleanupRequest } from "@civfix/shared"
@@ -23,6 +23,8 @@ const ALICE = "22222222-2222-2222-2222-222222222222"
 const BOB = "33333333-3333-3333-3333-333333333333"
 
 const PAST = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+/** A start far enough back that the default 4 h window has already closed: the event reads as `done`. */
+const ENDED = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString()
 
 let repo: InMemoryCleanupRepository
 let service: CleanupService
@@ -173,8 +175,8 @@ describe("joinCleanup / leaveCleanup", () => {
     expect(await repo.isMember(created.id, ALICE)).toBe(false)
   })
 
-  it("refuses to join when endsAt is null and the start is older than the grace window", async () => {
-    const stale = new Date(Date.now() - (IN_PROGRESS_GRACE_HOURS + 1) * 60 * 60 * 1000)
+  it("refuses to join once the default 4 h window has run out", async () => {
+    const stale = new Date(Date.now() - DEFAULT_EVENT_DURATION_MS - 60 * 60 * 1000)
     const created = await service.createCleanup(
       baseInput({ scheduledAt: stale.toISOString() }),
       ORG,
@@ -211,12 +213,11 @@ describe("joinCleanup / leaveCleanup", () => {
     expect(await repo.isMember(created.id, ALICE)).toBe(false)
   })
 
-  it("a completed or cancelled event still reports the closed message, not the ended one", async () => {
-    const done = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
-    repo.cleanups.get(done.id)!.status = "done"
+  it("a cancelled event reports the closed message; a past one reports the ended message", async () => {
+    const done = await service.createCleanup(baseInput({ scheduledAt: ENDED }), ORG)
     await expect(service.joinCleanup(done.id, ALICE)).rejects.toMatchObject({
       code: "CONFLICT",
-      message: "This event is closed.",
+      message: "This event has already ended.",
     })
 
     const cancelled = await service.createCleanup(baseInput(), ORG)
@@ -260,20 +261,19 @@ describe("cancelCleanup", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 
-  it("B18: 409s cancelling an event the host has already COMPLETED, and writes nothing", async () => {
-    const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
-    await service.completeCleanup(created.id, null, ORG)
+  it("B18: 409s cancelling an event that has already ENDED, and writes nothing", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: ENDED }), ORG)
 
     await expect(service.cancelCleanup(created.id, "changed my mind", ORG)).rejects.toMatchObject({
       code: "CONFLICT",
+      message: "This event has already ended and can't be cancelled.",
     })
-    expect(repo.cleanups.get(created.id)?.status).toBe("done")
+    expect(repo.cleanups.get(created.id)?.status).toBe("upcoming")
     expect(repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "cancel")).toEqual([])
   })
 
-  it("F067: a completed event's date/title/location/type are frozen; cosmetic edits still apply", async () => {
-    const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
-    await service.completeCleanup(created.id, null, ORG)
+  it("F067: an ended event's date/title/location/type are frozen; cosmetic edits still apply", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: ENDED }), ORG)
 
     const future = new Date(Date.now() + 30 * 86_400_000).toISOString()
     await expect(
@@ -366,64 +366,66 @@ describe("listCleanups filters", () => {
     expect(all.items.map((c) => c.title).sort()).toEqual(["Future", "Past"])
   })
 
-  it("keeps an in-progress event in the upcoming list after its start time passes", async () => {
+  it("keeps an UNDERWAY event in the upcoming list after its start time passes", async () => {
     repo.seedCleanup({
       id: "aaaaaaaa-0000-0000-0000-000000000021",
       organizerUserId: ORG,
       title: "InProgress",
       scheduledAt: new Date("2026-05-31T18:00:00.000Z"),
-      status: "active",
+      endsAt: new Date("2026-06-01T02:00:00.000Z"),
     })
     repo.seedCleanup({
       id: "aaaaaaaa-0000-0000-0000-000000000022",
       organizerUserId: ORG,
       title: "StalePlanned",
       scheduledAt: new Date("2026-05-31T18:00:00.000Z"),
-      status: "upcoming",
+      endsAt: new Date("2026-05-31T22:00:00.000Z"),
     })
 
     const upcoming = await service.listCleanups({ when: "upcoming" }, { userId: null })
     expect(upcoming.items.map((c) => c.title)).toEqual(["InProgress"])
   })
 
-  it("drops a stale in-progress event once it falls outside the grace window", async () => {
+  it("drops an underway event the moment its end passes", async () => {
     repo.seedCleanup({
       id: "aaaaaaaa-0000-0000-0000-000000000028",
       organizerUserId: ORG,
       title: "StaleActive",
       scheduledAt: new Date("2026-05-28T00:00:00.000Z"),
-      status: "active",
+      endsAt: new Date("2026-05-31T23:59:59.000Z"),
     })
     repo.seedCleanup({
       id: "aaaaaaaa-0000-0000-0000-000000000029",
       organizerUserId: ORG,
       title: "RecentActive",
       scheduledAt: new Date("2026-05-31T18:00:00.000Z"),
-      status: "active",
+      endsAt: new Date("2026-06-01T02:00:00.000Z"),
     })
 
     const upcoming = await service.listCleanups({ when: "upcoming" }, { userId: null })
     expect(upcoming.items.map((c) => c.title)).toEqual(["RecentActive"])
   })
 
-  it("drops a finished event from the upcoming list even when it is future-dated", async () => {
-    repo.seedCleanup({
+  it("a legacy row still stored as 'done' with a future window is upcoming again", async () => {
+    const legacy = repo.seedCleanup({
       id: "aaaaaaaa-0000-0000-0000-000000000023",
       organizerUserId: ORG,
-      title: "FinishedButFutureDated",
+      title: "LegacyDoneButFutureDated",
       scheduledAt: new Date("2026-06-15T00:00:00.000Z"),
-      status: "done",
     })
+    legacy.status = "done"
     repo.seedCleanup({
       id: "aaaaaaaa-0000-0000-0000-000000000024",
       organizerUserId: ORG,
       title: "StillPlanned",
       scheduledAt: new Date("2026-06-15T00:00:00.000Z"),
-      status: "upcoming",
     })
 
     const upcoming = await service.listCleanups({ when: "upcoming" }, { userId: null })
-    expect(upcoming.items.map((c) => c.title)).toEqual(["StillPlanned"])
+    expect(upcoming.items.map((c) => c.title).sort()).toEqual([
+      "LegacyDoneButFutureDated",
+      "StillPlanned",
+    ])
   })
 
   it("when=attending applies the same live-event predicate as when=upcoming", async () => {
@@ -433,14 +435,13 @@ describe("listCleanups filters", () => {
       organizerUserId: ORG,
       title: "AttendingInProgress",
       scheduledAt: new Date("2026-05-31T18:00:00.000Z"),
-      status: "active",
+      endsAt: new Date("2026-06-01T02:00:00.000Z"),
     })
     const finished = repo.seedCleanup({
       id: "aaaaaaaa-0000-0000-0000-000000000026",
       organizerUserId: ORG,
       title: "AttendingFinished",
-      scheduledAt: new Date("2026-06-15T00:00:00.000Z"),
-      status: "done",
+      scheduledAt: new Date("2026-05-20T00:00:00.000Z"),
     })
     repo.members.push({ cleanupId: inProgress.id, userId: ALICE, role: "member" })
     repo.members.push({ cleanupId: finished.id, userId: ALICE, role: "member" })
@@ -1472,6 +1473,7 @@ describe("L24: the cancellation fan-out rides the notification pipeline", () => 
       repo,
       counters: new InMemoryCounterStore(),
       logger: {
+        info: () => {},
         warn: (obj) => {
           warned.push(obj as { userId?: string; cleanupId?: string })
         },
@@ -1534,9 +1536,8 @@ describe("cleanup state machine (terminal states)", () => {
     })
   })
 
-  it("F067: freezes the title of a completed event but still allows a cosmetic description edit", async () => {
-    const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
-    await service.completeCleanup(created.id, null, ORG)
+  it("F067: freezes the title of an ended event but still allows a cosmetic description edit", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: ENDED }), ORG)
     await expect(
       service.updateCleanup(created.id, { title: "Renamed" }, ORG),
     ).rejects.toMatchObject({ code: "CONFLICT" })
@@ -1550,9 +1551,8 @@ describe("cleanup state machine (terminal states)", () => {
     await expect(service.joinCleanup(created.id, ALICE)).rejects.toMatchObject({ code: "CONFLICT" })
   })
 
-  it("409s joining a completed event", async () => {
-    const created = await service.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
-    await service.completeCleanup(created.id, null, ORG)
+  it("409s joining an event whose window has closed", async () => {
+    const created = await service.createCleanup(baseInput({ scheduledAt: ENDED }), ORG)
     await expect(service.joinCleanup(created.id, ALICE)).rejects.toMatchObject({ code: "CONFLICT" })
   })
 
@@ -1578,9 +1578,8 @@ describe("CVX-006: PATCH cannot backdate an event past the create-time floor", (
     expect(repo.cleanups.get(created.id)?.scheduledAt).toEqual(original)
   })
 
-  it("F067: refuses any scheduledAt/title change on a completed event, even echoing the stored date", async () => {
+  it("F067: refuses any scheduledAt/title change on an ended event, even echoing the stored date", async () => {
     const created = await service.createCleanup(baseInput({ scheduledAt: daysAgo(30) }), ORG)
-    await service.completeCleanup(created.id, null, ORG)
     const stored = repo.cleanups.get(created.id)!.scheduledAt.toISOString()
 
     await expect(
@@ -1593,28 +1592,31 @@ describe("CVX-006: PATCH cannot backdate an event past the create-time floor", (
     expect(repo.cleanups.get(created.id)!.title).toBe("Beach cleanup")
   })
 
-  it("allows moving a backdated event FORWARD but not further into the past", async () => {
+  it("refuses to move an ended event in EITHER direction (the window is frozen)", async () => {
     const created = await service.createCleanup(baseInput({ scheduledAt: daysAgo(30) }), ORG)
 
-    const laterButStillPast = daysAgo(29)
-    const edited = await service.updateCleanup(
-      created.id,
-      { scheduledAt: laterButStillPast },
-      ORG,
-    )
-    expect(edited.scheduledAt).toBe(laterButStillPast)
-
+    await expect(
+      service.updateCleanup(created.id, { scheduledAt: daysAgo(29) }, ORG),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
     await expect(
       service.updateCleanup(created.id, { scheduledAt: daysAgo(40) }, ORG),
-    ).rejects.toMatchObject({ code: "VALIDATION" })
+    ).rejects.toMatchObject({ code: "CONFLICT" })
   })
 
   it("accepts a scheduledAt inside the one-day backdate window", async () => {
     const created = await service.createCleanup(baseInput(), ORG)
-    const justNow = new Date(Date.now() - 60_000).toISOString()
+    const justNow = new Date(Date.now() - 60_000)
+    const justNowIso = justNow.toISOString()
 
-    const edited = await service.updateCleanup(created.id, { scheduledAt: justNow }, ORG)
-    expect(edited.scheduledAt).toBe(justNow)
+    const edited = await service.updateCleanup(
+      created.id,
+      {
+        scheduledAt: justNowIso,
+        endsAt: new Date(justNow.getTime() + 4 * 60 * 60 * 1000).toISOString(),
+      },
+      ORG,
+    )
+    expect(edited.scheduledAt).toBe(justNowIso)
   })
 })
 
@@ -1718,7 +1720,7 @@ describe("F157: cancellation fan-out leaves the request path", () => {
       repo,
       counters: new InMemoryCounterStore(),
       jobs,
-      logger: { warn: () => {}, error: (obj) => errors.push(obj) },
+      logger: { info: () => {}, warn: () => {}, error: (obj) => errors.push(obj) },
       attendeeNotifier: {
         eventCancelled: (cleanupId: string) => {
           guestCalls.push(cleanupId)
@@ -1848,24 +1850,21 @@ describe("insights invalidation", () => {
     expect(bumped).toEqual([created.id])
   })
 
-  it("bumps the insights generation when the host completes the event", async () => {
+  it("does NOT bump on the deprecated complete call, which writes nothing", async () => {
     const { svc, bumped } = invalidatingService()
-    const created = await svc.createCleanup(baseInput({ scheduledAt: PAST }), ORG)
+    const created = await svc.createCleanup(baseInput({ scheduledAt: ENDED }), ORG)
 
     await svc.completeCleanup(created.id, null, ORG)
 
-    expect(bumped).toEqual([created.id])
+    expect(bumped).toEqual([])
   })
 
-  it("leaves the generation alone when the status flip is refused", async () => {
+  it("leaves the generation alone when the cancel is refused", async () => {
     const { svc, bumped } = invalidatingService()
     const created = await svc.createCleanup(baseInput(), ORG)
 
     await expect(svc.cancelCleanup(created.id, null, ALICE)).rejects.toMatchObject({
       code: "FORBIDDEN",
-    })
-    await expect(svc.completeCleanup(created.id, null, ORG)).rejects.toMatchObject({
-      code: "CONFLICT",
     })
 
     expect(bumped).toEqual([])

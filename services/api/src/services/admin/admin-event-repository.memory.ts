@@ -7,12 +7,12 @@
  *     matchesQuery) + the status + flagged-only facet and pages newest-id-keyset; flagged is derived from
  *     the seeded timeline kinds;
  *   - getEvent/listTimeline/listMessages read the seeded cleanup + its extras;
- *   - setStatus / toggleFlag / cancel mutate the cleanup + append a cleanup_timeline row;
+ *   - toggleFlag / cancel mutate the cleanup + append a cleanup_timeline row;
  *
- * STATUS (H1): like the Drizzle repo, this fake stores the Phase-1 cleanups.status value and maps it to
- * the Phase-2 EventStatus DTO on read (event-status.ts). seedEvent accepts an EventStatus (mapped to the
- * stored value) OR a raw `storedStatus` to seed a legacy 'active'/'done' row; the status filter matches
- * the stored variants, so the completed filter catches a legacy 'done' row exactly as the SQL does.
+ * STATUS (0.46.0): like the Drizzle repo, this fake DERIVES the status from scheduled_at/ends_at against
+ * the wall clock and reads the stored value only for 'cancelled' (cleanup-rules.deriveCleanupStatus, the
+ * TS twin of cleanupStatusExpr). seedEvent takes an EventStatus (or a raw legacy `storedStatus`) and,
+ * unless the caller pins `scheduledAt`/`endsAt`, seeds a window that derives back to it.
  *   - postMessage appends a chat message + a 'message' timeline row + returns the seeded members;
  *   - notifyMember records a notification row (inspectable for the message-attendees test).
  * Seed/inspect helpers (seedEvent, seedMember, the public maps) let tests arrange + assert state.
@@ -23,11 +23,8 @@ import { isUuid } from "../../db/cursor-helpers.js"
 import { pageInMemoryById } from "./pagination.js"
 import { flaggedFromTimeline } from "./admin-event-helpers.js"
 import { isPubliclyVisibleStatus } from "../report-visibility.js"
-import {
-  toEventStatus,
-  toStoredCleanupStatus,
-  storedVariantsForEventStatus,
-} from "./event-status.js"
+import { toEventStatus } from "./event-status.js"
+import { DEFAULT_EVENT_DURATION_MS, deriveCleanupStatus } from "../cleanup-rules.js"
 import type {
   AdminEventMessageRecord,
   AdminEventRecord,
@@ -39,6 +36,21 @@ import type {
 } from "./admin-event-service.js"
 import type { LinkedReportView } from "../cleanup-service.js"
 import type { AdminEventCounts, EventKind, EventStatus, ReportCategory } from "@civfix/shared"
+
+function seededWindow(
+  status: string,
+  scheduledAt: Date | undefined,
+  endsAt: Date | undefined,
+): { scheduledAt: Date; endsAt: Date } {
+  const start = scheduledAt ?? new Date(Date.now() + defaultStartOffsetMs(status))
+  return { scheduledAt: start, endsAt: endsAt ?? new Date(start.getTime() + DEFAULT_EVENT_DURATION_MS) }
+}
+
+function defaultStartOffsetMs(status: string): number {
+  if (status === "in_progress" || status === "active") return -3_600_000
+  if (status === "completed" || status === "done") return -DEFAULT_EVENT_DURATION_MS - 3_600_000
+  return 7 * 86_400_000
+}
 
 /** A recorded member notification (the message-attendees fan-out), inspectable by tests. */
 export interface RecordedMemberNotification {
@@ -59,8 +71,10 @@ export interface RecordedEventAudit {
 /** A seeded cleanup plus its detail extras held in one place. */
 export interface SeededEvent {
   record: AdminEventRecord
-  /** The raw stored cleanups.status (Phase-1 enum); record.status is its EventStatus projection. */
+  /** The raw stored cleanups.status; only 'cancelled' is consulted, exactly as the SQL does. */
   storedStatus: string
+  /** cleanups.ends_at — the derivation's right edge. */
+  endsAt: Date
   /** cleanups.organization_id (the org link), for the admin org events list. */
   organizationId: string | null
   members: EventMemberRef[]
@@ -128,6 +142,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     lat?: number
     lng?: number
     scheduledAt?: Date
+    endsAt?: Date
     organizationId?: string | null
     members?: EventMemberRef[]
     timeline?: AdminEventTimelineRecord[]
@@ -135,11 +150,13 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
   }): SeededEvent {
     const id = input.id ?? randomUUID()
     const timeline = input.timeline ?? []
-    const storedStatus = input.storedStatus ?? toStoredCleanupStatus(input.status ?? "upcoming")
+    const seededStatus = input.storedStatus ?? input.status ?? "upcoming"
+    const storedStatus = seededStatus === "cancelled" ? "cancelled" : "upcoming"
+    const window = seededWindow(seededStatus, input.scheduledAt, input.endsAt)
     const seeded: SeededEvent = {
       record: {
         id,
-        status: toEventStatus(storedStatus),
+        status: toEventStatus(seededStatus),
         eventKind: input.eventKind ?? "cleanup",
         flagged: flaggedFromTimeline(timeline.map((t) => t.kind)),
         title: input.title ?? "Park cleanup",
@@ -152,9 +169,10 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
         address: input.address ?? "",
         lat: input.lat ?? 0,
         lng: input.lng ?? 0,
-        scheduledAt: input.scheduledAt ?? this.now,
+        scheduledAt: window.scheduledAt,
       },
       storedStatus,
+      endsAt: window.endsAt,
       organizationId: input.organizationId ?? null,
       members: input.members ?? [],
     }
@@ -205,23 +223,26 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     let seededRows = [...this.events.values()]
 
     if (args.status !== null) {
-      // Filter on the STORED variants (H1), so e.g. filter=completed catches a legacy 'done' row exactly
-      // as the SQL `c.status = ANY(...)` does - not just rows already projected to 'completed'.
-      const variants = new Set(storedVariantsForEventStatus(args.status))
-      seededRows = seededRows.filter((s) => variants.has(s.storedStatus))
+      seededRows = seededRows.filter((s) => this.derivedStatus(s) === args.status)
     }
     if (args.organizationId !== undefined) {
       seededRows = seededRows.filter((s) => s.organizationId === args.organizationId)
     }
-    let rows = seededRows.map((s) => s.record)
+    let rows = seededRows.map((s) => this.projected(s))
 
     if (args.q !== null) rows = rows.filter((r) => matchesQuery(r, args.q as string))
     if (args.flaggedOnly) rows = rows.filter((r) => r.flagged)
     if (args.when !== undefined) {
       const ref = args.when.ref.getTime()
-      rows = rows.filter((r) =>
-        args.when?.kind === "upcoming" ? r.scheduledAt.getTime() >= ref : r.scheduledAt.getTime() < ref,
-      )
+      const upcoming = args.when.kind === "upcoming"
+      const byId = new Map(seededRows.map((s) => [s.record.id, s]))
+      rows = rows.filter((r) => {
+        const seeded = byId.get(r.id)
+        if (seeded === undefined) return false
+        const ended = seeded.endsAt.getTime() <= ref
+        const cancelled = seeded.storedStatus === "cancelled"
+        return upcoming ? !cancelled && !ended : ended || cancelled
+      })
     }
 
     rows.sort((a, b) => {
@@ -239,7 +260,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
   }
 
   async countByBucket(args: { q: string | null }): Promise<AdminEventCounts> {
-    let rows = [...this.events.values()].map((s) => s.record)
+    let rows = [...this.events.values()].map((s) => this.projected(s))
     if (args.q !== null) rows = rows.filter((r) => matchesQuery(r, args.q as string))
     let upcoming = 0
     let inProgress = 0
@@ -255,7 +276,26 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
   }
 
   async getEvent(id: string): Promise<AdminEventRecord | null> {
-    return this.events.get(id)?.record ?? null
+    const seeded = this.events.get(id)
+    return seeded === undefined ? null : this.projected(seeded)
+  }
+
+  private derivedStatus(seeded: SeededEvent): EventStatus {
+    return toEventStatus(
+      deriveCleanupStatus(
+        {
+          status: seeded.storedStatus === "cancelled" ? "cancelled" : "upcoming",
+          scheduledAt: seeded.record.scheduledAt.toISOString(),
+          endsAt: seeded.endsAt.toISOString(),
+        },
+        Date.now(),
+      ),
+    )
+  }
+
+  private projected(seeded: SeededEvent): AdminEventRecord {
+    seeded.record.status = this.derivedStatus(seeded)
+    return seeded.record
   }
 
   async listTimeline(id: string): Promise<AdminEventTimelineRecord[]> {
@@ -264,29 +304,6 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
 
   async listMessages(id: string): Promise<AdminEventMessageRecord[]> {
     return [...(this.messages.get(id) ?? [])]
-  }
-
-  async setStatus(
-    id: string,
-    input: { status: EventStatus; note: string; actorId: string | null },
-  ): Promise<boolean> {
-    const seeded = this.events.get(id)
-    if (!seeded) return false
-    // Write the stored Phase-1 value (H1) and keep the projected EventStatus in sync.
-    seeded.storedStatus = toStoredCleanupStatus(input.status)
-    seeded.record.status = toEventStatus(seeded.storedStatus)
-    this.appendTimeline(id, {
-      kind: "status",
-      note: input.note,
-      who: "operator",
-      createdAt: this.nextDate(),
-    })
-    this.audits.push({
-      action: "event.status_changed",
-      target: `cleanup:${id}`,
-      meta: { status: input.status },
-    })
-    return true
   }
 
   async setBags(id: string, input: { bags: number; actorId: string | null }): Promise<boolean> {
@@ -328,11 +345,9 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     if (!seeded) return false
     // Mirrors the Drizzle repo's `AND status <> 'cancelled'` guard: a repeat cancel must not append a
     // second public timeline row, but the event IS cancelled, so it is not a 404.
-    if (seeded.storedStatus === toStoredCleanupStatus("cancelled")) return true
-    // Round-trip through the mappers like setStatus does, so a future non-trivial 'cancelled' mapping
-    // can't drift between cancel and setStatus.
-    seeded.storedStatus = toStoredCleanupStatus("cancelled")
-    seeded.record.status = toEventStatus(seeded.storedStatus)
+    if (seeded.storedStatus === "cancelled") return true
+    seeded.storedStatus = "cancelled"
+    seeded.record.status = "cancelled"
     this.appendTimeline(id, {
       kind: "cancel",
       note: input.note,

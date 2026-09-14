@@ -46,7 +46,7 @@ import { smsFailureKind } from "../errors/sms-failure.js"
 import { mapWithLimit } from "./media-presign.js"
 import { renderMessage } from "../i18n/renderMessage.js"
 import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
-import { eventEndedError, hasEventEnded, isCleanupTerminal } from "./cleanup-rules.js"
+import { eventEndedError, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
 import { enqueueWaitlistPromotion } from "./host/waitlist-promotion.js"
 import { formatEventWhen } from "./host/broadcast-render.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
@@ -488,8 +488,8 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
   async function loadOpenEvent(cleanupId: string): Promise<GuestEventView> {
     const event = await deps.repo.findEvent(cleanupId)
     if (event === null) throw AppError.notFound("Event not found")
-    if (isCleanupTerminal(event.status)) throw eventClosedError()
-    if (hasEventEnded(event, new Date(now()))) throw eventEndedError()
+    if (event.status === "cancelled") throw eventClosedError()
+    if (hasEventEnded(eventWindowOf(event), now())) throw eventEndedError()
     return event
   }
 
@@ -509,7 +509,12 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     if (!deps.smsGuestEnabled) return 0
     const event = await deps.repo.findEvent(cleanupId)
     if (event === null) return 0
-    if (kind === "updated" && isCleanupTerminal(event.status)) return 0
+    if (
+      kind === "updated" &&
+      (event.status === "cancelled" || hasEventEnded(eventWindowOf(event), now()))
+    ) {
+      return 0
+    }
 
     let recipients: GuestRecipient[]
     try {

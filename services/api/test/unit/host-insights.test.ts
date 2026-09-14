@@ -215,17 +215,22 @@ describe("event insights", () => {
     }
   })
 
-  it("calls a cancelled event cancelled and a completed event ended", async () => {
+  it("calls a cancelled event cancelled, and ignores a legacy 'done' column entirely", async () => {
     const cancelled = build({ eventClock: () => Promise.resolve(clockRecord({ status: "cancelled" })) })
     expect((await cancelled.service.insights(EVENT, VIEWER)).phase).toBe("cancelled")
 
-    const done = build({
-      eventClock: () =>
-        Promise.resolve(
-          clockRecord({ status: "done", completedAt: new Date("2026-03-07T21:00:00.000Z") }),
-        ),
-    })
-    expect((await done.service.insights(EVENT, VIEWER)).phase).toBe("ended")
+    // DECISIONS §40: the phase is a clock reading. A row a pre-0.46.0 host marked complete, whose window
+    // is still ahead, is UPCOMING again — the old `status === "done"` short-circuit is gone.
+    const legacyDone = build(
+      {
+        eventClock: () =>
+          Promise.resolve(
+            clockRecord({ status: "done", completedAt: new Date("2026-03-07T21:00:00.000Z") }),
+          ),
+      },
+      new Date(STARTS_AT.getTime() - 5 * 3_600_000),
+    )
+    expect((await legacyDone.service.insights(EVENT, VIEWER)).phase).toBe("upcoming")
   })
 
   it("clamps unmarked seats at zero and never goes negative", async () => {

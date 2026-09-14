@@ -100,7 +100,9 @@ export async function registerVolunteerHoursRoutes(
           jurisdictionGeoid: record.jurisdictionGeoid,
           title: record.title,
           scheduledAt: record.scheduledAt,
+          endsAt: record.endsAt,
           completedAt: record.completedAt,
+          timezone: record.timezone,
         }
       },
       listMemberIds: (cleanupId: string, limit: number) =>

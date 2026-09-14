@@ -14,6 +14,7 @@ import {
   SUGGEST_CANDIDATE_POOL,
   SUGGEST_CANDIDATE_RADIUS_DEG,
 } from "../../src/services/social-repository.drizzle.js"
+import { DEFAULT_EVENT_DURATION_MS } from "../../src/services/cleanup-rules.js"
 
 interface StoredUser {
   id: string
@@ -419,6 +420,7 @@ function parseNameCursor(cursor: string | null): { name: string; id: string } | 
 
 export function makeCleanupRecord(over: Partial<CleanupRecord> & { organizerUserId: string }): CleanupRecord {
   const id = over.id ?? randomUUID()
+  const scheduledAt = over.scheduledAt ?? new Date("2025-01-01T10:00:00.000Z")
   return {
     id,
     organizerUserId: over.organizerUserId,
@@ -428,7 +430,7 @@ export function makeCleanupRecord(over: Partial<CleanupRecord> & { organizerUser
     description: over.description ?? null,
     lat: over.lat ?? 34.0,
     lng: over.lng ?? -118.49,
-    scheduledAt: over.scheduledAt ?? new Date("2025-01-01T10:00:00.000Z"),
+    scheduledAt,
     completedAt: over.completedAt ?? null,
     status: over.status ?? "done",
     bring: over.bring ?? null,
@@ -446,7 +448,7 @@ export function makeCleanupRecord(over: Partial<CleanupRecord> & { organizerUser
       bio: null,
       avatarUrl: null,
     },
-    endsAt: over.endsAt ?? null,
+    endsAt: over.endsAt ?? new Date(scheduledAt.getTime() + DEFAULT_EVENT_DURATION_MS),
     timezone: over.timezone ?? null,
     visibility: over.visibility ?? "public",
     coverMediaId: over.coverMediaId ?? null,

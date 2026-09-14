@@ -26,7 +26,7 @@ import type {
 } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
 import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
-import { MIN_EVENT_DURATION_MS } from "./cleanup-rules.js"
+import { MIN_EVENT_DURATION_MS, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
 import type { AffiliationLoader } from "./affiliation.js"
 import type { TopVolunteerRow } from "./host/analytics-repository.drizzle.js"
@@ -77,23 +77,22 @@ export interface HoursModerationSink {
   }): Promise<void>
 }
 
-export function creditableHoursForEvent(cleanup: {
+export interface EventHoursWindow {
   scheduledAt: Date
+  endsAt: Date
   completedAt: Date | null
-}): number | null {
+}
+
+export function creditableHoursForEvent(cleanup: EventHoursWindow): number {
   const windowMs = eventDurationMs(cleanup)
-  if (windowMs === null) return null
   if (windowMs <= 0) return 0
   const hours = (windowMs + EVENT_WINDOW_GRACE_MS) / (60 * 60 * 1000)
   return Math.min(MAX_EVENT_HOURS, Math.round(hours * 100) / 100)
 }
 
-export function eventDurationMs(cleanup: {
-  scheduledAt: Date
-  completedAt: Date | null
-}): number | null {
-  if (cleanup.completedAt === null) return null
-  return cleanup.completedAt.getTime() - cleanup.scheduledAt.getTime()
+export function eventDurationMs(cleanup: EventHoursWindow): number {
+  const end = cleanup.completedAt ?? cleanup.endsAt
+  return end.getTime() - cleanup.scheduledAt.getTime()
 }
 
 export interface LogEventHoursArgs {
@@ -234,7 +233,9 @@ export interface CleanupHoursView {
   jurisdictionGeoid: string | null
   title: string
   scheduledAt: Date
+  endsAt: Date
   completedAt: Date | null
+  timezone: string | null
 }
 
 export interface CleanupHoursLookup {
@@ -573,11 +574,14 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       if (!can(actorStanding, "manage_event")) {
         throw AppError.forbidden("Only the event hosts can log volunteer hours.")
       }
-      if (cleanup.status !== "done") {
-        throw AppError.conflict("Volunteer hours can only be logged for a completed event.")
+      if (cleanup.status === "cancelled") {
+        throw AppError.conflict("Volunteer hours can't be logged for a cancelled event.")
+      }
+      if (!hasEventEnded(eventWindowOf(cleanup), Date.now())) {
+        throw AppError.conflict("Volunteer hours can be logged once the event has ended.")
       }
       const durationMs = eventDurationMs(cleanup)
-      if (durationMs !== null && durationMs < MIN_EVENT_DURATION_MS) {
+      if (durationMs < MIN_EVENT_DURATION_MS) {
         throw AppError.conflict(
           `This event ran for less than ${MIN_EVENT_DURATION_MS / 60_000} minutes, so no volunteer hours can be logged against it.`,
         )
@@ -602,9 +606,9 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
             entries: `hours must be at least ${MIN_EVENT_HOURS} and at most ${MAX_EVENT_HOURS}`,
           })
         }
-        if (windowCap !== null && entry.hours > windowCap) {
+        if (entry.hours > windowCap) {
           throw AppError.validation({
-            entries: `this event ran for ${round2((durationMs ?? 0) / 3_600_000)} h, so at most ${windowCap} h may be credited per attendee`,
+            entries: `this event ran for ${round2(durationMs / 3_600_000)} h, so at most ${windowCap} h may be credited per attendee`,
           })
         }
         if (seen.has(entry.userId)) {

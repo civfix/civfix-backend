@@ -59,9 +59,13 @@ beforeEach(() => {
 
 describe("createCleanup with host fields", () => {
   it("defaults to a public event with no host extras", async () => {
-    const dto = await service.createCleanup(base(), ORG)
+    const input = base()
+    const dto = await service.createCleanup(input, ORG)
     expect(dto.visibility).toBe("public")
-    expect(dto.endsAt).toBeNull()
+    // DECISIONS §41: a create with no endsAt gets the 4 h default rather than a null end.
+    expect(dto.endsAt).toBe(
+      new Date(Date.parse(input.scheduledAt) + 4 * 60 * 60 * 1000).toISOString(),
+    )
     expect(dto.galleryUrls).toEqual([])
     expect(dto.coverUrl).toBeNull()
     expect(dto.myCapabilities).toContain("manage_event")

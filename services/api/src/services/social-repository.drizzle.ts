@@ -26,7 +26,7 @@ import {
   parseTimeCursor,
 } from "../db/cursor-helpers.js"
 import { escapeLike } from "./admin/like.js"
-import { goingScalar } from "./cleanup-sql.js"
+import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
 import { servedKeyExpr } from "./media-served-key.js"
 
 export {
@@ -106,6 +106,8 @@ interface CleanupRowSelect {
   lat: number
   scheduled_at: Date
   completed_at: Date | null
+  ends_at: Date
+  timezone: string | null
   status: CleanupStatus
   bring: string[] | null
   address: string | null
@@ -150,8 +152,8 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
     going: Number(r.going),
     dist: null,
     organizer,
-    endsAt: null,
-    timezone: null,
+    endsAt: r.ends_at,
+    timezone: r.timezone,
     visibility: r.visibility,
     coverMediaId: null,
     coverKey: null,
@@ -197,7 +199,9 @@ function profileEventRows(
       ST_Y(c.geom) AS lat,
       c.scheduled_at,
       c.completed_at,
-      c.status,
+      c.ends_at,
+      c.timezone,
+      ${cleanupStatusExpr(sql)} AS status,
       c.bring,
       c.address,
       c.jurisdiction_geoid,

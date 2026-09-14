@@ -82,6 +82,7 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
       linkedReportIds: [],
       slots: [],
       host: {
+        endsAt: new Date(FUTURE.getTime() + 4 * 60 * 60 * 1000),
         ...(over.visibility !== undefined
           ? { visibility: over.visibility as "public" | "unlisted" | "private" }
           : {}),
@@ -507,7 +508,7 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
       jurCode: 0,
       linkedReportIds: [],
       slots: [],
-      host: {},
+      host: { endsAt: new Date(FUTURE.getTime() + 4 * 60 * 60 * 1000) },
       idempotency: { key, scope: "cleanup.create", userOrAnon: `user:${organizer}` },
     }
     const first = await cleanups.createCleanupTx({ ...args, cleanupId: randomUUID() })

@@ -89,4 +89,14 @@ describe("makeDb: TLS is derived from sslmode and set explicitly on both clients
     expect((handle.sql as unknown as WithSsl).options.ssl).toBe("verify-full")
     await handle.close()
   })
+
+  it("pins the session time zone to UTC on both clients (DECISIONS §42)", async () => {
+    // Every bare `::date` cast and `to_char` on a timestamptz reads the SESSION zone. Pinning it makes
+    // those deterministic regardless of the box's TZ; the day math that must NOT be UTC says so
+    // explicitly with `AT TIME ZONE <event zone>`.
+    const handle = makeDb("postgres://u:p@localhost:5432/civfix")
+    type WithConnection = { options: { connection?: Record<string, string> } }
+    expect((handle.sql as unknown as WithConnection).options.connection?.TimeZone).toBe("UTC")
+    await handle.close()
+  })
 })

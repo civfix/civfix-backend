@@ -128,6 +128,7 @@ describe("admin events list", () => {
       lat: 30.27,
       lng: -97.74,
       scheduledAt: hoursAgo(2),
+      endsAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
       organizer: {
         id: "u-1",
         name: "Olive",
@@ -139,7 +140,7 @@ describe("admin events list", () => {
     })
     const page = await svc.list({})
     const row = page.items[0]!
-    expect(row.status).toBe("upcoming")
+    expect(row.status).toBe("in_progress")
     expect(row.attendees).toBe(12)
     expect(row.capacity).toBe(30)
     expect(row.bags).toBe(4)
@@ -281,19 +282,43 @@ describe("admin events detail", () => {
 })
 
 describe("admin events mutations", () => {
-  it("setStatus changes the status, appends a cleanup_timeline row, and audits", async () => {
+  it("setStatus 409s every status but cancelled — the rest is a clock reading", async () => {
     const { repo, svc } = harness()
     repo.seedEvent({ id: "evt-1", status: "upcoming" })
-    await svc.setStatus("evt-1", { status: "in_progress", actorId: "op-1" })
-    expect(repo.events.get("evt-1")?.record.status).toBe("in_progress")
-    // H1: the value WRITTEN to cleanups.status is the Phase-1 enum value (active), never the Phase-2 one.
-    expect(repo.events.get("evt-1")?.storedStatus).toBe("active")
-    expect(repo.timeline.get("evt-1")?.at(-1)).toMatchObject({ kind: "status" })
+    for (const status of ["upcoming", "in_progress", "completed"] as const) {
+      await expect(svc.setStatus("evt-1", { status, actorId: "op-1" })).rejects.toMatchObject({
+        httpStatus: 409,
+        message: "Event status is derived from its schedule and can't be set by hand.",
+      })
+    }
+    expect(repo.events.get("evt-1")?.storedStatus).toBe("upcoming")
+    expect(repo.timeline.get("evt-1")).toBeUndefined()
+    expect(repo.audits).toEqual([])
+  })
+
+  it("setStatus cancelled goes down the cancel path: stored cancelled + timeline + audit", async () => {
+    const { repo, svc } = harness()
+    repo.seedEvent({ id: "evt-1", status: "upcoming" })
+    await svc.setStatus("evt-1", { status: "cancelled", actorId: "op-1" })
+    expect(repo.events.get("evt-1")?.storedStatus).toBe("cancelled")
+    expect(repo.timeline.get("evt-1")?.at(-1)).toMatchObject({ kind: "cancel" })
     expect(repo.audits.at(-1)).toMatchObject({
-      action: "event.status_changed",
+      action: "event.cancelled",
       target: "cleanup:evt-1",
-      meta: { status: "in_progress" },
     })
+  })
+
+  it("derives completed from a window that has passed, whatever the column says", async () => {
+    const { repo, svc } = harness()
+    repo.seedEvent({
+      id: "evt-1",
+      status: "upcoming",
+      scheduledAt: new Date(Date.now() - 8 * 60 * 60 * 1000),
+      endsAt: new Date(Date.now() - 4 * 60 * 60 * 1000),
+    })
+    expect(repo.events.get("evt-1")?.storedStatus).toBe("upcoming")
+    expect((await svc.get("evt-1")).status).toBe("completed")
+    expect((await svc.list({ filter: "completed" })).items.map((r) => r.id)).toEqual(["evt-1"])
   })
 
   it("setOutcome logs the bags collected (the only write path for cleanups.bags) + audits", async () => {
@@ -374,7 +399,7 @@ describe("admin events mutations", () => {
   it("setStatus / cancel / flag throw notFound for an unknown event", async () => {
     const { svc } = harness()
     await expect(
-      svc.setStatus("nope", { status: "completed", actorId: null }),
+      svc.setStatus("nope", { status: "cancelled", actorId: null }),
     ).rejects.toMatchObject({
       httpStatus: 404,
     })

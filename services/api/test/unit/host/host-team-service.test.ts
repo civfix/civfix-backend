@@ -835,7 +835,10 @@ describe("listMyEventInvites", () => {
     expect((await service.listMyInvites(INVITEE, {})).items).toHaveLength(0)
 
     repo.closedEvents.delete(EVENT)
-    repo.seedEvent(EVENT, { status: "done" })
+    repo.seedEvent(EVENT, {
+      startsAt: new Date(Date.now() - 8 * 3_600_000),
+      endsAt: new Date(Date.now() - 4 * 3_600_000),
+    })
     expect((await service.listMyInvites(INVITEE, {})).items).toHaveLength(0)
   })
 })

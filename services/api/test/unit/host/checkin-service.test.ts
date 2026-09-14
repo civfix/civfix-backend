@@ -179,11 +179,35 @@ describe("check-in service", () => {
     expect(result.marked).toBe(1)
   })
 
-  it("sweeps no-shows only on finished events", async () => {
+  it("sweeps no-shows only once the event's end plus the live tail has passed", async () => {
     await register(h.repo, EVENT, 2)
     expect(await h.service.runNoShowSweep()).toBe(0)
-    h.repo.seedEvent({ cleanupId: EVENT, status: "done" })
+
+    // Ended, but still inside the 2 h wrap-up tail: late check-ins are still possible.
+    h.repo.seedEvent({
+      cleanupId: EVENT,
+      scheduledAt: new Date(NOW.getTime() - 5 * 3_600_000),
+      endsAt: new Date(NOW.getTime() - 60_000),
+    })
+    expect(await h.service.runNoShowSweep()).toBe(0)
+
+    h.repo.seedEvent({
+      cleanupId: EVENT,
+      scheduledAt: new Date(NOW.getTime() - 8 * 3_600_000),
+      endsAt: new Date(NOW.getTime() - 4 * 3_600_000),
+    })
     expect(await h.service.runNoShowSweep()).toBe(2)
+  })
+
+  it("never sweeps a cancelled event", async () => {
+    await register(h.repo, EVENT, 2)
+    h.repo.seedEvent({
+      cleanupId: EVENT,
+      status: "cancelled",
+      scheduledAt: new Date(NOW.getTime() - 8 * 3_600_000),
+      endsAt: new Date(NOW.getTime() - 4 * 3_600_000),
+    })
+    expect(await h.service.runNoShowSweep()).toBe(0)
   })
 
   it("reports live counters for the host", async () => {

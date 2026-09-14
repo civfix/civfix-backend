@@ -9,6 +9,7 @@ import {
 import type { Queryable, Sql } from "../../db/client.js"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
 import { servedKeyExpr } from "../media-served-key.js"
+import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { writeHostAudit } from "./host-audit.js"
 import { isUniqueViolationOn } from "./registration-sql.js"
 import type {
@@ -25,8 +26,6 @@ import type {
   PendingInviteForUserRecord,
   RevokeTeamInviteOutcome,
 } from "./host-team-repository.types.js"
-
-const CLOSED_EVENT_STATUSES = ["cancelled", "done"]
 
 interface InviteRowSelect {
   id: string
@@ -199,12 +198,13 @@ async function reofferOpenInvite(
 }
 
 async function eventOpenInTx(tx: Queryable, cleanupId: string): Promise<"open" | "closed" | "gone"> {
-  const rows = await tx<{ status: string }[]>`
-    SELECT status FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
+  const rows = await tx<{ closed: boolean }[]>`
+    SELECT (status = 'cancelled' OR ends_at <= now()) AS closed
+    FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
   `
-  const status = rows[0]?.status
-  if (status === undefined) return "gone"
-  return CLOSED_EVENT_STATUSES.includes(status) ? "closed" : "open"
+  const row = rows[0]
+  if (row === undefined) return "gone"
+  return row.closed ? "closed" : "open"
 }
 
 async function alreadySeatedOutcome(
@@ -540,7 +540,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           c.title,
           c.scheduled_at,
           c.ends_at,
-          c.status AS event_status,
+          ${cleanupStatusExpr(sql)} AS event_status,
           c.visibility,
           c.address,
           ${servedKeyExpr(sql, "ma")} AS cover_key,
@@ -555,7 +555,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         WHERE i.invited_user_id = ${args.userId}
           AND i.status = 'pending'
           AND i.expires_at > ${args.now}
-          AND c.status <> ALL(${CLOSED_EVENT_STATUSES}::text[])
+          AND c.status <> 'cancelled' AND c.ends_at > now()
           ${cursorFilter}
         ORDER BY i.created_at DESC, i.id DESC
         LIMIT ${args.limit + 1}

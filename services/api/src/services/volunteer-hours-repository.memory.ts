@@ -7,6 +7,8 @@ import type {
   VolunteerHoursSource,
 } from "@civfix/shared"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
+import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
+import { eventDayKey } from "./host/event-day.js"
 import {
   DAILY_HOURS_CAP,
   ITEMISED_SOURCES,
@@ -43,6 +45,7 @@ export interface MemoryCleanupMeta {
   title: string | null
   referenceCode: string | null
   scheduledAt: Date | null
+  timezone?: string | null
   organizationId?: string | null
 }
 
@@ -229,8 +232,9 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
   }
 
   private eventDay(cleanupId: string): string | null {
-    const scheduledAt = this.cleanups.get(cleanupId)?.scheduledAt ?? null
-    return scheduledAt === null ? null : scheduledAt.toISOString().slice(0, 10)
+    const meta = this.cleanups.get(cleanupId) ?? null
+    if (meta === null || meta.scheduledAt === null) return null
+    return eventDayKey(meta.scheduledAt, meta.timezone ?? DEFAULT_EVENT_TIME_ZONE)
   }
 
   private detectAnomalies(args: LogEventHoursArgs): VolunteerHoursAnomaly[] {

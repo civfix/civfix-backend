@@ -34,7 +34,6 @@ import type {
   CleanupRepository,
   CreateCleanupOutcome,
   EventHostWrite,
-  CompleteCleanupOutcome,
   CreateCleanupTxArgs,
   DesiredSlot,
   DuplicateSource,
@@ -52,7 +51,7 @@ import type {
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "./cleanup-repository.types.js"
-import { hasEventEnded, isCleanupTerminal } from "./cleanup-rules.js"
+import { eventWindowOfRow, hasEventEnded } from "./cleanup-rules.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import {
   buildBboxFilter,
@@ -60,6 +59,7 @@ import {
   buildWhenFilter,
   buildVisibilityFilter,
   cleanupColumns,
+  cleanupStatusExpr,
   eventHostJoins,
   goingJoin,
   goingScalar,
@@ -81,7 +81,6 @@ import type {
 } from "@civfix/shared"
 import type { HostStanding } from "@civfix/shared/host"
 import { touchUserActivity } from "../db/sql/user-activity.js"
-import { MIN_EVENT_DURATION_MS } from "./cleanup-rules.js"
 
 const PG_UNIQUE_VIOLATION = "23505"
 
@@ -374,7 +373,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
               ${args.address},
               ${args.jurisdictionGeoid},
               ${referenceCode},
-              ${args.host.endsAt ?? null},
+              ${args.host.endsAt},
               ${args.host.timezone ?? null},
               ${args.host.visibility ?? "public"},
               ${args.host.coverMediaId ?? null},
@@ -613,6 +612,8 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           event_kind: EventKind
           status: CleanupStatus
           scheduled_at: Date
+          ends_at: Date | null
+          timezone: string | null
           lng: number
           lat: number
           going: number
@@ -625,7 +626,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         }[]
       >`
         SELECT
-          report_id, id, title, event_kind, status, scheduled_at,
+          report_id, id, title, event_kind, status, scheduled_at, ends_at, timezone,
           lng, lat, going, org_id, org_display_name, org_handle, org_bio, org_avatar_url,
           linked_at
         FROM (
@@ -634,8 +635,10 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             c.id,
             c.title,
             c.event_kind,
-            c.status,
+            ${cleanupStatusExpr(sql)} AS status,
             c.scheduled_at,
+            c.ends_at,
+            c.timezone,
             ST_X(c.geom) AS lng,
             ST_Y(c.geom) AS lat,
             ${goingScalar(sql)} AS going,
@@ -665,6 +668,8 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           eventKind: r.event_kind,
           status: r.status,
           scheduledAt: r.scheduled_at,
+          endsAt: r.ends_at,
+          timezone: r.timezone,
           lat: r.lat,
           lng: r.lng,
           going: r.going,
@@ -985,7 +990,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         `
         const cleanup = locked[0]
         if (cleanup === undefined) return { kind: "not_found" }
-        if (isCleanupTerminal(cleanup.status)) return { kind: "closed" }
+        if (cleanup.status === "cancelled") return { kind: "closed" }
         const deleted = await tx<{ user_id: string }[]>`
           DELETE FROM cleanup_members
           WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND role <> 'organizer'
@@ -1091,10 +1096,8 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         ) {
           return "not_found"
         }
-        if (isCleanupTerminal(cleanup.status)) return "closed"
-        if (hasEventEnded({ scheduledAt: cleanup.scheduled_at, endsAt: cleanup.ends_at }, cleanup.now)) {
-          return "ended"
-        }
+        if (cleanup.status === "cancelled") return "closed"
+        if (hasEventEnded(eventWindowOfRow(cleanup), cleanup.now.getTime())) return "ended"
         const banned = await tx<{ one: number }[]>`
           SELECT 1 AS one FROM cleanup_bans
           WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
@@ -1117,7 +1120,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         `
         const cleanup = locked[0]
         if (cleanup === undefined) return "not_found"
-        if (isCleanupTerminal(cleanup.status)) return "closed"
+        if (cleanup.status === "cancelled") return "closed"
         await tx`
           DELETE FROM cleanup_members WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
         `
@@ -1135,7 +1138,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return sql.begin(async (tx) => {
         const updated = await tx<{ id: string }[]>`
           UPDATE cleanups SET status = 'cancelled'
-          WHERE id = ${id} AND status <> 'cancelled' AND status <> 'done'
+          WHERE id = ${id} AND status <> 'cancelled' AND ends_at > now()
           RETURNING id
         `
         if (updated.length === 0) {
@@ -1144,54 +1147,13 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           `
           const status = existing[0]?.status
           if (status === undefined) return "not_found"
-          return status === "done" ? "already_completed" : "already_cancelled"
+          return status === "cancelled" ? "already_cancelled" : "already_ended"
         }
         await tx`
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'cancel', ${input.note}, ${input.actorId})
         `
         return "cancelled"
-      })
-    },
-
-    async completeCleanupTx(
-      id: string,
-      input: { note: string; actorId: string; now: Date },
-    ): Promise<CompleteCleanupOutcome> {
-      return sql.begin(async (tx) => {
-        const locked = await tx<
-          {
-            status: CleanupStatus
-            scheduled_at: Date
-            organizer_user_id: string
-            lng: number
-            lat: number
-          }[]
-        >`
-          SELECT status, scheduled_at, organizer_user_id, ST_X(geom) AS lng, ST_Y(geom) AS lat
-          FROM cleanups WHERE id = ${id} LIMIT 1 FOR NO KEY UPDATE
-        `
-        const row = locked[0]
-        if (row === undefined) return "not_found"
-        if (row.status === "cancelled") return "cancelled"
-        if (row.status === "done") return "already_completed"
-        if (row.scheduled_at.getTime() + MIN_EVENT_DURATION_MS > input.now.getTime()) {
-          return "too_early"
-        }
-        await tx`
-          UPDATE cleanups SET status = 'done', completed_at = ${input.now} WHERE id = ${id}
-        `
-        await tx`
-          INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
-          VALUES (${id}, 'status', ${input.note}, ${input.actorId})
-        `
-        await touchUserActivity(tx, {
-          userId: row.organizer_user_id,
-          lng: row.lng,
-          lat: row.lat,
-          at: input.now,
-        })
-        return "completed"
       })
     },
 
@@ -1437,10 +1399,8 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         ) {
           return { kind: "not_found" }
         }
-        if (isCleanupTerminal(cleanup.status)) return { kind: "closed" }
-        if (hasEventEnded({ scheduledAt: cleanup.scheduled_at, endsAt: cleanup.ends_at }, cleanup.now)) {
-          return { kind: "ended" }
-        }
+        if (cleanup.status === "cancelled") return { kind: "closed" }
+        if (hasEventEnded(eventWindowOfRow(cleanup), cleanup.now.getTime())) return { kind: "ended" }
 
         const banned = await tx<{ one: number }[]>`
           SELECT 1 AS one FROM cleanup_bans
@@ -1496,7 +1456,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       `
       const status = rows[0]?.status
       if (status === undefined) return { kind: "not_found" }
-      if (isCleanupTerminal(status)) return { kind: "closed" }
+      if (status === "cancelled") return { kind: "closed" }
       await sql`
         DELETE FROM cleanup_slot_claims WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
       `

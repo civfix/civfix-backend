@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest"
+import { makeFakeSql } from "../helpers/fake-sql.js"
+import { makeDrizzleBroadcastRepository } from "../../src/services/host/broadcast-repository.drizzle.js"
+import type { Sql } from "../../src/db/client.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
 import {
@@ -13,8 +16,8 @@ const CONTEXT: EventBroadcastContext = {
   cleanupId: EVENT,
   pageSlug: "beach-cleanup",
   title: "Beach Cleanup",
-  scheduledAt: new Date("2026-02-01T17:00:00Z"),
-  endsAt: null,
+  scheduledAt: new Date(Date.now() + 7 * 86_400_000),
+  endsAt: new Date(Date.now() + 7 * 86_400_000 + 4 * 60 * 60 * 1000),
   timezone: "UTC",
   address: null,
   status: "upcoming",
@@ -135,5 +138,28 @@ describe("event_updated lane", () => {
       enqueuePlan: () => Promise.resolve(),
     })
     expect(await lanes.eventUpdated(EVENT)).toMatchObject({ status: "throttled" })
+  })
+})
+
+describe("the reminder sweep's candidate predicate (0.46.0)", () => {
+  it("selects every event that is not cancelled, so a legacy 'active' future row is swept too", async () => {
+    // 0135's index and predicate were both `status = 'upcoming'`, which silently skipped a future event
+    // an operator (or the retired mark-completed action) had left stored as 'active'. Status is a clock
+    // reading now, so the only stored value that can rule a row out is 'cancelled'; the existing
+    // `scheduled_at > now` bound is what keeps past rows out.
+    const fake = makeFakeSql([{ match: /FROM cleanups/, rows: [] }])
+    const repo = makeDrizzleBroadcastRepository(fake.sql as unknown as Sql)
+
+    await repo.listDueReminders({
+      now: new Date(),
+      staleAfter: new Date(),
+      defaultOffsets: DEFAULT_REMINDER_OFFSETS_MIN,
+      limit: 50,
+    })
+
+    const statement = fake.statements.at(-1)?.sql ?? ""
+    expect(statement).toContain("WHERE c.status <> 'cancelled'")
+    expect(statement).not.toContain("c.status = 'upcoming'")
+    expect(statement).toContain("c.scheduled_at > ")
   })
 })

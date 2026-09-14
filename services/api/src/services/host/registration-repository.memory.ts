@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto"
 import type { CheckinMethod } from "@civfix/shared"
 import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
-import { hasEventEnded } from "../cleanup-rules.js"
+import {
+  DEFAULT_EVENT_DURATION_MS,
+  eventEndsAtMs,
+  eventWindowOf,
+  hasEventEnded,
+} from "../cleanup-rules.js"
+import { LIVE_TAIL_MS } from "@civfix/shared/host"
 import {
   ARRIVAL_BUCKET_MINUTES,
   buildCheckinResult,
@@ -106,7 +112,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       lat: 34,
       lng: -118,
       scheduledAt: new Date(Date.now() + SEEDED_EVENT_LEAD_MS),
-      endsAt: null,
+      endsAt: new Date(Date.now() + SEEDED_EVENT_LEAD_MS + DEFAULT_EVENT_DURATION_MS),
       timezone: null,
       address: null,
       registrationOpensAt: null,
@@ -407,7 +413,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
   async registerTx(args: RegisterTxArgs): Promise<RegisterTxOutcome> {
     const event = this.events.get(args.cleanupId)
     if (event === undefined) return { kind: "not_found" }
-    if (event.status === "done" || event.status === "cancelled") return { kind: "closed" }
+    if (event.status === "cancelled") return { kind: "closed" }
     if (!withinWindow(args.now, event.registrationOpensAt, event.registrationClosesAt)) {
       return { kind: "registration_closed" }
     }
@@ -735,8 +741,8 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
   }): Promise<JoinWaitlistOutcome> {
     const event = this.events.get(args.cleanupId)
     if (event === undefined) return { kind: "not_found" }
-    if (event.status === "done" || event.status === "cancelled") return { kind: "closed" }
-    if (hasEventEnded(event, args.now)) return { kind: "ended" }
+    if (event.status === "cancelled") return { kind: "closed" }
+    if (hasEventEnded(eventWindowOf(event), args.now.getTime())) return { kind: "ended" }
     const type = this.ticketTypes.get(args.ticketTypeId)
     if (type === undefined || type.cleanupId !== args.cleanupId) {
       return { kind: "ticket_type_not_found" }
@@ -1069,7 +1075,9 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     let marked = 0
     for (const registration of this.registrations.values()) {
       const event = this.events.get(registration.cleanupId)
-      if (event === undefined || event.status !== "done") continue
+      if (event === undefined || event.status === "cancelled") continue
+      const endsAtMs = eventEndsAtMs(eventWindowOf(event))
+      if (endsAtMs === null || endsAtMs + LIVE_TAIL_MS > args.now.getTime()) continue
       for (const seat of registration.seats) {
         if (marked >= args.limit) return marked
         if (seat.status !== "active" || seat.checkedInAt !== null || seat.noShowAt !== null) continue

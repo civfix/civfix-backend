@@ -8,6 +8,7 @@ import { personSelect, toPersonRecord } from "./admin-person.js"
 import { toEventStatus } from "./event-status.js"
 import type { AdminEventRecord, AdminOrganizerRecord } from "./admin-event-service.js"
 import type { EventKind } from "@civfix/shared"
+import { adminEventStatusExpr } from "../cleanup-sql.js"
 
 // The "is flagged" boolean: the most recent cleanup_timeline flag/unflag row is a 'flag'. The ONE
 // definition — eventSelect + countByBucket both build their flagged column/filter from this so they can't
@@ -104,7 +105,7 @@ export function eventSelect(
   return sql`
     SELECT
       c.id,
-      c.status,
+      ${adminEventStatusExpr(sql)} AS status,
       c.event_kind,
       ${flaggedEventExpr(sql)} AS flagged,
       c.title,

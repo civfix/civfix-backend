@@ -2,7 +2,7 @@
 import type { Sql } from "../../db/client.js"
 import { decodeCursor, clampLimit, paginate } from "./pagination.js"
 import { writeAudit } from "./audit.js"
-import { toStoredCleanupStatus, storedVariantsForEventStatus } from "./event-status.js"
+import { adminEventStatusExpr } from "../cleanup-sql.js"
 import {
   eventSelect,
   flaggedEventExpr,
@@ -20,12 +20,7 @@ import type {
   ListEventsArgs,
 } from "./admin-event-service.js"
 import type { LinkedReportView } from "../cleanup-service.js"
-import type {
-  AdminEventCounts,
-  EventStatus,
-  ReportCategory,
-  ReportStatus,
-} from "@civfix/shared"
+import type { AdminEventCounts, ReportCategory, ReportStatus } from "@civfix/shared"
 
 const MESSAGE_CAP = 100
 
@@ -41,7 +36,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
 
       const conds: SqlFragment[] = []
       if (args.status !== null) {
-        conds.push(sql`AND c.status = ANY(${storedVariantsForEventStatus(args.status)})`)
+        conds.push(sql`AND ${adminEventStatusExpr(sql)} = ${args.status}`)
       }
       if (args.flaggedOnly) conds.push(sql`AND ${flaggedEventExpr(sql)}`)
       if (args.q !== null) conds.push(searchEventsFragment(sql, args.q))
@@ -51,8 +46,8 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       if (args.when !== undefined) {
         conds.push(
           args.when.kind === "upcoming"
-            ? sql`AND c.scheduled_at >= ${args.when.ref}`
-            : sql`AND c.scheduled_at < ${args.when.ref}`,
+            ? sql`AND c.status <> 'cancelled' AND c.ends_at > ${args.when.ref}`
+            : sql`AND (c.ends_at <= ${args.when.ref} OR c.status = 'cancelled')`,
         )
       }
       if (anchor !== null) {
@@ -75,7 +70,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
         { all: string; upcoming: string; in_progress: string; completed: string; flagged: string }[]
       >`
         WITH candidates AS (
-          SELECT c.status, ${flaggedEventExpr(sql)} AS flagged
+          SELECT ${adminEventStatusExpr(sql)} AS status, ${flaggedEventExpr(sql)} AS flagged
           FROM cleanups c
           LEFT JOIN users u ON u.id = c.organizer_user_id
           WHERE true
@@ -83,9 +78,9 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
         )
         SELECT
           COUNT(*)::text AS all,
-          COUNT(*) FILTER (WHERE status = ANY(${storedVariantsForEventStatus("upcoming")}))::text AS upcoming,
-          COUNT(*) FILTER (WHERE status = ANY(${storedVariantsForEventStatus("in_progress")}))::text AS in_progress,
-          COUNT(*) FILTER (WHERE status = ANY(${storedVariantsForEventStatus("completed")}))::text AS completed,
+          COUNT(*) FILTER (WHERE status = 'upcoming')::text AS upcoming,
+          COUNT(*) FILTER (WHERE status = 'in_progress')::text AS in_progress,
+          COUNT(*) FILTER (WHERE status = 'completed')::text AS completed,
           COUNT(*) FILTER (WHERE flagged)::text AS flagged
         FROM candidates
       `
@@ -140,30 +135,6 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
         text: r.body ?? "",
         createdAt: r.created_at,
       }))
-    },
-
-    async setStatus(
-      id: string,
-      input: { status: EventStatus; note: string; actorId: string | null },
-    ): Promise<boolean> {
-      const stored = toStoredCleanupStatus(input.status)
-      return sql.begin(async (tx) => {
-        const updated = await tx<{ id: string }[]>`
-          UPDATE cleanups SET status = ${stored} WHERE id = ${id} RETURNING id
-        `
-        if (updated.length === 0) return false
-        await tx`
-          INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
-          VALUES (${id}, 'status', ${input.note}, ${input.actorId})
-        `
-        await writeAudit(tx, {
-          actorId: input.actorId,
-          action: "event.status_changed",
-          target: `cleanup:${id}`,
-          meta: { status: input.status },
-        })
-        return true
-      })
     },
 
     async setBags(

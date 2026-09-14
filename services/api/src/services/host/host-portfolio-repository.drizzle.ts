@@ -7,6 +7,7 @@ import type {
 import type { Sql } from "../../db/client.js"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
 import { servedKeyExpr } from "../media-served-key.js"
+import { cleanupStatusExpr } from "../cleanup-sql.js"
 
 export interface HostedEventRecord {
   id: string
@@ -120,9 +121,9 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
           : sql``
       const whenFilter =
         args.when === "upcoming"
-          ? sql`AND c.scheduled_at >= now() AND c.status <> 'cancelled'`
+          ? sql`AND c.status <> 'cancelled' AND c.ends_at > now()`
           : past
-            ? sql`AND c.scheduled_at < now()`
+            ? sql`AND (c.ends_at <= now() OR c.status = 'cancelled')`
             : sql``
       const order = past
         ? sql`ORDER BY c.scheduled_at DESC, c.id DESC`
@@ -136,7 +137,7 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
           c.scheduled_at,
           c.ends_at,
           c.timezone,
-          c.status,
+          ${cleanupStatusExpr(sql)} AS status,
           c.visibility,
           ${servedKeyExpr(sql, "ma")} AS cover_key,
           c.capacity,
@@ -175,7 +176,7 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
         SELECT
           count(*)::int AS events_hosted,
           count(*) FILTER (
-            WHERE c.scheduled_at >= ${args.now} AND c.status <> 'cancelled'
+            WHERE c.status <> 'cancelled' AND c.ends_at > ${args.now}
           )::int AS upcoming_events
         FROM hosted h
         JOIN cleanups c ON c.id = h.id

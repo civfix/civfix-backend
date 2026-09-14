@@ -337,7 +337,7 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       jurCode: 0,
       linkedReportIds: [],
       slots: [slot({ title: "Grill", capacity: 2, sortOrder: 0 }), slot({ title: "Sign-in", sortOrder: 1 })],
-      host: {},
+      host: { endsAt: new Date(FUTURE.getTime() + 4 * 60 * 60 * 1000) },
     })
 
     expect(record.record.id).toBe(cleanupId)

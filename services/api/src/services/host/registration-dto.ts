@@ -27,6 +27,7 @@ import type {
   TicketTypeRecord,
   WaitlistRecord,
 } from "./registration-repository.types.js"
+import { eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
 
 export const REGISTRATION_ROSTER_DEFAULT_LIMIT = 25
 
@@ -264,11 +265,15 @@ export function toEventPageDTO(record: PageRecord, coverUrl: string | null): Eve
 }
 
 export function registrationStateOf(
-  event: Pick<EventRegistrationContext, "status" | "registrationOpensAt" | "registrationClosesAt">,
+  event: Pick<
+    EventRegistrationContext,
+    "status" | "scheduledAt" | "endsAt" | "registrationOpensAt" | "registrationClosesAt"
+  >,
   ticketTypes: readonly TicketTypeRecord[],
   now: Date,
 ): RegistrationState {
-  if (event.status === "cancelled" || event.status === "done") return "closed"
+  if (event.status === "cancelled") return "closed"
+  if (hasEventEnded(eventWindowOf(event), now.getTime())) return "closed"
   if (event.registrationOpensAt !== null && now < event.registrationOpensAt) return "not_yet_open"
   if (event.registrationClosesAt !== null && now >= event.registrationClosesAt) return "closed"
   if (ticketTypes.length === 0) return "open"
@@ -312,6 +317,8 @@ export async function attachRegistrationFieldsWith(
     dto.registrationState = registrationStateOf(
       {
         status: dto.status,
+        scheduledAt: new Date(dto.scheduledAt),
+        endsAt: dto.endsAt === null || dto.endsAt === undefined ? null : new Date(dto.endsAt),
         registrationOpensAt:
           dto.registrationOpensAt === null || dto.registrationOpensAt === undefined
             ? null

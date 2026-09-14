@@ -14,7 +14,6 @@ import { InMemoryCounterStore, type CounterStore } from "../abuse/counter-store.
 import type {
   CleanupAttendeesResponse,
   CleanupDTO,
-  CleanupStatus,
   CreateCleanupRequest,
   DuplicateCleanupRequest,
   EventKind,
@@ -76,10 +75,11 @@ import { assertSlugAllowed } from "./host/slugs.js"
 import { NULL_HOST_AUDIT_SINK, type HostAuditSink } from "./host/host-audit.js"
 import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import {
-  MIN_EVENT_DURATION_MS,
+  DEFAULT_EVENT_DURATION_MS,
   SCHEDULE_MAX_BACKDATE_MS,
+  deriveCleanupStatus,
   eventEndedError,
-  isCleanupTerminal,
+  eventWindowOf,
 } from "./cleanup-rules.js"
 import type { EventWindow } from "./cleanup-rules.js"
 import {
@@ -245,7 +245,11 @@ export interface CleanupServiceDeps {
   counters?: CounterStore
   jobs?: Jobs
   insightsInvalidator?: InsightsInvalidator
-  logger?: { warn(obj: unknown, msg?: string): void; error(obj: unknown, msg?: string): void }
+  logger?: {
+    info(obj: unknown, msg?: string): void
+    warn(obj: unknown, msg?: string): void
+    error(obj: unknown, msg?: string): void
+  }
   newId?: () => string
   enrichDTOs?: (dtos: CleanupDTO[], viewerUserId: string | null) => Promise<CleanupDTO[]>
   affiliations?: AffiliationLoader
@@ -260,7 +264,12 @@ export interface CleanupService {
     requesterUserId: string,
   ): Promise<CleanupDTO>
   cancelCleanup(id: string, reason: string | null, requesterUserId: string): Promise<CleanupDTO>
-  completeCleanup(id: string, note: string | null, requesterUserId: string): Promise<CleanupDTO>
+  completeCleanup(
+    id: string,
+    note: string | null,
+    requesterUserId: string,
+    userAgent?: string | null,
+  ): Promise<CleanupDTO>
   listCleanups(
     req: ListCleanupsRequest,
     viewer: CleanupViewer,
@@ -453,7 +462,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       write.timezone = patch.timezone ?? null
     }
     if (patch.visibility !== undefined) write.visibility = patch.visibility
-    if (patch.endsAt !== undefined) write.endsAt = toDateOrNull(patch.endsAt)
+    if (patch.endsAt != null) write.endsAt = new Date(patch.endsAt)
     if (patch.registrationOpensAt !== undefined) {
       write.registrationOpensAt = toDateOrNull(patch.registrationOpensAt)
     }
@@ -757,13 +766,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
   function toDesiredSlots(
     slots: EventSlotInput[],
-    status: CleanupStatus | null,
     opts: { keepIds: boolean },
     window: EventWindow,
   ): DesiredSlot[] {
-    if (status !== null && isCleanupTerminal(status)) {
-      throw AppError.validation({ slots: "slots can't be changed after an event is completed" })
-    }
     if (slots.length > MAX_EVENT_SLOTS) {
       throw AppError.validation({ slots: `at most ${MAX_EVENT_SLOTS} slots may be listed` })
     }
@@ -886,13 +891,16 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       throw AppError.validation({ linkedReportIds: "only cleanup events can link reports" })
     }
     await assertReportsLinkable(linkedReportIds)
-    const slots = toDesiredSlots(input.slots ?? [], null, { keepIds: false }, {
-      scheduledAt: new Date(input.scheduledAt),
-      endsAt: input.endsAt != null ? new Date(input.endsAt) : null,
-    })
+    if (input.endsAt === null) throw AppError.validation({ endsAt: "required" })
+    const scheduledAt = new Date(input.scheduledAt)
+    const endsAt =
+      input.endsAt !== undefined
+        ? new Date(input.endsAt)
+        : new Date(scheduledAt.getTime() + DEFAULT_EVENT_DURATION_MS)
+    const slots = toDesiredSlots(input.slots ?? [], { keepIds: false }, { scheduledAt, endsAt })
 
     const host = await resolveHostWrite({
-      patch: { ...input, scheduledAt: input.scheduledAt },
+      patch: { ...input, scheduledAt: input.scheduledAt, endsAt: endsAt.toISOString() },
       actorId: organizerUserId,
       cleanupId: null,
       current: null,
@@ -918,7 +926,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       description: input.description ?? null,
       lat: input.lat,
       lng: input.lng,
-      scheduledAt: new Date(input.scheduledAt),
+      scheduledAt,
       status: "upcoming",
       bring: input.bring ?? null,
       address: input.address ?? null,
@@ -926,7 +934,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       jurCode,
       linkedReportIds,
       slots,
-      host,
+      host: { ...host, endsAt },
       ...(copyFrom !== undefined ? { copyFrom } : {}),
       ...(input.idempotencyKey !== undefined
         ? {
@@ -985,18 +993,14 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     },
 
     async duplicateCleanup(actorId: string, input: DuplicateCleanupRequest): Promise<CleanupDTO> {
+      if (input.endsAt === null) throw AppError.validation({ endsAt: "required" })
       const { record: source } = await requireCapabilityOn(input.id, actorId, "manage_event")
       const link = await resolveDuplicateOrganization(source.organizationId, actorId)
       const now = new Date()
       const scheduledAt = new Date(input.scheduledAt)
-      const sourceDurationMs =
-        source.endsAt === null ? null : source.endsAt.getTime() - source.scheduledAt.getTime()
+      const sourceDurationMs = source.endsAt.getTime() - source.scheduledAt.getTime()
       const endsAt =
-        input.endsAt !== undefined
-          ? (input.endsAt ?? null)
-          : sourceDurationMs === null
-            ? null
-            : new Date(scheduledAt.getTime() + sourceDurationMs).toISOString()
+        input.endsAt ?? new Date(scheduledAt.getTime() + sourceDurationMs).toISOString()
       const slots = await deps.repo.listSlots(source.id, null)
       const shiftMs = scheduledAt.getTime() - source.scheduledAt.getTime()
       const shifted = (at: Date | null): string | null =>
@@ -1055,7 +1059,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (current.status === "cancelled") {
         throw AppError.conflict("This event has been cancelled and can no longer be edited.")
       }
-      if (isCleanupTerminal(current.status)) {
+      if (deriveCleanupStatus(eventWindowOf(current), Date.now()) === "done") {
         const frozen =
           patch.title !== undefined ||
           patch.scheduledAt !== undefined ||
@@ -1065,7 +1069,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
           patch.eventKind !== undefined
         if (frozen) {
           throw AppError.conflict(
-            "A completed event's date, title, location and type can no longer be changed.",
+            "An event that has ended can't change its date, title, location or type.",
           )
         }
       }
@@ -1086,20 +1090,27 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         await assertReportsLinkable(desiredLinks)
       }
 
+      if (patch.endsAt === null) {
+        throw AppError.validation({ endsAt: "an event must have an end time" })
+      }
       const effectiveWindow: EventWindow = {
+        status: current.status,
         scheduledAt: patch.scheduledAt !== undefined ? new Date(patch.scheduledAt) : current.scheduledAt,
-        endsAt:
-          patch.endsAt !== undefined
-            ? (patch.endsAt != null ? new Date(patch.endsAt) : null)
-            : current.endsAt,
+        endsAt: patch.endsAt !== undefined ? new Date(patch.endsAt) : current.endsAt,
       }
       const windowMoved =
         effectiveWindow.scheduledAt.getTime() !== current.scheduledAt.getTime() ||
         (effectiveWindow.endsAt?.getTime() ?? null) !== (current.endsAt?.getTime() ?? null)
 
+      if (
+        patch.slots !== undefined &&
+        deriveCleanupStatus(eventWindowOf(current), Date.now()) === "done"
+      ) {
+        throw AppError.validation({ slots: "Slots can't be changed after an event has ended." })
+      }
       const desiredSlots =
         patch.slots !== undefined
-          ? toDesiredSlots(patch.slots, current.status, { keepIds: true }, effectiveWindow)
+          ? toDesiredSlots(patch.slots, { keepIds: true }, effectiveWindow)
           : null
 
       if (desiredSlots === null && windowMoved) {
@@ -1175,7 +1186,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (slotDiff !== null) {
         await notifySlotChanges(record, slotDiff)
       }
-      if (!isCleanupTerminal(record.status) && guestVisibleChange(current, patch)) {
+      if (
+        deriveCleanupStatus(eventWindowOf(record), Date.now()) !== "done" &&
+        guestVisibleChange(current, patch)
+      ) {
         await dispatchGuestUpdateFanout(record.id)
       }
       const [linkedReports, slotBoard, media] = await Promise.all([
@@ -1213,8 +1227,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         actorId: requesterUserId,
       })
       if (outcome === "not_found") notFoundCleanup()
-      if (outcome === "already_completed") {
-        throw AppError.conflict("A completed event can't be cancelled.")
+      if (outcome === "already_ended") {
+        throw AppError.conflict("This event has already ended and can't be cancelled.")
       }
 
       await deps.insightsInvalidator?.bumpInsightsGeneration(id)
@@ -1241,29 +1255,13 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       id: string,
       note: string | null,
       requesterUserId: string,
+      userAgent: string | null = null,
     ): Promise<CleanupDTO> {
       const { standing } = await requireCapabilityOn(id, requesterUserId, "manage_event")
       const requesterRole = standing.eventRole
       const trimmed = note?.trim()
-      const cleanNote = trimmed && trimmed.length > 0 ? trimmed : null
-      assertNoSlur(cleanNote, "note")
-      const timelineNote =
-        cleanNote !== null ? `Event marked complete: ${cleanNote}` : "Event marked complete"
-      const outcome = await deps.repo.completeCleanupTx(id, {
-        note: timelineNote,
-        actorId: requesterUserId,
-        now: new Date(),
-      })
-      if (outcome === "not_found") notFoundCleanup()
-      if (outcome === "cancelled") {
-        throw AppError.conflict("A cancelled event can't be marked complete.")
-      }
-      if (outcome === "too_early") {
-        throw AppError.conflict(
-          `This event can be marked complete ${MIN_EVENT_DURATION_MS / 60_000} minutes after its start time.`,
-        )
-      }
-      await deps.insightsInvalidator?.bumpInsightsGeneration(id)
+      assertNoSlur(trimmed && trimmed.length > 0 ? trimmed : null, "note")
+      deps.logger?.info({ cleanupId: id, userAgent }, "cleanup.complete.deprecated")
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()

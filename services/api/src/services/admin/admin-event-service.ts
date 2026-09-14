@@ -113,11 +113,6 @@ export interface AdminEventRepository {
   getEvent(id: string): Promise<AdminEventRecord | null>
   listTimeline(id: string): Promise<AdminEventTimelineRecord[]>
   listMessages(id: string): Promise<AdminEventMessageRecord[]>
-  // Returns false when the cleanup does not exist.
-  setStatus(
-    id: string,
-    input: { status: EventStatus; note: string; actorId: string | null },
-  ): Promise<boolean>
   // The ONLY write path for cleanups.bags. Returns false when the cleanup is absent.
   setBags(id: string, input: { bags: number; actorId: string | null }): Promise<boolean>
   // Toggle flagged via cleanup_timeline. Returns the resulting state, or null when the cleanup is absent.
@@ -294,9 +289,13 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
       id: string,
       input: { status: EventStatus; actorId: string | null },
     ): Promise<void> {
-      const ok = await deps.repo.setStatus(id, {
-        status: input.status,
-        note: eventStatusNote(input.status),
+      if (input.status !== "cancelled") {
+        throw AppError.conflict(
+          "Event status is derived from its schedule and can't be set by hand.",
+        )
+      }
+      const ok = await deps.repo.cancel(id, {
+        note: eventStatusNote("cancelled"),
         actorId: input.actorId,
       })
       if (!ok) throw AppError.notFound("Event not found")

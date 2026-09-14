@@ -65,7 +65,7 @@ export function makeDb(
   }
   const statementTimeoutMs = opts.statementTimeoutMs ?? 15_000
   const idleInTxTimeoutMs = opts.idleInTxTimeoutMs ?? 30_000
-  const connection: Record<string, string> = {}
+  const connection: Record<string, string> = { TimeZone: "UTC" }
   if (statementTimeoutMs > 0) connection.statement_timeout = String(statementTimeoutMs)
   if (idleInTxTimeoutMs > 0) {
     connection.idle_in_transaction_session_timeout = String(idleInTxTimeoutMs)
@@ -78,7 +78,7 @@ export function makeDb(
     idle_timeout: 60,
     max_lifetime: 60 * 30,
     onnotice: () => {},
-    ...(Object.keys(connection).length > 0 ? { connection } : {}),
+    connection,
   }
   const sql = postgres(databaseUrl, { ...common, max: opts.max ?? 10 })
   const drizzleSql = postgres(databaseUrl, { ...common, max: 4 })

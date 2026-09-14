@@ -15,7 +15,6 @@ import {
   CLEANUP_MEMBERSHIP_RATE_LIMIT,
   type CleanupServiceOverrides,
 } from "../../src/routes/cleanups.routes.js"
-import { MIN_EVENT_DURATION_MS } from "../../src/services/cleanup-rules.js"
 
 
 interface Harness {
@@ -93,6 +92,8 @@ afterEach(async () => {
 
 const FUTURE = new Date(Date.now() + 7 * 86_400_000).toISOString()
 const PAST = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+/** A start far enough back that the default 4 h window has already closed: the event reads as `done`. */
+const ENDED = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString()
 
 async function createCleanup(
   app: FastifyInstance,
@@ -459,10 +460,10 @@ describe("POST /cleanups/:id/cancel (host cancel)", () => {
   })
 })
 
-describe("POST /cleanups/:id/complete (host completion)", () => {
-  it("the organizer completes an already-started event: 200 with status 'done'", async () => {
+describe("POST /cleanups/:id/complete (the deprecated no-op)", () => {
+  it("200s and returns the event unchanged (DECISIONS §40: the endpoint writes nothing)", async () => {
     const { app, token } = await makeHarness()
-    const id = await createCleanup(app, token, PAST)
+    const id = await createCleanup(app, token, ENDED)
 
     const res = await app.inject({
       method: "POST",
@@ -472,11 +473,18 @@ describe("POST /cleanups/:id/complete (host completion)", () => {
     })
     expect(res.statusCode).toBe(200)
     expect(res.json().status).toBe("done")
+
+    const timeline = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(token),
+    })
+    expect(timeline.json().status).toBe("done")
   })
 
-  it("completes with no note (empty body) -> 200, and a repeat is idempotent", async () => {
+  it("is idempotent: a repeat is another 200 with the same status", async () => {
     const { app, token } = await makeHarness()
-    const id = await createCleanup(app, token, PAST)
+    const id = await createCleanup(app, token, ENDED)
 
     const first = await app.inject({
       method: "POST",
@@ -496,7 +504,7 @@ describe("POST /cleanups/:id/complete (host completion)", () => {
     expect(second.json().status).toBe("done")
   })
 
-  it("a COHOST can complete (B13) while a plain member gets 403", async () => {
+  it("a COHOST may call it (B13) while a plain member gets 403", async () => {
     const { app, token, mailer, repo } = await makeHarness()
     const id = await createCleanup(app, token, PAST)
     const cohost = await signIn(app, mailer, "closer@example.com")
@@ -527,10 +535,9 @@ describe("POST /cleanups/:id/complete (host completion)", () => {
       payload: {},
     })
     expect(asCohost.statusCode).toBe(200)
-    expect(asCohost.json().status).toBe("done")
   })
 
-  it("409s an event that hasn't started yet (B14's time anchor)", async () => {
+  it("200s an event that has not started yet, and leaves it upcoming", async () => {
     const { app, token } = await makeHarness()
     const id = await createCleanup(app, token)
 
@@ -540,42 +547,13 @@ describe("POST /cleanups/:id/complete (host completion)", () => {
       headers: auth(token),
       payload: {},
     })
-    expect(res.statusCode).toBe(409)
-    expect(res.json().code).toBe("CONFLICT")
+    expect(res.statusCode).toBe(200)
+    expect(res.json().status).toBe("upcoming")
   })
 
-  it("H9: 409s completing an event that started but has not run for the minimum duration", async () => {
+  it("200s a CANCELLED event and leaves it cancelled; cancelling an ENDED one still 409s (B18)", async () => {
     const { app, token } = await makeHarness()
-    const justStarted = new Date(Date.now() - MIN_EVENT_DURATION_MS / 3).toISOString()
-    const id = await createCleanup(app, token, justStarted)
-
-    const tooSoon = await app.inject({
-      method: "POST",
-      url: `/v1/cleanups/${id}/complete`,
-      headers: auth(token),
-      payload: {},
-    })
-    expect(tooSoon.statusCode).toBe(409)
-    expect(tooSoon.json().code).toBe("CONFLICT")
-
-    const ranLongEnough = await createCleanup(
-      app,
-      token,
-      new Date(Date.now() - MIN_EVENT_DURATION_MS * 2).toISOString(),
-    )
-    const ok = await app.inject({
-      method: "POST",
-      url: `/v1/cleanups/${ranLongEnough}/complete`,
-      headers: auth(token),
-      payload: {},
-    })
-    expect(ok.statusCode).toBe(200)
-    expect(ok.json().status).toBe("done")
-  })
-
-  it("409s completing a CANCELLED event, and 409s cancelling a COMPLETED one (B18)", async () => {
-    const { app, token } = await makeHarness()
-    const cancelled = await createCleanup(app, token, PAST)
+    const cancelled = await createCleanup(app, token)
     await app.inject({
       method: "POST",
       url: `/v1/cleanups/${cancelled}/cancel`,
@@ -588,23 +566,18 @@ describe("POST /cleanups/:id/complete (host completion)", () => {
       headers: auth(token),
       payload: {},
     })
-    expect(completeCancelled.statusCode).toBe(409)
+    expect(completeCancelled.statusCode).toBe(200)
+    expect(completeCancelled.json().status).toBe("cancelled")
 
-    const completed = await createCleanup(app, token, PAST)
-    await app.inject({
+    const ended = await createCleanup(app, token, ENDED)
+    const cancelEnded = await app.inject({
       method: "POST",
-      url: `/v1/cleanups/${completed}/complete`,
+      url: `/v1/cleanups/${ended}/cancel`,
       headers: auth(token),
       payload: {},
     })
-    const cancelCompleted = await app.inject({
-      method: "POST",
-      url: `/v1/cleanups/${completed}/cancel`,
-      headers: auth(token),
-      payload: {},
-    })
-    expect(cancelCompleted.statusCode).toBe(409)
-    expect(cancelCompleted.json().code).toBe("CONFLICT")
+    expect(cancelEnded.statusCode).toBe(409)
+    expect(cancelEnded.json().code).toBe("CONFLICT")
   })
 
   it("401s an anonymous completion", async () => {
@@ -1007,15 +980,6 @@ describe("cleanup state machine + scheduledAt bounds", () => {
     })
   }
 
-  async function complete(app: FastifyInstance, token: string, id: string): Promise<void> {
-    await app.inject({
-      method: "POST",
-      url: `/v1/cleanups/${id}/complete`,
-      headers: auth(token),
-      payload: {},
-    })
-  }
-
   it("409s joining a CANCELLED cleanup (CVX-019)", async () => {
     const { app, token, mailer } = await makeHarness()
     const id = await createCleanup(app, token)
@@ -1030,10 +994,9 @@ describe("cleanup state machine + scheduledAt bounds", () => {
     expect(res.json().code).toBe("CONFLICT")
   })
 
-  it("409s joining a COMPLETED cleanup", async () => {
+  it("409s joining an ENDED cleanup", async () => {
     const { app, token, mailer } = await makeHarness()
-    const id = await createCleanup(app, token, PAST)
-    await complete(app, token, id)
+    const id = await createCleanup(app, token, ENDED)
     const joiner = await signIn(app, mailer, "postjoiner@example.com")
     const res = await app.inject({
       method: "POST",
@@ -1057,10 +1020,9 @@ describe("cleanup state machine + scheduledAt bounds", () => {
     expect(res.json().code).toBe("CONFLICT")
   })
 
-  it("F067: freezes the title of a COMPLETED cleanup but still allows a description edit", async () => {
+  it("F067: freezes the title of an ENDED cleanup but still allows a description edit", async () => {
     const { app, token } = await makeHarness()
-    const id = await createCleanup(app, token, PAST)
-    await complete(app, token, id)
+    const id = await createCleanup(app, token, ENDED)
     const frozen = await app.inject({
       method: "PATCH",
       url: `/v1/cleanups/${id}`,
@@ -1078,7 +1040,7 @@ describe("cleanup state machine + scheduledAt bounds", () => {
     expect(ok.json().description).toBe("post-event recap")
   })
 
-  it("409s completing a CANCELLED cleanup", async () => {
+  it("200s the deprecated complete on a CANCELLED cleanup without changing it", async () => {
     const { app, token } = await makeHarness()
     const id = await createCleanup(app, token, PAST)
     await cancel(app, token, id)
@@ -1088,7 +1050,8 @@ describe("cleanup state machine + scheduledAt bounds", () => {
       headers: auth(token),
       payload: {},
     })
-    expect(res.statusCode).toBe(409)
+    expect(res.statusCode).toBe(200)
+    expect(res.json().status).toBe("cancelled")
   })
 
   it("still allows join and edit on an UPCOMING cleanup (no over-restriction)", async () => {
@@ -1171,15 +1134,14 @@ describe("cleanup state machine + scheduledAt bounds", () => {
     expect(toFar.statusCode).toBe(422)
   })
 
-  it("F067: 409s a full-object edit of a COMPLETED event that changes title/scheduledAt", async () => {
+  it("F067: 409s a full-object edit of an ENDED event that changes title/scheduledAt", async () => {
     const { app, token } = await makeHarness()
-    const id = await createCleanup(app, token, PAST)
-    await complete(app, token, id)
+    const id = await createCleanup(app, token, ENDED)
     const res = await app.inject({
       method: "PATCH",
       url: `/v1/cleanups/${id}`,
       headers: auth(token),
-      payload: { title: "Recorded", scheduledAt: PAST },
+      payload: { title: "Recorded", scheduledAt: ENDED },
     })
     expect(res.statusCode).toBe(409)
   })

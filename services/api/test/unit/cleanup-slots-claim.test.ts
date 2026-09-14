@@ -310,32 +310,41 @@ describe("auto-RSVP (B28b)", () => {
 })
 
 describe("closed events (B28e)", () => {
-  for (const status of ["done", "cancelled"] as const) {
-    it(`409s a claim on a ${status} event`, async () => {
-      const id = seedEvent(CLEANUP_ID, { status })
-      const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
+  it("409s a claim on a cancelled event", async () => {
+    const id = seedEvent(CLEANUP_ID, { status: "cancelled" })
+    const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
 
-      await expect(service.claimEventSlot(id, OUTSIDER, slot.id)).rejects.toMatchObject({
-        code: "CONFLICT",
-      })
-      // The refusal exists because logEventHours requires CURRENT membership: without it, the
-      // auto-RSVP above would be a path to credit for an event you never attended.
-      expect(await repo.isMember(id, OUTSIDER)).toBe(false)
-      expect(repo.slotClaims).toEqual([])
+    await expect(service.claimEventSlot(id, OUTSIDER, slot.id)).rejects.toMatchObject({
+      code: "CONFLICT",
     })
+    // The refusal exists because logEventHours requires CURRENT membership: without it, the
+    // auto-RSVP above would be a path to credit for an event you never attended.
+    expect(await repo.isMember(id, OUTSIDER)).toBe(false)
+    expect(repo.slotClaims).toEqual([])
+  })
 
-    it(`409s a release on a ${status} event (the attested roster stops moving both ways)`, async () => {
-      const id = seedEvent(CLEANUP_ID, { status: "upcoming" })
-      const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
-      await service.claimEventSlot(id, MEMBER, slot.id)
-      repo.cleanups.get(id)!.status = status
+  it("409s a release on a cancelled event (the attested roster stops moving both ways)", async () => {
+    const id = seedEvent(CLEANUP_ID, { status: "upcoming" })
+    const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
+    await service.claimEventSlot(id, MEMBER, slot.id)
+    repo.cleanups.get(id)!.status = "cancelled"
 
-      await expect(service.claimEventSlot(id, MEMBER, null)).rejects.toMatchObject({
-        code: "CONFLICT",
-      })
-      expect(await repo.slotOf(id, MEMBER)).toBe(slot.id)
+    await expect(service.claimEventSlot(id, MEMBER, null)).rejects.toMatchObject({
+      code: "CONFLICT",
     })
-  }
+    expect(await repo.slotOf(id, MEMBER)).toBe(slot.id)
+  })
+
+  it("still lets an attendee release their shift after the event has ended (cancelled is the only closed state)", async () => {
+    const id = seedEvent(CLEANUP_ID, { status: "upcoming" })
+    const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
+    await service.claimEventSlot(id, MEMBER, slot.id)
+    repo.cleanups.get(id)!.scheduledAt = new Date(Date.now() - 5 * 60 * 60 * 1000)
+    repo.cleanups.get(id)!.endsAt = new Date(Date.now() - 4 * 60 * 60 * 1000)
+
+    await service.claimEventSlot(id, MEMBER, null)
+    expect(await repo.slotOf(id, MEMBER)).toBeNull()
+  })
 
   it("409s a claim on an event that has already ended (the slot door auto-RSVPs)", async () => {
     const id = seedEvent()

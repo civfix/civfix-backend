@@ -164,6 +164,8 @@ export function toLinkedEventRef(view: LinkedEventView): LinkedEventRef {
     eventKind: view.eventKind,
     status: view.status,
     scheduledAt: view.scheduledAt.toISOString(),
+    endsAt: view.endsAt === null ? null : view.endsAt.toISOString(),
+    timezone: view.timezone,
     lat: view.lat,
     lng: view.lng,
     going: view.going,

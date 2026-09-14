@@ -904,7 +904,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
           CROSS JOIN LATERAL unnest(
             COALESCE(c.reminder_offsets_min, ${[...args.defaultOffsets]}::int[])
           ) AS o(offset_min)
-         WHERE c.status = 'upcoming'
+         WHERE c.status <> 'cancelled'
            AND c.scheduled_at > ${args.now}
            AND c.scheduled_at <= ${args.now} + interval '7 days'
            AND c.scheduled_at - make_interval(mins => o.offset_min) <= ${args.now}

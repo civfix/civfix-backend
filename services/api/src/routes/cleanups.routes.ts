@@ -293,7 +293,12 @@ export async function registerCleanupRoutes(
     const userId = requireAuth(request)
     const { id } = parse(CleanupIdParamsSchema, request.params)
     const body = parse(CompleteCleanupRequestSchema, { ...(request.body as object), id })
-    const dto: GetCleanupResponse = await service().completeCleanup(id, body.note ?? null, userId)
+    const dto: GetCleanupResponse = await service().completeCleanup(
+      id,
+      body.note ?? null,
+      userId,
+      request.headers["user-agent"] ?? null,
+    )
     reply.status(200).send(dto)
   })
 
