@@ -234,6 +234,15 @@ Verified call sites (all public projections):
 | @-mention resolution | `services/api/src/services/social-repository.drizzle.ts` | Excludes soft-deleted users. |
 | Cleanup report galleries | `services/api/src/services/cleanup-repository.drizzle.ts` | Joins exclude `deleted_at IS NOT NULL` rows. |
 
+**Linked-report reconcile is visibility-scoped.** Because a host's
+`cleanup.linkedReports` view is hydrated through `publicReportFilter`, a link to a
+report the host can no longer see (unlisted by the reporter's account deletion,
+moderator-`rejected`, owner-hidden, or anon-`held`) is absent from the
+`linkedReportIds` their client sends back, so
+`reconcileLinkedReports` (`services/api/src/services/cleanup-repository.drizzle.ts`)
+only deletes links whose report passes that same filter — an omitted invisible link
+is left intact and writes no `report_unlinked` timeline row.
+
 **Conclusion:** after account deletion, a user's PUBLISHED reports and discussion
 comments survive but render the author as "Deleted User" (reports expose no author
 at all); their profile, directory presence, and mention-ability are removed. The

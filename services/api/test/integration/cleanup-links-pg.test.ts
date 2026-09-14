@@ -57,6 +57,52 @@ describe.skipIf(!pg)("cleanup<->report link bounds (integration)", () => {
     return row!.id
   }
 
+  async function newHiddenReport(title: string): Promise<string> {
+    const [row] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (
+        idempotency_key, geom, geom_source, category, title, status, visibility, h3_cell, jurisdiction_geoid
+      )
+      VALUES (
+        gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), 'manual', 'trash', ${title},
+        'published', 'hidden', 'h0', ${LA_CITY.geoid}
+      )
+      RETURNING id
+    `
+    return row!.id
+  }
+
+  it("reconcile leaves a link to an invisible report intact and only unlinks what the host can see", async () => {
+    const org = await newUser("Reconcile Org")
+    const cleanupId = await newCleanup(org, "Reconcile sweep")
+    const visibleKept = await newPublicReport("Kept")
+    const visibleDropped = await newPublicReport("Dropped")
+    const invisible = await newHiddenReport("Unlisted by erasure")
+    const added = await newPublicReport("Added")
+    for (const reportId of [visibleKept, visibleDropped, invisible]) {
+      await h.sql`
+        INSERT INTO cleanup_reports (cleanup_id, report_id, linked_by_user_id)
+        VALUES (${cleanupId}, ${reportId}, ${org})
+      `
+    }
+
+    const diff = await repo.reconcileLinkedReports(cleanupId, [visibleKept, added], org)
+
+    expect(diff.added).toEqual([added])
+    expect(diff.removed).toEqual([visibleDropped])
+    const remaining = await h.sql<{ report_id: string }[]>`
+      SELECT report_id FROM cleanup_reports WHERE cleanup_id = ${cleanupId} ORDER BY report_id
+    `
+    expect(remaining.map((r) => r.report_id).sort()).toEqual(
+      [visibleKept, invisible, added].sort(),
+    )
+    const unlinked = await h.sql<{ note: string | null }[]>`
+      SELECT note FROM cleanup_timeline
+      WHERE cleanup_id = ${cleanupId} AND kind = 'report_unlinked'
+    `
+    expect(unlinked).toHaveLength(1)
+    expect(unlinked[0]!.note).toBe(`Unlinked report ${visibleDropped}`)
+  })
+
   it("F064: the batched cleanup gallery honours the per-cleanup cap, newest link first", async () => {
     const org = await newUser("Gallery Org")
     const cleanupId = await newCleanup(org, "Gallery sweep")

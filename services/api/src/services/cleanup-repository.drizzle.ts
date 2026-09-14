@@ -513,7 +513,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         const have = new Set(existing.map((r) => r.report_id))
         const want = new Set(desiredIds)
         const toAdd = desiredIds.filter((id) => !have.has(id))
-        const toRemove = [...have].filter((id) => !want.has(id))
+        const droppable = [...have].filter((id) => !want.has(id))
+        const visible = await selectVisibleReportIds(tx, droppable)
+        const toRemove = droppable.filter((id) => visible.has(id))
 
         const added = await linkReportsInTx(tx, cleanupId, toAdd, actorId)
         if (toRemove.length > 0) {
@@ -691,13 +693,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
     },
 
     async filterVisibleReportIds(reportIds: string[]): Promise<Set<string>> {
-      if (reportIds.length === 0) return new Set()
-      const rows = await sql<{ id: string }[]>`
-        SELECT r.id FROM reports r
-        WHERE r.id = ANY(${reportIds}::uuid[])
-          AND ${publicReportFilter(sql)}
-      `
-      return new Set(rows.map((r) => r.id))
+      return selectVisibleReportIds(sql, reportIds)
     },
 
     async findCleanupById(id: string, near: NearPoint | null): Promise<CleanupRecord | null> {
@@ -1602,6 +1598,16 @@ export async function cancelSignupRegistrationIn(
     SELECT id FROM cancelled
   `
   return cancelled.length > 0
+}
+
+async function selectVisibleReportIds(q: Queryable, reportIds: string[]): Promise<Set<string>> {
+  if (reportIds.length === 0) return new Set()
+  const rows = await q<{ id: string }[]>`
+    SELECT r.id FROM reports r
+    WHERE r.id = ANY(${reportIds}::uuid[])
+      AND ${publicReportFilter(q)}
+  `
+  return new Set(rows.map((r) => r.id))
 }
 
 async function linkReportsInTx(

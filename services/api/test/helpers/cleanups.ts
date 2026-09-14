@@ -872,7 +872,9 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const have = this.links.filter((l) => l.cleanupId === cleanupId).map((l) => l.reportId)
     const want = new Set(desiredIds)
     const toAdd = desiredIds.filter((id) => !have.includes(id))
-    const toRemove = have.filter((id) => !want.has(id))
+    const toRemove = have.filter(
+      (id) => !want.has(id) && this.reportVisible(this.reports.get(id)),
+    )
     const added = this.linkInner(cleanupId, toAdd, actorId)
     for (const reportId of toRemove) {
       const idx = this.links.findIndex((l) => l.cleanupId === cleanupId && l.reportId === reportId)

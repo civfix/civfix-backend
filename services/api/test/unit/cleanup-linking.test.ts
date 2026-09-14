@@ -147,6 +147,53 @@ describe("updateCleanup (host-gated PATCH)", () => {
   })
 })
 
+describe("reconcileLinkedReports only unlinks what the host can see", () => {
+  it("keeps a link to an invisible report the patch omits, and writes no unlink timeline row", async () => {
+    const created = await service.createCleanup(baseInput({ linkedReportIds: [R1] }), ORG)
+    repo.seedLink(created.id, R3, ORG)
+
+    const updated = await service.updateCleanup(created.id, { linkedReportIds: [R1] }, ORG)
+
+    expect(updated.linkedReports.map((r) => r.id)).toEqual([R1])
+    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId).sort()).toEqual(
+      [R1, R3].sort(),
+    )
+    expect(
+      repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "report_unlinked"),
+    ).toHaveLength(0)
+  })
+
+  it("removes a VISIBLE link the patch omits, with the unlink timeline row", async () => {
+    const created = await service.createCleanup(baseInput({ linkedReportIds: [R1, R2] }), ORG)
+
+    const updated = await service.updateCleanup(created.id, { linkedReportIds: [R1] }, ORG)
+
+    expect(updated.linkedReports.map((r) => r.id)).toEqual([R1])
+    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId)).toEqual([R1])
+    const unlinked = repo.timeline.filter(
+      (t) => t.cleanupId === created.id && t.kind === "report_unlinked",
+    )
+    expect(unlinked.map((t) => t.reportId)).toEqual([R2])
+  })
+
+  it("a mixed patch removes the visible one, retains the invisible one and adds the new one", async () => {
+    const created = await service.createCleanup(baseInput({ linkedReportIds: [R1, R2] }), ORG)
+    repo.seedLink(created.id, R3, ORG)
+
+    const updated = await service.updateCleanup(created.id, { linkedReportIds: [R1, R4] }, ORG)
+
+    expect(updated.linkedReports.map((r) => r.id).sort()).toEqual([R1, R4].sort())
+    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId).sort()).toEqual(
+      [R1, R3, R4].sort(),
+    )
+    const kinds = repo.timeline.filter((t) => t.cleanupId === created.id)
+    expect(kinds.filter((t) => t.kind === "report_unlinked").map((t) => t.reportId)).toEqual([R2])
+    expect(kinds.filter((t) => t.kind === "report_linked").map((t) => t.reportId).sort()).toEqual(
+      [R1, R2, R4].sort(),
+    )
+  })
+})
+
 describe("linking a report in a post-publication status (H8-b widening)", () => {
   it("links a resolved report at create time and shows it in the gallery", async () => {
     const dto = await service.createCleanup(baseInput({ linkedReportIds: [R1, R4] }), ORG)
