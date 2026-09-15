@@ -263,13 +263,14 @@ jobs:
             while :; do
               t="$(date -u +%s.%N)"
               code="$(curl -s -m 10 -o /dev/null -D probe.headers -w '%{http_code}' "$LIVENESS_URL" 2>/dev/null)"
+              curl_rc=$?
               state="$code"
               case "$code" in
                 200) state=200 ;;
                 503) grep -qi '^x-civfix-draining:' probe.headers && state=draining ;;
                 ""|000) state=000 ;;
               esac
-              printf '%s %s\n' "$t" "$state" >> probe.log
+              printf '%s %s curl_rc=%s\n' "$t" "$state" "$curl_rc" >> probe.log
               sleep 1
             done ) &
           PROBE=$!
@@ -307,13 +308,19 @@ jobs:
           ' probe.log)"
           last="$(tail -n 1 probe.log | awk '{ print $2 }')"
           last_at="$(tail -n 1 probe.log | awk '{ printf "%.2f", $1 + 0 }')"
+          # The age of the most recent SERVING sample decides "still up at the end" below. One
+          # runner-side connection blip on the very last probe is not an outage; a serving gap
+          # longer than the SLO is, wherever it falls.
+          last_serving_at="$(awk '$2 == "200" || $2 == "draining" { l = $1 } END { if (l == "") print "none"; else printf "%.2f", l + 0 }' probe.log)"
           elapsed="$(awk -v a="$probe_started" -v b="$probe_ended" 'BEGIN { printf "%.0f", b - a }')"
           stale="$(awk -v e="$probe_ended" -v l="$last_at" 'BEGIN { printf "%.2f", e - l }')"
-          echo "samples=$total elapsed_s=$elapsed last_sample=$last last_sample_age_s=$stale probe_alive=$probe_alive longest_unavailable_s=$worst slo=${MAX_OUTAGE_S}s deploy_rc=$rc"
+          if [ "$last_serving_at" = "none" ]; then serving_age="none"; else serving_age="$(awk -v e="$probe_ended" -v l="$last_serving_at" 'BEGIN { printf "%.2f", e - l }')"; fi
+          echo "samples=$total elapsed_s=$elapsed last_sample=$last last_sample_age_s=$stale last_serving_age_s=$serving_age probe_alive=$probe_alive longest_unavailable_s=$worst slo=${MAX_OUTAGE_S}s deploy_rc=$rc"
           {
             echo "DEPLOY_RC=$rc"
             echo "WORST_UNAVAILABLE_S=$worst"
             echo "LAST_SAMPLE=$last"
+            echo "LAST_SERVING_AGE_S=$serving_age"
             echo "PROBE_SAMPLES=$total"
             echo "PROBE_ELAPSED_S=$elapsed"
             echo "PROBE_LAST_AGE_S=$stale"
@@ -343,6 +350,7 @@ jobs:
           rc="${DEPLOY_RC:-1}"
           worst="${WORST_UNAVAILABLE_S:-}"
           last="${LAST_SAMPLE:-}"
+          serving_age="${LAST_SERVING_AGE_S:-none}"
           samples="${PROBE_SAMPLES:-0}"
           elapsed="${PROBE_ELAPSED_S:-0}"
           age="${PROBE_LAST_AGE_S:-999}"
@@ -364,11 +372,14 @@ jobs:
           awk -v w="$worst" -v m="$MAX_OUTAGE_S" 'BEGIN { exit !(w <= m) }' || {
             echo "FATAL: public API was unavailable for ~${worst}s during the deploy (slo ${MAX_OUTAGE_S}s)" >&2
             exit 1; }
-          case "$last" in
-            200|draining) ;;
-            *) echo "FATAL: API is not serving at the end of the deploy (last sample: ${last:-none})" >&2; exit 1 ;;
-          esac
-          echo "availability OK: $samples samples over ${elapsed}s, longest unavailable ${worst}s <= ${MAX_OUTAGE_S}s"
+          # "Serving at the end" is judged on the last SERVING sample's age against the same SLO, not
+          # on the literal final probe: a lone runner-side connection blip on the last sample must not
+          # fail a deploy the box completed and the API kept answering through.
+          [ "$serving_age" != "none" ] || { echo "FATAL: the API never served during the deploy window" >&2; exit 1; }
+          awk -v a="$serving_age" -v m="$MAX_OUTAGE_S" 'BEGIN { exit !(a <= m) }' || {
+            echo "FATAL: API is not serving at the end of the deploy (last serving sample ${serving_age}s ago, last sample: ${last:-none})" >&2
+            exit 1; }
+          echo "availability OK: $samples samples over ${elapsed}s, longest unavailable ${worst}s <= ${MAX_OUTAGE_S}s, last served ${serving_age}s before the end"
 
       - name: Cleanup deploy key
         if: always()
