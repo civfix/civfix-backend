@@ -1,6 +1,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleHomeRepository } from "../../src/services/admin/home-repository.drizzle.js"
 import type { HomeRepository } from "../../src/services/admin/home-service.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
@@ -94,15 +95,12 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
 
   it("eventsSummary: upcoming / live / attending", async () => {
     const org = await insertUser(h, "Org")
-    const live = (await h.sql<{ id: string }[]>`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (${org}, 'site', 'Live', ST_SetSRID(ST_MakePoint(-118.35,34.1),4326), now(), 'active')
-      RETURNING id
-    `)[0]!.id
-    await h.sql`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (${org}, 'site', 'Up', ST_SetSRID(ST_MakePoint(-118.35,34.1),4326), now(), 'upcoming')
-    `
+    const live = await seedCleanup(h.sql, {
+      organizerUserId: org,
+      title: "Live",
+      status: "active",
+    })
+    await seedCleanup(h.sql, { organizerUserId: org, title: "Up", status: "upcoming" })
     const member = await insertUser(h, "M")
     await h.sql`INSERT INTO cleanup_members (cleanup_id, user_id, role) VALUES (${live}, ${member}, 'attendee')`
 
@@ -135,10 +133,7 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
   it("recentPins: report + event pins with the event status mapped to the EventStatus enum", async () => {
     await insertReport(h, { status: "submitted" })
     const org = await insertUser(h, "Org")
-    await h.sql`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (${org}, 'site', 'Done event', ST_SetSRID(ST_MakePoint(-118.35,34.1),4326), now(), 'done')
-    `
+    await seedCleanup(h.sql, { organizerUserId: org, title: "Done event", status: "done" })
     const pins = await repo.recentPins(50)
     const report = pins.find((p) => p.refType === "report")
     const event = pins.find((p) => p.refType === "event")

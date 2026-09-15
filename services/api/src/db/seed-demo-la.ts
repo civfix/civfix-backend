@@ -47,6 +47,10 @@ import { resolveJurisdiction } from "./sql/jurisdiction.js"
 import { reportH3Cell } from "../services/report-clustering.js"
 import { runIfMain } from "./cli.js"
 import { DEMO_EMAIL_DOMAIN } from "./seed-demo-domain.js"
+import {
+  DEFAULT_EVENT_DURATION_MS,
+  DEFAULT_EVENT_SLOT_TITLE,
+} from "../services/cleanup-rules.js"
 
 // ---------------------------------------------------------------------------------------------------
 // Deterministic PRNG (mulberry32) + sampling helpers. Seeded so a rehearsal and the committed run (or
@@ -818,6 +822,7 @@ interface SeedEvent {
   lng: number
   address: string
   scheduledAt: Date
+  endsAt: Date
   createdAt: Date
   status: "upcoming" | "done" | "cancelled"
   bring: string[]
@@ -1062,6 +1067,7 @@ function makeEvents(users: SeedUser[], now: Date): SeedEvent[] {
       lng,
       address: park.name,
       scheduledAt,
+      endsAt: new Date(scheduledAt.getTime() + DEFAULT_EVENT_DURATION_MS),
       createdAt,
       status: kind,
       bring: shuffle([...BRING_POOL]).slice(0, rint(2, 5)),
@@ -1086,10 +1092,23 @@ function makeEvents(users: SeedUser[], now: Date): SeedEvent[] {
       ev.members.push({ user: u, role, joinedAt })
     }
 
-    // Slots on ~40% of events, claims from members only, capacity respected.
+    // A richer board on ~40% of events and 0169's default slot on every other OPEN one (past and
+    // cancelled keep the empty board it skips); claims from members only, capacity respected.
     if (chance(0.4)) {
       const set = pick(SLOT_SETS)
       ev.slots = set.map((s, idx) => ({ id: randomUUID(), ...s, sortOrder: idx }))
+    } else if (kind === "upcoming") {
+      ev.slots = [
+        {
+          id: randomUUID(),
+          title: DEFAULT_EVENT_SLOT_TITLE,
+          description: null,
+          capacity: ev.capacity,
+          sortOrder: 0,
+        },
+      ]
+    }
+    if (ev.slots.length > 0) {
       const claimed = new Set<string>()
       for (const m of ev.members) {
         if (m.role === "organizer" || !chance(0.5)) continue
@@ -1603,12 +1622,14 @@ async function writeAll(
     const referenceCode = await allocateEventReferenceCode(tx, jurCode)
     await tx`
       INSERT INTO cleanups (
-        id, organizer_user_id, type, event_kind, title, description, geom, scheduled_at, status,
-        bring, address, capacity, bags, jurisdiction_geoid, reference_code, created_at
+        id, organizer_user_id, type, event_kind, title, description, geom, scheduled_at, ends_at,
+        status, bring, address, capacity, bags, jurisdiction_geoid, reference_code, created_at
       ) VALUES (
         ${ev.id}, ${ev.organizer.id}, 'site', 'cleanup', ${ev.title}, ${ev.description},
         ST_SetSRID(ST_MakePoint(${ev.lng}, ${ev.lat}), 4326),
-        ${ev.scheduledAt}, ${ev.status}, ${ev.bring}, ${ev.address}, ${ev.capacity}, ${ev.bags},
+        ${ev.scheduledAt}, ${ev.endsAt},
+        ${ev.status === "cancelled" ? "cancelled" : "upcoming"},
+        ${ev.bring}, ${ev.address}, ${ev.capacity}, ${ev.bags},
         ${jur?.geoid ?? null}, ${referenceCode}, ${ev.createdAt}
       )
     `

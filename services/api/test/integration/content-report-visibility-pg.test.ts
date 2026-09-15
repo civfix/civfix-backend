@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import {
   makeDrizzleContentSubjectGate,
   type ContentSubjectGate,
@@ -167,17 +168,13 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
 
   it("event: an existing cleanup is reportable; an unknown id is not", async () => {
     const organizer = await newUser("organizer")
-    const [c] = await h.sql<{ id: string }[]>`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${organizer}, 'site', 'Cleanup', ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326),
-        ${new Date()}, 'upcoming'
-      )
-      RETURNING id
-    `
+    const cleanupId = await seedCleanup(h.sql, {
+      organizerUserId: organizer,
+      title: "Cleanup",
+    })
     const reporter = await newUser("event reporter")
 
-    await expect(gate.assertReportable("event", c!.id, reporter)).resolves.toBeUndefined()
+    await expect(gate.assertReportable("event", cleanupId, reporter)).resolves.toBeUndefined()
     await rejects404(gate.assertReportable("event", ABSENT, reporter))
   })
 

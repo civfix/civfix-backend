@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.drizzle.js"
 import { makeVolunteerHoursService } from "../../src/services/volunteer-hours-service.js"
 import { parseTimeCursor } from "../../src/db/cursor-helpers.js"
@@ -30,16 +31,15 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
   }
 
   async function newCleanup(organizerId: string): Promise<string> {
-    const id = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status, jurisdiction_geoid)
-      VALUES (
-        ${id}, ${organizerId}, 'site', 'Hours sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-        now() - interval '1 day', 'done', ${GEOID}
-      )
-    `
-    return id
+    return await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Hours sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: new Date(Date.now() - 86_400_000),
+      status: "done",
+      jurisdictionGeoid: GEOID,
+    })
   }
 
   async function rollupFor(userId: string): Promise<number> {
@@ -122,15 +122,14 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
 
   it("a geoid-less event writes the ledger but never the rollup", async () => {
     const org = await newUser("Hours NoGeo Org")
-    const cleanupId = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${cleanupId}, ${org}, 'site', 'No-geo sweep',
-        ST_SetSRID(ST_MakePoint(-118.3, 34.1), 4326),
-        now() - interval '1 day', 'done'
-      )
-    `
+    const cleanupId = await seedCleanup(h.sql, {
+      organizerUserId: org,
+      title: "No-geo sweep",
+      lng: -118.3,
+      lat: 34.1,
+      scheduledAt: new Date(Date.now() - 86_400_000),
+      status: "done",
+    })
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
     const credited = await repo.logEventHours({
       actorId: org,
@@ -152,15 +151,14 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     const org = await newUser("Hours F066 Org")
     const alice = await newUser("Hours F066 Alice")
     const mapped = await newCleanup(org)
-    const unmapped = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${unmapped}, ${org}, 'site', 'Unmapped sweep',
-        ST_SetSRID(ST_MakePoint(-118.3, 34.1), 4326),
-        now() - interval '1 day', 'done'
-      )
-    `
+    const unmapped = await seedCleanup(h.sql, {
+      organizerUserId: org,
+      title: "Unmapped sweep",
+      lng: -118.3,
+      lat: 34.1,
+      scheduledAt: new Date(Date.now() - 86_400_000),
+      status: "done",
+    })
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
     await repo.logEventHours({ actorId: org, cleanupId: mapped, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
     await repo.logEventHours({ actorId: org, cleanupId: unmapped, geoid: null, entries: [{ userId: alice, hours: 1.5 }] })
@@ -225,15 +223,14 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
 
   it("re-logging a never-mapped event just overwrites (no phantom reversal)", async () => {
     const org = await newUser("Hours NoGeo Twice")
-    const cleanupId = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${cleanupId}, ${org}, 'site', 'No-geo re-log',
-        ST_SetSRID(ST_MakePoint(-118.31, 34.11), 4326),
-        now() - interval '1 day', 'done'
-      )
-    `
+    const cleanupId = await seedCleanup(h.sql, {
+      organizerUserId: org,
+      title: "No-geo re-log",
+      lng: -118.31,
+      lat: 34.11,
+      scheduledAt: new Date(Date.now() - 86_400_000),
+      status: "done",
+    })
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
     await repo.logEventHours({ actorId: org, cleanupId, geoid: null, entries: [{ userId: org, hours: 1 }] })
     const credited = await repo.logEventHours({
@@ -302,15 +299,14 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
   it("M21: the audit is written for the geoid-less branch too", async () => {
     const org = await newUser("Audit NoGeo Org")
     const alice = await newUser("Audit NoGeo Alice")
-    const cleanupId = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${cleanupId}, ${org}, 'site', 'No-geo audit sweep',
-        ST_SetSRID(ST_MakePoint(-118.3, 34.1), 4326),
-        now() - interval '1 day', 'done'
-      )
-    `
+    const cleanupId = await seedCleanup(h.sql, {
+      organizerUserId: org,
+      title: "No-geo audit sweep",
+      lng: -118.3,
+      lat: 34.1,
+      scheduledAt: new Date(Date.now() - 86_400_000),
+      status: "done",
+    })
     const repo = makeDrizzleVolunteerHoursRepository(h.sql)
     await repo.logEventHours({ actorId: org, cleanupId, geoid: null, entries: [{ userId: alice, hours: 1 }] })
     await repo.logEventHours({ actorId: org, cleanupId, geoid: null, entries: [{ userId: alice, hours: 5 }] })
@@ -465,15 +461,16 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     const host = await newUser("Ledger Host")
     const alice = await newUser("Ledger Alice")
     await h.sql`UPDATE users SET handle = 'ledgerhost' WHERE id = ${host}`
-    const cleanupId = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, reference_code, geom, scheduled_at, status, jurisdiction_geoid)
-      VALUES (
-        ${cleanupId}, ${host}, 'site', 'Ocean Beach sweep', 'EVENT-LA-000999',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-        '2026-04-10T17:00:00.000Z'::timestamptz, 'done', ${GEOID}
-      )
-    `
+    const cleanupId = await seedCleanup(h.sql, {
+      organizerUserId: host,
+      title: "Ocean Beach sweep",
+      referenceCode: "EVENT-LA-000999",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: new Date("2026-04-10T17:00:00.000Z"),
+      status: "done",
+      jurisdictionGeoid: GEOID,
+    })
     await insertEntry({
       id: "1c000000-0000-4000-8000-000000000001",
       userId: alice,

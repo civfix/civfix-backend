@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { ChatMessageDTO } from "@civfix/shared"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { seedMediaAsset } from "../helpers/media-pg.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
@@ -64,16 +65,13 @@ describe.skipIf(!pg)("soft-deleted messages hydrate as tombstones (integration)"
   }
 
   async function newCleanup(organizerId: string): Promise<string> {
-    const [c] = await h.sql<{ id: string }[]>`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${organizerId}, 'site', 'Tombstone sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-        ${new Date(Date.now() + 7 * 86_400_000)}, 'scheduled'
-      )
-      RETURNING id
-    `
-    return c!.id
+    return await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Tombstone sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: new Date(Date.now() + 7 * 86_400_000),
+    })
   }
 
   async function newReport(): Promise<string> {

@@ -14,6 +14,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 
 const pg = await withPg()
 
@@ -48,13 +49,10 @@ describe.skipIf(!pg)("chat groups schema (0047, integration)", () => {
   /** Insert a minimal cleanup and return its id. */
   async function newCleanup(): Promise<string> {
     const organizerId = await newUser("Cleanup organizer")
-    const [c] = await h.sql<{ id: string }[]>`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (${organizerId}, 'site', 'Scope-chk fixture',
-              ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), now(), 'upcoming')
-      RETURNING id
-    `
-    return c!.id
+    return await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Scope-chk fixture",
+    })
   }
 
   it("creates chat_groups and chat_group_members with sensible defaults", async () => {

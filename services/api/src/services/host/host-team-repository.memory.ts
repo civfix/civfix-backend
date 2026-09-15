@@ -7,6 +7,7 @@ import type {
   EventVisibility,
 } from "@civfix/shared"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
+import { eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
 import type { CleanupPersonView } from "../cleanup-repository.types.js"
 import type {
   AcceptTeamInviteByIdOutcome,
@@ -44,6 +45,7 @@ interface StoredPerson {
   displayName: string
   handle: string | null
   email: string | null
+  avatarUrl: string | null
 }
 
 const ROLE_ORDER: Record<CleanupMemberRole, number> = {
@@ -61,8 +63,6 @@ const TEAM_ROLE_RANK: Record<string, number> = {
   staff: 2,
   member: 1,
 }
-
-const CLOSED_EVENT_STATUSES: CleanupStatus[] = ["cancelled", "done"]
 
 function teamRoleRank(role: string): number {
   return TEAM_ROLE_RANK[role] ?? 0
@@ -93,6 +93,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
       displayName: over.displayName ?? "Member",
       handle: over.handle ?? null,
       email: over.email ?? null,
+      avatarUrl: over.avatarUrl ?? null,
     }
     this.users.set(person.id, person)
     return person
@@ -114,7 +115,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
     const event: InviteEventView = {
       id: cleanupId,
       title: over.title ?? "Beach cleanup",
-      startsAt: over.startsAt ?? new Date("2026-10-01T17:00:00.000Z"),
+      startsAt: over.startsAt ?? new Date(Date.now() + 30 * 86_400_000),
       endsAt: over.endsAt ?? null,
       status: over.status ?? ("upcoming" as CleanupStatus),
       visibility: over.visibility ?? ("public" as EventVisibility),
@@ -131,7 +132,10 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
   }
 
   private isClosed(cleanupId: string): boolean {
-    return CLOSED_EVENT_STATUSES.includes(this.eventOf(cleanupId).status)
+    const event = this.eventOf(cleanupId)
+    if (event.status === "cancelled") return true
+    const window = eventWindowOf({ scheduledAt: event.startsAt, endsAt: event.endsAt })
+    return hasEventEnded(window, Date.now())
   }
 
   seedBan(cleanupId: string, userId: string): void {
@@ -146,6 +150,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
       displayName: stored.displayName,
       handle: stored.handle,
       bio: null,
+      avatarUrl: stored.avatarUrl,
     }
   }
 

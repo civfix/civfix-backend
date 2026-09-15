@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { testHandle, withPg, type PgHarness } from "../helpers/pg.js"
+import { signupSeat } from "../helpers/cleanups.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeDrizzleOrganizationRepository } from "../../src/services/host/organization-repository.drizzle.js"
 import { makeDrizzleHostTeamRepository } from "../../src/services/host/host-team-repository.drizzle.js"
@@ -82,6 +83,7 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
       linkedReportIds: [],
       slots: [],
       host: {
+        endsAt: new Date(FUTURE.getTime() + 4 * 60 * 60 * 1000),
         ...(over.visibility !== undefined
           ? { visibility: over.visibility as "public" | "unlisted" | "private" }
           : {}),
@@ -447,19 +449,19 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
     const privateId = await newEvent(organizer, { visibility: "private" })
     const unlistedId = await newEvent(organizer, { visibility: "unlisted" })
 
-    expect(await cleanups.joinCleanupTx(privateId, stranger)).toBe("not_found")
+    expect(await cleanups.joinCleanupTx(privateId, stranger, signupSeat())).toBe("not_found")
     const members = await h.sql<{ count: number }[]>`
       SELECT count(*)::int AS count FROM cleanup_members WHERE cleanup_id = ${privateId}
     `
     expect(members[0]?.count).toBe(1)
 
-    expect(await cleanups.joinCleanupTx(unlistedId, stranger)).toBe("joined")
+    expect(await cleanups.joinCleanupTx(unlistedId, stranger, signupSeat())).toBe("joined")
 
     await h.sql`
       INSERT INTO cleanup_members (cleanup_id, user_id, role)
       VALUES (${privateId}, ${invited}, 'member')
     `
-    expect(await cleanups.joinCleanupTx(privateId, invited)).toBe("joined")
+    expect(await cleanups.joinCleanupTx(privateId, invited, signupSeat())).toBe("joined")
   })
 
   it("keeps a private event out of a public report's linkedEvents block", async () => {
@@ -507,7 +509,7 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
       jurCode: 0,
       linkedReportIds: [],
       slots: [],
-      host: {},
+      host: { endsAt: new Date(FUTURE.getTime() + 4 * 60 * 60 * 1000) },
       idempotency: { key, scope: "cleanup.create", userOrAnon: `user:${organizer}` },
     }
     const first = await cleanups.createCleanupTx({ ...args, cleanupId: randomUUID() })

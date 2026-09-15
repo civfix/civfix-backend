@@ -16,9 +16,22 @@ import type {
   OrgVerificationStatus,
 } from "@civfix/shared"
 import { servedKeyExpr } from "./media-served-key.js"
-import { IN_PROGRESS_GRACE_HOURS } from "./cleanup-rules.js"
 
-export { IN_PROGRESS_GRACE_HOURS }
+export function cleanupStatusExpr(sql: Queryable) {
+  return sql`CASE
+    WHEN c.status = 'cancelled' THEN 'cancelled'
+    WHEN c.ends_at <= now() THEN 'done'
+    WHEN c.scheduled_at <= now() THEN 'active'
+    ELSE 'upcoming' END`
+}
+
+export function adminEventStatusExpr(sql: Queryable) {
+  return sql`CASE
+    WHEN c.status = 'cancelled' THEN 'cancelled'
+    WHEN c.ends_at <= now() THEN 'completed'
+    WHEN c.scheduled_at <= now() THEN 'in_progress'
+    ELSE 'upcoming' END`
+}
 
 export interface CleanupRowSelect {
   id: string
@@ -45,7 +58,8 @@ export interface CleanupRowSelect {
   org_display_name: string
   org_handle: string | null
   org_bio: string | null
-  ends_at: Date | null
+  org_avatar_url: string | null
+  ends_at: Date
   timezone: string | null
   visibility: EventVisibility
   cover_media_id: string | null
@@ -72,6 +86,7 @@ export interface AttendeeRowSelect {
   display_name: string
   handle: string | null
   bio: string | null
+  avatar_url: string | null
   role: CleanupMemberRole
   is_following: boolean
 }
@@ -82,6 +97,7 @@ export function toRecord(r: CleanupRowSelect): CleanupRecord {
     displayName: r.org_display_name,
     handle: r.org_handle,
     bio: r.org_bio,
+    avatarUrl: r.org_avatar_url,
   }
   const organization: CleanupOrganizationView | null =
     r.organization_id !== null && r.organization_slug !== null && r.organization_name !== null
@@ -151,7 +167,7 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     ST_Y(c.geom) AS lat,
     c.scheduled_at,
     c.completed_at,
-    c.status,
+    ${cleanupStatusExpr(sql)} AS status,
     c.bring,
     c.address,
     c.jurisdiction_geoid,
@@ -183,7 +199,8 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     ${distExpr} AS dist,
     u.display_name AS org_display_name,
     u.handle AS org_handle,
-    u.bio AS org_bio
+    u.bio AS org_bio,
+    u.avatar_url AS org_avatar_url
   `
 }
 
@@ -219,11 +236,9 @@ export function goingJoin(sql: Queryable) {
 
 export function buildWhenFilter(sql: Sql, when: "upcoming" | "past" | "attending" | undefined) {
   if (when === "upcoming" || when === "attending")
-    return sql`AND c.scheduled_at >= now() - make_interval(hours => ${IN_PROGRESS_GRACE_HOURS})
-      AND (c.scheduled_at >= now() OR c.status = 'active')
-      AND c.status NOT IN ('cancelled', 'done')`
+    return sql`AND c.status <> 'cancelled' AND c.ends_at > now()`
   if (when === "past")
-    return sql`AND c.scheduled_at < now() AND c.status <> 'cancelled'`
+    return sql`AND c.status <> 'cancelled' AND c.ends_at <= now()`
   return sql`AND c.status <> 'cancelled'`
 }
 

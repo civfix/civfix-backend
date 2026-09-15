@@ -25,7 +25,7 @@ export interface CleanupOrganizationView {
 }
 
 export interface CleanupHostFields {
-  endsAt: Date | null
+  endsAt: Date
   timezone: string | null
   visibility: EventVisibility
   coverMediaId: string | null
@@ -87,6 +87,8 @@ export interface LinkedEventView {
   eventKind: EventKind
   status: CleanupStatus
   scheduledAt: Date
+  endsAt: Date | null
+  timezone: string | null
   lat: number
   lng: number
   going: number
@@ -99,6 +101,7 @@ export interface CleanupPersonView {
   displayName: string
   handle: string | null
   bio: string | null
+  avatarUrl: string | null
 }
 
 export interface AttendeeView extends CleanupPersonView {
@@ -155,7 +158,7 @@ export interface ListAttendeesArgs {
 }
 
 export interface EventHostWrite {
-  endsAt?: Date | null
+  endsAt?: Date
   timezone?: string | null
   visibility?: EventVisibility
   coverMediaId?: string | null
@@ -199,7 +202,7 @@ export interface CreateCleanupTxArgs {
   jurCode: number
   linkedReportIds: string[]
   slots: DesiredSlot[]
-  host: EventHostWrite
+  host: EventHostWrite & { endsAt: Date }
   idempotency?: CleanupIdempotency
   copyFrom?: DuplicateSource
 }
@@ -235,14 +238,7 @@ export type RemoveMemberOutcome =
 export type CancelCleanupOutcome =
   | "cancelled"
   | "already_cancelled"
-  | "already_completed"
-  | "not_found"
-
-export type CompleteCleanupOutcome =
-  | "completed"
-  | "already_completed"
-  | "cancelled"
-  | "too_early"
+  | "already_ended"
   | "not_found"
 
 export interface NearPoint {
@@ -276,6 +272,11 @@ export interface ListCleanupsFilters {
   cursor: string | null
   limit: number
   viewerId?: string | null
+}
+
+export interface SignupSeat {
+  seatId: string
+  tokenHash: string
 }
 
 export interface CleanupRepository {
@@ -326,16 +327,12 @@ export interface CleanupRepository {
   listMemberIds(cleanupId: string, limit: number): Promise<string[]>
   goingCount(cleanupId: string): Promise<number>
   organizerOf(cleanupId: string): Promise<string | null>
-  joinCleanupTx(cleanupId: string, userId: string): Promise<JoinCleanupOutcome>
+  joinCleanupTx(cleanupId: string, userId: string, seat: SignupSeat): Promise<JoinCleanupOutcome>
   leaveCleanup(cleanupId: string, userId: string): Promise<LeaveCleanupOutcome>
   cancelCleanupTx(
     id: string,
     input: { note: string; body: string; reason: string | null; actorId: string },
   ): Promise<CancelCleanupOutcome>
-  completeCleanupTx(
-    id: string,
-    input: { note: string; actorId: string; now: Date },
-  ): Promise<CompleteCleanupOutcome>
   listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]>
 
 
@@ -350,7 +347,12 @@ export interface CleanupRepository {
     desired: DesiredSlot[],
     actorId: string | null,
   ): Promise<SlotReconcileResult>
-  claimSlot(cleanupId: string, userId: string, slotId: string): Promise<ClaimSlotOutcome>
+  claimSlot(
+    cleanupId: string,
+    userId: string,
+    slotId: string,
+    seat: SignupSeat,
+  ): Promise<ClaimSlotOutcome>
   releaseSlot(cleanupId: string, userId: string): Promise<ClaimSlotOutcome>
   slotOf(cleanupId: string, userId: string): Promise<string | null>
   resolveJurisdictionContact(geoid: string | null): Promise<{ contact: string; name: string } | null>

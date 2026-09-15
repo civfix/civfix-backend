@@ -1,3 +1,4 @@
+import { TEST_TICKET_SIGNER } from "../../helpers/ticket-signer.js"
 import { beforeEach, describe, expect, it } from "vitest"
 import type { CreateCleanupRequest } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
@@ -27,12 +28,14 @@ function base(over: Partial<CreateCleanupRequest> = {}): CreateCleanupRequest {
     lat: 34.0,
     lng: -118.49,
     scheduledAt: new Date(Date.now() + 86_400_000).toISOString(),
+    slots: [{ title: "Volunteers" }],
     ...over,
   } as CreateCleanupRequest
 }
 
 function makeService(): CleanupService {
   return makeCleanupService({
+    tickets: TEST_TICKET_SIGNER,
     repo,
     counters: new InMemoryCounterStore(),
     presignEventMedia: (key, opts) =>
@@ -59,9 +62,13 @@ beforeEach(() => {
 
 describe("createCleanup with host fields", () => {
   it("defaults to a public event with no host extras", async () => {
-    const dto = await service.createCleanup(base(), ORG)
+    const input = base()
+    const dto = await service.createCleanup(input, ORG)
     expect(dto.visibility).toBe("public")
-    expect(dto.endsAt).toBeNull()
+    // DECISIONS §41: a create with no endsAt gets the 4 h default rather than a null end.
+    expect(dto.endsAt).toBe(
+      new Date(Date.parse(input.scheduledAt) + 4 * 60 * 60 * 1000).toISOString(),
+    )
     expect(dto.galleryUrls).toEqual([])
     expect(dto.coverUrl).toBeNull()
     expect(dto.myCapabilities).toContain("manage_event")
@@ -382,6 +389,7 @@ describe("updateCleanup authorization", () => {
 describe("getCleanup addressing", () => {
   it("resolves a uuid, a reference code and a page slug", async () => {
     const scoped = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo,
       counters: new InMemoryCounterStore(),
       resolveJurisdictionCode: () => Promise.resolve(42),

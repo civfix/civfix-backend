@@ -40,16 +40,22 @@ async function insertCleanup(
     title?: string
     capacity?: number | null
     bags?: number
+    startsAt?: Date
+    endsAt?: Date
   },
 ): Promise<string> {
+  const startsAt = opts.startsAt ?? new Date(Date.now() + 2 * 86_400_000)
   const rows = await h.sql<{ id: string }[]>`
-    INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status, capacity, bags)
+    INSERT INTO cleanups (
+      organizer_user_id, type, title, geom, scheduled_at, ends_at, status, capacity, bags
+    )
     VALUES (
       ${opts.organizerId},
       'site',
       ${opts.title ?? "Park cleanup"},
       ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326),
-      now() + interval '2 days',
+      ${startsAt},
+      ${opts.endsAt ?? new Date(startsAt.getTime() + 4 * 60 * 60 * 1000)},
       ${opts.status ?? "upcoming"},
       ${opts.capacity ?? null},
       ${opts.bags ?? 0}
@@ -111,24 +117,27 @@ describe.skipIf(!pg)("admin event repository (integration: real schema)", () => 
     expect(flagged.records.map((x) => x.id)).toEqual([id])
   })
 
-  it("setStatus writes cleanup_timeline + audit", async () => {
+  it("projects completed for a past window whose stored status is still upcoming", async () => {
     const org = await insertUser(h)
-    const id = await insertCleanup(h, { organizerId: org, status: "upcoming" })
-    const ok = await repo.setStatus(id, { status: "in_progress", note: "live", actorId: null })
-    expect(ok).toBe(true)
-    const status = await h.sql<{ status: string }[]>`SELECT status FROM cleanups WHERE id = ${id}`
-    // Storage stays on the Phase-1 enum: EventStatus 'in_progress' is persisted as 'active'.
-    expect(status[0]?.status).toBe("active")
-    // The read side maps the stored Phase-1 value back to the Phase-2 EventStatus wire enum.
-    expect((await repo.getEvent(id))?.status).toBe("in_progress")
-    const tl = await h.sql<
-      { kind: string }[]
-    >`SELECT kind FROM cleanup_timeline WHERE cleanup_id = ${id} ORDER BY created_at DESC LIMIT 1`
-    expect(tl[0]?.kind).toBe("status")
-    const audit = await h.sql<
-      { action: string }[]
-    >`SELECT action FROM audit_log WHERE action = 'event.status_changed'`
-    expect(audit).toHaveLength(1)
+    const id = await insertCleanup(h, {
+      organizerId: org,
+      status: "upcoming",
+      startsAt: new Date(Date.now() - 8 * 60 * 60 * 1000),
+      endsAt: new Date(Date.now() - 4 * 60 * 60 * 1000),
+    })
+
+    const stored = await h.sql<{ status: string }[]>`SELECT status FROM cleanups WHERE id = ${id}`
+    expect(stored[0]?.status).toBe("upcoming")
+    expect((await repo.getEvent(id))?.status).toBe("completed")
+
+    const page = await repo.listEvents({
+      q: null,
+      status: "completed",
+      flaggedOnly: false,
+      cursor: null,
+      limit: 25,
+    })
+    expect(page.records.map((x) => x.id)).toContain(id)
   })
 
   it("toggleFlag flips the derived flagged state via cleanup_timeline (+ audit)", async () => {

@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleHostRegistrationRepository } from "../../src/services/host/registration-repository.drizzle.js"
 import type { EventPageBlock } from "@civfix/shared"
 import type { HostRegistrationRepository } from "../../src/services/host/registration-repository.types.js"
@@ -30,15 +31,13 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
   }
 
   async function newCleanup(organizerId: string): Promise<string> {
-    const id = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${id}, ${organizerId}, 'site', 'Page media sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), ${FUTURE}, 'upcoming'
-      )
-    `
-    return id
+    return await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Page media sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: FUTURE,
+    })
   }
 
   async function freshUpload(ageSeconds = 0): Promise<{ id: string; r2Key: string }> {

@@ -1,4 +1,5 @@
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { FakePushSender } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
@@ -107,17 +108,23 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
   it("profile: stats + pastEvents (organized AND attended), recent-first", async () => {
     const socialRepo = makeDrizzleSocialRepository(h.sql)
     const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
-    const cleanupService = makeCleanupService({ repo: cleanupRepo })
+    const cleanupService = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo: cleanupRepo })
 
     const organizer = await newUser("Profile Organizer", "proforg")
     const attendee = await newUser("Profile Attendee", "profatt")
 
     const older = await cleanupService.createCleanup(
-      { title: "Older Sweep", type: "site", eventKind: "cleanup", lat: 34.0, lng: -118.0, scheduledAt: "2025-01-01T10:00:00.000Z" },
+      {
+        title: "Older Sweep", type: "site", eventKind: "cleanup", lat: 34.0, lng: -118.0, scheduledAt: "2025-01-01T10:00:00.000Z",
+        slots: [{ title: "General volunteers", capacity: null }],
+      },
       organizer,
     )
     const newer = await cleanupService.createCleanup(
-      { title: "Newer Sweep", type: "site", eventKind: "cleanup", lat: 34.1, lng: -118.1, scheduledAt: "2025-03-01T10:00:00.000Z" },
+      {
+        title: "Newer Sweep", type: "site", eventKind: "cleanup", lat: 34.1, lng: -118.1, scheduledAt: "2025-03-01T10:00:00.000Z",
+        slots: [{ title: "General volunteers", capacity: null }],
+      },
       organizer,
     )
     await h.sql`
@@ -140,7 +147,10 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
 
   it("profile: an upcoming event the owner HOSTS is public, one they only ATTEND is self-only", async () => {
     const socialRepo = makeDrizzleSocialRepository(h.sql)
-    const cleanupService = makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) })
+    const cleanupService = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: makeDrizzleCleanupRepository(h.sql),
+    })
 
     const owner = await newUser("Upcoming Owner", "upcown")
     const stranger = await newUser("Upcoming Stranger", "upcstr")
@@ -154,6 +164,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
         lat: 34.0,
         lng: -118.0,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       owner,
     )
@@ -165,6 +176,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
         lat: 34.2,
         lng: -118.2,
         scheduledAt: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       host,
     )
@@ -189,6 +201,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     const socialRepo = makeDrizzleSocialRepository(h.sql)
     let hostBudgetClockMs = Date.now()
     const cleanupService = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
       repo: makeDrizzleCleanupRepository(h.sql),
       counters: new InMemoryCounterStore(() => hostBudgetClockMs),
     })
@@ -205,6 +218,7 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
           lat: 34.0,
           lng: -118.0,
           scheduledAt: new Date(Date.now() - (i + 1) * 86_400_000).toISOString(),
+          slots: [{ title: "General volunteers", capacity: null }],
         },
         owner,
       )

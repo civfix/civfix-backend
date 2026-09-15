@@ -1,7 +1,9 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
+import type { CleanupStatus } from "@civfix/shared"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { parseTimeCursor, type TimeCursor } from "../../src/db/cursor-helpers.js"
 import { makeDrizzleGuestRsvpRepository } from "../../src/services/guest-rsvp-repository.drizzle.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
@@ -30,19 +32,17 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
   }
 
   async function newCleanup(
-    over: { status?: string; scheduledAt?: Date } = {},
+    over: { status?: CleanupStatus; scheduledAt?: Date } = {},
   ): Promise<string> {
     const organizerId = await newUser("Host")
-    const id = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${id}, ${organizerId}, 'site', 'Guest sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-        ${over.scheduledAt ?? new Date(Date.now() + 7 * 86_400_000)},
-        ${over.status ?? "upcoming"}
-      )
-    `
+    const id = await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Guest sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: over.scheduledAt ?? new Date(Date.now() + 7 * 86_400_000),
+      status: over.status,
+    })
     await h.sql`
       INSERT INTO cleanup_members (cleanup_id, user_id, role)
       VALUES (${id}, ${organizerId}, 'organizer')

@@ -36,6 +36,14 @@ import type { AnalyticsRepository } from "./analytics-repository.drizzle.js"
 import { leaderboardEntryOf } from "../volunteer-hours-service.js"
 import type { MetricRow, MetricsRepository } from "./metrics-repository.drizzle.js"
 import { hostAnalyticsCacheKey, type HostAnalyticsCache } from "./host-analytics-cache.js"
+import { eventDayKey } from "./event-day.js"
+import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
+
+function shiftDayKey(day: string, deltaDays: number): string {
+  const [year, month, date] = day.split("-").map(Number)
+  const shifted = new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, date ?? 1) + deltaDays * 86_400_000)
+  return shifted.toISOString().slice(0, 10)
+}
 
 export const PORTFOLIO_EVENT_LIMIT = 200
 export const ARRIVAL_SAMPLE_LIMIT = 20_000
@@ -92,15 +100,21 @@ export interface AnalyticsService {
 export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsService {
   const now = deps.now ?? (() => new Date())
 
-  function rangeWindow(days: number | null): { from: string; to: string } {
+  function utcRangeWindow(days: number | null): { from: string; to: string } {
     const to = now()
     const span = days ?? ALL_RANGE_DAYS
     const from = new Date(to.getTime() - (span - 1) * 86_400_000)
     return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) }
   }
 
+  function eventRangeWindow(days: number | null, timezone: string): { from: string; to: string } {
+    const span = days ?? ALL_RANGE_DAYS
+    const to = eventDayKey(now(), timezone)
+    return { from: shiftDayKey(to, 1 - span), to }
+  }
+
   async function timezoneOf(cleanupId: string): Promise<string> {
-    return (await deps.metrics.eventTimezone(cleanupId)) ?? "UTC"
+    return (await deps.metrics.eventTimezone(cleanupId)) ?? DEFAULT_EVENT_TIME_ZONE
   }
 
   function envelope<T extends AnalyticsRange>(range: T) {
@@ -123,8 +137,8 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
   return {
     overview(cleanupId, range, viewerScope) {
       return cached("overview", cleanupId, range, viewerScope, async () => {
-        const window = rangeWindow(RANGE_DAYS[range])
         const timezone = await timezoneOf(cleanupId)
+        const window = eventRangeWindow(RANGE_DAYS[range], timezone)
         const [kpis, metricRows, registrationDays, cancellationDays] = await Promise.all([
           deps.analytics.eventKpis(cleanupId),
           deps.metrics.read(
@@ -177,8 +191,8 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
 
     registrations(cleanupId, range, viewerScope) {
       return cached("registrations", cleanupId, range, viewerScope, async () => {
-        const window = rangeWindow(RANGE_DAYS[range])
         const timezone = await timezoneOf(cleanupId)
+        const window = eventRangeWindow(RANGE_DAYS[range], timezone)
         const [series, cancellations, byType, byAudience, waitlist] = await Promise.all([
           deps.analytics.registrationsByDay(cleanupId, timezone, window.from, window.to),
           deps.analytics.cancellationsByDay(cleanupId, timezone, window.from, window.to),
@@ -202,8 +216,8 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
 
     checkins(cleanupId, range, viewerScope) {
       return cached("checkins", cleanupId, range, viewerScope, async () => {
-        const window = rangeWindow(RANGE_DAYS[range])
         const timezone = await timezoneOf(cleanupId)
+        const window = eventRangeWindow(RANGE_DAYS[range], timezone)
         const [kpis, offsets, byType, bySlot, registrationDays] = await Promise.all([
           deps.analytics.eventKpis(cleanupId),
           deps.analytics.arrivalOffsets(cleanupId, ARRIVAL_SAMPLE_LIMIT),
@@ -233,7 +247,8 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
 
     broadcasts(cleanupId, range, viewerScope) {
       return cached("broadcasts", cleanupId, range, viewerScope, async () => {
-        const window = rangeWindow(RANGE_DAYS[range])
+        const timezone = await timezoneOf(cleanupId)
+        const window = eventRangeWindow(RANGE_DAYS[range], timezone)
         const [rows, broadcastsSent] = await Promise.all([
           deps.metrics.read(
             cleanupId,
@@ -247,7 +262,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
             window.from,
             window.to,
           ),
-          deps.analytics.broadcastsSent(cleanupId, window.from, window.to),
+          deps.analytics.broadcastsSent(cleanupId, timezone, window.from, window.to),
         ])
         const recipients = sumMetric(rows, "broadcast_recipients")
         const channels: Array<"inapp" | "push" | "email" | "sms"> = [
@@ -279,7 +294,8 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
 
     sources(cleanupId, range, viewerScope) {
       return cached("sources", cleanupId, range, viewerScope, async () => {
-        const window = rangeWindow(RANGE_DAYS[range])
+        const timezone = await timezoneOf(cleanupId)
+        const window = eventRangeWindow(RANGE_DAYS[range], timezone)
         const rows = await deps.metrics.read(
           cleanupId,
           ["page_views", "source", "donation_clicks"],
@@ -305,7 +321,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
     portfolio(userId, organizationId, range, viewerScope) {
       const scope = organizationId === null ? `portfolio:${userId}` : `org:${organizationId}`
       return cached("portfolio", scope, range, viewerScope, async () => {
-        const window = rangeWindow(PORTFOLIO_RANGE_DAYS[range])
+        const window = utcRangeWindow(PORTFOLIO_RANGE_DAYS[range])
         const cleanupIds = await deps.analytics.hostedEventIds(
           userId,
           organizationId,

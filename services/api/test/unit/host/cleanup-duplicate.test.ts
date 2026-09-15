@@ -1,3 +1,4 @@
+import { TEST_TICKET_SIGNER } from "../../helpers/ticket-signer.js"
 import { beforeEach, describe, expect, it } from "vitest"
 import type { DuplicateCleanupRequest } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
@@ -47,6 +48,7 @@ function seedSource(over: Parameters<InMemoryCleanupRepository["seedCleanup"]>[0
     reminderOffsetsMin: [1440],
     pageSlug: "ballona-sweep",
     referenceCode: "EV-0001",
+    withDefaultSlot: false,
     ...over,
   })
 }
@@ -56,7 +58,11 @@ beforeEach(() => {
   repo.seedUser({ id: ORG, displayName: "Olive Organizer", handle: "olive" })
   repo.seedUser({ id: COHOST, displayName: "Cody Cohost", handle: "cody" })
   repo.seedUser({ id: OUTSIDER, displayName: "Sam Outsider", handle: "sam" })
-  service = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
+  service = makeCleanupService({
+    tickets: TEST_TICKET_SIGNER,
+    repo,
+    counters: new InMemoryCounterStore(),
+  })
 })
 
 describe("duplicateCleanup authorization", () => {

@@ -1,6 +1,7 @@
 
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
+import type { Sql } from "../../src/db/client.js"
 import type {
   AttendeeView,
   CancelCleanupOutcome,
@@ -12,7 +13,6 @@ import type {
   CleanupPersonView,
   CleanupRecord,
   CleanupRepository,
-  CompleteCleanupOutcome,
   CreateCleanupTxArgs,
   DesiredSlot,
   DuplicateSource,
@@ -26,10 +26,10 @@ import type {
   OrganizationEventsFilters,
   OrganizationEventsHost,
   RemoveMemberOutcome,
+  SignupSeat,
   SlotReconcileResult,
   UpdateCleanupPatch,
 } from "../../src/services/cleanup-service.js"
-import { isCleanupTerminal } from "../../src/services/cleanup-service.js"
 import {
   LINKED_EVENTS_PER_REPORT_CAP,
   MAX_EVENTS_PER_REPORT,
@@ -50,7 +50,6 @@ import type {
 } from "@civfix/shared"
 import { NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import { eventScopeKey, formatReferenceCode, EVENT_PREFIX } from "../../src/db/reference-code.js"
-import { IN_PROGRESS_GRACE_HOURS } from "../../src/services/cleanup-sql.js"
 import {
   encodeNearCursor,
   encodeTimeCursor,
@@ -59,7 +58,76 @@ import {
   parseTimeCursor,
 } from "../../src/db/cursor-helpers.js"
 import { isPubliclyVisibleStatus } from "../../src/services/report-visibility.js"
-import { MIN_EVENT_DURATION_MS, hasEventEnded } from "../../src/services/cleanup-rules.js"
+import {
+  DEFAULT_EVENT_DURATION_MS,
+  DEFAULT_EVENT_SLOT_TITLE,
+  deriveCleanupStatus,
+  eventWindowOf,
+  hasEventEnded,
+} from "../../src/services/cleanup-rules.js"
+
+function defaultStartOffsetMs(status: CleanupRecord["status"]): number {
+  if (status === "active") return -3_600_000
+  if (status === "done") return -DEFAULT_EVENT_DURATION_MS - 3_600_000
+  return 86_400_000
+}
+
+export interface SeedCleanupArgs {
+  organizerUserId: string
+  id?: string
+  type?: CleanupRecord["type"]
+  eventKind?: EventKind
+  title?: string
+  lng?: number
+  lat?: number
+  status?: CleanupRecord["status"]
+  scheduledAt?: Date
+  endsAt?: Date
+  completedAt?: Date | null
+  createdAt?: Date
+  jurisdictionGeoid?: string | null
+  referenceCode?: string | null
+  organizationId?: string | null
+  donationUrl?: string | null
+  coverMediaId?: string | null
+  capacity?: number | null
+  bags?: number
+}
+
+export async function seedCleanup(sql: Sql, args: SeedCleanupArgs): Promise<string> {
+  const id = args.id ?? randomUUID()
+  const status = args.status ?? "upcoming"
+  const scheduledAt = args.scheduledAt ?? new Date(Date.now() + defaultStartOffsetMs(status))
+  const endsAt = args.endsAt ?? new Date(scheduledAt.getTime() + DEFAULT_EVENT_DURATION_MS)
+  await sql`
+    INSERT INTO cleanups (
+      id, organizer_user_id, type, event_kind, title, geom, scheduled_at, ends_at, status,
+      completed_at, created_at, jurisdiction_geoid, reference_code, organization_id,
+      donation_url, cover_media_id, capacity, bags
+    )
+    VALUES (
+      ${id},
+      ${args.organizerUserId},
+      ${args.type ?? "site"},
+      ${args.eventKind ?? "cleanup"},
+      ${args.title ?? "Test cleanup"},
+      ST_SetSRID(ST_MakePoint(${args.lng ?? -118.35}, ${args.lat ?? 34.1}), 4326),
+      ${scheduledAt},
+      ${endsAt},
+      ${status},
+      ${args.completedAt ?? null},
+      ${args.createdAt ?? sql`now()`},
+      ${args.jurisdictionGeoid ?? null},
+      ${args.referenceCode ?? null},
+      ${args.organizationId ?? null},
+      ${args.donationUrl ?? null},
+      ${args.coverMediaId ?? null},
+      ${args.capacity ?? null},
+      ${args.bags ?? 0}
+    )
+  `
+  return id
+}
 
 interface StoredCleanup {
   id: string
@@ -79,7 +147,7 @@ interface StoredCleanup {
   jurisdictionGeoid: string | null
   referenceCode: string | null
   createdAt: Date
-  endsAt: Date | null
+  endsAt: Date
   timezone: string | null
   visibility: EventVisibility
   coverMediaId: string | null
@@ -155,6 +223,7 @@ interface StoredUser {
   displayName: string
   handle: string | null
   bio: string | null
+  avatarUrl: string | null
 }
 
 interface StoredReport {
@@ -210,8 +279,23 @@ export interface GuestCountSource {
   activeGuestCount(cleanupId: string): number
 }
 
+export interface SignupRegistrationSink {
+  ensureSignupRegistration(args: {
+    cleanupId: string
+    userId: string
+    seatId: string
+    now: Date
+  }): unknown
+  cancelSignupRegistration(args: { cleanupId: string; userId: string; now: Date }): unknown
+}
+
+export function signupSeat(): SignupSeat {
+  return { seatId: randomUUID(), tokenHash: randomUUID() }
+}
+
 export class InMemoryCleanupRepository implements CleanupRepository {
   guestSource: GuestCountSource | null = null
+  registrationSink: SignupRegistrationSink | null = null
   readonly cleanups = new Map<string, StoredCleanup>()
   readonly organizations = new Map<string, StoredOrganization>()
   readonly orgMembers: StoredOrgMember[] = []
@@ -254,6 +338,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       displayName: over.displayName ?? "Organizer",
       handle: over.handle ?? null,
       bio: over.bio ?? null,
+      avatarUrl: over.avatarUrl ?? null,
     }
     this.users.set(user.id, user)
     return user
@@ -300,7 +385,13 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     )
   }
 
-  seedCleanup(over: Partial<StoredCleanup> & { id?: string }): StoredCleanup {
+  /** `withDefaultSlot: false` reproduces a LEGACY slot-less event — the shape 0169 backfilled away. */
+  seedCleanup(
+    over: Partial<StoredCleanup> & { id?: string; withDefaultSlot?: boolean },
+  ): StoredCleanup {
+    const seededStatus = over.status ?? "upcoming"
+    const scheduledAt =
+      over.scheduledAt ?? new Date(this.now().getTime() + defaultStartOffsetMs(seededStatus))
     const cleanup: StoredCleanup = {
       id: over.id ?? randomUUID(),
       organizerUserId: over.organizerUserId ?? randomUUID(),
@@ -310,16 +401,16 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       description: over.description ?? null,
       lat: over.lat ?? 34.0,
       lng: over.lng ?? -118.49,
-      scheduledAt: over.scheduledAt ?? new Date(Date.now() + 86_400_000),
+      scheduledAt,
       completedAt: over.completedAt ?? null,
-      status: over.status ?? "upcoming",
+      status: seededStatus === "cancelled" ? "cancelled" : "upcoming",
       bring: over.bring ?? null,
       address: over.address ?? null,
       capacity: over.capacity ?? null,
       jurisdictionGeoid: over.jurisdictionGeoid ?? null,
       referenceCode: over.referenceCode ?? null,
       createdAt: over.createdAt ?? new Date(),
-      endsAt: over.endsAt ?? null,
+      endsAt: over.endsAt ?? new Date(scheduledAt.getTime() + DEFAULT_EVENT_DURATION_MS),
       timezone: over.timezone ?? null,
       visibility: over.visibility ?? "public",
       coverMediaId: over.coverMediaId ?? null,
@@ -340,6 +431,13 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (!this.members.some((m) => m.cleanupId === cleanup.id && m.userId === cleanup.organizerUserId)) {
       this.members.push({ cleanupId: cleanup.id, userId: cleanup.organizerUserId, role: "organizer" })
     }
+    if (over.withDefaultSlot !== false) {
+      this.seedSlot({
+        cleanupId: cleanup.id,
+        title: DEFAULT_EVENT_SLOT_TITLE,
+        capacity: cleanup.capacity,
+      })
+    }
     return cleanup
   }
 
@@ -350,6 +448,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       displayName: u?.displayName ?? "Unknown",
       handle: u?.handle ?? null,
       bio: u?.bio ?? null,
+      avatarUrl: u?.avatarUrl ?? null,
     }
   }
 
@@ -377,7 +476,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       lng: c.lng,
       scheduledAt: c.scheduledAt,
       completedAt: c.completedAt,
-      status: c.status,
+      status: deriveCleanupStatus(eventWindowOf(c), this.now().getTime()),
       bring: c.bring,
       address: c.address,
       capacity: c.capacity,
@@ -450,7 +549,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       jurisdictionGeoid: args.jurisdictionGeoid,
       referenceCode,
       createdAt: this.now(),
-      endsAt: args.host.endsAt ?? null,
+      endsAt: args.host.endsAt,
       timezone: args.host.timezone ?? null,
       visibility: args.host.visibility ?? "public",
       coverMediaId: args.host.coverMediaId ?? null,
@@ -773,7 +872,9 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const have = this.links.filter((l) => l.cleanupId === cleanupId).map((l) => l.reportId)
     const want = new Set(desiredIds)
     const toAdd = desiredIds.filter((id) => !have.includes(id))
-    const toRemove = have.filter((id) => !want.has(id))
+    const toRemove = have.filter(
+      (id) => !want.has(id) && this.reportVisible(this.reports.get(id)),
+    )
     const added = this.linkInner(cleanupId, toAdd, actorId)
     for (const reportId of toRemove) {
       const idx = this.links.findIndex((l) => l.cleanupId === cleanupId && l.reportId === reportId)
@@ -830,8 +931,10 @@ export class InMemoryCleanupRepository implements CleanupRepository {
         id: c.id,
         title: c.title,
         eventKind: c.eventKind,
-        status: c.status,
+        status: deriveCleanupStatus(eventWindowOf(c), this.now().getTime()),
         scheduledAt: c.scheduledAt,
+        endsAt: c.endsAt,
+        timezone: c.timezone,
         lat: c.lat,
         lng: c.lng,
         going: this.goingOf(c.id),
@@ -878,12 +981,9 @@ export class InMemoryCleanupRepository implements CleanupRepository {
 
     let all = [...this.cleanups.values()].filter((c) => {
       if (filters.when === "upcoming" || filters.when === "attending") {
-        const at = c.scheduledAt.getTime()
-        if (at < nowMs - IN_PROGRESS_GRACE_HOURS * 60 * 60 * 1000) return false
-        if (!(at >= nowMs || c.status === "active")) return false
-        if (c.status === "cancelled" || c.status === "done") return false
+        if (c.status === "cancelled" || c.endsAt.getTime() <= nowMs) return false
       } else if (filters.when === "past") {
-        if (!(c.scheduledAt.getTime() < nowMs && c.status !== "cancelled")) return false
+        if (c.status === "cancelled" || c.endsAt.getTime() > nowMs) return false
       } else if (c.status === "cancelled") {
         return false
       }
@@ -947,11 +1047,8 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const matching = [...this.cleanups.values()].filter((c) => {
       if (c.organizationId !== filters.organizationId) return false
       if (c.visibility !== "public") return false
-      const at = c.scheduledAt.getTime()
-      if (past) return at < nowMs && c.status !== "cancelled"
-      if (at < nowMs - IN_PROGRESS_GRACE_HOURS * 60 * 60 * 1000) return false
-      if (!(at >= nowMs || c.status === "active")) return false
-      return c.status !== "cancelled" && c.status !== "done"
+      if (past) return c.status !== "cancelled" && c.endsAt.getTime() <= nowMs
+      return c.status !== "cancelled" && c.endsAt.getTime() > nowMs
     })
     matching.sort((a, b) => {
       const cmp = a.scheduledAt.getTime() - b.scheduledAt.getTime()
@@ -1009,12 +1106,13 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   removeMember(cleanupId: string, userId: string, actorId: string): Promise<RemoveMemberOutcome> {
     const cleanup = this.cleanups.get(cleanupId)
     if (cleanup === undefined) return Promise.resolve({ kind: "not_found" })
-    if (isCleanupTerminal(cleanup.status)) return Promise.resolve({ kind: "closed" })
+    if (cleanup.status === "cancelled") return Promise.resolve({ kind: "closed" })
     const idx = this.members.findIndex(
       (m) => m.cleanupId === cleanupId && m.userId === userId && m.role !== "organizer",
     )
     if (idx >= 0) {
       this.members.splice(idx, 1)
+      this.cancelSignupRegistration(cleanupId, userId)
       if (!this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
         this.bans.push({ cleanupId, userId, bannedByUserId: actorId })
       }
@@ -1051,29 +1149,46 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(c ? c.organizerUserId : null)
   }
 
-  joinCleanupTx(cleanupId: string, userId: string): Promise<JoinCleanupOutcome> {
+  joinCleanupTx(cleanupId: string, userId: string, seat: SignupSeat): Promise<JoinCleanupOutcome> {
     const cleanup = this.cleanups.get(cleanupId)
     if (cleanup === undefined) return Promise.resolve("not_found")
     if (this.privateBlocksJoin(cleanup, userId)) return Promise.resolve("not_found")
-    if (isCleanupTerminal(cleanup.status)) return Promise.resolve("closed")
-    if (hasEventEnded(cleanup, this.now())) return Promise.resolve("ended")
+    if (cleanup.status === "cancelled") return Promise.resolve("closed")
+    if (hasEventEnded(eventWindowOf(cleanup), this.now().getTime())) return Promise.resolve("ended")
     if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
       return Promise.resolve("banned")
     }
     if (!this.members.some((m) => m.cleanupId === cleanupId && m.userId === userId)) {
       this.members.push({ cleanupId, userId, role: "member" })
     }
+    this.ensureSignupRegistration(cleanupId, userId, seat)
     return Promise.resolve("joined")
   }
 
   leaveCleanup(cleanupId: string, userId: string): Promise<LeaveCleanupOutcome> {
     const cleanup = this.cleanups.get(cleanupId)
     if (cleanup === undefined) return Promise.resolve("not_found")
-    if (isCleanupTerminal(cleanup.status)) return Promise.resolve("closed")
+    if (cleanup.status === "cancelled") return Promise.resolve("closed")
     const idx = this.members.findIndex((m) => m.cleanupId === cleanupId && m.userId === userId)
     if (idx >= 0) this.members.splice(idx, 1)
+    this.cancelSignupRegistration(cleanupId, userId)
     this.deleteClaim(cleanupId, userId)
     return Promise.resolve("left")
+  }
+
+  private ensureSignupRegistration(cleanupId: string, userId: string, seat: SignupSeat): void {
+    if (this.registrationSink === null) return
+    this.registrationSink.ensureSignupRegistration({
+      cleanupId,
+      userId,
+      seatId: seat.seatId,
+      now: this.now(),
+    })
+  }
+
+  private cancelSignupRegistration(cleanupId: string, userId: string): void {
+    if (this.registrationSink === null) return
+    this.registrationSink.cancelSignupRegistration({ cleanupId, userId, now: this.now() })
   }
 
   private deleteClaim(cleanupId: string, userId: string): string | null {
@@ -1092,33 +1207,10 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const c = this.cleanups.get(id)
     if (!c) return Promise.resolve("not_found")
     if (c.status === "cancelled") return Promise.resolve("already_cancelled")
-    if (c.status === "done") return Promise.resolve("already_completed")
+    if (c.endsAt.getTime() <= this.now().getTime()) return Promise.resolve("already_ended")
     c.status = "cancelled"
     this.timeline.push({ cleanupId: id, kind: "cancel", reportId: "", note: input.note, actorId: input.actorId })
     return Promise.resolve("cancelled")
-  }
-
-  completeCleanupTx(
-    id: string,
-    input: { note: string; actorId: string; now: Date },
-  ): Promise<CompleteCleanupOutcome> {
-    const c = this.cleanups.get(id)
-    if (!c) return Promise.resolve("not_found")
-    if (c.status === "cancelled") return Promise.resolve("cancelled")
-    if (c.status === "done") return Promise.resolve("already_completed")
-    if (c.scheduledAt.getTime() + MIN_EVENT_DURATION_MS > input.now.getTime()) {
-      return Promise.resolve("too_early")
-    }
-    c.status = "done"
-    c.completedAt = input.now
-    this.timeline.push({
-      cleanupId: id,
-      kind: "status",
-      reportId: "",
-      note: input.note,
-      actorId: input.actorId,
-    })
-    return Promise.resolve("completed")
   }
 
   listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]> {
@@ -1269,14 +1361,19 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve({ added, updated, removed, rescheduled })
   }
 
-  claimSlot(cleanupId: string, userId: string, slotId: string): Promise<ClaimSlotOutcome> {
+  claimSlot(
+    cleanupId: string,
+    userId: string,
+    slotId: string,
+    seat: SignupSeat,
+  ): Promise<ClaimSlotOutcome> {
     const cleanup = this.cleanups.get(cleanupId)
     if (!cleanup) return Promise.resolve({ kind: "not_found" })
     if (this.privateBlocksJoin(cleanup, userId)) return Promise.resolve({ kind: "not_found" })
-    if (isCleanupTerminal(cleanup.status)) {
-      return Promise.resolve({ kind: "closed" })
+    if (cleanup.status === "cancelled") return Promise.resolve({ kind: "closed" })
+    if (hasEventEnded(eventWindowOf(cleanup), this.now().getTime())) {
+      return Promise.resolve({ kind: "ended" })
     }
-    if (hasEventEnded(cleanup, this.now())) return Promise.resolve({ kind: "ended" })
     if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
       return Promise.resolve({ kind: "banned" })
     }
@@ -1295,6 +1392,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       this.members.push({ cleanupId, userId, role: "member" })
       if (!this.users.has(userId)) this.seedUser({ id: userId })
     }
+    this.ensureSignupRegistration(cleanupId, userId, seat)
     if (current) current.slotId = slotId
     else this.slotClaims.push({ cleanupId, userId, slotId })
     return Promise.resolve({ kind: "claimed", slotId })
@@ -1303,9 +1401,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   releaseSlot(cleanupId: string, userId: string): Promise<ClaimSlotOutcome> {
     const cleanup = this.cleanups.get(cleanupId)
     if (!cleanup) return Promise.resolve({ kind: "not_found" })
-    if (isCleanupTerminal(cleanup.status)) {
-      return Promise.resolve({ kind: "closed" })
-    }
+    if (cleanup.status === "cancelled") return Promise.resolve({ kind: "closed" })
     this.deleteClaim(cleanupId, userId)
     return Promise.resolve({ kind: "released" })
   }

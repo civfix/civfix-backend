@@ -218,7 +218,6 @@ export function makeReportChatRepository(
           u.avatar_url,
           u.deleted_at AS user_deleted_at,
           EXISTS (
-          EXISTS (
             SELECT 1 FROM follows_people f
             WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id
           ) AS is_following,

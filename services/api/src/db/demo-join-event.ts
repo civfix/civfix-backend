@@ -21,6 +21,7 @@
 import { makeDb, type TransactionSql } from "./client.js"
 import { runIfMain } from "./cli.js"
 import { DEMO_EMAIL_DOMAIN } from "./seed-demo-domain.js"
+import { deriveCleanupStatus, eventWindowOf } from "../services/cleanup-rules.js"
 
 // --- deterministic PRNG (mulberry32), same generator seed-demo-la uses ---------------------------
 
@@ -76,6 +77,7 @@ interface EventRow {
   title: string
   status: string
   scheduled_at: Date
+  ends_at: Date
   created_at: Date
   capacity: number | null
   organizer_user_id: string
@@ -84,7 +86,7 @@ interface EventRow {
 async function loadEvent(tx: TransactionSql, ref: string): Promise<EventRow | null> {
   if (UUID_RE.test(ref)) {
     const rows = await tx<EventRow[]>`
-      SELECT id, title, status, scheduled_at, created_at, capacity, organizer_user_id
+      SELECT id, title, status, scheduled_at, ends_at, created_at, capacity, organizer_user_id
       FROM cleanups WHERE id = ${ref} LIMIT 1
     `
     return rows[0] ?? null
@@ -92,7 +94,7 @@ async function loadEvent(tx: TransactionSql, ref: string): Promise<EventRow | nu
   // Reference code, with or without the EVENT- prefix (codes are stored as EVENT-{JURCODE}-{NNNNNN}).
   const code = ref.toUpperCase().startsWith("EVENT-") ? ref.toUpperCase() : `EVENT-${ref}`
   const rows = await tx<EventRow[]>`
-    SELECT id, title, status, scheduled_at, created_at, capacity, organizer_user_id
+    SELECT id, title, status, scheduled_at, ends_at, created_at, capacity, organizer_user_id
     FROM cleanups WHERE reference_code = ${code} LIMIT 1
   `
   return rows[0] ?? null
@@ -122,10 +124,18 @@ export async function main(): Promise<void> {
         const event = await loadEvent(tx, eventRef)
         if (!event) throw new Error(`event not found for "${eventRef}"`)
         await tx`SELECT status FROM cleanups WHERE id = ${event.id} FOR SHARE`
-        if (event.status === "done" || event.status === "cancelled") {
-          throw new Error(`event "${event.title}" is ${event.status}; the live join path refuses closed events`)
+        const derived = deriveCleanupStatus(
+          eventWindowOf({
+            status: event.status === "cancelled" ? "cancelled" : "upcoming",
+            scheduledAt: event.scheduled_at,
+            endsAt: event.ends_at,
+          }),
+          Date.now(),
+        )
+        if (derived === "done" || derived === "cancelled") {
+          throw new Error(`event "${event.title}" is ${derived}; the live join path refuses closed events`)
         }
-        console.log(`event: ${event.title} (${event.status}, scheduled ${event.scheduled_at.toISOString()})`)
+        console.log(`event: ${event.title} (${derived}, scheduled ${event.scheduled_at.toISOString()})`)
 
         // Demo users not already members, not banned, not the organizer; skip soft-deleted.
         const candidates = await tx<{ id: string; handle: string; created_at: Date }[]>`

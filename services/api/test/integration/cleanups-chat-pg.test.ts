@@ -12,10 +12,12 @@
  * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
  */
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { signupSeat } from "../helpers/cleanups.js"
 import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
@@ -52,7 +54,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
   it("createCleanupTx inserts the cleanup + organizer membership atomically", async () => {
     const organizerId = await newUser("Org Atomic")
     const repo = makeDrizzleCleanupRepository(h.sql)
-    const service = makeCleanupService({ repo })
+    const service = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo })
 
     const dto = await service.createCleanup(
       {
@@ -62,6 +64,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         lat: 34.05,
         lng: -118.25,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
         bring: ["gloves"],
         address: "Main gate",
       },
@@ -84,7 +87,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     const organizerId = await newUser("Org Join")
     const aliceId = await newUser("Alice Join")
     const repo = makeDrizzleCleanupRepository(h.sql)
-    const service = makeCleanupService({ repo })
+    const service = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo })
     const created = await service.createCleanup(
       {
         title: "Join sweep",
@@ -93,6 +96,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         lat: 34.06,
         lng: -118.26,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )
@@ -106,7 +110,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
   it("persists chat into the partitioned table and pages history newest-first with a cursor", async () => {
     const organizerId = await newUser("Org Chat")
     const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
-    const cleanupService = makeCleanupService({ repo: cleanupRepo })
+    const cleanupService = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo: cleanupRepo })
     const created = await cleanupService.createCleanup(
       {
         title: "Chat sweep",
@@ -115,6 +119,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         lat: 34.07,
         lng: -118.27,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )
@@ -165,7 +170,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
   it("P1-5: a `before` cursor from ANOTHER room cannot seek/leak into this room", async () => {
     const organizerId = await newUser("Org XRoom")
     const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
-    const cleanupService = makeCleanupService({ repo: cleanupRepo })
+    const cleanupService = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo: cleanupRepo })
     const mk = (title: string) =>
       cleanupService.createCleanup(
         {
@@ -175,6 +180,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
           lat: 34.07,
           lng: -118.27,
           scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+          slots: [{ title: "General volunteers", capacity: null }],
         },
         organizerId,
       )
@@ -204,7 +210,10 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
   it("persists the chat read watermark (cleanup_members.last_read_at) monotonically", async () => {
     const organizerId = await newUser("Org Read")
     const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
-    const created = await makeCleanupService({ repo: cleanupRepo }).createCleanup(
+    const created = await makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: cleanupRepo,
+    }).createCleanup(
       {
         title: "Read sweep",
         type: "site",
@@ -212,6 +221,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         lat: 34.09,
         lng: -118.29,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )
@@ -262,7 +272,10 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       const organizerToken = await authServices.sessions.createSession(organizerId, [])
 
       const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
-      const created = await makeCleanupService({ repo: cleanupRepo }).createCleanup(
+      const created = await makeCleanupService({
+        tickets: TEST_TICKET_SIGNER,
+        repo: cleanupRepo,
+      }).createCleanup(
         {
           title: "Route sweep",
           type: "site",
@@ -270,6 +283,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
           lat: 34.08,
           lng: -118.28,
           scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+          slots: [{ title: "General volunteers", capacity: null }],
         },
         organizerId,
       )
@@ -323,7 +337,10 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       const organizerToken = await authServices.sessions.createSession(organizerId, [])
 
       const cleanupRepo = makeDrizzleCleanupRepository(h.sql)
-      const created = await makeCleanupService({ repo: cleanupRepo }).createCleanup(
+      const created = await makeCleanupService({
+        tickets: TEST_TICKET_SIGNER,
+        repo: cleanupRepo,
+      }).createCleanup(
         {
           title: "Reaction sweep",
           type: "site",
@@ -331,6 +348,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
           lat: 34.1,
           lng: -118.3,
           scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+          slots: [{ title: "General volunteers", capacity: null }],
         },
         organizerId,
       )
@@ -379,7 +397,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     const aliceId = await newUser("Alice Roles")
     const bobId = await newUser("Bob Roles")
     const repo = makeDrizzleCleanupRepository(h.sql)
-    const service = makeCleanupService({ repo })
+    const service = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo })
     const created = await service.createCleanup(
       {
         title: "Roles sweep",
@@ -388,6 +406,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         lat: 34.08,
         lng: -118.28,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )
@@ -423,11 +442,11 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     // M17: the same transaction wrote the ban that makes the removal stick — the self-service join
     // now refuses instead of silently re-creating the membership row.
     expect(await repo.isBanned(created.id, bobId)).toBe(true)
-    expect(await repo.joinCleanupTx(created.id, bobId)).toBe("banned")
+    expect(await repo.joinCleanupTx(created.id, bobId, signupSeat())).toBe("banned")
     expect(await repo.isMember(created.id, bobId)).toBe(false)
     // The organizer lifts it, and only then can Bob RSVP again.
     expect(await repo.unbanMember(created.id, bobId)).toBe(true)
-    expect(await repo.joinCleanupTx(created.id, bobId)).toBe("joined")
+    expect(await repo.joinCleanupTx(created.id, bobId, signupSeat())).toBe("joined")
     expect(await repo.isMember(created.id, bobId)).toBe(true)
     // Direct repo guard: removing the organizer row is refused (and writes no ban).
     expect((await repo.removeMember(created.id, organizerId, organizerId)).kind).toBe("not_member")

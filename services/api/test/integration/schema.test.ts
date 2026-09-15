@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 import { getTableName, is } from "drizzle-orm"
 import { PgTable, getTableConfig } from "drizzle-orm/pg-core"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import * as schema from "../../src/db/schema/index.js"
 import { FEED_HIDDEN_NOTIFICATION_TYPES } from "../../src/services/notification-helpers.js"
 
@@ -437,9 +438,10 @@ describe.skipIf(!pg)("schema (Phase 2): admin migration 0007 produces the expect
       INSERT INTO users (display_name) VALUES ('Cleanup Host') RETURNING id
     `
     const ins = await h.sql<{ bags: number; capacity: number | null }[]>`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
+      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, ends_at, status)
       VALUES (${host[0]!.id}, 'site', 'Bags default check',
-              ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), now(), 'upcoming')
+              ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326), now(),
+              now() + interval '4 hours', 'upcoming')
       RETURNING bags, capacity
     `
     expect(ins[0]?.bags).toBe(0)
@@ -523,18 +525,16 @@ describe.skipIf(!pg)("schema (0167): cleanup_slots carries an optional time wind
   const h = pg as PgHarness
 
   async function newSlotHost(): Promise<string> {
-    const id = randomUUID()
     const [host] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name) VALUES ('Slot Window Host') RETURNING id
     `
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (
-        ${id}, ${host!.id}, 'site', 'Window sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), now() + interval '7 days', 'upcoming'
-      )
-    `
-    return id
+    return await seedCleanup(h.sql, {
+      organizerUserId: host!.id,
+      title: "Window sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: new Date(Date.now() + 7 * 86_400_000),
+    })
   }
 
   it("added starts_at and ends_at as NULLable timestamptz with no default", async () => {

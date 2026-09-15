@@ -17,6 +17,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import postgres from "postgres"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleModerationRepository } from "../../src/services/admin/moderation-repository.drizzle.js"
 import type { ModerationRepository } from "../../src/services/admin/moderation-service.js"
@@ -61,12 +62,12 @@ describe.skipIf(!pg)("F160: batched destination refs match the per-item lookup",
   }
 
   async function newCleanup(organizerId: string): Promise<string> {
-    const [c] = await h.sql<{ id: string }[]>`
-      INSERT INTO cleanups (organizer_user_id, title, type, geom, scheduled_at, status)
-      VALUES (${organizerId}, 'Beach cleanup', 'site', ST_SetSRID(ST_MakePoint(-118.49, 34.0), 4326), now(), 'upcoming')
-      RETURNING id
-    `
-    return c!.id
+    return await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Beach cleanup",
+      lng: -118.49,
+      lat: 34.0,
+    })
   }
 
   async function newChatMessage(

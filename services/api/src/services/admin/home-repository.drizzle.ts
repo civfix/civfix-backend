@@ -15,6 +15,7 @@ import type {
   UsersSectionCounts,
 } from "./home-types.js"
 import type { EventKind, ReportCategory } from "@civfix/shared"
+import { adminEventStatusExpr } from "../cleanup-sql.js"
 
 function num(value: string | null | undefined): number {
   if (value == null) return 0
@@ -82,10 +83,10 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     async eventsSummary(): Promise<EventsSectionCounts> {
       const rows = await sql<{ upcoming: string; live: string; attending: string }[]>`
         SELECT
-          COUNT(*) FILTER (WHERE c.status = 'upcoming')::text AS upcoming,
-          COUNT(*) FILTER (WHERE c.status IN ('active', 'in_progress'))::text AS live,
+          COUNT(*) FILTER (WHERE ${adminEventStatusExpr(sql)} = 'upcoming')::text AS upcoming,
+          COUNT(*) FILTER (WHERE ${adminEventStatusExpr(sql)} = 'in_progress')::text AS live,
           COALESCE(SUM(
-            CASE WHEN c.status NOT IN ('done', 'completed', 'cancelled')
+            CASE WHEN ${adminEventStatusExpr(sql)} NOT IN ('completed', 'cancelled')
               THEN COALESCE(mc.n, 0)
               ELSE 0 END
           ), 0)::text AS attending
@@ -190,7 +191,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
             c.id::text AS id,
             ST_Y(c.geom) AS lat,
             ST_X(c.geom) AS lng,
-            c.status AS status,
+            ${adminEventStatusExpr(sql)} AS status,
             c.event_kind AS event_kind,
             c.title AS title,
             c.address AS place,

@@ -51,7 +51,7 @@ export const cleanups = pgTable(
     jurisdictionGeoid: text("jurisdiction_geoid").references(() => jurisdictions.geoid),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
-    endsAt: timestamp("ends_at", { withTimezone: true }),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
     timezone: text("timezone"),
     visibility: text("visibility").$type<EventVisibility>().notNull().default("public"),
     coverMediaId: uuid("cover_media_id"),
@@ -111,6 +111,10 @@ export const cleanups = pgTable(
       .on(t.coverMediaId)
       .where(sql`${t.coverMediaId} is not null`),
     index("cleanups_gallery_media_gin_idx").using("gin", t.galleryMediaIds),
+    index("cleanups_ends_at_idx").on(t.endsAt),
+    index("cleanups_reminder_sweep_v2_idx")
+      .on(t.scheduledAt)
+      .where(sql`${t.status} <> 'cancelled'`),
   ],
 )
 

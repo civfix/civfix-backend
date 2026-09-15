@@ -1,14 +1,50 @@
-import { AppError, ErrorCode } from "@civfix/shared"
-import type { CleanupStatus } from "@civfix/shared"
+import {
+  AppError,
+  ErrorCode,
+  MAX_EVENT_DURATION_MINUTES,
+  MIN_EVENT_DURATION_MINUTES,
+} from "@civfix/shared"
+import type { CleanupStatus, EventSlotInput } from "@civfix/shared"
+import {
+  DEFAULT_EVENT_DURATION_MS,
+  deriveCleanupStatus,
+  eventEndsAtMs,
+  hasEventEnded,
+  hasEventStarted,
+} from "@civfix/shared/host"
+import type { EventWindowLike } from "@civfix/shared/host"
+
+export {
+  DEFAULT_EVENT_DURATION_MS,
+  deriveCleanupStatus,
+  eventEndsAtMs,
+  hasEventEnded,
+  hasEventStarted,
+}
+export type { EventWindowLike }
 
 export const SCHEDULE_MAX_BACKDATE_MS = 24 * 60 * 60 * 1000
 
-export const MIN_EVENT_DURATION_MS = 15 * 60 * 1000
+export const DEFAULT_EVENT_SLOT_TITLE = "General volunteers"
+
+export const EVENT_NEEDS_A_SLOT_MESSAGE = "an event needs at least one signup slot"
+
+export function defaultEventSlot(capacity: number | null): EventSlotInput {
+  return {
+    title: DEFAULT_EVENT_SLOT_TITLE,
+    description: null,
+    capacity: capacity !== null && Number.isInteger(capacity) && capacity > 0 ? capacity : null,
+    startsAt: null,
+    endsAt: null,
+    sortOrder: 0,
+  }
+}
+
+export const MIN_EVENT_DURATION_MS = MIN_EVENT_DURATION_MINUTES * 60 * 1000
+
+export const MAX_EVENT_DURATION_MS = MAX_EVENT_DURATION_MINUTES * 60 * 1000
+
 export const SCHEDULE_MAX_AHEAD_MS = 2 * 365 * 24 * 60 * 60 * 1000
-
-export const IN_PROGRESS_GRACE_HOURS = 24
-
-export const IN_PROGRESS_GRACE_MS = IN_PROGRESS_GRACE_HOURS * 60 * 60 * 1000
 
 export const EVENT_ENDED_FIELD = "event"
 
@@ -22,19 +58,28 @@ export function eventEndedError(): AppError {
   })
 }
 
-export function isCleanupTerminal(status: CleanupStatus): boolean {
-  return status === "done" || status === "cancelled"
-}
-
 export interface EventWindow {
+  status?: CleanupStatus
   scheduledAt: Date
   endsAt: Date | null
 }
 
-export function eventEndsAt(window: EventWindow): Date {
-  return window.endsAt ?? new Date(window.scheduledAt.getTime() + IN_PROGRESS_GRACE_MS)
+export function eventWindowOf(window: EventWindow): EventWindowLike {
+  return {
+    status: window.status ?? "upcoming",
+    scheduledAt: window.scheduledAt.toISOString(),
+    endsAt: window.endsAt === null ? null : window.endsAt.toISOString(),
+  }
 }
 
-export function hasEventEnded(window: EventWindow, now: Date): boolean {
-  return eventEndsAt(window).getTime() < now.getTime()
+export function eventWindowOfRow(row: {
+  status: CleanupStatus
+  scheduled_at: Date
+  ends_at: Date | null
+}): EventWindowLike {
+  return eventWindowOf({
+    status: row.status,
+    scheduledAt: row.scheduled_at,
+    endsAt: row.ends_at,
+  })
 }

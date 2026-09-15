@@ -1,4 +1,5 @@
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -46,7 +47,10 @@ describe.skipIf(!pg)("chat media attach (integration)", () => {
   }
 
   async function newCleanup(organizerId: string): Promise<string> {
-    const service = makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) })
+    const service = makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: makeDrizzleCleanupRepository(h.sql),
+    })
     const dto = await service.createCleanup(
       {
         title: "Media sweep",
@@ -55,6 +59,7 @@ describe.skipIf(!pg)("chat media attach (integration)", () => {
         lat: 34.05,
         lng: -118.25,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )

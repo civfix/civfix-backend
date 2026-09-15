@@ -1,6 +1,8 @@
 import type { BroadcastKind, CleanupStatus, RegistrationSource } from "@civfix/shared"
 import type { DayCount, DayTimeCount, KeyCount } from "@civfix/shared/host"
 import type { Sql } from "../../db/client.js"
+import { cleanupStatusExpr } from "../cleanup-sql.js"
+import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
 
 export const INSIGHTS_TREND_LIMIT = 400
 
@@ -34,7 +36,7 @@ interface EventClockRowSelect {
 }
 
 function eventClockColumns(tag: Sql) {
-  return tag`status, scheduled_at, ends_at, completed_at, registration_closes_at, timezone`
+  return tag`${cleanupStatusExpr(tag)} AS status, c.scheduled_at, c.ends_at, c.completed_at, c.registration_closes_at, c.timezone`
 }
 
 export interface SeatTrendPoint {
@@ -123,7 +125,7 @@ export interface AnalyticsRepository {
   portfolioTotals(cleanupIds: readonly string[]): Promise<PortfolioTotals>
   portfolioByEvent(cleanupIds: readonly string[], limit: number): Promise<KeyCount[]>
   portfolioDayTime(cleanupIds: readonly string[]): Promise<DayTimeCount[]>
-  broadcastsSent(cleanupId: string, from: string, to: string): Promise<number>
+  broadcastsSent(cleanupId: string, timezone: string, from: string, to: string): Promise<number>
   eventClock(cleanupId: string): Promise<EventClockRecord | null>
   seatTrend(cleanupId: string, timezone: string): Promise<SeatTrendPoint[]>
   registrationsBySource(cleanupId: string): Promise<SourceSeats[]>
@@ -336,21 +338,20 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
       return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
     },
 
-    async broadcastsSent(cleanupId, from, to) {
+    async broadcastsSent(cleanupId, timezone, from, to) {
       const rows = await sql<{ n: string }[]>`
         SELECT count(*)::text AS n
           FROM broadcasts b
          WHERE b.cleanup_id = ${cleanupId}
            AND b.status IN ('sent','failed')
            AND b.finished_at IS NOT NULL
-           AND b.finished_at >= ${from}::date
-           AND b.finished_at < (${to}::date + 1)`
+           AND (b.finished_at AT TIME ZONE ${timezone})::date BETWEEN ${from}::date AND ${to}::date`
       return Number(rows[0]?.n ?? 0)
     },
 
     async eventClock(cleanupId) {
       const rows = await sql<EventClockRowSelect[]>`
-        SELECT ${eventClockColumns(sql)} FROM cleanups WHERE id = ${cleanupId}`
+        SELECT ${eventClockColumns(sql)} FROM cleanups c WHERE c.id = ${cleanupId}`
       const row = rows[0]
       if (row === undefined) return null
       return {
@@ -529,9 +530,9 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     async portfolioDayTime(cleanupIds) {
       if (cleanupIds.length === 0) return []
       const rows = await sql<{ weekday: string; hour: string; n: string }[]>`
-        SELECT extract(dow FROM c.scheduled_at AT TIME ZONE COALESCE(c.timezone, 'UTC'))::int::text
+        SELECT extract(dow FROM c.scheduled_at AT TIME ZONE COALESCE(c.timezone, ${DEFAULT_EVENT_TIME_ZONE}))::int::text
                  AS weekday,
-               extract(hour FROM c.scheduled_at AT TIME ZONE COALESCE(c.timezone, 'UTC'))::int::text
+               extract(hour FROM c.scheduled_at AT TIME ZONE COALESCE(c.timezone, ${DEFAULT_EVENT_TIME_ZONE}))::int::text
                  AS hour,
                count(r.id)::text AS n
           FROM cleanups c

@@ -14,6 +14,7 @@
  * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
  */
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
@@ -82,7 +83,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
 
   /** Create a cleanup whose organizer is `organizerId` (organizer row == chat membership). */
   async function newCleanup(organizerId: string): Promise<string> {
-    const created = await makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) }).createCleanup(
+    const created = await makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: makeDrizzleCleanupRepository(h.sql),
+    }).createCleanup(
       {
         title: "Edit sweep",
         type: "site",
@@ -90,6 +94,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
         lat: 34.05,
         lng: -118.25,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )
@@ -189,7 +194,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     const msg = await chat.insertMessage({ cleanupId, userId: organizerId, body: "mine" }, randomUUID())
 
     const mallory = await newUser("Edit Mallory")
-    await makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) }).joinCleanup(cleanupId, mallory)
+    await makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: makeDrizzleCleanupRepository(h.sql),
+    }).joinCleanup(cleanupId, mallory)
 
     await expect(
       makeService().editMessage({

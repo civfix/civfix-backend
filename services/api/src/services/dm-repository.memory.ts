@@ -151,6 +151,7 @@ export class InMemoryDmRepository implements DmRepository {
         handle: sender.handle ?? null,
         bio: sender.bio ?? null,
         avatar: avatarGradient(sender.id),
+        ...(sender.avatarUrl != null ? { avatarUrl: sender.avatarUrl } : {}),
         followers: 0,
         following: 0,
         isFollowing: false,

@@ -1,3 +1,4 @@
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
@@ -59,7 +60,10 @@ describe.skipIf(!pg)("F040: the cleanup read ack only advances on a message from
   }
 
   async function newCleanup(organizerId: string, title: string): Promise<string> {
-    const dto = await makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) }).createCleanup(
+    const dto = await makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: makeDrizzleCleanupRepository(h.sql),
+    }).createCleanup(
       {
         title,
         type: "site",
@@ -67,6 +71,7 @@ describe.skipIf(!pg)("F040: the cleanup read ack only advances on a message from
         lat: 34.05,
         lng: -118.25,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )

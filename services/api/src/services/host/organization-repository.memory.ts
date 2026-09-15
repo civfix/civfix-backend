@@ -114,6 +114,7 @@ interface StoredPerson {
   /** Mirrors users.email_verified: an email invite is only resolvable by / acceptable with a VERIFIED address. */
   emailVerified: boolean
   bio: string | null
+  avatarUrl: string | null
   createdAt: Date
   deletedAt: Date | null
 }
@@ -145,6 +146,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       email: over.email ?? null,
       emailVerified: over.emailVerified ?? true,
       bio: over.bio ?? null,
+      avatarUrl: over.avatarUrl ?? null,
       createdAt: over.createdAt ?? new Date("2025-01-01T00:00:00.000Z"),
       deletedAt: over.deletedAt ?? null,
     }
@@ -361,6 +363,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
             displayName: person.displayName,
             handle: person.handle,
             bio: person.bio,
+            avatarUrl: person.avatarUrl,
           },
           role: m.role,
           joinedAt: m.joinedAt,
@@ -377,7 +380,13 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     if (member === undefined) return Promise.resolve(null)
     const person = this.personOf(member.userId)
     return Promise.resolve({
-      person: { id: person.id, displayName: person.displayName, handle: person.handle, bio: person.bio },
+      person: {
+        id: person.id,
+        displayName: person.displayName,
+        handle: person.handle,
+        bio: person.bio,
+        avatarUrl: person.avatarUrl,
+      },
       role: member.role,
       joinedAt: member.joinedAt,
     })
@@ -817,7 +826,13 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
   private personView(userId: string | null) {
     if (userId === null) return null
     const person = this.personOf(userId)
-    return { id: person.id, displayName: person.displayName, handle: person.handle, bio: person.bio }
+    return {
+      id: person.id,
+      displayName: person.displayName,
+      handle: person.handle,
+      bio: person.bio,
+      avatarUrl: person.avatarUrl,
+    }
   }
 
   private toInviteRecord(invite: StoredInvite): OrganizationInviteRecord {

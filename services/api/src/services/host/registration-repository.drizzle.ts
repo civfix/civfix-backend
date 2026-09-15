@@ -9,7 +9,8 @@ import {
   parseNameCursor,
   parseTimeCursor,
 } from "../../db/cursor-helpers.js"
-import { hasEventEnded, isCleanupTerminal } from "../cleanup-rules.js"
+import { eventWindowOfRow, hasEventEnded } from "../cleanup-rules.js"
+import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup } from "../media-bindings.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./event-media.js"
 import { deterministicUuid } from "../deterministic-uuid.js"
@@ -333,13 +334,14 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
         organization_id: string | null
       }[]
     >`
-      SELECT id, status, visibility, capacity, title, description, reference_code,
-             ST_X(geom) AS lng, ST_Y(geom) AS lat,
-             scheduled_at, ends_at, timezone, address,
-             registration_opens_at, registration_closes_at, page_slug,
-             organizer_user_id, organization_id
-        FROM cleanups
-       WHERE id = ${cleanupId}
+      SELECT c.id, ${cleanupStatusExpr(tag)} AS status, c.visibility, c.capacity, c.title,
+             c.description, c.reference_code,
+             ST_X(c.geom) AS lng, ST_Y(c.geom) AS lat,
+             c.scheduled_at, c.ends_at, c.timezone, c.address,
+             c.registration_opens_at, c.registration_closes_at, c.page_slug,
+             c.organizer_user_id, c.organization_id
+        FROM cleanups c
+       WHERE c.id = ${cleanupId}
        LIMIT 1
     `
     const row = rows[0]
@@ -624,7 +626,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     `
     const event = locked[0]
     if (event === undefined) return { kind: "not_found" as const }
-    if (isCleanupTerminal(event.status)) return { kind: "closed" as const }
+    if (event.status === "cancelled") return { kind: "closed" as const }
     if (
       !withinSalesWindow(
         args.now,
@@ -1641,8 +1643,8 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
           `
           const event = locked[0]
           if (event === undefined) return { kind: "not_found" as const }
-          if (isCleanupTerminal(event.status)) return { kind: "closed" as const }
-          if (hasEventEnded({ scheduledAt: event.scheduled_at, endsAt: event.ends_at }, event.now)) {
+          if (event.status === "cancelled") return { kind: "closed" as const }
+          if (hasEventEnded(eventWindowOfRow(event), event.now.getTime())) {
             return { kind: "ended" as const }
           }
 
@@ -2174,9 +2176,8 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
             WHERE s2.status = 'active'
               AND s2.checked_in_at IS NULL
               AND s2.no_show_at IS NULL
-              AND c.status = 'done'
-              AND COALESCE(c.ends_at, c.scheduled_at + interval '4 hours') + interval '2 hours'
-                  <= ${args.now}
+              AND c.status <> 'cancelled'
+              AND c.ends_at <= ${args.now} - interval '2 hours'
             ORDER BY s2.created_at
             LIMIT ${args.limit}
          )

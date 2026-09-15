@@ -9,6 +9,7 @@ import type { Queryable, Sql } from "../db/client.js"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { servedKeyExpr } from "./media-served-key.js"
+import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
 import {
   DAILY_HOURS_CAP,
   EVENT_HOURS_MEMBER_CAP,
@@ -205,8 +206,9 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
             AND vh.source = 'event'
             AND vh.voided_at IS NULL
             AND vh.cleanup_id <> ${args.cleanupId}
-            AND (c.scheduled_at AT TIME ZONE 'UTC')::date = (
-              SELECT (scheduled_at AT TIME ZONE 'UTC')::date FROM cleanups WHERE id = ${args.cleanupId}
+            AND (c.scheduled_at AT TIME ZONE COALESCE(c.timezone, ${DEFAULT_EVENT_TIME_ZONE}))::date = (
+              SELECT (scheduled_at AT TIME ZONE COALESCE(timezone, ${DEFAULT_EVENT_TIME_ZONE}))::date
+              FROM cleanups WHERE id = ${args.cleanupId}
             )
           GROUP BY vh.user_id
         `

@@ -26,7 +26,7 @@ import {
   parseTimeCursor,
 } from "../db/cursor-helpers.js"
 import { escapeLike } from "./admin/like.js"
-import { goingScalar } from "./cleanup-sql.js"
+import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
 import { servedKeyExpr } from "./media-served-key.js"
 
 export {
@@ -106,6 +106,8 @@ interface CleanupRowSelect {
   lat: number
   scheduled_at: Date
   completed_at: Date | null
+  ends_at: Date
+  timezone: string | null
   status: CleanupStatus
   bring: string[] | null
   address: string | null
@@ -118,6 +120,7 @@ interface CleanupRowSelect {
   org_display_name: string
   org_handle: string | null
   org_bio: string | null
+  org_avatar_url: string | null
 }
 
 function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
@@ -126,6 +129,7 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
     displayName: r.org_display_name,
     handle: r.org_handle,
     bio: r.org_bio,
+    avatarUrl: r.org_avatar_url,
   }
   return {
     id: r.id,
@@ -148,8 +152,8 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
     going: Number(r.going),
     dist: null,
     organizer,
-    endsAt: null,
-    timezone: null,
+    endsAt: r.ends_at,
+    timezone: r.timezone,
     visibility: r.visibility,
     coverMediaId: null,
     coverKey: null,
@@ -195,7 +199,9 @@ function profileEventRows(
       ST_Y(c.geom) AS lat,
       c.scheduled_at,
       c.completed_at,
-      c.status,
+      c.ends_at,
+      c.timezone,
+      ${cleanupStatusExpr(sql)} AS status,
       c.bring,
       c.address,
       c.jurisdiction_geoid,
@@ -206,7 +212,8 @@ function profileEventRows(
       ${goingScalar(sql)} AS going,
       u.display_name AS org_display_name,
       u.handle AS org_handle,
-      u.bio AS org_bio
+      u.bio AS org_bio,
+      u.avatar_url AS org_avatar_url
     FROM cleanups c
     JOIN ids ON ids.cleanup_id = c.id
     JOIN users u ON u.id = c.organizer_user_id

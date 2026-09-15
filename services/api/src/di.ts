@@ -80,6 +80,10 @@ import { makeDrizzleNotificationRepository } from "./services/notification-repos
 import { MEDIA_GET_URL_TTL_SEC } from "./services/media-intake-service.js"
 import { makeAffiliationLoader, type AffiliationLoader } from "./services/affiliation.js"
 import { RedisByteMeter, type ByteMeter } from "./services/media-byte-quota.js"
+import {
+  makeTicketTokenSigner,
+  type TicketTokenSigner,
+} from "./services/host/ticket-token.js"
 import { RedisCounterStore, type CounterStore } from "./abuse/counter-store.js"
 import { InMemoryBlocksRepository, InMemoryDmRepository } from "./services/dm-repository.memory.js"
 import { MultiPushSender } from "./adapters/push-sender.js"
@@ -132,6 +136,7 @@ export interface Container {
   getCounterStore(): CounterStore
   getCache(): CacheClient
   getByteMeter(): ByteMeter
+  getTicketTokenSigner(): TicketTokenSigner
 
   close(): Promise<void>
 }
@@ -270,6 +275,14 @@ export function buildContainer(env: Env): Container {
   }
   function getByteMeter(): ByteMeter {
     return lazyByteMeter
+  }
+
+  let ticketTokenSigner: TicketTokenSigner | undefined
+  function getTicketTokenSigner(): TicketTokenSigner {
+    if (!ticketTokenSigner) {
+      ticketTokenSigner = makeTicketTokenSigner(env.TICKET_TOKEN_SECRET.trim())
+    }
+    return ticketTokenSigner
   }
 
   const localStorageDir = env.LOCAL_STORAGE_DIR
@@ -534,6 +547,7 @@ export function buildContainer(env: Env): Container {
     getCounterStore,
     getCache,
     getByteMeter,
+    getTicketTokenSigner,
     close,
   }
 }

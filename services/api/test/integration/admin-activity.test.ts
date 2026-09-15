@@ -15,6 +15,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleActivityRepository } from "../../src/services/admin/activity-repository.drizzle.js"
 import type {
   ActivityRepository,
@@ -69,10 +70,11 @@ describe.skipIf(!pg)("admin activity repository (integration: real schema)", () 
       VALUES (${reporter}, gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.35,34.1),4326), 'manual', 'trash', 'submitted', 'public', 'h0', ${GEOID}, now() - interval '2 hours')
     `
     // A cleanup (3h ago).
-    await h.sql`
-      INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status, created_at)
-      VALUES (${org}, 'site', 'Park cleanup', ST_SetSRID(ST_MakePoint(-118.35,34.1),4326), now(), 'upcoming', now() - interval '3 hours')
-    `
+    await seedCleanup(h.sql, {
+      organizerUserId: org,
+      title: "Park cleanup",
+      createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+    })
     // An audit row (1h ago).
     await h.sql`
       INSERT INTO audit_log (actor_id, action, target, created_at)

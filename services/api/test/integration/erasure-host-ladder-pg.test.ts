@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest"
+import type { CleanupStatus } from "@civfix/shared"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { PgUserStore } from "../../src/auth/pg-stores.js"
 
 
@@ -39,25 +41,21 @@ async function addOrgMember(
 
 async function event(
   h: PgHarness,
-  opts: { organizerId: string; organizationId?: string; status?: string; donationUrl?: string },
+  opts: {
+    organizerId: string
+    organizationId?: string
+    status?: CleanupStatus
+    donationUrl?: string
+  },
 ): Promise<string> {
-  const rows = await h.sql<{ id: string }[]>`
-    INSERT INTO cleanups (
-      organizer_user_id, organization_id, type, title, geom, scheduled_at, status, donation_url
-    )
-    VALUES (
-      ${opts.organizerId},
-      ${opts.organizationId ?? null},
-      'site',
-      'Creek sweep',
-      ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326),
-      ${new Date(Date.now() + 86_400_000)},
-      ${opts.status ?? "upcoming"},
-      ${opts.donationUrl ?? null}
-    )
-    RETURNING id
-  `
-  const id = rows[0]!.id
+  const id = await seedCleanup(h.sql, {
+    organizerUserId: opts.organizerId,
+    organizationId: opts.organizationId ?? null,
+    title: "Creek sweep",
+    scheduledAt: new Date(Date.now() + 86_400_000),
+    status: opts.status,
+    donationUrl: opts.donationUrl ?? null,
+  })
   await h.sql`
     INSERT INTO cleanup_members (cleanup_id, user_id, role, joined_at)
     VALUES (${id}, ${opts.organizerId}, 'organizer', now() - interval '10 days')

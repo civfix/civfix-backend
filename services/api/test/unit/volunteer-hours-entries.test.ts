@@ -33,7 +33,9 @@ const doneEvent = (title: string): CleanupHoursView => ({
   jurisdictionGeoid: GEOID_A,
   title,
   scheduledAt: new Date("2026-07-04T08:00:00.000Z"),
+  endsAt: new Date("2026-07-04T12:00:00.000Z"),
   completedAt: new Date("2026-07-05T07:00:00.000Z"),
+  timezone: null,
 })
 
 function makeCleanups(

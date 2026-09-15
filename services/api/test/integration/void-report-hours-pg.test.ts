@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url"
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 import { makeDrizzleVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.drizzle.js"
 
@@ -66,16 +67,15 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
 
   /** A done cleanup, so an event credit has a real row to hang off. */
   async function newCleanup(organizerId: string): Promise<string> {
-    const id = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status, jurisdiction_geoid)
-      VALUES (
-        ${id}, ${organizerId}, 'site', 'Void sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-        now() - interval '1 day', 'done', ${GEOID}
-      )
-    `
-    return id
+    return await seedCleanup(h.sql, {
+      organizerUserId: organizerId,
+      title: "Void sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: new Date(Date.now() - 86_400_000),
+      status: "done",
+      jurisdictionGeoid: GEOID,
+    })
   }
 
   /** A published report row, so a report-source credit satisfies its FK. */

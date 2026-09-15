@@ -22,7 +22,7 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
 import { makeReportService, type ReportService } from "../../src/services/report-service.js"
 import type { CreateReportRequest } from "@civfix/shared"
-import { LA_CITY, PROBE_INSIDE_CITY } from "../../src/db/seed-fixtures.js"
+import { CALIFORNIA, LA_CITY, PROBE_INSIDE_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()
 
@@ -334,9 +334,10 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
    *
    * M14 made the client's `zoom` advisory: the effective zoom is min(requested, impliedZoomForBBox), so a
    * bbox must be small enough to JUSTIFY per-pin zoom before listReportsInBBox will return pins at all.
-   * The seeded LA_CITY bbox (0.3° lng x 0.2° lat) implies 12, one step under CLUSTER_ZOOM_THRESHOLD, so
-   * these tests use a ~0.04° box (implies 16) — asserting on `pins` with a city-wide bbox would silently
-   * assert on an empty array forever.
+   * The seeded CALIFORNIA bbox (10.5° lng x 9.5° lat) implies 7, well under CLUSTER_ZOOM_THRESHOLD, so
+   * these tests use a ~0.04° box (implies 16) — asserting on `pins` with a state-wide bbox would silently
+   * assert on an empty array forever. The county bbox no longer works for this: at threshold 10 it
+   * implies exactly 10 and DOES return pins.
    */
   const STREET_BBOX = {
     west: PROBE_INSIDE_CITY.lng - 0.02,
@@ -367,10 +368,10 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     expect(res.counts?.water).toBeGreaterThanOrEqual(1)
   })
 
-  it("M14: the SAME point over a city-wide bbox clusters even when the client claims zoom 22", async () => {
+  it("M14: the SAME point over a state-wide bbox clusters even when the client claims zoom 22", async () => {
     // The anonymous-DoS fix: `zoom` used to be a free query parameter, so bbox=<whole world>&zoom=22
     // skipped clustering and forced up to 2000 report rows + 2000 media presigns per request. The bbox
-    // extent now caps the zoom, so a claimed street-level zoom over a city cannot reach the per-pin
+    // extent now caps the zoom, so a claimed street-level zoom over a whole state cannot reach the per-pin
     // branch. Proven against a live DB (not just the pure clustering unit test) because the presign
     // fan-out lives on the service side of that branch.
     const created = await service.createReport(
@@ -378,7 +379,7 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
       { userId },
     )
 
-    const [west, south, east, north] = LA_CITY.bbox
+    const [west, south, east, north] = CALIFORNIA.bbox
     const wide = await service.listReportsInBBox({ west, south, east, north }, null, null, 22)
     expect(wide.pins).toHaveLength(0)
     expect(wide.clusters.length).toBeGreaterThan(0)

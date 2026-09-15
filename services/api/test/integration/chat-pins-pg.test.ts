@@ -22,6 +22,7 @@
  * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
  */
 
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
@@ -135,7 +136,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
 
   /** Create a cleanup whose organizer is `organizerId` (organizer row == chat membership). */
   async function newCleanup(organizerId: string): Promise<string> {
-    const created = await makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) }).createCleanup(
+    const created = await makeCleanupService({
+      tickets: TEST_TICKET_SIGNER,
+      repo: makeDrizzleCleanupRepository(h.sql),
+    }).createCleanup(
       {
         title: "Pin sweep",
         type: "site",
@@ -143,6 +147,7 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         lat: 34.05,
         lng: -118.25,
         scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        slots: [{ title: "General volunteers", capacity: null }],
       },
       organizerId,
     )
@@ -171,7 +176,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       const organizerId = await newUser("Pin Org")
       const memberId = await newUser("Pin Member")
       const cleanupId = await newCleanup(organizerId)
-      await makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) }).joinCleanup(cleanupId, memberId)
+      await makeCleanupService({
+        tickets: TEST_TICKET_SIGNER,
+        repo: makeDrizzleCleanupRepository(h.sql),
+      }).joinCleanup(cleanupId, memberId)
       const msg = await chat().insertMessage({ cleanupId, userId: memberId, body: "pin me" }, randomUUID())
 
       const watcher = new MockConnection("pin-watcher")
@@ -204,7 +212,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       const organizerId = await newUser("Pin Org Deny")
       const memberId = await newUser("Pin Member Deny")
       const cleanupId = await newCleanup(organizerId)
-      await makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) }).joinCleanup(cleanupId, memberId)
+      await makeCleanupService({
+        tickets: TEST_TICKET_SIGNER,
+        repo: makeDrizzleCleanupRepository(h.sql),
+      }).joinCleanup(cleanupId, memberId)
       const msg = await chat().insertMessage({ cleanupId, userId: organizerId, body: "no pin for you" }, randomUUID())
 
       const res = await pin(await token(memberId), {
@@ -456,7 +467,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       const organizerId = await newUser("Del Org")
       const memberId = await newUser("Del Member")
       const cleanupId = await newCleanup(organizerId)
-      await makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) }).joinCleanup(cleanupId, memberId)
+      await makeCleanupService({
+        tickets: TEST_TICKET_SIGNER,
+        repo: makeDrizzleCleanupRepository(h.sql),
+      }).joinCleanup(cleanupId, memberId)
       const msg = await chat().insertMessage({ cleanupId, userId: memberId, body: "rule-breaking" }, randomUUID())
 
       const watcher = new MockConnection("del-override-watcher")
@@ -484,7 +498,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       const organizerId = await newUser("Del Org Deny")
       const memberId = await newUser("Del Member Deny")
       const cleanupId = await newCleanup(organizerId)
-      await makeCleanupService({ repo: makeDrizzleCleanupRepository(h.sql) }).joinCleanup(cleanupId, memberId)
+      await makeCleanupService({
+        tickets: TEST_TICKET_SIGNER,
+        repo: makeDrizzleCleanupRepository(h.sql),
+      }).joinCleanup(cleanupId, memberId)
       const msg = await chat().insertMessage({ cleanupId, userId: organizerId, body: "keep out" }, randomUUID())
 
       const res = await app.inject({

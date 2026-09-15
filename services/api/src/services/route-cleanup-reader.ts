@@ -16,6 +16,7 @@ export function makeRouteCleanupReader(
   return (cleanupId, viewerUserId) =>
     makeCleanupService({
       repo: makeDrizzleCleanupRepository(container.getDb().sql),
+      tickets: container.getTicketTokenSigner(),
       presignThumb: (thumbKey: string) =>
         container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC),
       presignEventMedia: makeEventMediaPresigner(container.storage),

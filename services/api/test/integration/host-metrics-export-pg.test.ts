@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleMetricsRepository } from "../../src/services/host/metrics-repository.drizzle.js"
 import type { MetricsRepository } from "../../src/services/host/metrics-repository.drizzle.js"
 import { makeDrizzleHostExportRepository } from "../../src/services/host/export-repository.drizzle.js"
@@ -27,12 +27,13 @@ describe.skipIf(!pg)("event metrics and host exports (integration)", () => {
     const [user] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name) VALUES ('Host') RETURNING id`
     userId = user!.id
-    cleanupId = randomUUID()
-    await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
-      VALUES (${cleanupId}, ${userId}, 'site', 'Beach sweep',
-              ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
-              ${new Date(Date.now() + 7 * 86_400_000)}, 'upcoming')`
+    cleanupId = await seedCleanup(h.sql, {
+      organizerUserId: userId,
+      title: "Beach sweep",
+      lng: -118.25,
+      lat: 34.05,
+      scheduledAt: new Date(Date.now() + 7 * 86_400_000),
+    })
   })
 
   afterAll(async () => {

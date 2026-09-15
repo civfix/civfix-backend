@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from "fastify"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 import type { EventBroadcastContext } from "./broadcast-types.js"
+import { eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
 
 export const DEFAULT_REMINDER_OFFSETS_MIN = [1440, 180] as const
 
@@ -84,7 +85,10 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
     async eventUpdated(cleanupId: string): Promise<EventUpdateVerdict> {
       const event = await deps.repo.eventContext(cleanupId)
       if (event === null) return { status: "skipped" }
-      if (event.status === "cancelled" || event.status === "done") return { status: "skipped" }
+      const window = eventWindowOf({ scheduledAt: event.scheduledAt, endsAt: event.endsAt })
+      if (event.status === "cancelled" || hasEventEnded(window, now().getTime())) {
+        return { status: "skipped" }
+      }
       if (!(await reserveEventUpdateSlot(cleanupId))) {
         return { status: "throttled", retryAfterSec: secondsToWindowEnd(now()) }
       }

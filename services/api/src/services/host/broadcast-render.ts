@@ -14,6 +14,7 @@ import {
 import { markdownToPlainText, parseMarkdownSubset } from "@civfix/shared/markdown"
 import { button, richList, richParagraph, type EmailBlock } from "../../adapters/email-blocks.js"
 import { eventFooter, renderEmailBody } from "../../adapters/email-layout.js"
+import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
 
 export interface BroadcastContent {
   subject: string
@@ -89,7 +90,7 @@ export function renderBroadcast(
 export function formatEventWhen(scheduledAt: Date, timezone: string | null): string {
   try {
     return new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone ?? "UTC",
+      timeZone: timezone ?? DEFAULT_EVENT_TIME_ZONE,
       weekday: "long",
       month: "long",
       day: "numeric",

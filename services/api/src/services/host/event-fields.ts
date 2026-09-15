@@ -1,4 +1,11 @@
-import { AppError, MAX_EVENT_GALLERY_MEDIA, MAX_EVENT_REMINDER_OFFSETS } from "@civfix/shared"
+import {
+  AppError,
+  MAX_EVENT_DURATION_MINUTES,
+  MAX_EVENT_GALLERY_MEDIA,
+  MAX_EVENT_REMINDER_OFFSETS,
+  MIN_EVENT_DURATION_MINUTES,
+} from "@civfix/shared"
+import { MAX_EVENT_DURATION_MS, MIN_EVENT_DURATION_MS } from "../cleanup-rules.js"
 
 export const DEFAULT_EVENT_TIME_ZONE = "America/Los_Angeles"
 
@@ -73,8 +80,21 @@ export function assertEventWindow(input: {
   registrationOpensAt: Date | null
   registrationClosesAt: Date | null
 }): void {
-  if (input.endsAt !== null && input.endsAt.getTime() <= input.scheduledAt.getTime()) {
-    throw AppError.validation({ endsAt: "must be after the start time" })
+  if (input.endsAt !== null) {
+    const durationMs = input.endsAt.getTime() - input.scheduledAt.getTime()
+    if (durationMs <= 0) {
+      throw AppError.validation({ endsAt: "must be after the start time" })
+    }
+    if (durationMs < MIN_EVENT_DURATION_MS) {
+      throw AppError.validation({
+        endsAt: `must be at least ${MIN_EVENT_DURATION_MINUTES} minutes after scheduledAt`,
+      })
+    }
+    if (durationMs > MAX_EVENT_DURATION_MS) {
+      throw AppError.validation({
+        endsAt: `an event can run for at most ${MAX_EVENT_DURATION_MINUTES / 60} hours`,
+      })
+    }
   }
   if (
     input.registrationOpensAt !== null &&

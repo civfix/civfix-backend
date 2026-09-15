@@ -136,10 +136,11 @@ describe.skipIf(!pg)("served_key + conditional orphan reap (integration)", () =>
   async function insertCleanup(organizerId: string): Promise<string> {
     const id = randomUUID()
     await h.sql`
-      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, status)
+      INSERT INTO cleanups (id, organizer_user_id, type, title, geom, scheduled_at, ends_at, status)
       VALUES (
         ${id}, ${organizerId}, 'site', 'Orphan sweep sweep',
-        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), now() + interval '7 days', 'upcoming'
+        ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326),
+        now() + interval '7 days', now() + interval '7 days' + interval '4 hours', 'upcoming'
       )
     `
     return id

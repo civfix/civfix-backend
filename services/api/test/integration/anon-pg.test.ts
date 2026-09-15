@@ -218,12 +218,13 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     expect(map.pins.some((p) => p.id === response.reportId)).toBe(true)
 
     // The same released report is also COUNTED (not dropped) when the viewport is wide enough to cluster.
+    // +/-1 degree implies zoom 9; the old +/-0.5 box implies 10, which is now the per-pin threshold.
     const wide = await reports.listReportsInBBox(
       {
-        west: PROBE_INSIDE_CITY.lng - 0.5,
-        south: PROBE_INSIDE_CITY.lat - 0.5,
-        east: PROBE_INSIDE_CITY.lng + 0.5,
-        north: PROBE_INSIDE_CITY.lat + 0.5,
+        west: PROBE_INSIDE_CITY.lng - 1,
+        south: PROBE_INSIDE_CITY.lat - 1,
+        east: PROBE_INSIDE_CITY.lng + 1,
+        north: PROBE_INSIDE_CITY.lat + 1,
       },
       null,
       null,

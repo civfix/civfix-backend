@@ -794,7 +794,7 @@ describe("going: members plus verified, non-cancelled guests", () => {
       jurCode: 1,
       linkedReportIds: [],
       slots: [],
-      host: {},
+      host: { endsAt: new Date(Date.parse("2026-09-01T21:00:00.000Z")) },
     })
     expect(record.record.going).toBe(1)
     expect(record.record.guestCount).toBe(0)

@@ -1,7 +1,9 @@
 import { afterAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
+import type { CleanupStatus } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedCleanup } from "../helpers/cleanups.js"
 import { PgUserStore } from "../../src/auth/pg-stores.js"
 import { makeDrizzleCertificateRepository } from "../../src/services/certificate-repository.drizzle.js"
 import { makeDataExportService } from "../../src/services/data-export-service.js"
@@ -57,21 +59,13 @@ async function insertReport(
 
 async function insertCleanup(
   h: PgHarness,
-  opts: { organizerId: string; status?: string },
+  opts: { organizerId: string; status?: CleanupStatus },
 ): Promise<string> {
-  const rows = await h.sql<{ id: string }[]>`
-    INSERT INTO cleanups (organizer_user_id, type, title, geom, scheduled_at, status)
-    VALUES (
-      ${opts.organizerId},
-      'site',
-      'Cleanup',
-      ST_SetSRID(ST_MakePoint(-118.35, 34.1), 4326),
-      ${new Date()},
-      ${opts.status ?? "upcoming"}
-    )
-    RETURNING id
-  `
-  return rows[0]!.id
+  return await seedCleanup(h.sql, {
+    organizerUserId: opts.organizerId,
+    title: "Cleanup",
+    status: opts.status,
+  })
 }
 
 async function insertIdentity(

@@ -15,7 +15,7 @@ import type { Queryable, Sql } from "../db/client.js"
 import type { POST_KIND_VALUES, REPORT_VISIBILITY_VALUES } from "../db/schema/types.js"
 import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
 import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
-import { goingScalar } from "./cleanup-sql.js"
+import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
 import { servedKeyExpr } from "./media-served-key.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
@@ -167,6 +167,8 @@ interface EventRow {
   event_kind: LinkedEventRef["eventKind"]
   status: LinkedEventRef["status"]
   scheduled_at: Date
+  ends_at: Date | null
+  timezone: string | null
   lat: number
   lng: number
   going: number
@@ -390,8 +392,10 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         c.id,
         c.title,
         c.event_kind,
-        c.status,
+        ${cleanupStatusExpr(sql)} AS status,
         c.scheduled_at,
+        c.ends_at,
+        c.timezone,
         ST_Y(c.geom) AS lat,
         ST_X(c.geom) AS lng,
         ${goingScalar(sql)} AS going,
@@ -423,6 +427,8 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         eventKind: r.event_kind,
         status: r.status,
         scheduledAt: r.scheduled_at.toISOString(),
+        endsAt: r.ends_at === null ? null : r.ends_at.toISOString(),
+        timezone: r.timezone,
         lat: r.lat,
         lng: r.lng,
         going: Number(r.going),

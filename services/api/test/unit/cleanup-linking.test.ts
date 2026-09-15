@@ -1,3 +1,4 @@
+import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { describe, it, expect, beforeEach } from "vitest"
 import { makeCleanupService, type CleanupService } from "../../src/services/cleanup-service.js"
 import { makeReportService, type ReportService } from "../../src/services/report-service.js"
@@ -34,6 +35,7 @@ function baseInput(over: Partial<CreateCleanupRequest> = {}): CreateCleanupReque
     scheduledAt: over.scheduledAt ?? new Date(Date.now() + 86_400_000).toISOString(),
     ...(over.bring !== undefined ? { bring: over.bring } : {}),
     ...(over.address !== undefined ? { address: over.address } : {}),
+    slots: over.slots ?? [{ title: "Volunteers" }],
   }
 }
 
@@ -44,7 +46,11 @@ beforeEach(() => {
   repo.seedReport({ id: R2, title: "Graffiti", category: "graffiti" })
   repo.seedReport({ id: R3, title: "Held one", status: "held" })
   repo.seedReport({ id: R4, title: "Fixed hazard", category: "hazard", status: "resolved" })
-  service = makeCleanupService({ repo, counters: new InMemoryCounterStore() })
+  service = makeCleanupService({
+    tickets: TEST_TICKET_SIGNER,
+    repo,
+    counters: new InMemoryCounterStore(),
+  })
 })
 
 describe("createCleanup linking", () => {
@@ -138,6 +144,53 @@ describe("updateCleanup (host-gated PATCH)", () => {
     expect(updated.eventKind).toBe("other_volunteer")
     expect(updated.linkedReports).toEqual([])
     expect(repo.links.filter((l) => l.cleanupId === created.id)).toHaveLength(0)
+  })
+})
+
+describe("reconcileLinkedReports only unlinks what the host can see", () => {
+  it("keeps a link to an invisible report the patch omits, and writes no unlink timeline row", async () => {
+    const created = await service.createCleanup(baseInput({ linkedReportIds: [R1] }), ORG)
+    repo.seedLink(created.id, R3, ORG)
+
+    const updated = await service.updateCleanup(created.id, { linkedReportIds: [R1] }, ORG)
+
+    expect(updated.linkedReports.map((r) => r.id)).toEqual([R1])
+    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId).sort()).toEqual(
+      [R1, R3].sort(),
+    )
+    expect(
+      repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "report_unlinked"),
+    ).toHaveLength(0)
+  })
+
+  it("removes a VISIBLE link the patch omits, with the unlink timeline row", async () => {
+    const created = await service.createCleanup(baseInput({ linkedReportIds: [R1, R2] }), ORG)
+
+    const updated = await service.updateCleanup(created.id, { linkedReportIds: [R1] }, ORG)
+
+    expect(updated.linkedReports.map((r) => r.id)).toEqual([R1])
+    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId)).toEqual([R1])
+    const unlinked = repo.timeline.filter(
+      (t) => t.cleanupId === created.id && t.kind === "report_unlinked",
+    )
+    expect(unlinked.map((t) => t.reportId)).toEqual([R2])
+  })
+
+  it("a mixed patch removes the visible one, retains the invisible one and adds the new one", async () => {
+    const created = await service.createCleanup(baseInput({ linkedReportIds: [R1, R2] }), ORG)
+    repo.seedLink(created.id, R3, ORG)
+
+    const updated = await service.updateCleanup(created.id, { linkedReportIds: [R1, R4] }, ORG)
+
+    expect(updated.linkedReports.map((r) => r.id).sort()).toEqual([R1, R4].sort())
+    expect(repo.links.filter((l) => l.cleanupId === created.id).map((l) => l.reportId).sort()).toEqual(
+      [R1, R3, R4].sort(),
+    )
+    const kinds = repo.timeline.filter((t) => t.cleanupId === created.id)
+    expect(kinds.filter((t) => t.kind === "report_unlinked").map((t) => t.reportId)).toEqual([R2])
+    expect(kinds.filter((t) => t.kind === "report_linked").map((t) => t.reportId).sort()).toEqual(
+      [R1, R2, R4].sort(),
+    )
   })
 })
 
