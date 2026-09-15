@@ -7,10 +7,11 @@ import { REPORT_H3_RESOLUTION, type ReportMapPoint } from "./report-service.type
 export const MAP_REPORTS_CANDIDATE_CAP = 2000
 
 // Zoom at/above which the map returns INDIVIDUAL pins; below it points snap to a grid and return as
-// clusters with counts. 11 is "district" zoom: with the bbox clamp below, a phone-sized viewport (whose
-// fetch bbox is padded 1.6x per axis) clears it from map zoom ~10.2, so the CLIENT clusterer owns every
-// grouping decision from there in and the server only aggregates at city/aerial scale.
-export const CLUSTER_ZOOM_THRESHOLD = 11
+// clusters with counts. 10 is "city" zoom: with the bbox clamp below, a phone-sized viewport (whose
+// fetch bbox is padded 1.6x per axis) clears it from map zoom ~9.2 — the whole LA basin in view — so the
+// CLIENT clusterer owns every grouping decision from there in and the server only aggregates at the
+// aerial scale where a pin payload would be unbounded anyway.
+export const CLUSTER_ZOOM_THRESHOLD = 10
 
 /**
  * M14 — the bbox, not the client, decides the effective zoom.
@@ -26,8 +27,9 @@ export const CLUSTER_ZOOM_THRESHOLD = 11
  *
  * The reference viewport is deliberately generous (2048 CSS px ≈ 8 tiles) so that a genuine desktop map
  * is never down-clamped: reaching CLUSTER_ZOOM_THRESHOLD still only requires a span of
- * 360*8/2^11 ≈ 1.41° (~140 km), which is a real district viewport, while a world bbox tops out at
- * an implied zoom of 3 and can therefore NEVER reach the per-pin branch.
+ * 360*8/2^10 ≈ 2.81° (~280 km), which is a real metro-area viewport, while a world bbox tops out at
+ * an implied zoom of 3 and can therefore NEVER reach the per-pin branch. MAP_REPORTS_CANDIDATE_CAP
+ * still bounds the pin payload at 2000 rows, and the route's 60s Cache-Control is unchanged.
  */
 export const MAP_VIEWPORT_REFERENCE_TILES = 8
 

@@ -1007,14 +1007,26 @@ describe("effectiveMapZoom / impliedZoomForBBox (M14)", () => {
     }
   }
 
-  it("lets a phone's padded fetch bbox reach individual pins from map zoom 11", () => {
+  it("lets a phone's padded fetch bbox reach individual pins from map zoom 10", () => {
+    expect(effectiveMapZoom(phoneFetchBBox(10), 16)).toBeGreaterThanOrEqual(CLUSTER_ZOOM_THRESHOLD)
     expect(effectiveMapZoom(phoneFetchBBox(11), 16)).toBeGreaterThanOrEqual(CLUSTER_ZOOM_THRESHOLD)
     expect(effectiveMapZoom(phoneFetchBBox(14), 16)).toBeGreaterThanOrEqual(CLUSTER_ZOOM_THRESHOLD)
   })
 
+  it("reaches individual pins from a fractional map zoom just over 9", () => {
+    expect(effectiveMapZoom(phoneFetchBBox(9.2), 16)).toBeGreaterThanOrEqual(CLUSTER_ZOOM_THRESHOLD)
+  })
+
   it("still clusters the same phone viewport one zoom step further out", () => {
-    expect(effectiveMapZoom(phoneFetchBBox(10), 16)).toBeLessThan(CLUSTER_ZOOM_THRESHOLD)
+    expect(effectiveMapZoom(phoneFetchBBox(9), 16)).toBeLessThan(CLUSTER_ZOOM_THRESHOLD)
     expect(effectiveMapZoom(phoneFetchBBox(8), 16)).toBeLessThan(CLUSTER_ZOOM_THRESHOLD)
+  })
+
+  it("keeps the per-pin branch out of reach for any bbox the route would accept", () => {
+    const widest = { west: -180, south: -85, east: 180, north: 85 }
+    expect(impliedZoomForBBox(widest)).toBeLessThan(CLUSTER_ZOOM_THRESHOLD)
+    const metro = { west: -119.0, south: 33.7, east: -117.6, north: 34.8 }
+    expect(impliedZoomForBBox(metro)).toBeGreaterThanOrEqual(CLUSTER_ZOOM_THRESHOLD)
   })
 })
 
