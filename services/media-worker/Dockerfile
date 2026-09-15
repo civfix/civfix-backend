@@ -63,11 +63,11 @@ WORKDIR /app
 FROM base AS ffmpeg
 ARG TARGETARCH
 ARG FFMPEG_VERSION=n8.1.2
-ARG FFMPEG_RELEASE=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-02-13-13
-ARG FFMPEG_URL_AMD64=${FFMPEG_RELEASE}/ffmpeg-n8.1.2-50-g1a748fe2cd-linux64-lgpl-8.1.tar.xz
-ARG FFMPEG_SHA256_AMD64=00eb62aac60b796fd2b0cc53c49574f58a1586cb1ab46744fc863c4c79565378
-ARG FFMPEG_URL_ARM64=${FFMPEG_RELEASE}/ffmpeg-n8.1.2-50-g1a748fe2cd-linuxarm64-lgpl-8.1.tar.xz
-ARG FFMPEG_SHA256_ARM64=43945e886f0d994b6ee02d08b00bcc3ce1f65bbba68b40ec322b6d88e739a8a2
+ARG FFMPEG_RELEASE=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-14-13-17
+ARG FFMPEG_URL_AMD64=${FFMPEG_RELEASE}/ffmpeg-n8.1.2-52-g5a03dfa0f6-linux64-lgpl-8.1.tar.xz
+ARG FFMPEG_SHA256_AMD64=0aa0402135ee553746f8015ec65eea50ba521b44d713d1ee60c04eb936230305
+ARG FFMPEG_URL_ARM64=${FFMPEG_RELEASE}/ffmpeg-n8.1.2-52-g5a03dfa0f6-linuxarm64-lgpl-8.1.tar.xz
+ARG FFMPEG_SHA256_ARM64=0f776300bba480239f67e635e1b18f9e3d8e9a02c89d9abc2f0aa4f501d17075
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
  && rm -rf /var/lib/apt/lists/*
