@@ -4,10 +4,11 @@ import type { LatLng } from "@civfix/shared"
 
 export const CF_LAT_HEADER = "cf-iplatitude"
 export const CF_LNG_HEADER = "cf-iplongitude"
+export const CF_CITY_HEADER = "cf-ipcity"
 
 export type HeaderBag = Record<string, string | string[] | undefined>
 
-function header(headers: HeaderBag, name: string): string | null {
+export function headerValue(headers: HeaderBag, name: string): string | null {
   const raw = headers[name]
   const value = Array.isArray(raw) ? raw[0] : raw
   const trimmed = value?.trim()
@@ -15,8 +16,8 @@ function header(headers: HeaderBag, name: string): string | null {
 }
 
 export function parseCfGeo(headers: HeaderBag): LatLng | null {
-  const latRaw = header(headers, CF_LAT_HEADER)
-  const lngRaw = header(headers, CF_LNG_HEADER)
+  const latRaw = headerValue(headers, CF_LAT_HEADER)
+  const lngRaw = headerValue(headers, CF_LNG_HEADER)
   if (latRaw === null || lngRaw === null) return null
 
   const lat = Number.parseFloat(latRaw)

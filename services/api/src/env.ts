@@ -46,6 +46,10 @@ const TILES_MIN_ZOOM_DEFAULT = 1
 const TILES_MAX_ZOOM_DEFAULT = 19
 const TILES_BOUNDS_DEFAULT: [number, number, number, number] = [-125, 24, -66, 50]
 
+const HOME_REGION_LAT_DEFAULT = 34.0522
+const HOME_REGION_LNG_DEFAULT = -118.2437
+const HOME_REGION_RADIUS_KM_DEFAULT = 40
+
 const NodeEnvSchema = z.enum(["development", "test", "production"]).default("development")
 const PortSchema = z.coerce.number().int().positive().max(65535)
 
@@ -147,6 +151,24 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     return parsed.data
   }
 
+  function reqNumber(
+    key: string,
+    fallback: number,
+    range: { min: number; max: number; exclusiveMin?: boolean },
+  ): number {
+    const raw = source[key]
+    if (raw === undefined || raw.trim() === "") return fallback
+
+    const exclusiveMin = range.exclusiveMin ?? false
+    const value = Number.parseFloat(raw.trim())
+    const aboveMin = exclusiveMin ? value > range.min : value >= range.min
+    if (Number.isFinite(value) && aboveMin && value <= range.max) return value
+
+    const lowerBound = exclusiveMin ? `greater than ${range.min}` : `at least ${range.min}`
+    errors.push(`${key}: must be a number ${lowerBound} and at most ${range.max}`)
+    return fallback
+  }
+
   function reqCron(key: string, fallback: string): string {
     const value = (source[key] ?? "").trim() || fallback
     if (!isCronish(value)) {
@@ -220,6 +242,20 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
         "Use an explicit CIDR list; leave unset for the safe internal-ranges default",
     )
   }
+
+  const HOME_REGION_LAT = reqNumber("HOME_REGION_LAT", HOME_REGION_LAT_DEFAULT, {
+    min: -90,
+    max: 90,
+  })
+  const HOME_REGION_LNG = reqNumber("HOME_REGION_LNG", HOME_REGION_LNG_DEFAULT, {
+    min: -180,
+    max: 180,
+  })
+  const HOME_REGION_RADIUS_KM = reqNumber(
+    "HOME_REGION_RADIUS_KM",
+    HOME_REGION_RADIUS_KM_DEFAULT,
+    { min: 0, max: 20_000, exclusiveMin: true },
+  )
 
   const LOCAL_STORAGE_DIR = (source.LOCAL_STORAGE_DIR ?? "").trim()
   const usesLocalStorage = LOCAL_STORAGE_DIR.length > 0
@@ -352,6 +388,10 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     TILES_MIN_ZOOM: parseIntOr(source.TILES_MIN_ZOOM, TILES_MIN_ZOOM_DEFAULT),
     TILES_MAX_ZOOM: parseIntOr(source.TILES_MAX_ZOOM, TILES_MAX_ZOOM_DEFAULT),
     TILES_BOUNDS: parseBounds(source.TILES_BOUNDS, TILES_BOUNDS_DEFAULT),
+
+    HOME_REGION_LAT,
+    HOME_REGION_LNG,
+    HOME_REGION_RADIUS_KM,
 
     CENSUS_GEOCODER_URL:
       (source.CENSUS_GEOCODER_URL ?? "").trim() ||

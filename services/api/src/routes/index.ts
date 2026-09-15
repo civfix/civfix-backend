@@ -4,6 +4,7 @@ import type { Container } from "../di.js"
 import { registerHealthRoutes } from "./health.routes.js"
 import { registerAuthRoutes } from "./auth.routes.js"
 import { registerMapRoutes } from "./map.routes.js"
+import { registerGeoRoutes } from "./geo.routes.js"
 import { registerMediaRoutes } from "./media.routes.js"
 import { registerReportRoutes } from "./reports.routes.js"
 import { registerAnonRoutes } from "./anon.routes.js"
@@ -53,6 +54,7 @@ export async function registerRoutes(
   }
 
   await registerMapRoutes(app, container)
+  await registerGeoRoutes(app, container)
   await registerMediaRoutes(app, container)
   await registerReportRoutes(app, container)
   await registerAnonRoutes(app, container)
