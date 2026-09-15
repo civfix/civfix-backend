@@ -31,6 +31,10 @@ export interface Env extends CommsEnv, PaymentsEnv, RegistrationEnv {
   TILES_MAX_ZOOM: number
   TILES_BOUNDS: [number, number, number, number]
 
+  HOME_REGION_LAT: number
+  HOME_REGION_LNG: number
+  HOME_REGION_RADIUS_KM: number
+
   CENSUS_GEOCODER_URL: string
   CENSUS_GEOCODER_TIMEOUT_MS: number
 
