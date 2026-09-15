@@ -7,8 +7,10 @@ import { REPORT_H3_RESOLUTION, type ReportMapPoint } from "./report-service.type
 export const MAP_REPORTS_CANDIDATE_CAP = 2000
 
 // Zoom at/above which the map returns INDIVIDUAL pins; below it points snap to a grid and return as
-// clusters with counts. 13 is "neighborhood" zoom (the clients' default landing zoom).
-export const CLUSTER_ZOOM_THRESHOLD = 13
+// clusters with counts. 11 is "district" zoom: with the bbox clamp below, a phone-sized viewport (whose
+// fetch bbox is padded 1.6x per axis) clears it from map zoom ~10.2, so the CLIENT clusterer owns every
+// grouping decision from there in and the server only aggregates at city/aerial scale.
+export const CLUSTER_ZOOM_THRESHOLD = 11
 
 /**
  * M14 — the bbox, not the client, decides the effective zoom.
@@ -24,8 +26,8 @@ export const CLUSTER_ZOOM_THRESHOLD = 13
  *
  * The reference viewport is deliberately generous (2048 CSS px ≈ 8 tiles) so that a genuine desktop map
  * is never down-clamped: reaching CLUSTER_ZOOM_THRESHOLD still only requires a span of
- * 360*8/2^13 ≈ 0.35° (~35 km), which is a real neighborhood viewport, while a world bbox tops out at an
- * implied zoom of 3 and can therefore NEVER reach the per-pin branch.
+ * 360*8/2^11 ≈ 1.41° (~140 km), which is a real district viewport, while a world bbox tops out at
+ * an implied zoom of 3 and can therefore NEVER reach the per-pin branch.
  */
 export const MAP_VIEWPORT_REFERENCE_TILES = 8
 

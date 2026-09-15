@@ -22,7 +22,7 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
 import { makeReportService, type ReportService } from "../../src/services/report-service.js"
 import type { CreateReportRequest } from "@civfix/shared"
-import { LA_CITY, PROBE_INSIDE_CITY } from "../../src/db/seed-fixtures.js"
+import { LA_CITY, LA_COUNTY, PROBE_INSIDE_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()
 
@@ -334,8 +334,8 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
    *
    * M14 made the client's `zoom` advisory: the effective zoom is min(requested, impliedZoomForBBox), so a
    * bbox must be small enough to JUSTIFY per-pin zoom before listReportsInBBox will return pins at all.
-   * The seeded LA_CITY bbox (0.3° lng x 0.2° lat) implies 12, one step under CLUSTER_ZOOM_THRESHOLD, so
-   * these tests use a ~0.04° box (implies 16) — asserting on `pins` with a city-wide bbox would silently
+   * The seeded LA_COUNTY bbox (1.4° lng x 1.1° lat) implies 10, one step under CLUSTER_ZOOM_THRESHOLD, so
+   * these tests use a ~0.04° box (implies 16) — asserting on `pins` with a county-wide bbox would silently
    * assert on an empty array forever.
    */
   const STREET_BBOX = {
@@ -367,7 +367,7 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     expect(res.counts?.water).toBeGreaterThanOrEqual(1)
   })
 
-  it("M14: the SAME point over a city-wide bbox clusters even when the client claims zoom 22", async () => {
+  it("M14: the SAME point over a county-wide bbox clusters even when the client claims zoom 22", async () => {
     // The anonymous-DoS fix: `zoom` used to be a free query parameter, so bbox=<whole world>&zoom=22
     // skipped clustering and forced up to 2000 report rows + 2000 media presigns per request. The bbox
     // extent now caps the zoom, so a claimed street-level zoom over a city cannot reach the per-pin
@@ -378,7 +378,7 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
       { userId },
     )
 
-    const [west, south, east, north] = LA_CITY.bbox
+    const [west, south, east, north] = LA_COUNTY.bbox
     const wide = await service.listReportsInBBox({ west, south, east, north }, null, null, 22)
     expect(wide.pins).toHaveLength(0)
     expect(wide.clusters.length).toBeGreaterThan(0)

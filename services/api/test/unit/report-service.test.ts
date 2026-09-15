@@ -987,6 +987,35 @@ describe("effectiveMapZoom / impliedZoomForBBox (M14)", () => {
     expect(impliedZoomForBBox(degenerate)).toBe(0)
     expect(effectiveMapZoom(degenerate, Number.NaN)).toBe(0)
   })
+
+  const PHONE_WIDTH_PT = 402
+  const PHONE_HEIGHT_PT = 874
+  const REGION_PAD_FACTOR = 1.6
+  const DOWNTOWN_LA = { lat: 34.05, lng: -118.25 }
+
+  function phoneFetchBBox(mapZoom: number) {
+    const pxPerDeg = (512 * Math.pow(2, mapZoom)) / 360
+    const halfLng = (PHONE_WIDTH_PT / pxPerDeg / 2) * REGION_PAD_FACTOR
+    const halfLat =
+      ((PHONE_HEIGHT_PT / pxPerDeg) * Math.cos((DOWNTOWN_LA.lat * Math.PI) / 180) / 2) *
+      REGION_PAD_FACTOR
+    return {
+      west: DOWNTOWN_LA.lng - halfLng,
+      east: DOWNTOWN_LA.lng + halfLng,
+      south: DOWNTOWN_LA.lat - halfLat,
+      north: DOWNTOWN_LA.lat + halfLat,
+    }
+  }
+
+  it("lets a phone's padded fetch bbox reach individual pins from map zoom 11", () => {
+    expect(effectiveMapZoom(phoneFetchBBox(11), 16)).toBeGreaterThanOrEqual(CLUSTER_ZOOM_THRESHOLD)
+    expect(effectiveMapZoom(phoneFetchBBox(14), 16)).toBeGreaterThanOrEqual(CLUSTER_ZOOM_THRESHOLD)
+  })
+
+  it("still clusters the same phone viewport one zoom step further out", () => {
+    expect(effectiveMapZoom(phoneFetchBBox(10), 16)).toBeLessThan(CLUSTER_ZOOM_THRESHOLD)
+    expect(effectiveMapZoom(phoneFetchBBox(8), 16)).toBeLessThan(CLUSTER_ZOOM_THRESHOLD)
+  })
 })
 
 describe("searchReports", () => {
