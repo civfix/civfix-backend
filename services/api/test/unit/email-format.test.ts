@@ -30,6 +30,7 @@ function reportRecord(overrides: Partial<AdminReportRecord> = {}): AdminReportRe
     lat: 39.5,
     lng: -98.35,
     hasPhoto: true,
+    previewMedia: null,
     createdAt: new Date("2026-01-01T00:00:00Z"),
     referenceCode: "ABC123",
     verificationVerdict: null,
