@@ -13,6 +13,7 @@
 
 import { describe, expect, it } from "vitest"
 import { makeFakeSql } from "../helpers/fake-sql.js"
+import { evalSqlPredicate } from "../helpers/sql-predicate.js"
 import type { Queryable } from "../../src/db/client.js"
 import {
   loadServableAttachmentsFor,
@@ -56,7 +57,7 @@ describe("loadServableAttachmentsFor", () => {
     expect(statement.sql).toMatch(/media_assets\.r2_key/)
   })
 
-  it("no longer filters on status = 'ready': a validating asset is servable", async () => {
+  it("admits a validating asset without admitting every non-ready status", async () => {
     const fake = makeFakeSql([{ match: /FROM media_assets/, rows: [] }])
 
     await loadServableAttachmentsFor(
@@ -67,8 +68,54 @@ describe("loadServableAttachmentsFor", () => {
     )
 
     const statement = fake.statements.at(-1)!
-    expect(statement.sql).not.toMatch(/status = 'ready'/)
-    expect(statement.sql).toMatch(/media_assets\.status <> 'ready' OR media_assets\.served_key IS NOT NULL/)
+    expect(statement.sql).toMatch(
+      /media_assets\.status = 'validating' OR \(media_assets\.status = 'ready' AND media_assets\.served_key IS NOT NULL\)/,
+    )
+    expect(statement.sql).not.toMatch(/status <> 'ready'/)
+  })
+
+  it("quarantines held and rejected attachments and serves validating and ready ones", async () => {
+    const fake = makeFakeSql([{ match: /FROM media_assets/, rows: [] }])
+
+    await loadServableAttachmentsFor(
+      fake.sql as unknown as Queryable,
+      "chat_message_id",
+      [MESSAGE],
+      PRESIGN,
+    )
+
+    const predicate = /AND (\(media_assets\.status = 'validating'[^\n]*?IS NOT NULL\)\))/.exec(
+      fake.statements.at(-1)!.sql,
+    )?.[1]
+    expect(predicate).toBeDefined()
+    const servable = (status: string, servedKey: string | null): boolean =>
+      evalSqlPredicate(predicate as string, {
+        status,
+        served_key: servedKey,
+        r2_key: "chat/one.jpg",
+      })
+
+    expect(servable("validating", null)).toBe(true)
+    expect(servable("ready", "chat/one.jpg.served")).toBe(true)
+    expect(servable("ready", null)).toBe(false)
+    expect(servable("held", "chat/one.jpg.served")).toBe(false)
+    expect(servable("held", null)).toBe(false)
+    expect(servable("rejected", null)).toBe(false)
+  })
+
+  it("falls back to the raw upload key only while the asset is validating", async () => {
+    const fake = makeFakeSql([{ match: /FROM media_assets/, rows: [] }])
+
+    await loadServableAttachmentsFor(
+      fake.sql as unknown as Queryable,
+      "chat_message_id",
+      [MESSAGE],
+      PRESIGN,
+    )
+
+    expect(fake.statements.at(-1)!.sql).toMatch(
+      /COALESCE\(media_assets\.served_key, CASE WHEN media_assets\.status = 'validating' THEN media_assets\.r2_key END\)/,
+    )
   })
 
   it("returns the still-validating attachment with its status intact so the client can render it", async () => {
