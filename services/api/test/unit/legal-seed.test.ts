@@ -4,10 +4,21 @@ import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 import { LEGAL_DOCUMENTS } from "@civfix/shared/legal"
 import { LEGAL_DOCUMENT_TYPE_VALUES } from "../../src/db/schema/types-legal.js"
-import { legalDocumentVersions } from "../../src/services/legal-service.js"
+import {
+  assertConsentVersionsCurrent,
+  currentLegalDocument,
+  legalDocumentVersions,
+} from "../../src/services/legal-service.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const MIGRATION = join(HERE, "../../drizzle/0151_legal_documents_consents.sql")
+const DRIZZLE = join(HERE, "../../drizzle")
+
+const SEED_MIGRATIONS = [
+  "0151_legal_documents_consents.sql",
+  "0171_legal_documents_2026_09_16.sql",
+] as const
+
+const RETIRED_TYPES = ["donations", "org_donation_agreement", "donation_disclosure"] as const
 
 interface SeedRow {
   type: string
@@ -17,8 +28,8 @@ interface SeedRow {
   url: string
 }
 
-function seededRows(): SeedRow[] {
-  const sql = readFileSync(MIGRATION, "utf8")
+function rowsIn(file: string): SeedRow[] {
+  const sql = readFileSync(join(DRIZZLE, file), "utf8")
   const insert = sql.slice(sql.indexOf("INSERT INTO legal_documents"))
   const values = insert.slice(0, insert.indexOf("ON CONFLICT"))
   const rows: SeedRow[] = []
@@ -32,14 +43,25 @@ function seededRows(): SeedRow[] {
       url: match[5] as string,
     })
   }
+  expect(rows.length, `${file} should seed at least one legal_documents row`).toBeGreaterThan(0)
   return rows
 }
 
+function seededRows(): SeedRow[] {
+  return SEED_MIGRATIONS.flatMap(rowsIn)
+}
+
+function latestByType(type: string): SeedRow | undefined {
+  return seededRows()
+    .filter((row) => row.type === type)
+    .sort((a, b) => Date.parse(a.effectiveAt) - Date.parse(b.effectiveAt))
+    .at(-1)
+}
+
 describe("legal_documents seed", () => {
-  it("seeds every current LEGAL_DOCUMENTS entry", () => {
-    const seeded = seededRows()
+  it("seeds the latest version of every current LEGAL_DOCUMENTS entry", () => {
     for (const document of LEGAL_DOCUMENTS) {
-      const row = seeded.find((entry) => entry.type === document.type)
+      const row = latestByType(document.type)
       expect(row, `missing seed row for ${document.type}`).toBeDefined()
       expect(row?.version).toBe(document.version)
       expect(row?.sha256).toBe(document.sha256)
@@ -56,7 +78,43 @@ describe("legal_documents seed", () => {
     expect(missing).toEqual([])
   })
 
-  it("serves the same set from GET /legal/versions", () => {
+  it("keeps every superseded row, because consent_records points at it", () => {
+    const seeded = seededRows()
+    for (const row of rowsIn(SEED_MIGRATIONS[0])) {
+      expect(
+        seeded.filter((entry) => entry.type === row.type && entry.version === row.version),
+      ).toHaveLength(1)
+    }
+    for (const type of RETIRED_TYPES) {
+      expect(
+        seeded.some((row) => row.type === type),
+        `retired type ${type} must keep its seeded row`,
+      ).toBe(true)
+    }
+  })
+
+  it("never re-seeds a (type, version) pair with a different hash", () => {
+    const byKey = new Map<string, string>()
+    for (const row of seededRows()) {
+      const key = `${row.type}@${row.version}`
+      const seen = byKey.get(key)
+      expect(seen === undefined || seen === row.sha256, `${key} seeded twice with differing sha256`).toBe(true)
+      byKey.set(key, row.sha256)
+    }
+  })
+
+  it("publishes a version forward, never by rewriting an older one", () => {
+    for (const document of LEGAL_DOCUMENTS) {
+      const versions = seededRows()
+        .filter((row) => row.type === document.type)
+        .map((row) => Date.parse(row.effectiveAt))
+      for (const effectiveAt of versions) {
+        expect(effectiveAt).toBeLessThanOrEqual(Date.parse(document.effectiveAt))
+      }
+    }
+  })
+
+  it("serves the current version of each document from GET /legal/versions", () => {
     const served = legalDocumentVersions()
     expect(served).toHaveLength(LEGAL_DOCUMENTS.length)
     for (const document of LEGAL_DOCUMENTS) {
@@ -67,12 +125,29 @@ describe("legal_documents seed", () => {
         effectiveAt: document.effectiveAt,
         url: document.url,
       })
+      expect(served.filter((entry) => entry.type === document.type)).toHaveLength(1)
+    }
+  })
+
+  it("rejects a consent claiming a superseded version", () => {
+    for (const document of LEGAL_DOCUMENTS) {
+      const superseded = seededRows().find(
+        (row) => row.type === document.type && row.version !== document.version,
+      )
+      if (!superseded) continue
+      expect(currentLegalDocument(document.type).version).toBe(document.version)
+      expect(() =>
+        assertConsentVersionsCurrent([{ type: document.type, version: superseded.version }]),
+      ).toThrow()
     }
   })
 
   it("uses a 64-hex sha256 for every document, so a consent record can pin the exact text", () => {
     for (const document of LEGAL_DOCUMENTS) {
       expect(document.sha256).toMatch(/^[0-9a-f]{64}$/)
+    }
+    for (const row of seededRows()) {
+      expect(row.sha256, `${row.type}@${row.version}`).toMatch(/^[0-9a-f]{64}$/)
     }
   })
 })
