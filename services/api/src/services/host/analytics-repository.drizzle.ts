@@ -19,6 +19,7 @@ export interface EventKpiRow {
 
 export interface EventClockRecord {
   status: CleanupStatus
+  createdAt: Date
   scheduledAt: Date
   endsAt: Date | null
   completedAt: Date | null
@@ -28,6 +29,7 @@ export interface EventClockRecord {
 
 interface EventClockRowSelect {
   status: CleanupStatus
+  created_at: Date
   scheduled_at: Date
   ends_at: Date | null
   completed_at: Date | null
@@ -36,7 +38,7 @@ interface EventClockRowSelect {
 }
 
 function eventClockColumns(tag: Sql) {
-  return tag`${cleanupStatusExpr(tag)} AS status, c.scheduled_at, c.ends_at, c.completed_at, c.registration_closes_at, c.timezone`
+  return tag`${cleanupStatusExpr(tag)} AS status, c.created_at, c.scheduled_at, c.ends_at, c.completed_at, c.registration_closes_at, c.timezone`
 }
 
 export interface SeatTrendPoint {
@@ -356,6 +358,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
       if (row === undefined) return null
       return {
         status: row.status,
+        createdAt: row.created_at,
         scheduledAt: row.scheduled_at,
         endsAt: row.ends_at,
         completedAt: row.completed_at,

@@ -1,6 +1,7 @@
 import {
   AppError,
   EventAnalyticsRequestSchema,
+  GetEventAnalyticsRequestSchema,
   GetEventInsightsRequestSchema,
   HostedEventsAnalyticsRequestSchema,
   type AnalyticsRange,
@@ -21,12 +22,14 @@ import {
 import { makeCommsRuntime } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
 import type { AnalyticsService } from "../../services/host/analytics-service.js"
+import type { EventAnalyticsService } from "../../services/host/event-analytics-service.js"
 import type { InsightsService } from "../../services/host/insights-service.js"
 
 export const ANALYTICS_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
 export interface HostAnalyticsOverrides {
   analytics: AnalyticsService
+  eventAnalytics: EventAnalyticsService
   insights: InsightsService
 }
 
@@ -54,6 +57,12 @@ export async function registerHostAnalyticsRoutes(
     return (cached ??= makeCommsRuntime(container, app.log)).analytics
   }
 
+  function eventAnalytics(): EventAnalyticsService {
+    const override = app.hostAnalyticsOverrides
+    if (override) return override.eventAnalytics
+    return (cached ??= makeCommsRuntime(container, app.log)).eventAnalytics
+  }
+
   function insights(): InsightsService {
     const override = app.hostAnalyticsOverrides
     if (override) return override.insights
@@ -74,6 +83,25 @@ export async function registerHostAnalyticsRoutes(
     const viewerScope = `${resolution.standing.eventRole ?? "none"}:${resolution.standing.orgRole ?? "none"}`
     return { cleanupId: query.id, range: query.range ?? "30d", viewerScope }
   }
+
+  route(app, "getEventAnalytics", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const query = parse(GetEventAnalyticsRequestSchema, mergeQuery(request))
+    const resolution = await requireCapability(
+      container.getDb().sql,
+      query.id,
+      userId,
+      "view_analytics",
+    )
+    const viewerScope = `${resolution.standing.eventRole ?? "none"}:${resolution.standing.orgRole ?? "none"}`
+    reply.status(200).send(
+      await eventAnalytics().analytics(query.id, query.scope ?? "full", {
+        userId,
+        organizationId: resolution.organizationId,
+        viewerScope,
+      }),
+    )
+  })
 
   route(app, "eventAnalyticsOverview", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
     const scope = await eventScope(request)

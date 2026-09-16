@@ -54,6 +54,7 @@ function analyticsRepo(overrides: Partial<AnalyticsRepository> = {}): AnalyticsR
     eventClock: () =>
       Promise.resolve({
         status: "active" as const,
+        createdAt: new Date("2026-02-01T17:00:00Z"),
         scheduledAt: new Date("2026-02-14T17:00:00Z"),
         endsAt: null,
         completedAt: null,
