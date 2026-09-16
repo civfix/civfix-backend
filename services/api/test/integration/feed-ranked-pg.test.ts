@@ -2,6 +2,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { DEFAULT_FEED_RANKING } from "@civfix/shared"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
+import { makeFeedPresence } from "../../src/services/feed-presence.js"
+import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import {
   explainFeedCandidates,
   makeDrizzlePostRepository,
@@ -31,7 +33,15 @@ describe.skipIf(!pg)("ranked home feed: candidate SQL (integration)", () => {
   }
 
   function makeService(repo: PostRepository = makeRepo()): PostService {
-    return makePostService({ repo, sql: h.sql, feedRanking: DEFAULT_FEED_RANKING })
+    return makePostService({
+      repo,
+      sql: h.sql,
+      feedRanking: DEFAULT_FEED_RANKING,
+      feedPresence: makeFeedPresence({
+        cache: new InMemoryCacheClient(() => Date.now()),
+        config: DEFAULT_FEED_RANKING,
+      }),
+    })
   }
 
   function args(over: Partial<FeedCandidateArgs> = {}): FeedCandidateArgs {

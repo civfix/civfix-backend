@@ -111,8 +111,8 @@ cross join — is `test/unit/social-suggest-sql.test.ts`.
 and need nothing here. What DOES need an out-of-band run is the **backfill**:
 0172 adds the column but deliberately populates no rows, because one `UPDATE`
 over the whole table inside the migration's single transaction is a lock
-hazard. The migration RAISEs a `WARNING` naming how many attached posts are
-still unpopulated.
+hazard. The migration RAISEs a `WARNING` when any backfillable post is still
+unpopulated.
 
 Run it once the deploy is healthy — keyset-paged, idempotent, safe to re-run
 and safe while the API serves traffic:
@@ -128,18 +128,36 @@ and recent-public pools still fill the feed. Only the *nearby* pool is degraded.
 Verify:
 
 ```sql
-SELECT count(*) FROM posts
- WHERE geom IS NULL AND (report_id IS NOT NULL OR event_id IS NOT NULL);
+SELECT count(*)
+  FROM posts p
+  LEFT JOIN reports  r ON r.id = p.report_id
+  LEFT JOIN cleanups c ON c.id = p.event_id
+ WHERE p.geom IS NULL AND COALESCE(r.geom, c.geom) IS NOT NULL;
 ```
 
-must return `0`. If `posts` has grown large enough that an inline
-`CREATE INDEX` would be disruptive, build both indexes with `CONCURRENTLY`
-BEFORE deploying — the migrations' `IF NOT EXISTS` guards then no-op:
+must return `0`. (The `COALESCE(...) IS NOT NULL` term matters: a post linked to
+a row whose own `geom` is null is not backfillable, and counting it would make
+this check permanently unsatisfiable. The migration's `DO` block uses the same
+predicate.)
+
+**`posts.geom` is an insert-time snapshot, not a live mirror.** It is written
+once by `createPost` and never updated: there is no trigger and no relocation
+hook, and the backfill only touches rows where `geom IS NULL`. If a report or
+cleanup is later moved to a new coordinate, every post already linked to it
+keeps ranking against the OLD point indefinitely. That is acceptable for feed
+proximity (the post was about the place as it was), but it is a deliberate
+property, not an oversight — if live tracking is ever wanted, the relocation
+paths must update the derived posts explicitly.
+
+If `posts` has grown large enough that an inline `CREATE INDEX` would be
+disruptive, build both indexes with `CONCURRENTLY` BEFORE deploying — the
+migrations' `IF NOT EXISTS` guards then no-op:
 
 ```sql
 CREATE INDEX CONCURRENTLY IF NOT EXISTS posts_geom_gist
   ON posts USING gist (geom)
-  WHERE geom IS NOT NULL AND deleted_at IS NULL AND visibility = 'public';
+  WHERE geom IS NOT NULL AND deleted_at IS NULL AND reply_to_id IS NULL
+    AND visibility = 'public';
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS posts_author_public_recent_idx
   ON posts (author_id, created_at DESC, id DESC)

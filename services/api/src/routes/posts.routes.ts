@@ -22,6 +22,8 @@ const PostIdParamsSchema = z.object({ id: IdSchema }).strict()
 
 export const FEED_COUNTS_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
+export const HOME_FEED_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
+
 export const CREATE_POST_RATE_LIMIT = perIdentity({ max: 120, timeWindow: "1 minute" })
 
 export const POST_INTERACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
@@ -106,7 +108,7 @@ export async function registerPostRoutes(app: FastifyInstance, container: Contai
     return { lat: approximate.lat, lng: approximate.lng }
   }
 
-  route(app, "homeFeed", async (request, reply) => {
+  route(app, "homeFeed", { config: { rateLimit: HOME_FEED_RATE_LIMIT } }, async (request, reply) => {
     const userId = request.auth.userId
     const query = parse(HomeFeedQuerySchema, request.query)
     const location = viewerLocationOf(request)

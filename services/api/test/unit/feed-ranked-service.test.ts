@@ -136,9 +136,11 @@ describe("ranked feed: cursor continuation covers every item exactly once", () =
   const rows = Array.from({ length: 60 }, (_, i) => candidateRow(i + 1))
 
   function service(): PostService {
+    const cache = new InMemoryCacheClient(() => Date.now())
     return makePostService({
       repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
       sql: throwingSql,
+      feedPresence: makeFeedPresence({ cache, config: DEFAULT_FEED_RANKING }),
       now: () => NOW,
     })
   }
@@ -242,40 +244,83 @@ describe("ranked feed: warm snapshot continues a cursor without re-ranking", () 
     expect(second.items.some((item) => firstIds.has(item.id))).toBe(false)
   })
 
-  it("produces the same page whether the snapshot is warm or cold", async () => {
-    const warm = harness()
-    const first = await warm.svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
-    const fromSnapshot = await warm.svc.homeFeed(VIEWER, {
-      filter: "all",
-      limit: 20,
-      cursor: first.nextCursor!,
-    })
+  it("ends the feed rather than re-ranking when the snapshot has expired", async () => {
+    const { svc } = harness()
+    const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
 
-    const cold = harness()
-    await cold.svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
-    await cold.presence.readSnapshot(VIEWER, "all")
-    const coldPresence = makeFeedPresence({ config: DEFAULT_FEED_RANKING })
-    const coldSvc = makePostService({
+    const expired = makePostService({
       repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
       sql: throwingSql,
-      feedPresence: coldPresence,
+      feedPresence: makeFeedPresence({
+        cache: new InMemoryCacheClient(() => Date.now()),
+        config: DEFAULT_FEED_RANKING,
+      }),
       now: () => NOW,
     })
-    const fromRerank = await coldSvc.homeFeed(VIEWER, {
+    const page = await expired.homeFeed(VIEWER, {
       filter: "all",
       limit: 20,
       cursor: first.nextCursor!,
     })
 
-    expect(fromSnapshot.items.map((i) => i.id)).toEqual(fromRerank.items.map((i) => i.id))
-    expect(fromSnapshot.nextCursor).toBe(fromRerank.nextCursor)
+    expect(page.items).toEqual([])
+    expect(page.nextCursor).toBeNull()
+  })
+
+  it("re-ranking a moved clock never re-serves a page-1 item", async () => {
+    const { svc } = harness()
+    const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+
+    const later = makePostService({
+      repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+      sql: throwingSql,
+      feedPresence: makeFeedPresence({
+        cache: new InMemoryCacheClient(() => Date.now()),
+        config: DEFAULT_FEED_RANKING,
+      }),
+      now: () => NOW + 10 * 60_000,
+    })
+    const page = await later.homeFeed(VIEWER, {
+      filter: "all",
+      limit: 20,
+      cursor: first.nextCursor!,
+    })
+
+    const firstIds = new Set(first.items.map((item) => item.id))
+    expect(page.items.some((item) => firstIds.has(item.id))).toBe(false)
   })
 
   it("keys the snapshot per filter, so the events tab does not slice the all tab's page", async () => {
-    const { svc, candidateQueries } = harness()
+    const { svc } = harness()
     const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
-    await svc.homeFeed(VIEWER, { filter: "events", limit: 20, cursor: first.nextCursor! })
-    expect(candidateQueries()).toBe(2)
+    const events = await svc.homeFeed(VIEWER, {
+      filter: "events",
+      limit: 20,
+      cursor: first.nextCursor!,
+    })
+    expect(events.items).toEqual([])
+  })
+
+  it("keeps an active scroll alive by refreshing the snapshot TTL", async () => {
+    const touched: string[] = []
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const presence = makeFeedPresence({ cache, config: DEFAULT_FEED_RANKING })
+    const spied = {
+      ...presence,
+      touchSnapshot: (userId: string, filter: string) => {
+        touched.push(`${userId}:${filter}`)
+        return presence.touchSnapshot(userId, filter)
+      },
+    }
+    const svc = makePostService({
+      repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+      sql: throwingSql,
+      feedPresence: spied,
+      now: () => NOW,
+    })
+    const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    await svc.homeFeed(VIEWER, { filter: "all", limit: 20, cursor: first.nextCursor! })
+    expect(touched).toEqual([`${VIEWER}:all`])
   })
 })
 
@@ -313,7 +358,8 @@ describe("ranked feed: realtime fanout never blocks the request path", () => {
       { kind: "post", body: "hello", mediaUploadIds: [], mentionedUserIds: [] } as never,
       AUTHOR,
     )
-    expect(sent).toEqual([{ users: ["f1", "f2"], signal: { topic: "feed", id: POST } }])
+    expect(sent.flatMap((s) => s.users)).toEqual(["f1", "f2"])
+    expect(sent.every((s) => s.signal.topic === "feed" && s.signal.id === POST)).toBe(true)
   })
 
   it("publishes topic feed_counts to the post's live viewers on a like", async () => {
@@ -331,9 +377,8 @@ describe("ranked feed: realtime fanout never blocks the request path", () => {
     })
     await svc.likePost(POST, VIEWER)
 
-    expect(sent).toHaveLength(1)
-    expect(sent[0]!.signal).toEqual({ topic: "feed_counts", id: POST })
-    expect(sent[0]!.users.sort()).toEqual(["reader-1", "reader-2"])
+    expect(sent.every((s) => s.signal.topic === "feed_counts" && s.signal.id === POST)).toBe(true)
+    expect(sent.flatMap((s) => s.users).sort()).toEqual(["reader-1", "reader-2"])
   })
 
   it("excludes the acting user, whose own client already patched optimistically", async () => {
@@ -351,7 +396,7 @@ describe("ranked feed: realtime fanout never blocks the request path", () => {
     })
     await svc.likePost(POST, VIEWER)
 
-    expect(sent[0]!.users).toEqual(["reader-1"])
+    expect(sent.flatMap((s) => s.users)).toEqual(["reader-1"])
   })
 
   it("does not publish when the interaction was a no-op (double like)", async () => {

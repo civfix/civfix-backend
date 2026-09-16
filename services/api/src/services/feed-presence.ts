@@ -24,6 +24,7 @@ export interface FeedSnapshotEntry {
 export interface FeedPresence {
   readSnapshot(userId: string, filter: string): Promise<FeedSnapshotEntry[] | null>
   writeSnapshot(userId: string, filter: string, ranked: readonly RankedCandidate[]): Promise<void>
+  touchSnapshot(userId: string, filter: string): Promise<void>
   seenBy(userId: string, postIds: readonly string[]): Promise<Set<string>>
   recordServed(userId: string, postIds: readonly string[]): Promise<void>
   viewersOf(postId: string): Promise<string[]>
@@ -98,6 +99,13 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
       })
     },
 
+    touchSnapshot(userId: string, filter: string): Promise<void> {
+      if (cfg.snapshotTtlSeconds <= 0) return Promise.resolve()
+      return guarded<void>(undefined, "snapshot touch", async () => {
+        await deps.cache!.expire(snapshotKey(userId, filter), cfg.snapshotTtlSeconds)
+      })
+    },
+
     seenBy(userId: string, postIds: readonly string[]): Promise<Set<string>> {
       if (postIds.length === 0) return Promise.resolve(new Set<string>())
       return guarded(new Set<string>(), "served-set read", async () => {
@@ -130,7 +138,7 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
         const key = viewersKey(postId)
         const size = await cache.scard(key)
         if (size === 0) return []
-        if (size > cfg.viewerFanoutMax) {
+        if (size >= cfg.viewerFanoutMax) {
           deps.logger?.debug?.(
             { postId, size, cap: cfg.viewerFanoutMax },
             "feed presence: viewer fanout skipped (over cap)",

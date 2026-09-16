@@ -103,9 +103,6 @@ export const FEED_IN_NETWORK_POOL = 250
 export const FEED_NEARBY_POOL = 150
 export const FEED_RECENT_POOL = 150
 
-export const FEED_GEOM_INDEX = "posts_geom_gist"
-export const FEED_AUTHOR_INDEX = "posts_author_public_recent_idx"
-
 const KM_PER_DEGREE_LAT = 111.32
 
 const MIN_LATITUDE_COSINE = 0.25
@@ -351,6 +348,11 @@ export function feedCandidatesStatement(
     AND p.reply_to_id IS NULL
     AND p.visibility = 'public'
     AND p.created_at >= (SELECT since FROM eligible_window)
+    AND NOT EXISTS (
+      SELECT 1 FROM user_blocks b
+      WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = p.author_id)
+         OR (b.blocker_id = p.author_id AND b.blocked_id = ${viewerId})
+    )
     ${filterClause}
   `
   return sql`
@@ -413,9 +415,12 @@ export function feedCandidatesStatement(
       LIMIT ${FEED_RECENT_POOL}
     ),
     pool AS (
-      SELECT id FROM in_network
-      UNION SELECT id FROM nearby
-      UNION SELECT id FROM recent_public
+      SELECT DISTINCT ON (id) id, source FROM (
+        SELECT id, 0 AS source FROM in_network
+        UNION ALL SELECT id, 1 AS source FROM nearby
+        UNION ALL SELECT id, 2 AS source FROM recent_public
+      ) merged
+      ORDER BY id, source
     )
     SELECT
       p.id,
@@ -460,11 +465,7 @@ export function feedCandidatesStatement(
       ORDER BY COALESCE(o.id = au.primary_organization_id, false) DESC, m.joined_at ASC, o.id ASC
       LIMIT 1
     ) aff ON true
-    WHERE NOT EXISTS (
-      SELECT 1 FROM user_blocks b
-      WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = p.author_id)
-         OR (b.blocker_id = p.author_id AND b.blocked_id = ${viewerId})
-    )
+    ORDER BY pool.source, p.created_at DESC, p.id DESC
     LIMIT ${args.candidateCap}
   `
 }
@@ -1223,8 +1224,13 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     async followerIdsOf(authorId: string, limit: number): Promise<string[]> {
       if (limit <= 0) return []
       const rows = await sql<{ follower_id: string }[]>`
-        SELECT follower_id FROM follows_people
-        WHERE followee_id = ${authorId}
+        SELECT f.follower_id FROM follows_people f
+        WHERE f.followee_id = ${authorId}
+          AND NOT EXISTS (
+            SELECT 1 FROM user_blocks b
+            WHERE (b.blocker_id = f.follower_id AND b.blocked_id = ${authorId})
+               OR (b.blocker_id = ${authorId} AND b.blocked_id = f.follower_id)
+          )
         LIMIT ${limit}
       `
       return rows.map((r) => r.follower_id)

@@ -127,7 +127,6 @@ export interface Container {
   getAffiliationLoader(): AffiliationLoader
   getPostRepo(): PostRepository
   getPostService(): PostService
-  getFeedPresence(): FeedPresence
   getNotificationService(logger?: NotificationLogger): NotificationService
   getCounterStore(): CounterStore
   getCache(): CacheClient
@@ -541,7 +540,6 @@ export function buildContainer(env: Env): Container {
     getAffiliationLoader,
     getPostRepo,
     getPostService,
-    getFeedPresence,
     getNotificationService,
     getCounterStore,
     getCache,

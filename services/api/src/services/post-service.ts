@@ -29,6 +29,7 @@ import {
   type RepliesPage,
 } from "./post-repository.drizzle.js"
 import { applyCutoff, rankCandidates, type FeedCandidate } from "./feed-ranking.js"
+import { mapWithLimit } from "./media-presign.js"
 import type { FeedPresence } from "./feed-presence.js"
 import type { PostNotifier } from "./notification-service.js"
 
@@ -40,6 +41,15 @@ function isLegacyTimeCursor(cursor: string | null | undefined): boolean {
   if (cursor === null || cursor === undefined || cursor === "") return false
   if (parseFeedScoreCursor(cursor) !== null) return false
   return parseTimeCursor(cursor) !== null
+}
+
+export const FEED_FANOUT_CONCURRENCY = 16
+
+export const FEED_DISTANCE_RESOLUTION_KM = 1
+
+function coarseDistanceKm(distanceKm: number | null): number | null {
+  if (distanceKm === null || !Number.isFinite(distanceKm)) return null
+  return Math.round(distanceKm / FEED_DISTANCE_RESOLUTION_KM) * FEED_DISTANCE_RESOLUTION_KM
 }
 
 export interface FeedViewerLocation {
@@ -89,7 +99,9 @@ export function makePostService(deps: PostServiceDeps): PostService {
   function fanout(recipients: readonly string[], topic: "feed" | "feed_counts", id: string): void {
     const channel = deps.userChannel
     if (channel === undefined || recipients.length === 0) return
-    void channel.publishToUsers(recipients, { topic, id }).catch((err: unknown) => {
+    void mapWithLimit([...recipients], FEED_FANOUT_CONCURRENCY, (userId) =>
+      channel.publishToUser(userId, { topic, id }),
+    ).catch((err: unknown) => {
       deps.logger?.warn({ err, topic, id }, "post: realtime feed fanout failed (suppressed)")
     })
   }
@@ -133,7 +145,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
       authorIsViewer: row.author_is_viewer,
       viewerMentioned: row.viewer_mentioned,
       authorOrgVerified: row.author_org_verified,
-      distanceKm: row.distance_km === null ? null : Number(row.distance_km),
+      distanceKm: coarseDistanceKm(row.distance_km === null ? null : Number(row.distance_km)),
       alreadySeen: seen.has(row.id),
     }
   }
@@ -147,7 +159,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
     const hasMore = entries.length > pageEntries.length
     const last = pageEntries[pageEntries.length - 1]
     const nextCursor =
-      hasMore && last !== undefined
+      hasMore && last !== undefined && deps.feedPresence !== undefined && viewerId !== NIL_VIEWER_ID
         ? formatFeedScoreCursor({ score: last.score, postId: last.id })
         : null
 
@@ -156,22 +168,34 @@ export function makePostService(deps: PostServiceDeps): PostService {
       viewerId,
     )
 
-    if (deps.feedPresence !== undefined) {
-      void deps.feedPresence.recordServed(
-        viewerId,
-        items.map((item) => item.id),
-      )
+    if (deps.feedPresence !== undefined && viewerId !== NIL_VIEWER_ID) {
+      void deps.feedPresence
+        .recordServed(
+          viewerId,
+          items.map((item) => item.id),
+        )
+        .catch((err: unknown) => {
+          deps.logger?.warn({ err }, "post: feed served-set write failed (suppressed)")
+        })
     }
 
     return { items, nextCursor }
   }
 
-  function continueFromSnapshot(
+  async function continueRankedPage(
     viewerId: string,
-    snapshot: readonly { id: string; score: number }[],
+    filter: string,
     cursor: { score: number; postId: string },
     limit: number,
   ): Promise<FeedPage> {
+    if (deps.feedPresence === undefined || viewerId === NIL_VIEWER_ID) {
+      return { items: [], nextCursor: null }
+    }
+    const snapshot = await deps.feedPresence.readSnapshot(viewerId, filter)
+    if (snapshot === null) return { items: [], nextCursor: null }
+    void deps.feedPresence.touchSnapshot(viewerId, filter).catch((err: unknown) => {
+      deps.logger?.warn({ err }, "post: feed snapshot touch failed (suppressed)")
+    })
     const after = snapshot.filter((entry) =>
       isAfterFeedScoreCursor({ score: entry.score, postId: entry.id }, cursor),
     )
@@ -185,13 +209,9 @@ export function makePostService(deps: PostServiceDeps): PostService {
   ): Promise<FeedPage> {
     const limit = query.limit ?? POSTS_DEFAULT_LIMIT
     const cursor = parseFeedScoreCursor(query.cursor)
-    const isFirstPage = cursor === null
 
-    if (cursor !== null && deps.feedPresence !== undefined) {
-      const snapshot = await deps.feedPresence.readSnapshot(viewerId, query.filter)
-      if (snapshot !== null) {
-        return continueFromSnapshot(viewerId, snapshot, cursor, limit)
-      }
+    if (cursor !== null) {
+      return continueRankedPage(viewerId, query.filter, cursor, limit)
     }
 
     const rows = await deps.repo.feedCandidates({
@@ -205,7 +225,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
     })
 
     const seen =
-      deps.feedPresence === undefined
+      deps.feedPresence === undefined || viewerId === NIL_VIEWER_ID
         ? new Set<string>()
         : await deps.feedPresence.seenBy(
             viewerId,
@@ -217,19 +237,15 @@ export function makePostService(deps: PostServiceDeps): PostService {
       feedConfig,
       nowMs(),
     )
-    const kept = applyCutoff(ranked, feedConfig, isFirstPage)
-    const after =
-      cursor === null
-        ? kept
-        : kept.filter((entry) =>
-            isAfterFeedScoreCursor({ score: entry.score, postId: entry.id }, cursor),
-          )
+    const kept = applyCutoff(ranked, feedConfig, true)
 
-    if (isFirstPage && deps.feedPresence !== undefined) {
-      void deps.feedPresence.writeSnapshot(viewerId, query.filter, ranked)
+    if (deps.feedPresence !== undefined && viewerId !== NIL_VIEWER_ID) {
+      void deps.feedPresence.writeSnapshot(viewerId, query.filter, kept).catch((err: unknown) => {
+        deps.logger?.warn({ err }, "post: feed snapshot write failed (suppressed)")
+      })
     }
 
-    return pageFrom(viewerId, after, limit)
+    return pageFrom(viewerId, kept, limit)
   }
 
   async function safeNotify(fn: () => Promise<void>): Promise<void> {
@@ -397,8 +413,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
     async unlikePost(id: string, viewerId: string): Promise<PostDTO> {
       const subject = await requireReadable(id, viewerId)
-      const removed = await deps.repo.unlike(subject.id, viewerId)
-      if (removed) await announceCountChange(subject.id, viewerId)
+      await deps.repo.unlike(subject.id, viewerId)
       return hydrateOrThrow(id, viewerId)
     },
 
@@ -439,8 +454,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
     async unrepostPost(id: string, viewerId: string): Promise<PostDTO> {
       await requireReadable(id, viewerId)
-      const { targetId, removed } = await deps.repo.unrepost(id, viewerId)
-      if (removed) await announceCountChange(targetId, viewerId)
+      const { targetId } = await deps.repo.unrepost(id, viewerId)
       return hydrateOrThrow(targetId, viewerId)
     },
 

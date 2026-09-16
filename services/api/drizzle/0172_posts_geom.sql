@@ -47,17 +47,18 @@ COMMENT ON COLUMN posts.geom IS
 
 CREATE INDEX IF NOT EXISTS posts_geom_gist
   ON posts USING gist (geom)
-  WHERE geom IS NOT NULL AND deleted_at IS NULL AND visibility = 'public';
+  WHERE geom IS NOT NULL AND deleted_at IS NULL AND reply_to_id IS NULL AND visibility = 'public';
 
 DO $$
-DECLARE
-  pending bigint;
 BEGIN
-  SELECT count(*) INTO pending
-  FROM posts
-  WHERE geom IS NULL AND (report_id IS NOT NULL OR event_id IS NOT NULL);
+  PERFORM 1
+  FROM posts p
+  LEFT JOIN reports r ON r.id = p.report_id
+  LEFT JOIN cleanups c ON c.id = p.event_id
+  WHERE p.geom IS NULL AND COALESCE(r.geom, c.geom) IS NOT NULL
+  LIMIT 1;
 
-  IF pending > 0 THEN
-    RAISE WARNING 'posts.geom is unpopulated for % attached post(s) - run pnpm db:backfill:post-geom after this deploy is healthy; those posts score no feed proximity term until then', pending;
+  IF FOUND THEN
+    RAISE WARNING 'posts.geom is unpopulated for at least one attached post - run pnpm db:backfill:post-geom after this deploy is healthy; those posts score no feed proximity term until then';
   END IF;
 END $$;

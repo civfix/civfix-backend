@@ -147,7 +147,7 @@ function reportSelect(
       -- confirmations was the report_follows count; that table was dropped with the discussion system.
       -- Kept as a stable admin DTO field (always 0 now) so the admin UI neighbors-confirmed row still parses.
       '0'::text AS confirmations,
-      EXISTS (SELECT 1 FROM media_assets m WHERE m.report_id = r.id AND m.status = 'ready') AS has_photo,
+      EXISTS (SELECT 1 FROM media_assets m WHERE m.report_id = r.id AND m.status = 'ready' AND m.served_key IS NOT NULL) AS has_photo,
       pm.id AS preview_id,
       pm.kind AS preview_kind,
       pm.served_key AS preview_key,

@@ -81,7 +81,9 @@ export const posts = pgTable(
       .where(sql`deleted_at IS NULL AND reply_to_id IS NULL AND visibility = 'public'`),
     index("posts_geom_gist")
       .using("gist", t.geom)
-      .where(sql`geom IS NOT NULL AND deleted_at IS NULL AND visibility = 'public'`),
+      .where(
+        sql`geom IS NOT NULL AND deleted_at IS NULL AND reply_to_id IS NULL AND visibility = 'public'`,
+      ),
     index("posts_organization_created_idx")
       .on(t.organizationId, t.createdAt.desc())
       .where(sql`${t.organizationId} IS NOT NULL AND deleted_at IS NULL`),

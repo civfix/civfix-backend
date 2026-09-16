@@ -79,12 +79,18 @@ describe("feed candidate SQL: security invariants", () => {
     expect(replies.length).toBeGreaterThanOrEqual(3)
   })
 
-  it("applies the block exclusion symmetrically, once over the union", async () => {
+  it("applies the block exclusion symmetrically, inside every pool", async () => {
     const stmt = await emitted()
     expect(stmt.sql).toContain("FROM user_blocks b")
     expect(stmt.sql).toMatch(/b\.blocker_id = \? AND b\.blocked_id = p\.author_id/)
     expect(stmt.sql).toMatch(/b\.blocker_id = p\.author_id AND b\.blocked_id = \?/)
-    expect(stmt.sql.match(/FROM user_blocks b/g)).toHaveLength(1)
+    expect(stmt.sql.match(/FROM user_blocks b/g)?.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it("cuts the candidate pool deterministically, in-network first", async () => {
+    const stmt = await emitted()
+    expect(stmt.sql).toMatch(/ORDER BY pool\.source, p\.created_at DESC, p\.id DESC/)
+    expect(stmt.sql).toContain("DISTINCT ON (id)")
   })
 
   it("never counts a suspended or deleted organization as verified", async () => {
