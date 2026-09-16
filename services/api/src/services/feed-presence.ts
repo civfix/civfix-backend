@@ -114,12 +114,13 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
         const cache = deps.cache!
         await cache.sadd(servedKey(userId), ...unique)
         await cache.expire(servedKey(userId), cfg.servedTtlSeconds)
-        for (const postId of unique) {
-          const key = viewersKey(postId)
-          if ((await cache.scard(key)) >= cfg.viewerFanoutMax) continue
-          await cache.sadd(key, userId)
-          await cache.expire(key, cfg.servedTtlSeconds)
-        }
+
+        const sizes = await Promise.all(unique.map((postId) => cache.scard(viewersKey(postId))))
+        const admitted = unique.filter((_, i) => (sizes[i] ?? 0) < cfg.viewerFanoutMax)
+        await Promise.all(admitted.map((postId) => cache.sadd(viewersKey(postId), userId)))
+        await Promise.all(
+          admitted.map((postId) => cache.expire(viewersKey(postId), cfg.servedTtlSeconds)),
+        )
       })
     },
 
