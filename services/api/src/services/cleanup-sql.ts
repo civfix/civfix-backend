@@ -59,6 +59,7 @@ export interface CleanupRowSelect {
   org_handle: string | null
   org_bio: string | null
   org_avatar_url: string | null
+  org_donation_url: string | null
   ends_at: Date
   timezone: string | null
   visibility: EventVisibility
@@ -99,6 +100,7 @@ export function toRecord(r: CleanupRowSelect): CleanupRecord {
     handle: r.org_handle,
     bio: r.org_bio,
     avatarUrl: r.org_avatar_url,
+    donationUrl: r.org_donation_url,
   }
   const organization: CleanupOrganizationView | null =
     r.organization_id !== null && r.organization_slug !== null && r.organization_name !== null
@@ -203,7 +205,8 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     u.display_name AS org_display_name,
     u.handle AS org_handle,
     u.bio AS org_bio,
-    u.avatar_url AS org_avatar_url
+    u.avatar_url AS org_avatar_url,
+    u.donation_url AS org_donation_url
   `
 }
 

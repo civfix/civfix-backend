@@ -123,6 +123,7 @@ interface CleanupRowSelect {
   org_handle: string | null
   org_bio: string | null
   org_avatar_url: string | null
+  org_donation_url: string | null
 }
 
 function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
@@ -132,6 +133,7 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
     handle: r.org_handle,
     bio: r.org_bio,
     avatarUrl: r.org_avatar_url,
+    donationUrl: r.org_donation_url,
   }
   return {
     id: r.id,
@@ -215,7 +217,8 @@ function profileEventRows(
       u.display_name AS org_display_name,
       u.handle AS org_handle,
       u.bio AS org_bio,
-      u.avatar_url AS org_avatar_url
+      u.avatar_url AS org_avatar_url,
+      u.donation_url AS org_donation_url
     FROM cleanups c
     JOIN ids ON ids.cleanup_id = c.id
     JOIN users u ON u.id = c.organizer_user_id

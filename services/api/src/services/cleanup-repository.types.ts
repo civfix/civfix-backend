@@ -103,6 +103,7 @@ export interface CleanupPersonView {
   handle: string | null
   bio: string | null
   avatarUrl: string | null
+  donationUrl?: string | null
 }
 
 export interface AttendeeView extends CleanupPersonView {

@@ -625,13 +625,14 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           org_handle: string | null
           org_bio: string | null
           org_avatar_url: string | null
+          org_donation_url: string | null
           linked_at: Date
         }[]
       >`
         SELECT
           report_id, id, title, event_kind, status, scheduled_at, ends_at, timezone,
           lng, lat, going, org_id, org_display_name, org_handle, org_bio, org_avatar_url,
-          linked_at
+          org_donation_url, linked_at
         FROM (
           SELECT
             cr.report_id,
@@ -650,6 +651,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             u.handle AS org_handle,
             u.bio AS org_bio,
             u.avatar_url AS org_avatar_url,
+            u.donation_url AS org_donation_url,
             cr.linked_at,
             row_number() OVER (
               PARTITION BY cr.report_id ORDER BY cr.linked_at DESC, c.id
@@ -682,6 +684,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             handle: r.org_handle,
             bio: r.org_bio,
             avatarUrl: r.org_avatar_url,
+            donationUrl: r.org_donation_url,
           },
           linkedAt: r.linked_at,
         }

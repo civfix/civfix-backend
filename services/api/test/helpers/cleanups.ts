@@ -225,6 +225,7 @@ interface StoredUser {
   handle: string | null
   bio: string | null
   avatarUrl: string | null
+  donationUrl: string | null
 }
 
 interface StoredReport {
@@ -340,6 +341,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       handle: over.handle ?? null,
       bio: over.bio ?? null,
       avatarUrl: over.avatarUrl ?? null,
+      donationUrl: over.donationUrl ?? null,
     }
     this.users.set(user.id, user)
     return user
@@ -450,6 +452,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       handle: u?.handle ?? null,
       bio: u?.bio ?? null,
       avatarUrl: u?.avatarUrl ?? null,
+      donationUrl: u?.donationUrl ?? null,
     }
   }
 

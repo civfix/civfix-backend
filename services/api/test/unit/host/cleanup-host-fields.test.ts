@@ -196,6 +196,25 @@ describe("createCleanup with host fields", () => {
     expect(dto.donationUrl).toBeNull()
   })
 
+  it("carries both donation links onto a read event: the host's own and the organization's", async () => {
+    repo.seedUser({ id: ORG, displayName: "Olive Organizer", handle: "olive", donationUrl: "https://give.example.org/olive" })
+    const solo = await service.getCleanup(
+      (await service.createCleanup(base(), ORG)).id,
+      { userId: ORG },
+    )
+    expect(solo.organizer.donationUrl).toBe("https://give.example.org/olive")
+    expect(solo.organization).toBeNull()
+
+    const org = repo.seedOrganization({ slug: "bct", donationUrl: "https://give.example.org/org" })
+    repo.seedOrgMember(org.id, ORG, "member")
+    const hosted = await service.getCleanup(
+      (await service.createCleanup(base({ organizationId: org.id }), ORG)).id,
+      { userId: ORG },
+    )
+    expect(hosted.organization?.donationUrl).toBe("https://give.example.org/org")
+    expect(hosted.organizer.donationUrl).toBe("https://give.example.org/olive")
+  })
+
   it("accepts a donation link from a host with no organization at all", async () => {
     const dto = await service.createCleanup(
       base({ donationUrl: "https://give.example.org/solo" }),
