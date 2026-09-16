@@ -56,6 +56,12 @@ export interface AdminBroadcastListQuery {
   limit: number
 }
 
+export interface AnnouncementListQuery {
+  cleanupId: string
+  cursor: { createdAt: Date; id: string } | null
+  limit: number
+}
+
 export interface AudiencePageQuery {
   cleanupId: string
   segment: BroadcastSegment
@@ -72,6 +78,8 @@ export interface BroadcastRepository {
   findById(broadcastId: string): Promise<BroadcastRecord | null>
   findForEvent(cleanupId: string, broadcastId: string): Promise<BroadcastRecord | null>
   list(query: BroadcastListQuery): Promise<BroadcastRecord[]>
+  listAnnouncements(query: AnnouncementListQuery): Promise<BroadcastRecord[]>
+  countAnnouncementsSince(cleanupId: string, since: Date): Promise<number>
   listAdmin(query: AdminBroadcastListQuery): Promise<AdminBroadcastRow[]>
   listAdminHosts(params: AdminHostListParams): Promise<AdminHostRow[]>
 

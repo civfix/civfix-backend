@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto"
+import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/shared"
 import type { BroadcastKind, BroadcastStatus } from "@civfix/shared"
 import type {
   AdminBroadcastListQuery,
+  AnnouncementListQuery,
   AudiencePageQuery,
   BroadcastListQuery,
   BroadcastRepository,
@@ -28,6 +30,7 @@ import type {
   MemberContact,
 } from "./broadcast-types.js"
 import {
+  ANNOUNCEMENT_VISIBLE_STATUSES,
   CRITICAL_BROADCAST_KINDS,
   HOST_COMPOSED_BROADCAST_KINDS,
 } from "./broadcast-types.js"
@@ -120,6 +123,12 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     this.guests.set(cleanupId, rows.map((row) => ({ registered: true, ...row })))
   }
 
+  forceCreatedAt(broadcastId: string, at: Date): void {
+    const found = this.broadcasts.get(broadcastId)
+    if (found === undefined) return
+    this.broadcasts.set(broadcastId, { ...found, createdAt: at })
+  }
+
   forceUpdatedAt(broadcastId: string, at: Date): void {
     const found = this.broadcasts.get(broadcastId)
     if (found === undefined) return
@@ -194,6 +203,32 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
       .filter((b) => query.status === undefined || b.status === query.status)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
     return Promise.resolve(rows.slice(0, query.limit))
+  }
+
+  listAnnouncements(query: AnnouncementListQuery): Promise<BroadcastRecord[]> {
+    const rows = [...this.broadcasts.values()]
+      .filter((b) => b.cleanupId === query.cleanupId)
+      .filter((b) => b.kind === ANNOUNCEMENT_BROADCAST_KIND)
+      .filter((b) => ANNOUNCEMENT_VISIBLE_STATUSES.includes(b.status))
+      .filter(
+        (b) =>
+          query.cursor === null ||
+          b.createdAt.getTime() < query.cursor.createdAt.getTime() ||
+          (b.createdAt.getTime() === query.cursor.createdAt.getTime() && b.id < query.cursor.id),
+      )
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : -1))
+    return Promise.resolve(rows.slice(0, query.limit))
+  }
+
+  countAnnouncementsSince(cleanupId: string, since: Date): Promise<number> {
+    const rows = [...this.broadcasts.values()].filter(
+      (b) =>
+        b.cleanupId === cleanupId &&
+        b.kind === ANNOUNCEMENT_BROADCAST_KIND &&
+        b.status !== "draft" &&
+        b.createdAt.getTime() >= since.getTime(),
+    )
+    return Promise.resolve(rows.length)
   }
 
   listAdmin(query: AdminBroadcastListQuery): Promise<AdminBroadcastRow[]> {
@@ -695,6 +730,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     for (const [id, row] of this.broadcasts) {
       if (n >= batchSize) break
       if (row.contentScrubbedAt !== null || row.bodyMd === null) continue
+      if (row.kind === ANNOUNCEMENT_BROADCAST_KIND) continue
       if (row.finishedAt === null || row.finishedAt.getTime() >= cutoff.getTime()) continue
       this.broadcasts.set(id, {
         ...row,

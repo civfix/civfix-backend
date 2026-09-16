@@ -1,3 +1,4 @@
+import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/shared"
 import type {
   BroadcastChannel,
   BroadcastKind,
@@ -9,6 +10,7 @@ import type { Sql } from "../../db/client.js"
 import { listGuestAudiencePage, listMemberAudiencePage } from "./broadcast-audience-sql.js"
 import type {
   AdminBroadcastListQuery,
+  AnnouncementListQuery,
   AudiencePageQuery,
   BroadcastListQuery,
   BroadcastRepository,
@@ -34,6 +36,7 @@ import type {
   HostMessagingState,
   MemberContact,
 } from "./broadcast-types.js"
+import { ANNOUNCEMENT_VISIBLE_STATUSES } from "./broadcast-types.js"
 
 interface BroadcastRowSelect {
   id: string
@@ -192,6 +195,35 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
          ORDER BY created_at DESC, id DESC
          LIMIT ${query.limit}`
       return rows.map(toRecord)
+    },
+
+    async listAnnouncements(query: AnnouncementListQuery): Promise<BroadcastRecord[]> {
+      const cursorFilter =
+        query.cursor !== null
+          ? sql`AND (created_at, id) < (${query.cursor.createdAt}, ${query.cursor.id})`
+          : sql``
+      const rows = await sql<BroadcastRowSelect[]>`
+        SELECT id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
+               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
+               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
+               suppressed_count, content_scrubbed_at, created_at, updated_at FROM broadcasts
+         WHERE cleanup_id = ${query.cleanupId}
+           AND kind = ${ANNOUNCEMENT_BROADCAST_KIND}
+           AND status = ANY(${[...ANNOUNCEMENT_VISIBLE_STATUSES]}::text[])
+           ${cursorFilter}
+         ORDER BY created_at DESC, id DESC
+         LIMIT ${query.limit}`
+      return rows.map(toRecord)
+    },
+
+    async countAnnouncementsSince(cleanupId: string, since: Date): Promise<number> {
+      const rows = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM broadcasts
+         WHERE cleanup_id = ${cleanupId}
+           AND kind = ${ANNOUNCEMENT_BROADCAST_KIND}
+           AND status <> 'draft'
+           AND created_at >= ${since}`
+      return rows[0]?.n ?? 0
     },
 
     async listAdmin(query: AdminBroadcastListQuery): Promise<AdminBroadcastRow[]> {
@@ -947,6 +979,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
            SELECT id FROM broadcasts
             WHERE content_scrubbed_at IS NULL
               AND body_md IS NOT NULL
+              AND kind <> ${ANNOUNCEMENT_BROADCAST_KIND}
               AND finished_at IS NOT NULL
               AND finished_at < ${cutoff}
             ORDER BY finished_at
