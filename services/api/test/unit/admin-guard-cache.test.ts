@@ -67,6 +67,9 @@ class SpyCache implements CacheClient {
   smembers(key: string): Promise<string[]> {
     return this.inner.smembers(key)
   }
+  scard(key: string): Promise<number> {
+    return this.inner.scard(key)
+  }
   expire(key: string, ttlSeconds: number): Promise<void> {
     return this.inner.expire(key, ttlSeconds)
   }

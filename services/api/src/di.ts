@@ -70,6 +70,7 @@ import {
   type PostRepository,
 } from "./services/post-repository.drizzle.js"
 import { makePostService, type PostService } from "./services/post-service.js"
+import { makeFeedPresence, type FeedPresence } from "./services/feed-presence.js"
 import {
   makeNotificationService,
   type NotificationService,
@@ -126,6 +127,7 @@ export interface Container {
   getAffiliationLoader(): AffiliationLoader
   getPostRepo(): PostRepository
   getPostService(): PostService
+  getFeedPresence(): FeedPresence
   getNotificationService(logger?: NotificationLogger): NotificationService
   getCounterStore(): CounterStore
   getCache(): CacheClient
@@ -217,6 +219,18 @@ export function buildContainer(env: Env): Container {
     return postRepo
   }
 
+  let feedPresence: FeedPresence | undefined
+  function getFeedPresence(): FeedPresence {
+    if (!feedPresence) {
+      feedPresence = makeFeedPresence({
+        ...(env.REDIS_URL.length > 0 ? { cache: getCache() } : {}),
+        config: env.FEED_RANKING,
+        ...(serverLogger !== undefined ? { logger: serverLogger } : {}),
+      })
+    }
+    return feedPresence
+  }
+
   let postService: PostService | undefined
   function getPostService(): PostService {
     if (!postService) {
@@ -225,6 +239,9 @@ export function buildContainer(env: Env): Container {
         sql: getDb().sql,
         notifier: getNotificationService(),
         isBlockedEitherWay: (a: string, b: string) => getBlocksRepo().isBlockedEitherWay(a, b),
+        feedRanking: env.FEED_RANKING,
+        feedPresence: getFeedPresence(),
+        userChannel: getUserChannel(),
       })
     }
     return postService
@@ -476,6 +493,7 @@ export function buildContainer(env: Env): Container {
       redis = undefined
       redisCounters = undefined
       cacheClient = undefined
+      feedPresence = undefined
       redisByteMeter = undefined
     }
     if (dbHandle) {
@@ -523,6 +541,7 @@ export function buildContainer(env: Env): Container {
     getAffiliationLoader,
     getPostRepo,
     getPostService,
+    getFeedPresence,
     getNotificationService,
     getCounterStore,
     getCache,

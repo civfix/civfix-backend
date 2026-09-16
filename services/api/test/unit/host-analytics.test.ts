@@ -568,6 +568,7 @@ describe("host analytics cache", () => {
       sadd: () => Promise.resolve(0),
       srem: () => Promise.resolve(0),
       smembers: () => Promise.resolve([]),
+      scard: () => Promise.resolve(0),
       expire: () => Promise.resolve(),
     }
     const cache = makeHostAnalyticsCache({ cache: broken, ttlSeconds: 60 })

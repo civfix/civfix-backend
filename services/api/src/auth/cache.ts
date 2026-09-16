@@ -11,6 +11,7 @@ export interface CacheClient {
   sadd(key: string, ...members: string[]): Promise<number>
   srem(key: string, ...members: string[]): Promise<number>
   smembers(key: string): Promise<string[]>
+  scard(key: string): Promise<number>
   expire(key: string, ttlSeconds: number): Promise<void>
 }
 
@@ -115,6 +116,10 @@ export class InMemoryCacheClient implements CacheClient {
     return Promise.resolve([...(this.liveSet(key)?.members ?? [])])
   }
 
+  scard(key: string): Promise<number> {
+    return Promise.resolve(this.liveSet(key)?.members.size ?? 0)
+  }
+
   expire(key: string, ttlSeconds: number): Promise<void> {
     const at = this.clock() + ttlSeconds * 1000
     const setEntry = this.liveSet(key)
@@ -176,6 +181,10 @@ export class RedisCacheClient implements CacheClient {
 
   async smembers(key: string): Promise<string[]> {
     return this.redis.smembers(key)
+  }
+
+  async scard(key: string): Promise<number> {
+    return this.redis.scard(key)
   }
 
   async expire(key: string, ttlSeconds: number): Promise<void> {
