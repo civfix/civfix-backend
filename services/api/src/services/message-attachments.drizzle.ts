@@ -1,6 +1,7 @@
 import type { Queryable } from "../db/client.js"
 import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/shared"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
+import { servableMediaFilter, servedKeyExpr } from "./media-served-key.js"
 
 export type MessageMediaColumn = "chat_message_id"
 
@@ -50,7 +51,7 @@ export function makeAttachmentRepo(column: MessageMediaColumn): MessageAttachmen
   }
 }
 
-export async function loadReadyAttachmentsFor(
+export async function loadServableAttachmentsFor(
   tag: Queryable,
   column: MessageMediaColumn,
   messageIds: string[],
@@ -59,12 +60,12 @@ export async function loadReadyAttachmentsFor(
   const byMessage = new Map<string, MediaDTO[]>()
   if (messageIds.length === 0) return byMessage
   const rows = await tag<MediaRow[]>`
-    SELECT id, ${tag(column)} AS message_id, kind, codec, served_key AS r2_key,
+    SELECT id, ${tag(column)} AS message_id, kind, codec,
+           ${servedKeyExpr(tag, "media_assets")} AS r2_key,
            thumb_key, status, width, height
     FROM media_assets
     WHERE ${tag(column)} IN ${tag(messageIds)}
-      AND status = 'ready'
-      AND served_key IS NOT NULL
+      AND ${servableMediaFilter(tag, "media_assets")}
     ORDER BY created_at ASC
   `
   const projected = await mapWithLimit(rows, PRESIGN_CONCURRENCY, async (r) => {

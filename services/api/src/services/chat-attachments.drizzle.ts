@@ -1,7 +1,7 @@
 import type { Queryable } from "../db/client.js"
 import type { MediaDTO } from "@civfix/shared"
 import type { PresignMedia } from "./media-presign.js"
-import { loadReadyAttachmentsFor, makeAttachmentRepo } from "./message-attachments.drizzle.js"
+import { loadServableAttachmentsFor, makeAttachmentRepo } from "./message-attachments.drizzle.js"
 
 export function attachChatMedia(
   sql: Queryable,
@@ -17,5 +17,5 @@ export function loadChatAttachments(
   messageIds: string[],
   presign: PresignMedia,
 ): Promise<Map<string, MediaDTO[]>> {
-  return loadReadyAttachmentsFor(sql, "chat_message_id", messageIds, presign)
+  return loadServableAttachmentsFor(sql, "chat_message_id", messageIds, presign)
 }
