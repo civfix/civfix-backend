@@ -206,10 +206,10 @@ describe.skipIf(!pg)("ranked home feed: candidate SQL (integration)", () => {
   it("denormalises geom from the linked report at insert time", async () => {
     const author = await newUser("Report Author")
     const [report] = await h.sql<{ id: string }[]>`
-      INSERT INTO reports (reporter_user_id, idempotency_key, category, type, description, geom, geom_source, status, visibility)
+      INSERT INTO reports (reporter_user_id, idempotency_key, category, type, description, geom, geom_source, status, visibility, h3_cell)
       VALUES (
         ${author}, gen_random_uuid(), 'graffiti', 'graffiti', 'tag',
-        ST_SetSRID(ST_MakePoint(${LA.lng}, ${LA.lat}), 4326), 'manual', 'published', 'public'
+        ST_SetSRID(ST_MakePoint(${LA.lng}, ${LA.lat}), 4326), 'manual', 'published', 'public', 'h0'
       )
       RETURNING id
     `
