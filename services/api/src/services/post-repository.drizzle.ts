@@ -35,6 +35,8 @@ export const POSTS_DEFAULT_LIMIT = 20
 
 export const NIL_VIEWER_ID = "00000000-0000-0000-0000-000000000000"
 
+export const FEED_NEARBY_INDEX = "posts_geom_gist"
+
 function postColumns(sql: Queryable): postgres.Fragment {
   return sql`
     p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,

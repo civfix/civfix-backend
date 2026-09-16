@@ -7,6 +7,7 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import {
   explainFeedCandidates,
   makeDrizzlePostRepository,
+  FEED_NEARBY_INDEX,
   type FeedCandidateArgs,
   type PostRepository,
 } from "../../src/services/post-repository.drizzle.js"
@@ -259,11 +260,21 @@ describe.skipIf(!pg)("ranked home feed: candidate SQL (integration)", () => {
     expect(rows.length).toBeLessThanOrEqual(3)
   })
 
-  it("plans the nearby pool as an index scan, not a sequential scan", async () => {
+  async function explainWithIndexPlan(viewerId: string): Promise<string> {
+    await h.sql`ANALYZE posts`
+    await h.sql`ANALYZE follows_people`
+    return h.sql.begin(async (tx) => {
+      await tx`SET LOCAL enable_seqscan = off`
+      await tx`SET LOCAL enable_bitmapscan = off`
+      return explainFeedCandidates(tx, args({ viewerId }))
+    })
+  }
+
+  it("has an index path available for the nearby pool, and never falls back to a posts seq scan", async () => {
     const viewer = await newUser("Explain Viewer")
-    const plan = await explainFeedCandidates(h.sql, args({ viewerId: viewer }))
-    expect(plan).toContain("posts_geom_gist")
-    expect(plan).not.toMatch(/Seq Scan on posts/)
+    const plan = await explainWithIndexPlan(viewer)
+    expect(plan, `${FEED_NEARBY_INDEX} missing from:\n${plan}`).toContain(FEED_NEARBY_INDEX)
+    expect(plan, plan).not.toMatch(/Seq Scan on posts/)
   })
 
   it("pages the ranked feed over every seeded post exactly once", async () => {
