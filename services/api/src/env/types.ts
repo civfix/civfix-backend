@@ -1,3 +1,4 @@
+import type { FeedRankingConfig } from "@civfix/shared"
 import type { TrustProxyValue } from "./parsers.js"
 import type { CommsEnv } from "./comms-env.js"
 import type { RegistrationEnv } from "./registration-env.js"
@@ -33,6 +34,8 @@ export interface Env extends CommsEnv, RegistrationEnv {
   HOME_REGION_LAT: number
   HOME_REGION_LNG: number
   HOME_REGION_RADIUS_KM: number
+
+  FEED_RANKING: FeedRankingConfig
 
   CENSUS_GEOCODER_URL: string
   CENSUS_GEOCODER_TIMEOUT_MS: number
