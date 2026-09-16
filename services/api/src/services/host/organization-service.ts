@@ -79,6 +79,15 @@ export const MY_ORG_INVITES_CAP = 20
 
 export const ADMIN_ORGS_DEFAULT_LIMIT = 25
 
+export const ORG_LAST_ADMIN_CODE = "ORG_LAST_ADMIN"
+
+export function lastAdminError(): AppError {
+  return AppError.validation(
+    { userId: ORG_LAST_ADMIN_CODE },
+    "An organization needs at least one admin.",
+  )
+}
+
 const fallbackCounters = new InMemoryCounterStore()
 
 export interface OrganizationLogoPresigner {
@@ -906,6 +915,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       if (outcome === "owner") {
         throw AppError.forbidden("The owner's role can't be changed.")
       }
+      if (outcome === "last_admin") throw lastAdminError()
       return { ok: true }
     },
 
@@ -927,6 +937,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
             : "The owner can't be removed from their own organization.",
         )
       }
+      if (outcome === "last_admin") throw lastAdminError()
       return { ok: true }
     },
 
@@ -1209,6 +1220,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
           "The owner can't be removed. Transfer ownership to another member first.",
         )
       }
+      if (outcome === "last_admin") throw lastAdminError()
       return { ok: true }
     },
 

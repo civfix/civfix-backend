@@ -449,6 +449,12 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     return Promise.resolve("added")
   }
 
+  private countAdminSeats(organizationId: string): number {
+    return this.members.filter(
+      (m) => m.organizationId === organizationId && (m.role === "owner" || m.role === "admin"),
+    ).length
+  }
+
   setMemberRoleTx(args: {
     organizationId: string
     userId: string
@@ -460,6 +466,9 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     )
     if (member === undefined) return Promise.resolve("not_member")
     if (member.role === "owner") return Promise.resolve("owner")
+    if (member.role === "admin" && args.role === "member") {
+      if (this.countAdminSeats(args.organizationId) <= 1) return Promise.resolve("last_admin")
+    }
     if (member.role !== args.role) {
       member.role = args.role
       this.audits.push({
@@ -484,6 +493,9 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     const member = this.members[index]
     if (member === undefined) return Promise.resolve("not_member")
     if (member.role === "owner") return Promise.resolve("owner")
+    if (member.role === "admin" && this.countAdminSeats(args.organizationId) <= 1) {
+      return Promise.resolve("last_admin")
+    }
     this.members.splice(index, 1)
     this.audits.push({
       actorId: args.actorId,

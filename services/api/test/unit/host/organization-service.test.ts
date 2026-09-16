@@ -7,6 +7,7 @@ import { makeFakeSql, type SqlHandler } from "../../helpers/fake-sql.js"
 import type { Sql } from "../../../src/db/client.js"
 import {
   makeOrganizationService,
+  ORG_LAST_ADMIN_CODE,
   ORGS_CREATED_PER_DAY,
   type OrganizationService,
 } from "../../../src/services/host/organization-service.js"
@@ -398,6 +399,81 @@ describe("membership", () => {
       code: "FORBIDDEN",
     })
     await expect(service.removeMember(id, MEMBER, MEMBER)).resolves.toEqual({ ok: true })
+  })
+})
+
+describe("last-admin guard", () => {
+  async function seeded(): Promise<string> {
+    const dto = await service.createOrganization(base(), OWNER)
+    await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "handle",
+      identifier: "adam",
+      role: "admin",
+    })
+    await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "handle",
+      identifier: "mel",
+      role: "member",
+    })
+    return dto.id
+  }
+
+  /** The owner seat is the structural guard, so orphan the org first to reach the residual case. */
+  function dropOwnerSeat(id: string): void {
+    const index = repo.members.findIndex((m) => m.organizationId === id && m.role === "owner")
+    repo.members.splice(index, 1)
+  }
+
+  it("the owner seat alone already makes the invariant unreachable through the normal paths", async () => {
+    const id = await seeded()
+    await service.setMemberRole(id, OWNER, ADMIN, "member")
+    expect(
+      repo.members.filter((m) => m.organizationId === id && m.role !== "member"),
+    ).toHaveLength(1)
+    await expect(service.removeMember(id, OWNER, OWNER)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+  })
+
+  it("refuses to remove the last owner-or-admin seat of an orphaned organization", async () => {
+    const id = await seeded()
+    dropOwnerSeat(id)
+
+    await expect(service.removeMember(id, ADMIN, ADMIN)).rejects.toMatchObject({
+      code: "VALIDATION",
+      fields: { userId: ORG_LAST_ADMIN_CODE },
+    })
+    expect(repo.members.some((m) => m.organizationId === id && m.userId === ADMIN)).toBe(true)
+  })
+
+  it("allows the removal once a second admin seat exists", async () => {
+    const id = await seeded()
+    dropOwnerSeat(id)
+    await repo.setMemberRoleTx({ organizationId: id, userId: MEMBER, role: "admin", actorId: ADMIN })
+
+    await expect(service.removeMember(id, ADMIN, ADMIN)).resolves.toEqual({ ok: true })
+  })
+
+  it("refuses to demote the last owner-or-admin seat at the repository boundary", async () => {
+    const id = await seeded()
+    dropOwnerSeat(id)
+
+    await expect(
+      repo.setMemberRoleTx({ organizationId: id, userId: ADMIN, role: "member", actorId: ADMIN }),
+    ).resolves.toBe("last_admin")
+    expect(repo.members.find((m) => m.organizationId === id && m.userId === ADMIN)?.role).toBe(
+      "admin",
+    )
+  })
+
+  it("lets an admin be demoted while another owner-or-admin seat remains", async () => {
+    const id = await seeded()
+    dropOwnerSeat(id)
+    await repo.setMemberRoleTx({ organizationId: id, userId: MEMBER, role: "admin", actorId: ADMIN })
+
+    await expect(
+      repo.setMemberRoleTx({ organizationId: id, userId: ADMIN, role: "member", actorId: ADMIN }),
+    ).resolves.toBe("updated")
   })
 })
 
