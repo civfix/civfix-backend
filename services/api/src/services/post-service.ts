@@ -138,6 +138,46 @@ export function makePostService(deps: PostServiceDeps): PostService {
     }
   }
 
+  async function pageFrom(
+    viewerId: string,
+    entries: readonly { id: string; score: number }[],
+    limit: number,
+  ): Promise<FeedPage> {
+    const pageEntries = entries.slice(0, limit)
+    const hasMore = entries.length > pageEntries.length
+    const last = pageEntries[pageEntries.length - 1]
+    const nextCursor =
+      hasMore && last !== undefined
+        ? formatFeedScoreCursor({ score: last.score, postId: last.id })
+        : null
+
+    const items = await deps.repo.hydrateByIds(
+      pageEntries.map((entry) => entry.id),
+      viewerId,
+    )
+
+    if (deps.feedPresence !== undefined) {
+      void deps.feedPresence.recordServed(
+        viewerId,
+        items.map((item) => item.id),
+      )
+    }
+
+    return { items, nextCursor }
+  }
+
+  function continueFromSnapshot(
+    viewerId: string,
+    snapshot: readonly { id: string; score: number }[],
+    cursor: { score: number; postId: string },
+    limit: number,
+  ): Promise<FeedPage> {
+    const after = snapshot.filter((entry) =>
+      isAfterFeedScoreCursor({ score: entry.score, postId: entry.id }, cursor),
+    )
+    return pageFrom(viewerId, after, limit)
+  }
+
   async function rankedFeed(
     viewerId: string,
     query: HomeFeedQuery,
@@ -146,6 +186,13 @@ export function makePostService(deps: PostServiceDeps): PostService {
     const limit = query.limit ?? POSTS_DEFAULT_LIMIT
     const cursor = parseFeedScoreCursor(query.cursor)
     const isFirstPage = cursor === null
+
+    if (cursor !== null && deps.feedPresence !== undefined) {
+      const snapshot = await deps.feedPresence.readSnapshot(viewerId, query.filter)
+      if (snapshot !== null) {
+        return continueFromSnapshot(viewerId, snapshot, cursor, limit)
+      }
+    }
 
     const rows = await deps.repo.feedCandidates({
       viewerId,
@@ -178,30 +225,11 @@ export function makePostService(deps: PostServiceDeps): PostService {
             isAfterFeedScoreCursor({ score: entry.score, postId: entry.id }, cursor),
           )
 
-    const pageEntries = after.slice(0, limit)
-    const hasMore = after.length > pageEntries.length
-    const last = pageEntries[pageEntries.length - 1]
-    const nextCursor =
-      hasMore && last !== undefined
-        ? formatFeedScoreCursor({ score: last.score, postId: last.id })
-        : null
-
-    const items = await deps.repo.hydrateByIds(
-      pageEntries.map((entry) => entry.id),
-      viewerId,
-    )
-
-    if (deps.feedPresence !== undefined) {
-      if (isFirstPage) {
-        void deps.feedPresence.writeSnapshot(viewerId, query.filter, ranked)
-      }
-      void deps.feedPresence.recordServed(
-        viewerId,
-        items.map((item) => item.id),
-      )
+    if (isFirstPage && deps.feedPresence !== undefined) {
+      void deps.feedPresence.writeSnapshot(viewerId, query.filter, ranked)
     }
 
-    return { items, nextCursor }
+    return pageFrom(viewerId, after, limit)
   }
 
   async function safeNotify(fn: () => Promise<void>): Promise<void> {

@@ -1209,6 +1209,11 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         WHERE p.id = ANY(${[...ids]}::uuid[])
           AND p.deleted_at IS NULL
           AND p.visibility = 'public'
+          AND NOT EXISTS (
+            SELECT 1 FROM user_blocks b
+            WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = p.author_id)
+               OR (b.blocker_id = p.author_id AND b.blocked_id = ${viewerId})
+          )
       `
       const order = new Map(ids.map((id, index) => [id, index]))
       rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))

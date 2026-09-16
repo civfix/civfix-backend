@@ -204,6 +204,81 @@ describe("ranked feed: cursor continuation covers every item exactly once", () =
   })
 })
 
+describe("ranked feed: warm snapshot continues a cursor without re-ranking", () => {
+  const rows = Array.from({ length: 60 }, (_, i) => candidateRow(i + 1))
+
+  function harness() {
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const presence = makeFeedPresence({ cache, config: DEFAULT_FEED_RANKING })
+    let candidateQueries = 0
+    const svc = makePostService({
+      repo: repoOver({
+        feedCandidates: () => {
+          candidateQueries += 1
+          return Promise.resolve(rows)
+        },
+      }),
+      sql: throwingSql,
+      feedPresence: presence,
+      now: () => NOW,
+    })
+    return { svc, presence, candidateQueries: () => candidateQueries }
+  }
+
+  it("re-ranks on page 1 and slices the snapshot on page 2", async () => {
+    const { svc, candidateQueries } = harness()
+    const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    expect(candidateQueries()).toBe(1)
+
+    const second = await svc.homeFeed(VIEWER, {
+      filter: "all",
+      limit: 20,
+      cursor: first.nextCursor!,
+    })
+    expect(candidateQueries()).toBe(1)
+    expect(second.items).toHaveLength(20)
+
+    const firstIds = new Set(first.items.map((item) => item.id))
+    expect(second.items.some((item) => firstIds.has(item.id))).toBe(false)
+  })
+
+  it("produces the same page whether the snapshot is warm or cold", async () => {
+    const warm = harness()
+    const first = await warm.svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    const fromSnapshot = await warm.svc.homeFeed(VIEWER, {
+      filter: "all",
+      limit: 20,
+      cursor: first.nextCursor!,
+    })
+
+    const cold = harness()
+    await cold.svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    await cold.presence.readSnapshot(VIEWER, "all")
+    const coldPresence = makeFeedPresence({ config: DEFAULT_FEED_RANKING })
+    const coldSvc = makePostService({
+      repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+      sql: throwingSql,
+      feedPresence: coldPresence,
+      now: () => NOW,
+    })
+    const fromRerank = await coldSvc.homeFeed(VIEWER, {
+      filter: "all",
+      limit: 20,
+      cursor: first.nextCursor!,
+    })
+
+    expect(fromSnapshot.items.map((i) => i.id)).toEqual(fromRerank.items.map((i) => i.id))
+    expect(fromSnapshot.nextCursor).toBe(fromRerank.nextCursor)
+  })
+
+  it("keys the snapshot per filter, so the events tab does not slice the all tab's page", async () => {
+    const { svc, candidateQueries } = harness()
+    const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    await svc.homeFeed(VIEWER, { filter: "events", limit: 20, cursor: first.nextCursor! })
+    expect(candidateQueries()).toBe(2)
+  })
+})
+
 describe("ranked feed: served set feeds the seen discount", () => {
   it("records the served page so the next refresh demotes what was already read", async () => {
     const cache = new InMemoryCacheClient(() => Date.now())
