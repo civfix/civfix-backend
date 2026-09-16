@@ -181,66 +181,50 @@ describe("createCleanup with host fields", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" })
   })
 
-  it("refuses a donation link from anyone but the organization owner", async () => {
+  it("projects the organization's own donation link onto the event's organization ref", async () => {
     const org = repo.seedOrganization({
       slug: "bct",
-      verifiedStatus: "verified",
-      verifiedKind: "nonprofit",
+      donationUrl: "https://give.example.org/org",
     })
-    repo.seedOrgMember(org.id, ORG, "admin")
-    await expect(
-      service.createCleanup(
-        base({ organizationId: org.id, donationUrl: "https://give.example.org/bct" }),
-        ORG,
-      ),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" })
-  })
-
-  it("refuses a donation link added later by a cohost with no organization standing", async () => {
-    const org = repo.seedOrganization({
+    repo.seedOrgMember(org.id, ORG, "member")
+    const dto = await service.createCleanup(base({ organizationId: org.id }), ORG)
+    expect(dto.organization).toMatchObject({
+      id: org.id,
       slug: "bct",
-      verifiedStatus: "verified",
-      verifiedKind: "nonprofit",
+      donationUrl: "https://give.example.org/org",
     })
-    repo.seedOrgMember(org.id, ORG, "owner")
-    const created = await service.createCleanup(base({ organizationId: org.id }), ORG)
-    repo.seedMember(created.id, COHOST, "cohost")
-    await expect(
-      service.updateCleanup(
-        created.id,
-        { donationUrl: "https://give.example.org/bct" },
-        COHOST,
-      ),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" })
-    await expect(
-      service.updateCleanup(created.id, { donationUrl: "https://give.example.org/bct" }, ORG),
-    ).resolves.toMatchObject({ donationUrl: "https://give.example.org/bct" })
+    expect(dto.donationUrl).toBeNull()
   })
 
-  it("refuses a donation link unless the organization is a verified nonprofit", async () => {
+  it("accepts a donation link from a host with no organization at all", async () => {
+    const dto = await service.createCleanup(
+      base({ donationUrl: "https://give.example.org/solo" }),
+      ORG,
+    )
+    expect(dto.donationUrl).toBe("https://give.example.org/solo")
+  })
+
+  it("accepts a donation link on an unverified organization's event", async () => {
     const org = repo.seedOrganization({ slug: "bct" })
-    repo.seedOrgMember(org.id, ORG, "owner")
-    await expect(
-      service.createCleanup(
-        base({ organizationId: org.id, donationUrl: "https://give.example.org/bct" }),
-        ORG,
-      ),
-    ).rejects.toMatchObject({ code: "VALIDATION" })
-
-    repo.seedOrganization({ ...org, verifiedStatus: "verified", verifiedKind: "government" })
-    await expect(
-      service.createCleanup(
-        base({ organizationId: org.id, donationUrl: "https://give.example.org/bct" }),
-        ORG,
-      ),
-    ).rejects.toMatchObject({ code: "VALIDATION" })
-
-    repo.seedOrganization({ ...org, verifiedStatus: "verified", verifiedKind: "nonprofit" })
+    repo.seedOrgMember(org.id, ORG, "member")
     const dto = await service.createCleanup(
       base({ organizationId: org.id, donationUrl: "https://give.example.org/bct" }),
       ORG,
     )
     expect(dto.donationUrl).toBe("https://give.example.org/bct")
+  })
+
+  it("lets a cohost set the donation link later, and keeps it when the organization is unlinked", async () => {
+    const org = repo.seedOrganization({ slug: "bct" })
+    repo.seedOrgMember(org.id, ORG, "owner")
+    const created = await service.createCleanup(base({ organizationId: org.id }), ORG)
+    repo.seedMember(created.id, COHOST, "cohost")
+    await expect(
+      service.updateCleanup(created.id, { donationUrl: "https://give.example.org/bct" }, COHOST),
+    ).resolves.toMatchObject({ donationUrl: "https://give.example.org/bct" })
+    await expect(
+      service.updateCleanup(created.id, { organizationId: null }, ORG),
+    ).resolves.toMatchObject({ donationUrl: "https://give.example.org/bct" })
   })
 
   it("replays an idempotent create instead of making a second event", async () => {

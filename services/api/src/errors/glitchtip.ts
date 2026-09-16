@@ -1,6 +1,6 @@
 
 import type * as SentryNode from "@sentry/node"
-import { redactPans } from "./payment-failure.js"
+import { redactPans } from "./pan-redaction.js"
 
 type SentryModule = typeof SentryNode
 
@@ -72,8 +72,6 @@ const SENSITIVE_KEY_PATTERNS: readonly string[] = [
   "pan",
   "cvc",
   "last4",
-  "stripe",
-  "payment",
   "client_secret",
   "iban",
   "routing",

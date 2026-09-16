@@ -211,7 +211,7 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
     expect(scrubbed[0]?.ein_scrubbed_at).not.toBeNull()
   })
 
-  it("clears every donation link on the org's events when verification is revoked", async () => {
+  it("leaves the org's event donation links alone when verification is revoked", async () => {
     const owner = await newUser("Donee")
     const operator = await newUser("Reviewer")
     const orgId = await newOrg(owner, `donate-${randomUUID().slice(0, 8)}`)
@@ -240,7 +240,7 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
     const rows = await h.sql<{ donation_url: string | null }[]>`
       SELECT donation_url FROM cleanups WHERE id = ${eventId}
     `
-    expect(rows[0]?.donation_url).toBeNull()
+    expect(rows[0]?.donation_url).toBe("https://give.example.org/x")
   })
 
   it("enforces the cleanups host CHECK constraints the service also enforces", async () => {

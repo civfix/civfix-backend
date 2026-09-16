@@ -118,7 +118,6 @@ export async function registerHostAnalyticsRoutes(
     reply.status(200).send(
       await insights().insights(params.id, {
         userId,
-        canViewDonations: can(resolution.standing, "view_donations"),
         viewerScope,
       }),
     )

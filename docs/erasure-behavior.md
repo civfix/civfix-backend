@@ -39,8 +39,9 @@ response can be answered truthfully. It is the source of record for the
    - **Scrubs their own attendee free text** (event answers, attendee names,
      host notes) and cancels their live waitlist entries, releasing any seats
      those entries held.
-   - **Unlinks their donations from the profile** (`donations.user_id = NULL`,
-     `profile_unlinked_at` stamped). See the ⚖️ DECISION below.
+   - **Unlinks their historical donations from the profile** (`donations.user_id = NULL`,
+     `profile_unlinked_at` stamped). The platform no longer processes donations, but
+     the rows written while it did are retained. See the ⚖️ DECISION below.
    - **Revokes and scrubs their issued service-hours certificates** — see the
      dedicated section below.
    - Keeps every content foreign key intact (the rows survive; the author
@@ -62,13 +63,13 @@ response can be answered truthfully. It is the source of record for the
 |---|---|
 | Live sessions / login | **Revoked** — all sessions deleted, ban marker set, cookies cleared. |
 | DM reachability | **Off** — `allow_direct_messages = false`. |
-| `display_name`, `handle`, `email`, `bio`, `avatar_url`, `avatar_media_id`, `social_links`, `primary_organization_id` | **Scrubbed** on the `users` row — nulled, or replaced with the `Deleted User` label / a generated placeholder handle. |
+| `display_name`, `handle`, `email`, `bio`, `avatar_url`, `avatar_media_id`, `social_links`, `donation_url`, `primary_organization_id` | **Scrubbed** on the `users` row — nulled, or replaced with the `Deleted User` label / a generated placeholder handle. |
 | OAuth identity links | **Deleted** (best-effort, step 4) — otherwise a provider sign-in walks back into the tombstone once the ban marker's TTL lapses. |
 | Device push tokens | **Deleted** (best-effort, step 4). |
 | Reports the user filed | **Kept** as rows; the user's `public` ones are flipped to `hidden` (see public rendering below). |
 | Discussion comments, chat, DMs the user wrote | **Kept** (soft-deleted only where the user deleted them individually). |
 | Cleanups organized / joined | **Kept**; an `upcoming`/`active` event they organize is TRANSFERRED where anyone can take it over, and cancelled only when nobody can (ladder below). |
-| Organizations they belonged to | Membership rows **deleted**, and `users.primary_organization_id` (the affiliation badge pin, 0.43.0) is nulled in the same transaction. An organization they OWNED promotes its earliest live admin; one left with nobody is **soft-deleted** and its events lose both `organization_id` and `donation_url`. |
+| Organizations they belonged to | Membership rows **deleted**, and `users.primary_organization_id` (the affiliation badge pin, 0.43.0) is nulled in the same transaction. An organization they OWNED promotes its earliest live admin; one left with nobody is **soft-deleted** and its events lose their `organization_id`. The events keep their own `donation_url` — since the platform stopped processing donations that link belongs to the host, not to the organization's verification. |
 | Event team invitations they sent or received | Pending ones **revoked**, the invitee address **scrubbed**. |
 | Posts published under an organization (`posts.organization_id`, 0.43.0) | **Kept**, exactly like every other post: the FK names the organization, not the person, and the author de-links the same way. Nothing about the org link identifies the departing account. |
 | `event_consents` | **Kept, untouched by every lane.** It carries no contact detail of its own (the subject is a foreign key) and it is the artifact THAT consent existed; the account row it points at is tombstoned rather than deleted. |
@@ -107,8 +108,9 @@ Organizations follow the same shape. The departing owner **steps down to admin
 first** and is only then replaced by the earliest live admin — the reverse order
 would violate `organization_members_owner_uidx`, the partial unique index that
 enforces one owner per organization. An organization left with no owner at all is
-soft-deleted, and its events' `organization_id` **and `donation_url`** are NULLed:
-a live donation link must never outlive the verification behind it.
+soft-deleted, and its events' `organization_id` is NULLed. Their own `donation_url`
+survives: the link is an outbound pointer the HOST set, not something the
+organization's verification granted, and no money ever passed through civfix.
 
 ### The attendee side of the ladder
 

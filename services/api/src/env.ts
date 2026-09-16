@@ -3,7 +3,6 @@ import { z } from "zod"
 import type { Env } from "./env/types.js"
 import { assertOutboundSendPolicy } from "./services/admin/outbound-send-policy.js"
 import { loadCommsEnv } from "./env/comms-env.js"
-import { loadPaymentsEnv } from "./env/payments-env.js"
 import { loadRegistrationEnv } from "./env/registration-env.js"
 import {
   isCronish,
@@ -64,7 +63,6 @@ type FakeFlags = Pick<
   | "USE_FAKE_USER_CHANNEL"
   | "USE_FAKE_GEOCODER"
   | "USE_FAKE_SMS"
-  | "USE_FAKE_PAYMENTS"
   | "USE_REAL_NSFW"
 >
 
@@ -93,12 +91,6 @@ export const FAKE_SEAM_FLAGS: ReadonlyArray<{ flag: keyof FakeFlags; consequence
     consequence:
       "guest-RSVP verification texts are swallowed and guests can never verify (turn SMS off with " +
       "SMS_GUEST_ENABLED=false instead)",
-  },
-  {
-    flag: "USE_FAKE_PAYMENTS",
-    consequence:
-      "donations are accepted against an in-memory fake: no charge reaches the organization, no receipt " +
-      "is real, and the money a donor believes they gave never exists",
   },
 ]
 
@@ -355,7 +347,6 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   }
 
   const comms = loadCommsEnv(source, errors)
-  const payments = loadPaymentsEnv(source, errors)
   const registration = loadRegistrationEnv(source, errors)
 
   if (errors.length > 0) {
@@ -473,7 +464,6 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     ...fakeFlags,
 
     ...comms,
-    ...payments,
     ...registration,
   }
 

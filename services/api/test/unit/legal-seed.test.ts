@@ -3,11 +3,11 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 import { LEGAL_DOCUMENTS } from "@civfix/shared/legal"
-import { LEGAL_DOCUMENT_TYPE_VALUES } from "../../../src/db/schema/types-payments.js"
-import { legalDocumentVersions } from "../../../src/services/payments/legal-service.js"
+import { LEGAL_DOCUMENT_TYPE_VALUES } from "../../src/db/schema/types-legal.js"
+import { legalDocumentVersions } from "../../src/services/legal-service.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const MIGRATION = join(HERE, "../../../drizzle/0151_legal_documents_consents.sql")
+const MIGRATION = join(HERE, "../../drizzle/0151_legal_documents_consents.sql")
 
 interface SeedRow {
   type: string
@@ -36,9 +36,8 @@ function seededRows(): SeedRow[] {
 }
 
 describe("legal_documents seed", () => {
-  it("mirrors LEGAL_DOCUMENTS exactly", () => {
+  it("seeds every current LEGAL_DOCUMENTS entry", () => {
     const seeded = seededRows()
-    expect(seeded).toHaveLength(LEGAL_DOCUMENTS.length)
     for (const document of LEGAL_DOCUMENTS) {
       const row = seeded.find((entry) => entry.type === document.type)
       expect(row, `missing seed row for ${document.type}`).toBeDefined()
@@ -52,10 +51,9 @@ describe("legal_documents seed", () => {
   })
 
   it("covers every LegalDocumentType the schema mirror knows about", () => {
-    const seededTypes = seededRows()
-      .map((row) => row.type)
-      .sort()
-    expect(seededTypes).toEqual([...LEGAL_DOCUMENT_TYPE_VALUES].sort())
+    const seededTypes = seededRows().map((row) => row.type)
+    const missing = LEGAL_DOCUMENT_TYPE_VALUES.filter((type) => !seededTypes.includes(type))
+    expect(missing).toEqual([])
   })
 
   it("serves the same set from GET /legal/versions", () => {

@@ -50,10 +50,6 @@ import { makeContainerCleanupService } from "../cleanups.routes.js"
 import { CLEANUPS_DEFAULT_LIMIT } from "../../services/cleanup-service.js"
 import { makeDrizzleOrganizationRepository } from "../../services/host/organization-repository.drizzle.js"
 import type { OrganizationRepository } from "../../services/host/organization-repository.types.js"
-import { makeEligibilityBootstrap } from "../../services/payments/eligibility-bootstrap.js"
-import { makeDrizzleEligibilityRepository } from "../../services/payments/eligibility-repository.drizzle.js"
-import { makeEligibilityService } from "../../services/payments/eligibility-service.js"
-import { makeDrizzleOrgPaymentsRepository } from "../../services/payments/org-payments-repository.drizzle.js"
 
 export interface OrganizationOverrides {
   repo: OrganizationRepository
@@ -62,7 +58,6 @@ export interface OrganizationOverrides {
   now?: OrganizationServiceDeps["now"]
   newId?: OrganizationServiceDeps["newId"]
   newToken?: OrganizationServiceDeps["newToken"]
-  onNonprofitVerified?: OrganizationServiceDeps["onNonprofitVerified"]
   mailer?: OrganizationServiceDeps["mailer"]
   notifier?: OrganizationServiceDeps["notifier"]
 }
@@ -132,31 +127,17 @@ export function makeContainerOrganizationService(
       ...(overrides.now !== undefined ? { now: overrides.now } : {}),
       ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
       ...(overrides.newToken !== undefined ? { newToken: overrides.newToken } : {}),
-      ...(overrides.onNonprofitVerified !== undefined
-        ? { onNonprofitVerified: overrides.onNonprofitVerified }
-        : {}),
       ...(overrides.mailer !== undefined ? { mailer: overrides.mailer } : {}),
       ...(overrides.notifier !== undefined ? { notifier: overrides.notifier } : {}),
       logger: app.log,
     })
   }
   const sql = container.getDb().sql
-  const bootstrap = makeEligibilityBootstrap({
-    eligibility: makeEligibilityService({
-      eligibility: makeDrizzleEligibilityRepository(sql),
-      orgs: makeDrizzleOrgPaymentsRepository(sql),
-      storage: container.storage,
-      ...(container.env.PAYMENTS_ENABLED ? { jobs: container.jobs } : {}),
-      logger: app.log,
-    }),
-    logger: app.log,
-  })
   return makeOrganizationService({
     repo: makeDrizzleOrganizationRepository(sql),
     counters: container.getCounterStore(),
     presignLogo: (key: string) => container.storage.presignGet(key, MEDIA_GET_URL_TTL_SEC),
     affiliations: container.getAffiliationLoader(),
-    onNonprofitVerified: bootstrap.onNonprofitVerified,
     mailer: container.mailer,
     // Lazy so the notification service is only built on the admin decide path that needs it.
     notifier: {

@@ -37,10 +37,6 @@ import type { HostExportOverrides } from "./routes/host/exports.routes.js"
 import type { AdminEventPageOverrides } from "./routes/admin/pages.routes.js"
 import type { AdminMediaOverrides } from "./routes/admin/media.routes.js"
 import type { AdminBroadcastOverrides } from "./routes/admin/broadcasts.routes.js"
-import type { OrgPaymentsOverrides } from "./routes/org-payments.routes.js"
-import type { DonationOverrides } from "./routes/donations.routes.js"
-import type { AdminPaymentsOverrides } from "./routes/admin/payments.routes.js"
-import type { StripeWebhookOverrides } from "./routes/webhooks/stripe.routes.js"
 import type { ContentSubjectGate } from "./services/content-report-subject.js"
 import { registerRoutes } from "./routes/index.js"
 import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
@@ -53,7 +49,6 @@ import { registerCleanupCancelFanoutJob } from "./services/cleanup-jobs.js"
 import { registerGuestJobs } from "./services/guest-jobs.js"
 import { registerRegistrationJobs } from "./services/host/registration-jobs.js"
 import { registerCommsJobs } from "./services/host/comms-jobs.js"
-import { registerPaymentsJobs } from "./services/payments/payments-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 import { makeLifecycle, makeShutdown, REQUEST_TIMEOUT_MS } from "./lifecycle.js"
 
@@ -85,10 +80,6 @@ export interface BuildServerOptions {
   adminEventPageOverrides?: AdminEventPageOverrides
   adminMediaOverrides?: AdminMediaOverrides
   adminBroadcastOverrides?: AdminBroadcastOverrides
-  orgPaymentsOverrides?: OrgPaymentsOverrides
-  donationOverrides?: DonationOverrides
-  adminPaymentsOverrides?: AdminPaymentsOverrides
-  stripeWebhookOverrides?: StripeWebhookOverrides
   chatOverrides?: ChatGatewayOverrides
   discussionOverrides?: DiscussionServiceOverrides
   socialOverrides?: SocialServiceOverrides
@@ -119,10 +110,6 @@ const OVERRIDE_KEYS = [
   "adminEventPageOverrides",
   "adminMediaOverrides",
   "adminBroadcastOverrides",
-  "orgPaymentsOverrides",
-  "donationOverrides",
-  "adminPaymentsOverrides",
-  "stripeWebhookOverrides",
   "chatOverrides",
   "discussionOverrides",
   "socialOverrides",
@@ -169,20 +156,13 @@ export const LOG_REDACT_PATHS = [
   "*.pan",
   "*.last4",
   "*.cardLast4",
-  "*.paymentMethod",
-  "*.payment_method",
-  "*.donorEmail",
-  "*.donorName",
-  "*.stripeSecretKey",
   "*.webhookSecret",
   "err.raw",
-  "err.raw.payment_method",
   "err.raw.source",
   "err.headers",
   "*.smtp.response",
   "smtp.response",
   "err.smtp.response",
-  "req.headers['stripe-signature']",
 ]
 
 export function loggedRequestUrl(url: string): string {
@@ -311,10 +291,6 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     await registerChatRoomFanoutJob(app.container, app.log)
     await registerRegistrationJobs(app.container, app.log)
     await registerCommsJobs(app.container, app.log)
-    await registerPaymentsJobs(app.container, app.log)
-
-    const warmablePayments = app.container.payments as { warmup?: () => Promise<void> }
-    if (typeof warmablePayments.warmup === "function") await warmablePayments.warmup()
   }
 
   const shutdown = makeShutdown(app, {

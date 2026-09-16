@@ -65,8 +65,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1057.0
       '@civfix/shared':
-        specifier: ^0.47.0
-        version: 0.47.0
+        specifier: ^0.48.0
+        version: 0.48.0
       '@fastify/cookie':
         specifier: ^11.0.1
         version: 11.0.2
@@ -139,9 +139,6 @@ importers:
       qrcode-generator:
         specifier: ^2.0.4
         version: 2.0.4
-      stripe:
-        specifier: 22.6.1
-        version: 22.6.1(@types/node@22.19.19)
       web-push:
         specifier: ^3.6.7
         version: 3.6.7
@@ -213,8 +210,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/shared':
-        specifier: ^0.47.0
-        version: 0.47.0
+        specifier: ^0.48.0
+        version: 0.48.0
       '@sentry/node':
         specifier: ^10.73.0
         version: 10.73.0(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))
@@ -417,8 +414,8 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/shared@0.47.0':
-    resolution: {integrity: sha512-t49VcTILqzAvGleA1ShTH5+zKND8bGQKJjwnYOjnGBQQjJxiH7Zj5r1MrnXyR68YGHQ64Xu23EzZ+0U4RB0osA==}
+  '@civfix/shared@0.48.0':
+    resolution: {integrity: sha512-QvyyTlH4lQ6CvTiqo428xlwOiHR7b1t2NGbFAB9XsNmtFJwIUa2KPcuRnr1LhkK/ht7WKaYcHRs9T35vmR5j8Q==}
     engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
@@ -3783,15 +3780,6 @@ packages:
   strip-literal@3.1.0:
     resolution: {integrity: sha512-8r3mkIM/2+PpjHoOtiAW8Rg3jJLHaV7xPwG+YRGrv6FP0wwk/toTpATxWYOW0BKdWwl82VT2tFYi5DlROa0Mxg==}
 
-  stripe@22.6.1:
-    resolution: {integrity: sha512-hAKSkGeVt2u46TRYhmnvwmVHxBNtOCJnPjc+SH5sP2B2ypElYzAAY3Ljx0Ar8C2w8nfpFQiZ95qoDCDsFkXMTA==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      '@types/node': '>=18'
-    peerDependenciesMeta:
-      '@types/node':
-        optional: true
-
   strnum@2.3.0:
     resolution: {integrity: sha512-ums3KNd42PGyx5xaoVTO1mjU1bH3NpY4vsrVlnv9PNGqQj8wd7rJ6nEypLrJ7z5vxK5RP0yMLo6J/Gsm62DI5Q==}
 
@@ -4446,7 +4434,7 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/shared@0.47.0':
+  '@civfix/shared@0.48.0':
     dependencies:
       zod: 3.25.76
 
@@ -7792,10 +7780,6 @@ snapshots:
   strip-literal@3.1.0:
     dependencies:
       js-tokens: 9.0.1
-
-  stripe@22.6.1(@types/node@22.19.19):
-    optionalDependencies:
-      '@types/node': 22.19.19
 
   strnum@2.3.0: {}
 

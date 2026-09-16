@@ -58,13 +58,6 @@ import {
   PageViewSourceSchema,
   HostExportKindSchema,
   HostExportStatusSchema,
-  DonationStatusSchema,
-  DonationDisputeStateSchema,
-  PayoutStatusSchema,
-  OrgPaymentsStateSchema,
-  DonateStateSchema,
-  EligibilityVerdictSchema,
-  EligibilitySourceSchema,
   LegalDocumentTypeSchema,
   ConsentSurfaceSchema,
 } from "@civfix/shared"
@@ -135,16 +128,9 @@ import {
   HOST_EXPORT_STATUS_VALUES,
 } from "../../src/db/schema/types-broadcast.js"
 import {
-  DONATION_STATUS_VALUES,
-  DONATION_DISPUTE_STATE_VALUES,
-  PAYOUT_STATUS_VALUES,
-  ORG_PAYMENTS_STATE_VALUES,
-  DONATE_STATE_VALUES,
-  ELIGIBILITY_VERDICT_VALUES,
-  ELIGIBILITY_SOURCE_VALUES,
   LEGAL_DOCUMENT_TYPE_VALUES,
   CONSENT_SURFACE_VALUES,
-} from "../../src/db/schema/types-payments.js"
+} from "../../src/db/schema/types-legal.js"
 
 describe("schema enum tuples mirror @civfix/shared", () => {
   it.each([
@@ -208,13 +194,6 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ["PageViewSource", PAGE_VIEW_SOURCE_VALUES, PageViewSourceSchema.options],
     ["HostExportKind", HOST_EXPORT_KIND_VALUES, HostExportKindSchema.options],
     ["HostExportStatus", HOST_EXPORT_STATUS_VALUES, HostExportStatusSchema.options],
-    ["DonationStatus", DONATION_STATUS_VALUES, DonationStatusSchema.options],
-    ["DonationDisputeState", DONATION_DISPUTE_STATE_VALUES, DonationDisputeStateSchema.options],
-    ["PayoutStatus", PAYOUT_STATUS_VALUES, PayoutStatusSchema.options],
-    ["OrgPaymentsState", ORG_PAYMENTS_STATE_VALUES, OrgPaymentsStateSchema.options],
-    ["DonateState", DONATE_STATE_VALUES, DonateStateSchema.options],
-    ["EligibilityVerdict", ELIGIBILITY_VERDICT_VALUES, EligibilityVerdictSchema.options],
-    ["EligibilitySource", ELIGIBILITY_SOURCE_VALUES, EligibilitySourceSchema.options],
     ["LegalDocumentType", LEGAL_DOCUMENT_TYPE_VALUES, LegalDocumentTypeSchema.options],
     ["ConsentSurface", CONSENT_SURFACE_VALUES, ConsentSurfaceSchema.options],
   ])("%s matches the shared enum exactly", (_name, mirrored, shared) => {

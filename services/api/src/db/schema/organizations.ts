@@ -20,6 +20,7 @@ export const organizations = pgTable(
     name: text("name").notNull(),
     description: text("description"),
     websiteUrl: text("website_url"),
+    donationUrl: text("donation_url"),
     logoMediaId: uuid("logo_media_id"),
     socialLinks: jsonb("social_links"),
     verifiedStatus: text("verified_status")
@@ -41,6 +42,10 @@ export const organizations = pgTable(
     check(
       "organizations_website_https_chk",
       sql`${t.websiteUrl} IS NULL OR ${t.websiteUrl} LIKE 'https://%'`,
+    ),
+    check(
+      "organizations_donation_url_https_chk",
+      sql`${t.donationUrl} IS NULL OR ${t.donationUrl} LIKE 'https://%'`,
     ),
     uniqueIndex("organizations_slug_uidx")
       .on(t.slug)

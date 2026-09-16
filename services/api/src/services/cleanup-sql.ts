@@ -76,6 +76,7 @@ export interface CleanupRowSelect {
   organization_slug: string | null
   organization_name: string | null
   organization_logo_key: string | null
+  organization_donation_url: string | null
   organization_verified_status: OrgVerificationStatus | null
   organization_verified_kind: OrgVerificationKind | null
   organization_suspended: boolean | null
@@ -106,6 +107,7 @@ export function toRecord(r: CleanupRowSelect): CleanupRecord {
           slug: r.organization_slug,
           name: r.organization_name,
           logoKey: r.organization_logo_key,
+          donationUrl: r.organization_donation_url,
           verifiedStatus: r.organization_verified_status ?? "unverified",
           verifiedKind: r.organization_verified_kind,
           suspended: r.organization_suspended === true,
@@ -191,6 +193,7 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     o.slug AS organization_slug,
     o.name AS organization_name,
     ${servedKeyExpr(sql, "am")} AS organization_logo_key,
+    o.donation_url AS organization_donation_url,
     o.verified_status AS organization_verified_status,
     o.verified_kind AS organization_verified_kind,
     (o.suspended_at IS NOT NULL) AS organization_suspended,

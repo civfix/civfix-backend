@@ -7,7 +7,7 @@ import type {
   HostCapability,
   LinkedEventRef,
   LinkedReportRef,
-  OrganizationRefDTO,
+  CleanupOrganizationRef,
   PersonDTO,
 } from "@civfix/shared"
 import type {
@@ -79,7 +79,10 @@ export interface CleanupDTOExtras {
   organizationLogoUrl?: string | null
 }
 
-export function toOrganizationRef(view: CleanupOrganizationView, logoUrl: string | null): OrganizationRefDTO {
+export function toOrganizationRef(
+  view: CleanupOrganizationView,
+  logoUrl: string | null,
+): CleanupOrganizationRef {
   return {
     id: view.id,
     slug: view.slug,
@@ -87,6 +90,7 @@ export function toOrganizationRef(view: CleanupOrganizationView, logoUrl: string
     logoUrl,
     verified: view.verifiedStatus === "verified",
     verifiedKind: view.verifiedKind,
+    donationUrl: view.donationUrl,
   }
 }
 

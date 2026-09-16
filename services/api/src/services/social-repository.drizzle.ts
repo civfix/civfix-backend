@@ -60,6 +60,7 @@ export interface PersonRowSelect {
   avatar_r2_key: string | null
   avatar_url: string | null
   social_links?: SocialLinks | null
+  donation_url?: string | null
   show_volunteer_hours: boolean | null
 }
 
@@ -78,6 +79,7 @@ export function toPersonView(r: PersonRowSelect): PersonView {
     avatarR2Key: r.avatar_r2_key,
     avatarUrl: r.avatar_url,
     socialLinks: r.social_links ?? null,
+    donationUrl: r.donation_url ?? null,
     showVolunteerHours: r.show_volunteer_hours === undefined ? false : r.show_volunteer_hours,
   }
 }
@@ -453,6 +455,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
         u.avatar_url,
         u.social_links,
+        u.donation_url,
         u.show_volunteer_hours
       FROM users u
       LEFT JOIN media_assets am ON am.id = u.avatar_media_id

@@ -6,7 +6,7 @@ import { route } from "../versioning/route.js"
 import {
   LEGAL_VERSIONS_CACHE_SECONDS,
   legalDocumentVersions,
-} from "../services/payments/legal-service.js"
+} from "../services/legal-service.js"
 
 export const LEGAL_VERSIONS_RATE_LIMIT = perHost({ max: 120, timeWindow: "1 minute" })
 

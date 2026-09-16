@@ -628,8 +628,24 @@ interface MirroredCheck {
   column: string
   mirror: readonly string[]
   omitted?: readonly string[]
+  retired?: readonly string[]
   note?: string
 }
+
+const RETIRED_PAYMENT_TABLES = new Set([
+  "org_stripe_accounts",
+  "org_payouts",
+  "org_donation_settings",
+  "org_donation_agreement_changes",
+  "org_eligibility",
+  "org_eligibility_checks",
+  "eligibility_source_revisions",
+  "donations",
+  "donation_refunds",
+  "donation_disputes",
+  "donation_reconciliation_runs",
+  "stripe_events",
+])
 
 const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   { table: "media_assets", column: "purpose", mirror: schema.MEDIA_PURPOSE_VALUES },
@@ -683,10 +699,13 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   { table: "broadcast_unsubscribes", column: "scope", mirror: schema.UNSUBSCRIBE_SCOPE_VALUES },
   { table: "broadcast_unsubscribes", column: "reason", mirror: schema.UNSUBSCRIBE_REASON_VALUES },
   { table: "email_suppressions", column: "reason", mirror: schema.EMAIL_SUPPRESSION_REASON_VALUES },
-  { table: "host_exports", column: "kind", mirror: schema.HOST_EXPORT_KIND_VALUES },
+  {
+    table: "host_exports",
+    column: "kind",
+    mirror: schema.HOST_EXPORT_KIND_VALUES,
+    retired: ["donations"],
+  },
   { table: "host_exports", column: "status", mirror: schema.HOST_EXPORT_STATUS_VALUES },
-  { table: "org_stripe_accounts", column: "onboarding_state", mirror: schema.ORG_PAYMENTS_STATE_VALUES },
-  { table: "org_payouts", column: "status", mirror: schema.PAYOUT_STATUS_VALUES },
   {
     table: "user_verification",
     column: "status",
@@ -694,37 +713,18 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
     omitted: ["unverified"],
   },
   {
-    table: "org_donation_settings",
-    column: "disabled_reason",
-    mirror: schema.DONATIONS_DISABLED_REASON_VALUES,
+    table: "legal_documents",
+    column: "type",
+    mirror: schema.LEGAL_DOCUMENT_TYPE_VALUES,
+    retired: ["donations", "org_donation_agreement", "donation_disclosure"],
   },
-  {
-    table: "org_donation_agreement_changes",
-    column: "change_kind",
-    mirror: schema.AGREEMENT_CHANGE_KIND_VALUES,
-  },
-  { table: "org_eligibility", column: "verdict", mirror: schema.ELIGIBILITY_VERDICT_VALUES },
-  { table: "org_eligibility", column: "ein_source", mirror: schema.EIN_SOURCE_VALUES },
-  { table: "org_eligibility_checks", column: "source", mirror: schema.ELIGIBILITY_SOURCE_VALUES },
-  {
-    table: "org_eligibility_checks",
-    column: "verdict_contribution",
-    mirror: schema.ELIGIBILITY_VERDICT_CONTRIBUTION_VALUES,
-  },
-  { table: "eligibility_source_revisions", column: "source", mirror: schema.ELIGIBILITY_SOURCE_VALUES },
-  { table: "donations", column: "status", mirror: schema.DONATION_STATUS_VALUES },
-  { table: "donations", column: "dispute_state", mirror: schema.DONATION_DISPUTE_STATE_VALUES },
-  {
-    table: "donation_refunds",
-    column: "app_fee_refund_state",
-    mirror: schema.APP_FEE_REFUND_STATE_VALUES,
-  },
-  { table: "donation_disputes", column: "state", mirror: schema.DONATION_DISPUTE_STATE_VALUES },
-  { table: "donation_reconciliation_runs", column: "status", mirror: schema.RECONCILIATION_STATUS_VALUES },
-  { table: "stripe_events", column: "scope", mirror: schema.STRIPE_EVENT_SCOPE_VALUES },
-  { table: "legal_documents", column: "type", mirror: schema.LEGAL_DOCUMENT_TYPE_VALUES },
   { table: "consent_records", column: "subject_kind", mirror: schema.CONSENT_SUBJECT_KIND_VALUES },
-  { table: "consent_records", column: "surface", mirror: schema.CONSENT_SURFACE_VALUES },
+  {
+    table: "consent_records",
+    column: "surface",
+    mirror: schema.CONSENT_SURFACE_VALUES,
+    retired: ["web_donate", "web_org_settings"],
+  },
   { table: "chat_groups", column: "kind", mirror: ["group", "channel"] },
   { table: "chat_groups", column: "visibility", mirror: ["private", "public"] },
   { table: "volunteer_hours", column: "source", mirror: ["report", "event", "manual"] },
@@ -763,6 +763,7 @@ describe.skipIf(!pg)("schema: enum mirrors match the DDL CHECK constraints", () 
     for (const r of rows) {
       const parsed = parseValueSet(r.def)
       if (parsed === null) continue
+      if (RETIRED_PAYMENT_TABLES.has(r.tbl)) continue
       const key = `${r.tbl}.${parsed.column}`
       const prior = out.get(key)
       out.set(key, prior === undefined ? parsed.values : prior.filter((v) => parsed.values.includes(v)))
@@ -786,7 +787,7 @@ describe.skipIf(!pg)("schema: enum mirrors match the DDL CHECK constraints", () 
     const inDb = await dbValueSets()
     for (const c of MIRRORED_CHECKS) {
       const key = `${c.table}.${c.column}`
-      const expected = c.mirror.filter((v) => !(c.omitted ?? []).includes(v)).sort()
+      const expected = [...c.mirror.filter((v) => !(c.omitted ?? []).includes(v)), ...(c.retired ?? [])].sort()
       expect(inDb.get(key)?.slice().sort(), `value-set drift on ${key}`).toEqual(expected)
     }
   })

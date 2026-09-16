@@ -312,7 +312,7 @@ must outlive the in-flight and stale-claim windows by a wide margin.
 
 ## Event host platform — new TTLs (contract 0.40.0)
 
-Organizations, ticketed registration, host broadcasts and donations each add
+Organizations, ticketed registration and host broadcasts each add
 stores with their own rule. Everything below is enforced by the
 `host.retention.sweep` cron (`HOST_RETENTION_CRON`, default `35 4 * * *`) unless
 another lane is named; every lane is bounded (`RETENTION_BATCH_SIZE` = 1000 rows ×
@@ -353,16 +353,29 @@ a failed lane is logged and the next lane still runs.
 | `event_metrics_daily` | **never** — aggregates with no identifier of any kind, and the only long-run record a host has | — |
 | `broadcast_unsubscribes`, `email_suppressions` | **indefinite, deliberately** — a suppression list that expires re-enables mailing someone who said stop (same reasoning as `sms_opt_outs`) | — |
 
-### Donations, eligibility and legal
+### Donation links, retired payments tables, and legal
+
+civfix no longer processes donations. A donation link is now a single nullable
+`text` column on `cleanups`, `organizations` and `users` — an outbound https
+pointer, no money, no donor, no retention clock. It is cleared on account erasure
+for `users`, and nowhere else.
+
+The platform-payments tables written before that change are **retained, unread and
+unswept**. Their application code, their Drizzle mirrors and their retention lanes
+are gone; the rows and their R2 objects are financial records the organization
+keeps, and nothing in the API reads or writes them any more. Do not add a sweep
+for them without a counsel decision.
+
+Retained, no longer swept: `donations`, `donation_refunds`, `donation_disputes`,
+`donation_reconciliation_runs`, `org_payouts`, `org_stripe_accounts`,
+`stripe_events`, `org_donation_settings`, `org_donation_agreement_changes`,
+`org_eligibility`, `org_eligibility_checks`, `eligibility_source_revisions`.
+Account erasure still unlinks a departing user from `donations`
+(`user_id = NULL`, `profile_unlinked_at` stamped, contact scrubbed on a donation
+that never charged) — see `docs/erasure-behavior.md`.
 
 | Table | Rows deleted | Source schema |
 |---|---|---|
-| `donations` | **none, ever.** Contact columns (`donor_email`, `donor_name`) NULLed at `charged_at + 7y` | `schema/donations.ts` |
-| `donation_refunds` / `donation_disputes` | none, ever | `schema/donation_refunds.ts` |
-| `org_payouts` | **none, ever.** The audit mirror of a money movement carries no contact data at all: an org id, a Stripe payout id, an amount and a status. `requested_by` is a plain user FK with `ON DELETE SET NULL`, so account erasure anonymizes the actor without touching the financial record | `schema/org_payouts.ts` |
-| `stripe_events` | deleted at `received_at + 400d` | `schema/stripe_events.ts` |
-| `org_eligibility_checks` | deleted at the per-row `retention_until` (7 y; 10 y OFAC) | `schema/org_eligibility_checks.ts` |
-| `eligibility_source_revisions` | deleted at `retention_until`, **object before row** | `schema/eligibility_source_revisions.ts` |
 | `consent_records` | none, ever | `schema/consent_records.ts` |
 | `legal_documents` | none, ever | `schema/legal_documents.ts` |
 

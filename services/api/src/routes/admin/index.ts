@@ -19,7 +19,6 @@ import { registerAdminAuditRoutes } from "./audit.routes.js"
 import { registerAdminSystemRoutes } from "./system.routes.js"
 import { registerAdminOrgRoutes } from "./orgs.routes.js"
 import { registerAdminBroadcastRoutes } from "./broadcasts.routes.js"
-import { registerAdminPaymentsRoutes } from "./payments.routes.js"
 import { registerAdminEventPageRoutes } from "./pages.routes.js"
 import { registerAdminMediaRoutes } from "./media.routes.js"
 import { registerAdminLegalRoutes } from "./legal.routes.js"
@@ -49,7 +48,6 @@ export async function registerAdminRoutes(
     await registerAdminSystemRoutes(operator, container)
     await registerAdminOrgRoutes(operator, container)
     await registerAdminBroadcastRoutes(operator, container)
-    await registerAdminPaymentsRoutes(operator, container)
     await registerAdminEventPageRoutes(operator, container)
     await registerAdminMediaRoutes(operator, container)
     await registerAdminLegalRoutes(operator, container)

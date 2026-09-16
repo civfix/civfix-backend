@@ -224,6 +224,9 @@ export class PgUserStore implements UserStore {
       set.handleChangedAt = decided.handleChangedAt
     }
     if (input.bio !== undefined) set.bio = input.bio === "" ? null : input.bio
+    if (input.donationUrl !== undefined) {
+      set.donationUrl = input.donationUrl === "" ? null : input.donationUrl
+    }
     if (input.avatarUploadId !== undefined) {
       const media = await resolveAvatarMediaOrThrow(this.db.$client, input.avatarUploadId, {
         userId: id,
@@ -458,7 +461,7 @@ export class PgUserStore implements UserStore {
       const orphanedOrgIds = orphaned.map((row) => row.id)
       if (orphanedOrgIds.length > 0) {
         await tx.execute(sql`
-          UPDATE cleanups SET organization_id = NULL, donation_url = NULL
+          UPDATE cleanups SET organization_id = NULL
           WHERE ${inArray(sql`organization_id`, orphanedOrgIds)}
         `)
       }
@@ -531,6 +534,7 @@ export class PgUserStore implements UserStore {
           avatarUrl: null,
           avatarMediaId: null,
           socialLinks: null,
+          donationUrl: null,
           lastActivityGeom: null,
           lastActivityAt: null,
           primaryOrganizationId: null,

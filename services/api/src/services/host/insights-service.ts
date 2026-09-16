@@ -8,7 +8,6 @@ import {
   type ArrivalOffsetBucket,
   type EventInsights,
   type EventInsightsClock,
-  type EventInsightsMoney,
   type EventInsightsReturning,
   type EventPhase,
   type InsightsBroadcast,
@@ -27,7 +26,6 @@ import { hostAnalyticsCacheKey, type HostAnalyticsCache } from "./host-analytics
 import { leaderboardEntryOf } from "../volunteer-hours-service.js"
 import type { CheckinCountersRecord, HostRegistrationRepository } from "./registration-repository.types.js"
 import { CHECKIN_COARSEN_DAYS } from "./registration-retention.js"
-import type { DonationRepository } from "../payments/donation-repository.drizzle.js"
 
 export const INSIGHTS_LIVE_CACHE_TTL_SEC = 15
 
@@ -58,14 +56,12 @@ type InsightsAnalyticsRepository = Pick<
 export interface InsightsServiceDeps {
   analytics: InsightsAnalyticsRepository
   registrations: Pick<HostRegistrationRepository, "checkinCounters">
-  donations: Pick<DonationRepository, "eventTotals">
   cache: HostAnalyticsCache
   now?: () => Date
 }
 
 export interface InsightsViewer {
   userId: string
-  canViewDonations: boolean
   viewerScope: string
 }
 
@@ -165,7 +161,7 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
     phase: EventPhase,
     at: Date,
   ): Promise<EventInsights> {
-    const [counters, trend, bySource, broadcasts, hours, topVolunteers, returning, money] =
+    const [counters, trend, bySource, broadcasts, hours, topVolunteers, returning] =
       await Promise.all([
         deps.registrations.checkinCounters(cleanupId),
         deps.analytics.seatTrend(cleanupId, clock.timezone ?? "UTC"),
@@ -174,7 +170,6 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
         deps.analytics.eventHoursTotals(cleanupId),
         topVolunteersOf(cleanupId, phase),
         returningOf(cleanupId, viewer, phase),
-        viewer.canViewDonations ? deps.donations.eventTotals(cleanupId) : Promise.resolve(null),
       ])
 
     const coarsened = at.getTime() - endOf(clock) > CHECKIN_COARSEN_DAYS * DAY_MS
@@ -193,18 +188,6 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
       failed: broadcast.failed,
       suppressed: broadcast.suppressed,
     }))
-
-    const donations: EventInsightsMoney | null =
-      money === null
-        ? null
-        : {
-            currency: "USD",
-            donationCount: money.donationCount,
-            grossMinor: money.grossMinor,
-            netMinor: money.netMinor,
-            refundedMinor: money.refundedMinor,
-            lastChargedAt: money.lastChargedAt?.toISOString() ?? null,
-          }
 
     return {
       generatedAt: at.toISOString(),
@@ -230,7 +213,6 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
         attendeesCheckedIn: hours.attendeesCheckedIn,
       },
       topVolunteers,
-      money: donations,
       returning,
     }
   }

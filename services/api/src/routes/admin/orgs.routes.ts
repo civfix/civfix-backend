@@ -76,9 +76,6 @@ export async function registerAdminOrgRoutes(
       ...(query.verified !== undefined ? { verified: query.verified } : {}),
       ...(query.kind !== undefined ? { kind: query.kind } : {}),
       ...(query.suspended !== undefined ? { suspended: query.suspended } : {}),
-      ...(query.donationsEnabled !== undefined
-        ? { donationsEnabled: query.donationsEnabled }
-        : {}),
       cursor: query.cursor ?? null,
       limit: query.limit ?? ADMIN_ORGS_DEFAULT_LIMIT,
     })

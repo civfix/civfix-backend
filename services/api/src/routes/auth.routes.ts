@@ -333,6 +333,7 @@ export async function registerAuthRoutes(
       displayName: body.displayName,
       ...(body.bio !== undefined ? { bio: body.bio } : {}),
       ...(body.socialLinks !== undefined ? { socialLinks: body.socialLinks } : {}),
+      ...(body.donationUrl !== undefined ? { donationUrl: body.donationUrl } : {}),
       ...(body.avatarUploadId !== undefined
         ? {
             avatarUploadId: body.avatarUploadId,

@@ -2,7 +2,6 @@ import type {
   OrganizationInviteRole,
   OrganizationInviteStatus,
   OrganizationMemberRole,
-  OrgPaymentsState,
   OrgVerificationKind,
   OrgVerificationStatus,
   SocialLinks,
@@ -18,6 +17,7 @@ export interface OrganizationBaseRecord {
   name: string
   description: string | null
   websiteUrl: string | null
+  donationUrl: string | null
   logoMediaId: string | null
   logoKey: string | null
   socialLinks: SocialLinks | null
@@ -85,11 +85,9 @@ export interface AdminOrgVerificationRecord extends OrgVerificationRecord {
   reviewedBy: AdminActorView | null
 }
 
-/** Operator-facing extras on an org row: the owner and the donation/payout state, read in one query. */
+/** Operator-facing extras on an org row: the owner, read in one query. */
 export interface AdminOrganizationRecord extends OrganizationBaseRecord {
   owner: AdminActorView | null
-  donationsEnabled: boolean
-  paymentsState: OrgPaymentsState | null
 }
 
 export interface AdminOrganizationCounts {
@@ -123,6 +121,7 @@ export interface UpdateOrganizationPatch {
   slug?: string
   description?: string | null
   websiteUrl?: string | null
+  donationUrl?: string | null
   logoMediaId?: string | null
   socialLinks?: SocialLinks | null
 }
@@ -173,7 +172,6 @@ export interface AdminOrganizationListQuery {
   verified?: OrgVerificationStatus
   kind?: OrgVerificationKind
   suspended?: boolean
-  donationsEnabled?: boolean
   cursor: string | null
   limit: number
 }
@@ -333,7 +331,6 @@ export interface OrganizationRepository {
   /** Latest verification row per org, for list pages (one query, not N). */
   adminGetVerifications(organizationIds: string[]): Promise<Map<string, AdminOrgVerificationRecord>>
   decideVerificationTx(args: DecideOrgVerificationArgs): Promise<DecideOrgVerificationOutcome>
-  verifiedEinOf(organizationId: string): Promise<string | null>
   scrubDecidedEins(before: Date, limit: number): Promise<number>
 
   // ---- Admin org management (0.41.0) ----

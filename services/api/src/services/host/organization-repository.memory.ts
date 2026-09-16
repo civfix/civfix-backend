@@ -3,12 +3,9 @@ import type {
   OrganizationInviteRole,
   OrganizationInviteStatus,
   OrganizationMemberRole,
-  OrgPaymentsState,
   OrgVerificationKind,
   SocialLinks,
 } from "@civfix/shared"
-import { normalizeEin } from "../payments/eligibility-sources.js"
-import type { SetEinInput } from "../payments/eligibility-repository.drizzle.js"
 import type {
   AcceptOrganizationInviteOutcome,
   DeclineOrganizationInviteOutcome,
@@ -55,6 +52,7 @@ interface StoredOrganization {
   name: string
   description: string | null
   websiteUrl: string | null
+  donationUrl: string | null
   logoMediaId: string | null
   socialLinks: SocialLinks | null
   verifiedStatus: OrganizationRecord["verifiedStatus"]
@@ -124,10 +122,6 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
   readonly members: StoredMember[] = []
   readonly verifications: StoredVerification[] = []
   readonly invites: StoredInvite[] = []
-  /** Per-org donation/payout state the admin list facets read (org_donation_settings / org_stripe_accounts). */
-  readonly donationsEnabled = new Map<string, boolean>()
-  readonly paymentsStates = new Map<string, OrgPaymentsState>()
-  eligibilityEinSink: ((input: SetEinInput) => void) | null = null
   readonly users = new Map<string, StoredPerson>()
   readonly eventCounts = new Map<string, number>()
   readonly volunteerHours = new Map<string, { hours: number; volunteers: number }>()
@@ -175,6 +169,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       name: org.name,
       description: org.description,
       websiteUrl: org.websiteUrl,
+      donationUrl: org.donationUrl,
       logoMediaId: org.logoMediaId,
       logoKey: org.logoMediaId === null ? null : `media/${org.logoMediaId}`,
       socialLinks: org.socialLinks,
@@ -219,6 +214,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       name: args.name,
       description: args.description,
       websiteUrl: args.websiteUrl,
+      donationUrl: null,
       logoMediaId: args.logoMediaId,
       socialLinks: args.socialLinks,
       verifiedStatus: verifiedKind === null ? "unverified" : "verified",
@@ -315,6 +311,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     if (patch.name !== undefined) org.name = patch.name
     if (patch.description !== undefined) org.description = patch.description
     if (patch.websiteUrl !== undefined) org.websiteUrl = patch.websiteUrl
+    if (patch.donationUrl !== undefined) org.donationUrl = patch.donationUrl
     if (patch.logoMediaId !== undefined) org.logoMediaId = patch.logoMediaId
     if (patch.socialLinks !== undefined) org.socialLinks = patch.socialLinks
     org.updatedAt = now
@@ -647,8 +644,6 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     return {
       ...this.toBaseRecord(org, null),
       owner: owner === undefined ? null : this.actorOf(owner.userId),
-      donationsEnabled: this.donationsEnabled.get(org.id) ?? false,
-      paymentsState: this.paymentsStates.get(org.id) ?? null,
     }
   }
 
@@ -678,11 +673,6 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       .filter((o) => query.kind === undefined || o.verifiedKind === query.kind)
       .filter(
         (o) => query.suspended === undefined || (o.suspendedAt !== null) === query.suspended,
-      )
-      .filter(
-        (o) =>
-          query.donationsEnabled === undefined ||
-          (this.donationsEnabled.get(o.id) ?? false) === query.donationsEnabled,
       )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
     const start =
@@ -981,6 +971,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
           slug: org.slug,
           name: org.name,
           logoKey: null,
+          donationUrl: null,
           verifiedStatus: org.verifiedStatus,
           verifiedKind: org.verifiedKind,
           suspended: false,
@@ -1082,19 +1073,6 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     org.verifiedStatus = args.decision
     org.verifiedKind = args.decision === "verified" ? grantedKind : null
     org.verifiedAt = args.decision === "verified" ? args.now : null
-    const verifiedEin =
-      args.decision === "verified" && grantedKind === "nonprofit" && open.einNumber !== null
-        ? normalizeEin(open.einNumber)
-        : null
-    if (verifiedEin !== null && this.eligibilityEinSink !== null) {
-      this.eligibilityEinSink({
-        organizationId: args.organizationId,
-        ein: verifiedEin,
-        source: "org_verification",
-        actorUserId: args.reviewedBy,
-        now: args.now,
-      })
-    }
     this.audits.push({
       actorId: args.reviewedBy,
       action:
@@ -1103,13 +1081,6 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       meta: { kind: grantedKind, reason: args.reason },
     })
     return Promise.resolve("decided")
-  }
-
-  verifiedEinOf(organizationId: string): Promise<string | null> {
-    const verified = this.verifications
-      .filter((v) => v.organizationId === organizationId && v.status === "verified")
-      .sort((a, b) => (b.reviewedAt?.getTime() ?? 0) - (a.reviewedAt?.getTime() ?? 0))
-    return Promise.resolve(verified[0]?.einNumber ?? null)
   }
 
   scrubDecidedEins(before: Date, limit: number): Promise<number> {

@@ -105,22 +105,7 @@ import {
 } from "../../src/routes/host/exports.routes.js"
 import { PAGE_VIEW_RATE_LIMIT } from "../../src/routes/host/page-views.routes.js"
 import { UNSUBSCRIBE_RATE_LIMIT } from "../../src/routes/host/unsubscribe.routes.js"
-import {
-  DONATE_PAGE_RATE_LIMIT,
-  DONATION_CHECKOUT_RATE_LIMIT,
-  DONATION_STATUS_RATE_LIMIT,
-  MY_DONATIONS_RATE_LIMIT,
-} from "../../src/routes/donations.routes.js"
-import {
-  ORG_ACCOUNT_RATE_LIMIT,
-  ORG_ACCOUNT_LINK_RATE_LIMIT,
-  ORG_PAYMENTS_READ_RATE_LIMIT,
-  ORG_SETTINGS_WRITE_RATE_LIMIT,
-  ORG_DONATION_EXPORT_RATE_LIMIT,
-  ORG_PAYOUT_RATE_LIMIT,
-} from "../../src/routes/org-payments.routes.js"
 import { LEGAL_VERSIONS_RATE_LIMIT } from "../../src/routes/legal.routes.js"
-import { STRIPE_WEBHOOK_RATE_LIMIT } from "../../src/routes/webhooks/stripe.routes.js"
 import { ROUTE_REPORT_RATE_LIMIT } from "../../src/routes/admin/reports.routes.js"
 import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "../../src/routes/admin/mail.routes.js"
 import { PUSH_TOKEN_RATE_LIMIT } from "../../src/routes/notifications.routes.js"
@@ -505,14 +490,6 @@ const IDENTITY_SCOPED_LIMITS = {
   EXPORT_REQUEST_RATE_LIMIT,
   EXPORT_READ_RATE_LIMIT,
   EXPORT_DOWNLOAD_RATE_LIMIT,
-  DONATION_CHECKOUT_RATE_LIMIT,
-  MY_DONATIONS_RATE_LIMIT,
-  ORG_ACCOUNT_RATE_LIMIT,
-  ORG_ACCOUNT_LINK_RATE_LIMIT,
-  ORG_PAYMENTS_READ_RATE_LIMIT,
-  ORG_SETTINGS_WRITE_RATE_LIMIT,
-  ORG_DONATION_EXPORT_RATE_LIMIT,
-  ORG_PAYOUT_RATE_LIMIT,
 }
 
 const HOST_SCOPED_LIMITS = {
@@ -536,10 +513,7 @@ const HOST_SCOPED_LIMITS = {
   PUBLIC_ORG_READ_RATE_LIMIT,
   PAGE_VIEW_RATE_LIMIT,
   UNSUBSCRIBE_RATE_LIMIT,
-  DONATE_PAGE_RATE_LIMIT,
-  DONATION_STATUS_RATE_LIMIT,
   LEGAL_VERSIONS_RATE_LIMIT,
-  STRIPE_WEBHOOK_RATE_LIMIT,
   EVENT_ICS_RATE_LIMIT,
 }
 

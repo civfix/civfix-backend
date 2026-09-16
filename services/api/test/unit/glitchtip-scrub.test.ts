@@ -84,6 +84,13 @@ describe("scrubEvent (exception + message redaction)", () => {
     expect(out.message).toContain("access_token=[redacted]")
   })
 
+  it("redacts a Luhn-valid card number in event.message and leaves other long digit runs alone", () => {
+    const out = scrubEvent({ message: "charge 4242424242424242 failed; order 1234567890123456789" })
+    expect(out.message).not.toContain("4242424242424242")
+    expect(out.message).toContain("[redacted]")
+    expect(out.message).toContain("1234567890123456789")
+  })
+
   it("does not mutate the input exception (pure)", () => {
     const input = { exception: { values: [{ value: "x@y.com" }] } }
     const out = scrubEvent(input)

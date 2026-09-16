@@ -1,6 +1,17 @@
 
 import { sql } from "drizzle-orm"
-import { boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
+import {
+  boolean,
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core"
 import { citext, geometry, type ROLE_VALUES } from "./types.js"
 import type { SocialLinks } from "@civfix/shared"
 
@@ -26,6 +37,7 @@ export const users = pgTable(
     allowDirectMessages: boolean("allow_direct_messages").notNull().default(true),
     showVolunteerHours: boolean("show_volunteer_hours"),
     socialLinks: jsonb("social_links").$type<SocialLinks | null>(),
+    donationUrl: text("donation_url"),
     followerCount: integer("follower_count").notNull().default(0),
     followingCount: integer("following_count").notNull().default(0),
     lastActivityGeom: geometry("last_activity_geom", { subtype: "Point", srid: 4326 }),
@@ -35,6 +47,10 @@ export const users = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (t) => [
+    check(
+      "users_donation_url_https_chk",
+      sql`${t.donationUrl} IS NULL OR ${t.donationUrl} LIKE 'https://%'`,
+    ),
     uniqueIndex("users_handle_key").on(t.handle),
     index("users_role_idx").on(t.role),
     uniqueIndex("users_email_key")

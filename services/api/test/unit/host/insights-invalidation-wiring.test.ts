@@ -24,7 +24,6 @@ import {
   makeInsightsService,
   type InsightsService,
 } from "../../../src/services/host/insights-service.js"
-import { makeMemoryDonationRepository } from "../../../src/services/payments/donation-repository.memory.js"
 import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
 import type { InsightsServiceDeps } from "../../../src/services/host/insights-service.js"
 import type { SeatDraft } from "../../../src/services/host/registration-repository.types.js"
@@ -37,7 +36,7 @@ const NOW = new Date("2026-03-07T18:00:00.000Z")
 
 const tokens = makeTicketTokenSigner("insights-wiring-test-secret-long-enough")
 
-const VIEWER = { userId: HOST, canViewDonations: false, viewerScope: "organizer:none" }
+const VIEWER = { userId: HOST, viewerScope: "organizer:none" }
 
 function analyticsStub(): InsightsServiceDeps["analytics"] {
   return {
@@ -86,7 +85,6 @@ function build(): Harness {
   const insights = makeInsightsService({
     analytics: analyticsStub(),
     registrations: repo,
-    donations: makeMemoryDonationRepository({ donations: [] }),
     cache: makeHostAnalyticsCache({ cache, ttlSeconds: 300 }),
     now: () => NOW,
   })

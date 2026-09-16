@@ -5,7 +5,6 @@ import type {
   InboundMail,
   Jobs,
   Mailer,
-  Payments,
   PushSender,
   RoutingProvider,
   SmsSender,
@@ -19,7 +18,6 @@ import {
   FakeInboundMail,
   FakeJobs,
   FakeMailer,
-  FakePayments,
   FakePushSender,
   FakeRoutingProvider,
   FakeSmsSender,
@@ -90,9 +88,6 @@ import { MultiPushSender } from "./adapters/push-sender.js"
 import { HttpRoutingProvider } from "./adapters/routing-provider.js"
 import { RealAbuseChecks } from "./adapters/abuse-checks.js"
 import { PgBossJobs } from "./adapters/jobs.pgboss.js"
-import { StripePayments } from "./adapters/payments.stripe.js"
-import { DisabledPayments } from "./adapters/payments.disabled.js"
-import { webhookSecretsOf } from "./env/payments-env.js"
 
 export interface Container {
   readonly env: Env
@@ -114,7 +109,6 @@ export interface Container {
   readonly routingProvider: RoutingProvider
   readonly abuseChecks: AbuseChecks
   readonly jobs: Jobs
-  readonly payments: Payments
 
   readonly dbHandle: DbHandle | undefined
   readonly redis: RedisClient | undefined
@@ -456,19 +450,6 @@ export function buildContainer(env: Env): Container {
     ? new FakeJobs()
     : new PgBossJobs({ connectionString: env.DATABASE_URL })
 
-  const payments: Payments = !env.PAYMENTS_ENABLED
-    ? new DisabledPayments()
-    : env.USE_FAKE_PAYMENTS
-      ? new FakePayments()
-      : new StripePayments({
-          secretKey: env.STRIPE_SECRET_KEY_PAYMENTS,
-          apiVersion: env.STRIPE_API_VERSION,
-          webhookSecrets: {
-            connect: webhookSecretsOf(env.STRIPE_WEBHOOK_SECRET_CONNECT),
-            platform: webhookSecretsOf(env.STRIPE_WEBHOOK_SECRET_PLATFORM),
-          },
-        })
-
   async function close(): Promise<void> {
     const maybePgBoss = jobs as { stop?: () => Promise<void> }
     if (typeof maybePgBoss.stop === "function") {
@@ -525,7 +506,6 @@ export function buildContainer(env: Env): Container {
     routingProvider,
     abuseChecks,
     jobs,
-    payments,
     get dbHandle() {
       return dbHandle
     },

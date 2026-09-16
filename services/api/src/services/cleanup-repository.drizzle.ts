@@ -746,6 +746,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           slug: string
           name: string
           logo_key: string | null
+          donation_url: string | null
           verified_status: OrgVerificationStatus
           verified_kind: OrgVerificationKind | null
           suspended: boolean
@@ -753,6 +754,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       >`
         SELECT o.id, o.slug, o.name,
                ${servedKeyExpr(sql, "am")} AS logo_key,
+               o.donation_url,
                o.verified_status, o.verified_kind,
                (o.suspended_at IS NOT NULL) AS suspended
         FROM organizations o
@@ -767,6 +769,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         slug: row.slug,
         name: row.name,
         logoKey: row.logo_key,
+        donationUrl: row.donation_url,
         verifiedStatus: row.verified_status,
         verifiedKind: row.verified_kind,
         suspended: row.suspended,
@@ -783,6 +786,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           slug: string
           name: string
           logo_key: string | null
+          donation_url: string | null
           verified_status: OrgVerificationStatus
           verified_kind: OrgVerificationKind | null
           suspended: boolean
@@ -791,6 +795,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       >`
         SELECT o.id, o.slug, o.name,
                ${servedKeyExpr(sql, "am")} AS logo_key,
+               o.donation_url,
                o.verified_status, o.verified_kind,
                (o.suspended_at IS NOT NULL) AS suspended,
                EXISTS (
@@ -810,6 +815,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           slug: row.slug,
           name: row.name,
           logoKey: row.logo_key,
+          donationUrl: row.donation_url,
           verifiedStatus: row.verified_status,
           verifiedKind: row.verified_kind,
           suspended: row.suspended,

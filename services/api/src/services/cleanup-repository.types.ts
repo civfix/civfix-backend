@@ -18,6 +18,7 @@ export interface CleanupOrganizationView {
   slug: string
   name: string
   logoKey: string | null
+  donationUrl: string | null
   verifiedStatus: OrgVerificationStatus
   verifiedKind: OrgVerificationKind | null
   /** Operator suspension flag (0162): a suspended org cannot be linked to a new or existing event. */

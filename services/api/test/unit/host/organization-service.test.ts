@@ -119,6 +119,46 @@ describe("createOrganization", () => {
   })
 })
 
+describe("donation link", () => {
+  it("round-trips donationUrl onto the organization DTO and clears it with null", async () => {
+    const created = await service.createOrganization(base(), OWNER)
+    expect(created.donationUrl).toBeNull()
+    const set = await service.updateOrganization(
+      created.id,
+      { donationUrl: "https://give.example.org/bct" },
+      OWNER,
+    )
+    expect(set.donationUrl).toBe("https://give.example.org/bct")
+    expect(repo.organizations.get(created.id)?.donationUrl).toBe("https://give.example.org/bct")
+    const read = await service.getOrganizationBySlug("ballona-creek-trust", null)
+    expect(read.donationUrl).toBe("https://give.example.org/bct")
+    const cleared = await service.updateOrganization(created.id, { donationUrl: null }, OWNER)
+    expect(cleared.donationUrl).toBeNull()
+  })
+
+  it("leaves the link untouched when the patch omits it", async () => {
+    const created = await service.createOrganization(base(), OWNER)
+    await service.updateOrganization(
+      created.id,
+      { donationUrl: "https://give.example.org/bct" },
+      OWNER,
+    )
+    const renamed = await service.updateOrganization(created.id, { name: "Renamed" }, OWNER)
+    expect(renamed.donationUrl).toBe("https://give.example.org/bct")
+  })
+
+  it("reports the link on the operator-facing admin DTO", async () => {
+    const created = await service.createOrganization(base(), OWNER)
+    await service.updateOrganization(
+      created.id,
+      { donationUrl: "https://give.example.org/bct" },
+      OWNER,
+    )
+    const admin = await service.adminGetOrganization(created.id)
+    expect(admin.donationUrl).toBe("https://give.example.org/bct")
+  })
+})
+
 describe("membership", () => {
   async function seeded(): Promise<string> {
     const dto = await service.createOrganization(base(), OWNER)
@@ -441,7 +481,7 @@ describe("verification", () => {
     expect(page.pendingCount).toBe(1)
   })
 
-  it("a rejection needs a reason and clears any donation link", async () => {
+  it("a rejection needs a reason", async () => {
     const id = await seeded()
     await service.applyVerification(id, OWNER, { kind: "nonprofit", documents: [] })
     await expect(
@@ -462,61 +502,6 @@ describe("verification", () => {
     expect(dto.verifiedStatus).toBe("verified")
     expect(dto.verifiedKind).toBe("nonprofit")
     expect(repo.audits.some((a) => a.action === "org.verification_verified")).toBe(true)
-  })
-
-  it("copies a verified nonprofit's EIN in the approval itself and hands it to the eligibility hook, and only then", async () => {
-    const events: { organizationId: string; ein: string | null; operatorId: string }[] = []
-    const copied: { organizationId: string; ein: string; source: string; actorUserId: string | null }[] = []
-    repo.eligibilityEinSink = (input) => {
-      copied.push(input)
-    }
-    const hooked = makeOrganizationService({
-      repo,
-      counters: new InMemoryCounterStore(() => clock.getTime()),
-      now: () => clock,
-      newId: () => randomUUID(),
-      onNonprofitVerified: (event) => {
-        events.push(event)
-        return Promise.resolve()
-      },
-    })
-    const nonprofit = await seeded()
-    await hooked.applyVerification(nonprofit, OWNER, {
-      kind: "nonprofit",
-      einNumber: "95-4327245",
-      documents: [],
-    })
-    await hooked.adminDecideVerification(nonprofit, OPERATOR, { decision: "verified" })
-    expect(events).toEqual([{ organizationId: nonprofit, ein: "95-4327245", operatorId: OPERATOR }])
-    expect(copied).toEqual([
-      { organizationId: nonprofit, ein: "954327245", source: "org_verification", actorUserId: OPERATOR, now: clock },
-    ])
-
-    const community = await hooked.createOrganization(base({ slug: "community-org", name: "Community Org" }), OWNER)
-    await hooked.applyVerification(community.id, OWNER, { kind: "community", documents: [] })
-    await hooked.adminDecideVerification(community.id, OPERATOR, { decision: "verified" })
-    const rejected = await hooked.createOrganization(base({ slug: "rejected-org", name: "Rejected Org" }), OWNER)
-    await hooked.applyVerification(rejected.id, OWNER, { kind: "nonprofit", documents: [] })
-    await hooked.adminDecideVerification(rejected.id, OPERATOR, { decision: "rejected", reason: "no letter" })
-    expect(events).toHaveLength(1)
-    expect(copied).toHaveLength(1)
-  })
-
-  it("never fails an approval because the eligibility follow-up failed", async () => {
-    const errors: unknown[] = []
-    const failing = makeOrganizationService({
-      repo,
-      counters: new InMemoryCounterStore(() => clock.getTime()),
-      now: () => clock,
-      newId: () => randomUUID(),
-      onNonprofitVerified: () => Promise.reject(new Error("queue down")),
-      logger: { error: (obj) => errors.push(obj) },
-    })
-    const id = await seeded()
-    await failing.applyVerification(id, OWNER, { kind: "nonprofit", einNumber: "95-4327245", documents: [] })
-    const dto = await failing.adminDecideVerification(id, OPERATOR, { decision: "verified" })
-    expect(dto.verifiedStatus).toBe("verified")
-    expect(errors).toHaveLength(1)
   })
 
   it("409s a decision when no application is open", async () => {

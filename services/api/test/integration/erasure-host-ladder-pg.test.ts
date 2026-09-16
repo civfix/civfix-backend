@@ -161,7 +161,7 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     expect(await eventRoleOf(h, orphan, attendee)).toBe("member")
   })
 
-  it("soft-deletes an organization left with nobody and clears its events' org + donation link", async () => {
+  it("soft-deletes an organization left with nobody and unlinks its events, keeping their donation link", async () => {
     const h = pg!
     const owner = await user(h, "owner-orphaning")
     const org = await organization(h, `orphaned-${Date.now()}`, owner)
@@ -182,8 +182,23 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
       SELECT organization_id, donation_url FROM cleanups WHERE id = ${orgEvent}
     `
     expect(eventRows[0]!.organization_id).toBeNull()
-    expect(eventRows[0]!.donation_url).toBeNull()
+    expect(eventRows[0]!.donation_url).toBe("https://example.org/give")
     expect(await statusOf(h, orgEvent)).toBe("cancelled")
+  })
+
+  it("nulls the departing user's own donation link", async () => {
+    const h = pg!
+    const donor = await user(h, "person-with-a-link")
+    await h.sql`
+      UPDATE users SET donation_url = 'https://give.example.org/me' WHERE id = ${donor}
+    `
+
+    await new PgUserStore(h.db).softDeleteAndAnonymize(donor)
+
+    const rows = await h.sql<{ donation_url: string | null }[]>`
+      SELECT donation_url FROM users WHERE id = ${donor}
+    `
+    expect(rows[0]!.donation_url).toBeNull()
   })
 
   it("revokes the departing user's pending team invites and scrubs the invitee address", async () => {

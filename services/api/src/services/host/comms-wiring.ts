@@ -1,3 +1,4 @@
+import { AppError } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../../di.js"
 import { domainOf } from "../../adapters/mail-text.js"
@@ -7,7 +8,6 @@ import { makeDrizzleAnalyticsRepository } from "./analytics-repository.drizzle.j
 import { makeAnalyticsService, type AnalyticsService } from "./analytics-service.js"
 import { makeInsightsService, type InsightsService } from "./insights-service.js"
 import { makeDrizzleHostRegistrationRepository } from "./registration-repository.drizzle.js"
-import { makeDrizzleDonationRepository } from "../payments/donation-repository.drizzle.js"
 import { makeHostAnalyticsCache } from "./host-analytics-cache.js"
 import { makeDrizzleBroadcastRepository } from "./broadcast-repository.drizzle.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
@@ -31,7 +31,7 @@ import {
   type HostExportService,
 } from "./export-service.js"
 import { registerEventExportBuilders } from "./host-export-builders.js"
-import { requireCapability, requireOrgCapability } from "./authz.js"
+import { requireCapability } from "./authz.js"
 
 export type CommsLogger = Pick<FastifyBaseLogger, "info" | "warn" | "error">
 
@@ -189,7 +189,6 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
   const insights = makeInsightsService({
     analytics: analyticsRepo,
     registrations: makeDrizzleHostRegistrationRepository(sql),
-    donations: makeDrizzleDonationRepository(sql),
     cache: analyticsCache,
   })
 
@@ -202,13 +201,8 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
       ttlHours: env.HOST_EXPORT_TTL_HOURS,
     },
     authorize: async (record) => {
-      if (record.cleanupId !== null) {
-        await requireCapability(sql, record.cleanupId, record.requestedBy, "export")
-        return
-      }
-      if (record.organizationId !== null) {
-        await requireOrgCapability(sql, record.organizationId, record.requestedBy, "view_donations")
-      }
+      if (record.cleanupId === null) throw AppError.notFound("Export not found")
+      await requireCapability(sql, record.cleanupId, record.requestedBy, "export")
     },
     ...(logger !== undefined ? { logger } : {}),
   })

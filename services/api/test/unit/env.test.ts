@@ -144,7 +144,6 @@ describe("loadEnv", () => {
       "USE_FAKE_GEOCODER",
       "USE_FAKE_JOBS",
       "USE_FAKE_MAILER",
-      "USE_FAKE_PAYMENTS",
       "USE_FAKE_PUSH",
       "USE_FAKE_SMS",
       "USE_FAKE_STORAGE",

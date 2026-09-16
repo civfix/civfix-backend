@@ -476,7 +476,7 @@ describe("onNewFollower", () => {
     const { repo, push, service } = makeHarness(() => at(12, 0))
     await service.onNewFollower({
       followeeId: U,
-      follower: { id: V, displayName: "Alice", handle: "alice", bio: null, followers: 0, following: 0, avatarR2Key: null, avatarUrl: null, socialLinks: null, showVolunteerHours: null },
+      follower: { id: V, displayName: "Alice", handle: "alice", bio: null, followers: 0, following: 0, avatarR2Key: null, avatarUrl: null, socialLinks: null, donationUrl: null, showVolunteerHours: null },
     })
     expect(repo.notifications).toHaveLength(1)
     const n = repo.notifications[0]!
@@ -669,6 +669,7 @@ describe("toggle-bell de-duplication (F015)", () => {
       avatarR2Key: null,
       avatarUrl: null,
       socialLinks: null,
+      donationUrl: null,
       showVolunteerHours: null,
     }
     await service.onNewFollower({ followeeId: U, follower })
