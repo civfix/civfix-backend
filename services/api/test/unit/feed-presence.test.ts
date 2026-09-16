@@ -72,6 +72,12 @@ describe("feed presence: snapshot", () => {
     expect(await presence.readSnapshot(VIEWER, "all")).toBeNull()
   })
 
+  it("advertises snapshots only when a cache is wired and the TTL knob is positive", () => {
+    expect(present().presence.snapshotsAvailable).toBe(true)
+    expect(present({ snapshotTtlSeconds: 0 }).presence.snapshotsAvailable).toBe(false)
+    expect(makeFeedPresence({ config: CFG }).snapshotsAvailable).toBe(false)
+  })
+
   it("writes nothing when the TTL knob is zero", async () => {
     const { cache, presence } = present({ snapshotTtlSeconds: 0 })
     await presence.writeSnapshot(VIEWER, "all", [{ id: POST, authorId: "a", score: 1 }])
@@ -93,21 +99,30 @@ describe("feed presence: served set and the seen signal", () => {
     expect([...(await presence.seenBy(OTHER, [POST]))]).toEqual([])
   })
 
-  it("puts a TTL on both the served set and the viewer index (no unbounded growth)", async () => {
+  function recordingCache(): { cache: FeedPresenceCache; expiries: Array<[string, number]> } {
     const expiries: Array<[string, number]> = []
     const inner = new InMemoryCacheClient(() => Date.now())
-    const recording: FeedPresenceCache = {
-      get: (k) => inner.get(k),
-      set: (k, v, ttl) => inner.set(k, v, ttl),
-      sadd: (k, ...m) => inner.sadd(k, ...m),
-      smembers: (k) => inner.smembers(k),
-      scard: (k) => inner.scard(k),
-      expire: (k, ttl) => {
-        expiries.push([k, ttl])
-        return inner.expire(k, ttl)
+    return {
+      expiries,
+      cache: {
+        get: (k) => inner.get(k),
+        set: (k, v, ttl) => inner.set(k, v, ttl),
+        sadd: (k, ...m) => inner.sadd(k, ...m),
+        smembers: (k) => inner.smembers(k),
+        smismember: (k, m) => inner.smismember(k, m),
+        scard: (k) => inner.scard(k),
+        expire: (k, ttl) => inner.expire(k, ttl),
+        expireNx: (k, ttl) => {
+          expiries.push([k, ttl])
+          return inner.expireNx(k, ttl)
+        },
       },
     }
-    const presence = makeFeedPresence({ cache: recording, config: CFG })
+  }
+
+  it("puts a TTL on both the served set and the viewer index (no unbounded growth)", async () => {
+    const { cache, expiries } = recordingCache()
+    const presence = makeFeedPresence({ cache, config: CFG })
     await presence.recordServed(VIEWER, [POST, OTHER])
 
     expect(expiries).toEqual([
@@ -115,6 +130,43 @@ describe("feed presence: served set and the seen signal", () => {
       [viewersKey(POST), CFG.servedTtlSeconds],
       [viewersKey(OTHER), CFG.servedTtlSeconds],
     ])
+  })
+
+  it("never refreshes the served-set TTL, so an active reader's key still expires", async () => {
+    const clock = { now: 1_000_000 }
+    const cache = new InMemoryCacheClient(() => clock.now)
+    const presence = makeFeedPresence({ cache, config: CFG })
+
+    await presence.recordServed(VIEWER, [POST])
+    clock.now += (CFG.servedTtlSeconds - 1) * 1000
+    await presence.recordServed(VIEWER, [OTHER])
+    clock.now += 2000
+
+    expect(await cache.scard(servedKey(VIEWER))).toBe(0)
+    expect(await cache.scard(viewersKey(POST))).toBe(0)
+  })
+
+  it("reads the seen signal with a membership probe over the candidate ids, not a full set read", async () => {
+    let smembersCalls = 0
+    const inner = new InMemoryCacheClient(() => Date.now())
+    const cache: FeedPresenceCache = {
+      get: (k) => inner.get(k),
+      set: (k, v, ttl) => inner.set(k, v, ttl),
+      sadd: (k, ...m) => inner.sadd(k, ...m),
+      smembers: (k) => {
+        smembersCalls += 1
+        return inner.smembers(k)
+      },
+      smismember: (k, m) => inner.smismember(k, m),
+      scard: (k) => inner.scard(k),
+      expire: (k, ttl) => inner.expire(k, ttl),
+      expireNx: (k, ttl) => inner.expireNx(k, ttl),
+    }
+    const presence = makeFeedPresence({ cache, config: CFG })
+    await presence.recordServed(VIEWER, [POST])
+
+    expect([...(await presence.seenBy(VIEWER, [POST, OTHER]))]).toEqual([POST])
+    expect(smembersCalls).toBe(0)
   })
 
   it("is a no-op for an empty page", async () => {
@@ -155,8 +207,10 @@ describe("feed presence: viewer reverse index is bounded", () => {
         smembersCalls += 1
         return Promise.resolve([])
       },
+      smismember: () => Promise.resolve([]),
       scard: () => Promise.resolve(50_000),
       expire: () => Promise.resolve(),
+      expireNx: () => Promise.resolve(),
     }
     const presence = makeFeedPresence({ cache, config: { ...CFG, viewerFanoutMax: 500 } })
     expect(await presence.viewersOf(POST)).toEqual([])
@@ -170,8 +224,10 @@ describe("feed presence: degrades instead of failing the request", () => {
     set: () => Promise.reject(new Error("redis down")),
     sadd: () => Promise.reject(new Error("redis down")),
     smembers: () => Promise.reject(new Error("redis down")),
+    smismember: () => Promise.reject(new Error("redis down")),
     scard: () => Promise.reject(new Error("redis down")),
     expire: () => Promise.reject(new Error("redis down")),
+    expireNx: () => Promise.reject(new Error("redis down")),
   }
 
   it("swallows every Redis failure and returns the safe fallback", async () => {

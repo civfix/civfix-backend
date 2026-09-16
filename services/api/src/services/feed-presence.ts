@@ -6,7 +6,9 @@ export interface FeedPresenceCache {
   set(key: string, value: string, ttlSeconds: number): Promise<void>
   sadd(key: string, ...members: string[]): Promise<number>
   smembers(key: string): Promise<string[]>
+  smismember(key: string, members: readonly string[]): Promise<number[]>
   scard(key: string): Promise<number>
+  expireNx(key: string, ttlSeconds: number): Promise<void>
   expire(key: string, ttlSeconds: number): Promise<void>
 }
 
@@ -22,6 +24,7 @@ export interface FeedSnapshotEntry {
 }
 
 export interface FeedPresence {
+  readonly snapshotsAvailable: boolean
   readSnapshot(userId: string, filter: string): Promise<FeedSnapshotEntry[] | null>
   writeSnapshot(userId: string, filter: string, ranked: readonly RankedCandidate[]): Promise<void>
   touchSnapshot(userId: string, filter: string): Promise<void>
@@ -66,6 +69,8 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
   }
 
   return {
+    snapshotsAvailable: deps.cache !== undefined && cfg.snapshotTtlSeconds > 0,
+
     readSnapshot(userId: string, filter: string): Promise<FeedSnapshotEntry[] | null> {
       return guarded<FeedSnapshotEntry[] | null>(null, "snapshot read", async () => {
         const raw = await deps.cache!.get(snapshotKey(userId, filter))
@@ -108,10 +113,10 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
 
     seenBy(userId: string, postIds: readonly string[]): Promise<Set<string>> {
       if (postIds.length === 0) return Promise.resolve(new Set<string>())
+      const unique = [...new Set(postIds)]
       return guarded(new Set<string>(), "served-set read", async () => {
-        const members = await deps.cache!.smembers(servedKey(userId))
-        const served = new Set(members)
-        return new Set(postIds.filter((id) => served.has(id)))
+        const flags = await deps.cache!.smismember(servedKey(userId), unique)
+        return new Set(unique.filter((_, i) => flags[i] === 1))
       })
     },
 
@@ -121,13 +126,13 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
       return guarded<void>(undefined, "served-set write", async () => {
         const cache = deps.cache!
         await cache.sadd(servedKey(userId), ...unique)
-        await cache.expire(servedKey(userId), cfg.servedTtlSeconds)
+        await cache.expireNx(servedKey(userId), cfg.servedTtlSeconds)
 
         const sizes = await Promise.all(unique.map((postId) => cache.scard(viewersKey(postId))))
         const admitted = unique.filter((_, i) => (sizes[i] ?? 0) < cfg.viewerFanoutMax)
         await Promise.all(admitted.map((postId) => cache.sadd(viewersKey(postId), userId)))
         await Promise.all(
-          admitted.map((postId) => cache.expire(viewersKey(postId), cfg.servedTtlSeconds)),
+          admitted.map((postId) => cache.expireNx(viewersKey(postId), cfg.servedTtlSeconds)),
         )
       })
     },
