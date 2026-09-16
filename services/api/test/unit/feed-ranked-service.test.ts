@@ -517,7 +517,7 @@ describe("ranked feed: served set feeds the seen discount", () => {
     })
 
     const page = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
-    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
     const served = await presence.seenBy(
       VIEWER,
       rows.map((r) => r.id),
