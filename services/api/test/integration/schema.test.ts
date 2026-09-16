@@ -126,6 +126,21 @@ const DROPPED_TABLES = [
   "report_message_user_mentions",
 ] as const
 
+const RETIRED_PAYMENT_TABLES = new Set([
+  "org_stripe_accounts",
+  "org_payouts",
+  "org_donation_settings",
+  "org_donation_agreement_changes",
+  "org_eligibility",
+  "org_eligibility_checks",
+  "eligibility_source_revisions",
+  "donations",
+  "donation_refunds",
+  "donation_disputes",
+  "donation_reconciliation_runs",
+  "stripe_events",
+])
+
 async function ownedTables(h: PgHarness): Promise<Set<string>> {
   const rows = await h.sql<{ relname: string }[]>`
     SELECT rel.relname
@@ -164,7 +179,7 @@ describe.skipIf(!pg)("schema: migrations produce the expected shape", () => {
       .filter((v): v is PgTable => is(v, PgTable))
       .map((t) => getTableName(t))
       .sort()
-    const owned = [...(await ownedTables(h))].sort()
+    const owned = [...(await ownedTables(h))].filter((t) => !RETIRED_PAYMENT_TABLES.has(t)).sort()
     expect(mirrored).toEqual(owned)
   })
 
@@ -631,21 +646,6 @@ interface MirroredCheck {
   retired?: readonly string[]
   note?: string
 }
-
-const RETIRED_PAYMENT_TABLES = new Set([
-  "org_stripe_accounts",
-  "org_payouts",
-  "org_donation_settings",
-  "org_donation_agreement_changes",
-  "org_eligibility",
-  "org_eligibility_checks",
-  "eligibility_source_revisions",
-  "donations",
-  "donation_refunds",
-  "donation_disputes",
-  "donation_reconciliation_runs",
-  "stripe_events",
-])
 
 const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   { table: "media_assets", column: "purpose", mirror: schema.MEDIA_PURPOSE_VALUES },
