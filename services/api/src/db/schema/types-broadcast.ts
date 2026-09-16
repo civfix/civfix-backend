@@ -6,6 +6,7 @@ export const BROADCAST_KIND_VALUES = [
   "event_updated",
   "event_cancelled",
   "thank_you",
+  "announcement",
 ] as const
 
 export const BROADCAST_STATUS_VALUES = [

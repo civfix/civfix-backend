@@ -69,9 +69,12 @@ export const broadcasts = pgTable(
     uniqueIndex("broadcasts_cancellation_uidx")
       .on(t.cleanupId)
       .where(sql`kind = 'event_cancelled'`),
+    index("broadcasts_announcement_public_idx")
+      .on(t.cleanupId, t.createdAt.desc(), t.id.desc())
+      .where(sql`kind = 'announcement'`),
     index("broadcasts_scrub_idx")
       .on(t.finishedAt)
-      .where(sql`content_scrubbed_at IS NULL AND body_md IS NOT NULL`),
+      .where(sql`content_scrubbed_at IS NULL AND body_md IS NOT NULL AND kind <> 'announcement'`),
     index("broadcasts_admin_log_idx").on(t.createdAt.desc(), t.id.desc()),
   ],
 )
