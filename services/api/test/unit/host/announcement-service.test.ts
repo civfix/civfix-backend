@@ -9,8 +9,10 @@ import {
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryBroadcastRepository } from "../../../src/services/host/broadcast-repository.memory.js"
 import {
+  BroadcastCapError,
   makeBroadcastService,
   type BroadcastConfig,
+  type BroadcastService,
 } from "../../../src/services/host/broadcast-service.js"
 import {
   announcementTitleOf,
@@ -26,9 +28,9 @@ const SLOT = "00000000-0000-0000-0000-0000000000s1".replace("s1", "0f1")
 
 const CONFIG: BroadcastConfig = {
   killSwitch: false,
-  perEventPerDay: 50,
+  perEventPerDay: 3,
   recipientsPerDay: 2000,
-  cooldownSec: 0,
+  cooldownSec: 900,
   minAccountAgeHours: 24,
   maxRecipients: 5000,
   chunkSize: 200,
@@ -89,6 +91,7 @@ interface Harness {
   repo: InMemoryBroadcastRepository
   plans: string[]
   service: AnnouncementService
+  broadcasts: BroadcastService
   clock: { at: Date }
 }
 
@@ -118,7 +121,30 @@ function harness(over: { org?: OrganizationRefDTO | null } = {}): Harness {
     config: CONFIG,
     now: () => clock.at,
   })
-  return { repo, plans, service, clock }
+  return { repo, plans, service, broadcasts, clock }
+}
+
+async function sendRegularBroadcast(h: Harness, subject: string): Promise<void> {
+  const draft = await h.repo.create({
+    cleanupId: EVENT,
+    createdBy: HOST,
+    kind: "host_broadcast",
+    subject,
+    bodyMd: "Body",
+    segment: { kind: "all_registered" },
+    channels: ["email"],
+    status: "draft",
+  })
+  await h.broadcasts.send(EVENT, HOST, draft.id)
+}
+
+async function capKindOf(run: () => Promise<unknown>): Promise<string> {
+  try {
+    await run()
+    return "none"
+  } catch (err) {
+    return err instanceof BroadcastCapError ? err.kind : `other:${String(err)}`
+  }
 }
 
 let h: Harness
@@ -231,6 +257,65 @@ describe("createEventAnnouncement", () => {
         audience: { kind: "all_registered" },
       }),
     ).resolves.toMatchObject({ bodyMd: "A new day" })
+  })
+
+  it("is not blocked by the regular-broadcast cooldown", async () => {
+    await h.service.create(EVENT, HOST, {
+      id: EVENT,
+      bodyMd: "First",
+      audience: { kind: "all_registered" },
+    })
+
+    await expect(
+      h.service.create(EVENT, HOST, {
+        id: EVENT,
+        bodyMd: "Second, minutes later",
+        audience: { kind: "all_registered" },
+      }),
+    ).resolves.toMatchObject({ bodyMd: "Second, minutes later" })
+  })
+
+  it("does not consume the event's regular-broadcast daily slots", async () => {
+    for (let i = 0; i < CONFIG.perEventPerDay + 2; i += 1) {
+      await h.service.create(EVENT, HOST, {
+        id: EVENT,
+        bodyMd: `Body ${i}`,
+        audience: { kind: "all_registered" },
+      })
+    }
+
+    expect(await capKindOf(() => sendRegularBroadcast(h, "Still allowed"))).toBe("none")
+  })
+
+  it("leaves the regular-broadcast cooldown and per-event cap intact for host broadcasts", async () => {
+    await h.service.create(EVENT, HOST, {
+      id: EVENT,
+      bodyMd: "Announcement first",
+      audience: { kind: "all_registered" },
+    })
+
+    expect(await capKindOf(() => sendRegularBroadcast(h, "One"))).toBe("none")
+    expect(await capKindOf(() => sendRegularBroadcast(h, "Two"))).toBe("cooldown")
+  })
+
+  it("still refuses a host broadcast that exhausts the per-event daily cap", async () => {
+    const noCooldown = harness()
+    for (let i = 0; i < CONFIG.perEventPerDay; i += 1) {
+      noCooldown.clock.at = new Date(Date.UTC(2026, 0, 20, 12 + i))
+      expect(await capKindOf(() => sendRegularBroadcast(noCooldown, `Body ${i}`))).toBe("none")
+    }
+    noCooldown.clock.at = new Date(Date.UTC(2026, 0, 20, 12 + CONFIG.perEventPerDay))
+
+    expect(await capKindOf(() => sendRegularBroadcast(noCooldown, "One too many"))).toBe(
+      "per_event_per_day",
+    )
+    await expect(
+      noCooldown.service.create(EVENT, HOST, {
+        id: EVENT,
+        bodyMd: "Announcements are a separate lane",
+        audience: { kind: "all_registered" },
+      }),
+    ).resolves.toMatchObject({ bodyMd: "Announcements are a separate lane" })
   })
 
   it("leaves no orphan draft behind when the send is refused", async () => {

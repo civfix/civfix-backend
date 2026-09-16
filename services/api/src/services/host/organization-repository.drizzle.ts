@@ -731,6 +731,9 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       actorId: string
     }): Promise<SetOrganizationMemberRoleOutcome> {
       return sql.begin(async (tx) => {
+        await tx`
+          SELECT id FROM organizations WHERE id = ${args.organizationId} LIMIT 1 FOR UPDATE
+        `
         const current = await tx<{ role: OrganizationMemberRole }[]>`
           SELECT role FROM organization_members
           WHERE organization_id = ${args.organizationId} AND user_id = ${args.userId}
@@ -766,6 +769,9 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       reason?: string
     }): Promise<RemoveOrganizationMemberOutcome> {
       return sql.begin(async (tx) => {
+        await tx`
+          SELECT id FROM organizations WHERE id = ${args.organizationId} LIMIT 1 FOR UPDATE
+        `
         await tx`
           SELECT id FROM users WHERE id = ${args.userId} LIMIT 1 FOR UPDATE
         `

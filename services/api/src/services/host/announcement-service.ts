@@ -179,7 +179,7 @@ export function makeAnnouncementService(deps: AnnouncementServiceDeps): Announce
             ctaUrl: cta,
           })
         }
-        await deps.broadcasts.send(cleanupId, actorId, draft.id)
+        await deps.broadcasts.sendAnnouncement(cleanupId, actorId, draft.id)
       } catch (err) {
         await repo.deleteDraft(cleanupId, draft.id).catch(() => false)
         throw err

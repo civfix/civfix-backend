@@ -475,6 +475,51 @@ describe("last-admin guard", () => {
       repo.setMemberRoleTx({ organizationId: id, userId: ADMIN, role: "member", actorId: ADMIN }),
     ).resolves.toBe("updated")
   })
+
+  const ORG = "66666666-6666-4666-8666-666666666666"
+
+  function seatHandlers(): SqlHandler[] {
+    return [
+      { match: /SELECT role FROM organization_members/, rows: [{ role: "admin" }] },
+      { match: /count\(\*\)::int AS n\s+FROM organization_members/, rows: [{ n: 1 }] },
+    ]
+  }
+
+  function lockIndex(statements: { sql: string }[]): number {
+    return statements.findIndex((s) => /FROM organizations WHERE id = \?.*FOR UPDATE/s.test(s.sql))
+  }
+
+  function countIndex(statements: { sql: string }[]): number {
+    return statements.findIndex((s) => /count\(\*\)::int AS n\s+FROM organization_members/.test(s.sql))
+  }
+
+  it("serializes a demotion on the organizations row before it counts the seats", async () => {
+    const fake = makeFakeSql(seatHandlers())
+
+    const outcome = await makeDrizzleOrganizationRepository(
+      fake.sql as unknown as Sql,
+    ).setMemberRoleTx({ organizationId: ORG, userId: ADMIN, role: "member", actorId: OWNER })
+
+    expect(outcome).toBe("last_admin")
+    const lock = lockIndex(fake.statements)
+    const count = countIndex(fake.statements)
+    expect(lock).toBe(0)
+    expect(count).toBeGreaterThan(lock)
+  })
+
+  it("serializes a removal on the organizations row before it counts the seats", async () => {
+    const fake = makeFakeSql(seatHandlers())
+
+    const outcome = await makeDrizzleOrganizationRepository(
+      fake.sql as unknown as Sql,
+    ).removeMemberTx({ organizationId: ORG, userId: ADMIN, actorId: OWNER })
+
+    expect(outcome).toBe("last_admin")
+    const lock = lockIndex(fake.statements)
+    const count = countIndex(fake.statements)
+    expect(lock).toBe(0)
+    expect(count).toBeGreaterThan(lock)
+  })
 })
 
 describe("verification", () => {

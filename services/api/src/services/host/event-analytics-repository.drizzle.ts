@@ -1,5 +1,8 @@
+import type postgres from "postgres"
 import type { KeyCount } from "@civfix/shared/host"
 import type { Sql } from "../../db/client.js"
+
+type Fragment = postgres.Fragment
 
 export const EVENT_ANALYTICS_SLOT_ROW_LIMIT = 50
 
@@ -42,26 +45,39 @@ export interface EventAnalyticsRepository {
 export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRepository {
   return {
     async previousCompletedEventIds(args) {
-      const orgFilter =
+      const orgFilter = (): Fragment =>
         args.organizationId !== null
           ? sql`AND c.organization_id = ${args.organizationId}`
           : sql``
       const rows = await sql<{ id: string }[]>`
-        SELECT c.id
-          FROM cleanups c
-         WHERE c.completed_at IS NOT NULL
-           AND c.id <> ${args.excludeCleanupId}
-           AND (c.organizer_user_id = ${args.userId}
-                OR EXISTS (
-                  SELECT 1 FROM cleanup_members m
-                   WHERE m.cleanup_id = c.id AND m.user_id = ${args.userId}
-                     AND m.role IN ('organizer','cohost','coordinator'))
-                OR EXISTS (
-                  SELECT 1 FROM organization_members om
-                   WHERE om.organization_id = c.organization_id AND om.user_id = ${args.userId}
-                     AND om.role IN ('owner','admin')))
-           ${orgFilter}
-         ORDER BY c.completed_at DESC
+        WITH hosted AS (
+          SELECT c.id, c.completed_at
+            FROM cleanups c
+           WHERE c.organizer_user_id = ${args.userId}
+             AND c.completed_at IS NOT NULL
+             AND c.id <> ${args.excludeCleanupId}
+             ${orgFilter()}
+          UNION
+          SELECT c.id, c.completed_at
+            FROM cleanup_members m
+            JOIN cleanups c ON c.id = m.cleanup_id
+           WHERE m.user_id = ${args.userId}
+             AND m.role IN ('organizer','cohost','coordinator')
+             AND c.completed_at IS NOT NULL
+             AND c.id <> ${args.excludeCleanupId}
+             ${orgFilter()}
+          UNION
+          SELECT c.id, c.completed_at
+            FROM organization_members om
+            JOIN cleanups c ON c.organization_id = om.organization_id
+           WHERE om.user_id = ${args.userId}
+             AND om.role IN ('owner','admin')
+             AND c.completed_at IS NOT NULL
+             AND c.id <> ${args.excludeCleanupId}
+             ${orgFilter()}
+        )
+        SELECT id FROM hosted
+         ORDER BY completed_at DESC
          LIMIT ${args.limit}`
       return rows.map((row) => row.id)
     },

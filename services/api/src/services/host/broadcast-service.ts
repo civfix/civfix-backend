@@ -141,6 +141,10 @@ export function toBroadcastDTO(record: BroadcastRecord): BroadcastDTO {
   }
 }
 
+export interface BroadcastSendOptions {
+  skipEventSendCounters?: boolean
+}
+
 export interface BroadcastService {
   list(cleanupId: string, query: ListEventBroadcastsRequest): Promise<{
     items: BroadcastDTO[]
@@ -164,7 +168,13 @@ export interface BroadcastService {
     body: PreviewEventBroadcastRequest,
   ): Promise<BroadcastPreviewDTO>
   testSend(cleanupId: string, actorId: string, broadcastId: string): Promise<{ ok: true }>
-  send(cleanupId: string, actorId: string, broadcastId: string): Promise<BroadcastDTO>
+  send(
+    cleanupId: string,
+    actorId: string,
+    broadcastId: string,
+    options?: BroadcastSendOptions,
+  ): Promise<BroadcastDTO>
+  sendAnnouncement(cleanupId: string, actorId: string, broadcastId: string): Promise<BroadcastDTO>
   schedule(
     cleanupId: string,
     actorId: string,
@@ -274,6 +284,36 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       )
     }
     return event
+  }
+
+  async function sendBroadcast(
+    cleanupId: string,
+    actorId: string,
+    broadcastId: string,
+    skipEventSendCounters: boolean,
+  ): Promise<BroadcastDTO> {
+    await guardHost(actorId)
+    const record = await requireDraft(cleanupId, broadcastId)
+    if (record.subject === null || record.bodyMd === null) {
+      throw AppError.conflict("That message has no content to send.")
+    }
+    assertContent(record.subject, record.bodyMd, record.ctaUrl)
+    const event = await requireEventOrgNotSuspended(cleanupId)
+    const moved = await repo.transition(broadcastId, ["draft", "scheduled"], "sending", {
+      startedAt: now(),
+      replyTo: event.replyToVerified ? event.replyTo : null,
+    })
+    if (moved === null) throw AppError.conflict("That message is already sending.")
+    if (!skipEventSendCounters) {
+      try {
+        await reserveSendCounters(cleanupId, actorId)
+      } catch (err) {
+        await repo.transition(broadcastId, ["sending"], record.status, { startedAt: null })
+        throw err
+      }
+    }
+    await deps.enqueuePlan(broadcastId)
+    return toBroadcastDTO(moved)
   }
 
   return {
@@ -441,27 +481,17 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       return { ok: true }
     },
 
-    async send(cleanupId, actorId, broadcastId) {
-      await guardHost(actorId)
-      const record = await requireDraft(cleanupId, broadcastId)
-      if (record.subject === null || record.bodyMd === null) {
-        throw AppError.conflict("That message has no content to send.")
-      }
-      assertContent(record.subject, record.bodyMd, record.ctaUrl)
-      const event = await requireEventOrgNotSuspended(cleanupId)
-      const moved = await repo.transition(broadcastId, ["draft", "scheduled"], "sending", {
-        startedAt: now(),
-        replyTo: event.replyToVerified ? event.replyTo : null,
-      })
-      if (moved === null) throw AppError.conflict("That message is already sending.")
-      try {
-        await reserveSendCounters(cleanupId, actorId)
-      } catch (err) {
-        await repo.transition(broadcastId, ["sending"], record.status, { startedAt: null })
-        throw err
-      }
-      await deps.enqueuePlan(broadcastId)
-      return toBroadcastDTO(moved)
+    async send(cleanupId, actorId, broadcastId, options) {
+      return sendBroadcast(
+        cleanupId,
+        actorId,
+        broadcastId,
+        options?.skipEventSendCounters === true,
+      )
+    },
+
+    async sendAnnouncement(cleanupId, actorId, broadcastId) {
+      return sendBroadcast(cleanupId, actorId, broadcastId, true)
     },
 
     async schedule(cleanupId, actorId, broadcastId, scheduledAt) {
