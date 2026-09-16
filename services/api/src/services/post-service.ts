@@ -28,9 +28,14 @@ import {
   type PostRepository,
   type RepliesPage,
 } from "./post-repository.drizzle.js"
-import { applyCutoff, rankCandidates, type FeedCandidate } from "./feed-ranking.js"
+import {
+  applyCutoff,
+  rankCandidates,
+  type FeedCandidate,
+  type RankedCandidate,
+} from "./feed-ranking.js"
 import { mapWithLimit } from "./media-presign.js"
-import type { FeedPresence } from "./feed-presence.js"
+import type { FeedPresence, FeedSnapshotEntry } from "./feed-presence.js"
 import type { PostNotifier } from "./notification-service.js"
 
 function isVisible(brief: PostBrief): boolean {
@@ -116,6 +121,12 @@ export function makePostService(deps: PostServiceDeps): PostService {
     }
   }
 
+  function presenceFor(viewerId: string): FeedPresence | undefined {
+    if (deps.feedPresence === undefined) return undefined
+    if (viewerId === NIL_VIEWER_ID) return undefined
+    return deps.feedPresence
+  }
+
   async function announceCountChange(postId: string, actorId: string): Promise<void> {
     if (deps.userChannel === undefined || deps.feedPresence === undefined) return
     try {
@@ -150,16 +161,27 @@ export function makePostService(deps: PostServiceDeps): PostService {
     }
   }
 
+  function sliceAfterCursor(
+    entries: readonly FeedSnapshotEntry[],
+    cursor: { score: number; postId: string },
+  ): FeedSnapshotEntry[] {
+    const anchor = entries.findIndex((entry) => entry.id === cursor.postId)
+    if (anchor !== -1) return entries.slice(anchor + 1)
+    return entries.filter((entry) =>
+      isAfterFeedScoreCursor({ score: entry.score, postId: entry.id }, cursor),
+    )
+  }
+
   async function pageFrom(
     viewerId: string,
-    entries: readonly { id: string; score: number }[],
+    entries: readonly FeedSnapshotEntry[],
     limit: number,
   ): Promise<FeedPage> {
     const pageEntries = entries.slice(0, limit)
     const hasMore = entries.length > pageEntries.length
     const last = pageEntries[pageEntries.length - 1]
     const nextCursor =
-      hasMore && last !== undefined && deps.feedPresence !== undefined && viewerId !== NIL_VIEWER_ID
+      hasMore && last !== undefined
         ? formatFeedScoreCursor({ score: last.score, postId: last.id })
         : null
 
@@ -168,8 +190,9 @@ export function makePostService(deps: PostServiceDeps): PostService {
       viewerId,
     )
 
-    if (deps.feedPresence !== undefined && viewerId !== NIL_VIEWER_ID) {
-      void deps.feedPresence
+    const presence = presenceFor(viewerId)
+    if (presence !== undefined) {
+      void presence
         .recordServed(
           viewerId,
           items.map((item) => item.id),
@@ -182,24 +205,75 @@ export function makePostService(deps: PostServiceDeps): PostService {
     return { items, nextCursor }
   }
 
-  async function continueRankedPage(
+  async function rankCandidateSet(
+    viewerId: string,
+    query: HomeFeedQuery,
+    location: FeedViewerLocation | undefined,
+    isFirstPage: boolean,
+  ): Promise<{ page: RankedCandidate[]; durable: RankedCandidate[] }> {
+    const rows = await deps.repo.feedCandidates({
+      viewerId,
+      filter: query.filter,
+      fallbackLat: location?.lat ?? null,
+      fallbackLng: location?.lng ?? null,
+      windowDays: feedConfig.candidateWindowDays,
+      radiusKm: feedConfig.nearbyRadiusKm,
+      candidateCap: feedConfig.candidateCap,
+    })
+
+    const presence = presenceFor(viewerId)
+    const seen =
+      presence === undefined || !isFirstPage
+        ? new Set<string>()
+        : await presence.seenBy(
+            viewerId,
+            rows.map((r) => r.id),
+          )
+
+    const ranked = rankCandidates(
+      rows.map((row) => toCandidate(row, seen)),
+      feedConfig,
+      nowMs(),
+    )
+    return {
+      page: applyCutoff(ranked, feedConfig, true),
+      durable: applyCutoff(ranked, feedConfig, false),
+    }
+  }
+
+  function persistSnapshot(
     viewerId: string,
     filter: string,
+    durable: readonly RankedCandidate[],
+  ): void {
+    const presence = presenceFor(viewerId)
+    if (presence === undefined || !presence.snapshotsAvailable) return
+    void presence.writeSnapshot(viewerId, filter, durable).catch((err: unknown) => {
+      deps.logger?.warn({ err }, "post: feed snapshot write failed (suppressed)")
+    })
+  }
+
+  async function continueRankedPage(
+    viewerId: string,
+    query: HomeFeedQuery,
+    location: FeedViewerLocation | undefined,
     cursor: { score: number; postId: string },
     limit: number,
   ): Promise<FeedPage> {
-    if (deps.feedPresence === undefined || viewerId === NIL_VIEWER_ID) {
-      return { items: [], nextCursor: null }
+    const presence = presenceFor(viewerId)
+    if (presence !== undefined && presence.snapshotsAvailable) {
+      const snapshot = await presence.readSnapshot(viewerId, query.filter)
+      if (snapshot !== null) {
+        void presence.touchSnapshot(viewerId, query.filter).catch((err: unknown) => {
+          deps.logger?.warn({ err }, "post: feed snapshot touch failed (suppressed)")
+        })
+        return pageFrom(viewerId, sliceAfterCursor(snapshot, cursor), limit)
+      }
     }
-    const snapshot = await deps.feedPresence.readSnapshot(viewerId, filter)
-    if (snapshot === null) return { items: [], nextCursor: null }
-    void deps.feedPresence.touchSnapshot(viewerId, filter).catch((err: unknown) => {
-      deps.logger?.warn({ err }, "post: feed snapshot touch failed (suppressed)")
-    })
-    const after = snapshot.filter((entry) =>
-      isAfterFeedScoreCursor({ score: entry.score, postId: entry.id }, cursor),
-    )
-    return pageFrom(viewerId, after, limit)
+
+    const { durable } = await rankCandidateSet(viewerId, query, location, false)
+    persistSnapshot(viewerId, query.filter, durable)
+    return pageFrom(viewerId, sliceAfterCursor(durable, cursor), limit)
   }
 
   async function rankedFeed(
@@ -211,41 +285,12 @@ export function makePostService(deps: PostServiceDeps): PostService {
     const cursor = parseFeedScoreCursor(query.cursor)
 
     if (cursor !== null) {
-      return continueRankedPage(viewerId, query.filter, cursor, limit)
+      return continueRankedPage(viewerId, query, location, cursor, limit)
     }
 
-    const rows = await deps.repo.feedCandidates({
-      viewerId,
-      filter: query.filter,
-      fallbackLat: location?.lat ?? null,
-      fallbackLng: location?.lng ?? null,
-      windowDays: feedConfig.candidateWindowDays,
-      radiusKm: feedConfig.nearbyRadiusKm,
-      candidateCap: feedConfig.candidateCap,
-    })
-
-    const seen =
-      deps.feedPresence === undefined || viewerId === NIL_VIEWER_ID
-        ? new Set<string>()
-        : await deps.feedPresence.seenBy(
-            viewerId,
-            rows.map((r) => r.id),
-          )
-
-    const ranked = rankCandidates(
-      rows.map((row) => toCandidate(row, seen)),
-      feedConfig,
-      nowMs(),
-    )
-    const kept = applyCutoff(ranked, feedConfig, true)
-
-    if (deps.feedPresence !== undefined && viewerId !== NIL_VIEWER_ID) {
-      void deps.feedPresence.writeSnapshot(viewerId, query.filter, kept).catch((err: unknown) => {
-        deps.logger?.warn({ err }, "post: feed snapshot write failed (suppressed)")
-      })
-    }
-
-    return pageFrom(viewerId, kept, limit)
+    const { page, durable } = await rankCandidateSet(viewerId, query, location, true)
+    persistSnapshot(viewerId, query.filter, durable)
+    return pageFrom(viewerId, page, limit)
   }
 
   async function safeNotify(fn: () => Promise<void>): Promise<void> {
@@ -303,9 +348,11 @@ export function makePostService(deps: PostServiceDeps): PostService {
       const kind =
         input.replyToId !== undefined ? "reply" : input.repostOfId !== undefined ? "quote" : "post"
 
+      let replyParentId: string | null = null
       let replyParentAuthor: string | null = null
       if (input.replyToId !== undefined) {
         const parent = await requireReadable(input.replyToId, authorId)
+        replyParentId = parent.id
         replyParentAuthor = parent.authorId
       }
       let quoteTargetAuthor: string | null = null
@@ -364,8 +411,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
       if (kind === "post" || kind === "quote") {
         await announceNewPost(postId, authorId)
       }
-      if (replyParentAuthor !== null) {
-        await announceCountChange(input.replyToId!, authorId)
+      if (replyParentId !== null) {
+        await announceCountChange(replyParentId, authorId)
       }
 
       return hydrateOrThrow(postId, authorId)
@@ -413,7 +460,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
     async unlikePost(id: string, viewerId: string): Promise<PostDTO> {
       const subject = await requireReadable(id, viewerId)
-      await deps.repo.unlike(subject.id, viewerId)
+      const removed = await deps.repo.unlike(subject.id, viewerId)
+      if (removed) await announceCountChange(subject.id, viewerId)
       return hydrateOrThrow(id, viewerId)
     },
 
@@ -454,7 +502,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
     async unrepostPost(id: string, viewerId: string): Promise<PostDTO> {
       await requireReadable(id, viewerId)
-      const { targetId } = await deps.repo.unrepost(id, viewerId)
+      const { targetId, removed } = await deps.repo.unrepost(id, viewerId)
+      if (removed) await announceCountChange(targetId, viewerId)
       return hydrateOrThrow(targetId, viewerId)
     },
 

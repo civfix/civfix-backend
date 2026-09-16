@@ -212,7 +212,7 @@ describe("PostService validation + authorization", () => {
     await svc.publicFeed({ filter: "all", cursor: "not-a-cursor" })
 
     expect(chronological).toEqual([])
-    expect(ranked).toEqual([NIL_VIEWER_ID])
+    expect(ranked).toEqual([NIL_VIEWER_ID, NIL_VIEWER_ID])
   })
 
   it("rejects an attached event the author does not host/attend (403)", async () => {
