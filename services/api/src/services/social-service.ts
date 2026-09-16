@@ -54,6 +54,7 @@ export interface PersonView {
   avatarR2Key: string | null
   avatarUrl: string | null
   socialLinks: SocialLinks | null
+  donationUrl: string | null
   showVolunteerHours: boolean | null
 }
 
@@ -202,6 +203,7 @@ export function toPersonDTO(view: PersonView, isFollowing: boolean): PersonDTO {
     followers: view.followers,
     following: view.following,
     isFollowing,
+    ...(view.donationUrl !== null ? { donationUrl: view.donationUrl } : {}),
   }
 }
 
@@ -325,6 +327,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       isFollowing,
       organization,
       ...(view.socialLinks ? { socialLinks: view.socialLinks } : {}),
+      ...(view.donationUrl !== null ? { donationUrl: view.donationUrl } : {}),
       pastEvents,
       upcomingEvents,
       ...(pastEventsPage.nextCursor !== null

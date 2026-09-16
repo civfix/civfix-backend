@@ -167,6 +167,7 @@ interface StoredOrganization {
   slug: string
   name: string
   logoKey: string | null
+  donationUrl: string | null
   verifiedStatus: OrgVerificationStatus
   verifiedKind: OrgVerificationKind | null
   suspended: boolean
@@ -224,6 +225,7 @@ interface StoredUser {
   handle: string | null
   bio: string | null
   avatarUrl: string | null
+  donationUrl: string | null
 }
 
 interface StoredReport {
@@ -339,6 +341,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       handle: over.handle ?? null,
       bio: over.bio ?? null,
       avatarUrl: over.avatarUrl ?? null,
+      donationUrl: over.donationUrl ?? null,
     }
     this.users.set(user.id, user)
     return user
@@ -449,6 +452,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       handle: u?.handle ?? null,
       bio: u?.bio ?? null,
       avatarUrl: u?.avatarUrl ?? null,
+      donationUrl: u?.donationUrl ?? null,
     }
   }
 
@@ -513,6 +517,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       slug: org.slug,
       name: org.name,
       logoKey: org.logoKey,
+      donationUrl: org.donationUrl,
       verifiedStatus: org.verifiedStatus,
       verifiedKind: org.verifiedKind,
       suspended: org.suspended,
@@ -737,6 +742,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       slug: over.slug ?? `org-${this.organizations.size + 1}`,
       name: over.name ?? "Ballona Creek Trust",
       logoKey: over.logoKey ?? null,
+      donationUrl: over.donationUrl ?? null,
       verifiedStatus: over.verifiedStatus ?? "unverified",
       verifiedKind: over.verifiedKind ?? null,
       suspended: over.suspended ?? false,

@@ -244,12 +244,8 @@ describe("duplicateCleanup organization link", () => {
     expect(copy.organization).toBeNull()
   })
 
-  it("keeps a donation link only while the actor may manage payments", async () => {
-    const org = repo.seedOrganization({
-      slug: "bct",
-      verifiedStatus: "verified",
-      verifiedKind: "nonprofit",
-    })
+  it("carries the donation link over for every actor who may duplicate the event", async () => {
+    const org = repo.seedOrganization({ slug: "bct" })
     repo.seedOrgMember(org.id, ORG, "owner")
     repo.seedOrgMember(org.id, COHOST, "admin")
     const source = seedSource({
@@ -263,7 +259,7 @@ describe("duplicateCleanup organization link", () => {
 
     const byAdmin = await service.duplicateCleanup(COHOST, request({ id: source.id }))
     expect(byAdmin.organization).toMatchObject({ id: org.id })
-    expect(byAdmin.donationUrl).toBeNull()
+    expect(byAdmin.donationUrl).toBe("https://give.example.org/bct")
   })
 })
 

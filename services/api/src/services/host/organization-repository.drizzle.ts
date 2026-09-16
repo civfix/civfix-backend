@@ -2,7 +2,6 @@ import type {
   OrganizationInviteRole,
   OrganizationInviteStatus,
   OrganizationMemberRole,
-  OrgPaymentsState,
   OrgVerificationKind,
   OrgVerificationStatus,
   SocialLinks,
@@ -13,8 +12,6 @@ import type { Queryable, Sql } from "../../db/client.js"
 import { encodeTimeCursor, isUuid, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
 import { likeContains } from "../admin/like.js"
 import { servedKeyExpr } from "../media-served-key.js"
-import { upsertOrgEligibilityEin } from "../payments/eligibility-repository.drizzle.js"
-import { normalizeEin } from "../payments/eligibility-sources.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./event-media.js"
 import { mediaBoundElsewhere } from "../media-bindings.js"
 import { writeHostAudit } from "./host-audit.js"
@@ -89,6 +86,7 @@ interface OrganizationRowSelect {
   name: string
   description: string | null
   website_url: string | null
+  donation_url: string | null
   logo_media_id: string | null
   logo_key: string | null
   social_links: SocialLinks | null
@@ -148,8 +146,6 @@ interface AdminOrganizationRowSelect extends OrganizationRowSelect {
   owner_name: string | null
   owner_handle: string | null
   owner_joined: Date | null
-  donations_enabled: boolean
-  payments_state: OrgPaymentsState | null
 }
 
 function toOrganizationBaseRecord(row: OrganizationRowSelect): OrganizationBaseRecord {
@@ -159,6 +155,7 @@ function toOrganizationBaseRecord(row: OrganizationRowSelect): OrganizationBaseR
     name: row.name,
     description: row.description,
     websiteUrl: row.website_url,
+    donationUrl: row.donation_url,
     logoMediaId: row.logo_media_id,
     logoKey: row.logo_key,
     socialLinks: row.social_links,
@@ -196,21 +193,17 @@ function toAdminOrganizationRecord(row: AdminOrganizationRowSelect): AdminOrgani
             handle: row.owner_handle ?? "",
             joined: row.owner_joined ?? new Date(0),
           },
-    donationsEnabled: row.donations_enabled === true,
-    paymentsState: row.payments_state,
   }
 }
 
-/** Owner + donation/payout state columns; assumes the admin joins (own/ou/ds/sa) below are in the FROM. */
+/** Owner columns; assumes the admin joins (own/ou) below are in the FROM. */
 function adminOrganizationColumns(sql: Queryable) {
   return sql`
     ${organizationColumns(sql, null)},
     ou.id AS owner_id,
     ou.display_name AS owner_name,
     ou.handle AS owner_handle,
-    ou.created_at AS owner_joined,
-    COALESCE(ds.enabled, false) AS donations_enabled,
-    sa.onboarding_state AS payments_state
+    ou.created_at AS owner_joined
   `
 }
 
@@ -219,8 +212,6 @@ function adminOrganizationJoins(sql: Queryable) {
     LEFT JOIN media_assets am ON am.id = o.logo_media_id
     LEFT JOIN organization_members own ON own.organization_id = o.id AND own.role = 'owner'
     LEFT JOIN users ou ON ou.id = own.user_id
-    LEFT JOIN org_donation_settings ds ON ds.organization_id = o.id
-    LEFT JOIN org_stripe_accounts sa ON sa.organization_id = o.id
   `
 }
 
@@ -231,6 +222,7 @@ function organizationColumns(sql: Queryable, viewerId: string | null) {
     o.name,
     o.description,
     o.website_url,
+    o.donation_url,
     o.logo_media_id,
     ${servedKeyExpr(sql, "am")} AS logo_key,
     o.social_links,
@@ -513,6 +505,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       if (patch.slug !== undefined) sets.push(sql`slug = ${patch.slug}`)
       if (patch.description !== undefined) sets.push(sql`description = ${patch.description}`)
       if (patch.websiteUrl !== undefined) sets.push(sql`website_url = ${patch.websiteUrl}`)
+      if (patch.donationUrl !== undefined) sets.push(sql`donation_url = ${patch.donationUrl}`)
       if (patch.logoMediaId !== undefined) sets.push(sql`logo_media_id = ${patch.logoMediaId}`)
       if (patch.socialLinks !== undefined) {
         sets.push(
@@ -982,10 +975,6 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           : query.suspended
             ? sql`AND o.suspended_at IS NOT NULL`
             : sql`AND o.suspended_at IS NULL`
-      const donationsFilter =
-        query.donationsEnabled === undefined
-          ? sql``
-          : sql`AND COALESCE(ds.enabled, false) = ${query.donationsEnabled}`
       const cursorFilter =
         cursor !== null
           ? sql`AND (o.created_at, o.id) < (${cursor.at}, ${cursor.id}::uuid)`
@@ -999,7 +988,6 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           ${verifiedFilter}
           ${kindFilter}
           ${suspendedFilter}
-          ${donationsFilter}
           ${cursorFilter}
         ORDER BY o.created_at DESC, o.id DESC
         LIMIT ${query.limit + 1}
@@ -1382,6 +1370,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           slug: r.organization_slug,
           name: r.organization_name,
           logoKey: r.organization_logo_key,
+          donationUrl: null,
           verifiedStatus: r.organization_verified_status,
           verifiedKind: r.organization_verified_kind,
           suspended: false,
@@ -1594,25 +1583,6 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
               updated_at = ${args.now}
           WHERE id = ${args.organizationId}
         `
-        const verifiedEin =
-          args.decision === "verified" && grantedKind === "nonprofit" && open.ein_number !== null
-            ? normalizeEin(open.ein_number)
-            : null
-        if (verifiedEin !== null) {
-          await upsertOrgEligibilityEin(tx, {
-            organizationId: args.organizationId,
-            ein: verifiedEin,
-            source: "org_verification",
-            actorUserId: args.reviewedBy,
-            now: args.now,
-          })
-        }
-        if (args.decision !== "verified") {
-          await tx`
-            UPDATE cleanups SET donation_url = NULL
-            WHERE organization_id = ${args.organizationId} AND donation_url IS NOT NULL
-          `
-        }
         await writeHostAudit(tx, {
           actorId: args.reviewedBy,
           action:
@@ -1622,16 +1592,6 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         })
         return "decided"
       })
-    },
-
-    async verifiedEinOf(organizationId: string): Promise<string | null> {
-      const rows = await sql<{ ein_number: string | null }[]>`
-        SELECT ein_number FROM org_verifications
-        WHERE organization_id = ${organizationId} AND status = 'verified'
-        ORDER BY reviewed_at DESC NULLS LAST, id DESC
-        LIMIT 1
-      `
-      return rows[0]?.ein_number ?? null
     },
 
     async scrubDecidedEins(before: Date, limit: number): Promise<number> {

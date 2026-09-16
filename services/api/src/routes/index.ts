@@ -32,10 +32,7 @@ import { registerConversationRoutes } from "./conversations.routes.js"
 import { registerAdminRoutes } from "./admin/index.js"
 import { registerInboundMailWebhook } from "./webhooks/inbound-mail.routes.js"
 import { registerHomeTurfRoutes } from "./forms.routes.js"
-import { registerDonationRoutes } from "./donations.routes.js"
-import { registerOrgPaymentsRoutes } from "./org-payments.routes.js"
 import { registerLegalRoutes } from "./legal.routes.js"
-import { registerStripeWebhooks } from "./webhooks/stripe.routes.js"
 import { registerLocalStorageRoutes } from "./local-storage.routes.js"
 
 export interface RegisterRoutesOptions {
@@ -83,8 +80,6 @@ export async function registerRoutes(
 
   if (opts.authMounted) {
     await registerHostCommsRoutes(app, container)
-    await registerDonationRoutes(app, container)
-    await registerOrgPaymentsRoutes(app, container)
   }
 
   await registerHomeTurfRoutes(app, container)
@@ -98,8 +93,4 @@ export async function registerRoutes(
   }
 
   await registerInboundMailWebhook(app, container)
-
-  if (opts.authMounted) {
-    await registerStripeWebhooks(app, container)
-  }
 }

@@ -1,12 +1,11 @@
 import { sql } from "drizzle-orm"
 import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
-import { donations } from "./donations.js"
 import { users } from "./users.js"
 import type {
   ConsentSubjectKind,
   ConsentSurfaceValue,
   LegalDocumentTypeValue,
-} from "./types-payments.js"
+} from "./types-legal.js"
 
 export const consentRecords = pgTable(
   "consent_records",
@@ -17,7 +16,7 @@ export const consentRecords = pgTable(
     subjectKind: text("subject_kind").$type<ConsentSubjectKind>().notNull(),
     userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
     organizationId: uuid("organization_id"),
-    donationId: uuid("donation_id").references(() => donations.id, { onDelete: "restrict" }),
+    donationId: uuid("donation_id"),
     donorKey: uuid("donor_key"),
     documentType: text("document_type").$type<LegalDocumentTypeValue>().notNull(),
     documentVersion: text("document_version").notNull(),

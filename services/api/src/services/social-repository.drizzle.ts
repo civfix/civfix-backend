@@ -60,6 +60,7 @@ export interface PersonRowSelect {
   avatar_r2_key: string | null
   avatar_url: string | null
   social_links?: SocialLinks | null
+  donation_url?: string | null
   show_volunteer_hours: boolean | null
 }
 
@@ -78,6 +79,7 @@ export function toPersonView(r: PersonRowSelect): PersonView {
     avatarR2Key: r.avatar_r2_key,
     avatarUrl: r.avatar_url,
     socialLinks: r.social_links ?? null,
+    donationUrl: r.donation_url ?? null,
     showVolunteerHours: r.show_volunteer_hours === undefined ? false : r.show_volunteer_hours,
   }
 }
@@ -121,6 +123,7 @@ interface CleanupRowSelect {
   org_handle: string | null
   org_bio: string | null
   org_avatar_url: string | null
+  org_donation_url: string | null
 }
 
 function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
@@ -130,6 +133,7 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
     handle: r.org_handle,
     bio: r.org_bio,
     avatarUrl: r.org_avatar_url,
+    donationUrl: r.org_donation_url,
   }
   return {
     id: r.id,
@@ -213,7 +217,8 @@ function profileEventRows(
       u.display_name AS org_display_name,
       u.handle AS org_handle,
       u.bio AS org_bio,
-      u.avatar_url AS org_avatar_url
+      u.avatar_url AS org_avatar_url,
+      u.donation_url AS org_donation_url
     FROM cleanups c
     JOIN ids ON ids.cleanup_id = c.id
     JOIN users u ON u.id = c.organizer_user_id
@@ -453,6 +458,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
         u.avatar_url,
         u.social_links,
+        u.donation_url,
         u.show_volunteer_hours
       FROM users u
       LEFT JOIN media_assets am ON am.id = u.avatar_media_id

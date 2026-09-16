@@ -1,5 +1,5 @@
 import { index, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core"
-import type { LegalDocumentTypeValue } from "./types-payments.js"
+import type { LegalDocumentTypeValue } from "./types-legal.js"
 
 export const legalDocuments = pgTable(
   "legal_documents",

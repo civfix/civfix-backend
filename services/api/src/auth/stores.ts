@@ -150,6 +150,7 @@ export interface UpdateProfileInput {
   avatarUploadId?: string
   presignAvatar?: (avatarKey: string) => Promise<string>
   socialLinks?: SocialLinks | null
+  donationUrl?: string | null
 }
 
 export interface UserStore {

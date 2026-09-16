@@ -20,36 +20,6 @@ export const DATA_EXPORT_FREE_TEXT_MAX_ROWS = 5_000
 
 export const DATA_EXPORT_BYTE_BUDGET = 8_000_000
 
-export function exportMinor(value: string | number | null): number | null {
-  if (value === null) return null
-  return typeof value === "number" ? value : Number(value)
-}
-
-function toExportedDonation<
-  T extends {
-    amount_minor: string | number
-    fee_platform_minor: string | number
-    fee_stripe_minor: string | number | null
-    net_minor: string | number | null
-    refunded_total_minor: string | number
-  },
->(row: T): Omit<T, "amount_minor" | "fee_platform_minor" | "fee_stripe_minor" | "net_minor" | "refunded_total_minor"> & {
-  amount_minor: number
-  fee_platform_minor: number
-  fee_stripe_minor: number | null
-  net_minor: number | null
-  refunded_total_minor: number
-} {
-  return {
-    ...row,
-    amount_minor: exportMinor(row.amount_minor) ?? 0,
-    fee_platform_minor: exportMinor(row.fee_platform_minor) ?? 0,
-    fee_stripe_minor: exportMinor(row.fee_stripe_minor),
-    net_minor: exportMinor(row.net_minor),
-    refunded_total_minor: exportMinor(row.refunded_total_minor) ?? 0,
-  }
-}
-
 export function makeDataExportService(deps: DataExportServiceDeps): DataExportService {
   const { sql, mailer, users, fromNoReply, supportEmail } = deps
 
@@ -64,11 +34,13 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
           email_verified: boolean
           bio: string | null
           avatar_url: string | null
+          donation_url: string | null
           created_at: Date
           deleted_at: Date | null
         }[]
       >`
-        SELECT id, display_name, handle, email, email_verified, bio, avatar_url, created_at, deleted_at
+        SELECT id, display_name, handle, email, email_verified, bio, avatar_url, donation_url,
+               created_at, deleted_at
         FROM users WHERE id = ${userId} LIMIT 1
       `
 
@@ -250,40 +222,6 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
       `
 
-      const donations = sql<
-        {
-          id: string
-          org_name: string
-          amount_minor: string | number
-          currency: string
-          fee_bps: number
-          fee_platform_minor: string | number
-          fee_stripe_minor: string | number | null
-          net_minor: string | number | null
-          status: string
-          dispute_state: string
-          refunded_total_minor: string | number
-          charged_at: Date | null
-          card_brand: string | null
-          card_last4: string | null
-          receipt_sent_at: Date | null
-          share_identity_with_org: boolean
-          stripe_payment_intent_id: string | null
-          created_at: Date
-        }[]
-      >`
-        SELECT d.id, o.name AS org_name, d.amount_minor, d.currency, d.fee_bps,
-               d.fee_platform_minor, d.fee_stripe_minor, d.net_minor, d.status,
-               d.dispute_state, d.refunded_total_minor, d.charged_at, d.card_brand,
-               d.card_last4, d.receipt_sent_at, d.share_identity_with_org,
-               d.stripe_payment_intent_id, d.created_at
-        FROM donations d
-        JOIN organizations o ON o.id = d.organization_id
-        WHERE d.user_id = ${userId}
-        ORDER BY d.charged_at DESC NULLS LAST, d.id DESC
-        LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
-      `
-
       const organizations = sql<
         { organization_id: string; slug: string; name: string; role: string; joined_at: Date }[]
       >`
@@ -386,7 +324,6 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         notificationPrefRows,
         pushTokenRows,
         certificateRows,
-        donationRows,
         organizationRows,
         eventTeamMembershipRows,
         eventConsentRows,
@@ -408,7 +345,6 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         notificationPrefs,
         pushTokenRowsQuery,
         certificates,
-        donations,
         organizations,
         eventTeamMemberships,
         eventConsents,
@@ -450,7 +386,6 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         format: "civfix-data-export@1",
         userId,
         profile,
-        donations: fit("donations", donationRows.map(toExportedDonation), DATA_EXPORT_MAX_ROWS),
         reports: fit("reports", reportRows, DATA_EXPORT_MAX_ROWS),
         posts: fit("posts", postRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS),
         comments: fit("comments", commentRows, DATA_EXPORT_MAX_ROWS),
@@ -502,7 +437,7 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
 
       const text =
         "Attached is a copy of your civfix data (JSON). It includes your profile, reports, posts, " +
-        "comments, messages, events, registrations, organizations, donations, volunteer hours, " +
+        "comments, messages, events, registrations, organizations, volunteer hours, " +
         "connections, and your issued service-hours transcripts. Secrets (login codes, session " +
         "tokens, raw device tokens, ticket tokens) and other people's material (host-private notes, " +
         "another organization's verification evidence) are intentionally excluded." +

@@ -90,7 +90,6 @@ async function harness(options: { media?: MediaAssetView | null } = {}): Promise
     env: {
       NODE_ENV: "test",
       WEB_ORIGINS: ["https://civfix.org"],
-      PAYMENTS_ENABLED: false,
     },
     storage: new FakeStorage(),
     csrf: { protect: (_req: unknown, _reply: unknown, done: () => void) => done() },
@@ -455,7 +454,6 @@ describe("admin org management (0.41.0)", () => {
       owner: { id: HOST, handle: "ada" },
       memberCount: 1,
       suspendedAt: null,
-      donationsEnabled: false,
     })
     expect(h.orgs.audits.map((a) => a.action)).toEqual(
       expect.arrayContaining(["org.created", "org.verification_verified"]),

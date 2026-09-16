@@ -177,6 +177,7 @@ interface EventRow {
   org_handle: string | null
   org_bio: string | null
   org_avatar_url: string | null
+  org_donation_url: string | null
 }
 
 interface ReportRow {
@@ -403,7 +404,8 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         u.display_name AS org_name,
         u.handle AS org_handle,
         u.bio AS org_bio,
-        u.avatar_url AS org_avatar_url
+        u.avatar_url AS org_avatar_url,
+        u.donation_url AS org_donation_url
       FROM cleanups c
       JOIN users u ON u.id = c.organizer_user_id
       WHERE c.id = ANY(${ids}::uuid[])
@@ -420,6 +422,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         followers: 0,
         following: 0,
         isFollowing: false,
+        ...(r.org_donation_url !== null ? { donationUrl: r.org_donation_url } : {}),
       }
       out.set(r.id, {
         id: r.id,

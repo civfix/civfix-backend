@@ -98,6 +98,7 @@ describe("toPersonDTO", () => {
       avatarR2Key: null,
       avatarUrl: null,
       socialLinks: null,
+      donationUrl: "https://give.example.org/jane",
       showVolunteerHours: null,
     }
     const dto = toPersonDTO(view, true)
@@ -110,6 +111,7 @@ describe("toPersonDTO", () => {
       followers: 3,
       following: 7,
       isFollowing: true,
+      donationUrl: "https://give.example.org/jane",
     })
     expect(dto.avatarUrl).toBeUndefined()
   })
@@ -125,6 +127,7 @@ describe("toPersonDTO", () => {
       avatarR2Key: null,
       avatarUrl: "https://cdn.example.test/avatars/jane.jpg",
       socialLinks: null,
+      donationUrl: null,
       showVolunteerHours: null,
     }
     expect(toPersonDTO(view, false).avatarUrl).toBe("https://cdn.example.test/avatars/jane.jpg")
@@ -445,6 +448,16 @@ describe("getProfile", () => {
     const { profile } = await service.getProfile(A, { userId: null })
     expect(profile.pastEvents.map((e) => e.title)).toContain("Bob's sweep")
     expect(profile.stats.cleanups).toBe(0)
+  })
+
+  it("carries the person's own donation link, and omits it when they have none", async () => {
+    const { repo, service } = makeHarness()
+    repo.seedUser({ id: A, displayName: "Alice", donationUrl: "https://give.example.org/alice" })
+    repo.seedUser({ id: B, displayName: "Bob" })
+    const withLink = await service.getProfile(A, { userId: null })
+    expect(withLink.profile.donationUrl).toBe("https://give.example.org/alice")
+    const without = await service.getProfile(B, { userId: null })
+    expect(without.profile).not.toHaveProperty("donationUrl")
   })
 
   it("falls back to the provider avatar_url on the full profile when no custom avatar was uploaded", async () => {

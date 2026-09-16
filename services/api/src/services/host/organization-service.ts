@@ -85,10 +85,6 @@ export interface OrganizationLogoPresigner {
   (key: string): Promise<string>
 }
 
-export interface NonprofitVerifiedHook {
-  (event: { organizationId: string; ein: string | null; operatorId: string }): Promise<void>
-}
-
 /** Transactional email seam (the same shape host-team-service uses for invites). */
 export interface OrganizationMailer {
   sendTransactional(to: string, template: string, vars: Record<string, unknown>): Promise<void>
@@ -110,7 +106,6 @@ export interface OrganizationServiceDeps {
   newId?: () => string
   newToken?: () => string
   affiliations?: AffiliationLoader
-  onNonprofitVerified?: NonprofitVerifiedHook
   mailer?: OrganizationMailer
   notifier?: OrganizationNotifier
   webOrigin?: string
@@ -196,7 +191,6 @@ export interface OrganizationService {
     verified?: OrgVerificationStatus
     kind?: OrgVerificationKind
     suspended?: boolean
-    donationsEnabled?: boolean
     cursor: string | null
     limit: number
   }): Promise<{ items: AdminOrgDTO[]; nextCursor: string | null; counts?: AdminOrgCounts }>
@@ -252,6 +246,7 @@ export function toOrganizationDTO(
     name: record.name,
     description: record.description,
     websiteUrl: record.websiteUrl,
+    donationUrl: record.donationUrl,
     logoMediaId: record.logoMediaId,
     logoUrl,
     socialLinks: record.socialLinks,
@@ -453,6 +448,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       name: record.name,
       description: record.description,
       websiteUrl: record.websiteUrl,
+      donationUrl: record.donationUrl,
       logoUrl: await logoUrlOf(record),
       verifiedStatus: record.verifiedStatus,
       verifiedKind: record.verifiedKind,
@@ -463,8 +459,6 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       eventCount: record.eventCount,
       owner: toActorRef(record.owner),
       verification: verification === null ? null : toAdminVerificationItem(verification),
-      donationsEnabled: record.donationsEnabled,
-      paymentsState: record.paymentsState,
       suspendedAt: record.suspendedAt === null ? null : record.suspendedAt.toISOString(),
       suspendedReason: record.suspendedReason,
       updatedAt: record.updatedAt.toISOString(),
@@ -570,8 +564,8 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
 
   /**
    * Tell the org OWNER how their verification application was decided: a transactional email (when the
-   * owner has an address) plus an in-app `system` notification. BEST-EFFORT like the eligibility hook —
-   * the decision is already committed and audited, so a mail/notification failure is logged, never raised.
+   * owner has an address) plus an in-app `system` notification. BEST-EFFORT: the decision is already
+   * committed and audited, so a mail/notification failure is logged, never raised.
    */
   async function notifyOwnerOfDecision(
     org: AdminOrgDTO,
@@ -691,6 +685,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
           ...(patch.name !== undefined ? { name: patch.name } : {}),
           ...(patch.description !== undefined ? { description: patch.description } : {}),
           ...(patch.websiteUrl !== undefined ? { websiteUrl: patch.websiteUrl } : {}),
+          ...(patch.donationUrl !== undefined ? { donationUrl: patch.donationUrl } : {}),
           ...(patch.logoMediaId !== undefined ? { logoMediaId: patch.logoMediaId } : {}),
           ...(patch.socialLinks !== undefined ? { socialLinks: patch.socialLinks } : {}),
         },
@@ -1000,8 +995,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       verified?: OrgVerificationStatus
       kind?: OrgVerificationKind
       suspended?: boolean
-      donationsEnabled?: boolean
-      cursor: string | null
+        cursor: string | null
       limit: number
     }): Promise<{ items: AdminOrgDTO[]; nextCursor: string | null; counts?: AdminOrgCounts }> {
       const page = await deps.repo.adminListOrganizations(query)
@@ -1240,24 +1234,6 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         throw AppError.conflict("This organization has no open verification application.")
       }
       const dto = await adminOrgDTO(id)
-      if (
-        input.decision === "verified" &&
-        dto.verifiedKind === "nonprofit" &&
-        deps.onNonprofitVerified !== undefined
-      ) {
-        try {
-          await deps.onNonprofitVerified({
-            organizationId: id,
-            ein: await deps.repo.verifiedEinOf(id),
-            operatorId,
-          })
-        } catch (error) {
-          deps.logger?.error(
-            { evt: "org.verification.eligibility_hook_failed", organizationId: id, err: error },
-            "nonprofit verified but the eligibility follow-up failed; the EIN is recorded and an operator can evaluate on demand",
-          )
-        }
-      }
       await notifyOwnerOfDecision(dto, input.decision, reason)
       return dto
     },

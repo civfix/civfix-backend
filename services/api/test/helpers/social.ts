@@ -23,6 +23,7 @@ interface StoredUser {
   bio: string | null
   deletedAt: Date | null
   avatarUrl?: string | null
+  donationUrl?: string | null
   showVolunteerHours?: boolean | null
 }
 
@@ -53,6 +54,7 @@ export class InMemorySocialRepository implements SocialRepository {
       bio: over.bio ?? null,
       deletedAt: over.deletedAt ?? null,
       showVolunteerHours: over.showVolunteerHours ?? null,
+      donationUrl: over.donationUrl ?? null,
       ...(over.avatarUrl !== undefined ? { avatarUrl: over.avatarUrl } : {}),
     }
     this.users.set(user.id, user)
@@ -93,6 +95,7 @@ export class InMemorySocialRepository implements SocialRepository {
       avatarR2Key: null,
       avatarUrl: u.avatarUrl ?? null,
       socialLinks: null,
+      donationUrl: u.donationUrl ?? null,
       showVolunteerHours: u.showVolunteerHours ?? null,
     }
   }

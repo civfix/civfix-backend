@@ -625,13 +625,14 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           org_handle: string | null
           org_bio: string | null
           org_avatar_url: string | null
+          org_donation_url: string | null
           linked_at: Date
         }[]
       >`
         SELECT
           report_id, id, title, event_kind, status, scheduled_at, ends_at, timezone,
           lng, lat, going, org_id, org_display_name, org_handle, org_bio, org_avatar_url,
-          linked_at
+          org_donation_url, linked_at
         FROM (
           SELECT
             cr.report_id,
@@ -650,6 +651,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             u.handle AS org_handle,
             u.bio AS org_bio,
             u.avatar_url AS org_avatar_url,
+            u.donation_url AS org_donation_url,
             cr.linked_at,
             row_number() OVER (
               PARTITION BY cr.report_id ORDER BY cr.linked_at DESC, c.id
@@ -682,6 +684,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             handle: r.org_handle,
             bio: r.org_bio,
             avatarUrl: r.org_avatar_url,
+            donationUrl: r.org_donation_url,
           },
           linkedAt: r.linked_at,
         }
@@ -746,6 +749,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           slug: string
           name: string
           logo_key: string | null
+          donation_url: string | null
           verified_status: OrgVerificationStatus
           verified_kind: OrgVerificationKind | null
           suspended: boolean
@@ -753,6 +757,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       >`
         SELECT o.id, o.slug, o.name,
                ${servedKeyExpr(sql, "am")} AS logo_key,
+               o.donation_url,
                o.verified_status, o.verified_kind,
                (o.suspended_at IS NOT NULL) AS suspended
         FROM organizations o
@@ -767,6 +772,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         slug: row.slug,
         name: row.name,
         logoKey: row.logo_key,
+        donationUrl: row.donation_url,
         verifiedStatus: row.verified_status,
         verifiedKind: row.verified_kind,
         suspended: row.suspended,
@@ -783,6 +789,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           slug: string
           name: string
           logo_key: string | null
+          donation_url: string | null
           verified_status: OrgVerificationStatus
           verified_kind: OrgVerificationKind | null
           suspended: boolean
@@ -791,6 +798,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       >`
         SELECT o.id, o.slug, o.name,
                ${servedKeyExpr(sql, "am")} AS logo_key,
+               o.donation_url,
                o.verified_status, o.verified_kind,
                (o.suspended_at IS NOT NULL) AS suspended,
                EXISTS (
@@ -810,6 +818,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           slug: row.slug,
           name: row.name,
           logoKey: row.logo_key,
+          donationUrl: row.donation_url,
           verifiedStatus: row.verified_status,
           verifiedKind: row.verified_kind,
           suspended: row.suspended,

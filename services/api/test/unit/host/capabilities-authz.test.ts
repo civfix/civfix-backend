@@ -31,8 +31,6 @@ describe("host capability matrix (backend realm)", () => {
   it("organizer holds every event-lane capability", () => {
     const caps = hostCapabilities({ eventRole: "organizer", orgRole: null })
     const orgLaneOnly: HostCapability[] = [
-      "manage_payments",
-      "view_donations",
       "manage_org_members",
     ]
     for (const capability of HOST_CAPABILITY_VALUES) {
@@ -86,8 +84,6 @@ describe("host capability matrix (backend realm)", () => {
       "cancel_event",
       "manage_org_link",
       "request_resources",
-      "manage_payments",
-      "view_donations",
     ] as HostCapability[]) {
       expect(can({ eventRole: "coordinator", orgRole: null }, capability), capability).toBe(false)
     }
@@ -114,7 +110,6 @@ describe("host capability matrix (backend realm)", () => {
     expect(owner.has("manage_event")).toBe(true)
     expect(owner.has("manage_team")).toBe(true)
     expect(owner.has("cancel_event")).toBe(true)
-    expect(owner.has("manage_payments")).toBe(true)
     expect(owner.has("manage_org_members")).toBe(true)
   })
 
@@ -122,8 +117,6 @@ describe("host capability matrix (backend realm)", () => {
     const admin = hostCapabilities({ eventRole: null, orgRole: "admin" })
     expect(admin.has("export")).toBe(false)
     expect(admin.has("manage_event")).toBe(true)
-    expect(admin.has("view_donations")).toBe(true)
-    expect(admin.has("manage_payments")).toBe(false)
     expect(admin.has("manage_org_members")).toBe(true)
     expect(admin.has("manage_team")).toBe(false)
   })

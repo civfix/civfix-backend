@@ -25,8 +25,6 @@ const FORBIDDEN_COPY: Record<HostCapability, string> = {
   manage_org_link: "Only the event organizer can change the organization.",
   moderate_chat: "Only the event hosts can moderate the event chat.",
   request_resources: "Only the event organizer can request city resources.",
-  manage_payments: "Only the organization owner can manage payments.",
-  view_donations: "Only organization admins can view donations.",
   manage_org_members: "Only organization admins can manage members.",
 }
 

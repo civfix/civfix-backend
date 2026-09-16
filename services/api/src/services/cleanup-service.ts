@@ -134,24 +134,6 @@ function toDateOrNull(value: string | null | undefined): Date | null {
   return new Date(value)
 }
 
-function assertDonationsAllowed(
-  organization: CleanupOrganizationView | null,
-  orgRole: OrganizationMemberRole | null,
-): void {
-  if (
-    organization === null ||
-    organization.verifiedStatus !== "verified" ||
-    organization.verifiedKind !== "nonprofit"
-  ) {
-    throw AppError.validation({
-      donationUrl: "a donation link needs a verified nonprofit organization on the event",
-    })
-  }
-  if (!can({ eventRole: null, orgRole }, "manage_payments")) {
-    throw AppError.forbidden(hostForbiddenCopy("manage_payments"))
-  }
-}
-
 const HOST_REFUSAL_CODES = new Set<ErrorCode>([
   ErrorCode.FORBIDDEN,
   ErrorCode.CONFLICT,
@@ -500,17 +482,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     const orgChanged =
       patch.organizationId !== undefined && (current?.organizationId ?? null) !== effectiveOrgId
     if (patch.organizationId !== undefined) write.organizationId = effectiveOrgId
-    const { organization, orgRole } = await organizationFor(effectiveOrgId, input.actorId, {
+    await organizationFor(effectiveOrgId, input.actorId, {
       linking: orgChanged || current === null,
     })
 
-    if (patch.donationUrl !== undefined) {
-      const donationUrl = patch.donationUrl ?? null
-      if (donationUrl !== null) assertDonationsAllowed(organization, orgRole)
-      write.donationUrl = donationUrl
-    } else if (orgChanged && (current?.donationUrl ?? null) !== null) {
-      assertDonationsAllowed(organization, orgRole)
-    }
+    if (patch.donationUrl !== undefined) write.donationUrl = patch.donationUrl ?? null
 
     assertEventWindow({
       scheduledAt:
@@ -982,25 +958,15 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   async function resolveDuplicateOrganization(
     organizationId: string | null,
     actorId: string,
-  ): Promise<{ organizationId: string | null; donations: boolean }> {
-    if (organizationId === null) return { organizationId: null, donations: false }
-    let resolved: {
-      organization: CleanupOrganizationView | null
-      orgRole: OrganizationMemberRole | null
-    }
+  ): Promise<string | null> {
+    if (organizationId === null) return null
     try {
-      resolved = await organizationFor(organizationId, actorId, { linking: true })
+      await organizationFor(organizationId, actorId, { linking: true })
     } catch (err) {
       if (!isHostRefusal(err)) throw err
-      return { organizationId: null, donations: false }
+      return null
     }
-    try {
-      assertDonationsAllowed(resolved.organization, resolved.orgRole)
-    } catch (err) {
-      if (!isHostRefusal(err)) throw err
-      return { organizationId, donations: false }
-    }
-    return { organizationId, donations: true }
+    return organizationId
   }
 
   return {
@@ -1011,7 +977,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     async duplicateCleanup(actorId: string, input: DuplicateCleanupRequest): Promise<CleanupDTO> {
       if (input.endsAt === null) throw AppError.validation({ endsAt: "required" })
       const { record: source } = await requireCapabilityOn(input.id, actorId, "manage_event")
-      const link = await resolveDuplicateOrganization(source.organizationId, actorId)
+      const organizationId = await resolveDuplicateOrganization(source.organizationId, actorId)
       const now = new Date()
       const scheduledAt = new Date(input.scheduledAt)
       const sourceDurationMs = source.endsAt.getTime() - source.scheduledAt.getTime()
@@ -1045,10 +1011,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         endsAt,
         timezone: source.timezone,
         visibility: source.visibility,
-        donationUrl: link.donations ? source.donationUrl : null,
+        donationUrl: source.donationUrl,
         registrationOpensAt: futureOrNull(source.registrationOpensAt, now),
         registrationClosesAt: futureOrNull(source.registrationClosesAt, now),
-        organizationId: link.organizationId,
+        organizationId,
         reminderOffsetsMinutes: source.reminderOffsetsMin,
         hostReplyTo: source.hostReplyTo,
       }

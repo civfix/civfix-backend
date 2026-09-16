@@ -1,9 +1,8 @@
 import type { TrustProxyValue } from "./parsers.js"
 import type { CommsEnv } from "./comms-env.js"
-import type { PaymentsEnv } from "./payments-env.js"
 import type { RegistrationEnv } from "./registration-env.js"
 
-export interface Env extends CommsEnv, PaymentsEnv, RegistrationEnv {
+export interface Env extends CommsEnv, RegistrationEnv {
   NODE_ENV: "development" | "test" | "production"
   PORT: number
   PUBLIC_API_URL: string
@@ -122,7 +121,6 @@ export interface Env extends CommsEnv, PaymentsEnv, RegistrationEnv {
 
   USE_FAKE_SMS: boolean
 
-  USE_FAKE_PAYMENTS: boolean
 
   USE_REAL_NSFW: boolean
 }

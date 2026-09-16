@@ -1,7 +1,6 @@
 import type { CleanupDTO } from "@civfix/shared"
 import type { Container } from "../di.js"
 import { attachRegistrationFields } from "./host/registration-dto.js"
-import { attachDonationOrg } from "./payments/donation-org-dto.js"
 import { withAffiliation } from "./affiliation.js"
 
 export async function attachOrganizerAffiliations(
@@ -29,11 +28,5 @@ export async function enrichCleanupDTOs(
   if (dtos.length === 0) return dtos
   const sql = container.getDb().sql
   const withRegistration = await attachRegistrationFields(sql, dtos, viewerUserId)
-  const withOrganizer = await attachOrganizerAffiliations(
-    container,
-    withRegistration,
-    viewerUserId,
-  )
-  if (!container.env.PAYMENTS_ENABLED) return withOrganizer
-  return attachDonationOrg(sql, withOrganizer)
+  return attachOrganizerAffiliations(container, withRegistration, viewerUserId)
 }

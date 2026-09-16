@@ -2,12 +2,10 @@ import {
   DownloadHostExportRequestSchema,
   GetEventExportRequestSchema,
   ListEventExportsRequestSchema,
-  ListOrgDonationExportsRequestSchema,
   RequestEventExportRequestSchema,
   type DownloadHostExportResponse,
   type HostExportDTO,
   type ListEventExportsResponse,
-  type ListOrgDonationExportsResponse,
 } from "@civfix/shared"
 import { AppError } from "@civfix/shared"
 import type { FastifyInstance, FastifyRequest } from "fastify"
@@ -16,7 +14,7 @@ import { requireAuth } from "../../auth/context.js"
 import { perIdentity } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
 import { parse } from "../_validate.js"
-import { requireCapability, requireOrgCapability } from "../../services/host/authz.js"
+import { requireCapability } from "../../services/host/authz.js"
 import { writeAudit } from "../../services/admin/audit.js"
 import { HOST_EXPORT_JOB } from "../../services/host/broadcast-queues.js"
 import { makeCommsRuntime } from "../../services/host/comms-wiring.js"
@@ -70,12 +68,6 @@ export async function registerHostExportRoutes(
       const userId = requireAuth(request)
       const body = parse(RequestEventExportRequestSchema, mergeParams(request))
       await requireCapability(container.getDb().sql, body.id, userId, "export")
-      if (body.kind === "donations") {
-        throw AppError.validation(
-          { kind: "unsupported" },
-          "Donation exports are requested from the organization, not the event.",
-        )
-      }
       const payload: HostExportDTO = await exports().request({
         cleanupId: body.id,
         organizationId: null,
@@ -114,20 +106,6 @@ export async function registerHostExportRoutes(
 
   route(
     app,
-    "listOrgDonationExports",
-    { config: { rateLimit: EXPORT_READ_RATE_LIMIT } },
-    async (request, reply) => {
-      const userId = requireAuth(request)
-      const query = parse(ListOrgDonationExportsRequestSchema, mergeQuery(request))
-      await requireOrgCapability(container.getDb().sql, query.id, userId, "view_donations")
-      const items = await exports().listForOrganization(query.id)
-      const payload: ListOrgDonationExportsResponse = { items, nextCursor: null }
-      reply.status(200).send(payload)
-    },
-  )
-
-  route(
-    app,
     "getEventExport",
     { config: { rateLimit: EXPORT_READ_RATE_LIMIT } },
     async (request, reply) => {
@@ -149,16 +127,8 @@ export async function registerHostExportRoutes(
       const params = parse(DownloadHostExportRequestSchema, request.params)
       const record = await exports().get(params.id)
       if (record.requestedBy !== userId) throw AppError.notFound("Export not found")
-      if (record.cleanupId !== null) {
-        await requireCapability(container.getDb().sql, record.cleanupId, userId, "export")
-      } else if (record.organizationId !== null) {
-        await requireOrgCapability(
-          container.getDb().sql,
-          record.organizationId,
-          userId,
-          "view_donations",
-        )
-      }
+      if (record.cleanupId === null) throw AppError.notFound("Export not found")
+      await requireCapability(container.getDb().sql, record.cleanupId, userId, "export")
       const payload: DownloadHostExportResponse = await exports().downloadUrl(record)
       reply.status(200).send(payload)
     },

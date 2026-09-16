@@ -68,7 +68,7 @@ export const PAGE_VIEW_SOURCE_VALUES = [
   "other",
 ] as const
 
-export const HOST_EXPORT_KIND_VALUES = ["roster", "answers", "checkins", "donations"] as const
+export const HOST_EXPORT_KIND_VALUES = ["roster", "answers", "checkins"] as const
 
 export const HOST_EXPORT_STATUS_VALUES = [
   "queued",
