@@ -240,7 +240,7 @@ export function buildContainer(env: Env): Container {
         isBlockedEitherWay: (a: string, b: string) => getBlocksRepo().isBlockedEitherWay(a, b),
         feedRanking: env.FEED_RANKING,
         feedPresence: getFeedPresence(),
-        userChannel: getUserChannel(),
+        ...(env.USE_FAKE_USER_CHANNEL ? {} : { userChannel: getUserChannel() }),
       })
     }
     return postService
