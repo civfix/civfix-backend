@@ -104,6 +104,53 @@ statement through the exported `explainSuggestFollows`. The offline half —
 that the emitted SQL really is a `CROSS JOIN LATERAL` and not a same-level
 cross join — is `test/unit/social-suggest-sql.test.ts`.
 
+### `posts.geom` backfill (migration 0172, issue #100) — data, not an index
+
+`posts` is NOT a hot table, so `posts_geom_gist` and
+`posts_author_public_recent_idx` are built inline by migrations 0172 and 0173
+and need nothing here. What DOES need an out-of-band run is the **backfill**:
+0172 adds the column but deliberately populates no rows, because one `UPDATE`
+over the whole table inside the migration's single transaction is a lock
+hazard. The migration RAISEs a `WARNING` naming how many attached posts are
+still unpopulated.
+
+Run it once the deploy is healthy — keyset-paged, idempotent, safe to re-run
+and safe while the API serves traffic:
+
+```sh
+sudo -n docker exec compose-api-1 node dist/db/backfill-post-geom.js
+```
+
+Nothing breaks without it: a `NULL` `posts.geom` yields a `NULL` `distance_km`,
+the ranker simply scores no proximity term for that post, and the in-network
+and recent-public pools still fill the feed. Only the *nearby* pool is degraded.
+
+Verify:
+
+```sql
+SELECT count(*) FROM posts
+ WHERE geom IS NULL AND (report_id IS NOT NULL OR event_id IS NOT NULL);
+```
+
+must return `0`. If `posts` has grown large enough that an inline
+`CREATE INDEX` would be disruptive, build both indexes with `CONCURRENTLY`
+BEFORE deploying — the migrations' `IF NOT EXISTS` guards then no-op:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS posts_geom_gist
+  ON posts USING gist (geom)
+  WHERE geom IS NOT NULL AND deleted_at IS NULL AND visibility = 'public';
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS posts_author_public_recent_idx
+  ON posts (author_id, created_at DESC, id DESC)
+  WHERE deleted_at IS NULL AND reply_to_id IS NULL AND visibility = 'public';
+```
+
+The nearby pool's plan is asserted by
+`test/integration/feed-ranked-pg.test.ts`, which `EXPLAIN`s the real statement
+through the exported `explainFeedCandidates` and requires
+`posts_geom_gist` with no `Seq Scan on posts`.
+
 ### `media_assets_orphan_sweep_idx` (migration 0098, audit H13)
 
 Back the hourly orphan sweep's candidate scan (`findOrphans` /`deleteOrphan` in

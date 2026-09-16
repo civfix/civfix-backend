@@ -22,6 +22,24 @@ The owner's own detail/list (`mine: true`) and the create-time idempotency
 snapshot also carry full precision; routing to a jurisdiction uses the precise
 `geom`.
 
+**A second stored copy exists as of migration 0172 (issue #100).** `posts.geom`
+denormalises the linked report's or event's point onto the post row so the
+ranked home feed's proximity pool is one bounded KNN scan. It is NOT a new
+class of data and NOT a new exposure: the value is copied server-side from a
+coordinate this platform already publishes at full precision on the linked
+report or event, it is never populated from a client-supplied coordinate, and
+it is never projected into any DTO — it only orders the feed, and the feed
+emits `PostDTO`, which carries no post-level coordinate at all. The only
+derived value that leaves the server is the ranking score.
+
+Consequence for any future coarsening decision: rounding the projected
+`lat`/`lng` would NOT cover `posts.geom`, which would keep ordering the feed at
+full precision. That is almost certainly the desired behaviour (proximity
+ranking is the point), but it must be a stated decision rather than an
+oversight, and a policy that requires coarsening at REST — not just in
+transit — has to cover this column, `reports.geom`, `cleanups.geom` and
+`users.last_activity_geom` together.
+
 ## Is a backend-only coarsening possible without a shared-contract change?
 
 **Technically yes.** `ReportDTO.lat/lng` and `ReportPinDTO.lat/lng` are
