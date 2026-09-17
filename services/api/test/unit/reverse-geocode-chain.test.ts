@@ -1,11 +1,18 @@
 import { describe, it, expect } from "vitest"
-import { chainReverse, type ReverseGeocode } from "../../src/adapters/reverse-geocode.chain.js"
+import { chainReverse, type PointResolver } from "../../src/adapters/reverse-geocode.chain.js"
+
+/**
+ * chainReverse is generic over the answer shape - the real seam carries a structured
+ * { line, precision, provider }, but the ORDERING contract under test here is about which provider
+ * answers first, not what it answers with, so a bare string keeps the assertions readable.
+ */
+type StringResolver = PointResolver<string>
 
 const ok =
-  (label: string): ReverseGeocode =>
+  (label: string): StringResolver =>
   async () =>
     label
-const nul: ReverseGeocode = async () => null
+const nul: StringResolver = async () => null
 
 describe("chainReverse", () => {
   it("returns the first non-null result", async () => {

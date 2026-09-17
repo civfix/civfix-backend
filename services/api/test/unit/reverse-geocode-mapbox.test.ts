@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest"
 import {
   makeMapboxReverseGeocode,
   formatMapboxReverse,
+  mapboxPrecision,
   redactMapboxToken,
 } from "../../src/adapters/reverse-geocode.mapbox.js"
 
@@ -71,7 +72,11 @@ describe("makeMapboxReverseGeocode", () => {
         context: { place: { name: "Springfield" }, region: { region_code: "IL" }, country: { country_code: "us" } },
       }),
     })
-    expect(await geocode(39.8, -89.6)).toBe("1 Main St, Springfield, IL")
+    expect(await geocode(39.8, -89.6)).toEqual({
+      line: "1 Main St, Springfield, IL",
+      precision: "street",
+      provider: "mapbox",
+    })
   })
   it("returns null on non-ok HTTP", async () => {
     const geocode = makeMapboxReverseGeocode({
@@ -119,5 +124,62 @@ describe("makeMapboxReverseGeocode", () => {
     })
     await geocode(39.8, -89.6)
     expect(opts?.redirect).toBe("error")
+  })
+})
+
+/**
+ * Mapbox is the OPT-IN primary, so what it REFUSES to answer matters as much as what it answers: a
+ * place-only hit must fall through to Photon and then to the local TIGER locality rung rather than
+ * short-circuit the chain with the vaguest line available.
+ */
+describe("mapboxPrecision", () => {
+  it("claims street only with a house number", () => {
+    expect(mapboxPrecision({ context: { address: { address_number: "123", name: "123 Main St" } } })).toBe(
+      "street",
+    )
+    expect(mapboxPrecision({ name: "123 Main St" })).toBe("street")
+  })
+
+  it("claims intersection for a named street with no number", () => {
+    expect(mapboxPrecision({ name: "Main St", context: { street: { name: "Main St" } } })).toBe(
+      "intersection",
+    )
+  })
+
+  it("claims NOTHING for a place-only hit, so the chain keeps going", () => {
+    expect(mapboxPrecision({ name: "Los Angeles", context: { place: { name: "Los Angeles" } } })).toBeNull()
+    expect(mapboxPrecision({})).toBeNull()
+  })
+})
+
+describe("makeMapboxReverseGeocode precision ladder", () => {
+  it("returns intersection (no fabricated number) for a street-only feature", async () => {
+    const geocode = makeMapboxReverseGeocode({
+      token: "pk.test",
+      fetchImpl: okFetch({
+        name: "Main St",
+        context: {
+          street: { name: "Main St" },
+          place: { name: "Springfield" },
+          region: { region_code: "IL" },
+        },
+      }),
+    })
+    expect(await geocode(39.8, -89.6)).toEqual({
+      line: "Main St, Springfield, IL",
+      precision: "intersection",
+      provider: "mapbox",
+    })
+  })
+
+  it("returns null rather than a locality line", async () => {
+    const geocode = makeMapboxReverseGeocode({
+      token: "pk.test",
+      fetchImpl: okFetch({
+        name: "Springfield",
+        context: { place: { name: "Springfield" }, region: { region_code: "IL" } },
+      }),
+    })
+    expect(await geocode(39.8, -89.6)).toBeNull()
   })
 })
