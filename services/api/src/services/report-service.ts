@@ -31,7 +31,7 @@ import {
   type UnsignedReportPin,
 } from "./report-clustering.js"
 import { isPubliclyVisibleStatus } from "./report-visibility.js"
-import { addressProvenance } from "./address-resolver.js"
+import { addressProvenance, resolveAddressOrNull } from "./address-resolver.js"
 import {
   REPORT_AUTOFORWARD_JOB,
   REPORT_CREATE_SCOPE,
@@ -226,10 +226,11 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const category = REPORT_TYPE_TO_CATEGORY[input.type]
 
       const suppliedAddr = input.addr?.trim() ?? ""
-      const wantsReverse = suppliedAddr.length === 0 && deps.resolveAddress !== undefined
       const [jurisdictionGeoid, reversed] = await Promise.all([
         deps.resolveJurisdictionGeoid(input.lat, input.lng),
-        wantsReverse ? deps.resolveAddress!(input.lat, input.lng) : Promise.resolve(null),
+        suppliedAddr.length > 0
+          ? Promise.resolve(null)
+          : resolveAddressOrNull(deps.resolveAddress, input.lat, input.lng),
       ])
       const jurCode =
         deps.resolveJurisdictionCode !== undefined

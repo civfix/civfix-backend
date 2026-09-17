@@ -70,7 +70,9 @@ export function makeAddressResolver(deps: AddressResolverDeps): AddressResolver 
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return NOT_RESOLVED
 
     const pointKey = geocodePointKey({ lat, lng })
-    const cached = await cache.read(pointKey)
+    // Guarded HERE as well as inside makeGeocodeCache: "never throws" is a property of this function,
+    // not of whichever cache implementation happens to be wired in.
+    const cached = await orNull(cache.read(pointKey))
     if (cached !== null) {
       return {
         address: cached.address,
@@ -95,12 +97,14 @@ export function makeAddressResolver(deps: AddressResolverDeps): AddressResolver 
           ? { address: cityStateLabel, precision: "locality", cityStateLabel }
           : { address: null, precision: null, cityStateLabel }
 
-    await cache.write(pointKey, {
-      address: resolved.address,
-      precision: resolved.precision,
-      cityStateLabel,
-      provider: hit?.provider ?? (resolved.precision === "locality" ? "tiger" : null),
-    })
+    await orNull(
+      cache.write(pointKey, {
+        address: resolved.address,
+        precision: resolved.precision,
+        cityStateLabel,
+        provider: hit?.provider ?? (resolved.precision === "locality" ? "tiger" : null),
+      }),
+    )
 
     return resolved
   }
@@ -138,5 +142,24 @@ export function addressProvenance(
     addr: resolved.address.slice(0, MAX_REPORT_ADDR_LENGTH),
     addrSource: "resolved",
     addrPrecision: resolved.precision,
+  }
+}
+
+/**
+ * Call a resolver on the report-create path. `makeAddressResolver` already fails open, but this is the
+ * ONE place where an address is optional and a filing is not, so the guarantee is re-stated at the call
+ * site rather than inherited: an injected resolver that rejects (a test double, a future wrapper, a dep
+ * someone swaps in) must cost the address, never the report.
+ */
+export async function resolveAddressOrNull(
+  resolve: AddressResolver | undefined,
+  lat: number,
+  lng: number,
+): Promise<ResolvedAddress | null> {
+  if (resolve === undefined) return null
+  try {
+    return await resolve(lat, lng)
+  } catch {
+    return null
   }
 }

@@ -3,6 +3,11 @@ import type { FastifyInstance } from "fastify"
 import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
+import type { Container } from "../../src/di.js"
+import type {
+  ReverseGeocode,
+  ReverseResult,
+} from "../../src/adapters/reverse-geocode.chain.js"
 
 /**
  * Route-level tests for the map plugin that need NO database: tileinfo (pure env read) and
@@ -85,6 +90,91 @@ describe("POST /map/reverse-label", () => {
     const res = await app.inject({
       method: "POST",
       url: "/v1/map/reverse-label",
+      payload: { lat: 999, lng: -118.25 },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().code).toBe("VALIDATION")
+  })
+})
+
+/**
+ * The street-level preview the creation flows call. Runs on the fake geocoder for the locality half and
+ * an injected chain for the street half, so it is offline: the container's real chain is a live Photon
+ * request, which has no business in a unit test. There is no database here either, which is itself part
+ * of the contract - the cache swallows its own unavailability and the endpoint still answers.
+ */
+function withStreetChain(container: Container, result: ReverseResult | null): Container {
+  ;(container as { streetReverseGeocode: ReverseGeocode }).streetReverseGeocode = async () => result
+  return container
+}
+
+describe("POST /map/resolve-address", () => {
+  it("returns the chain's rung plus the locality hint", async () => {
+    const env = loadEnv({ NODE_ENV: "test" })
+    const container = withStreetChain(buildContainer(env), {
+      line: "123 Imperial Hwy, Inglewood, CA",
+      precision: "street",
+      provider: "photon",
+    })
+    app = await buildServer({ env, container })
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/map/resolve-address",
+      payload: { lat: 34.05, lng: -118.25 },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({
+      address: "123 Imperial Hwy, Inglewood, CA",
+      precision: "street",
+      // FakeGeocoder defaults to "Los Angeles, CA".
+      cityStateLabel: "Los Angeles, CA",
+    })
+  })
+
+  it("falls back to locality on a chain miss, and says so", async () => {
+    const env = loadEnv({ NODE_ENV: "test" })
+    const container = withStreetChain(buildContainer(env), null)
+    app = await buildServer({ env, container })
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/map/resolve-address",
+      payload: { lat: 34.05, lng: -118.25 },
+    })
+    expect(res.statusCode).toBe(200)
+    // precision 'locality' is what tells the client to ask the host to type an address instead.
+    expect(res.json()).toEqual({
+      address: "Los Angeles, CA",
+      precision: "locality",
+      cityStateLabel: "Los Angeles, CA",
+    })
+  })
+
+  it("returns a landmark line RAW, leaving the 'Near ' prefix to the client's locale", async () => {
+    const env = loadEnv({ NODE_ENV: "test" })
+    const container = withStreetChain(buildContainer(env), {
+      line: "Vista Hermosa Park, Los Angeles, CA",
+      precision: "landmark",
+      provider: "photon",
+    })
+    app = await buildServer({ env, container })
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/map/resolve-address",
+      payload: { lat: 34.05, lng: -118.25 },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().address).toBe("Vista Hermosa Park, Los Angeles, CA")
+    expect(res.json().precision).toBe("landmark")
+  })
+
+  it("rejects a malformed body with the 422 validation envelope", async () => {
+    app = await buildServer({ env: loadEnv() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/map/resolve-address",
       payload: { lat: 999, lng: -118.25 },
     })
     expect(res.statusCode).toBe(422)

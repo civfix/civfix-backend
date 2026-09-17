@@ -29,7 +29,11 @@ import {
 } from "../abuse/anon-token.js"
 import { generateToken, constantTimeStringEqual, sha256Hex } from "../auth/crypto.js"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
-import { addressProvenance, type AddressResolver } from "./address-resolver.js"
+import {
+  addressProvenance,
+  resolveAddressOrNull,
+  type AddressResolver,
+} from "./address-resolver.js"
 import type { AddressPrecision, ReportAddressSource } from "@civfix/shared"
 
 export const ANON_REPORT_CREATE_SCOPE = "anon_report_create"
@@ -196,9 +200,9 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
       const suppliedAddr = input.addr?.trim() ?? ""
       const [jurisdictionGeoid, resolvedAddr] = await Promise.all([
         deps.resolveJurisdictionGeoid(input.lat, input.lng),
-        suppliedAddr.length > 0 || !deps.resolveAddress
+        suppliedAddr.length > 0
           ? Promise.resolve(null)
-          : deps.resolveAddress(input.lat, input.lng),
+          : resolveAddressOrNull(deps.resolveAddress, input.lat, input.lng),
       ])
       const jurCode =
         deps.resolveJurisdictionCode !== undefined

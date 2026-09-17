@@ -18,6 +18,7 @@
  */
 
 import { AppError } from "@civfix/shared"
+import type { AddressPrecision, ReportAddressSource } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
 import type { LatLng } from "@civfix/shared"
 import type { AnonTokenRecord } from "../../src/abuse/anon-token.js"
@@ -47,6 +48,10 @@ export interface StoredAnonReport {
   anonSessionId: string | null
   category: string
   description: string | null
+  /** The creation-time address snapshot and its provenance (0175), as the real insert writes them. */
+  addr: string | null
+  addrSource: ReportAddressSource | null
+  addrPrecision: AddressPrecision | null
   status: ReportStatus
   visibility: "public" | "hidden"
   lat: number
@@ -145,6 +150,9 @@ export class InMemoryAnonStore {
       anonSessionId: over.anonSessionId ?? null,
       category: over.category ?? "trash",
       description: over.description ?? null,
+      addr: over.addr ?? null,
+      addrSource: over.addrSource ?? null,
+      addrPrecision: over.addrPrecision ?? null,
       status: over.status ?? "held",
       visibility: over.visibility ?? "public",
       lat: over.lat ?? 34.1,
@@ -245,6 +253,9 @@ export class InMemoryAnonStore {
           anonSessionId: args.anonSessionId,
           category: args.category,
           description: args.description,
+          addr: args.addr,
+          addrSource: args.addrSource,
+          addrPrecision: args.addrPrecision,
           status: "held",
           visibility: "public",
           lat: args.lat,

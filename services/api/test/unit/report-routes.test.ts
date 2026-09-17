@@ -167,6 +167,32 @@ describe("POST /reports", () => {
     expect(dto.addrPrecision).toBe("street")
   })
 
+  it("files the report anyway when the resolver throws - an outage never costs a filing", async () => {
+    const { app, token } = await makeHarness({
+      resolveAddress: async () => {
+        throw new Error("geocoder down")
+      },
+    })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/reports",
+      headers: auth(token),
+      payload: {
+        idempotencyKey: KEY_A,
+        category: "trash",
+        type: "dump",
+        lat: 33.95,
+        lng: -118.35,
+        geomSource: "device",
+        mediaUploadIds: [],
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    const dto = res.json()
+    expect(dto.addr).toBeUndefined()
+    expect(dto.addrSource).toBeUndefined()
+  })
+
   it("keeps a client-supplied addr instead of reverse-geocoding the pin", async () => {
     const { app, token } = await makeHarness({
       resolveAddress: async () => ({

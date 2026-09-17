@@ -66,6 +66,7 @@ function req(over: Partial<AnonReportRequest> = {}): AnonReportRequest {
     ...(over.description !== undefined ? { description: over.description } : {}),
     ...(over.honeypot !== undefined ? { honeypot: over.honeypot } : {}),
     ...(over.anonToken !== undefined ? { anonToken: over.anonToken } : {}),
+    ...(over.addr !== undefined ? { addr: over.addr } : {}),
   }
 }
 
@@ -544,3 +545,68 @@ function uuid(n: number): string {
   const h = n.toString(16).padStart(12, "0")
   return `00000000-0000-4000-8000-${h}`
 }
+
+/**
+ * Address provenance on the anonymous path. It shares one helper with the signed-in path by
+ * construction, so what is worth pinning here is the WIRING: the resolver is consulted only when the
+ * reporter typed nothing, and the resulting source/precision land on the row alongside the address.
+ */
+describe("submitAnonReport: address provenance", () => {
+  it("records the reporter's own text as 'user', with no provider precision", async () => {
+    const { store, service } = makeHarness({
+      resolveAddress: async () => ({
+        address: "SHOULD NOT BE USED",
+        precision: "street",
+        cityStateLabel: "Inglewood, CA",
+      }),
+    })
+    await service.submitAnonReport(req({ addr: "NW corner by the bus stop" }), ctx)
+
+    const stored = store.reports.get("report-1")!
+    expect(stored.addr).toBe("NW corner by the bus stop")
+    expect(stored.addrSource).toBe("user")
+    expect(stored.addrPrecision).toBeNull()
+  })
+
+  it("snapshots a server resolve as 'resolved' with the rung it reached", async () => {
+    const { store, service } = makeHarness({
+      resolveAddress: async () => ({
+        address: "Vista Hermosa Park, Los Angeles, CA",
+        precision: "landmark",
+        cityStateLabel: "Los Angeles, CA",
+      }),
+    })
+    await service.submitAnonReport(req(), ctx)
+
+    const stored = store.reports.get("report-1")!
+    // Stored RAW: the "Near " prefix belongs to the viewer's locale, and addrPrecision is what earns it.
+    expect(stored.addr).toBe("Vista Hermosa Park, Los Angeles, CA")
+    expect(stored.addrSource).toBe("resolved")
+    expect(stored.addrPrecision).toBe("landmark")
+  })
+
+  it("files the report anyway when the resolver throws - an outage never costs a filing", async () => {
+    const { store, service } = makeHarness({
+      resolveAddress: async () => {
+        throw new Error("geocoder down")
+      },
+    })
+
+    await expect(service.submitAnonReport(req(), ctx)).resolves.toMatchObject({
+      response: { status: "held" },
+    })
+    const stored = store.reports.get("report-1")!
+    expect(stored.addr).toBeNull()
+    expect(stored.addrSource).toBeNull()
+  })
+
+  it("leaves all three NULL with no resolver wired at all", async () => {
+    const { store, service } = makeHarness()
+    await service.submitAnonReport(req(), ctx)
+
+    const stored = store.reports.get("report-1")!
+    expect(stored.addr).toBeNull()
+    expect(stored.addrSource).toBeNull()
+    expect(stored.addrPrecision).toBeNull()
+  })
+})
