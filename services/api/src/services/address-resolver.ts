@@ -20,6 +20,12 @@
  * A `landmark` line is stored and returned RAW ("Vista Hermosa Park, Los Angeles, CA"). The "Near "
  * prefix is added by the display layer, which is the only one that knows the viewer's language.
  *
+ * ONLY A CHAIN ANSWER IS CACHED. The `locality` rung is recomputed on every request - it is a free local
+ * PostGIS query, and storing it would give a transient provider outage the 180-day positive TTL and lock
+ * every point it touched at city grade for half a year. A chain miss writes the 15-minute NEGATIVE entry
+ * instead: it still stops a dragged pin from re-firing the chain per micro-drag, and the chain re-runs
+ * (and can upgrade the point) minutes after the outage ends.
+ *
  * NEVER BLOCKS, NEVER THROWS. Both halves are best-effort by seam contract, and this is called on the
  * report-create path where a geocoder outage must not cost a filing. A provider that throws, a cache
  * that is unreachable, a TIGER query that fails - each degrades one rung, never into an error.
@@ -33,7 +39,7 @@ import {
 } from "@civfix/shared"
 import type { Geocoder } from "@civfix/shared"
 import type { ReverseGeocode } from "../adapters/reverse-geocode.chain.js"
-import { NO_GEOCODE_CACHE, type GeocodeCache } from "./geocode-cache.js"
+import { isChainAnswer, NO_GEOCODE_CACHE, type GeocodeCache } from "./geocode-cache.js"
 
 export interface ResolvedAddress {
   /** The display line, or null when nothing resolved. Landmarks are raw - no "Near " prefix. */
@@ -70,22 +76,18 @@ export function makeAddressResolver(deps: AddressResolverDeps): AddressResolver 
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return NOT_RESOLVED
 
     const pointKey = geocodePointKey({ lat, lng })
-    // Guarded HERE as well as inside makeGeocodeCache: "never throws" is a property of this function,
-    // not of whichever cache implementation happens to be wired in.
     const cached = await orNull(cache.read(pointKey))
-    if (cached !== null) {
+    if (cached !== null && isChainAnswer(cached)) {
       return {
         address: cached.address,
         precision: cached.precision,
         cityStateLabel: cached.cityStateLabel,
       }
     }
+    const chainAlreadyMissed = cached !== null
 
-    // Raced, not sequenced: the TIGER label is a local PostGIS query and the chain is a network call, so
-    // the pair costs what the chain alone costs. The label is needed either way - as the response's
-    // unconditional cityStateLabel, and as the `locality` rung when the chain misses.
     const [hit, label] = await Promise.all([
-      orNull(deps.streetReverseGeocode(lat, lng)),
+      chainAlreadyMissed ? Promise.resolve(null) : orNull(deps.streetReverseGeocode(lat, lng)),
       orNull(Promise.resolve(deps.geocoder.cityStateLabel(lat, lng))),
     ])
 
@@ -97,14 +99,25 @@ export function makeAddressResolver(deps: AddressResolverDeps): AddressResolver 
           ? { address: cityStateLabel, precision: "locality", cityStateLabel }
           : { address: null, precision: null, cityStateLabel }
 
-    await orNull(
-      cache.write(pointKey, {
-        address: resolved.address,
-        precision: resolved.precision,
-        cityStateLabel,
-        provider: hit?.provider ?? (resolved.precision === "locality" ? "tiger" : null),
-      }),
-    )
+    if (hit !== null) {
+      await orNull(
+        cache.write(pointKey, {
+          address: hit.line,
+          precision: hit.precision,
+          cityStateLabel,
+          provider: hit.provider,
+        }),
+      )
+    } else if (!chainAlreadyMissed) {
+      await orNull(
+        cache.write(pointKey, {
+          address: null,
+          precision: null,
+          cityStateLabel,
+          provider: null,
+        }),
+      )
+    }
 
     return resolved
   }
@@ -137,7 +150,6 @@ export function addressProvenance(
   if (resolved === null || resolved.address === null) {
     return { addr: null, addrSource: null, addrPrecision: null }
   }
-  // The wire cap never applied to a server-derived line; clamp rather than overflow the column.
   return {
     addr: resolved.address.slice(0, MAX_REPORT_ADDR_LENGTH),
     addrSource: "resolved",

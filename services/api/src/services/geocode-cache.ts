@@ -8,26 +8,34 @@
  * fine-tune is a cache hit rather than a fresh provider call, and the create that follows a preview
  * costs zero provider calls.
  *
+ * ONLY A CHAIN ANSWER IS A POSITIVE ENTRY. A row earns the long TTL when the provider chain proved a
+ * located rung (street | intersection | landmark). The `locality` rung never reaches this table at all:
+ * it comes from a free local TIGER query, so the resolver recomputes it per request rather than letting
+ * a provider blip freeze a point at city grade for half a year.
+ *
  * TTL IS APPLIED ON READ, never by a cron: a row past its TTL is reported as a miss and overwritten in
  * place by the fresh resolve. Two TTLs, and the difference matters:
  *
- *   - POSITIVE (180 days). Addresses do not move.
- *   - NEGATIVE (15 minutes). A null IS cached, briefly: that is what stops a dragged pin over a
- *     genuinely unaddressable point - or a provider that is down right now - from re-firing the whole
- *     chain per micro-drag. Expiring it in minutes is what stops a provider OUTAGE from poisoning those
- *     points for half a year, which is the failure mode the design spec called out.
+ *   - POSITIVE (180 days), for a chain answer. Addresses do not move.
+ *   - NEGATIVE (15 minutes), for everything else. A chain miss IS cached, briefly: that is what stops a
+ *     dragged pin over a genuinely unaddressable point - or a provider that is down right now - from
+ *     re-firing the whole chain per micro-drag. Expiring it in minutes is what lets the chain re-run,
+ *     and upgrade the point, minutes after an outage ends.
+ *
+ * Expired rows are OVERWRITTEN, not deleted, so the table is bounded by the `geocode_cache` lane of the
+ * media-worker's `retention.sweep` (docs/retention-cleanup.md) rather than by this module.
  *
  * EVERY DB ERROR IS SWALLOWED. The cache is an optimisation on a seam whose entire contract is "best
  * effort, never blocks a submit". A cache table that is missing, locked or unreachable must degrade to
  * "no cache", never to a failed report.
  */
 
-import type { AddressPrecision } from "@civfix/shared"
+import { isLocatedPrecision, type AddressPrecision } from "@civfix/shared"
 import type { Queryable } from "../db/client.js"
 
-/** A resolved address line past this age is re-resolved (and the row overwritten) on next read. */
+/** A chain answer past this age is re-resolved (and the row overwritten) on next read. */
 export const GEOCODE_CACHE_TTL_MS = 180 * 24 * 60 * 60 * 1000
-/** A negative entry ("the providers had nothing") is trusted for minutes, not months. */
+/** A negative entry ("the chain had nothing") is trusted for minutes, not months. */
 export const GEOCODE_CACHE_NEGATIVE_TTL_MS = 15 * 60 * 1000
 
 export interface GeocodeCacheEntry {
@@ -50,9 +58,23 @@ interface GeocodeCacheRowSelect {
   resolved_at: Date
 }
 
-/** True while the row may still be served. Negative rows (no address) expire far sooner. */
-export function isFreshEntry(row: { address: string | null; resolvedAt: Date }, now: Date): boolean {
-  const ttl = row.address === null ? GEOCODE_CACHE_NEGATIVE_TTL_MS : GEOCODE_CACHE_TTL_MS
+/**
+ * Did the provider chain prove a located rung for this row? The one definition of "worth the long TTL",
+ * read by the freshness rule here and by the resolver that decides what to store.
+ */
+export function isChainAnswer(entry: {
+  address: string | null
+  precision: AddressPrecision | null
+}): boolean {
+  return entry.address !== null && isLocatedPrecision(entry.precision)
+}
+
+/** True while the row may still be served. Anything but a chain answer expires far sooner. */
+export function isFreshEntry(
+  row: { address: string | null; precision: AddressPrecision | null; resolvedAt: Date },
+  now: Date,
+): boolean {
+  const ttl = isChainAnswer(row) ? GEOCODE_CACHE_TTL_MS : GEOCODE_CACHE_NEGATIVE_TTL_MS
   return now.getTime() - row.resolvedAt.getTime() < ttl
 }
 
@@ -79,7 +101,11 @@ export function makeGeocodeCache(opts: GeocodeCacheOptions): GeocodeCache {
         `
         const row = rows[0]
         if (row === undefined) return null
-        if (!isFreshEntry({ address: row.address, resolvedAt: row.resolved_at }, now())) return null
+        const fresh = isFreshEntry(
+          { address: row.address, precision: row.address_precision, resolvedAt: row.resolved_at },
+          now(),
+        )
+        if (!fresh) return null
         return {
           address: row.address,
           precision: row.address_precision,
@@ -113,7 +139,7 @@ export function makeGeocodeCache(opts: GeocodeCacheOptions): GeocodeCache {
             resolved_at = EXCLUDED.resolved_at
         `
       } catch {
-        // See the header: a cache write can never be the reason a submit fails.
+        return
       }
     },
   }

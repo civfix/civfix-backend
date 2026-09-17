@@ -9,8 +9,9 @@
  *   - `cityStateLabel` comes back populated on every path, because the contract promises it;
  *   - a throwing provider, a throwing geocoder and an unreachable cache each cost one rung and never
  *     an error - this sits on the report-create path, where a geocoder outage must not cost a filing;
- *   - a cached point makes NO provider call, and a negative entry expires in minutes while a resolved
- *     one lasts months.
+ *   - a cached point makes NO provider call, and ONLY a chain answer is cached: a chain miss leaves a
+ *     short-TTL null row, so the locality rung is recomputed per request and an outage cannot lock a
+ *     point at city grade for half a year.
  *
  * All offline: fake providers, a fake geocoder and an in-memory cache.
  */
@@ -27,6 +28,7 @@ import {
 import {
   GEOCODE_CACHE_NEGATIVE_TTL_MS,
   GEOCODE_CACHE_TTL_MS,
+  isChainAnswer,
   isFreshEntry,
   makeGeocodeCache,
   type GeocodeCache,
@@ -60,6 +62,24 @@ function memoryCache(): GeocodeCache & { rows: Map<string, GeocodeCacheEntry>; w
     },
   }
   return cache
+}
+
+/** The same store, but applying the REAL freshness rule against a clock the test moves. */
+function expiringCache(clock: { now: Date }): GeocodeCache & {
+  rows: Map<string, GeocodeCacheEntry & { resolvedAt: Date }>
+} {
+  const rows = new Map<string, GeocodeCacheEntry & { resolvedAt: Date }>()
+  return {
+    rows,
+    read: async (key: string) => {
+      const row = rows.get(key)
+      if (row === undefined) return null
+      return isFreshEntry(row, clock.now) ? row : null
+    },
+    write: async (key: string, entry: GeocodeCacheEntry) => {
+      rows.set(key, { ...entry, resolvedAt: clock.now })
+    },
+  }
 }
 
 describe("makeAddressResolver ladder", () => {
@@ -231,17 +251,98 @@ describe("makeAddressResolver caching", () => {
       cityStateLabel: "",
       provider: null,
     })
+    // The second resolve must NOT rewrite the row: a refreshed resolved_at would push the negative
+    // entry's expiry out forever on a point that is being resolved continuously.
+    expect(cache.writes).toBe(1)
   })
 
-  it("records which adapter answered, and attributes the locality rung to tiger", async () => {
+  it("records which adapter answered", async () => {
     const cache = memoryCache()
     await makeAddressResolver({
+      streetReverseGeocode: chain({
+        line: "123 Main St, Inglewood, CA",
+        precision: "street",
+        provider: "mapbox",
+      }),
+      geocoder: new FakeGeocoder(),
+      cache,
+    })(LA.lat, LA.lng)
+
+    expect(cache.rows.get(geocodePointKey(LA))?.provider).toBe("mapbox")
+  })
+
+  it("NEVER caches the locality rung: a chain miss stores a null row, not the TIGER label", async () => {
+    const cache = memoryCache()
+    const out = await makeAddressResolver({
       streetReverseGeocode: chain(null),
       geocoder: new FakeGeocoder(),
       cache,
     })(LA.lat, LA.lng)
 
-    expect(cache.rows.get(geocodePointKey(LA))?.provider).toBe("tiger")
+    expect(out).toEqual({
+      address: "Los Angeles, CA",
+      precision: "locality",
+      cityStateLabel: "Los Angeles, CA",
+    })
+    expect(cache.rows.get(geocodePointKey(LA))).toEqual({
+      address: null,
+      precision: null,
+      cityStateLabel: "Los Angeles, CA",
+      provider: null,
+    })
+  })
+
+  it("re-runs the chain once the negative entry expires, and UPGRADES the point", async () => {
+    const clock = { now: new Date("2026-09-16T00:00:00Z") }
+    const cache = expiringCache(clock)
+    let down = true
+    const provider: ReverseGeocode = async () =>
+      down ? null : { line: "123 Main St, Inglewood, CA", precision: "street", provider: "photon" }
+    const resolve = makeAddressResolver({
+      streetReverseGeocode: provider,
+      geocoder: new FakeGeocoder(),
+      cache,
+    })
+
+    // The outage: the chain has nothing, so every caller still gets the live locality rung...
+    await expect(resolve(LA.lat, LA.lng)).resolves.toEqual({
+      address: "Los Angeles, CA",
+      precision: "locality",
+      cityStateLabel: "Los Angeles, CA",
+    })
+    // ...off a SHORT-TTL null row, which is what makes the re-run possible at all.
+    expect(cache.rows.get(geocodePointKey(LA))?.address).toBeNull()
+
+    down = false
+    clock.now = new Date(clock.now.getTime() + GEOCODE_CACHE_NEGATIVE_TTL_MS + 1000)
+
+    await expect(resolve(LA.lat, LA.lng)).resolves.toEqual({
+      address: "123 Main St, Inglewood, CA",
+      precision: "street",
+      cityStateLabel: "Los Angeles, CA",
+    })
+    expect(cache.rows.get(geocodePointKey(LA))?.precision).toBe("street")
+  })
+
+  it("keeps serving a chain answer for months - only the misses are short-lived", async () => {
+    const clock = { now: new Date("2026-09-16T00:00:00Z") }
+    const cache = expiringCache(clock)
+    const provider = chain({
+      line: "123 Main St, Inglewood, CA",
+      precision: "street",
+      provider: "photon",
+    })
+    const resolve = makeAddressResolver({
+      streetReverseGeocode: provider,
+      geocoder: new FakeGeocoder(),
+      cache,
+    })
+
+    await resolve(LA.lat, LA.lng)
+    clock.now = new Date(clock.now.getTime() + GEOCODE_CACHE_TTL_MS / 2)
+    await expect(resolve(LA.lat, LA.lng)).resolves.toMatchObject({ precision: "street" })
+
+    expect(provider.calls).toBe(1)
   })
 
   it("an UNREACHABLE cache degrades to no caching, never to an error", async () => {
@@ -325,15 +426,49 @@ describe("makeGeocodeCache", () => {
   it("expires a NEGATIVE row in minutes: an outage cannot poison a point for months", () => {
     const now = new Date()
     const aged = (ms: number): Date => new Date(now.getTime() - ms)
+    const negative = (ms: number): { address: null; precision: null; resolvedAt: Date } => ({
+      address: null,
+      precision: null,
+      resolvedAt: aged(ms),
+    })
 
-    // A negative entry an hour old is already gone...
-    expect(isFreshEntry({ address: null, resolvedAt: aged(60 * 60 * 1000) }, now)).toBe(false)
-    // ...while it is still trusted inside its short window (that is what stops the re-fire storm)...
-    expect(isFreshEntry({ address: null, resolvedAt: aged(GEOCODE_CACHE_NEGATIVE_TTL_MS / 2) }, now)).toBe(
-      true,
-    )
-    // ...and a resolved line an hour old is nowhere near expiry.
-    expect(isFreshEntry({ address: "123 Main St", resolvedAt: aged(60 * 60 * 1000) }, now)).toBe(true)
+    expect(isFreshEntry(negative(60 * 60 * 1000), now)).toBe(false)
+    expect(isFreshEntry(negative(GEOCODE_CACHE_NEGATIVE_TTL_MS / 2), now)).toBe(true)
+    expect(
+      isFreshEntry(
+        { address: "123 Main St", precision: "street", resolvedAt: aged(60 * 60 * 1000) },
+        now,
+      ),
+    ).toBe(true)
+  })
+
+  it("gives a LOCALITY row the negative TTL, so a legacy one cannot outlive the blip that wrote it", () => {
+    const now = new Date()
+    const row = {
+      address: "Los Angeles, CA",
+      precision: "locality" as const,
+      resolvedAt: new Date(now.getTime() - 60 * 60 * 1000),
+    }
+
+    expect(isChainAnswer(row)).toBe(false)
+    expect(isFreshEntry(row, now)).toBe(false)
+  })
+
+  it("a stale LOCALITY row is a read MISS, so the chain gets its next chance", async () => {
+    const cache = makeGeocodeCache({
+      getSql: () =>
+        fakeSql([
+          {
+            address: "Los Angeles, CA",
+            address_precision: "locality",
+            city_state_label: "Los Angeles, CA",
+            provider: "tiger",
+            resolved_at: new Date(Date.now() - GEOCODE_CACHE_NEGATIVE_TTL_MS - 1000),
+          },
+        ]),
+    })
+
+    await expect(cache.read("34.05223,-118.24368")).resolves.toBeNull()
   })
 
   it("swallows a DB that is not there at all (the offline faked server)", async () => {
