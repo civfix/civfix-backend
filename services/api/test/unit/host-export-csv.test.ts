@@ -7,9 +7,11 @@ import {
   toHostExportDTO,
 } from "../../src/services/host/export-service.js"
 import {
+  hostExportBuilder,
   registerHostExportBuilder,
   resetHostExportBuildersForTests,
 } from "../../src/services/host/export-builders.js"
+import { registerEventExportBuilders } from "../../src/services/host/host-export-builders.js"
 import type {
   HostExportRecord,
   HostExportRepository,
@@ -267,6 +269,42 @@ describe("roster export query source", () => {
     expect(rosterQuery).not.toMatch(/users\.email/)
     expect(rosterQuery).not.toMatch(/users\.phone/)
     expect(rosterQuery).toMatch(/g\.email AS guest_email/)
+  })
+
+  /**
+   * The CSV is the LAST place a host can hold guest contact after `EventGuestsBlock`, and it is the
+   * only artefact that leaves the platform. The header and the provenance block are the promise the
+   * file makes about that, so they are pinned here rather than left to a DB-backed test.
+   */
+  it("carries guest_email and guest_phone on the roster, with the scrub caveat written on the file", async () => {
+    resetHostExportBuildersForTests()
+    registerEventExportBuilders(() => {
+      throw new Error("no SQL: header and provenance must not touch the database")
+    })
+    const ctx = {
+      exportId: "11111111-1111-4111-8111-111111111111",
+      cleanupId: "22222222-2222-4222-8222-222222222222",
+      organizationId: null,
+      requestedBy: "33333333-3333-4333-8333-333333333333",
+      filters: {},
+      now: new Date("2026-02-05T12:00:00Z"),
+    }
+
+    const roster = hostExportBuilder("roster")
+    const header = await roster.header(ctx)
+    expect(header).toContain("guest_email")
+    expect(header).toContain("guest_phone")
+    expect(header).toContain("attendee_kind")
+    expect((await roster.provenance(ctx)).join(" ")).toContain(
+      "guest contact is blank once the 30-day retention scrub has run",
+    )
+
+    // The check-in export is a different capability's artefact and must NOT carry contact.
+    const checkins = await hostExportBuilder("checkins").header(ctx)
+    expect(checkins).not.toContain("guest_email")
+    expect(checkins).not.toContain("guest_phone")
+
+    resetHostExportBuildersForTests()
   })
 })
 

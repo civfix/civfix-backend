@@ -7,6 +7,7 @@ import { insightsGenerationKey } from "../../src/services/host/host-analytics-ca
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
 import {
+  emailHashOf,
   makeBroadcastService,
   type BroadcastConfig,
 } from "../../src/services/host/broadcast-service.js"
@@ -521,6 +522,121 @@ describe("broadcast chunk", () => {
     await h.pipeline.plan(id)
     await h.pipeline.runChunk(id, 0)
     expect(h.notifications.calls).toHaveLength(1)
+  })
+})
+
+/**
+ * Guests have no account, so the bell and push are structurally unreachable for them: email is the
+ * whole channel set. Every producing lane asks for ["inapp","push","email"], so if the guest half of
+ * the planner ever stopped filtering, a guest would get a delivery row on a channel that can never be
+ * processed and the broadcast would sit unfinished.
+ */
+describe("broadcast to guests", () => {
+  const GUEST_A = u(101)
+  const GUEST_B = u(102)
+
+  function withGuests(guests: Parameters<InMemoryBroadcastRepository["seedGuests"]>[1]): Harness {
+    const h = harness({ members: 0 })
+    h.repo.seedMembers(EVENT, [{ userId: u(1) }])
+    h.repo.seedGuests(EVENT, guests)
+    return h
+  }
+
+  it("plans EMAIL ONLY for a guest, whatever channels the host picked", async () => {
+    const h = withGuests([{ guestId: GUEST_A, email: "ada@example.test", name: "Ada" }])
+    const id = await draftSending(h, ["inapp", "push", "email"])
+    await h.pipeline.plan(id)
+
+    const rows = h.repo.allDeliveries()
+    const guestRows = rows.filter((d) => d.guestId === GUEST_A)
+    expect(guestRows.map((d) => d.channel)).toEqual(["email"])
+    expect(rows.filter((d) => d.userId === u(1))).toHaveLength(3)
+  })
+
+  it("sends the guest their email and leaves them out of the in-app fan-out", async () => {
+    const h = withGuests([{ guestId: GUEST_A, email: "ada@example.test", name: "Ada" }])
+    const id = await draftSending(h, ["inapp", "email"])
+    await h.pipeline.plan(id)
+    await h.pipeline.runChunk(id, 0)
+    await h.pipeline.runChunk(id, 1)
+
+    const guestRow = h.repo.allDeliveries().find((d) => d.guestId === GUEST_A)
+    expect(guestRow?.status).toBe("sent")
+    const envelope = h.mailer.sent.find((m) => m.to === "ada@example.test")?.outbound
+    expect(envelope?.headers?.["List-Unsubscribe"]).toContain("/v1/broadcasts/unsubscribe?t=")
+    expect(envelope?.text).toContain("Beach Cleanup")
+    const fanout = h.notifications.calls as { userIds: string[] }[]
+    expect(fanout.flatMap((c) => c.userIds)).toEqual([u(1)])
+  })
+
+  it("greets the guest by the name they gave at RSVP", async () => {
+    const h = withGuests([{ guestId: GUEST_A, email: "ada@example.test", name: "Ada" }])
+    const record = await h.repo.create({
+      cleanupId: EVENT,
+      createdBy: HOST,
+      kind: "host_broadcast",
+      subject: "Hello {first_name}",
+      bodyMd: "See you soon, {first_name}.",
+      segment: { kind: "guests_only" },
+      channels: ["email"],
+      status: "sending",
+    })
+    await h.pipeline.plan(record.id)
+    await h.pipeline.runChunk(record.id, 0)
+
+    const envelope = h.mailer.sent.find((m) => m.to === "ada@example.test")?.outbound
+    expect(envelope?.subject).toBe("Hello Ada")
+    expect(envelope?.text).toContain("See you soon, Ada.")
+  })
+
+  it("labels a guest whose contact was scrubbed between plan and send contact_scrubbed", async () => {
+    const h = withGuests([{ guestId: GUEST_A, email: "ada@example.test", name: "Ada" }])
+    const id = await draftSending(h)
+    await h.pipeline.plan(id)
+    h.repo.seedGuests(EVENT, [
+      { guestId: GUEST_A, email: "ada@example.test", name: "Ada", scrubbed: true },
+    ])
+    await h.pipeline.runChunk(id, 0)
+
+    const guestRow = h.repo.allDeliveries().find((d) => d.guestId === GUEST_A)
+    expect(guestRow?.status).toBe("suppressed")
+    expect(guestRow?.suppressionReason).toBe("contact_scrubbed")
+  })
+
+  it("blocks a guest on the address-level bounce suppression list, like any member", async () => {
+    const h = withGuests([
+      { guestId: GUEST_A, email: "bounced@example.test", name: "Ada" },
+      { guestId: GUEST_B, email: "fine@example.test", name: "Grace" },
+    ])
+    await h.repo.suppressEmail(emailHashOf("bounced@example.test"), "hard_bounce")
+    const id = await draftSending(h)
+    await h.pipeline.plan(id)
+    for (const chunk of [...h.chunks]) await h.pipeline.runChunk(id, chunk.chunkNo)
+
+    const rows = h.repo.allDeliveries()
+    expect(rows.find((d) => d.guestId === GUEST_A)?.suppressionReason).toBe("bounce_suppressed")
+    expect(rows.find((d) => d.guestId === GUEST_B)?.status).toBe("sent")
+  })
+
+  it("reaches guests on the ANNOUNCEMENT kind, which asks for inapp + push + email", async () => {
+    const h = withGuests([{ guestId: GUEST_A, email: "ada@example.test", name: "Ada" }])
+    const record = await h.repo.create({
+      cleanupId: EVENT,
+      createdBy: HOST,
+      kind: "announcement",
+      subject: "Parking has moved",
+      bodyMd: "Use the north lot.",
+      segment: { kind: "all_registered" },
+      channels: ["inapp", "push", "email"],
+      status: "sending",
+    })
+    await h.pipeline.plan(record.id)
+    for (const chunk of [...h.chunks]) await h.pipeline.runChunk(record.id, chunk.chunkNo)
+
+    const guestRows = h.repo.allDeliveries().filter((d) => d.guestId === GUEST_A)
+    expect(guestRows.map((d) => d.channel)).toEqual(["email"])
+    expect(guestRows[0]?.status).toBe("sent")
+    expect(h.mailer.sent.some((m) => m.to === "ada@example.test")).toBe(true)
   })
 })
 

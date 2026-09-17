@@ -156,6 +156,75 @@ describe("broadcast audience", () => {
     expect(result.guests).toEqual([u(11)])
   })
 
+  it("resolves the GUEST half of every segment, and only slots comes back empty", async () => {
+    const repo = new InMemoryBroadcastRepository()
+    repo.seedMembers(EVENT, [])
+    repo.seedGuests(EVENT, [
+      { guestId: u(21), ticketTypeId: TYPE_A, checkedIn: true },
+      { guestId: u(22), ticketTypeId: TYPE_B },
+      { guestId: u(23), waitlisted: true, registered: false },
+    ])
+
+    // all_registered / guests_only select cleanup_guests DIRECTLY, with no join to a registration: a
+    // verified RSVP is the membership, so a guest whose seat write was swallowed still hears from the
+    // host. u(23) is on the waitlist only and is in this segment for the same reason.
+    expect((await resolve(repo, { kind: "all_registered" })).guests).toEqual([u(21), u(22), u(23)])
+    expect((await resolve(repo, { kind: "guests_only" })).guests).toEqual([u(21), u(22), u(23)])
+    expect((await resolve(repo, { kind: "ticket_types", ids: [TYPE_B] })).guests).toEqual([u(22)])
+    expect((await resolve(repo, { kind: "waitlist" })).guests).toEqual([u(23)])
+    expect((await resolve(repo, { kind: "checked_in" })).guests).toEqual([u(21)])
+    expect((await resolve(repo, { kind: "not_checked_in" })).guests).toEqual([u(22)])
+    // A guest can never hold a slot claim (cleanup_slot_claims is user_id-keyed).
+    expect((await resolve(repo, { kind: "slots", ids: [SLOT] })).guests).toEqual([])
+  })
+
+  it("excludes a guest with no email address at all: there is no other channel for them", async () => {
+    const repo = new InMemoryBroadcastRepository()
+    repo.seedMembers(EVENT, [])
+    repo.seedGuests(EVENT, [
+      { guestId: u(31), email: null },
+      { guestId: u(32), email: "grace@example.org" },
+    ])
+    for (const kind of ["host_broadcast", "event_cancelled"] as const) {
+      expect((await resolve(repo, { kind: "all_registered" }, kind)).guests, kind).toEqual([u(32)])
+    }
+  })
+
+  it("keeps a guest unsubscribe OFF the critical lanes, exactly like a member's", async () => {
+    const repo = seed()
+    await repo.recordUnsubscribe({
+      scope: "event",
+      cleanupId: EVENT,
+      subjectKind: "guest",
+      subjectId: u(11),
+    })
+    for (const kind of ["event_updated", "event_cancelled"] as const) {
+      expect((await resolve(repo, { kind: "all_registered" }, kind)).guests, kind).toEqual([u(11)])
+    }
+    for (const kind of ["host_broadcast", "announcement", "reminder", "thank_you"] as const) {
+      expect((await resolve(repo, { kind: "all_registered" }, kind)).guests, kind).toEqual([])
+    }
+  })
+
+  it("honours a GLOBAL guest unsubscribe for bulk", async () => {
+    const repo = seed()
+    await repo.recordUnsubscribe({
+      scope: "global",
+      cleanupId: null,
+      subjectKind: "guest",
+      subjectId: u(11),
+    })
+    expect((await resolve(repo, { kind: "all_registered" })).guests).toEqual([])
+    expect((await resolve(repo, { kind: "all_registered" }, "event_cancelled")).guests).toEqual([
+      u(11),
+    ])
+  })
+
+  it("keeps cancelled and scrubbed guests out of the guests_only segment too", async () => {
+    const result = await resolve(seed(), { kind: "guests_only" }, "event_cancelled")
+    expect(result.guests).toEqual([u(11)])
+  })
+
   it("pages by keyset independently per recipient kind", async () => {
     const repo = seed()
     const first = await repo.audiencePage({
