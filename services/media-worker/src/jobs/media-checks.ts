@@ -57,6 +57,11 @@ export interface MediaChecksDeps extends JobObsDeps {
   limits: WorkerLimits
   download: DownloadFn
   findPhashDuplicate?: FindPhashDuplicateFn
+  publicMediaBase?: string
+}
+
+export function publicMediaUrl(base: string, key: string): string {
+  return `${base.replace(/\/+$/, "")}/${key.replace(/^\/+/, "")}`
 }
 
 export interface MediaChecksPayload {
@@ -301,6 +306,13 @@ async function processAsset(
       codec: result.codec,
       exifGpsPresent: result.exifGps !== null,
     })
+    if (applied.servedKey && deps.publicMediaBase && deps.repo.refreshAvatarUrls) {
+      await deps.repo
+        .refreshAvatarUrls(asset.id, publicMediaUrl(deps.publicMediaBase, applied.servedKey))
+        .catch((err: unknown) =>
+          log("media.checks: avatar url refresh failed (non-fatal)", { err: String(err) }),
+        )
+    }
   }
   return result.status
 }

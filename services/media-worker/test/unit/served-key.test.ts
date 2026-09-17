@@ -128,6 +128,49 @@ describe("C1: processed media is published to a worker-owned key", () => {
     expect(repo.get(id)!.servedKey).toBe(servedKey(r2Key))
   })
 
+  it("refreshes bound avatar urls with the durable public url when a public base is configured", async () => {
+    const { deps, storage, repo } = makeDeps({ publicMediaBase: "https://media.example.test/" })
+    const { id, uploadId, r2Key } = await seed(storage, repo, await fx.makeValidJpegWithGps())
+    const calls: { mediaId: string; avatarUrl: string }[] = []
+    repo.refreshAvatarUrls = (mediaId: string, avatarUrl: string) => {
+      calls.push({ mediaId, avatarUrl })
+      return Promise.resolve(1)
+    }
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, deps)
+
+    expect(status).toBe("ready")
+    expect(calls).toEqual([
+      { mediaId: id, avatarUrl: `https://media.example.test/${servedKey(r2Key)}` },
+    ])
+  })
+
+  it("does not refresh avatar urls without a public base (signed-url deployments derive at read time)", async () => {
+    const { deps, storage, repo } = makeDeps()
+    const { id, uploadId, r2Key } = await seed(storage, repo, await fx.makeValidJpegWithGps())
+    const calls: string[] = []
+    repo.refreshAvatarUrls = (mediaId: string) => {
+      calls.push(mediaId)
+      return Promise.resolve(1)
+    }
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, deps)
+
+    expect(status).toBe("ready")
+    expect(calls).toEqual([])
+  })
+
+  it("a failed avatar url refresh is non-fatal and the job still completes", async () => {
+    const { deps, storage, repo } = makeDeps({ publicMediaBase: "https://media.example.test" })
+    const { id, uploadId, r2Key } = await seed(storage, repo, await fx.makeValidJpegWithGps())
+    repo.refreshAvatarUrls = () => Promise.reject(new Error("users table unavailable"))
+
+    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, deps)
+
+    expect(status).toBe("ready")
+    expect(repo.get(id)!.servedKey).toBe(servedKey(r2Key))
+  })
+
   it("rejects when the upload object vanished before the publish", async () => {
     const { deps, storage, repo } = makeDeps()
     const { id, uploadId, r2Key } = await seed(storage, repo, await fx.makeValidPng())

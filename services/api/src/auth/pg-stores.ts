@@ -232,8 +232,8 @@ export class PgUserStore implements UserStore {
         userId: id,
       })
       set.avatarMediaId = media.id
-      if (input.presignAvatar) {
-        set.avatarUrl = await input.presignAvatar(media.r2Key)
+      if (input.presignAvatar && media.servedKey !== null) {
+        set.avatarUrl = await input.presignAvatar(media.servedKey)
       }
     }
     if (input.socialLinks !== undefined) {

@@ -5,6 +5,7 @@ import { UNBOUND_GRACE_MS } from "./media-authorization.js"
 export interface AvatarMediaRef {
   id: string
   r2Key: string
+  servedKey: string | null
 }
 
 export interface AvatarClaimant {
@@ -21,12 +22,14 @@ export async function resolveAvatarMediaOrThrow(
 ): Promise<AvatarMediaRef> {
   const claimantUserId = claimant.userId ?? null
   const claimantGroupId = claimant.groupId ?? null
-  const rows = await sql<{ id: string; r2_key: string }[]>`
-    SELECT m.id, m.served_key AS r2_key
+  const rows = await sql<{ id: string; r2_key: string; served_key: string | null }[]>`
+    SELECT m.id, COALESCE(m.served_key, m.r2_key) AS r2_key, m.served_key
     FROM media_assets m
     WHERE m.upload_id = ${uploadId}
-      AND m.status = 'ready'
-      AND m.served_key IS NOT NULL
+      AND (
+        (m.status = 'ready' AND m.served_key IS NOT NULL)
+        OR (m.status = 'validating' AND m.finalized_at IS NOT NULL)
+      )
       AND m.kind = 'image'
       AND m.purpose = 'report'
       AND m.report_id IS NULL
@@ -49,5 +52,5 @@ export async function resolveAvatarMediaOrThrow(
   if (!row) {
     throw AppError.validation({ avatarUploadId: "That image is unavailable." })
   }
-  return { id: row.id, r2Key: row.r2_key }
+  return { id: row.id, r2Key: row.r2_key, servedKey: row.served_key }
 }
