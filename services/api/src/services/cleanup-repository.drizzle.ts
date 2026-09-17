@@ -356,7 +356,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           await tx`
             INSERT INTO cleanups (
               id, organizer_user_id, type, event_kind, title, description, geom, scheduled_at,
-              status, bring, address, jurisdiction_geoid, reference_code,
+              status, bring, address, address_source, jurisdiction_geoid, reference_code,
               ends_at, timezone, visibility, cover_media_id, gallery_media_ids, donation_url,
               page_slug, registration_opens_at, registration_closes_at, organization_id,
               reminder_offsets_min, host_reply_to
@@ -372,6 +372,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
               ${args.status},
               ${args.bring as unknown as string[] | null},
               ${args.address},
+              ${args.addressSource},
               ${args.jurisdictionGeoid},
               ${referenceCode},
               ${args.host.endsAt},
@@ -450,6 +451,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         sets.push(sql`geom = ST_SetSRID(ST_MakePoint(${patch.lng}, ${patch.lat}), 4326)`)
       }
       if (patch.address !== undefined) sets.push(sql`address = ${patch.address}`)
+      if (patch.addressSource !== undefined) {
+        sets.push(sql`address_source = ${patch.addressSource}`)
+      }
       if (patch.bring !== undefined) {
         sets.push(sql`bring = ${patch.bring as unknown as string[] | null}`)
       }

@@ -35,7 +35,7 @@ async function makeHarness(
   reportOpts: {
     geoid?: string | null
     seed?: (repo: InMemoryReportRepository) => void
-    reverseGeocode?: (lat: number, lng: number) => Promise<string | null>
+    resolveAddress?: ReportServiceOverrides["resolveAddress"]
     joinReportChatAsOwner?: ReportServiceOverrides["joinReportChatAsOwner"]
   } = {},
 ): Promise<Harness> {
@@ -62,7 +62,7 @@ async function makeHarness(
     repo,
     resolveJurisdictionGeoid: () =>
       Promise.resolve("geoid" in reportOpts ? (reportOpts.geoid ?? null) : "0644000"),
-    ...(reportOpts.reverseGeocode ? { reverseGeocode: reportOpts.reverseGeocode } : {}),
+    ...(reportOpts.resolveAddress ? { resolveAddress: reportOpts.resolveAddress } : {}),
     ...(reportOpts.joinReportChatAsOwner
       ? { joinReportChatAsOwner: reportOpts.joinReportChatAsOwner }
       : {}),
@@ -137,9 +137,13 @@ describe("POST /reports", () => {
     expect(repo.reports.size).toBe(1)
   })
 
-  it("reverse-geocodes the pin into addr when the client supplies none", async () => {
+  it("reverse-geocodes the pin into addr when the client supplies none, and records the rung", async () => {
     const { app, token } = await makeHarness({
-      reverseGeocode: async () => "123 Imperial Hwy, Inglewood, CA",
+      resolveAddress: async () => ({
+        address: "123 Imperial Hwy, Inglewood, CA",
+        precision: "street",
+        cityStateLabel: "Inglewood, CA",
+      }),
     })
     const res = await app.inject({
       method: "POST",
@@ -156,12 +160,20 @@ describe("POST /reports", () => {
       },
     })
     expect(res.statusCode).toBe(201)
-    expect(res.json().addr).toBe("123 Imperial Hwy, Inglewood, CA")
+    const dto = res.json()
+    expect(dto.addr).toBe("123 Imperial Hwy, Inglewood, CA")
+    // Provenance rides along: the server filled it, at street precision.
+    expect(dto.addrSource).toBe("resolved")
+    expect(dto.addrPrecision).toBe("street")
   })
 
   it("keeps a client-supplied addr instead of reverse-geocoding the pin", async () => {
     const { app, token } = await makeHarness({
-      reverseGeocode: async () => "SHOULD NOT BE USED",
+      resolveAddress: async () => ({
+        address: "SHOULD NOT BE USED",
+        precision: "street",
+        cityStateLabel: "Inglewood, CA",
+      }),
     })
     const res = await app.inject({
       method: "POST",
@@ -179,7 +191,11 @@ describe("POST /reports", () => {
       },
     })
     expect(res.statusCode).toBe(201)
-    expect(res.json().addr).toBe("NW corner by the bus stop")
+    const dto = res.json()
+    expect(dto.addr).toBe("NW corner by the bus stop")
+    // The reporter's own text is 'user' and carries NO provider precision.
+    expect(dto.addrSource).toBe("user")
+    expect(dto.addrPrecision).toBeUndefined()
   })
 
   // Regression for the live mobile createReport 500 (api.civfix.org, stale deploy): submitReport.ts

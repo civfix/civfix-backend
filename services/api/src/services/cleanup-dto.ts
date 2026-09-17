@@ -121,6 +121,7 @@ export function toCleanupDTO(
     ...(myRole !== null ? { myRole } : {}),
     bring: record.bring ?? [],
     address: record.address,
+    addressSource: record.addressSource,
     ...(record.dist !== null ? { dist: record.dist } : {}),
     ...(record.jurisdictionGeoid !== null ? { jurisdictionGeoid: record.jurisdictionGeoid } : {}),
     ...(record.referenceCode !== null ? { referenceCode: record.referenceCode } : {}),

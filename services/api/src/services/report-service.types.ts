@@ -1,4 +1,5 @@
 import type {
+  AddressPrecision,
   CreateReportRequest,
   GeomSource,
   ListMyReportsResponse,
@@ -6,6 +7,7 @@ import type {
   PaginationQuery,
   ReportCategory,
   ReportClusterResponse,
+  ReportAddressSource,
   ReportDTO,
   ReportStatus,
   ReportType,
@@ -14,6 +16,7 @@ import type {
 import type { Jobs } from "@civfix/shared/interfaces"
 import type { LinkedEventView } from "./cleanup-service.js"
 import type { ReportChatSystemEmitter } from "./report-timeline-event.js"
+import type { AddressResolver } from "./address-resolver.js"
 
 export const REPORT_CREATE_SCOPE = "report_create"
 
@@ -68,6 +71,8 @@ export interface ReportRecord {
   title: string | null
   description: string | null
   addr: string | null
+  addrSource: ReportAddressSource | null
+  addrPrecision: AddressPrecision | null
   status: ReportStatus
   visibility: ReportVisibility
   lat: number
@@ -109,6 +114,8 @@ export interface CreateReportTxArgs {
   title: string | null
   description: string | null
   addr: string | null
+  addrSource: ReportAddressSource | null
+  addrPrecision: AddressPrecision | null
   status: ReportStatus
   visibility: ReportVisibility
   h3Cell: string
@@ -204,7 +211,12 @@ export interface ReportServiceDeps {
   repo: ReportRepository
   resolveJurisdictionGeoid: (lat: number, lng: number) => Promise<string | null>
   resolveJurisdictionCode?: (geoid: string | null) => Promise<number>
-  reverseGeocode?: (lat: number, lng: number) => Promise<string | null>
+  /**
+   * Reverse-resolve the pin when the reporter typed no address. Structured now, so the snapshot can
+   * record the ladder rung it came from and the display layer can be honest about a landmark line.
+   * Still best-effort: omitted, throwing or empty, the report is filed either way.
+   */
+  resolveAddress?: AddressResolver
   presignMedia: (
     r2Key: string,
     thumbKey: string | null,

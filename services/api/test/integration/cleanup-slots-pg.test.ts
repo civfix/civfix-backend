@@ -344,6 +344,7 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       status: "upcoming",
       bring: null,
       address: null,
+      addressSource: null,
       jurisdictionGeoid: null,
       jurCode: 0,
       linkedReportIds: [],

@@ -790,6 +790,7 @@ describe("going: members plus verified, non-cancelled guests", () => {
       status: "upcoming",
       bring: null,
       address: null,
+      addressSource: null,
       jurisdictionGeoid: null,
       jurCode: 1,
       linkedReportIds: [],

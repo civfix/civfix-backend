@@ -31,6 +31,7 @@ import {
   type UnsignedReportPin,
 } from "./report-clustering.js"
 import { isPubliclyVisibleStatus } from "./report-visibility.js"
+import { addressProvenance } from "./address-resolver.js"
 import {
   REPORT_AUTOFORWARD_JOB,
   REPORT_CREATE_SCOPE,
@@ -142,6 +143,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       ...(record.title !== null ? { title: record.title } : {}),
       ...(record.description !== null ? { description: record.description } : {}),
       ...(record.addr !== null ? { addr: record.addr } : {}),
+      ...(record.addrSource !== null ? { addrSource: record.addrSource } : {}),
+      ...(record.addrPrecision !== null ? { addrPrecision: record.addrPrecision } : {}),
       status: record.status,
       visibility: record.visibility,
       lat: record.lat,
@@ -209,6 +212,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
       assertNoSlur(input.title ?? null, "title")
       assertNoSlur(input.description ?? null, "description")
+      // Events have slur-checked `address` since forever; reports never checked `addr`, and it is the
+      // same class of public free text rendered on the same surfaces.
+      assertNoSlur(input.addr ?? null, "addr")
 
       const existing = await deps.repo.findIdempotentSnapshot(
         input.idempotencyKey,
@@ -219,10 +225,11 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
       const category = REPORT_TYPE_TO_CATEGORY[input.type]
 
-      const wantsReverse = !input.addr?.trim() && deps.reverseGeocode !== undefined
+      const suppliedAddr = input.addr?.trim() ?? ""
+      const wantsReverse = suppliedAddr.length === 0 && deps.resolveAddress !== undefined
       const [jurisdictionGeoid, reversed] = await Promise.all([
         deps.resolveJurisdictionGeoid(input.lat, input.lng),
-        wantsReverse ? deps.reverseGeocode!(input.lat, input.lng) : Promise.resolve(null),
+        wantsReverse ? deps.resolveAddress!(input.lat, input.lng) : Promise.resolve(null),
       ])
       const jurCode =
         deps.resolveJurisdictionCode !== undefined
@@ -231,7 +238,11 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const h3Cell = reportH3Cell(input.lat, input.lng)
       const publishedAt = now()
       const reportId = newId()
-      const addr = input.addr?.trim() ? input.addr.trim() : reversed
+      // Provenance, snapshotted with the address itself. 'user' text carries no provider precision by
+      // definition; a server resolve carries exactly the rung the ladder reached, so a `landmark` line
+      // can be rendered as "Near X" rather than posing as a postal address. A resolve that came back
+      // empty leaves all three NULL - filing is never blocked on any of this.
+      const addressWrite = addressProvenance(suppliedAddr, reversed)
 
       const result = await deps.repo.createReportTx({
         reportId,
@@ -246,7 +257,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         type: input.type,
         title: input.title ?? null,
         description: input.description ?? null,
-        addr,
+        addr: addressWrite.addr,
+        addrSource: addressWrite.addrSource,
+        addrPrecision: addressWrite.addrPrecision,
         status: "published",
         visibility: "public",
         h3Cell,

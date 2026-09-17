@@ -13,6 +13,7 @@ import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
 import type {
   CleanupStatus,
   CleanupType,
+  EventAddressSource,
   EventKind,
   EventVisibility,
   SocialLinks,
@@ -113,6 +114,7 @@ interface CleanupRowSelect {
   status: CleanupStatus
   bring: string[] | null
   address: string | null
+  address_source: EventAddressSource | null
   jurisdiction_geoid: string | null
   reference_code: string | null
   created_at: Date
@@ -149,6 +151,7 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
     status: r.status,
     bring: r.bring,
     address: r.address,
+    addressSource: r.address_source,
     jurisdictionGeoid: r.jurisdiction_geoid,
     referenceCode: r.reference_code,
     createdAt: r.created_at,
@@ -208,6 +211,7 @@ function profileEventRows(
       ${cleanupStatusExpr(sql)} AS status,
       c.bring,
       c.address,
+      c.address_source,
       c.jurisdiction_geoid,
       c.reference_code,
       c.created_at,
