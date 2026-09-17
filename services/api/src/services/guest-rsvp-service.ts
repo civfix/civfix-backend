@@ -445,10 +445,6 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     return `${deps.manageLinkBase}/guest?token=${encodeURIComponent(rawToken)}`
   }
 
-  async function sendGuestEmail(to: string, subject: string, message: string): Promise<void> {
-    await deps.mailer.sendTransactional(to, "generic", { subject, message })
-  }
-
   async function deliverCode(args: {
     channel: GuestContactChannel
     contact: string
@@ -456,15 +452,11 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     eventTitle: string
   }): Promise<void> {
     if (args.channel === "email") {
-      await sendGuestEmail(
-        args.contact,
-        renderMessage("en", "email.guest_otp.subject", { title: args.eventTitle }),
-        renderMessage("en", "email.guest_otp.body", {
-          title: args.eventTitle,
-          code: args.code,
-          minutes: Math.floor(GUEST_OTP_TTL_SECONDS / 60),
-        }),
-      )
+      await deps.mailer.sendTransactional(args.contact, "guest_otp", {
+        title: args.eventTitle,
+        code: args.code,
+        minutes: String(Math.floor(GUEST_OTP_TTL_SECONDS / 60)),
+      })
       return
     }
     await deps.smsSender.send(
@@ -616,8 +608,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
   }
 
   async function joinAsGuest(args: {
-    cleanupId: string
-    eventTitle: string
+    event: GuestEventView
     name: string
     channel: GuestContactChannel
     contact: string
@@ -627,7 +618,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     const rawToken = newToken()
     const manageTokenHash = await sha256Hex(rawToken)
     const guest = await deps.repo.upsertVerifiedGuest({
-      cleanupId: args.cleanupId,
+      cleanupId: args.event.id,
       name: args.name,
       channel: args.channel,
       contactKey: args.contact,
@@ -637,15 +628,15 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       now: new Date(now()),
     })
     const seat = await registerVerifiedGuest(
-      args.cleanupId,
+      args.event.id,
       guest.id,
       args.registration ?? {},
     )
-    const going = await deps.repo.goingCount(args.cleanupId)
+    const going = await deps.repo.goingCount(args.event.id)
     if (args.confirm) {
       await sendConfirmation({ ...args, rawToken }).catch((err: unknown) => {
         deps.logger?.warn(
-          { err, cleanupId: args.cleanupId },
+          { err, cleanupId: args.event.id },
           "guest rsvp: confirmation message failed (suppressed; the RSVP stands)",
         )
       })
@@ -661,20 +652,20 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
   }
 
   async function sendConfirmation(args: {
-    eventTitle: string
+    event: GuestEventView
     channel: GuestContactChannel
     contact: string
     rawToken: string
   }): Promise<void> {
     if (args.channel === "email") {
-      await sendGuestEmail(
-        args.contact,
-        renderMessage("en", "email.guest_confirmed.subject", { title: args.eventTitle }),
-        renderMessage("en", "email.guest_confirmed.body", {
-          title: args.eventTitle,
-          link: manageLink(args.rawToken),
-        }),
-      )
+      await deps.mailer.sendTransactional(args.contact, "guest_confirmed", {
+        title: args.event.title,
+        when: formatEventWhen(args.event.scheduledAt, args.event.timezone ?? DEFAULT_EVENT_TIME_ZONE),
+        ...(args.event.address !== null && args.event.address.length > 0
+          ? { place: args.event.address }
+          : {}),
+        cancelUrl: manageLink(args.rawToken),
+      })
       return
     }
     if (!deps.smsGuestEnabled) return
@@ -688,7 +679,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     await deps.smsSender.send(
       args.contact,
       renderMessage("en", "sms.guest_confirmed.body", {
-        title: smsTitle(args.eventTitle),
+        title: smsTitle(args.event.title),
         link: manageLink(args.rawToken),
       }),
     )
@@ -848,8 +839,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       if (isReviewerContact(input.channel, contact)) {
         if (reviewer !== null && constantTimeStringEqual(input.code, reviewer.code)) {
           return joinAsGuest({
-            cleanupId: event.id,
-            eventTitle: event.title,
+            event,
             name: REVIEWER_DISPLAY_NAME,
             channel: input.channel,
             contact,
@@ -899,8 +889,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       })
 
       return joinAsGuest({
-        cleanupId: event.id,
-        eventTitle: event.title,
+        event,
         name: record.name,
         channel: input.channel,
         contact,

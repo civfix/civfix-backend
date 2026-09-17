@@ -1,5 +1,4 @@
 import type { Mailer } from "@civfix/shared/interfaces"
-import { renderMessage } from "../i18n/renderMessage.js"
 import { formatEventWhen } from "./host/broadcast-render.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
 import type { GuestRsvpRepository } from "./guest-rsvp-service.js"
@@ -34,13 +33,10 @@ export function makeGuestPromotionNotifier(deps: GuestNotifyDeps): GuestPromotio
       if (guest.email === null || guest.email.length === 0) return
       const event = await deps.repo.findEvent(guest.cleanupId)
       if (event === null) return
-      await deps.mailer.sendTransactional(guest.email, "generic", {
-        subject: renderMessage("en", "email.guest_promoted.subject", { title: event.title }),
-        message: renderMessage("en", "email.guest_promoted.body", {
-          title: event.title,
-          when: formatEventWhen(event.scheduledAt, event.timezone ?? DEFAULT_EVENT_TIME_ZONE),
-          link: guestEventLink(deps.linkBase, guest.cleanupId),
-        }),
+      await deps.mailer.sendTransactional(guest.email, "guest_promoted", {
+        title: event.title,
+        when: formatEventWhen(event.scheduledAt, event.timezone ?? DEFAULT_EVENT_TIME_ZONE),
+        eventUrl: guestEventLink(deps.linkBase, guest.cleanupId),
       })
     },
   }

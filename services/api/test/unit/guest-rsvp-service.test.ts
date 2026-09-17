@@ -19,6 +19,7 @@ import { smsFailure } from "../../src/errors/sms-failure.js"
 import { formatEventWhen } from "../../src/services/host/broadcast-render.js"
 import { generateToken } from "../../src/auth/crypto.js"
 import { OTP_VERIFY_IP_FAIL_MAX } from "../../src/auth/otp.js"
+import { renderTemplate } from "../../src/adapters/mailer.oci.js"
 import {
   GUEST_CONTACT_MAX_PER_DAY,
   GUEST_IP_MAX_PER_HOUR,
@@ -162,8 +163,12 @@ describe("guest rsvp: requesting a code", () => {
     expect(result).toEqual({ sent: true, resendAfterSec: 60 })
     expect(h.mailer.sent).toHaveLength(1)
     expect(h.mailer.sent[0]?.to).toBe("ada@example.org")
-    expect(String(h.mailer.sent[0]?.vars?.message)).toContain(CODE)
-    expect(String(h.mailer.sent[0]?.vars?.subject)).toContain("Beach cleanup")
+    expect(h.mailer.sent[0]?.template).toBe("guest_otp")
+    expect(String(h.mailer.sent[0]?.vars?.code)).toBe(CODE)
+    expect(String(h.mailer.sent[0]?.vars?.title)).toContain("Beach cleanup")
+    const rendered = renderTemplate("guest_otp", h.mailer.sent[0]?.vars ?? {})
+    expect(rendered.subject).toContain("Beach cleanup")
+    expect(rendered.text).toContain(CODE)
     expect(h.repo.otps).toHaveLength(1)
     expect(h.repo.otps[0]?.name).toBe("Ada Lovelace")
   })
@@ -442,7 +447,12 @@ describe("guest rsvp: verifying a code", () => {
     const result = await h.service.verifyCode(emailVerify(), ctx)
     const confirmation = h.mailer.sent.at(-1)
 
-    expect(String(confirmation?.vars?.message)).toContain(
+    expect(confirmation?.template).toBe("guest_confirmed")
+    expect(confirmation?.vars?.cancelUrl).toBe(
+      `https://civfix.org/guest?token=${encodeURIComponent(result.manageToken)}`,
+    )
+    const rendered = renderTemplate("guest_confirmed", confirmation?.vars ?? {})
+    expect(rendered.text).toContain(
       `https://civfix.org/guest?token=${encodeURIComponent(result.manageToken)}`,
     )
   })
@@ -454,10 +464,10 @@ describe("guest rsvp: verifying a code", () => {
    */
   it("tells the guest how they actually get in, since no ticket is ever linked", async () => {
     await h.service.verifyCode(emailVerify(), ctx)
-    const body = String(h.mailer.sent.at(-1)?.vars?.message)
+    const rendered = renderTemplate("guest_confirmed", h.mailer.sent.at(-1)?.vars ?? {})
 
-    expect(body).toContain("Check in by name")
-    expect(body).toContain("no ticket to print")
+    expect(rendered.text).toContain("Check in by name")
+    expect(rendered.text).toContain("no ticket to print")
   })
 
   it("rejects a code that was already consumed by an earlier successful verify", async () => {

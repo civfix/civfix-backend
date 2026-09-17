@@ -66,13 +66,12 @@ describe("guest waitlist promotion notice", () => {
     expect(h.mailer.sent).toHaveLength(1)
     const mail = h.mailer.sent[0]
     expect(mail?.to).toBe("ada@example.org")
-    expect(mail?.template).toBe("generic")
-    expect(String(mail?.vars?.subject)).toContain("Beach cleanup")
-    const body = String(mail?.vars?.message)
-    expect(body).toContain("Beach cleanup")
-    expect(body).toContain(formatEventWhen(SCHEDULED_AT, "America/Los_Angeles"))
-    expect(body).toContain("10:00 AM PDT")
-    expect(body).toContain(guestEventLink("https://civfix.org", EVENT_ID))
+    expect(mail?.template).toBe("guest_promoted")
+    expect(String(mail?.vars?.title)).toBe("Beach cleanup")
+    const when = String(mail?.vars?.when)
+    expect(when).toBe(formatEventWhen(SCHEDULED_AT, "America/Los_Angeles"))
+    expect(when).toContain("10:00 AM PDT")
+    expect(mail?.vars?.eventUrl).toBe(guestEventLink("https://civfix.org", EVENT_ID))
   })
 
   it("prints Pacific Time when the event carries no timezone, never a raw ISO stamp", async () => {
@@ -80,15 +79,15 @@ describe("guest waitlist promotion notice", () => {
     h.repo.seedEvent({ id: EVENT_ID, scheduledAt: SCHEDULED_AT, timezone: null })
     await h.notify(h.guestId)
 
-    const body = String(h.mailer.sent[0]?.vars?.message)
-    expect(body).toContain("10:00 AM PDT")
-    expect(body).not.toContain("2026-09-05T17:00:00.000Z")
+    const when = String(h.mailer.sent[0]?.vars?.when)
+    expect(when).toContain("10:00 AM PDT")
+    expect(when).not.toContain("2026-09-05T17:00:00.000Z")
   })
 
   it("never leaks the manage token: the link is the public event page", async () => {
     const h = harness()
     await h.notify(h.guestId)
-    expect(String(h.mailer.sent[0]?.vars?.message)).not.toContain("token=")
+    expect(JSON.stringify(h.mailer.sent[0]?.vars)).not.toContain("token=")
   })
 
   it("sends nothing to an SMS-channel guest, who has no address to mail", async () => {
