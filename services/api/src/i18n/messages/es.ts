@@ -123,7 +123,10 @@ export const es: Partial<Record<MessageKey, string>> = {
     "Tu código para confirmar tu asistencia a {{title}} es {{code}}. Caduca en {{minutes}} minutos. Si no lo solicitaste, puedes ignorar este correo.",
   "email.guest_confirmed.subject": "Estás en la lista de {{title}}",
   "email.guest_confirmed.body":
-    "Te has apuntado a {{title}}. ¿Cambiaste de opinión? Cancela tu asistencia aquí: {{link}}",
+    "Te has apuntado a {{title}}. Al llegar, regístrate con tu nombre; no hay ninguna entrada que imprimir. ¿Cambiaste de opinión? Cancela tu asistencia aquí: {{link}}",
+  "email.guest_promoted.subject": "Se ha liberado una plaza para {{title}}",
+  "email.guest_promoted.body":
+    "Se ha liberado una plaza para {{title}} el {{when}}. Estabas en la lista de espera y la organización te está reservando una plaza. Consulta el evento y ponte en contacto con la organización si todavía quieres asistir: {{link}}",
   "email.guest_updated.subject": "{{title}} tiene nuevos detalles",
   "email.guest_updated.body":
     "Los detalles de {{title}} han cambiado. Ahora empieza a las {{when}} en {{place}}. Usa el enlace de cancelación de tu mensaje de confirmación si ya no puedes asistir.",

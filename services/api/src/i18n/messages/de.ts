@@ -124,7 +124,10 @@ export const de: Partial<Record<MessageKey, string>> = {
     "Dein Code für die Anmeldung zu {{title}} lautet {{code}}. Er läuft in {{minutes}} Minuten ab. Wenn du ihn nicht angefordert hast, kannst du diese E-Mail ignorieren.",
   "email.guest_confirmed.subject": "Du stehst auf der Liste für {{title}}",
   "email.guest_confirmed.body":
-    "Du bist für {{title}} angemeldet. Anders entschieden? Hier kannst du deine Anmeldung stornieren: {{link}}",
+    "Du bist für {{title}} angemeldet. Melde dich vor Ort mit deinem Namen an; es gibt kein Ticket zum Ausdrucken. Anders entschieden? Hier kannst du deine Anmeldung stornieren: {{link}}",
+  "email.guest_promoted.subject": "Ein Platz für {{title}} ist frei geworden",
+  "email.guest_promoted.body":
+    "Ein Platz für {{title}} am {{when}} ist frei geworden. Du standest auf der Warteliste, und die Veranstalterin oder der Veranstalter hält einen Platz für dich frei. Sieh dir die Veranstaltung an und melde dich dort, wenn du noch kommen möchtest: {{link}}",
   "email.guest_updated.subject": "{{title}} hat neue Angaben",
   "email.guest_updated.body":
     "Die Angaben zu {{title}} haben sich geändert. Es beginnt jetzt um {{when}} an folgendem Ort: {{place}}. Nutze den Stornierungslink aus deiner Bestätigung, falls du nicht mehr kommen kannst.",

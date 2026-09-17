@@ -122,7 +122,11 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "email.guest_otp.body":
     "{{title}} 참가 신청 코드는 {{code}}입니다. {{minutes}}분 후에 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하셔도 됩니다.",
   "email.guest_confirmed.subject": "{{title}} 참가자 명단에 등록되었습니다",
-  "email.guest_confirmed.body": "{{title}}에 참가 신청이 완료되었습니다. 마음이 바뀌셨나요? 여기에서 취소하세요: {{link}}",
+  "email.guest_confirmed.body":
+    "{{title}}에 참가 신청이 완료되었습니다. 현장에서는 이름으로 체크인하며, 출력할 티켓은 없습니다. 마음이 바뀌셨나요? 여기에서 취소하세요: {{link}}",
+  "email.guest_promoted.subject": "{{title}}에 자리가 생겼습니다",
+  "email.guest_promoted.body":
+    "{{when}}에 열리는 {{title}}에 자리가 생겼습니다. 대기자 명단에 계셨고, 주최자가 자리를 잡아두고 있습니다. 아직 참가를 원하시면 행사 페이지를 확인하고 주최자에게 문의하세요: {{link}}",
   "email.guest_updated.subject": "{{title}} 세부 정보가 변경되었습니다",
   "email.guest_updated.body":
     "{{title}}의 세부 정보가 변경되었습니다. 이제 {{when}}에 {{place}}에서 시작합니다. 참석이 어려우시면 확인 메시지의 취소 링크를 이용하세요.",

@@ -186,7 +186,10 @@ export const en = {
     "Your code to RSVP for {{title}} is {{code}}. It expires in {{minutes}} minutes. If you did not request it, you can ignore this email.",
   "email.guest_confirmed.subject": "You are on the list for {{title}}",
   "email.guest_confirmed.body":
-    "You are signed up for {{title}}. Change your mind? Cancel your RSVP here: {{link}}",
+    "You are signed up for {{title}}. Check in by name when you arrive; there is no ticket to print. Change your mind? Cancel your RSVP here: {{link}}",
+  "email.guest_promoted.subject": "A place opened up for {{title}}",
+  "email.guest_promoted.body":
+    "A place opened up for {{title}} on {{when}}. You were on the waitlist and the host is holding a place for you. See the event and contact the host if you still want it: {{link}}",
   "email.guest_updated.subject": "{{title}} has new details",
   "email.guest_updated.body":
     "The details for {{title}} changed. It now starts at {{when}} at {{place}}. Use the cancel link in your confirmation message if you can no longer make it.",
