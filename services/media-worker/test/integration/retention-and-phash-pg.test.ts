@@ -2,7 +2,7 @@
  * The worker's RAW SQL against the canonical migrated schema (Docker-gated; SKIPS without Docker).
  *
  * Two pieces of the worker talk to Postgres in hand-written SQL and were only ever exercised against
- * fakes: runRetentionSweep (five paged DELETE ... RETURNING statements plus the inbound-email lane, spy-
+ * fakes: runRetentionSweep (six paged DELETE ... RETURNING statements plus the inbound-email lane, spy-
  * tested as STRINGS, so a wrong column or table name was invisible) and makePhashDuplicateLookup (replaced
  * by an injected stub in every unit test, and its interpolated `AND id <> $1` / `AND report_id IS DISTINCT
  * FROM $2` fragments plus ORDER BY created_at are exactly the kind of thing a string spy cannot check).
@@ -18,6 +18,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { FakeStorage } from "@civfix/shared/fakes"
+import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
 import { runRetentionSweep } from "../../src/jobs/retention-sweep.js"
 import { buildSeams, type WorkerSeams } from "../../src/seams.js"
 import { withWorkerPg, type WorkerPgHarness } from "../helpers/pg.js"
@@ -59,13 +60,14 @@ afterAll(async () => {
 describe.skipIf(!pg)("retention.sweep against the real schema", () => {
   const NOW = new Date("2026-06-20T12:00:00Z")
 
-  /** A deterministic baseline: these six tables hold ONLY what each test puts in them. */
+  /** A deterministic baseline: these seven tables hold ONLY what each test puts in them. */
   beforeEach(async () => {
     await h.sql`DELETE FROM email_otps`
     await h.sql`DELETE FROM anon_tokens`
     await h.sql`DELETE FROM sessions`
     await h.sql`DELETE FROM idempotency_keys`
     await h.sql`DELETE FROM notifications`
+    await h.sql`DELETE FROM geocode_cache`
     await h.sql`DELETE FROM inbound_emails`
   })
 
@@ -122,6 +124,25 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     return row!.id
   }
 
+  /**
+   * geocode_cache is keyed by the shared 5-decimal point key, so each seeded row needs its own point.
+   * The counter is never reset: uniqueness across the whole file is all the PK asks for.
+   */
+  let geocodePoint = 0
+
+  async function insertGeocodeEntry(resolvedAt: Date): Promise<string> {
+    const pointKey = `34.${String(10000 + geocodePoint++).padStart(5, "0")},-118.25000`
+    const [row] = await h.sql<{ point_key: string }[]>`
+      INSERT INTO geocode_cache (
+        point_key, address, address_precision, city_state_label, provider, resolved_at
+      ) VALUES (
+        ${pointKey}, '1 Main St', 'street', 'Los Angeles, CA', 'photon', ${resolvedAt}
+      )
+      RETURNING point_key
+    `
+    return row!.point_key
+  }
+
   async function insertInboundEmail(opts: {
     archivedAt: Date | null
     attachmentKey?: string
@@ -144,7 +165,7 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     return row!.id
   }
 
-  it("deletes exactly the expired/consumed rows in all six tables and keeps the live ones", async () => {
+  it("deletes exactly the expired/consumed rows in all seven tables and keeps the live ones", async () => {
     // Doomed: past the 1h grace cutoff, or consumed regardless of expiry.
     const expiredOtp = await insertOtp({ expiresAt: at(-3 * HOUR) })
     const consumedButValidOtp = await insertOtp({ expiresAt: at(3 * HOUR), consumedAt: at(-HOUR) })
@@ -152,6 +173,8 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     const expiredSession = await insertSession(at(-3 * HOUR))
     const oldKey = await insertIdempotencyKey(at(-72 * HOUR))
     const oldNotification = await insertNotification(at(-100 * 24 * HOUR))
+    // geocode_cache is reaped on resolved_at against the SAME TTL the read path applies (180 days).
+    const staleGeocode = await insertGeocodeEntry(at(-GEOCODE_CACHE_TTL_MS - HOUR))
 
     // Survivors: still inside the grace window / retention window.
     const liveOtp = await insertOtp({ expiresAt: at(3 * HOUR) })
@@ -160,6 +183,7 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     const liveSession = await insertSession(at(3 * HOUR))
     const recentKey = await insertIdempotencyKey(at(-2 * HOUR))
     const recentNotification = await insertNotification(at(-24 * HOUR))
+    const liveGeocode = await insertGeocodeEntry(at(-GEOCODE_CACHE_TTL_MS + HOUR))
 
     // inbound_emails is reaped on archived_at, 180 days, and only after its attachment objects are gone.
     const attachmentKey = `inbound/${randomUUID()}.pdf`
@@ -180,6 +204,7 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
       sessions: 1,
       idempotencyKeys: 1,
       notifications: 1,
+      geocodeCache: 1,
       inboundEmails: 1,
       inboundEmailObjectsLeaked: 0,
       errors: 0,
@@ -206,6 +231,10 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     expect(notifications.map((r) => r.id)).toEqual([recentNotification])
     expect(notifications.map((r) => r.id)).not.toContain(oldNotification)
 
+    const points = await h.sql<{ point_key: string }[]>`SELECT point_key FROM geocode_cache`
+    expect(points.map((r) => r.point_key)).toEqual([liveGeocode])
+    expect(points.map((r) => r.point_key)).not.toContain(staleGeocode)
+
     const emails = await h.sql<{ id: string }[]>`SELECT id FROM inbound_emails`
     expect(emails.map((r) => r.id).sort()).toEqual(
       [recentlyArchivedEmail, unarchivedEmail].sort(),
@@ -227,6 +256,7 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
       sessions: 0,
       idempotencyKeys: 0,
       notifications: 0,
+      geocodeCache: 0,
       inboundEmails: 0,
       inboundEmailObjectsLeaked: 0,
       errors: 0,
