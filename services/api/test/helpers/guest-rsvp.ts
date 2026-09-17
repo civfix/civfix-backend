@@ -3,6 +3,7 @@ import type { GuestContactChannel } from "@civfix/shared"
 import { encodeTimeCursor, pageWith, type TimeCursor } from "../../src/db/cursor-helpers.js"
 import type {
   GuestEventView,
+  GuestNoticeTarget,
   GuestOtpRecord,
   GuestRecipient,
   GuestRosterRow,
@@ -211,6 +212,19 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
     const row = this.guests.find((g) => g.manageTokenHash === hash)
     if (row === undefined) return Promise.resolve(null)
     return Promise.resolve({ id: row.id, cleanupId: row.cleanupId, cancelledAt: row.cancelledAt })
+  }
+
+  findGuestForNotice(guestId: string): Promise<GuestNoticeTarget | null> {
+    const row = this.guests.find((g) => g.id === guestId)
+    if (row === undefined) return Promise.resolve(null)
+    return Promise.resolve({
+      id: row.id,
+      cleanupId: row.cleanupId,
+      name: row.name,
+      email: row.email,
+      cancelledAt: row.cancelledAt,
+      contactScrubbedAt: row.contactScrubbedAt,
+    })
   }
 
   releaseOnCancel: string[] = []

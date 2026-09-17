@@ -132,6 +132,15 @@ export interface GuestRecipient {
   phone: string | null
 }
 
+export interface GuestNoticeTarget {
+  id: string
+  cleanupId: string
+  name: string
+  email: string | null
+  cancelledAt: Date | null
+  contactScrubbedAt: Date | null
+}
+
 export interface GuestEventView {
   id: string
   title: string
@@ -188,6 +197,7 @@ export interface GuestRsvpRepository {
   findGuestByManageTokenHash(
     hash: string,
   ): Promise<{ id: string; cleanupId: string; cancelledAt: Date | null } | null>
+  findGuestForNotice(guestId: string): Promise<GuestNoticeTarget | null>
   cancelGuest(guestId: string, now: Date): Promise<string[]>
   listGuests(args: {
     cleanupId: string
