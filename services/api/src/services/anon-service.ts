@@ -212,7 +212,6 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
       const reportId = newId()
       const claimCode = newClaimCode()
       const claimCodeHash = await sha256Hex(claimCode)
-      // Identical provenance rules to the signed-in path, by construction (one shared helper).
       const addressWrite = addressProvenance(suppliedAddr, resolvedAddr)
 
       const responseSnapshot: AnonReportResponse = {

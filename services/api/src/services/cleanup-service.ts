@@ -553,14 +553,25 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
    *
    * The shim stores NOTHING when the ladder only reached `locality`: "Los Angeles, CA" is not a meeting
    * address, and writing it would dress up a non-answer as a host-provided one.
+   *
+   * `fromStoredEvent` marks the DUPLICATE path, whose pair did not come off the wire at all: it is this
+   * server's own stored row, copied verbatim. The new-client length floor is a check on a client payload
+   * and would reject a backfilled one-or-two-character address that the host has been running for
+   * months. Slur checks still apply - they run over the whole input before this.
    */
-  async function resolveEventAddress(input: {
-    address?: string | undefined
-    addressSource?: EventAddressSource | undefined
-    lat: number
-    lng: number
-  }): Promise<{ address: string | null; addressSource: EventAddressSource | null }> {
+  async function resolveEventAddress(
+    input: {
+      address?: string | undefined
+      addressSource?: EventAddressSource | undefined
+      lat: number
+      lng: number
+    },
+    opts?: { fromStoredEvent?: boolean },
+  ): Promise<{ address: string | null; addressSource: EventAddressSource | null }> {
     if (input.addressSource !== undefined) {
+      if (opts?.fromStoredEvent === true && input.address !== undefined) {
+        return { address: input.address, addressSource: input.addressSource }
+      }
       return { address: assertConfirmedAddress(input.address), addressSource: input.addressSource }
     }
     const typed = input.address?.trim() ?? ""
@@ -570,7 +581,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     if (resolved.address === null || !isLocatedPrecision(resolved.precision)) {
       return { address: null, addressSource: null }
     }
-    // The wire cap never applied to a server-derived line; clamp rather than overflow the column.
     return {
       address: resolved.address.slice(0, MAX_EVENT_ADDRESS_LENGTH),
       addressSource: "resolved",
@@ -961,9 +971,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       throw AppError.validation({ linkedReportIds: "only cleanup events can link reports" })
     }
     await assertReportsLinkable(linkedReportIds)
-    // Before any budget or host work: a malformed address is a client bug, and rejecting it early keeps
-    // the compat shim's geocode off the path of a request that was never going to be written.
-    const addressWrite = await resolveEventAddress(input)
+    const addressWrite = await resolveEventAddress(input, { fromStoredEvent: copyFrom !== undefined })
     if (input.endsAt === null) throw AppError.validation({ endsAt: "required" })
     if (input.slots !== undefined && input.slots.length === 0) {
       throw AppError.validation({ slots: EVENT_NEEDS_A_SLOT_MESSAGE })
@@ -1085,9 +1093,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         lng: source.lng,
         scheduledAt: scheduledAt.toISOString(),
         ...(source.bring !== null ? { bring: source.bring } : {}),
-        // A duplicate is the same place at a new time, so the host's verified address and its provenance
-        // both carry over verbatim. Copied as a PAIR: an address with no source would be re-read as an
-        // old client's payload and demoted to 'manual', and a source with no address cannot exist.
         ...(source.address !== null && source.addressSource !== null
           ? { address: source.address, addressSource: source.addressSource }
           : source.address !== null

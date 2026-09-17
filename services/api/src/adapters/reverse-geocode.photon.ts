@@ -176,8 +176,6 @@ export function composePhotonReverse(
     roads.push(road)
     roadProps ??= c.props
   }
-  // A house number is what separates `street` from `intersection`; the pin sits ON a road either way, so
-  // even a single named road is a materially better answer than the city - it just never claims a number.
   if (roadProps !== null && roads[0] !== undefined) {
     const primary = roads.length >= 2 ? `${roads[0]} & ${roads[1]}` : roads[0]
     return { line: [primary, ...localityTail(roadProps, primary)].join(", "), precision: "intersection" }

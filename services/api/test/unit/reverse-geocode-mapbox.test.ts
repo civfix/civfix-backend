@@ -3,7 +3,6 @@ import {
   makeMapboxReverseGeocode,
   formatMapboxReverse,
   mapboxPrecision,
-  redactMapboxToken,
 } from "../../src/adapters/reverse-geocode.mapbox.js"
 
 function okFetch(props: unknown): typeof fetch {
@@ -38,28 +37,6 @@ describe("formatMapboxReverse", () => {
   })
   it("returns null for empty input", () => {
     expect(formatMapboxReverse({})).toBeNull()
-  })
-})
-
-describe("redactMapboxToken", () => {
-  it("redacts the access_token value while keeping every other query param", () => {
-    const url =
-      "https://api.mapbox.com/search/geocode/v6/reverse?longitude=-89.6&latitude=39.8&access_token=pk.secretVALUE123&limit=1"
-    const out = redactMapboxToken(url)
-    expect(out).not.toContain("pk.secretVALUE123")
-    expect(out).toContain("access_token=[redacted]")
-    expect(out).toContain("longitude=-89.6")
-    expect(out).toContain("limit=1")
-  })
-
-  it("redacts the token when it is the first query param", () => {
-    expect(redactMapboxToken("https://x/y?access_token=abc&z=1")).toBe(
-      "https://x/y?access_token=[redacted]&z=1",
-    )
-  })
-
-  it("is a no-op when there is no token", () => {
-    expect(redactMapboxToken("https://x/y?z=1")).toBe("https://x/y?z=1")
   })
 })
 

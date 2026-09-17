@@ -81,10 +81,6 @@ export function mapboxPrecision(p: MapboxReverseProps): AddressPrecision | null 
   return null
 }
 
-export function redactMapboxToken(url: string): string {
-  return url.replace(/([?&]access_token=)[^&#\s]*/gi, "$1[redacted]")
-}
-
 export function makeMapboxReverseGeocode(opts: MapboxReverseOptions): ReverseGeocode {
   const baseUrl = opts.url ?? MAPBOX_REVERSE_URL
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS

@@ -270,6 +270,28 @@ describe("duplicateCleanup", () => {
     expect(copy.addressSource).toBe("edited")
   })
 
+  it("copies a stored address that is SHORTER than the new-client floor, instead of refusing it", async () => {
+    const service = serviceWith()
+    const created = await service.createCleanup(
+      baseInput({ address: "North gate", addressSource: "manual" }),
+      HOST,
+    )
+    // What 0175's backfill leaves on a legacy event whose host typed two characters.
+    repo.cleanups.get(created.id)!.address = "NW"
+
+    const copy = await service.duplicateCleanup(HOST, {
+      id: created.id,
+      scheduledAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      endsAt: new Date(Date.now() + 7 * 86_400_000 + 4 * 3_600_000).toISOString(),
+      includeTicketTypes: false,
+      includeQuestions: false,
+      includePage: false,
+    })
+
+    expect(copy.address).toBe("NW")
+    expect(copy.addressSource).toBe("manual")
+  })
+
   it("duplicating an addressless legacy event stays addressless", async () => {
     const service = serviceWith()
     const created = await service.createCleanup(baseInput(), HOST)

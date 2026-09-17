@@ -212,8 +212,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
       assertNoSlur(input.title ?? null, "title")
       assertNoSlur(input.description ?? null, "description")
-      // Events have slur-checked `address` since forever; reports never checked `addr`, and it is the
-      // same class of public free text rendered on the same surfaces.
       assertNoSlur(input.addr ?? null, "addr")
 
       const existing = await deps.repo.findIdempotentSnapshot(
@@ -239,10 +237,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const h3Cell = reportH3Cell(input.lat, input.lng)
       const publishedAt = now()
       const reportId = newId()
-      // Provenance, snapshotted with the address itself. 'user' text carries no provider precision by
-      // definition; a server resolve carries exactly the rung the ladder reached, so a `landmark` line
-      // can be rendered as "Near X" rather than posing as a postal address. A resolve that came back
-      // empty leaves all three NULL - filing is never blocked on any of this.
       const addressWrite = addressProvenance(suppliedAddr, reversed)
 
       const result = await deps.repo.createReportTx({
