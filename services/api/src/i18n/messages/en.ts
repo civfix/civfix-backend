@@ -182,14 +182,23 @@ export const en = {
   // Sent to people who are NOT users, so there is no users.locale to key off: the guest service renders
   // these in "en". They are catalogued anyway so a future guest-locale field needs no code change.
   "email.guest_otp.subject": "Your code to RSVP for {{title}}",
-  "email.guest_otp.body":
-    "Your code to RSVP for {{title}} is {{code}}. It expires in {{minutes}} minutes. If you did not request it, you can ignore this email.",
+  "email.guest_otp.html_intro": "Your code to RSVP for {{title}} is:",
+  "email.guest_otp.body_expiry":
+    "It expires in {{minutes}} minutes. If you did not request it, you can ignore this email.",
   "email.guest_confirmed.subject": "You are on the list for {{title}}",
-  "email.guest_confirmed.body":
-    "You are signed up for {{title}}. Check in by name when you arrive; there is no ticket to print. Change your mind? Cancel your RSVP here: {{link}}",
+  "email.guest_confirmed.checkin":
+    "You are on the list. Check in by name when you arrive; there is no ticket to print.",
+  "email.guest_confirmed.cancel_hint":
+    "Plans changed? Cancel your RSVP so someone else can take the place.",
+  "email.guest_confirmed.cancel_cta": "Cancel RSVP",
+  "email.event.when": "When",
+  "email.event.where": "Where",
   "email.guest_promoted.subject": "A place opened up for {{title}}",
-  "email.guest_promoted.body":
-    "A place opened up for {{title}} on {{when}}. You were on the waitlist and the host is holding a place for you. See the event and contact the host if you still want it: {{link}}",
+  "email.guest_promoted.intro":
+    "A place opened up for {{title}} on {{when}}. You were on the waitlist and the host is holding a place for you.",
+  "email.guest_promoted.cta": "See the event",
+  "email.guest_promoted.ignore":
+    "If you no longer want the place, there is nothing you need to do.",
   "email.guest_updated.subject": "{{title}} has new details",
   "email.guest_updated.body":
     "The details for {{title}} changed. It now starts at {{when}} at {{place}}. Use the cancel link in your confirmation message if you can no longer make it.",
