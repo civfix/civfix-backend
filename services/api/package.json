@@ -51,6 +51,7 @@
     "db:backfill:user-activity": "tsx src/db/backfill-user-activity.ts",
     "db:backfill:signup-seats": "tsx src/db/backfill-signup-seats.ts",
     "db:backfill:post-geom": "tsx src/db/backfill-post-geom.ts",
+    "email:gallery": "tsx scripts/render-email-gallery.ts",
     "db:certificate:revoke": "tsx scripts/revoke-certificate.ts",
     "db:prepare-boundaries": "tsx scripts/prepare-boundaries.ts",
     "db:boundaries:refresh": "tsx scripts/refresh-boundaries.ts",
