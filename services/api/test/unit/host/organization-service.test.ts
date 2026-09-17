@@ -689,11 +689,11 @@ describe("verification", () => {
       await svc.adminDecideVerification(id, OPERATOR, { decision: "verified" })
 
       expect(mails).toHaveLength(1)
-      expect(mails[0]).toMatchObject({ to: "olive@x.org", template: "generic" })
+      expect(mails[0]).toMatchObject({ to: "olive@x.org", template: "action" })
       expect(mails[0]?.vars.subject).toBe(
         "Ballona Creek Trust is now verified as a nonprofit on civfix",
       )
-      expect(String(mails[0]?.vars.message)).toContain("https://web.test/orgs/ballona-creek-trust")
+      expect(mails[0]?.vars.ctaUrl).toBe("https://web.test/orgs/ballona-creek-trust")
 
       expect(notes).toHaveLength(1)
       expect(notes[0]).toMatchObject({
@@ -727,10 +727,9 @@ describe("verification", () => {
       expect(mails[0]?.vars.subject).toBe(
         "Your verification application for Ballona Creek Trust was not approved",
       )
-      const message = String(mails[0]?.vars.message)
-      expect(message).toContain("Reason: no determination letter")
-      expect(message).toContain("re-apply")
-      expect(message).toContain(`https://web.test/manage/orgs/${id}/verification`)
+      expect(mails[0]?.vars.quote).toBe("no determination letter")
+      expect(String(mails[0]?.vars.note)).toContain("re-apply")
+      expect(mails[0]?.vars.ctaUrl).toBe(`https://web.test/manage/orgs/${id}/verification`)
 
       expect(notes[0]).toMatchObject({
         userId: OWNER,
@@ -849,10 +848,10 @@ describe("org invites (0.41.0)", () => {
     expect(mails[0]?.to).toBe("newcomer@example.com")
     expect(String(mails[0]?.vars.subject)).toContain("Olive Owner invited you to join Ballona Creek Trust")
     // The token rides the URL FRAGMENT, never the query string (DECISIONS §32).
-    expect(String(mails[0]?.vars.message)).toContain(
+    expect(mails[0]?.vars.ctaUrl).toBe(
       `https://civfix.test/manage/org-invites/accept#token=${OPERATOR_TOKEN}`,
     )
-    expect(String(mails[0]?.vars.message)).not.toContain("?token=")
+    expect(JSON.stringify(mails[0]?.vars)).not.toContain("?token=")
     expect(repo.audits.filter((a) => a.action === "org.invite_created")).toHaveLength(1)
     const listed = await service.listInvites(orgId, OWNER)
     expect(listed.items).toHaveLength(1)

@@ -201,12 +201,9 @@ describe("inviteEventTeamMember", () => {
     })
     expect(sentMail).toHaveLength(1)
     const token = "token-1-aaaaaaaaaaaaaaaaaaaaaaaa"
-    const message = String(sentMail[0]?.vars.message)
-    expect(message).toContain(`https://civfix.test/cleanups/${EVENT}#teamInvite=${token}`)
-    expect(message).not.toContain("?teamInvite=")
-    const url = new URL(
-      message.split(/\s+/).find((word) => word.startsWith("https://")) ?? "",
-    )
+    const link = String(sentMail[0]?.vars.ctaUrl)
+    expect(link).toBe(`https://civfix.test/cleanups/${EVENT}#teamInvite=${token}`)
+    const url = new URL(link)
     expect(url.hash).toBe(`#teamInvite=${token}`)
     expect(url.search).toBe("")
     expect(`${url.origin}${url.pathname}${url.search}`).not.toContain(token)

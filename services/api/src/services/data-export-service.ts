@@ -1,6 +1,8 @@
 import type { Sql } from "../db/client.js"
 import type { Mailer } from "@civfix/shared/interfaces"
 import type { UserStore } from "../auth/stores.js"
+import { heading, paragraph } from "../adapters/email-blocks.js"
+import { renderEmailBody } from "../adapters/email-layout.js"
 
 export interface DataExportServiceDeps {
   sql: Sql
@@ -19,6 +21,38 @@ export const DATA_EXPORT_MAX_ROWS = 50_000
 export const DATA_EXPORT_FREE_TEXT_MAX_ROWS = 5_000
 
 export const DATA_EXPORT_BYTE_BUDGET = 8_000_000
+
+export function buildDataExportEmail(
+  supportEmail: string,
+  truncatedSections: readonly string[],
+): { subject: string; text: string; html: string } {
+  const subject = "Your civfix data export"
+  const blocks = [
+    heading("Your civfix data export"),
+    paragraph("Attached is a copy of your civfix data as a JSON file (civfix-export.json)."),
+    paragraph(
+      "It includes your profile, reports, posts, comments, messages, events, registrations, " +
+        "organizations, volunteer hours, connections, and your issued service-hours transcripts.",
+    ),
+    paragraph(
+      "Secrets (login codes, session tokens, raw device tokens, ticket tokens) and other " +
+        "people's material (host-private notes, another organization's verification evidence) " +
+        "are intentionally excluded.",
+      { muted: true },
+    ),
+  ]
+  if (truncatedSections.length > 0) {
+    blocks.push(
+      paragraph(
+        `Note: some sections (${truncatedSections.join(", ")}) were very large and this export ` +
+          `contains only part of them. Email ${supportEmail} to request a complete copy of those sections.`,
+      ),
+    )
+  }
+  blocks.push(paragraph("If you did not request this, you can ignore this email.", { muted: true }))
+  const { text, html } = renderEmailBody({ preheader: subject, blocks })
+  return { subject, text, html }
+}
 
 export function makeDataExportService(deps: DataExportServiceDeps): DataExportService {
   const { sql, mailer, users, fromNoReply, supportEmail } = deps
@@ -435,23 +469,14 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
 
       const bytes = new TextEncoder().encode(JSON.stringify(exportObject))
 
-      const text =
-        "Attached is a copy of your civfix data (JSON). It includes your profile, reports, posts, " +
-        "comments, messages, events, registrations, organizations, volunteer hours, " +
-        "connections, and your issued service-hours transcripts. Secrets (login codes, session " +
-        "tokens, raw device tokens, ticket tokens) and other people's material (host-private notes, " +
-        "another organization's verification evidence) are intentionally excluded." +
-        (truncatedSections.length > 0
-          ? `\n\nNote: some sections (${truncatedSections.join(", ")}) were very large and this export ` +
-            `contains only part of them. Email ${supportEmail} to request a complete copy of those sections.`
-          : "") +
-        "\n\nIf you did not request this, you can ignore this email."
+      const rendered = buildDataExportEmail(supportEmail, truncatedSections)
 
       await mailer.sendOutbound({
         from: fromNoReply,
         to: email,
-        subject: "Your civfix data export",
-        text,
+        subject: rendered.subject,
+        text: rendered.text,
+        html: rendered.html,
         attachments: [
           {
             filename: "civfix-export.json",

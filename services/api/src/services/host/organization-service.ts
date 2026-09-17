@@ -146,6 +146,56 @@ function verificationKindLabel(kind: OrgVerificationKind | null): string {
   }
 }
 
+export function orgInviteEmailVars(args: {
+  inviterName: string
+  orgName: string
+  role: "admin" | "member"
+  link: string
+}): Record<string, unknown> {
+  const roleLabel = args.role === "admin" ? "an admin" : "a member"
+  return {
+    subject: `${args.inviterName} invited you to join ${args.orgName} on civfix`,
+    paragraphs: [
+      `${args.inviterName} invited you to join ${args.orgName} on civfix as ${roleLabel}.`,
+      "Sign in with this email address to accept.",
+    ],
+    ctaUrl: args.link,
+    ctaLabel: "Accept the invitation",
+    note: "The invitation expires in 14 days. If you weren't expecting it, you can ignore this email.",
+  }
+}
+
+export function orgVerificationDecisionEmailVars(args: {
+  orgName: string
+  kindLabel: string
+  approved: boolean
+  reason: string
+  orgUrl: string
+  verifyUrl: string
+}): Record<string, unknown> {
+  if (args.approved) {
+    return {
+      subject: `${args.orgName} is now verified as a ${args.kindLabel} on civfix`,
+      paragraphs: [
+        `Good news: ${args.orgName} is now verified as a ${args.kindLabel} on civfix. Its profile now carries the verified badge.`,
+      ],
+      ctaUrl: args.orgUrl,
+      ctaLabel: "View the profile",
+    }
+  }
+  return {
+    subject: `Your verification application for ${args.orgName} was not approved`,
+    paragraphs: [
+      `An operator reviewed the verification application for ${args.orgName} and did not approve it.`,
+    ],
+    quoteHeading: "Reason",
+    quote: args.reason,
+    ctaUrl: args.verifyUrl,
+    ctaLabel: "Re-apply for verification",
+    note: "You can address the reason and re-apply at any time from the organization's verification page.",
+  }
+}
+
 export interface OrganizationService {
   createOrganization(input: CreateOrganizationRequest, actorId: string): Promise<OrganizationDTO>
   listMyOrganizations(actorId: string): Promise<OrganizationDTO[]>
@@ -543,10 +593,11 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       )
     }
     try {
-      await deps.mailer.sendTransactional(email, "generic", {
-        subject: `${inviterName} invited you to join ${org.name} on civfix`,
-        message: `${inviterName} invited you to join ${org.name} on civfix as ${role === "admin" ? "an admin" : "a member"}. Open ${link} to accept - sign in with this email address. The invitation expires in 14 days.`,
-      })
+      await deps.mailer.sendTransactional(
+        email,
+        "action",
+        orgInviteEmailVars({ inviterName, orgName: org.name, role, link }),
+      )
     } catch (err) {
       deps.logger?.warn?.({ err, organization: org.name }, "org invite email failed (suppressed)")
     }
@@ -598,15 +649,20 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     const verifyPath = `/manage/orgs/${org.id}/verification`
     const kindLabel = verificationKindLabel(org.verifiedKind ?? null)
     const approved = decision === "verified"
-    const subject = approved
-      ? `${org.name} is now verified as a ${kindLabel} on civfix`
-      : `Your verification application for ${org.name} was not approved`
-    const message = approved
-      ? `Good news: ${org.name} is now verified as a ${kindLabel} on civfix. Its profile shows the verified badge at ${base}${orgPath}.`
-      : `An operator reviewed the verification application for ${org.name} and did not approve it.\n\nReason: ${reason}\n\nYou can address the reason and re-apply at any time from the organization's verification page: ${base}${verifyPath}.`
     if (deps.mailer !== undefined && owner.email !== null) {
       try {
-        await deps.mailer.sendTransactional(owner.email, "generic", { subject, message })
+        await deps.mailer.sendTransactional(
+          owner.email,
+          "action",
+          orgVerificationDecisionEmailVars({
+            orgName: org.name,
+            kindLabel,
+            approved,
+            reason,
+            orgUrl: `${base}${orgPath}`,
+            verifyUrl: `${base}${verifyPath}`,
+          }),
+        )
       } catch (err) {
         deps.logger?.warn?.(
           { err, organizationId: org.id, decision },
