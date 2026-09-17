@@ -322,7 +322,7 @@ Everything an operator has to do by hand, in order, plus the two infra facts and
 node dist/db/migrate.js        # == pnpm --filter @civfix/api db:migrate
 ```
 
-`drizzle/` holds **157 files**, `0000_extensions.sql` … `0174_event_announcements.sql`. The nine rows
+`drizzle/` holds **158 files**, `0000_extensions.sql` … `0175_address_resolution.sql`. The nine rows
 below are exactly what this change set adds — `0052`–`0060`, contiguous, no gaps — and everything from
 `0000` through `0051_social_posts.sql` predates it. (`0060` arrived later than the rest, with the feed
 redesign; it is listed here because this table is the single operator runbook. `0061`–`0064` arrived
@@ -564,6 +564,7 @@ foreign key into `organizations` from `0105`.
 | `0173_posts_author_public_recent_idx.sql` | adds the partial index `posts_author_public_recent_idx (author_id, created_at DESC, id DESC) WHERE deleted_at IS NULL AND reply_to_id IS NULL AND visibility = 'public'` - the author-keyed twin of `0071_posts_toplevel_recent_idx`, backing the ranked feed's in-network candidate pool (self + followees). Neither `posts_author_created_idx` (0051, not partial on reply_to_id/visibility, no id tiebreak) nor `posts_toplevel_recent_idx` (0071, not author-keyed) serves that shape. Same not-a-hot-table reasoning as 0172 | The in-network pool sorts instead of stopping at its LIMIT. Correct, slower; no functional change |
 
 | `0174_event_announcements.sql` | widens `broadcasts_kind_check` to accept the new `announcement` kind (event announcements ride the existing host-broadcast pipeline rather than a parallel table), adds the partial `broadcasts_announcement_public_idx (cleanup_id, created_at DESC, id DESC) WHERE kind = 'announcement'` that backs the public per-event announcements list, and re-creates `broadcasts_scrub_idx` with `kind <> 'announcement'` so the retention scrub can never NULL an announcement body - an announcement is permanent public event content rendered on the event page, not a one-shot email. `broadcasts` is NOT on the hot-table list in `docs/out-of-band-indexes.md`, so both indexes build inline; `IF NOT EXISTS` makes an out-of-band CONCURRENTLY build a no-op | Every `createEventAnnouncement` fails on the CHECK constraint. Applying the CHECK but not the scrub-index swap still works (the repository query carries the same predicate), it just scans more rows |
+| `0175_address_resolution.sql` | the address-resolution overhaul: creates `geocode_cache` (a read-through cache of reverse geocodes keyed by the shared 5-decimal point key, with its `geocode_cache_resolved_at_idx`; derived public data only, no user/report/event reference, TTL applied on read rather than by a cron), adds `cleanups.address_source` (resolved | edited | manual) and backfills it to `manual` for every event that already has an address, and adds `reports.addr_source` + `reports.addr_precision`. All three CHECK constraints are `NOT VALID` (new columns, so they hold by construction) and are listed in the outstanding-VALIDATE set below. No new index on a hot table: both `reports` columns are plain row columns | `POST /map/resolve-address` and every create path still answer, but uncached (the cache swallows its own errors) and with no provenance persisted; a new client's event create fails on the missing `cleanups.address_source` column |
 
 
 **Deferred to the NEXT release** (expand/contract, `docs/migrations-expand-contract.md`): 0.43.0
@@ -593,9 +594,10 @@ either way — `org_verifications` documents are claimed with it.
 **Deferred to a later release, out of band** (record them in the expand/contract ledger): the six
 `NOT VALID` CHECKs `0107` adds on `cleanups` and `0110`'s `media_assets_purpose_expanded` still need
 `ALTER TABLE … VALIDATE CONSTRAINT`, and so do `0164`'s
-`users_primary_organization_fk` and `posts_organization_fk`. They are correct as `NOT VALID` — the
-constraint is enforced for every new row — and validating takes a scan that does not belong in a
-deploy transaction.
+`users_primary_organization_fk` and `posts_organization_fk`, and `0175`'s
+`cleanups_address_source_chk`, `reports_addr_source_chk` and `reports_addr_precision_chk`. They are
+correct as `NOT VALID` — the constraint is enforced for every new row — and validating takes a scan
+that does not belong in a deploy transaction.
 | `0096_cleanup_guests.sql` | guest event RSVP (contract 0.38.0): `cleanup_guests` (event-scoped, contact-bearing attendance rows; SHA-256 manage-token hash only; partial unique on the active `(cleanup_id, contact_key)`), `guest_otps` (event-scoped one-time codes, hash only), `sms_opt_outs` (STOP suppression list, kept indefinitely). Three brand-new empty tables; no existing table touched | `POST /v1/cleanups/:id/guest-rsvp/*` and `GET /v1/cleanups/:id/guests` 500 on a missing relation, and `going` cannot include guests |
 | `0097_media_assets_served_key.sql` | adds `media_assets.served_key` (audit C1): the worker-owned key the processed object is published to, so the client-writable upload key is never served after `ready`. Catalog-only nullable `ADD COLUMN` on a hot table. **Post-deploy:** run `node dist/db/backfill-served-key.js` immediately and again ~20 min later; pre-existing `ready` media reads as not-found until it completes | Every existing photo 404s until the backfill runs; new uploads work |
 | `0098_sweep_predicate_indexes.sql` | idempotent guard that warns while `media_assets_orphan_sweep_idx` is missing (hot table; build it out of band with `CREATE INDEX CONCURRENTLY`, see `docs/out-of-band-indexes.md`) plus two small inline `email_otps` indexes (`expires_at`, partial `consumed_at`) backing the OTP retention lane (audit H13/M) | Both sweeps sequential-scan; correctness unaffected |

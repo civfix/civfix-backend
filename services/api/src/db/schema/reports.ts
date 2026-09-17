@@ -1,6 +1,7 @@
 
 import { sql } from "drizzle-orm"
 import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
+import type { AddressPrecision, ReportAddressSource } from "@civfix/shared"
 import { jurisdictions } from "./jurisdictions.js"
 import { users } from "./users.js"
 import {
@@ -35,6 +36,10 @@ export const reports = pgTable(
     title: text("title"),
     description: text("description"),
     addr: text("addr"),
+    /** 0175: where `addr` came from. NULL for legacy rows and for reports with no address. */
+    addrSource: text("addr_source").$type<ReportAddressSource>(),
+    /** 0175: the ladder rung a RESOLVED addr reached. Always NULL when addrSource is 'user'. */
+    addrPrecision: text("addr_precision").$type<AddressPrecision>(),
     status: text("status").$type<ReportStatus>().notNull(),
     visibility: text("visibility").$type<ReportVisibility>().notNull().default("public"),
     h3Cell: text("h3_cell").notNull(),
