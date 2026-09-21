@@ -5,6 +5,7 @@ import {
   buildEventPacket,
 } from "../../src/services/admin/mail-format.js"
 import { renderEmailBody } from "../../src/adapters/email-layout.js"
+import { DEFAULT_FORWARD_BODY_TEMPLATE } from "@civfix/shared"
 import { paragraph, kvTable, linkList } from "../../src/adapters/email-blocks.js"
 import type { AdminReportRecord } from "../../src/services/admin/admin-report-types.js"
 
@@ -38,6 +39,8 @@ function reportRecord(overrides: Partial<AdminReportRecord> = {}): AdminReportRe
     ...overrides,
   }
 }
+
+const NO_TEMPLATES = { subject: null, body: null }
 
 describe("email layout", () => {
   it("emits a full HTML document with charset, viewport, inline CSS and a footer", () => {
@@ -76,7 +79,13 @@ describe("email layout", () => {
 
 describe("buildReportPacket", () => {
   it("builds the refined default subject + a branded body with escaped, multi-line content", () => {
-    const packet = buildReportPacket(reportRecord(), null, ["https://r2/a?t=1", "https://r2/b?t=2"], "Please prioritize.")
+    const packet = buildReportPacket(
+      reportRecord(),
+      null,
+      ["https://r2/a?t=1", "https://r2/b?t=2"],
+      "Please prioritize.",
+      NO_TEMPLATES,
+    )
     expect(packet.subject).toBe("[civfix] Tag on the underpass - Springfield - ABC123")
     expect(packet.html).toContain("<!DOCTYPE html>")
     expect(packet.html).toContain("First line of description.<br>Second line with detail.")
@@ -90,7 +99,7 @@ describe("buildReportPacket", () => {
   })
 
   it("H6: the packet never names the reporter and never offers a direct line to them", () => {
-    const packet = buildReportPacket(reportRecord(), null, [], null)
+    const packet = buildReportPacket(reportRecord(), null, [], null, NO_TEMPLATES)
     for (const part of [packet.text, packet.html]) {
       expect(part).not.toContain("Dana Reporter")
       expect(part).not.toContain("Reported by")
@@ -102,49 +111,81 @@ describe("buildReportPacket", () => {
   })
 
   it("H6: precise coordinates and the map link stay (jurisdiction routing needs the exact spot)", () => {
-    const packet = buildReportPacket(reportRecord(), null, [], null)
+    const packet = buildReportPacket(reportRecord(), null, [], null, NO_TEMPLATES)
     expect(packet.text).toContain("39.5, -98.35")
     expect(packet.html).toContain("mlat=39.5")
     expect(packet.text).toContain("100 Main St")
   })
 
   it("strips CRLF from the subject to block header injection", () => {
-    const packet = buildReportPacket(reportRecord({ title: "Hi\r\nBcc: evil@x" }), null, [], null)
+    const packet = buildReportPacket(reportRecord({ title: "Hi\r\nBcc: evil@x" }), null, [], null, NO_TEMPLATES)
     expect(packet.subject).not.toContain("\n")
     expect(packet.subject).not.toContain("\r")
   })
 
   it("escapes HTML-significant characters in user content", () => {
-    const packet = buildReportPacket(reportRecord({ desc: "<script>alert(1)</script>" }), null, [], null)
+    const packet = buildReportPacket(reportRecord({ desc: "<script>alert(1)</script>" }), null, [], null, NO_TEMPLATES)
     expect(packet.html).not.toContain("<script>alert(1)</script>")
     expect(packet.html).toContain("&lt;script&gt;")
   })
 
   it("applies a custom body + subject template, interpolating report tokens", () => {
-    const packet = buildReportPacket(
-      reportRecord(),
-      null,
-      ["https://r2/a?t=1", "https://r2/b?t=2"],
-      "Please prioritize.",
-      "Case {referenceCode}: {category} at {address}",
-      "A {category} report was filed at {address}.\n\nConfirmed by {confirmations} neighbors. See {mapLink}.",
-    )
+    const packet = buildReportPacket(reportRecord(), null, [], "Please prioritize.", {
+      subject: "Case {referenceCode}: {category} at {address}",
+      body: "A {category} report was filed at {address}.\n\nConfirmed by {confirmations} neighbors. See {mapLink}.",
+    })
     expect(packet.subject).toBe("Case ABC123: Graffiti at 100 Main St")
     expect(packet.html).toContain("A Graffiti report was filed at 100 Main St.")
     expect(packet.html).toContain("Confirmed by 3 neighbors.")
     expect(packet.html).toContain("<!DOCTYPE html>")
-    expect(packet.html).not.toContain(">Photo 1<")
   })
 
-  it("normalizes CRLF in a custom body so Windows blank lines split into paragraphs without stray \\r", () => {
+  it("appends the photo list to a custom body that does NOT use {photoLinks}", () => {
     const packet = buildReportPacket(
       reportRecord(),
       null,
-      [],
+      ["https://r2/a?t=1", "https://r2/b?t=2"],
       null,
-      null,
-      "First paragraph.\r\n\r\nSecond paragraph.",
+      { subject: null, body: "A {category} report was filed at {address}." },
     )
+    expect(packet.html).toContain(">Photo 1<")
+    expect(packet.html).toContain(">Photo 2<")
+    expect(packet.text).toContain("Photos (2)")
+  })
+
+  it("does NOT append the photo list when the body already renders {photoLinks}", () => {
+    const packet = buildReportPacket(
+      reportRecord(),
+      null,
+      ["https://r2/a?t=1", "https://r2/b?t=2"],
+      null,
+      { subject: null, body: "Photos:\n{photoLinks}" },
+    )
+    expect(packet.html).not.toContain(">Photo 1<")
+    expect(packet.text).toContain("https://r2/a?t=1")
+  })
+
+  it("appends the operator note unless the body renders {operatorNote} itself", () => {
+    const appended = buildReportPacket(reportRecord(), null, [], "Please prioritize.", {
+      subject: null,
+      body: "A {category} report was filed.",
+    })
+    expect(appended.text).toContain("Note from the civfix team")
+    expect(appended.text).toContain("Please prioritize.")
+
+    const inline = buildReportPacket(reportRecord(), null, [], "Please prioritize.", {
+      subject: null,
+      body: "A {category} report was filed.\n\nOperator: {operatorNote}",
+    })
+    expect(inline.text).not.toContain("Note from the civfix team")
+    expect(inline.text).toContain("Operator: Please prioritize.")
+  })
+
+  it("normalizes CRLF in a custom body so Windows blank lines split into paragraphs without stray \\r", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null, {
+      subject: null,
+      body: "First paragraph.\r\n\r\nSecond paragraph.",
+    })
     expect(packet.html).toContain("First paragraph.")
     expect(packet.html).toContain("Second paragraph.")
     expect(packet.text).not.toContain("\r")
@@ -152,29 +193,86 @@ describe("buildReportPacket", () => {
   })
 
   it("interpolates a custom template's HTML-significant tokens safely (escaped)", () => {
-    const packet = buildReportPacket(
-      reportRecord({ desc: "<b>bold</b>" }),
-      null,
-      [],
-      null,
-      null,
-      "Details: {description}",
-    )
+    const packet = buildReportPacket(reportRecord({ desc: "<b>bold</b>" }), null, [], null, {
+      subject: null,
+      body: "Details: {description}",
+    })
     expect(packet.html).not.toContain("<b>bold</b>")
     expect(packet.html).toContain("&lt;b&gt;bold&lt;/b&gt;")
   })
 
-  it("uses the custom subject but the refined default body when only the subject is set", () => {
+  it("uses the custom subject but the built-in default body when only the subject is set", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null, {
+      subject: "Ref {referenceCode}",
+      body: null,
+    })
+    expect(packet.subject).toBe("Ref ABC123")
+    expect(packet.html).toContain("What was reported")
+  })
+
+  it("a null template renders exactly what the shared built-in default renders", () => {
+    const fallback = buildReportPacket(reportRecord(), null, [], null, NO_TEMPLATES)
+    const explicit = buildReportPacket(reportRecord(), null, [], null, {
+      subject: null,
+      body: DEFAULT_FORWARD_BODY_TEMPLATE,
+    })
+    expect(explicit.text).toBe(fallback.text)
+    expect(explicit.html).toBe(fallback.html)
+  })
+
+  it("H6: a CUSTOM body can never name the reporter (the token is gone from the palette)", () => {
     const packet = buildReportPacket(
       reportRecord(),
       null,
-      [],
-      null,
-      "Ref {referenceCode}",
-      null,
+      ["https://r2/a?t=1"],
+      "Please prioritize.",
+      { subject: "{reporterName}", body: "Filed by {reporterName} ({dept})." },
     )
-    expect(packet.subject).toBe("Ref ABC123")
-    expect(packet.html).toContain("What was reported")
+    for (const part of [packet.subject, packet.text, packet.html]) {
+      expect(part).not.toContain("Dana Reporter")
+    }
+  })
+
+  it("strips retired or unknown tokens that survive interpolation instead of mailing them", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null, {
+      subject: "Ref {referenceCode} from {reporterName}",
+      body: "Dept: {dept}\nTitle: {title} {{title}} {nope}",
+    })
+    expect(packet.subject).toBe(`Ref ${reportRecord().referenceCode} from `)
+    expect(packet.text).not.toMatch(/\{[a-zA-Z]+\}/)
+    expect(packet.text).not.toContain("{{")
+    expect(packet.text).toContain("Dept: ")
+    expect(packet.text).toContain(`Title: ${reportRecord().title}`)
+    const resident = buildReportPacket(
+      reportRecord({ desc: "Trash here {{ and the pile keeps growing {corner} {title} end" }),
+      null,
+      [],
+      "Note with {braces} kept",
+      NO_TEMPLATES,
+    )
+    expect(resident.text).toContain("Trash here {{ and the pile keeps growing {corner} {title} end")
+    expect(resident.text).toContain("Note with {braces} kept")
+  })
+
+  it("links bare URLs inside template paragraphs so the default map link is clickable", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null, NO_TEMPLATES)
+    expect(packet.html).toMatch(/<a class="cv-link" href="https:\/\/www\.openstreetmap\.org\/\?mlat=/)
+    const custom = buildReportPacket(reportRecord(), null, [], null, {
+      subject: null,
+      body: "See https://example.org/x?a=1&b=2. Then <b>plain</b>",
+    })
+    expect(custom.html).toContain('href="https://example.org/x?a=1&amp;b=2"')
+    expect(custom.html).toContain("&lt;b&gt;plain&lt;/b&gt;")
+    expect(custom.html).not.toContain("<b>plain</b>")
+  })
+
+  it("renders the operator-facing status LABEL, not the raw enum value", () => {
+    const packet = buildReportPacket(reportRecord({ status: "in_progress" }), null, [], null, {
+      subject: null,
+      body: "Status: {status}",
+    })
+    expect(packet.text).toContain("Status: In progress")
+    expect(packet.text).not.toContain("in_progress")
   })
 })
 
