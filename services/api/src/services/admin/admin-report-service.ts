@@ -69,6 +69,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     deps.presignMedia ??
     (async (r2Key: string, thumbKey: string | null) =>
       thumbKey === null ? { url: r2Key } : { url: r2Key, thumbUrl: thumbKey })
+  const presignPacketMedia = deps.presignPacketMedia ?? presignMedia
 
   async function emitTimeline(event: {
     reportId: string
@@ -307,20 +308,17 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
 
     async routeToJurisdiction(
       id: string,
-      input: { contactEmailOverride: string | null; note: string | null; actorId: string | null },
+      input: { note: string | null; actorId: string | null },
     ): Promise<RouteToJurisdictionResult> {
       const record = await deps.repo.getReport(id)
       if (!record) throw AppError.notFound("Report not found")
 
       const routing = await deps.repo.getRouting(id)
-      const override =
-        input.contactEmailOverride && input.contactEmailOverride.trim() !== ""
-          ? input.contactEmailOverride.trim()
-          : null
-      if (override !== null) assertOverrideDomainAllowed(override, routing?.contact ?? null)
-      const toAddr = override ?? routing?.contact ?? null
+      const toAddr = routing?.contact ?? null
       if (toAddr === null || toAddr === "") {
-        throw AppError.notRoutable("No routing contact for this report's jurisdiction")
+        throw AppError.notRoutable(
+          "No routing contact for this report's jurisdiction — set one in Jurisdictions first",
+        )
       }
 
       assertRoutable(await deps.repo.getOutreach(id), toAddr)
@@ -330,7 +328,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       const attachments: OutboundAttachment[] = []
       let attachedBytesTotal = 0
       for (const m of media) {
-        const { url } = await presignMedia(m.r2Key, m.thumbKey)
+        const { url } = await presignPacketMedia(m.r2Key, m.thumbKey)
         mediaLinks.push(url)
         if (m.kind !== "image" || attachments.length >= MAX_PACKET_ATTACHMENTS) continue
         const bytes = deps.loadMediaBytes ? await deps.loadMediaBytes(m.r2Key) : null
@@ -354,11 +352,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         routing?.forwardBodyTemplate ?? null,
       )
 
-      const publicRouteAddr = override !== null ? (routing?.contact ?? null) : toAddr
-      const routeNote =
-        publicRouteAddr !== null && publicRouteAddr !== ""
-          ? `Sent to jurisdiction (${publicRouteAddr})`
-          : "Sent to jurisdiction"
+      const routeNote = `Sent to jurisdiction (${toAddr})`
       const prepared = await deps.repo.withRouteLock(id, async () => {
         assertRoutable(await deps.repo.getOutreach(id), toAddr)
         return deps.outboundMail.prepareReportToJurisdiction({
@@ -374,7 +368,6 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
             actorId: input.actorId,
             action: "report.routed",
             target: `report:${id}`,
-            meta: { override: override !== null },
           },
         })
       })
@@ -450,23 +443,6 @@ function sniffImageMime(bytes: Uint8Array): string | null {
   return null
 }
 
-export function assertOverrideDomainAllowed(override: string, knownContact: string | null): void {
-  const knownDomain = emailDomain(knownContact)
-  if (knownDomain === null) {
-    throw AppError.validation(
-      { contactEmailOverride: "no_jurisdiction_contact" },
-      "This jurisdiction has no routing contact on file, so a one-off destination cannot be verified. " +
-        "Save the jurisdiction's routing contact first, then route the report.",
-    )
-  }
-  if (emailDomain(override) !== knownDomain) {
-    throw AppError.validation(
-      { contactEmailOverride: "domain_not_allowed" },
-      `A one-off destination must be on the jurisdiction's own mail domain (@${knownDomain}).`,
-    )
-  }
-}
-
 function sameAddress(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase()
 }
@@ -481,15 +457,6 @@ function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
   if (landed && existing.sendFailed !== true && !retargeted) {
     throw AppError.conflict(ALREADY_ROUTED_CONFLICT)
   }
-}
-
-function emailDomain(email: string | null): string | null {
-  if (email === null) return null
-  const trimmed = email.trim().toLowerCase()
-  const at = trimmed.lastIndexOf("@")
-  if (at <= 0 || at === trimmed.length - 1) return null
-  const domain = trimmed.slice(at + 1)
-  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain) ? domain : null
 }
 
 async function recordFollowup(

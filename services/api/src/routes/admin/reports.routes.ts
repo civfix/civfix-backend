@@ -1,5 +1,6 @@
 
 import {
+  AppError,
   AdminReportListQuerySchema,
   FlagReportRequestSchema,
   RemoveReportRequestSchema,
@@ -35,7 +36,7 @@ import {
   type OutboundMailService,
 } from "../../services/admin/outbound-mail-service.js"
 import { makeDrizzleCleanupRepository } from "../../services/cleanup-repository.drizzle.js"
-import { makePrivateMediaPresigner } from "../../services/media-presign.js"
+import { makePacketMediaPresigner, makePrivateMediaPresigner } from "../../services/media-presign.js"
 import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "./mail.routes.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
 import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
@@ -91,6 +92,7 @@ export async function registerAdminReportsRoutes(
         repo,
         outboundMail,
         presignMedia: makePrivateMediaPresigner(container.storage),
+        presignPacketMedia: makePacketMediaPresigner(container.storage),
         loadLinkedEventsForReports: (reportIds) =>
           cleanupRepo.loadLinkedEventsForReports(reportIds),
         loadMediaBytes: (k) => container.storage.getObject(k),
@@ -159,8 +161,13 @@ export async function registerAdminReportsRoutes(
     async (request, reply) => {
       const operatorId = requireOperator(request)
       const { id, body } = parseBodyWithId(RouteReportRequestSchema, request)
+      if (typeof body.contactEmailOverride === "string" && body.contactEmailOverride.trim() !== "") {
+        throw AppError.validation(
+          { contactEmailOverride: "removed" },
+          "One-off destinations were removed. Set the jurisdiction's routing contact in Jurisdictions, then send.",
+        )
+      }
       const { threadId, routedTo } = await service().routeToJurisdiction(id, {
-        contactEmailOverride: body.contactEmailOverride ?? null,
         note: body.note ?? null,
         actorId: operatorId,
       })
