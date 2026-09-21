@@ -316,31 +316,40 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       }
 
       const routing = await deps.repo.getRouting(id)
-      const contact = routing?.contact ?? null
-      if (contact === null || contact === "") {
+      const outreach = await deps.repo.getOutreach(id)
+      assertNoSendInFlight(outreach)
+      if (outreach.threadId === null) {
+        throw AppError.validation(
+          { to: "not_routed" },
+          "Send the report to the jurisdiction first; follow-ups go on that conversation",
+        )
+      }
+      const destination = outreach.routedTo ?? routing?.contact ?? null
+      if (destination === null || destination === "") {
         throw AppError.validation({ to: "no city contact on file for this report" })
       }
-      await deps.outboundMail.sendToCity({
-        geoid: routing?.geoid ?? null,
-        toAddr: contact,
-        subject: `civfix report ${id}`,
+      await deps.outboundMail.appendOutbound(outreach.threadId, {
         body: input.body,
-        reportContext: { reportId: id, category: record.category, place: record.place },
-        org: routing?.dept ?? null,
+        toAddr: destination,
+        audit: {
+          actorId: input.actorId,
+          action: "mail.replied",
+          meta: { reportId: id, to: destination },
+        },
       })
       await recordFollowup(deps, id, {
-        note: `Follow-up sent to ${contact}`,
+        note: `Follow-up sent to ${destination}`,
         actorId: input.actorId,
         to: "city",
-        destination: contact,
+        destination,
       })
       await emitTimeline({
         reportId: id,
         status: record.status,
         kind: "status",
-        note: `Follow-up sent to ${contact}`,
+        note: `Follow-up sent to ${destination}`,
       })
-      return { to: "city", destination: contact }
+      return { to: "city", destination }
     },
 
     async routeToJurisdiction(
@@ -492,10 +501,14 @@ function sameAddress(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase()
 }
 
-function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
+function assertNoSendInFlight(existing: ReportOutreachState): void {
   if (existing.sendInFlight === true) {
     throw AppError.conflict(SEND_IN_FLIGHT_CONFLICT)
   }
+}
+
+function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
+  assertNoSendInFlight(existing)
   const landed =
     existing.status === "sent" || existing.status === "delivered" || existing.status === "replied"
   const retargeted = existing.routedTo !== null && !sameAddress(existing.routedTo, toAddr)
