@@ -93,6 +93,8 @@ export class InMemoryMailRepository implements MailRepository {
       toAddr: over.toAddr ?? null,
       subject: over.subject ?? null,
       body: over.body ?? null,
+      html: over.html ?? null,
+      kind: over.kind ?? null,
       attachments: over.attachments ?? [],
       messageId: over.messageId ?? null,
       inReplyTo: over.inReplyTo ?? null,
@@ -235,6 +237,8 @@ export class InMemoryMailRepository implements MailRepository {
       toAddr: input.toAddr ?? null,
       subject: input.subject ?? null,
       body: input.body ?? null,
+      html: input.html ?? null,
+      kind: input.kind ?? null,
       attachments: input.attachments ?? [],
       messageId: input.messageId ?? null,
       inReplyTo: input.inReplyTo ?? null,
@@ -475,6 +479,12 @@ export class InMemoryMailRepository implements MailRepository {
       meta: input.meta ?? null,
     })
     return Promise.resolve(record.id)
+  }
+
+  setThreadSubject(id: string, subject: string): Promise<void> {
+    const t = this.threads.get(id)
+    if (t) t.subject = subject
+    return Promise.resolve()
   }
 
   stats7d(): Promise<MailStatsResponse> {

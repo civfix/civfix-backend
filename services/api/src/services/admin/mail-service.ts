@@ -11,6 +11,7 @@ import type {
   MailThreadDTO,
 } from "@civfix/shared"
 import type { ListThreadsInput, MailRepository } from "./mail-repository.drizzle.js"
+import { domainOf } from "../../adapters/mail-text.js"
 import { SEND_IN_FLIGHT_CONFLICT } from "./admin-report-service.js"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 
@@ -145,17 +146,40 @@ export function makeMailService(deps: MailServiceDeps): MailService {
   }
 }
 
+const OURS_LOCAL_PART_RE = /^(reply|report|event)-/i
+
 export function resolveCorrespondent(
   messages: readonly MailMessageDTO[],
   fromOutreach: string,
+  replyDomain?: string,
 ): string | null {
+  const ourDomains = new Set(
+    [domainOf(fromOutreach), replyDomain ?? ""].map((d) => d.trim().toLowerCase()).filter((d) => d.length > 0),
+  )
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     if (!m) continue
     const from = m.from
-    if (from.length > 0 && !addressesEqual(from, fromOutreach)) return from
+    if (from.length > 0 && !isOurAddress(from, fromOutreach, ourDomains)) return from
   }
   return null
+}
+
+function isOurAddress(from: string, fromOutreach: string, ourDomains: ReadonlySet<string>): boolean {
+  if (addressesEqual(from, fromOutreach)) return true
+  const addr = emailOf(from)
+  if (addr === null) return false
+  const at = addr.lastIndexOf("@")
+  if (at < 0) return false
+  const local = addr.slice(0, at)
+  const domain = addr.slice(at + 1)
+  return ourDomains.has(domain) && OURS_LOCAL_PART_RE.test(local)
+}
+
+function emailOf(from: string): string | null {
+  const angled = /<([^>]+)>/.exec(from)
+  const raw = (angled?.[1] ?? from).trim().toLowerCase()
+  return raw.length > 0 ? raw : null
 }
 
 export function latestOutbound(messages: readonly MailMessageDTO[]): MailMessageDTO | null {

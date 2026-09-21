@@ -50,6 +50,7 @@ export interface ReportOutreachState {
   threadId: string | null
   routedTo: string | null
   routedAt: string | null
+  packetSent: boolean
   sendFailed?: boolean
   sendInFlight?: boolean
 }

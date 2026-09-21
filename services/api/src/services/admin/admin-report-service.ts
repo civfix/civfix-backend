@@ -18,7 +18,7 @@ import type {
   ReportRouting,
   ReportTimelineItem,
 } from "@civfix/shared"
-import type { OutboundAttachment } from "@civfix/shared/interfaces"
+import type { PacketAttachment } from "./outbound-mail-service.js"
 import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"
@@ -186,6 +186,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         threadId: outreach.threadId,
         routedTo: outreach.routedTo,
         routedAt: outreach.routedAt,
+        ...(outreach.sendFailed !== undefined ? { sendFailed: outreach.sendFailed } : {}),
       }
       return {
         ...base,
@@ -371,7 +372,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
 
       const media = await deps.repo.listMedia(id)
       const mediaLinks: string[] = []
-      const attachments: OutboundAttachment[] = []
+      const attachments: PacketAttachment[] = []
       let attachedBytesTotal = 0
       for (const m of media) {
         const { url } = await presignPacketMedia(m.r2Key, m.thumbKey)
@@ -383,6 +384,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         attachedBytesTotal += bytes.byteLength
         const contentType = attachmentContentType(m.contentType, bytes)
         attachments.push({
+          key: m.r2Key,
           filename: attachmentFilename(m.r2Key, attachments.length, contentType),
           contentType,
           content: bytes,
@@ -509,10 +511,9 @@ function assertNoSendInFlight(existing: ReportOutreachState): void {
 
 function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
   assertNoSendInFlight(existing)
-  const landed =
-    existing.status === "sent" || existing.status === "delivered" || existing.status === "replied"
   const retargeted = existing.routedTo !== null && !sameAddress(existing.routedTo, toAddr)
-  if (landed && existing.sendFailed !== true && !retargeted) {
+  const bounced = existing.status === "bounced"
+  if (existing.packetSent && existing.sendFailed !== true && !retargeted && !bounced) {
     throw AppError.conflict(ALREADY_ROUTED_CONFLICT)
   }
 }

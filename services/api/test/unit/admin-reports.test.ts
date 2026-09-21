@@ -3,6 +3,7 @@ import { AppError } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js"
 import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
+import type { MailMessageKind } from "../../src/services/admin/mail-repository.js"
 import {
   makeAdminReportService,
   resolveListFilter,
@@ -884,6 +885,8 @@ describe("routeToJurisdiction re-send gate", () => {
     outreach: {
       threadStatus: string
       hasInbound?: boolean
+      packetSent?: boolean
+      outboundKinds?: (MailMessageKind | null)[]
       sendFailed?: boolean
       routedTo?: string
       contact?: string
@@ -905,6 +908,9 @@ describe("routeToJurisdiction re-send gate", () => {
         threadId: "t-1",
         threadStatus: outreach.threadStatus,
         hasInbound: outreach.hasInbound ?? false,
+        ...(outreach.outboundKinds !== undefined
+          ? { outboundKinds: outreach.outboundKinds }
+          : { packetSent: outreach.packetSent ?? true }),
         routedTo: outreach.routedTo ?? "311@lacity.gov",
         ...(outreach.sendFailed !== undefined ? { sendFailed: outreach.sendFailed } : {}),
       },
@@ -996,6 +1002,7 @@ describe("routeToJurisdiction re-send gate", () => {
         threadId: thread?.id ?? "t-1",
         threadStatus: "sent",
         hasInbound: false,
+        packetSent: true,
         routedTo: "311@lacity.gov",
         routedAt: NOW,
         sendFailed: true,
@@ -1009,6 +1016,42 @@ describe("routeToJurisdiction re-send gate", () => {
     expect(routedTo).toBe("311@lacity.gov")
     expect(h.mailRepo.events.some((e) => e.type === "sent")).toBe(true)
     expect((await h.svc.get("rep-1")).status).toBe("acknowledged")
+  })
+
+  it("lets the operator send the packet after a citizen's @city discussion forward", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "sent", packetSent: false })
+    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
+    expect(routedTo).toBe("311@lacity.gov")
+    expect(h.mailer.sent).toHaveLength(1)
+    expect(h.mailRepo.messages.at(-1)?.kind).toBe("packet")
+  })
+
+  it("REFUSES a second packet for a report routed BEFORE 0174 (kind NULL is a packet)", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "sent", outboundKinds: [null] })
+    await expect(
+      h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+    expect(h.mailer.sent).toHaveLength(0)
+  })
+
+  it("REFUSES a second packet once one has been sent, whatever the thread status says", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "needs_action", packetSent: true })
+    await expect(
+      h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+    expect(h.mailer.sent).toHaveLength(0)
+  })
+
+  it("exposes sendFailed on the report DTO so the operator can see a resend is allowed", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "sent", sendFailed: true })
+    expect((await h.svc.get("rep-1")).outreach.sendFailed).toBe(true)
+    const clean = harness()
+    seedRouted(clean, { threadStatus: "sent" })
+    expect((await clean.svc.get("rep-1")).outreach.sendFailed).toBe(false)
   })
 
   it("clears a thread's 'bounced' status once a re-route actually delivers (no unbounded re-sends)", async () => {
@@ -1054,6 +1097,7 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
             threadId: `t-${marker}`,
             threadStatus: "sent",
             hasInbound: false,
+            packetSent: true,
             routedTo: input.toAddr,
             routedAt: NOW,
             sendFailed: false,
@@ -1106,6 +1150,7 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
             threadId: "t-1",
             threadStatus: "sent",
             hasInbound: false,
+            packetSent: true,
             routedTo: input.toAddr,
             routedAt: NOW,
             sendFailed: false,
@@ -1241,6 +1286,7 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
             threadId: "t-1",
             threadStatus: "sent",
             hasInbound: false,
+            packetSent: true,
             routedTo: input.toAddr,
             routedAt: NOW,
             sendFailed: false,
@@ -1380,6 +1426,7 @@ describe("runAutoForwardWith delegates the duplicate-send decision", () => {
         threadId: "t-1",
         threadStatus: "sent",
         hasInbound: false,
+        packetSent: true,
         routedTo: "311@lacity.gov",
         routedAt: NOW,
         sendFailed: true,

@@ -61,6 +61,8 @@ describe("toThreadDTO", () => {
         attachments: [],
         messageId: null,
         inReplyTo: null,
+        html: null,
+        kind: null,
         unaffiliated: false,
         effectsClaimedAt: null,
         effectsAppliedAt: null,
@@ -78,6 +80,8 @@ describe("toThreadDTO", () => {
         attachments: [{ key: "r2/a.pdf", filename: "a.pdf", size: 10 }],
         messageId: null,
         inReplyTo: null,
+        html: null,
+        kind: null,
         unaffiliated: false,
         effectsClaimedAt: null,
         effectsAppliedAt: null,
@@ -338,5 +342,14 @@ describe("InMemoryMailRepository: recordEvent", () => {
     expect(typeof id).toBe("string")
     expect(repo.events).toHaveLength(1)
     expect(repo.events[0]?.meta).toEqual({ to: "x@y.com" })
+  })
+})
+
+describe("InMemoryMailRepository: thread subject", () => {
+  it("rewrites a thread subject in place", async () => {
+    const repo = new InMemoryMailRepository()
+    const t = await repo.createThread({ subject: "old" })
+    await repo.setThreadSubject(t.id, "new")
+    expect((await repo.getThreadRecord(t.id))?.subject).toBe("new")
   })
 })
