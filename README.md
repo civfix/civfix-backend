@@ -391,3 +391,16 @@ blocklist so no real user can take it.
 
 `services/api/PHASE1-ACCEPTANCE.md` maps each Phase-1 done-criterion to the endpoint(s)/code that
 satisfy it and the test(s) that prove it, and marks which are proven locally vs Docker-gated/CI.
+
+## License
+
+civfix-backend is free software, licensed under the
+[GNU Affero General Public License, version 3 only](LICENSE). Every file is
+covered by the declaration in [REUSE.toml](REUSE.toml); there are no per-file
+license headers. The corresponding source for the API and the media worker is
+this repository, <https://github.com/civfix/civfix-backend>; the community web
+app and the operator dashboard link to their own repositories at the deployed
+commit. Contributions are accepted under
+the [Contributor License Agreement](CLA.md) — see
+[CONTRIBUTING.md](CONTRIBUTING.md). civfix is a project of Reach Out Los Angeles; the civfix name and
+logos are its trademarks and are not covered by the license.
