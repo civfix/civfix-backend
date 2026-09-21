@@ -562,8 +562,15 @@ describe("admin reports mutations", () => {
     ).rejects.toMatchObject({ httpStatus: 422 })
   })
 
-  it("follow-up to city calls OutboundMailService.sendToCity (delivers + threads) + audits", async () => {
+  it("follow-up to city goes on the REPORT'S OWN thread, as a reply the city can correlate", async () => {
     const { repo, mailRepo, mailer, svc } = harness()
+    const thread = mailRepo.seedThread({
+      reportId: "rep-1",
+      jurisdictionGeoid: "0644000",
+      subject: "Hazard report — Los Angeles",
+      status: "sent",
+    })
+    mailRepo.seedMessage({ threadId: thread.id, direction: "out", toAddr: "311@lacity.gov" })
     repo.seedReport({
       id: "rep-1",
       category: "hazard",
@@ -572,30 +579,79 @@ describe("admin reports mutations", () => {
         geoid: "0644000",
         dept: "LA",
         place: "Los Angeles",
-        contact: "311@lacity.gov",
+        contact: "new-311@lacity.gov",
         routed: true,
       },
+      outreach: { threadId: thread.id, threadStatus: "sent", routedTo: "311@lacity.gov" },
     })
+    const before = mailRepo.messagesOf(thread.id).length
+
     const result = await svc.sendFollowup("rep-1", {
       to: "city",
       body: "Please prioritize this hazard.",
       actorId: "op-1",
     })
+
     expect(result).toEqual({ to: "city", destination: "311@lacity.gov" })
-    const sent = mailer.sent.find((m) => m.to === "311@lacity.gov")
-    expect(sent).toBeDefined()
-    expect(sent?.outbound?.from).toMatch(/^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/)
-    expect(sent?.outbound?.replyTo).toBeUndefined()
-    const thread = [...mailRepo.threads.values()].find(
-      (t) => t.jurisdictionGeoid === "0644000" && t.reportId === null,
-    )
-    expect(thread).toBeDefined()
-    expect(thread?.threadToken).toMatch(/^[a-z2-7]{12}$/)
-    expect(mailRepo.messagesOf(thread!.id).some((m) => m.direction === "out")).toBe(true)
+    expect(mailRepo.messagesOf(thread.id)).toHaveLength(before + 1)
+    expect(mailRepo.messagesOf(thread.id).at(-1)).toMatchObject({
+      direction: "out",
+      toAddr: "311@lacity.gov",
+      subject: "Re: Hazard report — Los Angeles",
+    })
+    expect([...mailRepo.threads.values()]).toHaveLength(1)
+    expect(mailer.sent.at(-1)?.to).toBe("311@lacity.gov")
+    expect(repo.timeline.get("rep-1")?.at(-1)?.note).toBe("Follow-up sent to 311@lacity.gov")
     expect(repo.audits.at(-1)).toMatchObject({
       action: "report.followup_sent",
-      meta: { to: "city" },
+      meta: { to: "city", destination: "311@lacity.gov" },
     })
+  })
+
+  it("follow-up to city REFUSES while a send on that thread is still in flight (409, nothing mailed)", async () => {
+    const { repo, mailRepo, mailer, svc } = harness()
+    const thread = mailRepo.seedThread({ reportId: "rep-1", subject: "Hazard report", status: "sent" })
+    repo.seedReport({
+      id: "rep-1",
+      routing: {
+        geoid: "0644000",
+        dept: "LA",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: true,
+      },
+      outreach: {
+        threadId: thread.id,
+        threadStatus: "sent",
+        routedTo: "311@lacity.gov",
+        sendInFlight: true,
+      },
+    })
+    const before = mailRepo.messagesOf(thread.id).length
+    await expect(
+      svc.sendFollowup("rep-1", { to: "city", body: "hi", actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+    expect(mailer.sent).toHaveLength(0)
+    expect(mailRepo.messagesOf(thread.id)).toHaveLength(before)
+  })
+
+  it("follow-up to city is REFUSED until the report itself has been routed (no orphan thread)", async () => {
+    const { repo, mailRepo, mailer, svc } = harness()
+    repo.seedReport({
+      id: "rep-1",
+      routing: {
+        geoid: "0644000",
+        dept: "LA",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+    })
+    await expect(
+      svc.sendFollowup("rep-1", { to: "city", body: "hi", actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 422, fields: { to: "not_routed" } })
+    expect(mailer.sent).toHaveLength(0)
+    expect([...mailRepo.threads.values()]).toHaveLength(0)
   })
 
   it("follow-up to city with no contact on file is a 422", async () => {
