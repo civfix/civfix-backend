@@ -364,6 +364,34 @@ describe("InMemoryMailRepository: outbound snapshot + failure recording", () => 
     expect(repo.audits.at(-1)).toMatchObject({ action: "mail.send_failed", target: "report:rep-1" })
   })
 
+  it("re-reads the latest outbound message whole, and only outbound ones", async () => {
+    const repo = new InMemoryMailRepository()
+    const t = await repo.createThread({ subject: "Pothole" })
+    await repo.insertMessage({ threadId: t.id, direction: "out", toAddr: "clerk@city.gov", body: "first" })
+    const inbound = await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "re" })
+    const last = await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      toAddr: "clerk@city.gov",
+      subject: "civfix report: Pothole",
+      body: "second",
+      html: "<p>second</p>",
+      kind: "packet",
+      attachments: [{ key: "media/r2/a.jpg", filename: "a.jpg", size: 4 }],
+    })
+
+    expect(await repo.latestOutboundMessageId(t.id)).toBe(last?.id)
+    expect(await repo.getOutboundMessageForResend(inbound?.id ?? "")).toBeNull()
+    expect(await repo.getOutboundMessageForResend(last?.id ?? "")).toEqual({
+      id: last?.id,
+      toAddr: "clerk@city.gov",
+      subject: "civfix report: Pothole",
+      body: "second",
+      html: "<p>second</p>",
+      attachments: [{ key: "media/r2/a.jpg", filename: "a.jpg", size: 4 }],
+    })
+  })
+
   it("rewrites a thread subject in place", async () => {
     const repo = new InMemoryMailRepository()
     const t = await repo.createThread({ subject: "old" })

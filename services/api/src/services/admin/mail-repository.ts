@@ -132,6 +132,15 @@ export interface RecordSendFailureInput {
   audit?: MailAuditInput
 }
 
+export interface OutboundMessageSnapshot {
+  id: string
+  toAddr: string | null
+  subject: string | null
+  body: string
+  html: string | null
+  attachments: MailAttachment[]
+}
+
 export interface RecordEventInput {
   threadId?: string | null
   messageId?: string | null
@@ -156,6 +165,8 @@ export interface MailRepository {
   recordEvent(input: RecordEventInput): Promise<string>
   recordSendFailure(input: RecordSendFailureInput): Promise<void>
   setThreadSubject(id: string, subject: string): Promise<void>
+  latestOutboundMessageId(threadId: string): Promise<string | null>
+  getOutboundMessageForResend(messageId: string): Promise<OutboundMessageSnapshot | null>
   stats7d(): Promise<MailStatsResponse>
   getOutreachState(geoid: string): Promise<OutreachStateRecord | null>
   setOutreachState(geoid: string, patch: OutreachStatePatch): Promise<OutreachStateRecord>

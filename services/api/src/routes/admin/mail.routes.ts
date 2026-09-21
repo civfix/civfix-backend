@@ -85,12 +85,17 @@ export async function registerAdminMailRoutes(
       makeMailService({
         repo: overrides.repo,
         outboundMail: overrides.outboundMail,
+        loadAttachmentBytes: (key) => (overrides.outboundStorage ?? container.storage).getObject(key),
       }),
     () => {
       const sql = container.getDb().sql
       const repo: MailRepository = makeDrizzleMailRepository(sql)
       const outboundMail = makeContainerOutboundMailService(container, { repo, logger: app.log })
-      return makeMailService({ repo, outboundMail })
+      return makeMailService({
+        repo,
+        outboundMail,
+        loadAttachmentBytes: (key) => container.storage.getObject(key),
+      })
     },
   )
 

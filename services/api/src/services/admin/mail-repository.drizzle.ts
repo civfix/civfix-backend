@@ -29,6 +29,7 @@ import {
   type MailMessageRecord,
   type MailRepository,
   type MailThreadRecord,
+  type OutboundMessageSnapshot,
   type OutreachStatePatch,
   type OutreachStateRecord,
   type ClaimEffectsInput,
@@ -38,7 +39,13 @@ import {
   type RecordSendFailureInput,
   type ThreadInit,
 } from "./mail-repository.js"
-import type { MailDirection, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
+import type {
+  MailAttachment,
+  MailDirection,
+  MailStatsResponse,
+  MailStatus,
+  MailThreadDTO,
+} from "@civfix/shared"
 
 export * from "./mail-repository.js"
 export {
@@ -627,6 +634,45 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async setThreadSubject(id: string, subject: string): Promise<void> {
       await sql`UPDATE mail_threads SET subject = ${subject} WHERE id = ${id}`
+    },
+
+    async latestOutboundMessageId(threadId: string): Promise<string | null> {
+      const rows = await sql<{ id: string }[]>`
+        SELECT id
+        FROM mail_messages
+        WHERE thread_id = ${threadId} AND direction = 'out'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `
+      return rows[0]?.id ?? null
+    },
+
+    async getOutboundMessageForResend(messageId: string): Promise<OutboundMessageSnapshot | null> {
+      const rows = await sql<
+        {
+          id: string
+          to_addr: string | null
+          subject: string | null
+          body: string | null
+          html: string | null
+          attachments: MailAttachment[] | null
+        }[]
+      >`
+        SELECT id, to_addr, subject, body, html, attachments
+        FROM mail_messages
+        WHERE id = ${messageId} AND direction = 'out'
+        LIMIT 1
+      `
+      const row = rows[0]
+      if (!row) return null
+      return {
+        id: row.id,
+        toAddr: row.to_addr,
+        subject: row.subject,
+        body: row.body ?? "",
+        html: row.html,
+        attachments: row.attachments ?? [],
+      }
     },
 
     async stats7d(): Promise<MailStatsResponse> {

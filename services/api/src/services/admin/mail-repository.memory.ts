@@ -11,6 +11,7 @@ import {
   type MailMessageRecord,
   type MailRepository,
   type MailThreadRecord,
+  type OutboundMessageSnapshot,
   type OutreachStatePatch,
   type OutreachStateRecord,
   type ClaimEffectsInput,
@@ -498,6 +499,28 @@ export class InMemoryMailRepository implements MailRepository {
     const t = this.threads.get(id)
     if (t) t.subject = subject
     return Promise.resolve()
+  }
+
+  latestOutboundMessageId(threadId: string): Promise<string | null> {
+    let best: MailMessageRecord | null = null
+    for (const m of this.messages) {
+      if (m.threadId !== threadId || m.direction !== "out") continue
+      if (best === null || cmpCreated(m, best) > 0) best = m
+    }
+    return Promise.resolve(best?.id ?? null)
+  }
+
+  getOutboundMessageForResend(messageId: string): Promise<OutboundMessageSnapshot | null> {
+    const m = this.messages.find((x) => x.id === messageId && x.direction === "out")
+    if (!m) return Promise.resolve(null)
+    return Promise.resolve({
+      id: m.id,
+      toAddr: m.toAddr,
+      subject: m.subject,
+      body: m.body ?? "",
+      html: m.html,
+      attachments: m.attachments,
+    })
   }
 
   stats7d(): Promise<MailStatsResponse> {
