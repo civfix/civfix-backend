@@ -1,5 +1,5 @@
 
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Sql } from "../../db/client.js"
 import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination.js"
 import { writeAudit } from "./audit.js"
 import { upsertJurisdictionContacts } from "./discovery-repository.drizzle.js"
@@ -26,47 +26,6 @@ import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import { ilikeAnyOf } from "./sql-fragments.js"
 
 const DIRECTORY_FACET_TTL_MS = 30_000
-
-export const ROUTE_REPORTS_BATCH_SIZE = 500
-
-export const ROUTE_REPORTS_MAX_BATCHES = 1_000
-
-async function routeWaitingBatch(tx: Queryable, geoid: string): Promise<number> {
-  const rows = await tx<{ routed: string }[]>`
-    WITH picked AS (
-      SELECT id
-      FROM reports
-      WHERE jurisdiction_geoid = ${geoid}
-        AND deleted_at IS NULL
-        AND status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
-      ORDER BY id
-      LIMIT ${ROUTE_REPORTS_BATCH_SIZE}
-      FOR UPDATE SKIP LOCKED
-    ),
-    routed AS (
-      UPDATE reports
-      SET status = 'acknowledged'
-      WHERE id IN (SELECT id FROM picked)
-      RETURNING id
-    ),
-    timeline AS (
-      INSERT INTO report_timeline (report_id, status, note)
-      SELECT id, 'acknowledged', 'Routed to jurisdiction contact' FROM routed
-    )
-    SELECT COUNT(*)::text AS routed FROM routed
-  `
-  return parseCount(rows[0]?.routed)
-}
-
-async function drainWaitingReports(sql: Sql, geoid: string): Promise<number> {
-  let routed = 0
-  for (let batch = 0; batch < ROUTE_REPORTS_MAX_BATCHES; batch++) {
-    const n = await routeWaitingBatch(sql, geoid)
-    if (n === 0) return routed
-    routed += n
-  }
-  return routed
-}
 
 const PG_UNIQUE_VIOLATION = "23505"
 const JURISDICTION_HANDLE_CONSTRAINT = "jurisdictions_handle_lower_key"
@@ -183,7 +142,7 @@ export function makeDrizzleJurisdictionContactsRepository(
       geoid: string,
       input: SaveContactsInput,
       audit: { actorId: string | null },
-    ): Promise<{ routedReports: number; taskResolved: boolean }> {
+    ): Promise<{ taskResolved: boolean }> {
       const committed = await sql.begin(async (tx) => {
         await upsertJurisdictionContacts(tx, geoid, input.contacts, input.defaultEmails, input.formUrl)
         await tx`
@@ -210,9 +169,6 @@ export function makeDrizzleJurisdictionContactsRepository(
         `
         const taskResolved = tasks.length > 0
 
-        const routed = await routeWaitingBatch(tx, geoid)
-        const drainPending = routed === ROUTE_REPORTS_BATCH_SIZE
-
         await writeAudit(tx, {
           actorId: audit.actorId,
           action: "discovery.contacts_saved",
@@ -221,24 +177,14 @@ export function makeDrizzleJurisdictionContactsRepository(
             geoid,
             categories: Object.keys(input.contacts),
             defaultEmails: input.defaultEmails,
-            routedReports: routed,
-            drainPending,
             taskResolved,
           },
         })
 
-        return { routedReports: routed, taskResolved, drainPending }
+        return { taskResolved }
       })
       invalidateDefaultFacetCache()
-      if (!committed.drainPending) {
-        return { routedReports: committed.routedReports, taskResolved: committed.taskResolved }
-      }
-      const drained = await drainWaitingReports(sql, geoid)
-      invalidateDefaultFacetCache()
-      return {
-        routedReports: committed.routedReports + drained,
-        taskResolved: committed.taskResolved,
-      }
+      return { taskResolved: committed.taskResolved }
     },
 
     async patch(
@@ -385,9 +331,9 @@ export function makeDrizzleJurisdictionContactsRepository(
 
       const rows = await sql<DirectoryRow[]>`
         WITH waiting AS (
-          -- "Waiting" = open, un-routed reports (the same statuses save-and-route would flip): excludes
-          -- acknowledged/in_progress (already routed) and rejected/resolved (closed). So reportsWaiting is
-          -- the backlog needing a contact, and it drops to 0 once the jurisdiction is routed.
+          -- "Waiting" = open, un-routed reports: excludes acknowledged/in_progress (already routed) and
+          -- rejected/resolved (closed). So reportsWaiting is the backlog needing a contact, and it drops
+          -- as operators route those reports one by one.
           --
           -- Aggregated ONCE for every geoid rather than per row. The page's COUNT(*) OVER() has to
           -- materialize the whole filtered set before OFFSET/LIMIT, so as a per-row LATERAL this aggregate
