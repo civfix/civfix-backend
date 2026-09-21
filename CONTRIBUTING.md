@@ -7,9 +7,9 @@ quality: correct, secure, fast, reviewed.
 ## License and contributor agreement
 
 This repository is licensed under the GNU Affero General Public License,
-version 3 only (`LICENSE`). civfix is a project of Reach Out Los Angeles. By
+version 3 only (`LICENSE`). civfix is a project of Reach Out Los Angeles Inc.. By
 contributing you agree to the civfix Individual Contributor License Agreement
-in `CLA.md`, which lets Reach Out Los Angeles distribute your work under the
+in `CLA.md`, which lets Reach Out Los Angeles Inc. distribute your work under the
 AGPL, under the additional permissions the project carries, and under
 commercial terms when a government customer requires them. Until the automated
 agreement check is in place, state your acceptance in your first pull request

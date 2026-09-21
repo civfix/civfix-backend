@@ -402,5 +402,5 @@ this repository, <https://github.com/civfix/civfix-backend>; the community web
 app and the operator dashboard link to their own repositories at the deployed
 commit. Contributions are accepted under
 the [Contributor License Agreement](CLA.md) — see
-[CONTRIBUTING.md](CONTRIBUTING.md). civfix is a project of Reach Out Los Angeles; the civfix name and
+[CONTRIBUTING.md](CONTRIBUTING.md). civfix is a project of Reach Out Los Angeles Inc.; the civfix name and
 logos are its trademarks and are not covered by the license.

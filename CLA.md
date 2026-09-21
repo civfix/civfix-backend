@@ -1,7 +1,7 @@
 # civfix Individual Contributor License Agreement
 
 Thank you for your interest in contributing to civfix ("the Project"), a
-project of Reach Out Los Angeles ("the Owner"). This
+project of Reach Out Los Angeles Inc. ("the Owner"). This
 agreement clarifies the intellectual-property license granted with
 contributions from any person or entity. It protects you as a contributor
 and it protects the Project and the communities that rely on it; it does not
