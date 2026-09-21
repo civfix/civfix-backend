@@ -320,6 +320,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     this.appendTimeline(id, {
       status: seeded.record.status,
       note: next ? "Flagged for review" : "Flag cleared",
+      kind: "warn",
       who: "operator",
       createdAt: this.nextDate(),
     })
@@ -339,6 +340,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     this.appendTimeline(id, {
       status: "rejected",
       note: input.note,
+      kind: "remove",
       who: "operator",
       createdAt: this.nextDate(),
     })
@@ -372,6 +374,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     this.appendTimeline(id, {
       status: this.reports.get(id)?.record.status ?? "submitted",
       note: input.note,
+      kind: "followup",
       who: "operator",
       createdAt: this.nextDate(),
     })

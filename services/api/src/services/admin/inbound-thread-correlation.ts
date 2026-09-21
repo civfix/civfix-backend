@@ -8,12 +8,13 @@ import type {
 } from "./mail-repository.drizzle.js"
 import { makeDrizzleAdminReportRepository } from "./admin-report-repository.drizzle.js"
 import type { AdminReportRepository } from "./admin-report-service.js"
+import { JURISDICTION_REPLY_NOTE } from "./admin-report-status.js"
 import { makeDrizzleCleanupRepository } from "../cleanup-repository.drizzle.js"
 import type { CleanupRepository } from "../cleanup-service.js"
 import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 import { domainOf, domainsAligned } from "../../adapters/inbound-mail.cf.js"
 
-export const JURISDICTION_REPLY_NOTE = "The city responded to this report"
+export { JURISDICTION_REPLY_NOTE }
 
 export const EFFECTS_LEASE_MS = 10 * 60 * 1000
 

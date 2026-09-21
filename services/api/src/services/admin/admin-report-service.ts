@@ -1,5 +1,10 @@
 
-import { AppError, ErrorCode } from "@civfix/shared"
+import {
+  ADMIN_REPORT_STATUS_LABELS,
+  AppError,
+  canTransitionReportStatus,
+  ErrorCode,
+} from "@civfix/shared"
 import type {
   AdminReportCounts,
   AdminReportDTO,
@@ -19,7 +24,7 @@ import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
 import {
-  JURISDICTION_REPLY_NOTE_PREFIX,
+  JURISDICTION_REPLY_NOTE,
   resolveListFilter,
   statusChangeNote,
   timelineKindForStatus,
@@ -107,7 +112,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     const kind: ReportTimelineItem["kind"] =
       (record.kind ?? null) !== null
         ? (record.kind as ReportTimelineItem["kind"])
-        : record.note?.startsWith(JURISDICTION_REPLY_NOTE_PREFIX) === true
+        : record.note?.startsWith(JURISDICTION_REPLY_NOTE) === true
           ? "reply"
           : timelineKindForStatus(record.status)
     return {
@@ -199,13 +204,34 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       id: string,
       input: { status: AdminReportStatus; actorId: string | null },
     ): Promise<void> {
+      const record = await deps.repo.getReport(id)
+      if (!record) throw AppError.notFound("Report not found")
+      if (input.status === "rejected") {
+        throw AppError.validation({ status: "use_remove" }, "Use Remove to reject a report")
+      }
+      if (record.status === input.status) return
+      if (!canTransitionReportStatus(record.status, input.status)) {
+        throw AppError.validation(
+          { status: "illegal_transition" },
+          `Cannot move a report from ${ADMIN_REPORT_STATUS_LABELS[record.status]} to ` +
+            `${ADMIN_REPORT_STATUS_LABELS[input.status]}`,
+        )
+      }
       const note = statusChangeNote(input.status)
-      const ok = await deps.repo.setStatus(id, {
-        status: input.status,
+      const advanced = await deps.repo.advanceStatusIfIn(id, {
+        from: [record.status],
+        to: input.status,
         note,
         actorId: input.actorId,
+        kind: timelineKindForStatus(input.status),
       })
-      if (!ok) throw AppError.notFound("Report not found")
+      if (!advanced) {
+        const current = await deps.repo.getReport(id)
+        if (current?.status === input.status) return
+        throw AppError.conflict(
+          "This report moved on while you were looking at it — reload and try again",
+        )
+      }
       await emitTimeline({ reportId: id, status: input.status, kind: timelineKindForStatus(input.status), note })
     },
 
@@ -405,6 +431,16 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         actorId: input.actorId,
       })
       if (!ok) throw AppError.notFound("Report not found")
+      const note =
+        input.verdict === "approved" ? "Approved by an operator" : "Rejected by an operator"
+      await deps.repo.appendSystemTimeline(input.id, { note, kind: "status" })
+      const record = await deps.repo.getReport(input.id)
+      await emitTimeline({
+        reportId: input.id,
+        status: record?.status ?? "submitted",
+        kind: "status",
+        note,
+      })
     },
   }
 }

@@ -112,26 +112,41 @@ export async function registerAdminReportsRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "setReportStatus", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id, body } = parseBodyWithId(SetReportStatusRequestSchema, request)
-    await service().setStatus(id, { status: body.status, actorId: operatorId })
-    sendOk(reply)
-  })
+  route(
+    app,
+    "setReportStatus",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_REPORT_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const operatorId = requireOperator(request)
+      const { id, body } = parseBodyWithId(SetReportStatusRequestSchema, request)
+      await service().setStatus(id, { status: body.status, actorId: operatorId })
+      sendOk(reply)
+    },
+  )
 
-  route(app, "flagReport", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id, body } = parseBodyWithId(FlagReportRequestSchema, request)
-    await service().flag(id, { reason: body.reason ?? null, actorId: operatorId })
-    sendOk(reply)
-  })
+  route(
+    app,
+    "flagReport",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_REPORT_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const operatorId = requireOperator(request)
+      const { id, body } = parseBodyWithId(FlagReportRequestSchema, request)
+      await service().flag(id, { reason: body.reason ?? null, actorId: operatorId })
+      sendOk(reply)
+    },
+  )
 
-  route(app, "removeReport", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id, body } = parseBodyWithId(RemoveReportRequestSchema, request)
-    await service().remove(id, { reason: body.reason ?? null, actorId: operatorId })
-    sendOk(reply)
-  })
+  route(
+    app,
+    "removeReport",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_REPORT_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const operatorId = requireOperator(request)
+      const { id, body } = parseBodyWithId(RemoveReportRequestSchema, request)
+      await service().remove(id, { reason: body.reason ?? null, actorId: operatorId })
+      sendOk(reply)
+    },
+  )
 
   route(
     app,
@@ -145,13 +160,18 @@ export async function registerAdminReportsRoutes(
     },
   )
 
-  route(app, "setReportVerdict", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id, body } = parseBodyWithId(SetReportVerdictRequestSchema, request)
-    await service().setVerdict({ id, verdict: body.verdict, actorId: operatorId })
-    const payload: SetReportVerdictResponse = { ok: true }
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "setReportVerdict",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_REPORT_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const operatorId = requireOperator(request)
+      const { id, body } = parseBodyWithId(SetReportVerdictRequestSchema, request)
+      await service().setVerdict({ id, verdict: body.verdict, actorId: operatorId })
+      const payload: SetReportVerdictResponse = { ok: true }
+      reply.status(200).send(payload)
+    },
+  )
 
   route(
     app,
@@ -172,6 +192,12 @@ export async function registerAdminReportsRoutes(
 
 export const ROUTE_REPORT_RATE_LIMIT = perIdentity({
   max: 10,
+  timeWindow: "1 minute",
+  skipOnError: false,
+})
+
+export const ADMIN_REPORT_MUTATION_RATE_LIMIT = perIdentity({
+  max: 60,
   timeWindow: "1 minute",
   skipOnError: false,
 })
