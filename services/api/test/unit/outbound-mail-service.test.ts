@@ -82,14 +82,14 @@ describe("OutboundMailService.sendReportToJurisdiction", () => {
     const dto = await repo.getThread(thread.id)
     expect(dto?.messages).toHaveLength(1)
     expect(dto?.messages[0]?.dir).toBe("out")
-    expect(dto?.messages[0]?.from).toBe("outreach@civfix.org")
+    expect(dto?.messages[0]?.from).toBe(env?.from)
     const out = repo.messagesOf(thread.id)[0]
     expect(out?.messageId).toBe(messageId)
 
     expect(repo.events).toHaveLength(1)
     expect(repo.events[0]?.type).toBe("sent")
     expect(repo.events[0]?.meta).toMatchObject({
-      from: "outreach@civfix.org",
+      from: `"civfix Reports" <report-${thread.threadToken}@civfix.org>`,
       to: "clerk@lacity.gov",
       reportId: "report-1",
       geoid: "0644000",
@@ -232,7 +232,7 @@ describe("OutboundMailService.sendToCity (digest path: minted token)", () => {
     const dto = await repo.getThread(thread.id)
     expect(dto?.messages).toHaveLength(1)
     expect(dto?.messages[0]?.dir).toBe("out")
-    expect(dto?.messages[0]?.from).toBe("outreach@civfix.org")
+    expect(dto?.messages[0]?.from).toMatch(REPLY_FROM_RE)
 
     expect(mailer.sent).toHaveLength(1)
     const env = mailer.lastOutbound()
@@ -245,7 +245,7 @@ describe("OutboundMailService.sendToCity (digest path: minted token)", () => {
     expect(repo.events).toHaveLength(1)
     expect(repo.events[0]?.type).toBe("sent")
     expect(repo.events[0]?.meta).toMatchObject({
-      from: "outreach@civfix.org",
+      from: `"civfix" <reply-${thread.threadToken}@civfix.org>`,
       to: "clerk@city.gov",
       reportId: "42",
       geoid: "0644000",
@@ -403,6 +403,68 @@ describe("OutboundMailService — F109: a delivered send never throws post-deliv
       svc.sendToCity({ geoid: null, toAddr: "clerk@city.gov", subject: "Digest", body: "hi" }),
     ).resolves.toBeDefined()
     expect(mailer.sent).toHaveLength(1)
+  })
+})
+
+describe("OutboundMailService: the outbound row is a true snapshot of what was sent", () => {
+  it("stores the per-thread From, the html part, the kind and the attachment metadata", async () => {
+    const { repo, svc } = harness()
+    const { thread } = await svc.sendReportToJurisdiction({
+      reportId: "report-1",
+      geoid: "0644000",
+      toAddr: "clerk@lacity.gov",
+      subject: "civfix report: Pothole",
+      text: "A pothole on Main St.",
+      html: "<p>A pothole on Main St.</p>",
+      attachments: [
+        { key: "media/r2/photo.jpg", filename: "photo.jpg", contentType: "image/jpeg", content: new Uint8Array([1, 2, 3]) },
+        { filename: "keyless.jpg", contentType: "image/jpeg", content: new Uint8Array([4]) },
+      ],
+    })
+
+    const stored = repo.messagesOf(thread.id)[0]
+    expect(stored?.fromAddr).toBe(`"civfix Reports" <report-${thread.threadToken}@civfix.org>`)
+    expect(stored?.html).toBe("<p>A pothole on Main St.</p>")
+    expect(stored?.kind).toBe("packet")
+    expect(stored?.attachments).toEqual([{ key: "media/r2/photo.jpg", filename: "photo.jpg", size: 3 }])
+  })
+
+  it("stamps the kind each entry point owns", async () => {
+    const { repo, svc } = harness()
+    const digest = await svc.sendToCity({ geoid: "0644000", toAddr: "clerk@lacity.gov", subject: "Digest", body: "d" })
+    const composed = await svc.compose({ to: "mayor@city.gov", subject: "Intro", body: "hi" })
+    await svc.appendOutbound(composed.id, { toAddr: "mayor@city.gov", body: "again" })
+    await svc.appendOutbound(composed.id, { toAddr: "mayor@city.gov", body: "again", kind: "resend" })
+    const event = await svc.sendEventToJurisdiction({
+      cleanupId: "cleanup-1",
+      geoid: "0644000",
+      toAddr: "parks@lacity.gov",
+      subject: "Cleanup",
+      text: "e",
+    })
+
+    expect(repo.messagesOf(digest.id).map((m) => m.kind)).toEqual(["digest"])
+    expect(repo.messagesOf(composed.id).map((m) => m.kind)).toEqual(["compose", "reply", "resend"])
+    expect(repo.messagesOf(event.thread.id).map((m) => m.kind)).toEqual(["packet"])
+  })
+
+  it("refreshes the thread subject when a re-route carries a new one", async () => {
+    const { repo, svc } = harness()
+    const first = await svc.sendReportToJurisdiction({
+      reportId: "report-1",
+      geoid: "0644000",
+      toAddr: "clerk@lacity.gov",
+      subject: "civfix report: Pothole",
+      text: "one",
+    })
+    await svc.sendReportToJurisdiction({
+      reportId: "report-1",
+      geoid: "0644000",
+      toAddr: "clerk@lacity.gov",
+      subject: "civfix report: Pothole [ref-2]",
+      text: "two",
+    })
+    expect((await repo.getThreadRecord(first.thread.id))?.subject).toBe("civfix report: Pothole [ref-2]")
   })
 })
 

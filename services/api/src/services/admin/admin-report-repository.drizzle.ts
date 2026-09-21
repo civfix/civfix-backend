@@ -297,6 +297,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           has_inbound: boolean
           routed_to: string | null
           routed_at: Date | null
+          packet_sent: boolean
           send_failed: boolean
           send_in_flight: boolean
         }[]
@@ -316,6 +317,11 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
             SELECT MIN(m.created_at) FROM mail_messages m
             WHERE m.thread_id = t.id AND m.direction = 'out'
           ) AS routed_at,
+          EXISTS (
+            SELECT 1 FROM mail_messages m
+            WHERE m.thread_id = t.id AND m.direction = 'out'
+              AND COALESCE(m.kind, 'packet') = 'packet'
+          ) AS packet_sent,
           (${sendFailedExpr(sql, sql`t.id`)}) AS send_failed,
           (${sendInFlightExpr(sql, sql`t.id`)}) AS send_in_flight
         FROM mail_threads t
@@ -330,6 +336,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           threadId: null,
           routedTo: null,
           routedAt: null,
+          packetSent: false,
           sendFailed: false,
           sendInFlight: false,
         }
@@ -339,6 +346,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         threadId: row.thread_id,
         routedTo: row.routed_to,
         routedAt: row.routed_at ? row.routed_at.toISOString() : null,
+        packetSent: row.packet_sent,
         sendFailed: row.send_failed,
         sendInFlight: row.send_in_flight,
       }

@@ -1,0 +1,31 @@
+-- =============================================================================
+-- 0174_mail_messages_outbound_snapshot.sql
+-- -----------------------------------------------------------------------------
+-- WHY. An outbound mail row stored only the plain-text body, so a resend
+-- replayed a bare-text copy of a packet the city originally received as HTML
+-- with photo attachments, and nothing recorded WHICH kind of mail a row was.
+-- Two nullable columns close both gaps:
+--
+--   html  the exact HTML part that was handed to the mailer, so a resend
+--         replays the same message instead of a degraded one. NULL on rows
+--         written before this file and on every text-only send.
+--
+--   kind  what the outbound row is: packet | discussion | followup | digest |
+--         compose | reply | resend. NULL for inbound rows and for every row
+--         that predates this file. No CHECK, by the same convention as the
+--         other free-text discriminators on this table (direction, status are
+--         validated in the application layer): a value the code stops writing
+--         must not turn an old row into an un-readable one. The operator
+--         packet gate reads COALESCE(kind, 'packet') = 'packet': a NULL kind
+--         (every row written before this file) counts AS a packet, deliberately,
+--         so a report routed before the deploy keeps its "already routed" gate,
+--         while a citizen's @city discussion forward (written as 'discussion')
+--         no longer counts as one.
+--
+-- Two catalog-only ADD COLUMN IF NOT EXISTS on a cold table: no rewrite, no
+-- scan, no index, no backfill. Existing rows keep NULL in both: no html snapshot
+-- to replay, and a kind the gate reads as a packet.
+-- =============================================================================
+
+ALTER TABLE mail_messages ADD COLUMN IF NOT EXISTS html text;
+ALTER TABLE mail_messages ADD COLUMN IF NOT EXISTS kind text;

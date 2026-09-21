@@ -66,6 +66,8 @@ export const mailMessages = pgTable(
     toAddr: text("to_addr"),
     subject: text("subject"),
     body: text("body"),
+    html: text("html"),
+    kind: text("kind"),
     attachments: jsonb("attachments").notNull().default([]),
     messageId: text("message_id"),
     inReplyTo: text("in_reply_to"),

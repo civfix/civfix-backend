@@ -20,6 +20,7 @@ import type {
   ReportTimelineItem,
 } from "@civfix/shared"
 import { mapOutreachStatus } from "./admin-report-repository.drizzle.js"
+import { isPacketKind, type MailMessageKind } from "./mail-repository.js"
 import { REPORT_VERIFIED_THRESHOLD } from "./admin-report-service.js"
 import { STATUS_BUCKETS } from "./admin-report-status.js"
 
@@ -44,6 +45,8 @@ export interface SeededOutreach {
   hasInbound: boolean
   routedTo: string | null
   routedAt: Date | null
+  packetSent: boolean
+  outboundKinds?: (MailMessageKind | null)[]
   sendFailed: boolean
   sendInFlight?: boolean
 }
@@ -126,6 +129,11 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
         hasInbound: input.outreach?.hasInbound ?? false,
         routedTo: input.outreach?.routedTo ?? null,
         routedAt: input.outreach?.routedAt ?? null,
+        packetSent:
+          input.outreach?.packetSent ??
+          (input.outreach?.outboundKinds !== undefined
+            ? input.outreach.outboundKinds.some(isPacketKind)
+            : input.outreach?.threadStatus != null),
         sendFailed: input.outreach?.sendFailed ?? false,
         sendInFlight: input.outreach?.sendInFlight ?? false,
       },
@@ -217,13 +225,21 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
   async getOutreach(id: string): Promise<ReportOutreachState> {
     const o = this.reports.get(id)?.outreach
     if (!o || o.threadStatus === null) {
-      return { status: "not_sent", threadId: null, routedTo: null, routedAt: null, sendFailed: false }
+      return {
+        status: "not_sent",
+        threadId: null,
+        routedTo: null,
+        routedAt: null,
+        packetSent: false,
+        sendFailed: false,
+      }
     }
     return {
       status: mapOutreachStatus(o.threadStatus, o.hasInbound),
       threadId: o.threadId,
       routedTo: o.routedTo,
       routedAt: o.routedAt ? o.routedAt.toISOString() : null,
+      packetSent: o.packetSent,
       sendFailed: o.sendFailed,
       sendInFlight: o.sendInFlight ?? false,
     }

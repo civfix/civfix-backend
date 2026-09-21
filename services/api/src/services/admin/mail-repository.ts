@@ -24,6 +24,19 @@ export interface MailThreadRecord {
   createdAt: Date
 }
 
+export type MailMessageKind =
+  | "packet"
+  | "discussion"
+  | "followup"
+  | "digest"
+  | "compose"
+  | "reply"
+  | "resend"
+
+export function isPacketKind(kind: MailMessageKind | null): boolean {
+  return (kind ?? "packet") === "packet"
+}
+
 export interface MailMessageRecord {
   id: string
   threadId: string
@@ -32,6 +45,8 @@ export interface MailMessageRecord {
   toAddr: string | null
   subject: string | null
   body: string | null
+  html: string | null
+  kind: MailMessageKind | null
   attachments: MailAttachment[]
   messageId: string | null
   inReplyTo: string | null
@@ -87,6 +102,8 @@ export interface InsertMessageInput {
   toAddr?: string | null
   subject?: string | null
   body?: string | null
+  html?: string | null
+  kind?: MailMessageKind | null
   attachments?: MailAttachment[]
   messageId?: string | null
   inReplyTo?: string | null
@@ -130,6 +147,7 @@ export interface MailRepository {
   markThreadRead(id: string): Promise<boolean>
   setThreadStatus(id: string, status: MailStatus, audit?: MailAuditInput): Promise<boolean>
   recordEvent(input: RecordEventInput): Promise<string>
+  setThreadSubject(id: string, subject: string): Promise<void>
   stats7d(): Promise<MailStatsResponse>
   getOutreachState(geoid: string): Promise<OutreachStateRecord | null>
   setOutreachState(geoid: string, patch: OutreachStatePatch): Promise<OutreachStateRecord>

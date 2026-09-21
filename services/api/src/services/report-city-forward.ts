@@ -97,6 +97,7 @@ export async function forwardReportCityMention(
       subject: packet.subject,
       text: packet.text,
       html: packet.html,
+      kind: "discussion",
     })
     await markForwarded(opts, geoid)
     return { mentioned: true, geoid, forwarded: true, forwardedAt: createdAt }

@@ -5,10 +5,12 @@ import type { Env } from "../../env/types.js"
 import {
   makeDrizzleMailRepository,
   type MailAuditInput,
+  type MailMessageKind,
   type MailMessageRecord,
   type MailRepository,
   type MailThreadRecord,
 } from "./mail-repository.drizzle.js"
+import type { MailAttachment } from "@civfix/shared"
 import { domainOf } from "../../adapters/mail-text.js"
 import {
   base64Bytes,
@@ -21,6 +23,10 @@ import {
 export interface OutboundMailEnv {
   MAIL_FROM_OUTREACH: string
   MAIL_REPLY_DOMAIN: string
+}
+
+export interface PacketAttachment extends OutboundAttachment {
+  key?: string
 }
 
 export interface OutboundMailLogger {
@@ -55,6 +61,9 @@ export interface AppendOutboundInput {
   body: string
   toAddr: string
   subject?: string
+  html?: string
+  attachments?: PacketAttachment[]
+  kind?: MailMessageKind
   audit?: OutboundAudit
 }
 
@@ -66,7 +75,8 @@ export interface SendReportInput {
   subject: string
   text: string
   html?: string
-  attachments?: OutboundAttachment[]
+  attachments?: PacketAttachment[]
+  kind?: MailMessageKind
   audit?: MailAuditInput
 }
 
@@ -133,6 +143,17 @@ export function isOutboundSendDeadlineError(err: unknown): boolean {
   return (err as { outboundSendDeadline?: unknown }).outboundSendDeadline === true
 }
 
+export function attachmentMetadata(
+  attachments: readonly PacketAttachment[] | undefined,
+): MailAttachment[] {
+  const stored: MailAttachment[] = []
+  for (const att of attachments ?? []) {
+    if (att.key === undefined || att.key === "") continue
+    stored.push({ key: att.key, filename: att.filename, size: att.content.byteLength })
+  }
+  return stored
+}
+
 export function outboundPayloadBytes(input: {
   body: string
   html?: string | undefined
@@ -177,7 +198,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     subject: string
     body: string
     html?: string
-    attachments?: OutboundAttachment[]
+    attachments?: PacketAttachment[]
     eventMeta?: Record<string, unknown>
     onLateSuccess?: (() => Promise<void>) | undefined
   }): Promise<string> {
@@ -218,7 +239,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
           messageId: args.messageId,
           type: "failed",
           meta: {
-            from: env.MAIL_FROM_OUTREACH,
+            from: args.fromHeader,
             to: args.toAddr,
             error: err instanceof Error ? err.message : String(err),
             ...extra,
@@ -240,7 +261,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         messageId: args.messageId,
         type: "sent",
         meta: {
-          from: env.MAIL_FROM_OUTREACH,
+          from: args.fromHeader,
           to: args.toAddr,
           ...extra,
           ...(args.eventMeta ?? {}),
@@ -329,13 +350,22 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       subject: input.subject,
       status: "sent",
     })
+    if (thread.subject !== input.subject) {
+      await repo.setThreadSubject(thread.id, input.subject)
+      thread.subject = input.subject
+    }
+    const fromHeader = fromHeaderForThread(thread)
+    const attachments = attachmentMetadata(input.attachments)
     const message = await insertOut({
       threadId: thread.id,
       direction: "out",
-      fromAddr: env.MAIL_FROM_OUTREACH,
+      fromAddr: fromHeader,
       toAddr: input.toAddr,
       subject: input.subject,
       body: input.text,
+      kind: input.kind ?? "packet",
+      ...(input.html !== undefined ? { html: input.html } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.audit
         ? {
             audit: {
@@ -352,7 +382,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
           ...(opts?.onLateSuccess !== undefined ? { onLateSuccess: opts.onLateSuccess } : {}),
           threadId: thread.id,
           messageId: message.id,
-          fromHeader: fromHeaderForThread(thread),
+          fromHeader,
           toAddr: input.toAddr,
           subject: input.subject,
           body: input.text,
@@ -399,18 +429,21 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         subject: input.subject,
         status: "sent",
       })
+      const fromHeader = fromHeaderForThread(thread)
       const message = await insertOut({
         threadId: thread.id,
         direction: "out",
-        fromAddr: env.MAIL_FROM_OUTREACH,
+        fromAddr: fromHeader,
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.text,
+        kind: "packet",
+        ...(input.html !== undefined ? { html: input.html } : {}),
       })
       const messageId = await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        fromHeader: fromHeaderForThread(thread),
+        fromHeader,
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.text,
@@ -438,13 +471,15 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
               subject: input.subject,
               status: "sent",
             })
+      const fromHeader = fromHeaderForThread(thread)
       const message = await insertOut({
         threadId: thread.id,
         direction: "out",
-        fromAddr: env.MAIL_FROM_OUTREACH,
+        fromAddr: fromHeader,
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.body,
+        kind: "digest",
       })
       const eventMeta: Record<string, unknown> = {}
       if (input.reportContext?.reportId !== undefined) {
@@ -454,7 +489,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        fromHeader: fromHeaderForThread(thread),
+        fromHeader,
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.body,
@@ -465,19 +500,21 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
 
     async compose(input: ComposeInput): Promise<MailThreadRecord> {
       const thread = await repo.createThread({ subject: input.subject, status: "sent" })
+      const fromHeader = fromHeaderForThread(thread)
       const message = await insertOut({
         threadId: thread.id,
         direction: "out",
-        fromAddr: env.MAIL_FROM_OUTREACH,
+        fromAddr: fromHeader,
         toAddr: input.to,
         subject: input.subject,
         body: input.body,
+        kind: "compose",
         ...(input.audit ? { audit: { ...input.audit, target: `mail:${thread.id}` } } : {}),
       })
       await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        fromHeader: fromHeaderForThread(thread),
+        fromHeader,
         toAddr: input.to,
         subject: input.subject,
         body: input.body,
@@ -491,22 +528,29 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         throw AppError.notFound("Mail thread not found")
       }
       const subject = input.subject ?? replySubject(thread.subject)
+      const fromHeader = fromHeaderForThread(thread)
+      const attachments = attachmentMetadata(input.attachments)
       const message = await insertOut({
         threadId: thread.id,
         direction: "out",
-        fromAddr: env.MAIL_FROM_OUTREACH,
+        fromAddr: fromHeader,
         toAddr: input.toAddr,
         subject,
         body: input.body,
+        kind: input.kind ?? "reply",
+        ...(input.html !== undefined ? { html: input.html } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
         ...(input.audit ? { audit: { ...input.audit, target: `mail:${thread.id}` } } : {}),
       })
       await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        fromHeader: fromHeaderForThread(thread),
+        fromHeader,
         toAddr: input.toAddr,
         subject,
         body: input.body,
+        ...(input.html !== undefined ? { html: input.html } : {}),
+        ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
       })
       return freshThread(thread)
     },

@@ -42,6 +42,23 @@ describe("mail-service recipient-resolution helpers", () => {
     expect(resolveCorrespondent(msgs, "OUTREACH@CIVFIX.ORG")).toBe("clerk@city.gov")
   })
 
+  it("resolveCorrespondent treats every civfix reply address as ours, not as a correspondent", () => {
+    const msgs = [
+      { id: "a", who: "civfix", from: '"civfix Reports" <report-abcd2345wxyz@civfix.org>', to: "clerk@city.gov", dir: "out" as const, body: "packet", ts: "t", attachments: [], delivery: "sent" as const },
+      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [], delivery: null },
+      { id: "c", who: "civfix", from: "reply-abcd2345wxyz@civfix.org", to: "clerk@city.gov", dir: "out" as const, body: "ok", ts: "t", attachments: [], delivery: "sent" as const },
+    ]
+    expect(resolveCorrespondent(msgs, FROM_OUTREACH, "civfix.org")).toBe("clerk@city.gov")
+    expect(resolveCorrespondent(msgs, FROM_OUTREACH)).toBe("clerk@city.gov")
+  })
+
+  it("resolveCorrespondent keeps a real municipal sender on a civfix-shaped local part", () => {
+    const msgs = [
+      { id: "a", who: "clerk", from: "report-desk@lacity.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [], delivery: null },
+    ]
+    expect(resolveCorrespondent(msgs, FROM_OUTREACH, "civfix.org")).toBe("report-desk@lacity.gov")
+  })
+
   it("latestOutbound returns the newest out message, else null", () => {
     expect(latestOutbound([])).toBeNull()
     const msgs = [
