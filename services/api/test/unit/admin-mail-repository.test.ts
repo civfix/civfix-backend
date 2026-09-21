@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest"
+import type { MailThreadDTO } from "@civfix/shared"
+import type { Storage } from "@civfix/shared/interfaces"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { presignThreadAttachments } from "../../src/routes/admin/mail.routes.js"
 import {
   buildMailStats,
   mintThreadToken,
@@ -351,5 +354,26 @@ describe("InMemoryMailRepository: thread subject", () => {
     const t = await repo.createThread({ subject: "old" })
     await repo.setThreadSubject(t.id, "new")
     expect((await repo.getThreadRecord(t.id))?.subject).toBe("new")
+  })
+})
+
+describe("presignThreadAttachments", () => {
+  it("signs outbound packet media against the media bucket, inbound files against the inbound one", async () => {
+    const store = (label: string): Storage =>
+      ({ presignGet: (key: string) => Promise.resolve(`${label}:${key}`) }) as unknown as Storage
+    const attachments = (key: string) => [{ key, filename: "f", size: 1 }]
+    const dto = {
+      messages: [
+        { dir: "out", attachments: attachments("media/photo.jpg") },
+        { dir: "in", attachments: attachments("inbound/a.pdf") },
+      ],
+    } as unknown as MailThreadDTO
+
+    const signed = await presignThreadAttachments(dto, { in: store("in"), out: store("out") })
+
+    expect(signed.messages.map((m) => m.attachments[0]?.key)).toEqual([
+      "out:media/photo.jpg",
+      "in:inbound/a.pdf",
+    ])
   })
 })
