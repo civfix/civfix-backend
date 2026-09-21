@@ -125,6 +125,13 @@ export interface ListThreadsResult {
   nextCursor: string | null
 }
 
+export interface RecordSendFailureInput {
+  threadId: string
+  messageId: string
+  meta: Record<string, unknown>
+  audit?: MailAuditInput
+}
+
 export interface RecordEventInput {
   threadId?: string | null
   messageId?: string | null
@@ -147,6 +154,7 @@ export interface MailRepository {
   markThreadRead(id: string): Promise<boolean>
   setThreadStatus(id: string, status: MailStatus, audit?: MailAuditInput): Promise<boolean>
   recordEvent(input: RecordEventInput): Promise<string>
+  recordSendFailure(input: RecordSendFailureInput): Promise<void>
   setThreadSubject(id: string, subject: string): Promise<void>
   stats7d(): Promise<MailStatsResponse>
   getOutreachState(geoid: string): Promise<OutreachStateRecord | null>

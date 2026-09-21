@@ -10,7 +10,7 @@ import {
   type MailRepository,
   type MailThreadRecord,
 } from "./mail-repository.drizzle.js"
-import type { MailAttachment } from "@civfix/shared"
+import type { MailAttachment, MailStatus } from "@civfix/shared"
 import { domainOf } from "../../adapters/mail-text.js"
 import {
   base64Bytes,
@@ -124,6 +124,8 @@ export interface OutboundMailServiceDeps {
 
 export const OUTBOUND_DEADLINE_REASON = "deadline"
 
+const THREAD_STATUS_CLEARED_BY_DELIVERY: readonly MailStatus[] = ["needs_action", "bounced"]
+
 export class OutboundSendDeadlineError extends AppError {
   readonly outboundSendDeadline = true
   readonly deadlineMs: number
@@ -233,18 +235,35 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     })
 
     async function recordFailed(err: unknown, extra: Record<string, unknown>): Promise<void> {
+      const error = err instanceof Error ? err.message : String(err)
+      const reportId = args.eventMeta?.reportId
       try {
-        await repo.recordEvent({
+        await repo.recordSendFailure({
           threadId: args.threadId,
           messageId: args.messageId,
-          type: "failed",
           meta: {
             from: args.fromHeader,
             to: args.toAddr,
-            error: err instanceof Error ? err.message : String(err),
+            error,
             ...extra,
             ...(args.eventMeta ?? {}),
           },
+          ...(typeof reportId === "string" && reportId.length > 0
+            ? {
+                audit: {
+                  actorId: null,
+                  action: "mail.send_failed" as const,
+                  target: `report:${reportId}`,
+                  meta: {
+                    threadId: args.threadId,
+                    messageId: args.messageId,
+                    to: args.toAddr,
+                    reportId,
+                    error,
+                  },
+                },
+              }
+            : {}),
         })
       } catch (recordErr) {
         logger.warn(
@@ -267,6 +286,20 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
           ...(args.eventMeta ?? {}),
         },
       })
+      await clearDeliveryFailureStatus()
+    }
+
+    async function clearDeliveryFailureStatus(): Promise<void> {
+      try {
+        const fresh = await repo.getThreadRecord(args.threadId)
+        if (fresh === null || !THREAD_STATUS_CLEARED_BY_DELIVERY.includes(fresh.status)) return
+        await repo.setThreadStatus(args.threadId, "sent")
+      } catch (err) {
+        logger.warn(
+          { err, threadId: args.threadId, messageId: args.messageId },
+          "outbound mail delivered but clearing the thread's failure status failed",
+        )
+      }
     }
 
     let sent: SentMail
@@ -277,9 +310,15 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         await recordFailed(err, {})
         throw err
       }
+      const failureWrite = recordFailed(err, {
+        reason: OUTBOUND_DEADLINE_REASON,
+        deadlineMs,
+        bytes,
+      })
       void send.then(
         async (late: SentMail) => {
           try {
+            await failureWrite.catch(() => {})
             await recordSent(late, { late: true })
             if (args.onLateSuccess !== undefined) await args.onLateSuccess()
             logger.warn(
@@ -300,7 +339,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
           )
         },
       )
-      await recordFailed(err, { reason: OUTBOUND_DEADLINE_REASON, deadlineMs, bytes })
+      await failureWrite
       throw err
     }
     try {
@@ -393,16 +432,6 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
             ...(input.geoid != null ? { geoid: input.geoid } : {}),
           },
         })
-        if (thread.status === "bounced") {
-          try {
-            await repo.setThreadStatus(thread.id, "sent")
-          } catch (err) {
-            logger.warn(
-              { err, threadId: thread.id },
-              "report re-route delivered but clearing the thread's 'bounced' status failed",
-            )
-          }
-        }
         return { thread: await freshThread(thread), messageId }
       },
     }

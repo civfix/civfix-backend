@@ -35,6 +35,7 @@ import {
   type PendingEffects,
   type PendingEffectsQuery,
   type RecordEventInput,
+  type RecordSendFailureInput,
   type ThreadInit,
 } from "./mail-repository.js"
 import type { MailDirection, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
@@ -603,6 +604,25 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const id = rows[0]?.id
       if (id === undefined) throw new Error("recordEvent: insert returned no row")
       return id
+    },
+
+    async recordSendFailure(input: RecordSendFailureInput): Promise<void> {
+      const meta = sql.json(input.meta as Parameters<typeof sql.json>[0])
+      await sql.begin(async (tx) => {
+        await tx`
+          INSERT INTO mail_events (thread_id, message_id, type, meta)
+          VALUES (${input.threadId}, ${input.messageId}, 'failed', ${meta})
+        `
+        await tx`UPDATE mail_threads SET status = 'needs_action' WHERE id = ${input.threadId}`
+        if (input.audit) {
+          await writeAudit(tx, {
+            actorId: input.audit.actorId,
+            action: input.audit.action,
+            target: input.audit.target,
+            meta: input.audit.meta ?? null,
+          })
+        }
+      })
     },
 
     async setThreadSubject(id: string, subject: string): Promise<void> {

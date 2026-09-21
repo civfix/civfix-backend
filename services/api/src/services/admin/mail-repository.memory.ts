@@ -17,6 +17,7 @@ import {
   type PendingEffects,
   type PendingEffectsQuery,
   type RecordEventInput,
+  type RecordSendFailureInput,
   type ThreadInit,
 } from "./mail-repository.js"
 import {
@@ -479,6 +480,18 @@ export class InMemoryMailRepository implements MailRepository {
       meta: input.meta ?? null,
     })
     return Promise.resolve(record.id)
+  }
+
+  async recordSendFailure(input: RecordSendFailureInput): Promise<void> {
+    await this.recordEvent({
+      threadId: input.threadId,
+      messageId: input.messageId,
+      type: "failed",
+      meta: input.meta,
+    })
+    const thread = this.threads.get(input.threadId)
+    if (thread) thread.status = "needs_action"
+    this.recordAudit(input.audit)
   }
 
   setThreadSubject(id: string, subject: string): Promise<void> {
