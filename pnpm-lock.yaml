@@ -65,8 +65,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1057.0
       '@civfix/shared':
-        specifier: ^0.48.1
-        version: 0.48.1
+        specifier: ^0.48.2
+        version: 0.48.2
       '@fastify/cookie':
         specifier: ^11.0.1
         version: 11.0.2
@@ -210,8 +210,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/shared':
-        specifier: ^0.48.1
-        version: 0.48.1
+        specifier: ^0.48.2
+        version: 0.48.2
       '@sentry/node':
         specifier: ^10.73.0
         version: 10.73.0(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))
@@ -414,8 +414,8 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/shared@0.48.1':
-    resolution: {integrity: sha512-NXk+GK9YnsE0dzSDwyvyEjALTg1i0ylFTu7YKgSpzJZ5RNvSz6qx235sbuGIk7aKNLx0Bmu9SmOpmd92eTHcsQ==}
+  '@civfix/shared@0.48.2':
+    resolution: {integrity: sha512-whg1GyN5FKbOcdHiJvwkqs6gHmOXikwf56TwiVsp4cklzQBcSGGJOzB9GRGCdyYoBjnIUnwdax9FmimEm6Dflw==}
     engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
@@ -445,11 +445,11 @@ packages:
 
   '@esbuild-kit/core-utils@3.3.2':
     resolution: {integrity: sha512-sPRAnw9CdSsRmEtnsl2WXWdyquogVpB3yZ3dgwJfe8zrOzTsV7cJvmwrKVa+0ma5BoiGJ+BoqkMvawbayKUsqQ==}
-    deprecated: 'Merged into tsx: https://tsx.hirok.io'
+    deprecated: 'Merged into tsx: https://tsx.is'
 
   '@esbuild-kit/esm-loader@2.6.5':
     resolution: {integrity: sha512-FxEMIkJKnodyA1OaCUoEvbYRkoZlLZ4d/eXFu9Fh8CbBBgP5EmZxrfTRyN0qpXZ4vOvqnE5YdRdcrmUUXuU+dA==}
-    deprecated: 'Merged into tsx: https://tsx.hirok.io'
+    deprecated: 'Merged into tsx: https://tsx.is'
 
   '@esbuild/aix-ppc64@0.25.12':
     resolution: {integrity: sha512-Hhmwd6CInZ3dwpuGTF8fJG6yoWmsToE+vYgD4nytZVxcu1ulHpUQRAB1UJ8+N1Am3Mz4+xOByoQoSZf4D+CpkA==}
@@ -1782,8 +1782,8 @@ packages:
   '@types/node@22.19.19':
     resolution: {integrity: sha512-dyh/xO2Fh5bYrfWaaqGrRQQGkNdmYw6AmaAUvYeUMNTWQtvb796ikLdmTchRmOlOiIJ1TDXfWgVx1QkUlQ6Hew==}
 
-  '@types/node@22.20.3':
-    resolution: {integrity: sha512-DZmzkmwHzXrLPAXPyKNDzlIwMMUZCVacoD25ywdy5YTKGbOx/2ld+Q38Im2zJ0vBuZP5Prd3VZutKZyXwkOS8A==}
+  '@types/node@22.20.4':
+    resolution: {integrity: sha512-zJRE40jpHtKqE/C4fgHrAKQLJuSpzEnP9ff9Y7YtoR3Wd2pwqzlekDeEuUQXjRd+QCYnVnNwuJYmhdk9XV8gvA==}
 
   '@types/nodemailer@8.0.1':
     resolution: {integrity: sha512-PxpaInm8V1JQDd4j0ds5HfvWQk8JupS1C0Picb96QJsrrRDjBH+DlK7L4ZdNSqNULhiZRQHc40nLVShaGxXAMw==}
@@ -2518,6 +2518,7 @@ packages:
   eslint@9.39.4:
     resolution: {integrity: sha512-XoMjdBOwe/esVgEvLmNsD3IRHkm7fbKIUGvrleloJXUZgDHig2IPWNniv+GwjyJXzuNqVjlr5+4yVUZjycJwfQ==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     peerDependencies:
       jiti: '*'
@@ -4440,7 +4441,7 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/shared@0.48.1':
+  '@civfix/shared@0.48.2':
     dependencies:
       zod: 3.25.76
 
@@ -5584,7 +5585,7 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
-  '@types/node@22.20.3':
+  '@types/node@22.20.4':
     dependencies:
       undici-types: 6.21.0
     optional: true
@@ -5599,7 +5600,7 @@ snapshots:
 
   '@types/pg@8.6.1':
     dependencies:
-      '@types/node': 22.20.3
+      '@types/node': 22.20.4
       pg-protocol: 1.16.0
       pg-types: 2.2.0
     optional: true
