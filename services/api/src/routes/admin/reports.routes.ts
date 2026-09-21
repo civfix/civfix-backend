@@ -28,6 +28,7 @@ import { requireOperator } from "../../auth/admin-guard.js"
 import {
   makeAdminReportService,
   type AdminReportRepository,
+  type ReporterNotifier,
 } from "../../services/admin/admin-report-service.js"
 import { makeDrizzleAdminReportRepository } from "../../services/admin/admin-report-repository.drizzle.js"
 import {
@@ -38,6 +39,7 @@ import { makeDrizzleCleanupRepository } from "../../services/cleanup-repository.
 import { makePacketMediaPresigner, makePrivateMediaPresigner } from "../../services/media-presign.js"
 import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "./mail.routes.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
+import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
 
 export interface AdminReportRouteOverrides {
@@ -52,6 +54,7 @@ export interface AdminReportRouteOverrides {
   ) => Promise<Map<string, import("../../services/cleanup-service.js").LinkedEventView[]>>
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter
+  notifications?: ReporterNotifier
 }
 
 declare module "fastify" {
@@ -81,6 +84,9 @@ export async function registerAdminReportsRoutes(
         ...(overrides.reportChatEmitter !== undefined
           ? { reportChatEmitter: overrides.reportChatEmitter }
           : {}),
+        ...(overrides.notifications !== undefined
+          ? { notifications: overrides.notifications }
+          : {}),
       }),
     () => {
       const sql = container.getDb().sql
@@ -96,6 +102,8 @@ export async function registerAdminReportsRoutes(
           cleanupRepo.loadLinkedEventsForReports(reportIds),
         loadMediaBytes: (k) => container.storage.getObject(k),
         reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
+        notifications: makeRouteNotificationService(container, app.log),
+        logger: app.log,
       })
     },
   )

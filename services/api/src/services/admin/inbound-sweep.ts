@@ -6,7 +6,11 @@ import {
   type InboundProcessorDeps,
 } from "./inbound-processor.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
-import { applyInboundEffects, EFFECTS_LEASE_MS } from "./inbound-thread-correlation.js"
+import {
+  applyInboundEffects,
+  EFFECTS_LEASE_MS,
+  inboundEffectDeps,
+} from "./inbound-thread-correlation.js"
 
 export const INBOUND_SWEEP_BATCH = 200
 const LIST_PAGE = 100
@@ -117,8 +121,7 @@ async function redriveEffects(
     try {
       await applyInboundEffects(
         container,
-        opts.deps?.adminReportRepo,
-        opts.deps?.cleanupRepo,
+        inboundEffectDeps(opts.deps),
         mailRepo,
         thread,
         message,

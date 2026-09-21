@@ -186,22 +186,9 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     expect(audit).toHaveLength(1)
   })
 
-  it("notifyReporter inserts a notification; appendFollowup writes a timeline row + audit", async () => {
+  it("appendFollowup writes a 'followup' timeline row + audit", async () => {
     const reporter = await insertUser(h, { handle: "sam" })
     const id = await insertReport(h, { reporterId: reporter })
-    await repo.notifyReporter({
-      reportId: id,
-      reporterUserId: reporter,
-      title: "Update",
-      body: "thanks",
-      link: `/reports/${id}`,
-    })
-    const notes = await h.sql<{ type: string; body: string | null }[]>`
-      SELECT type, body FROM notifications WHERE user_id = ${reporter}
-    `
-    expect(notes[0]?.type).toBe("report_update")
-    expect(notes[0]?.body).toBe("thanks")
-
     await repo.appendFollowup(id, {
       note: "sent",
       actorId: null,
@@ -212,6 +199,10 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
       { action: string }[]
     >`SELECT action FROM audit_log WHERE action = 'report.followup_sent'`
     expect(audit).toHaveLength(1)
+    const rows = await h.sql<{ kind: string | null }[]>`
+      SELECT kind FROM report_timeline WHERE report_id = ${id} AND note = 'sent'
+    `
+    expect(rows.map((r) => r.kind)).toEqual(["followup"])
   })
 
   it("getOutreach derives sendFailed from the mail_events trail ('failed' recorded, no 'sent')", async () => {

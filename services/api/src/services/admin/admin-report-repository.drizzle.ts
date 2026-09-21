@@ -15,7 +15,6 @@ import {
   type AdminReportRoutingRecord,
   type AdminReportTimelineRecord,
   type ListReportsArgs,
-  type NotifyReporterInput,
   type ReportOutreachState,
 } from "./admin-report-service.js"
 import type {
@@ -509,13 +508,6 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         })
         return true
       })
-    },
-
-    async notifyReporter(input: NotifyReporterInput): Promise<void> {
-      await sql`
-        INSERT INTO notifications (user_id, type, title, body, link)
-        VALUES (${input.reporterUserId}, 'report_update', ${input.title}, ${input.body}, ${input.link})
-      `
     },
 
     async appendFollowup(
