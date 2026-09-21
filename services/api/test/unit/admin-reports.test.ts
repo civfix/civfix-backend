@@ -10,6 +10,7 @@ import {
   type AdminReportService,
 } from "../../src/services/admin/admin-report-service.js"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryForwardTemplateRepository } from "../../src/services/admin/forward-template-repository.memory.js"
 import { MAX_PACKET_TOTAL_BYTES } from "../../src/services/admin/mail-format.js"
 import {
   makeOutboundMailService,
@@ -35,6 +36,7 @@ interface Harness {
   mailRepo: InMemoryMailRepository
   mailer: FakeMailer
   emitter: FakeReportChatEmitter
+  forwardTemplates: InMemoryForwardTemplateRepository
   svc: AdminReportService
 }
 
@@ -44,6 +46,7 @@ function harness(): Harness {
   const mailRepo = new InMemoryMailRepository()
   const mailer = new FakeMailer()
   const emitter = new FakeReportChatEmitter()
+  const forwardTemplates = new InMemoryForwardTemplateRepository()
   const outboundMail = makeOutboundMailService({
     repo: mailRepo,
     mailer,
@@ -54,12 +57,23 @@ function harness(): Harness {
     outboundMail,
     now: () => NOW,
     reportChatEmitter: emitter,
+    forwardTemplates,
     presignMedia: async (r2Key, thumbKey) => ({
       url: `https://media.test/${r2Key}`,
       ...(thumbKey !== null ? { thumbUrl: `https://media.test/${thumbKey}` } : {}),
     }),
   })
-  return { repo, mailRepo, mailer, emitter, svc }
+  return { repo, mailRepo, mailer, emitter, forwardTemplates, svc }
+}
+
+function lastOutbound(mailer: FakeMailer): { subject: string; text: string; html?: string } {
+  const outbound = mailer.sent.filter((m) => m.outbound !== undefined).at(-1)?.outbound
+  if (outbound === undefined) throw new Error("no outbound mail was sent")
+  return {
+    subject: outbound.subject,
+    text: outbound.text,
+    ...(outbound.html !== undefined ? { html: outbound.html } : {}),
+  }
 }
 
 function hoursAgo(hours: number): Date {
@@ -554,6 +568,99 @@ describe("M5: routeToJurisdiction destination + audit", () => {
     ).rejects.toMatchObject({ code: "NOT_ROUTABLE", httpStatus: 422 })
     expect(h.mailer.sent).toHaveLength(0)
     expect(h.mailRepo.audits).toHaveLength(0)
+  })
+})
+
+describe("routeToJurisdiction template resolution", () => {
+  function seedWith(h: Harness, templates: { subject?: string | null; body?: string | null }): void {
+    h.repo.seedReport({
+      id: "rep-1",
+      status: "submitted",
+      category: "trash",
+      title: "Overflowing bin",
+      place: "Los Angeles",
+      address: "5th & Main",
+      confirmations: 4,
+      referenceCode: "LA-1-000042",
+      routing: {
+        geoid: "0644000",
+        dept: "LA Public Works",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+        forwardSubjectTemplate: templates.subject ?? null,
+        forwardBodyTemplate: templates.body ?? null,
+      },
+    })
+  }
+
+  it("sends the JURISDICTION's own template, rendered, when it has one", async () => {
+    const h = harness()
+    h.forwardTemplates.seed({ subjectTemplate: "Default {referenceCode}", bodyTemplate: "Default body." })
+    seedWith(h, {
+      subject: "City case {referenceCode}: {category}",
+      body: "A {category} report at {address}, confirmed by {confirmations} neighbors.",
+    })
+
+    await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
+
+    const mail = lastOutbound(h.mailer)
+    expect(mail.subject).toBe("City case LA-1-000042: Trash")
+    expect(mail.text).toContain("A Trash report at 5th & Main, confirmed by 4 neighbors.")
+    expect(mail.html).toContain("A Trash report at 5th &amp; Main, confirmed by 4 neighbors.")
+    expect(mail.text).not.toContain("Default body.")
+  })
+
+  it("falls back to the STORED platform default when the jurisdiction has no template", async () => {
+    const h = harness()
+    h.forwardTemplates.seed({
+      subjectTemplate: "civfix default {referenceCode}",
+      bodyTemplate: "Platform default body for {category}.",
+    })
+    seedWith(h, {})
+
+    await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
+
+    const mail = lastOutbound(h.mailer)
+    expect(mail.subject).toBe("civfix default LA-1-000042")
+    expect(mail.text).toContain("Platform default body for Trash.")
+    expect(mail.text).not.toContain("What was reported")
+  })
+
+  it("falls back to the BUILT-IN default when neither layer has a template", async () => {
+    const h = harness()
+    seedWith(h, {})
+
+    await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
+
+    const mail = lastOutbound(h.mailer)
+    expect(mail.subject).toBe("[civfix] Overflowing bin - Los Angeles - LA-1-000042")
+    expect(mail.text).toContain("What was reported")
+  })
+
+  it("an EMPTY jurisdiction template does not shadow the stored default", async () => {
+    const h = harness()
+    h.forwardTemplates.seed({ subjectTemplate: "Stored {referenceCode}", bodyTemplate: "Stored body." })
+    seedWith(h, { subject: "   ", body: "" })
+
+    await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
+
+    const mail = lastOutbound(h.mailer)
+    expect(mail.subject).toBe("Stored LA-1-000042")
+    expect(mail.text).toContain("Stored body.")
+  })
+
+  it("never ships a half-substituted placeholder to the city", async () => {
+    const h = harness()
+    seedWith(h, {})
+
+    await h.svc.routeToJurisdiction("rep-1", { note: "Second report this month.", actorId: "op-1" })
+
+    const mail = lastOutbound(h.mailer)
+    for (const part of [mail.subject, mail.text, mail.html ?? ""]) {
+      expect(part).not.toMatch(/\{\{/)
+      expect(part).not.toMatch(/\{[A-Za-z]+\}/)
+    }
   })
 })
 

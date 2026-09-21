@@ -30,6 +30,8 @@ import {
   type AdminReportRepository,
 } from "../../services/admin/admin-report-service.js"
 import { makeDrizzleAdminReportRepository } from "../../services/admin/admin-report-repository.drizzle.js"
+import { makeDrizzleForwardTemplateRepository } from "../../services/admin/forward-template-repository.drizzle.js"
+import type { ForwardTemplateRepository } from "../../services/admin/forward-template-types.js"
 import {
   makeContainerOutboundMailService,
   type OutboundMailService,
@@ -52,6 +54,7 @@ export interface AdminReportRouteOverrides {
   ) => Promise<Map<string, import("../../services/cleanup-service.js").LinkedEventView[]>>
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter
+  forwardTemplates?: ForwardTemplateRepository
 }
 
 declare module "fastify" {
@@ -81,6 +84,9 @@ export async function registerAdminReportsRoutes(
         ...(overrides.reportChatEmitter !== undefined
           ? { reportChatEmitter: overrides.reportChatEmitter }
           : {}),
+        ...(overrides.forwardTemplates !== undefined
+          ? { forwardTemplates: overrides.forwardTemplates }
+          : {}),
       }),
     () => {
       const sql = container.getDb().sql
@@ -96,6 +102,7 @@ export async function registerAdminReportsRoutes(
           cleanupRepo.loadLinkedEventsForReports(reportIds),
         loadMediaBytes: (k) => container.storage.getObject(k),
         reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
+        forwardTemplates: makeDrizzleForwardTemplateRepository(sql),
       })
     },
   )

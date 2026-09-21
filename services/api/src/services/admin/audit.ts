@@ -38,6 +38,7 @@ export type AdminAuditAction =
   | "mail.replied"
   | "mail.resent"
   | "mail.status_changed"
+  | "mail.forward_template_set"
   | "outreach.digest_sent"
   | "inbox.status_changed"
   | "user.detail_viewed"

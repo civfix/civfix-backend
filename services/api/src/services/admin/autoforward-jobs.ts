@@ -7,6 +7,7 @@ import {
   type AdminReportService,
 } from "./admin-report-service.js"
 import { makeDrizzleAdminReportRepository } from "./admin-report-repository.drizzle.js"
+import { makeDrizzleForwardTemplateRepository } from "./forward-template-repository.drizzle.js"
 import {
   isOutboundSendDeadlineError,
   makeContainerOutboundMailService,
@@ -90,6 +91,7 @@ function makeAutoForwardService(container: Container): AdminReportService {
     presignPacketMedia: makePacketMediaPresigner(container.storage),
     loadMediaBytes: (k) => container.storage.getObject(k),
     reportChatEmitter: makeContainerReportChatEmitter(container),
+    forwardTemplates: makeDrizzleForwardTemplateRepository(sql),
   })
 }
 
