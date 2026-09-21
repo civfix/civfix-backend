@@ -3,12 +3,16 @@ import {
   ComposeRequestSchema,
   MailListQuerySchema,
   MarkMailReadRequestSchema,
+  PreviewForwardTemplateRequestSchema,
   ReplyRequestSchema,
   ResendRequestSchema,
+  SetForwardTemplateDefaultRequestSchema,
   SetMailStatusRequestSchema,
+  type ForwardTemplateSettingsDTO,
   type MailListResponse,
   type MailStatsResponse,
   type MailThreadDTO,
+  type PreviewForwardTemplateResponse,
 } from "@civfix/shared"
 import type { Storage } from "@civfix/shared/interfaces"
 import type { FastifyInstance } from "fastify"
@@ -29,6 +33,12 @@ import {
   makeDrizzleMailRepository,
   type MailRepository,
 } from "../../services/admin/mail-repository.drizzle.js"
+import { makeDrizzleForwardTemplateRepository } from "../../services/admin/forward-template-repository.drizzle.js"
+import {
+  makeForwardTemplateService,
+  type ForwardTemplateService,
+} from "../../services/admin/forward-template-service.js"
+import type { ForwardTemplateRepository } from "../../services/admin/forward-template-types.js"
 
 export const ADMIN_OUTBOUND_MAIL_RATE_LIMIT = perIdentity({
   max: 20,
@@ -42,6 +52,7 @@ export interface AdminMailRouteOverrides {
   repo: MailRepository
   outboundMail: OutboundMailService
   storage?: Storage
+  forwardTemplates?: ForwardTemplateRepository
 }
 
 declare module "fastify" {
@@ -71,6 +82,13 @@ export async function registerAdminMailRoutes(
       return makeMailService({ repo, outboundMail })
     },
   )
+
+  function templateService(): ForwardTemplateService {
+    const overrides = app.adminMailOverrides?.forwardTemplates
+    const repo =
+      overrides ?? makeDrizzleForwardTemplateRepository(container.getDb().sql)
+    return makeForwardTemplateService({ repo })
+  }
 
   function storage(): Storage {
     return app.adminMailOverrides?.storage ?? container.inboundStorage
@@ -142,5 +160,32 @@ export async function registerAdminMailRoutes(
     await service().resend(id, actorId)
     sendOk(reply)
   })
-}
 
+  route(app, "getForwardTemplateDefault", async (_request, reply) => {
+    const payload: ForwardTemplateSettingsDTO = await templateService().get()
+    reply.status(200).send(payload)
+  })
+
+  route(
+    app,
+    "setForwardTemplateDefault",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } },
+    async (request, reply) => {
+      const actorId = requireOperator(request)
+      const body = parse(SetForwardTemplateDefaultRequestSchema, request.body)
+      const payload: ForwardTemplateSettingsDTO = await templateService().set(body, actorId)
+      reply.status(200).send(payload)
+    },
+  )
+
+  route(
+    app,
+    "previewForwardTemplate",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } },
+    async (request, reply) => {
+      const body = parse(PreviewForwardTemplateRequestSchema, request.body)
+      const payload: PreviewForwardTemplateResponse = await templateService().preview(body)
+      reply.status(200).send(payload)
+    },
+  )
+}

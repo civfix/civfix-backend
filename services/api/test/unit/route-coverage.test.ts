@@ -41,11 +41,7 @@ const SIGNING_KEY = "test-anon-signing-key"
 
 const PARAM_VALUE = "11111111-1111-1111-1111-111111111111"
 
-const NOT_YET_ROUTED = new Set<string>([
-  "getForwardTemplateDefault",
-  "setForwardTemplateDefault",
-  "previewForwardTemplate",
-])
+const NOT_YET_ROUTED = new Set<string>([])
 
 async function buildFullFakeServer(): Promise<FastifyInstance> {
   const env = loadEnv({ NODE_ENV: "test" })
