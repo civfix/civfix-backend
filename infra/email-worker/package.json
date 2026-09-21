@@ -2,6 +2,7 @@
   "name": "@civfix/email-worker",
   "version": "0.0.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "description": "Cloudflare Email Worker: catch-all *@civfix.org inbound mail -> R2 -> backend webhook nudge.",
   "type": "module",
   "scripts": {
