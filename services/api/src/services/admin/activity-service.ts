@@ -202,6 +202,7 @@ export function describeAuditAction(action: string): string {
     "mail.sent": "Sent outreach mail",
     "mail.replied": "Replied to a thread",
     "mail.resent": "Resent a message",
+    "mail.send_failed": "A send to a jurisdiction failed",
     "mail.status_changed": "Updated a mail thread",
     "outreach.digest_sent": "Sent an outreach digest",
     "inbox.status_changed": "Updated an inbox message",

@@ -674,7 +674,7 @@ describe("routeToJurisdiction re-send gate", () => {
     expect((await h.svc.get("rep-1")).status).toBe("submitted")
 
     const thread = [...h.mailRepo.threads.values()].find((t) => t.reportId === "rep-1")
-    expect(thread?.status).toBe("sent")
+    expect(thread?.status).toBe("needs_action")
     const seeded = h.repo.reports.get("rep-1")
     if (seeded) {
       seeded.outreach = {

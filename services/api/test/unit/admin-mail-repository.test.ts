@@ -348,7 +348,22 @@ describe("InMemoryMailRepository: recordEvent", () => {
   })
 })
 
-describe("InMemoryMailRepository: thread subject", () => {
+describe("InMemoryMailRepository: outbound snapshot + failure recording", () => {
+  it("records a send failure as one event + needs_action + an audit row", async () => {
+    const repo = new InMemoryMailRepository()
+    const t = await repo.createThread({ subject: "Pothole", status: "sent" })
+    const m = await repo.insertMessage({ threadId: t.id, direction: "out", toAddr: "clerk@city.gov", body: "packet" })
+    await repo.recordSendFailure({
+      threadId: t.id,
+      messageId: m?.id ?? "",
+      meta: { to: "clerk@city.gov", error: "smtp down" },
+      audit: { actorId: null, action: "mail.send_failed", target: "report:rep-1", meta: { reportId: "rep-1" } },
+    })
+    expect(repo.events.map((e) => e.type)).toEqual(["failed"])
+    expect((await repo.getThreadRecord(t.id))?.status).toBe("needs_action")
+    expect(repo.audits.at(-1)).toMatchObject({ action: "mail.send_failed", target: "report:rep-1" })
+  })
+
   it("rewrites a thread subject in place", async () => {
     const repo = new InMemoryMailRepository()
     const t = await repo.createThread({ subject: "old" })
