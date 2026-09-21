@@ -239,6 +239,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           "This report moved on while you were looking at it — reload and try again",
         )
       }
+      await notifyReporterOfStatus(deps, id, record.reporter?.id ?? null, input.status)
       await emitTimeline({ reportId: id, status: input.status, kind: timelineKindForStatus(input.status), note })
     },
 
@@ -289,9 +290,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         if (!reporterId || reporterId === "") {
           throw AppError.validation({ to: "report has no reporter account to notify" })
         }
-        await deps.repo.notifyReporter({
-          reportId: id,
-          reporterUserId: reporterId,
+        const notifications = deps.notifications
+        if (notifications === undefined) {
+          throw AppError.internal("Reporter notifications are not wired on this instance")
+        }
+        await notifications.createNotification(reporterId, {
+          type: "report_update",
           title: "Update on your report",
           body: input.body,
           link: `/reports/${id}`,
@@ -497,6 +501,43 @@ function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
   const retargeted = existing.routedTo !== null && !sameAddress(existing.routedTo, toAddr)
   if (landed && existing.sendFailed !== true && !retargeted) {
     throw AppError.conflict(ALREADY_ROUTED_CONFLICT)
+  }
+}
+
+const STATUS_NOTIFICATION_BODIES: Partial<Record<AdminReportStatus, string>> = {
+  in_progress: "The city is working on your report.",
+  resolved: "Your report has been marked resolved.",
+}
+
+async function notifyReporterOfStatus(
+  deps: AdminReportServiceDeps,
+  reportId: string,
+  reporterUserId: string | null,
+  status: AdminReportStatus,
+): Promise<void> {
+  const body = STATUS_NOTIFICATION_BODIES[status]
+  if (body === undefined) return
+  if (reporterUserId === null || reporterUserId === "") return
+  const notifications = deps.notifications
+  if (notifications === undefined) {
+    deps.logger?.warn(
+      { reportId, status },
+      "report status changed with no notifier wired: the reporter was not told",
+    )
+    return
+  }
+  try {
+    await notifications.createNotification(reporterUserId, {
+      type: "report_update",
+      title: `Your report is ${ADMIN_REPORT_STATUS_LABELS[status].toLowerCase()}`,
+      body,
+      link: `/reports/${reportId}`,
+    })
+  } catch (err) {
+    deps.logger?.warn(
+      { err, reportId, status },
+      "report_update notification failed (suppressed: the status change is committed)",
+    )
   }
 }
 

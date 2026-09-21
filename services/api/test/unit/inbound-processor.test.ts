@@ -4,6 +4,7 @@ import type { InboundMail } from "@civfix/shared/interfaces"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
 import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
+import { RecordingNotifier } from "../helpers/notifications.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import {
   processInboundObject,
@@ -72,6 +73,7 @@ interface Ctx {
   inboundRepo: InMemoryInboundRepository
   adminReportRepo: InMemoryAdminReportRepository
   cleanupRepo: InMemoryCleanupRepository
+  notifier: RecordingNotifier
   jobs: FakeJobs
   db: FakeSqlControl
 }
@@ -82,6 +84,7 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
   const inboundRepo = new InMemoryInboundRepository()
   const adminReportRepo = new InMemoryAdminReportRepository()
   const cleanupRepo = new InMemoryCleanupRepository()
+  const notifier = new RecordingNotifier()
   const jobs = new FakeJobs()
   const db = makeFakeSql(sqlHandlers)
   const deps: InboundProcessorDeps = {
@@ -91,6 +94,7 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
     inboundRepo,
     adminReportRepo,
     cleanupRepo,
+    notifications: notifier,
   }
   const container = {
     env: {},
@@ -100,7 +104,18 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
     jobs,
     getDb: () => ({ sql: db.sql }),
   } as unknown as Container
-  return { container, deps, storage, mailRepo, inboundRepo, adminReportRepo, cleanupRepo, jobs, db }
+  return {
+    container,
+    deps,
+    storage,
+    mailRepo,
+    inboundRepo,
+    adminReportRepo,
+    cleanupRepo,
+    notifier,
+    jobs,
+    db,
+  }
 }
 
 async function put(c: Ctx, key: string, eml: Buffer): Promise<void> {
@@ -230,9 +245,7 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
       ),
     ).toBe(true)
     expect(
-      c.adminReportRepo.notifications.some(
-        (n) => n.userId === reporterId && n.link === `/reports/${reportId}`,
-      ),
+      c.notifier.sent.some((n) => n.userId === reporterId && n.link === `/reports/${reportId}`),
     ).toBe(true)
   })
 
@@ -253,7 +266,7 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
         (t) => t.note === JURISDICTION_REPLY_NOTE,
       ),
     ).toBe(true)
-    expect(c.adminReportRepo.notifications).toHaveLength(0)
+    expect(c.notifier.sent).toHaveLength(0)
   })
 
   it("a side-effect failure (report repo throws) never breaks routing / the delete", async () => {
@@ -309,7 +322,7 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     expect(JSON.stringify(timeline)).not.toContain("555-0100")
     expect(JSON.stringify(timeline)).not.toContain("Elm St")
 
-    const bell = c.adminReportRepo.notifications.find((n) => n.userId === reporterId)
+    const bell = c.notifier.sent.find((n) => n.userId === reporterId)
     expect(bell).toBeDefined()
     expect(bell?.body).toBe(JURISDICTION_REPLY_NOTIFICATION_BODY)
     expect(JSON.stringify(bell)).not.toContain("555-0100")
@@ -701,7 +714,7 @@ describe("processInboundObject: message authentication gate (M7)", () => {
     expect(r.outcome).toBe("inbox")
     expect(c.mailRepo.messages).toHaveLength(0)
     expect(c.adminReportRepo.reports.get("report-auth")?.record.status).toBe("published")
-    expect(c.adminReportRepo.notifications).toHaveLength(0)
+    expect(c.notifier.sent).toHaveLength(0)
     expect(c.inboundRepo.rows[0]?.headers?.["x-civfix-auth-verdict"]).toBe("unknown")
   })
 
@@ -766,7 +779,7 @@ describe("processInboundObject: message authentication gate (M7)", () => {
     expect(c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")).toHaveLength(1)
     expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("published")
     expect(c.adminReportRepo.timeline.get(reportId) ?? []).toHaveLength(0)
-    expect(c.adminReportRepo.notifications).toHaveLength(0)
+    expect(c.notifier.sent).toHaveLength(0)
     expect((await c.mailRepo.getThreadRecord(thread.id))?.status).not.toBe("replied")
   })
 

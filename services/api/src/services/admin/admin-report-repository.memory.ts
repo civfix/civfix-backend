@@ -10,7 +10,6 @@ import type {
   AdminReportRoutingRecord,
   AdminReportTimelineRecord,
   ListReportsArgs,
-  NotifyReporterInput,
   ReportOutreachState,
 } from "./admin-report-service.js"
 import type {
@@ -22,14 +21,6 @@ import type {
 import { mapOutreachStatus } from "./admin-report-repository.drizzle.js"
 import { REPORT_VERIFIED_THRESHOLD } from "./admin-report-service.js"
 import { STATUS_BUCKETS } from "./admin-report-status.js"
-
-export interface RecordedReportNotification {
-  reportId: string
-  userId: string
-  title: string
-  body: string
-  link: string | null
-}
 
 export interface RecordedAudit {
   action: string
@@ -59,7 +50,6 @@ export interface SeededReport {
 export class InMemoryAdminReportRepository implements AdminReportRepository {
   readonly reports = new Map<string, SeededReport>()
   readonly timeline = new Map<string, AdminReportTimelineRecord[]>()
-  readonly notifications: RecordedReportNotification[] = []
   readonly audits: RecordedAudit[] = []
   readonly reporterReportVerified = new Map<string, boolean>()
 
@@ -350,16 +340,6 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       meta: { note: input.note },
     })
     return true
-  }
-
-  async notifyReporter(input: NotifyReporterInput): Promise<void> {
-    this.notifications.push({
-      reportId: input.reportId,
-      userId: input.reporterUserId,
-      title: input.title,
-      body: input.body,
-      link: input.link,
-    })
   }
 
   async appendFollowup(

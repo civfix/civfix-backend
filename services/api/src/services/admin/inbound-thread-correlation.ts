@@ -7,7 +7,7 @@ import type {
   MailThreadRecord,
 } from "./mail-repository.drizzle.js"
 import { makeDrizzleAdminReportRepository } from "./admin-report-repository.drizzle.js"
-import type { AdminReportRepository } from "./admin-report-service.js"
+import type { AdminReportRepository, ReporterNotifier } from "./admin-report-service.js"
 import { JURISDICTION_REPLY_NOTE } from "./admin-report-status.js"
 import { makeDrizzleCleanupRepository } from "../cleanup-repository.drizzle.js"
 import type { CleanupRepository } from "../cleanup-service.js"
@@ -15,6 +15,12 @@ import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 import { domainOf, domainsAligned } from "../../adapters/inbound-mail.cf.js"
 
 export { JURISDICTION_REPLY_NOTE }
+
+export interface InboundEffectDeps {
+  reportRepo?: AdminReportRepository
+  cleanupRepo?: CleanupRepository
+  notifications?: ReporterNotifier
+}
 
 export const EFFECTS_LEASE_MS = 10 * 60 * 1000
 
@@ -24,6 +30,18 @@ export const EFFECTS_STAGE_NOTIFIED = 3
 
 export const JURISDICTION_REPLY_NOTIFICATION_BODY =
   "The city responded. A civfix operator is reviewing their message."
+
+export function inboundEffectDeps(deps: {
+  adminReportRepo?: AdminReportRepository
+  cleanupRepo?: CleanupRepository
+  notifications?: ReporterNotifier
+} = {}): InboundEffectDeps {
+  return {
+    ...(deps.adminReportRepo !== undefined ? { reportRepo: deps.adminReportRepo } : {}),
+    ...(deps.cleanupRepo !== undefined ? { cleanupRepo: deps.cleanupRepo } : {}),
+    ...(deps.notifications !== undefined ? { notifications: deps.notifications } : {}),
+  }
+}
 
 export async function findThreadByReferences(
   mailRepo: MailRepository,
@@ -81,8 +99,7 @@ export async function isJurisdictionSender(
 
 export async function applyInboundEffects(
   container: Container,
-  injectedReportRepo: AdminReportRepository | undefined,
-  injectedCleanupRepo: CleanupRepository | undefined,
+  injected: InboundEffectDeps,
   mailRepo: MailRepository,
   thread: MailThreadRecord,
   message: MailMessageRecord,
@@ -96,9 +113,9 @@ export async function applyInboundEffects(
   if (stage === null) return
   try {
     if (thread.reportId !== null) {
-      await onJurisdictionReply(container, injectedReportRepo, mailRepo, thread, message.id, stage)
+      await onJurisdictionReply(container, injected, mailRepo, thread, message.id, stage)
     } else {
-      await onEventReply(container, injectedCleanupRepo, mailRepo, thread, message, stage)
+      await onEventReply(container, injected.cleanupRepo, mailRepo, thread, message, stage)
     }
     await mailRepo.markMessageEffectsApplied(message.id)
   } catch (err) {
@@ -109,7 +126,7 @@ export async function applyInboundEffects(
 
 export async function onJurisdictionReply(
   container: Container,
-  injectedReportRepo: AdminReportRepository | undefined,
+  injected: InboundEffectDeps,
   mailRepo: MailRepository,
   thread: MailThreadRecord,
   messageId: string,
@@ -118,7 +135,7 @@ export async function onJurisdictionReply(
   const reportId = thread.reportId
   if (reportId === null) return
 
-  const reportRepo = injectedReportRepo ?? makeDrizzleAdminReportRepository(container.getDb().sql)
+  const reportRepo = injected.reportRepo ?? makeDrizzleAdminReportRepository(container.getDb().sql)
   const record = await reportRepo.getReport(reportId)
   if (!record) return
 
@@ -155,9 +172,9 @@ export async function onJurisdictionReply(
   if (stage < EFFECTS_STAGE_NOTIFIED) {
     const reporterUserId = record.reporter?.id
     if (reporterUserId && reporterUserId !== "") {
-      await reportRepo.notifyReporter({
-        reportId,
-        reporterUserId,
+      const notifications = injected.notifications ?? container.getNotificationService()
+      await notifications.createNotification(reporterUserId, {
+        type: "report_update",
         title: "Your report got a response",
         body: JURISDICTION_REPLY_NOTIFICATION_BODY,
         link: `/reports/${reportId}`,
