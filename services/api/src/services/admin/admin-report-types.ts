@@ -153,6 +153,10 @@ export interface AdminReportServiceDeps {
     r2Key: string,
     thumbKey: string | null,
   ) => Promise<{ url: string; thumbUrl?: string }>
+  presignPacketMedia?: (
+    r2Key: string,
+    thumbKey: string | null,
+  ) => Promise<{ url: string; thumbUrl?: string }>
   loadLinkedEventsForReports?: (
     reportIds: string[],
   ) => Promise<Map<string, LinkedEventView[]>>
@@ -183,7 +187,7 @@ export interface AdminReportService {
   ): Promise<FollowupResult>
   routeToJurisdiction(
     id: string,
-    input: { contactEmailOverride: string | null; note: string | null; actorId: string | null },
+    input: { note: string | null; actorId: string | null },
   ): Promise<RouteToJurisdictionResult>
   setVerdict(input: {
     id: string
