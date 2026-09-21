@@ -409,13 +409,21 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
                left(body, ${MAIL_BODY_DETAIL_CHARS}) AS body,
                length(body) > ${MAIL_BODY_DETAIL_CHARS} AS truncated,
                attachments, message_id, in_reply_to, unaffiliated, effects_claimed_at, effects_applied_at,
-                    effects_stage, created_at
+                    effects_stage, created_at, delivery
         FROM (
-          SELECT id, thread_id, direction, from_addr, to_addr, subject, body, attachments, message_id,
-                 in_reply_to, unaffiliated, effects_claimed_at, effects_applied_at, effects_stage, created_at
-          FROM mail_messages
-          WHERE thread_id = ${id}
-          ORDER BY created_at DESC, id DESC
+          SELECT m.id, m.thread_id, m.direction, m.from_addr, m.to_addr, m.subject, m.body, m.attachments,
+                 m.message_id, m.in_reply_to, m.unaffiliated, m.effects_claimed_at, m.effects_applied_at,
+                 m.effects_stage, m.created_at, d.type AS delivery
+          FROM mail_messages m
+          LEFT JOIN (
+            SELECT DISTINCT ON (e.message_id) e.message_id, e.type
+            FROM mail_events e
+            WHERE e.thread_id = ${id}
+              AND e.type IN ('sent', 'failed')
+            ORDER BY e.message_id, e.created_at DESC, e.id DESC
+          ) d ON d.message_id = m.id::text
+          WHERE m.thread_id = ${id}
+          ORDER BY m.created_at DESC, m.id DESC
           LIMIT ${MAIL_THREAD_MESSAGE_CAP}
         ) recent
         ORDER BY created_at ASC, id ASC
