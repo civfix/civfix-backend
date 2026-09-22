@@ -17,10 +17,14 @@ import type { Container } from "../../src/di.js"
 import { makeFakeSql, type FakeSqlControl, type SqlHandler } from "../helpers/fake-sql.js"
 import {
   parseMessageIdList,
+  cityReplyChatBody,
+  stripQuotedHistory,
   JURISDICTION_REPLY_NOTE,
   JURISDICTION_REPLY_NOTIFICATION_BODY,
   MESSAGE_ID_LIST_CAP,
 } from "../../src/services/admin/inbound-thread-correlation.js"
+import { MESSAGE_BODY_MAX } from "@civfix/shared"
+import type { ReportTimelineEvent } from "../../src/services/report-timeline-event.js"
 
 
 const TOKEN = "0123456789abcdef01234567"
@@ -76,6 +80,7 @@ interface Ctx {
   notifier: RecordingNotifier
   jobs: FakeJobs
   db: FakeSqlControl
+  chatEvents: ReportTimelineEvent[]
 }
 
 function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlHandler[] = []): Ctx {
@@ -87,6 +92,7 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
   const notifier = new RecordingNotifier()
   const jobs = new FakeJobs()
   const db = makeFakeSql(sqlHandlers)
+  const chatEvents: ReportTimelineEvent[] = []
   const deps: InboundProcessorDeps = {
     storage,
     inboundMail,
@@ -95,6 +101,12 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
     adminReportRepo,
     cleanupRepo,
     notifications: notifier,
+    chatEmitter: {
+      emit: (event) => {
+        chatEvents.push(event)
+        return Promise.resolve()
+      },
+    },
   }
   const container = {
     env: {},
@@ -115,6 +127,7 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
     notifier,
     jobs,
     db,
+    chatEvents,
   }
 }
 
@@ -281,7 +294,7 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     expect(c.storage.get(key)).toBeNull()
   })
 
-  it("H6: does NOT publish the mail body to the timeline, the chat system message, or the reporter push", async () => {
+  it("publishes the city's reply text into the report chat while the timeline and push stay body-less", async () => {
     const reportId = "report-full"
     const reporterId = "user-full"
     const c = ctx()
@@ -305,32 +318,70 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
       calls.push({ kind: input.kind, body: input.body, note: input.note })
       return orig(id, input)
     }
-    const secret = "We spoke to your neighbour Bob at 42 Elm St; call my cell 555-0100."
+    const reply = "A crew is scheduled for Tuesday."
     const key = `${INBOUND_PENDING_PREFIX}reply-full.eml`
-    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: secret }))
+    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: reply }))
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
 
     expect(calls).toHaveLength(1)
     expect(calls[0]?.kind).toBe("reply")
     expect(calls[0]?.body).toBeNull()
     expect(calls[0]?.note).toBe(JURISDICTION_REPLY_NOTE)
-    expect(calls[0]?.note).not.toContain("neighbour")
+    expect(calls[0]?.note).not.toContain("Tuesday")
 
     expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
     const timeline = c.adminReportRepo.timeline.get(reportId) ?? []
     expect(timeline).toHaveLength(1)
-    expect(JSON.stringify(timeline)).not.toContain("555-0100")
-    expect(JSON.stringify(timeline)).not.toContain("Elm St")
+    expect(JSON.stringify(timeline)).not.toContain("Tuesday")
+
+    expect(c.chatEvents).toHaveLength(1)
+    expect(c.chatEvents[0]).toMatchObject({
+      reportId,
+      kind: "reply",
+      note: JURISDICTION_REPLY_NOTE,
+      body: reply,
+      status: "in_progress",
+    })
 
     const bell = c.notifier.sent.find((n) => n.userId === reporterId)
     expect(bell).toBeDefined()
     expect(bell?.body).toBe(JURISDICTION_REPLY_NOTIFICATION_BODY)
-    expect(JSON.stringify(bell)).not.toContain("555-0100")
+    expect(JSON.stringify(bell)).not.toContain("Tuesday")
 
-    expect(c.mailRepo.messagesOf(threadFull.id).some((m) => m.body === secret)).toBe(true)
+    expect(c.mailRepo.messagesOf(threadFull.id).some((m) => m.body === reply)).toBe(true)
   })
 
-  it("H6: an HTML-only city reply lands on the thread as TEXT and still publishes no body", async () => {
+  it("drops the quoted history from the chat body and falls back to note-only when nothing is left", async () => {
+    const reportId = "report-quoted"
+    const c = ctx()
+    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+
+    const key = `${INBOUND_PENDING_PREFIX}reply-quoted.eml`
+    await put(
+      c,
+      key,
+      rfc822({
+        from: "clerk@lacity.gov",
+        to: `reply+${TOKEN}@civfix.org`,
+        body: [
+          "Ticket 4821 is open.",
+          "",
+          "On Mon, Sep 21, 2026 at 9:02 AM civfix Reports <report-x@civfix.org> wrote:",
+          "> A resident reported a graffiti issue.",
+          "> civfix reference ABC123",
+        ].join("\n"),
+      }),
+    )
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+
+    expect(c.chatEvents).toHaveLength(1)
+    expect(c.chatEvents[0]?.body).toBe("Ticket 4821 is open.")
+    expect(c.chatEvents[0]?.body).not.toContain("civfix reference ABC123")
+  })
+
+  it("H6: an HTML-only city reply lands on the thread as TEXT and reaches the chat as text", async () => {
     const reportId = "report-html"
     const html = "<p>Crew dispatched to 42 Elm St</p>"
     const c = ctx(
@@ -364,6 +415,53 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     const stored = c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")
     expect(stored?.body).toContain("Crew dispatched to 42 Elm St")
     expect(stored?.body).not.toContain("<p>")
+
+    expect(c.chatEvents).toHaveLength(1)
+    expect(c.chatEvents[0]?.body).toContain("Crew dispatched to 42 Elm St")
+    expect(c.chatEvents[0]?.body).not.toContain("<p>")
+  })
+})
+
+describe("cityReplyChatBody (what a city reply publishes into the report chat)", () => {
+  it("keeps the city's own text, trimmed", () => {
+    expect(cityReplyChatBody("  A crew is scheduled.  \n")).toBe("A crew is scheduled.")
+  })
+
+  it("drops everything from the first attribution line onward", () => {
+    const body = [
+      "Ticket 4821 is open.",
+      "Thanks,",
+      "Clerk",
+      "",
+      "On Mon, Sep 21, 2026 at 9:02 AM civfix <report-x@civfix.org> wrote:",
+      "> A resident reported a graffiti issue.",
+    ].join("\n")
+    expect(cityReplyChatBody(body)).toBe("Ticket 4821 is open.\nThanks,\nClerk")
+  })
+
+  it("drops a trailing run of quoted lines with no attribution line", () => {
+    expect(cityReplyChatBody("Open.\n\n> prior mail\n> more prior mail\n")).toBe("Open.")
+  })
+
+  it("keeps a quote that is not trailing", () => {
+    expect(cityReplyChatBody("> their words\nOur answer.")).toBe("> their words\nOur answer.")
+  })
+
+  it("returns null for an empty, missing or fully-quoted body", () => {
+    expect(cityReplyChatBody(null)).toBeNull()
+    expect(cityReplyChatBody("")).toBeNull()
+    expect(cityReplyChatBody("   \n\n ")).toBeNull()
+    expect(cityReplyChatBody("> nothing but quoted history")).toBeNull()
+    expect(cityReplyChatBody("On Mon, Sep 21, 2026 at 9:02 AM civfix wrote:\n> quoted")).toBeNull()
+  })
+
+  it("clips to MESSAGE_BODY_MAX so the chat validator accepts it", () => {
+    const out = cityReplyChatBody("x".repeat(MESSAGE_BODY_MAX + 500))
+    expect(out).toHaveLength(MESSAGE_BODY_MAX)
+  })
+
+  it("normalizes CRLF before looking for the quoted history", () => {
+    expect(stripQuotedHistory("Open.\r\n\r\nOn Mon wrote:\r\n> old")).toBe("Open.")
   })
 })
 

@@ -1,11 +1,36 @@
 # Mail effects and the outbound send triad
 
 **Audience:** internal (engineering). Not served publicly.
-**Last updated:** 2026-09-03 (audit-fix pass).
+**Last updated:** 2026-09-21 (city replies are published into the report chat).
 
 An inbound message that correlates to a mail thread can drive **public** effects: a report status
 transition, a public `report_timeline` row, a report-chat system message, and a push to the reporter.
 This documents how those run exactly once, and the one residual that is knowingly accepted.
+
+## Stage 2 publishes the city's reply text (product decision)
+
+The `report_timeline` row (stage 1) and the reporter's push (stage 3) still carry **fixed copy only** —
+`JURISDICTION_REPLY_NOTE` and `JURISDICTION_REPLY_NOTIFICATION_BODY`. Stage 2 is the exception: the
+report-chat system message now carries the city's own words in its `body`, so residents read the reply
+in the report chat rather than waiting for an operator to relay it. The outbound packet template
+discloses this to the city ("replies to this email are made public at
+`https://civfix.org/pin/{reportId}`"), and the reporter's push says "See their reply in the report chat."
+
+What reaches the chat is `cityReplyChatBody(message.body)`
+(`services/api/src/services/admin/inbound-thread-correlation.ts`): the **stored plain-text** body (an
+HTML-only reply was already flattened by `htmlToText` before it was stored), conservatively stripped of
+quoted history, whitespace-trimmed, and clipped to `MESSAGE_BODY_MAX` (2000) so it passes chat
+validation. The strip is deliberately simple and is unit-tested:
+
+- everything from the first line matching `/^On\s.+\swrote:/` onward is dropped;
+- a trailing run of `>`-prefixed (or blank) lines is dropped;
+- a non-trailing quote is kept — a reply that quotes and then answers keeps both halves.
+
+If the result is empty (a reply that was nothing but quoted history), stage 2 falls back to the previous
+behavior: the note only, with `body: null`.
+
+The chat emitter is injectable (`InboundEffectDeps.chatEmitter`, plumbed through
+`InboundProcessorDeps`), so the stage is observable in the unit suite without a database.
 
 ## Why this is not a boolean
 
@@ -52,8 +77,9 @@ The exposure is bounded and one-sided:
 
 - The window is a single UPDATE, not a network call — orders of magnitude smaller than the
   claim-to-completion window the lease exists for.
-- It can only ever **duplicate a body-less status entry**. No mail content is published (H6: the timeline
-  row, the chat message and the push all carry fixed copy), so a repeat leaks nothing.
+- It can only ever **duplicate one already-published entry**. The timeline row and the push carry fixed
+  copy, so a repeat there leaks nothing; a repeated stage 2 posts the same city reply into the same report
+  chat a second time — visible noise, never new disclosure.
 - It cannot skip a step: the stage is only ever advanced after the effect committed, so the failure mode
   is "at least once", never "never".
 
