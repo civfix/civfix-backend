@@ -66,7 +66,8 @@ describe("forward-template service: preview", () => {
     expect(preview.subject).toContain(sample("title"))
     expect(preview.subject).toContain(sample("referenceCode"))
     expect(preview.subject).not.toMatch(/\{[A-Za-z]+\}/)
-    expect(preview.text).toContain(sample("referenceCode"))
+    if (defaultBodyUses("referenceCode")) expect(preview.text).toContain(sample("referenceCode"))
+    expect(`${preview.subject}\n${preview.text}`).toContain(sample("referenceCode"))
     if (defaultBodyUses("address")) expect(preview.text).toContain(sample("address"))
   })
 

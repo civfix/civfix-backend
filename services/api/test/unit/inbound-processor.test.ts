@@ -463,6 +463,86 @@ describe("cityReplyChatBody (what a city reply publishes into the report chat)",
   it("normalizes CRLF before looking for the quoted history", () => {
     expect(stripQuotedHistory("Open.\r\n\r\nOn Mon wrote:\r\n> old")).toBe("Open.")
   })
+
+  it("keeps prose that merely contains 'wrote:' mid-sentence", () => {
+    const body = "On Tuesday our crew wrote: the curb is clear now.\nTicket closed."
+    expect(cityReplyChatBody(body)).toBe(body)
+  })
+
+  it("keeps a line ending in 'wrote:' that is not an attribution only when it is not one", () => {
+    expect(cityReplyChatBody("Our inspector wrote: see attached.")).toBe(
+      "Our inspector wrote: see attached.",
+    )
+  })
+
+  it("drops everything from an Outlook -----Original Message----- separator onward", () => {
+    const body = [
+      "Work order raised.",
+      "",
+      "-----Original Message-----",
+      "From: civfix <report-x@civfix.org>",
+      "Sent: Monday, September 21, 2026 9:02 AM",
+      "A resident reported a graffiti issue.",
+    ].join("\n")
+    expect(cityReplyChatBody(body)).toBe("Work order raised.")
+  })
+
+  it("tolerates a different dash count on the Outlook separator", () => {
+    expect(cityReplyChatBody("Noted.\n\n--Original Message--\nold text")).toBe("Noted.")
+  })
+
+  it("drops an unquoted Outlook header block (From: followed by Sent:/Date:/To:)", () => {
+    for (const follow of ["Sent: Monday", "Date: Mon, 21 Sep 2026", "To: ops@lacity.gov"]) {
+      const body = ["Crew assigned.", "", "From: civfix <report-x@civfix.org>", follow, "old body"].join(
+        "\n",
+      )
+      expect(cityReplyChatBody(body)).toBe("Crew assigned.")
+    }
+  })
+
+  it("treats a From: header as a cut point when the follow header is two lines below", () => {
+    const body = ["Done.", "", "From: civfix <x@civfix.org>", "", "Sent: Monday", "old"].join("\n")
+    expect(cityReplyChatBody(body)).toBe("Done.")
+  })
+
+  it("keeps a bare From: line that no Sent/Date/To header follows", () => {
+    const body = "From: the front desk\nWe will send someone tomorrow."
+    expect(cityReplyChatBody(body)).toBe(body)
+  })
+
+  it("keeps a From: line whose follow header is more than two lines below", () => {
+    const body = ["From: the desk", "", "", "To: whoever"].join("\n")
+    expect(cityReplyChatBody(body)).toBe(body)
+  })
+
+  it("ignores a QUOTED Outlook header block, which the trailing-quote sweep already removes", () => {
+    expect(cityReplyChatBody("Open.\n\n> From: civfix\n> Sent: Monday")).toBe("Open.")
+  })
+
+  it("cuts at the EARLIEST cut point when a reply carries more than one", () => {
+    const body = [
+      "Closed.",
+      "",
+      "-----Original Message-----",
+      "On Mon, Sep 21, 2026 at 9:02 AM civfix wrote:",
+      "> old",
+    ].join("\n")
+    expect(cityReplyChatBody(body)).toBe("Closed.")
+  })
+
+  it("clips on a grapheme boundary so the cut cannot split a surrogate pair", () => {
+    const out = cityReplyChatBody("\u{1F600}".repeat(MESSAGE_BODY_MAX))
+    expect(out).not.toBeNull()
+    expect(out!.length).toBeLessThanOrEqual(MESSAGE_BODY_MAX)
+    expect(out).toBe("\u{1F600}".repeat(MESSAGE_BODY_MAX / 2))
+    expect(out).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
+    expect(out).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
+  })
+
+  it("clips a body whose cut lands mid-emoji without emitting a lone surrogate", () => {
+    const out = cityReplyChatBody(`${"x".repeat(MESSAGE_BODY_MAX - 1)}\u{1F600}x`)
+    expect(out).toBe("x".repeat(MESSAGE_BODY_MAX - 1))
+  })
 })
 
 describe("processInboundObject: unaffiliated thread joiners (H5)", () => {

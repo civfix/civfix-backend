@@ -22,6 +22,8 @@ import {
 import type { AdminReportRecord, AdminReportRoutingRecord } from "./admin-report-types.js"
 import type { MarkdownInline } from "@civfix/shared/markdown"
 
+export const NO_PHOTO_LINKS = "(none)"
+
 export const MAX_PACKET_ATTACHMENTS = 10
 export const MAX_PACKET_ATTACHMENT_BYTES = 10 * 1024 * 1024
 export const MAX_PACKET_TOTAL_BYTES = 8 * 1024 * 1024
@@ -91,7 +93,7 @@ function buildTemplateValues(
     submittedDate: formatSubmittedDate(record.createdAt),
     jurisdictionName: routing?.place ?? place,
     operatorNote: noteText ?? "",
-    photoLinks: mediaLinks.join("\n"),
+    photoLinks: mediaLinks.length > 0 ? mediaLinks.join("\n") : NO_PHOTO_LINKS,
     photoCount: String(mediaLinks.length),
   }
 }

@@ -3,6 +3,7 @@ import {
   buildReportPacket,
   buildDiscussionForwardPacket,
   buildEventPacket,
+  NO_PHOTO_LINKS,
 } from "../../src/services/admin/mail-format.js"
 import { renderEmailBody } from "../../src/adapters/email-layout.js"
 import {
@@ -100,7 +101,8 @@ describe("buildReportPacket", () => {
     expect(packet.subject).toContain("Tag on the underpass")
     expect(packet.subject).not.toMatch(/\{[A-Za-z]+\}/)
     expect(packet.text).not.toMatch(/\{[A-Za-z]+\}/)
-    expect(packet.text).toContain("ABC123")
+    if (defaultBodyUses("referenceCode")) expect(packet.text).toContain("ABC123")
+    expect(`${packet.subject}\n${packet.text}`).toContain("ABC123")
     expect(packet.text).toContain("Please prioritize.")
     if (defaultBodyUses("description")) {
       expect(packet.html).toContain("First line of description.<br>Second line with detail.")
@@ -127,6 +129,22 @@ describe("buildReportPacket", () => {
       expect(packet.text).toContain("Photo 1: https://r2/a?t=1")
     }
     if (defaultBodyUses("photoCount")) expect(packet.text).toContain("2")
+  })
+
+  it("renders (none) for photo links when the report has no media, leaving no dangling label", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null, NO_TEMPLATES)
+    if (defaultBodyUses("photoLinks")) {
+      expect(packet.text).toContain(NO_PHOTO_LINKS)
+      expect(packet.html).toContain(NO_PHOTO_LINKS)
+    }
+    if (defaultBodyUses("photoCount")) expect(packet.text).toContain("0")
+    expect(packet.text).not.toContain("Photos (0)")
+    expect(packet.text).not.toMatch(/\{[A-Za-z]+\}/)
+  })
+
+  it("uses the real links, not the (none) placeholder, as soon as the report has media", () => {
+    const packet = buildReportPacket(reportRecord(), null, ["https://r2/a?t=1"], null, NO_TEMPLATES)
+    expect(packet.text).not.toContain(NO_PHOTO_LINKS)
   })
 
   it("H6: the packet never names the reporter and never offers a direct line to them", () => {

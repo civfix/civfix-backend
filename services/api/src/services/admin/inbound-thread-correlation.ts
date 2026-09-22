@@ -13,7 +13,7 @@ import { makeDrizzleCleanupRepository } from "../cleanup-repository.drizzle.js"
 import type { CleanupRepository } from "../cleanup-service.js"
 import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
-import { MESSAGE_BODY_MAX } from "@civfix/shared"
+import { MESSAGE_BODY_MAX, segmentGraphemes } from "@civfix/shared"
 import { domainOf, domainsAligned } from "../../adapters/inbound-mail.cf.js"
 
 export { JURISDICTION_REPLY_NOTE }
@@ -48,13 +48,30 @@ export function inboundEffectDeps(deps: {
   }
 }
 
-const QUOTED_ATTRIBUTION_RE = /^On\s.+\swrote:/
+const QUOTED_ATTRIBUTION_RE = /^On\s.+\swrote:$/
+const OUTLOOK_ORIGINAL_MESSAGE_RE = /^-{2,}\s*Original Message\s*-{2,}$/i
+const OUTLOOK_HEADER_FROM_RE = /^From:\s.+$/
+const OUTLOOK_HEADER_FOLLOW_RE = /^(?:Sent|Date|To):\s/
+const OUTLOOK_HEADER_LOOKAHEAD = 2
+
+function isQuotedHistoryStart(lines: string[], index: number): boolean {
+  const line = lines[index]!.trim()
+  if (QUOTED_ATTRIBUTION_RE.test(line)) return true
+  if (OUTLOOK_ORIGINAL_MESSAGE_RE.test(line)) return true
+  if (!OUTLOOK_HEADER_FROM_RE.test(line)) return false
+  for (let ahead = 1; ahead <= OUTLOOK_HEADER_LOOKAHEAD; ahead++) {
+    const follow = lines[index + ahead]
+    if (follow === undefined) return false
+    if (OUTLOOK_HEADER_FOLLOW_RE.test(follow.trim())) return true
+  }
+  return false
+}
 
 export function stripQuotedHistory(raw: string): string {
   const lines = raw.replace(/\r\n?/g, "\n").split("\n")
   let end = lines.length
   for (let i = 0; i < lines.length; i++) {
-    if (QUOTED_ATTRIBUTION_RE.test(lines[i]!.trim())) {
+    if (isQuotedHistoryStart(lines, i)) {
       end = i
       break
     }
@@ -67,10 +84,20 @@ export function stripQuotedHistory(raw: string): string {
   return lines.slice(0, end).join("\n").trim()
 }
 
+export function clipToMessageBody(text: string, max: number = MESSAGE_BODY_MAX): string {
+  if (text.length <= max) return text
+  let kept = ""
+  for (const cluster of segmentGraphemes(text)) {
+    if (kept.length + cluster.length > max) break
+    kept += cluster
+  }
+  return kept
+}
+
 export function cityReplyChatBody(raw: string | null | undefined): string | null {
   const trimmed = stripQuotedHistory(raw ?? "")
   if (trimmed === "") return null
-  return trimmed.length > MESSAGE_BODY_MAX ? trimmed.slice(0, MESSAGE_BODY_MAX) : trimmed
+  return clipToMessageBody(trimmed)
 }
 
 export async function findThreadByReferences(
