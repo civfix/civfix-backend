@@ -32,9 +32,9 @@ export async function registerPostRoutes(app: FastifyInstance, container: Contai
   )
 
   route(app, "getPost", async (request, reply) => {
-    const userId = requireAuth(request)
+    const viewerId = request.auth.userId ?? NIL_VIEWER_ID
     const { id } = parse(PostIdParamsSchema, request.params)
-    reply.status(200).send(await service().getPost(id, userId))
+    reply.status(200).send(await service().getPost(id, viewerId))
   })
 
   route(app, "deletePost", { preHandler: csrfProtect }, async (request, reply) => {
