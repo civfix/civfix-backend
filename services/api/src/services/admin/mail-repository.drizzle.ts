@@ -29,15 +29,23 @@ import {
   type MailMessageRecord,
   type MailRepository,
   type MailThreadRecord,
+  type OutboundMessageSnapshot,
   type OutreachStatePatch,
   type OutreachStateRecord,
   type ClaimEffectsInput,
   type PendingEffects,
   type PendingEffectsQuery,
   type RecordEventInput,
+  type RecordSendFailureInput,
   type ThreadInit,
 } from "./mail-repository.js"
-import type { MailDirection, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
+import type {
+  MailAttachment,
+  MailDirection,
+  MailStatsResponse,
+  MailStatus,
+  MailThreadDTO,
+} from "@civfix/shared"
 
 export * from "./mail-repository.js"
 export {
@@ -270,8 +278,8 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       return sql.begin(async (tx) => {
         const inserted = await tx<MessageRowSelect[]>`
           INSERT INTO mail_messages (
-            thread_id, direction, from_addr, to_addr, subject, body, attachments, message_id, in_reply_to,
-            unaffiliated
+            thread_id, direction, from_addr, to_addr, subject, body, html, kind, attachments,
+            message_id, in_reply_to, unaffiliated
           ) VALUES (
             ${input.threadId},
             ${input.direction},
@@ -279,15 +287,17 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
             ${input.toAddr ?? null},
             ${input.subject ?? null},
             ${input.body ?? null},
+            ${input.html ?? null},
+            ${input.kind ?? null},
             ${tx.json(attachments as Parameters<typeof tx.json>[0])},
             ${input.messageId ?? null},
             ${input.inReplyTo ?? null},
             ${input.unaffiliated ?? false}
           )
           ON CONFLICT (message_id) WHERE message_id IS NOT NULL DO NOTHING
-          RETURNING id, thread_id, direction, from_addr, to_addr, subject, body, attachments,
-                    message_id, in_reply_to, unaffiliated, effects_claimed_at, effects_applied_at,
-                    effects_stage, created_at
+          RETURNING id, thread_id, direction, from_addr, to_addr, subject, body, html, kind,
+                    attachments, message_id, in_reply_to, unaffiliated, effects_claimed_at,
+                    effects_applied_at, effects_stage, created_at
         `
         const row = inserted[0]
         if (!row) return null
@@ -378,6 +388,8 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
                 toAddr: r.lm_to_addr,
                 subject: null,
                 body: r.lm_body,
+                html: null,
+                kind: null,
                 attachments: [],
                 messageId: null,
                 inReplyTo: null,
@@ -408,12 +420,12 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
         SELECT id, thread_id, direction, from_addr, to_addr, subject,
                left(body, ${MAIL_BODY_DETAIL_CHARS}) AS body,
                length(body) > ${MAIL_BODY_DETAIL_CHARS} AS truncated,
-               attachments, message_id, in_reply_to, unaffiliated, effects_claimed_at, effects_applied_at,
-                    effects_stage, created_at, delivery
+               kind, attachments, message_id, in_reply_to, unaffiliated, effects_claimed_at,
+                    effects_applied_at, effects_stage, created_at, delivery
         FROM (
-          SELECT m.id, m.thread_id, m.direction, m.from_addr, m.to_addr, m.subject, m.body, m.attachments,
-                 m.message_id, m.in_reply_to, m.unaffiliated, m.effects_claimed_at, m.effects_applied_at,
-                 m.effects_stage, m.created_at, d.type AS delivery
+          SELECT m.id, m.thread_id, m.direction, m.from_addr, m.to_addr, m.subject, m.body, m.kind,
+                 m.attachments, m.message_id, m.in_reply_to, m.unaffiliated, m.effects_claimed_at,
+                 m.effects_applied_at, m.effects_stage, m.created_at, d.type AS delivery
           FROM mail_messages m
           LEFT JOIN (
             SELECT DISTINCT ON (e.message_id) e.message_id, e.type
@@ -471,8 +483,8 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const rows = await sql<MessageRowSelect[]>`
         SELECT id, thread_id, direction, from_addr, to_addr, subject,
                left(body, ${MAIL_BODY_DETAIL_CHARS}) AS body,
-               attachments, message_id, in_reply_to, unaffiliated, effects_claimed_at, effects_applied_at,
-                    effects_stage, created_at
+               kind, attachments, message_id, in_reply_to, unaffiliated, effects_claimed_at,
+                    effects_applied_at, effects_stage, created_at
         FROM mail_messages
         WHERE message_id = ${messageId}
         LIMIT 1
@@ -527,7 +539,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const rows = await sql<PendingEffectsRowSelect[]>`
         SELECT m.id, m.thread_id, m.direction, m.from_addr, m.to_addr, m.subject,
                left(m.body, ${MAIL_BODY_DETAIL_CHARS}) AS body,
-               m.attachments, m.message_id, m.in_reply_to, m.unaffiliated, m.effects_claimed_at,
+               m.kind, m.attachments, m.message_id, m.in_reply_to, m.unaffiliated, m.effects_claimed_at,
                m.effects_applied_at, m.effects_stage,
                m.created_at,
                t.id AS t_id, t.thread_token AS t_thread_token,
@@ -599,6 +611,68 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const id = rows[0]?.id
       if (id === undefined) throw new Error("recordEvent: insert returned no row")
       return id
+    },
+
+    async recordSendFailure(input: RecordSendFailureInput): Promise<void> {
+      const meta = sql.json(input.meta as Parameters<typeof sql.json>[0])
+      await sql.begin(async (tx) => {
+        await tx`
+          INSERT INTO mail_events (thread_id, message_id, type, meta)
+          VALUES (${input.threadId}, ${input.messageId}, 'failed', ${meta})
+        `
+        await tx`UPDATE mail_threads SET status = 'needs_action' WHERE id = ${input.threadId}`
+        if (input.audit) {
+          await writeAudit(tx, {
+            actorId: input.audit.actorId,
+            action: input.audit.action,
+            target: input.audit.target,
+            meta: input.audit.meta ?? null,
+          })
+        }
+      })
+    },
+
+    async setThreadSubject(id: string, subject: string): Promise<void> {
+      await sql`UPDATE mail_threads SET subject = ${subject} WHERE id = ${id}`
+    },
+
+    async latestOutboundMessageId(threadId: string): Promise<string | null> {
+      const rows = await sql<{ id: string }[]>`
+        SELECT id
+        FROM mail_messages
+        WHERE thread_id = ${threadId} AND direction = 'out'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `
+      return rows[0]?.id ?? null
+    },
+
+    async getOutboundMessageForResend(messageId: string): Promise<OutboundMessageSnapshot | null> {
+      const rows = await sql<
+        {
+          id: string
+          to_addr: string | null
+          subject: string | null
+          body: string | null
+          html: string | null
+          attachments: MailAttachment[] | null
+        }[]
+      >`
+        SELECT id, to_addr, subject, body, html, attachments
+        FROM mail_messages
+        WHERE id = ${messageId} AND direction = 'out'
+        LIMIT 1
+      `
+      const row = rows[0]
+      if (!row) return null
+      return {
+        id: row.id,
+        toAddr: row.to_addr,
+        subject: row.subject,
+        body: row.body ?? "",
+        html: row.html,
+        attachments: row.attachments ?? [],
+      }
     },
 
     async stats7d(): Promise<MailStatsResponse> {

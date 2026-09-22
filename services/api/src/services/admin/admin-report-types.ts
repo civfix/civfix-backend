@@ -10,6 +10,8 @@ import type {
   ReportTimelineItem,
 } from "@civfix/shared"
 import type { OutboundMailService } from "./outbound-mail-service.js"
+import type { FastifyBaseLogger } from "fastify"
+import type { NotificationService } from "../notification-service.js"
 import type { LinkedEventView } from "../cleanup-service.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import type { AdminPersonRecord } from "./admin-person.js"
@@ -48,6 +50,7 @@ export interface ReportOutreachState {
   threadId: string | null
   routedTo: string | null
   routedAt: string | null
+  packetSent: boolean
   sendFailed?: boolean
   sendInFlight?: boolean
 }
@@ -81,13 +84,7 @@ export interface ListReportsArgs {
   limit: number
 }
 
-export interface NotifyReporterInput {
-  reportId: string
-  reporterUserId: string
-  title: string
-  body: string
-  link: string | null
-}
+export type ReporterNotifier = Pick<NotificationService, "createNotification">
 
 export interface AdminReportRepository {
   listReports(
@@ -128,7 +125,6 @@ export interface AdminReportRepository {
     input: { reason: string | null; actorId: string | null },
   ): Promise<boolean | null>
   remove(id: string, input: { note: string; actorId: string | null }): Promise<boolean>
-  notifyReporter(input: NotifyReporterInput): Promise<void>
   appendFollowup(
     id: string,
     input: {
@@ -165,6 +161,8 @@ export interface AdminReportServiceDeps {
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter
   forwardTemplates?: ForwardTemplateReader
+  notifications?: ReporterNotifier
+  logger?: Pick<FastifyBaseLogger, "warn">
 }
 
 export interface FollowupResult {

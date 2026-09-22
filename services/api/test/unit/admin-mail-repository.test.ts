@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest"
+import type { MailThreadDTO } from "@civfix/shared"
+import type { Storage } from "@civfix/shared/interfaces"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { presignThreadAttachments } from "../../src/routes/admin/mail.routes.js"
 import {
   buildMailStats,
   mintThreadToken,
@@ -61,6 +64,8 @@ describe("toThreadDTO", () => {
         attachments: [],
         messageId: null,
         inReplyTo: null,
+        html: null,
+        kind: null,
         unaffiliated: false,
         effectsClaimedAt: null,
         effectsAppliedAt: null,
@@ -78,6 +83,8 @@ describe("toThreadDTO", () => {
         attachments: [{ key: "r2/a.pdf", filename: "a.pdf", size: 10 }],
         messageId: null,
         inReplyTo: null,
+        html: null,
+        kind: null,
         unaffiliated: false,
         effectsClaimedAt: null,
         effectsAppliedAt: null,
@@ -338,5 +345,78 @@ describe("InMemoryMailRepository: recordEvent", () => {
     expect(typeof id).toBe("string")
     expect(repo.events).toHaveLength(1)
     expect(repo.events[0]?.meta).toEqual({ to: "x@y.com" })
+  })
+})
+
+describe("InMemoryMailRepository: outbound snapshot + failure recording", () => {
+  it("records a send failure as one event + needs_action + an audit row", async () => {
+    const repo = new InMemoryMailRepository()
+    const t = await repo.createThread({ subject: "Pothole", status: "sent" })
+    const m = await repo.insertMessage({ threadId: t.id, direction: "out", toAddr: "clerk@city.gov", body: "packet" })
+    await repo.recordSendFailure({
+      threadId: t.id,
+      messageId: m?.id ?? "",
+      meta: { to: "clerk@city.gov", error: "smtp down" },
+      audit: { actorId: null, action: "mail.send_failed", target: "report:rep-1", meta: { reportId: "rep-1" } },
+    })
+    expect(repo.events.map((e) => e.type)).toEqual(["failed"])
+    expect((await repo.getThreadRecord(t.id))?.status).toBe("needs_action")
+    expect(repo.audits.at(-1)).toMatchObject({ action: "mail.send_failed", target: "report:rep-1" })
+  })
+
+  it("re-reads the latest outbound message whole, and only outbound ones", async () => {
+    const repo = new InMemoryMailRepository()
+    const t = await repo.createThread({ subject: "Pothole" })
+    await repo.insertMessage({ threadId: t.id, direction: "out", toAddr: "clerk@city.gov", body: "first" })
+    const inbound = await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "re" })
+    const last = await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      toAddr: "clerk@city.gov",
+      subject: "civfix report: Pothole",
+      body: "second",
+      html: "<p>second</p>",
+      kind: "packet",
+      attachments: [{ key: "media/r2/a.jpg", filename: "a.jpg", size: 4 }],
+    })
+
+    expect(await repo.latestOutboundMessageId(t.id)).toBe(last?.id)
+    expect(await repo.getOutboundMessageForResend(inbound?.id ?? "")).toBeNull()
+    expect(await repo.getOutboundMessageForResend(last?.id ?? "")).toEqual({
+      id: last?.id,
+      toAddr: "clerk@city.gov",
+      subject: "civfix report: Pothole",
+      body: "second",
+      html: "<p>second</p>",
+      attachments: [{ key: "media/r2/a.jpg", filename: "a.jpg", size: 4 }],
+    })
+  })
+
+  it("rewrites a thread subject in place", async () => {
+    const repo = new InMemoryMailRepository()
+    const t = await repo.createThread({ subject: "old" })
+    await repo.setThreadSubject(t.id, "new")
+    expect((await repo.getThreadRecord(t.id))?.subject).toBe("new")
+  })
+})
+
+describe("presignThreadAttachments", () => {
+  it("signs outbound packet media against the media bucket, inbound files against the inbound one", async () => {
+    const store = (label: string): Storage =>
+      ({ presignGet: (key: string) => Promise.resolve(`${label}:${key}`) }) as unknown as Storage
+    const attachments = (key: string) => [{ key, filename: "f", size: 1 }]
+    const dto = {
+      messages: [
+        { dir: "out", attachments: attachments("media/photo.jpg") },
+        { dir: "in", attachments: attachments("inbound/a.pdf") },
+      ],
+    } as unknown as MailThreadDTO
+
+    const signed = await presignThreadAttachments(dto, { in: store("in"), out: store("out") })
+
+    expect(signed.messages.map((m) => m.attachments[0]?.key)).toEqual([
+      "out:media/photo.jpg",
+      "in:inbound/a.pdf",
+    ])
   })
 })

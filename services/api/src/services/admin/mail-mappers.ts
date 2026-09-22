@@ -2,6 +2,7 @@
 import type { CursorAnchor } from "./pagination.js"
 import { toPreview } from "./mail-preview.js"
 import type {
+  MailMessageKind,
   MailMessageRecord,
   MailThreadRecord,
   OutreachStateRecord,
@@ -38,6 +39,8 @@ export interface MessageRowSelect {
   to_addr: string | null
   subject: string | null
   body: string | null
+  html?: string | null
+  kind?: MailMessageKind | null
   attachments: MailAttachment[] | null
   message_id: string | null
   in_reply_to: string | null
@@ -81,6 +84,8 @@ export function toMessageRecord(r: MessageRowSelect): MailMessageRecord {
     toAddr: r.to_addr,
     subject: r.subject,
     body: r.body,
+    html: r.html ?? null,
+    kind: r.kind ?? null,
     attachments: r.attachments ?? [],
     messageId: r.message_id,
     inReplyTo: r.in_reply_to,

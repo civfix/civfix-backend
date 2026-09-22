@@ -18,7 +18,7 @@ import type {
   ReportRouting,
   ReportTimelineItem,
 } from "@civfix/shared"
-import type { OutboundAttachment } from "@civfix/shared/interfaces"
+import type { PacketAttachment } from "./outbound-mail-service.js"
 import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"
@@ -186,6 +186,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         threadId: outreach.threadId,
         routedTo: outreach.routedTo,
         routedAt: outreach.routedAt,
+        ...(outreach.sendFailed !== undefined ? { sendFailed: outreach.sendFailed } : {}),
       }
       return {
         ...base,
@@ -239,6 +240,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           "This report moved on while you were looking at it — reload and try again",
         )
       }
+      await notifyReporterOfStatus(deps, id, record.reporter?.id ?? null, input.status)
       await emitTimeline({ reportId: id, status: input.status, kind: timelineKindForStatus(input.status), note })
     },
 
@@ -289,9 +291,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         if (!reporterId || reporterId === "") {
           throw AppError.validation({ to: "report has no reporter account to notify" })
         }
-        await deps.repo.notifyReporter({
-          reportId: id,
-          reporterUserId: reporterId,
+        const notifications = deps.notifications
+        if (notifications === undefined) {
+          throw AppError.internal("Reporter notifications are not wired on this instance")
+        }
+        await notifications.createNotification(reporterId, {
+          type: "report_update",
           title: "Update on your report",
           body: input.body,
           link: `/reports/${id}`,
@@ -312,31 +317,40 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       }
 
       const routing = await deps.repo.getRouting(id)
-      const contact = routing?.contact ?? null
-      if (contact === null || contact === "") {
+      const outreach = await deps.repo.getOutreach(id)
+      assertNoSendInFlight(outreach)
+      if (outreach.threadId === null) {
+        throw AppError.validation(
+          { to: "not_routed" },
+          "Send the report to the jurisdiction first; follow-ups go on that conversation",
+        )
+      }
+      const destination = outreach.routedTo ?? routing?.contact ?? null
+      if (destination === null || destination === "") {
         throw AppError.validation({ to: "no city contact on file for this report" })
       }
-      await deps.outboundMail.sendToCity({
-        geoid: routing?.geoid ?? null,
-        toAddr: contact,
-        subject: `civfix report ${id}`,
+      await deps.outboundMail.appendOutbound(outreach.threadId, {
         body: input.body,
-        reportContext: { reportId: id, category: record.category, place: record.place },
-        org: routing?.dept ?? null,
+        toAddr: destination,
+        audit: {
+          actorId: input.actorId,
+          action: "mail.replied",
+          meta: { reportId: id, to: destination },
+        },
       })
       await recordFollowup(deps, id, {
-        note: `Follow-up sent to ${contact}`,
+        note: `Follow-up sent to ${destination}`,
         actorId: input.actorId,
         to: "city",
-        destination: contact,
+        destination,
       })
       await emitTimeline({
         reportId: id,
         status: record.status,
         kind: "status",
-        note: `Follow-up sent to ${contact}`,
+        note: `Follow-up sent to ${destination}`,
       })
-      return { to: "city", destination: contact }
+      return { to: "city", destination }
     },
 
     async routeToJurisdiction(
@@ -358,7 +372,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
 
       const media = await deps.repo.listMedia(id)
       const mediaLinks: string[] = []
-      const attachments: OutboundAttachment[] = []
+      const attachments: PacketAttachment[] = []
       let attachedBytesTotal = 0
       for (const m of media) {
         const { url } = await presignPacketMedia(m.r2Key, m.thumbKey)
@@ -370,6 +384,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         attachedBytesTotal += bytes.byteLength
         const contentType = attachmentContentType(m.contentType, bytes)
         attachments.push({
+          key: m.r2Key,
           filename: attachmentFilename(m.r2Key, attachments.length, contentType),
           contentType,
           content: bytes,
@@ -488,15 +503,55 @@ function sameAddress(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase()
 }
 
-function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
+function assertNoSendInFlight(existing: ReportOutreachState): void {
   if (existing.sendInFlight === true) {
     throw AppError.conflict(SEND_IN_FLIGHT_CONFLICT)
   }
-  const landed =
-    existing.status === "sent" || existing.status === "delivered" || existing.status === "replied"
+}
+
+function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
+  assertNoSendInFlight(existing)
   const retargeted = existing.routedTo !== null && !sameAddress(existing.routedTo, toAddr)
-  if (landed && existing.sendFailed !== true && !retargeted) {
+  const bounced = existing.status === "bounced"
+  if (existing.packetSent && existing.sendFailed !== true && !retargeted && !bounced) {
     throw AppError.conflict(ALREADY_ROUTED_CONFLICT)
+  }
+}
+
+const STATUS_NOTIFICATION_BODIES: Partial<Record<AdminReportStatus, string>> = {
+  in_progress: "The city is working on your report.",
+  resolved: "Your report has been marked resolved.",
+}
+
+async function notifyReporterOfStatus(
+  deps: AdminReportServiceDeps,
+  reportId: string,
+  reporterUserId: string | null,
+  status: AdminReportStatus,
+): Promise<void> {
+  const body = STATUS_NOTIFICATION_BODIES[status]
+  if (body === undefined) return
+  if (reporterUserId === null || reporterUserId === "") return
+  const notifications = deps.notifications
+  if (notifications === undefined) {
+    deps.logger?.warn(
+      { reportId, status },
+      "report status changed with no notifier wired: the reporter was not told",
+    )
+    return
+  }
+  try {
+    await notifications.createNotification(reporterUserId, {
+      type: "report_update",
+      title: `Your report is ${ADMIN_REPORT_STATUS_LABELS[status].toLowerCase()}`,
+      body,
+      link: `/reports/${reportId}`,
+    })
+  } catch (err) {
+    deps.logger?.warn(
+      { err, reportId, status },
+      "report_update notification failed (suppressed: the status change is committed)",
+    )
   }
 }
 

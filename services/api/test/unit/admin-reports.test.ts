@@ -3,6 +3,7 @@ import { AppError } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js"
 import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
+import type { MailMessageKind } from "../../src/services/admin/mail-repository.js"
 import {
   makeAdminReportService,
   resolveListFilter,
@@ -12,6 +13,7 @@ import {
 } from "../../src/services/admin/admin-report-service.js"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import { InMemoryForwardTemplateRepository } from "../../src/services/admin/forward-template-repository.memory.js"
+import { RecordingNotifier } from "../helpers/notifications.js"
 import { MAX_PACKET_TOTAL_BYTES } from "../../src/services/admin/mail-format.js"
 import {
   makeOutboundMailService,
@@ -21,6 +23,15 @@ import {
 
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
+
+const REPORTER = {
+  id: "u-7",
+  name: "Sam",
+  handle: "sam",
+  emailVerified: true,
+  hasOauth: false,
+  joinedAt: null,
+}
 
 const REPORT_STATUSES = [
   "submitted",
@@ -48,6 +59,7 @@ interface Harness {
   mailer: FakeMailer
   emitter: FakeReportChatEmitter
   forwardTemplates: InMemoryForwardTemplateRepository
+  notifier: RecordingNotifier
   svc: AdminReportService
 }
 
@@ -58,6 +70,7 @@ function harness(): Harness {
   const mailer = new FakeMailer()
   const emitter = new FakeReportChatEmitter()
   const forwardTemplates = new InMemoryForwardTemplateRepository()
+  const notifier = new RecordingNotifier()
   const outboundMail = makeOutboundMailService({
     repo: mailRepo,
     mailer,
@@ -69,12 +82,13 @@ function harness(): Harness {
     now: () => NOW,
     reportChatEmitter: emitter,
     forwardTemplates,
+    notifications: notifier,
     presignMedia: async (r2Key, thumbKey) => ({
       url: `https://media.test/${r2Key}`,
       ...(thumbKey !== null ? { thumbUrl: `https://media.test/${thumbKey}` } : {}),
     }),
   })
-  return { repo, mailRepo, mailer, emitter, forwardTemplates, svc }
+  return { repo, mailRepo, mailer, emitter, forwardTemplates, notifier, svc }
 }
 
 function lastOutbound(mailer: FakeMailer): { subject: string; text: string; html?: string } {
@@ -388,12 +402,13 @@ describe("admin reports mutations", () => {
     expect(page.items.some((i) => i.id === "rep-1")).toBe(true)
   })
 
-  it("setStatus to the status the report already has is a no-op (no timeline row, no audit)", async () => {
-    const { repo, emitter, svc } = harness()
+  it("setStatus to the status the report already has is a no-op (no row, no audit, no bell)", async () => {
+    const { repo, notifier, emitter, svc } = harness()
     repo.seedReport({ id: "rep-1", status: "in_progress" })
     await svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" })
     expect(repo.timeline.get("rep-1") ?? []).toHaveLength(0)
     expect(repo.audits).toHaveLength(0)
+    expect(notifier.sent).toHaveLength(0)
     expect(emitter.events).toHaveLength(0)
   })
 
@@ -414,6 +429,24 @@ describe("admin reports mutations", () => {
     expect(repo.audits).toHaveLength(0)
   })
 
+  it("setStatus rings the reporter through the notification pipeline on in_progress and resolved", async () => {
+    const { repo, notifier, svc } = harness()
+    repo.seedReport({
+      id: "rep-1",
+      status: "published",
+      reporter: REPORTER,
+    })
+    await svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" })
+    await svc.setStatus("rep-1", { status: "resolved", actorId: "op-1" })
+    expect(notifier.sent).toHaveLength(2)
+    expect(notifier.sent[0]).toMatchObject({
+      userId: "u-7",
+      type: "report_update",
+      link: "/reports/rep-1",
+    })
+    expect(notifier.sent[1]?.title).toContain("resolved")
+  })
+
   it("setStatus is a 409 when the report moved on between the read and the write", async () => {
     const { repo, svc } = harness()
     repo.seedReport({ id: "rep-1", status: "published" })
@@ -427,6 +460,31 @@ describe("admin reports mutations", () => {
       svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" }),
     ).rejects.toMatchObject({ httpStatus: 409 })
     expect(repo.reports.get("rep-1")?.record.status).toBe("held")
+  })
+
+  it("setStatus SURVIVES a notifier that throws — the committed status change is not undone", async () => {
+    const { repo, notifier, emitter, svc } = harness()
+    repo.seedReport({
+      id: "rep-1",
+      status: "published",
+      reporter: REPORTER,
+    })
+    notifier.failNext = true
+    await expect(
+      svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" }),
+    ).resolves.toBeUndefined()
+    expect(repo.reports.get("rep-1")?.record.status).toBe("in_progress")
+    expect(notifier.sent).toHaveLength(0)
+    expect(emitter.events).toHaveLength(1)
+  })
+
+  it("setStatus rings nobody for an anonymous report or for a status with no reporter-facing news", async () => {
+    const { repo, notifier, svc } = harness()
+    repo.seedReport({ id: "rep-anon", status: "published", reporter: null })
+    await svc.setStatus("rep-anon", { status: "in_progress", actorId: "op-1" })
+    repo.seedReport({ id: "rep-2", status: "submitted" })
+    await svc.setStatus("rep-2", { status: "held", actorId: "op-1" })
+    expect(notifier.sent).toHaveLength(0)
   })
 
   it("setStatus throws notFound for an unknown report", async () => {
@@ -503,18 +561,11 @@ describe("admin reports mutations", () => {
     expect(repo.audits.at(-1)).toMatchObject({ action: "report.removed", target: "report:rep-1" })
   })
 
-  it("follow-up to reporter creates a notification + a timeline row + audit", async () => {
-    const { repo, svc } = harness()
+  it("follow-up to reporter rings the notification pipeline + a timeline row + audit", async () => {
+    const { repo, notifier, svc } = harness()
     repo.seedReport({
       id: "rep-1",
-      reporter: {
-        id: "u-7",
-        name: "Sam",
-        handle: "sam",
-        emailVerified: true,
-        hasOauth: false,
-        joinedAt: null,
-      },
+      reporter: REPORTER,
     })
     const result = await svc.sendFollowup("rep-1", {
       to: "reporter",
@@ -522,10 +573,12 @@ describe("admin reports mutations", () => {
       actorId: "op-1",
     })
     expect(result).toEqual({ to: "reporter", destination: "u-7" })
-    expect(repo.notifications).toHaveLength(1)
-    expect(repo.notifications[0]).toMatchObject({
+    expect(notifier.sent).toHaveLength(1)
+    expect(notifier.sent[0]).toMatchObject({
       userId: "u-7",
+      type: "report_update",
       body: "Thanks, we routed this to the city.",
+      link: "/reports/rep-1",
     })
     expect(repo.timeline.get("rep-1")?.at(-1)).toMatchObject({
       note: "Follow-up sent to the reporter",
@@ -545,8 +598,15 @@ describe("admin reports mutations", () => {
     ).rejects.toMatchObject({ httpStatus: 422 })
   })
 
-  it("follow-up to city calls OutboundMailService.sendToCity (delivers + threads) + audits", async () => {
+  it("follow-up to city goes on the REPORT'S OWN thread, as a reply the city can correlate", async () => {
     const { repo, mailRepo, mailer, svc } = harness()
+    const thread = mailRepo.seedThread({
+      reportId: "rep-1",
+      jurisdictionGeoid: "0644000",
+      subject: "Hazard report — Los Angeles",
+      status: "sent",
+    })
+    mailRepo.seedMessage({ threadId: thread.id, direction: "out", toAddr: "311@lacity.gov" })
     repo.seedReport({
       id: "rep-1",
       category: "hazard",
@@ -555,30 +615,79 @@ describe("admin reports mutations", () => {
         geoid: "0644000",
         dept: "LA",
         place: "Los Angeles",
-        contact: "311@lacity.gov",
+        contact: "new-311@lacity.gov",
         routed: true,
       },
+      outreach: { threadId: thread.id, threadStatus: "sent", routedTo: "311@lacity.gov" },
     })
+    const before = mailRepo.messagesOf(thread.id).length
+
     const result = await svc.sendFollowup("rep-1", {
       to: "city",
       body: "Please prioritize this hazard.",
       actorId: "op-1",
     })
+
     expect(result).toEqual({ to: "city", destination: "311@lacity.gov" })
-    const sent = mailer.sent.find((m) => m.to === "311@lacity.gov")
-    expect(sent).toBeDefined()
-    expect(sent?.outbound?.from).toMatch(/^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/)
-    expect(sent?.outbound?.replyTo).toBeUndefined()
-    const thread = [...mailRepo.threads.values()].find(
-      (t) => t.jurisdictionGeoid === "0644000" && t.reportId === null,
-    )
-    expect(thread).toBeDefined()
-    expect(thread?.threadToken).toMatch(/^[a-z2-7]{12}$/)
-    expect(mailRepo.messagesOf(thread!.id).some((m) => m.direction === "out")).toBe(true)
+    expect(mailRepo.messagesOf(thread.id)).toHaveLength(before + 1)
+    expect(mailRepo.messagesOf(thread.id).at(-1)).toMatchObject({
+      direction: "out",
+      toAddr: "311@lacity.gov",
+      subject: "Re: Hazard report — Los Angeles",
+    })
+    expect([...mailRepo.threads.values()]).toHaveLength(1)
+    expect(mailer.sent.at(-1)?.to).toBe("311@lacity.gov")
+    expect(repo.timeline.get("rep-1")?.at(-1)?.note).toBe("Follow-up sent to 311@lacity.gov")
     expect(repo.audits.at(-1)).toMatchObject({
       action: "report.followup_sent",
-      meta: { to: "city" },
+      meta: { to: "city", destination: "311@lacity.gov" },
     })
+  })
+
+  it("follow-up to city REFUSES while a send on that thread is still in flight (409, nothing mailed)", async () => {
+    const { repo, mailRepo, mailer, svc } = harness()
+    const thread = mailRepo.seedThread({ reportId: "rep-1", subject: "Hazard report", status: "sent" })
+    repo.seedReport({
+      id: "rep-1",
+      routing: {
+        geoid: "0644000",
+        dept: "LA",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: true,
+      },
+      outreach: {
+        threadId: thread.id,
+        threadStatus: "sent",
+        routedTo: "311@lacity.gov",
+        sendInFlight: true,
+      },
+    })
+    const before = mailRepo.messagesOf(thread.id).length
+    await expect(
+      svc.sendFollowup("rep-1", { to: "city", body: "hi", actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+    expect(mailer.sent).toHaveLength(0)
+    expect(mailRepo.messagesOf(thread.id)).toHaveLength(before)
+  })
+
+  it("follow-up to city is REFUSED until the report itself has been routed (no orphan thread)", async () => {
+    const { repo, mailRepo, mailer, svc } = harness()
+    repo.seedReport({
+      id: "rep-1",
+      routing: {
+        geoid: "0644000",
+        dept: "LA",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+    })
+    await expect(
+      svc.sendFollowup("rep-1", { to: "city", body: "hi", actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 422, fields: { to: "not_routed" } })
+    expect(mailer.sent).toHaveLength(0)
+    expect([...mailRepo.threads.values()]).toHaveLength(0)
   })
 
   it("follow-up to city with no contact on file is a 422", async () => {
@@ -776,6 +885,8 @@ describe("routeToJurisdiction re-send gate", () => {
     outreach: {
       threadStatus: string
       hasInbound?: boolean
+      packetSent?: boolean
+      outboundKinds?: (MailMessageKind | null)[]
       sendFailed?: boolean
       routedTo?: string
       contact?: string
@@ -797,6 +908,9 @@ describe("routeToJurisdiction re-send gate", () => {
         threadId: "t-1",
         threadStatus: outreach.threadStatus,
         hasInbound: outreach.hasInbound ?? false,
+        ...(outreach.outboundKinds !== undefined
+          ? { outboundKinds: outreach.outboundKinds }
+          : { packetSent: outreach.packetSent ?? true }),
         routedTo: outreach.routedTo ?? "311@lacity.gov",
         ...(outreach.sendFailed !== undefined ? { sendFailed: outreach.sendFailed } : {}),
       },
@@ -881,13 +995,14 @@ describe("routeToJurisdiction re-send gate", () => {
     expect((await h.svc.get("rep-1")).status).toBe("submitted")
 
     const thread = [...h.mailRepo.threads.values()].find((t) => t.reportId === "rep-1")
-    expect(thread?.status).toBe("sent")
+    expect(thread?.status).toBe("needs_action")
     const seeded = h.repo.reports.get("rep-1")
     if (seeded) {
       seeded.outreach = {
         threadId: thread?.id ?? "t-1",
         threadStatus: "sent",
         hasInbound: false,
+        packetSent: true,
         routedTo: "311@lacity.gov",
         routedAt: NOW,
         sendFailed: true,
@@ -901,6 +1016,42 @@ describe("routeToJurisdiction re-send gate", () => {
     expect(routedTo).toBe("311@lacity.gov")
     expect(h.mailRepo.events.some((e) => e.type === "sent")).toBe(true)
     expect((await h.svc.get("rep-1")).status).toBe("acknowledged")
+  })
+
+  it("lets the operator send the packet after a citizen's @city discussion forward", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "sent", packetSent: false })
+    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
+    expect(routedTo).toBe("311@lacity.gov")
+    expect(h.mailer.sent).toHaveLength(1)
+    expect(h.mailRepo.messages.at(-1)?.kind).toBe("packet")
+  })
+
+  it("REFUSES a second packet for a report routed BEFORE 0174 (kind NULL is a packet)", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "sent", outboundKinds: [null] })
+    await expect(
+      h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+    expect(h.mailer.sent).toHaveLength(0)
+  })
+
+  it("REFUSES a second packet once one has been sent, whatever the thread status says", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "needs_action", packetSent: true })
+    await expect(
+      h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+    expect(h.mailer.sent).toHaveLength(0)
+  })
+
+  it("exposes sendFailed on the report DTO so the operator can see a resend is allowed", async () => {
+    const h = harness()
+    seedRouted(h, { threadStatus: "sent", sendFailed: true })
+    expect((await h.svc.get("rep-1")).outreach.sendFailed).toBe(true)
+    const clean = harness()
+    seedRouted(clean, { threadStatus: "sent" })
+    expect((await clean.svc.get("rep-1")).outreach.sendFailed).toBe(false)
   })
 
   it("clears a thread's 'bounced' status once a re-route actually delivers (no unbounded re-sends)", async () => {
@@ -946,6 +1097,7 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
             threadId: `t-${marker}`,
             threadStatus: "sent",
             hasInbound: false,
+            packetSent: true,
             routedTo: input.toAddr,
             routedAt: NOW,
             sendFailed: false,
@@ -998,6 +1150,7 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
             threadId: "t-1",
             threadStatus: "sent",
             hasInbound: false,
+            packetSent: true,
             routedTo: input.toAddr,
             routedAt: NOW,
             sendFailed: false,
@@ -1133,6 +1286,7 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
             threadId: "t-1",
             threadStatus: "sent",
             hasInbound: false,
+            packetSent: true,
             routedTo: input.toAddr,
             routedAt: NOW,
             sendFailed: false,
@@ -1272,6 +1426,7 @@ describe("runAutoForwardWith delegates the duplicate-send decision", () => {
         threadId: "t-1",
         threadStatus: "sent",
         hasInbound: false,
+        packetSent: true,
         routedTo: "311@lacity.gov",
         routedAt: NOW,
         sendFailed: true,

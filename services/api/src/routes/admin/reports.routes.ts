@@ -28,6 +28,7 @@ import { requireOperator } from "../../auth/admin-guard.js"
 import {
   makeAdminReportService,
   type AdminReportRepository,
+  type ReporterNotifier,
 } from "../../services/admin/admin-report-service.js"
 import { makeDrizzleAdminReportRepository } from "../../services/admin/admin-report-repository.drizzle.js"
 import { makeDrizzleForwardTemplateRepository } from "../../services/admin/forward-template-repository.drizzle.js"
@@ -40,6 +41,7 @@ import { makeDrizzleCleanupRepository } from "../../services/cleanup-repository.
 import { makePacketMediaPresigner, makePrivateMediaPresigner } from "../../services/media-presign.js"
 import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "./mail.routes.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
+import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
 
 export interface AdminReportRouteOverrides {
@@ -55,6 +57,7 @@ export interface AdminReportRouteOverrides {
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter
   forwardTemplates?: ForwardTemplateRepository
+  notifications?: ReporterNotifier
 }
 
 declare module "fastify" {
@@ -87,6 +90,9 @@ export async function registerAdminReportsRoutes(
         ...(overrides.forwardTemplates !== undefined
           ? { forwardTemplates: overrides.forwardTemplates }
           : {}),
+        ...(overrides.notifications !== undefined
+          ? { notifications: overrides.notifications }
+          : {}),
       }),
     () => {
       const sql = container.getDb().sql
@@ -103,6 +109,8 @@ export async function registerAdminReportsRoutes(
         loadMediaBytes: (k) => container.storage.getObject(k),
         reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
         forwardTemplates: makeDrizzleForwardTemplateRepository(sql),
+        notifications: makeRouteNotificationService(container, app.log),
+        logger: app.log,
       })
     },
   )

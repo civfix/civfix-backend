@@ -9,6 +9,7 @@ import {
   SetForwardTemplateDefaultRequestSchema,
   SetMailStatusRequestSchema,
   type ForwardTemplateSettingsDTO,
+  type MailDirection,
   type MailListResponse,
   type MailStatsResponse,
   type MailThreadDTO,
@@ -48,11 +49,32 @@ export const ADMIN_OUTBOUND_MAIL_RATE_LIMIT = perIdentity({
 
 const MAX_MAIL_THREAD_ATTACHMENTS = 50
 
+export async function presignThreadAttachments(
+  dto: MailThreadDTO,
+  stores: Record<MailDirection, Storage>,
+): Promise<MailThreadDTO> {
+  return {
+    ...dto,
+    messages: await mapWithLimit(dto.messages, PRESIGN_CONCURRENCY, async (msg) => ({
+      ...msg,
+      attachments: await mapWithLimit(
+        msg.attachments.slice(0, MAX_MAIL_THREAD_ATTACHMENTS),
+        PRESIGN_CONCURRENCY,
+        async (att) => ({
+          ...att,
+          key: await stores[msg.dir].presignGet(att.key, MEDIA_GET_URL_TTL_SEC),
+        }),
+      ),
+    })),
+  }
+}
+
 export interface AdminMailRouteOverrides {
   repo: MailRepository
   outboundMail: OutboundMailService
   storage?: Storage
   forwardTemplates?: ForwardTemplateRepository
+  outboundStorage?: Storage
 }
 
 declare module "fastify" {
@@ -74,12 +96,17 @@ export async function registerAdminMailRoutes(
       makeMailService({
         repo: overrides.repo,
         outboundMail: overrides.outboundMail,
+        loadAttachmentBytes: (key) => (overrides.outboundStorage ?? container.storage).getObject(key),
       }),
     () => {
       const sql = container.getDb().sql
       const repo: MailRepository = makeDrizzleMailRepository(sql)
       const outboundMail = makeContainerOutboundMailService(container, { repo, logger: app.log })
-      return makeMailService({ repo, outboundMail })
+      return makeMailService({
+        repo,
+        outboundMail,
+        loadAttachmentBytes: (key) => container.storage.getObject(key),
+      })
     },
   )
 
@@ -92,6 +119,10 @@ export async function registerAdminMailRoutes(
 
   function storage(): Storage {
     return app.adminMailOverrides?.storage ?? container.inboundStorage
+  }
+
+  function outboundStorage(): Storage {
+    return app.adminMailOverrides?.outboundStorage ?? container.storage
   }
 
   route(app, "getMailStats", async (_request, reply) => {
@@ -112,18 +143,10 @@ export async function registerAdminMailRoutes(
       action: "mail.thread_viewed",
       target: `mail:${id}`,
     })
-    const store = storage()
-    const payload: MailThreadDTO = {
-      ...dto,
-      messages: await mapWithLimit(dto.messages, PRESIGN_CONCURRENCY, async (msg) => ({
-        ...msg,
-        attachments: await mapWithLimit(
-          msg.attachments.slice(0, MAX_MAIL_THREAD_ATTACHMENTS),
-          PRESIGN_CONCURRENCY,
-          async (att) => ({ ...att, key: await store.presignGet(att.key, MEDIA_GET_URL_TTL_SEC) }),
-        ),
-      })),
-    }
+    const payload: MailThreadDTO = await presignThreadAttachments(dto, {
+      in: storage(),
+      out: outboundStorage(),
+    })
     reply.status(200).send(payload)
   })
 

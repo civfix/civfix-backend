@@ -1,6 +1,7 @@
 
 import { randomUUID } from "node:crypto"
 import type {
+  CreateNotificationInput,
   NewNotificationArgs,
   NotificationPrefsPatch,
   NotificationPrefsRecord,
@@ -11,7 +12,34 @@ import type {
 import { DEFAULT_PREFS, isFeedVisibleType } from "../../src/services/notification-service.js"
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
-import type { NotificationType, PushPlatform } from "@civfix/shared"
+import type { NotificationDTO, NotificationType, PushPlatform } from "@civfix/shared"
+import type { ReporterNotifier } from "../../src/services/admin/admin-report-service.js"
+
+export interface RecordedNotification extends CreateNotificationInput {
+  userId: string
+}
+
+export class RecordingNotifier implements ReporterNotifier {
+  readonly sent: RecordedNotification[] = []
+  failNext = false
+
+  createNotification(userId: string, input: CreateNotificationInput): Promise<NotificationDTO> {
+    if (this.failNext) {
+      this.failNext = false
+      return Promise.reject(new Error("push provider down"))
+    }
+    this.sent.push({ userId, ...input })
+    return Promise.resolve({
+      id: `notif-${this.sent.length}`,
+      type: input.type,
+      title: input.title ?? "",
+      body: input.body ?? "",
+      link: input.link ?? null,
+      read: false,
+      createdAt: new Date(0).toISOString(),
+    })
+  }
+}
 
 export function flushNotificationDispatch(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve))

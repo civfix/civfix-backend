@@ -5,6 +5,7 @@ import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repo
 import { runInboundSweep } from "../../src/services/admin/inbound-sweep.js"
 import { INBOUND_PENDING_PREFIX, type InboundProcessorDeps } from "../../src/services/admin/inbound-processor.js"
 import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
+import { RecordingNotifier } from "../helpers/notifications.js"
 import { JURISDICTION_REPLY_NOTE } from "../../src/services/admin/inbound-thread-correlation.js"
 import type { Container } from "../../src/di.js"
 
@@ -103,12 +104,14 @@ describe("runInboundSweep: side-effect re-drive", () => {
     const mailRepo = new InMemoryMailRepository()
     const inboundRepo = new InMemoryInboundRepository()
     const adminReportRepo = new InMemoryAdminReportRepository()
+    const notifier = new RecordingNotifier()
     const deps: InboundProcessorDeps = {
       storage,
       inboundMail: new FakeInboundMail(),
       mailRepo,
       inboundRepo,
       adminReportRepo,
+      notifications: notifier,
     }
     const container = {
       env: { USE_FAKE_CHAT: true },
@@ -118,7 +121,7 @@ describe("runInboundSweep: side-effect re-drive", () => {
         throw new Error("this harness has no DB: every dep is injected")
       },
     } as unknown as Container
-    return { storage, mailRepo, inboundRepo, adminReportRepo, deps, container }
+    return { storage, mailRepo, inboundRepo, adminReportRepo, notifier, deps, container }
   }
 
   it("a first attempt that THROWS is retried by the next run and applies its effects exactly once", async () => {
@@ -233,12 +236,14 @@ describe("runInboundSweep: crash-safe lease + idempotent re-drive (B4)", () => {
     const mailRepo = new InMemoryMailRepository()
     const inboundRepo = new InMemoryInboundRepository()
     const adminReportRepo = new InMemoryAdminReportRepository()
+    const notifier = new RecordingNotifier()
     const deps: InboundProcessorDeps = {
       storage,
       inboundMail: new FakeInboundMail(),
       mailRepo,
       inboundRepo,
       adminReportRepo,
+      notifications: notifier,
     }
     const container = {
       env: { USE_FAKE_CHAT: true },
@@ -248,7 +253,7 @@ describe("runInboundSweep: crash-safe lease + idempotent re-drive (B4)", () => {
         throw new Error("this harness has no DB: every dep is injected")
       },
     } as unknown as Container
-    return { mailRepo, adminReportRepo, deps, container }
+    return { mailRepo, adminReportRepo, notifier, deps, container }
   }
 
   function seed(h: ReturnType<typeof harness>, reportId: string) {
@@ -301,12 +306,12 @@ describe("runInboundSweep: crash-safe lease + idempotent re-drive (B4)", () => {
     expect(reclaimed.effectsErrors).toBe(0)
     expect(h.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
     expect(h.adminReportRepo.timeline.get(reportId) ?? []).toHaveLength(1)
-    expect(h.adminReportRepo.notifications).toHaveLength(1)
+    expect(h.notifier.sent).toHaveLength(1)
 
     const later = new Date(Date.UTC(2026, 0, 1, 3, 0))
     expect((await sweepAt(h, later)).effectsRedriven).toBe(0)
     expect(h.adminReportRepo.timeline.get(reportId) ?? []).toHaveLength(1)
-    expect(h.adminReportRepo.notifications).toHaveLength(1)
+    expect(h.notifier.sent).toHaveLength(1)
   })
 
   it("a throw AFTER the timeline write re-drives without duplicating the timeline row or the push", async () => {
@@ -314,34 +319,26 @@ describe("runInboundSweep: crash-safe lease + idempotent re-drive (B4)", () => {
     const reportId = "report-partial"
     seed(h, reportId)
 
-    let failNotify = true
-    const realNotify = h.adminReportRepo.notifyReporter.bind(h.adminReportRepo)
-    h.adminReportRepo.notifyReporter = (input) => {
-      if (failNotify) {
-        failNotify = false
-        return Promise.reject(new Error("push provider down"))
-      }
-      return realNotify(input)
-    }
+    h.notifier.failNext = true
 
     const first = await sweepAt(h, new Date(Date.UTC(2026, 0, 1, 1, 0)))
     expect(first.effectsErrors).toBe(1)
     expect(h.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
     expect(h.adminReportRepo.timeline.get(reportId) ?? []).toHaveLength(1)
-    expect(h.adminReportRepo.notifications).toHaveLength(0)
+    expect(h.notifier.sent).toHaveLength(0)
 
     const second = await sweepAt(h, new Date(Date.UTC(2026, 0, 1, 1, 1)))
     expect(second.effectsRedriven).toBe(1)
     expect(second.effectsErrors).toBe(0)
 
     expect(h.adminReportRepo.timeline.get(reportId) ?? []).toHaveLength(1)
-    expect(h.adminReportRepo.notifications).toHaveLength(1)
+    expect(h.notifier.sent).toHaveLength(1)
     expect(h.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
 
     const third = await sweepAt(h, new Date(Date.UTC(2026, 0, 1, 2, 0)))
     expect(third.effectsRedriven).toBe(0)
     expect(h.adminReportRepo.timeline.get(reportId) ?? []).toHaveLength(1)
-    expect(h.adminReportRepo.notifications).toHaveLength(1)
+    expect(h.notifier.sent).toHaveLength(1)
   })
 
   it("B1: a settled pre-migration row is never re-driven", async () => {
@@ -358,7 +355,7 @@ describe("runInboundSweep: crash-safe lease + idempotent re-drive (B4)", () => {
     expect(res.effectsErrors).toBe(0)
     expect(h.adminReportRepo.reports.get(reportId)?.record.status).toBe("published")
     expect(h.adminReportRepo.timeline.get(reportId) ?? []).toHaveLength(0)
-    expect(h.adminReportRepo.notifications).toHaveLength(0)
+    expect(h.notifier.sent).toHaveLength(0)
     expect((await h.mailRepo.getThreadRecord(inbound.threadId))?.status).toBe("sent")
   })
 
