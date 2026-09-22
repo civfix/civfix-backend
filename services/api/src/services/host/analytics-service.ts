@@ -9,6 +9,7 @@ import {
   type EventAnalyticsRegistrationsResponse,
   type EventAnalyticsSourcesResponse,
   type FunnelStep,
+  type HostAnalyticsSummaryResponse,
   type HostedEventsAnalyticsResponse,
   type Panel,
   type PortfolioAnalyticsRange,
@@ -95,6 +96,12 @@ export interface AnalyticsService {
     range: PortfolioAnalyticsRange,
     viewerScope: string,
   ): Promise<HostedEventsAnalyticsResponse>
+  summary(
+    userId: string,
+    organizationId: string | null,
+    range: AnalyticsRange,
+    viewerScope: string,
+  ): Promise<HostAnalyticsSummaryResponse>
 }
 
 export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsService {
@@ -356,6 +363,92 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
         }
       })
     },
+
+    summary(userId, organizationId, range, viewerScope) {
+      const scope = organizationId === null ? `host:${userId}` : `org:${organizationId}`
+      return cached("summary", scope, range, viewerScope, async () => {
+        const window = utcRangeWindow(RANGE_DAYS[range])
+        const bounds = dayBounds(window)
+        const cleanupIds = await deps.analytics.hostedEventIds(
+          userId,
+          organizationId,
+          PORTFOLIO_EVENT_LIMIT,
+        )
+        const envelope = {
+          generatedAt: now().toISOString(),
+          range,
+          k: ANALYTICS_SUPPRESSION_K,
+          window,
+        }
+        if (cleanupIds.length === 0) return emptySummary(envelope, window)
+        const [activity, held, signups, metricRows] = await Promise.all([
+          deps.analytics.activityTotals(cleanupIds, bounds.from, bounds.to),
+          deps.analytics.heldEventTotals(cleanupIds, bounds.from, bounds.to),
+          deps.analytics.signupsByDayAcross(cleanupIds, window.from, window.to),
+          deps.metrics.readMany(cleanupIds, ["donation_clicks"], window.from, window.to),
+        ])
+        return {
+          ...envelope,
+          activity: {
+            signups: activity.registrations,
+            cancellations: activity.cancellations,
+            hoursTotal: round2(activity.hoursTotal),
+            hoursVolunteers: activity.hoursVolunteers,
+            reportsLinked: activity.reportsLinked,
+            reportsResolved: activity.reportsResolved,
+            postsCreated: activity.postsCreated,
+            donationClicks: sumMetric(metricRows, "donation_clicks"),
+          },
+          eventsHeld: {
+            count: held.events,
+            registered: held.registered,
+            checkIns: held.checkedIn,
+            noShows: held.noShow,
+            checkInRate: exactRate(held.checkedIn, held.registered),
+          },
+          totals: { events: cleanupIds.length },
+          signupsDaily: exactSeries(signups.daily, window),
+          byEvent: exactPanel(signups.byEvent),
+          hoursByEvent: exactPanel(signups.hoursByEvent),
+        }
+      })
+    },
+  }
+}
+
+function dayBounds(window: DayRange): { from: Date; to: Date } {
+  const from = new Date(`${window.from}T00:00:00.000Z`)
+  const to = new Date(Date.parse(`${window.to}T00:00:00.000Z`) + 86_400_000)
+  return { from, to }
+}
+
+function emptySummary(
+  envelope: Pick<HostAnalyticsSummaryResponse, "generatedAt" | "range" | "k" | "window">,
+  window: DayRange,
+): HostAnalyticsSummaryResponse {
+  return {
+    ...envelope,
+    activity: {
+      signups: 0,
+      cancellations: 0,
+      hoursTotal: 0,
+      hoursVolunteers: 0,
+      reportsLinked: 0,
+      reportsResolved: 0,
+      postsCreated: 0,
+      donationClicks: 0,
+    },
+    eventsHeld: {
+      count: 0,
+      registered: 0,
+      checkIns: 0,
+      noShows: 0,
+      checkInRate: exactRate(0, 0),
+    },
+    totals: { events: 0 },
+    signupsDaily: exactSeries([], window),
+    byEvent: exactPanel([]),
+    hoursByEvent: exactPanel([]),
   }
 }
 

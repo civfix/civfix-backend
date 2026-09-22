@@ -1,3 +1,4 @@
+import { MAX_HOST_SUMMARY_EVENT_ROWS } from "@civfix/shared"
 import type { BroadcastKind, CleanupStatus, RegistrationSource } from "@civfix/shared"
 import type { DayCount, DayTimeCount, KeyCount } from "@civfix/shared/host"
 import type { Sql } from "../../db/client.js"
@@ -7,6 +8,8 @@ import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
 export const INSIGHTS_TREND_LIMIT = 400
 
 export const INSIGHTS_SOURCE_LIMIT = 10
+
+export const SUMMARY_DAY_ZONE = "UTC"
 
 export interface EventKpiRow {
   registered: number
@@ -113,6 +116,46 @@ export interface PortfolioTotals {
   repeatAttendees: number
 }
 
+export interface HostActivityTotals {
+  registrations: number
+  cancellations: number
+  hoursTotal: number
+  hoursVolunteers: number
+  reportsLinked: number
+  reportsResolved: number
+  postsCreated: number
+}
+
+export const ZERO_HOST_ACTIVITY_TOTALS: HostActivityTotals = Object.freeze({
+  registrations: 0,
+  cancellations: 0,
+  hoursTotal: 0,
+  hoursVolunteers: 0,
+  reportsLinked: 0,
+  reportsResolved: 0,
+  postsCreated: 0,
+})
+
+export interface HeldEventTotals {
+  events: number
+  registered: number
+  checkedIn: number
+  noShow: number
+}
+
+export const ZERO_HELD_EVENT_TOTALS: HeldEventTotals = Object.freeze({
+  events: 0,
+  registered: 0,
+  checkedIn: 0,
+  noShow: 0,
+})
+
+export interface HostSummarySignups {
+  daily: DayCount[]
+  byEvent: KeyCount[]
+  hoursByEvent: KeyCount[]
+}
+
 export interface AnalyticsRepository {
   eventKpis(cleanupId: string): Promise<EventKpiRow>
   registrationsByDay(cleanupId: string, timezone: string, from: string, to: string): Promise<DayCount[]>
@@ -139,6 +182,13 @@ export interface AnalyticsRepository {
     cleanupId: string,
     hostedEventIds: readonly string[],
   ): Promise<ReturningAttendees>
+  activityTotals(cleanupIds: readonly string[], from: Date, to: Date): Promise<HostActivityTotals>
+  heldEventTotals(cleanupIds: readonly string[], from: Date, to: Date): Promise<HeldEventTotals>
+  signupsByDayAcross(
+    cleanupIds: readonly string[],
+    fromDay: string,
+    toDay: string,
+  ): Promise<HostSummarySignups>
 }
 
 export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
@@ -549,6 +599,141 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
         hour: Number(row.hour),
         count: Number(row.n),
       }))
+    },
+
+    async activityTotals(cleanupIds, from, to) {
+      if (cleanupIds.length === 0) return { ...ZERO_HOST_ACTIVITY_TOTALS }
+      const ids = [...cleanupIds]
+      const rows = await sql<
+        {
+          registrations: string
+          cancellations: string
+          hours_total: number
+          hours_volunteers: string
+          reports_linked: string
+          reports_resolved: string
+          posts_created: string
+        }[]
+      >`
+        SELECT
+          (SELECT count(*) FROM cleanup_registrations r
+            WHERE r.cleanup_id = ANY(${ids}::uuid[])
+              AND r.status = 'registered'
+              AND r.registered_at >= ${from} AND r.registered_at < ${to})::text AS registrations,
+          (SELECT count(*) FROM cleanup_registrations r
+            WHERE r.cleanup_id = ANY(${ids}::uuid[])
+              AND r.cancelled_at IS NOT NULL
+              AND r.cancelled_at >= ${from} AND r.cancelled_at < ${to})::text AS cancellations,
+          (SELECT COALESCE(sum(vh.hours), 0)::float8 FROM volunteer_hours vh
+            WHERE vh.cleanup_id = ANY(${ids}::uuid[])
+              AND vh.source = 'event' AND vh.voided_at IS NULL
+              AND vh.created_at >= ${from} AND vh.created_at < ${to}) AS hours_total,
+          (SELECT count(DISTINCT vh.user_id) FROM volunteer_hours vh
+            WHERE vh.cleanup_id = ANY(${ids}::uuid[])
+              AND vh.source = 'event' AND vh.voided_at IS NULL
+              AND vh.created_at >= ${from} AND vh.created_at < ${to})::text AS hours_volunteers,
+          (SELECT count(*) FROM cleanup_reports cr
+            WHERE cr.cleanup_id = ANY(${ids}::uuid[])
+              AND cr.linked_at >= ${from} AND cr.linked_at < ${to})::text AS reports_linked,
+          (SELECT count(*) FROM cleanup_reports cr
+             JOIN reports rep ON rep.id = cr.report_id
+            WHERE cr.cleanup_id = ANY(${ids}::uuid[])
+              AND cr.linked_at >= ${from} AND cr.linked_at < ${to}
+              AND rep.status = 'resolved')::text AS reports_resolved,
+          (SELECT count(*) FROM posts p
+            WHERE p.event_id = ANY(${ids}::uuid[])
+              AND p.created_at >= ${from} AND p.created_at < ${to}
+              AND p.deleted_at IS NULL
+              AND p.reply_to_id IS NULL)::text AS posts_created`
+      const row = rows[0]
+      if (row === undefined) return { ...ZERO_HOST_ACTIVITY_TOTALS }
+      return {
+        registrations: Number(row.registrations),
+        cancellations: Number(row.cancellations),
+        hoursTotal: Number(row.hours_total),
+        hoursVolunteers: Number(row.hours_volunteers),
+        reportsLinked: Number(row.reports_linked),
+        reportsResolved: Number(row.reports_resolved),
+        postsCreated: Number(row.posts_created),
+      }
+    },
+
+    async heldEventTotals(cleanupIds, from, to) {
+      if (cleanupIds.length === 0) return { ...ZERO_HELD_EVENT_TOTALS }
+      const ids = [...cleanupIds]
+      const rows = await sql<
+        { events: string; registered: string; checked_in: string; no_show: string }[]
+      >`
+        WITH held AS (
+          SELECT c.id
+            FROM cleanups c
+           WHERE c.id = ANY(${ids}::uuid[])
+             AND COALESCE(c.completed_at, c.ends_at, c.scheduled_at) >= ${from}
+             AND COALESCE(c.completed_at, c.ends_at, c.scheduled_at) < ${to}
+        )
+        SELECT (SELECT count(*) FROM held)::text AS events,
+               (SELECT count(*) FROM cleanup_registrations r
+                 WHERE r.cleanup_id IN (SELECT id FROM held)
+                   AND r.status = 'registered')::text AS registered,
+               (SELECT count(*) FROM cleanup_registration_seats s
+                 WHERE s.cleanup_id IN (SELECT id FROM held)
+                   AND s.checked_in_at IS NOT NULL)::text AS checked_in,
+               (SELECT count(*) FROM cleanup_registration_seats s
+                 WHERE s.cleanup_id IN (SELECT id FROM held)
+                   AND s.no_show_at IS NOT NULL)::text AS no_show`
+      const row = rows[0]
+      if (row === undefined) return { ...ZERO_HELD_EVENT_TOTALS }
+      return {
+        events: Number(row.events),
+        registered: Number(row.registered),
+        checkedIn: Number(row.checked_in),
+        noShow: Number(row.no_show),
+      }
+    },
+
+    async signupsByDayAcross(cleanupIds, fromDay, toDay) {
+      if (cleanupIds.length === 0) return { daily: [], byEvent: [], hoursByEvent: [] }
+      const ids = [...cleanupIds]
+      const [dailyRows, byEventRows, hoursRows] = await Promise.all([
+        sql<{ day: string; n: string }[]>`
+          SELECT to_char((registered_at AT TIME ZONE ${SUMMARY_DAY_ZONE})::date, 'YYYY-MM-DD') AS day,
+                 count(*)::text AS n
+            FROM cleanup_registrations
+           WHERE cleanup_id = ANY(${ids}::uuid[])
+             AND status = 'registered'
+             AND (registered_at AT TIME ZONE ${SUMMARY_DAY_ZONE})::date BETWEEN ${fromDay}::date AND ${toDay}::date
+           GROUP BY 1 ORDER BY 1 LIMIT 400`,
+        sql<{ key: string; n: string }[]>`
+          SELECT c.title AS key, count(r.id)::text AS n
+            FROM cleanups c
+            JOIN cleanup_registrations r
+              ON r.cleanup_id = c.id
+             AND r.status = 'registered'
+             AND (r.registered_at AT TIME ZONE ${SUMMARY_DAY_ZONE})::date
+                   BETWEEN ${fromDay}::date AND ${toDay}::date
+           WHERE c.id = ANY(${ids}::uuid[])
+           GROUP BY c.id, c.title
+           ORDER BY 2 DESC, c.title ASC
+           LIMIT ${MAX_HOST_SUMMARY_EVENT_ROWS}`,
+        sql<{ key: string; n: string }[]>`
+          SELECT c.title AS key, round(sum(vh.hours))::text AS n
+            FROM cleanups c
+            JOIN volunteer_hours vh
+              ON vh.cleanup_id = c.id
+             AND vh.source = 'event'
+             AND vh.voided_at IS NULL
+             AND (vh.created_at AT TIME ZONE ${SUMMARY_DAY_ZONE})::date
+                   BETWEEN ${fromDay}::date AND ${toDay}::date
+           WHERE c.id = ANY(${ids}::uuid[])
+           GROUP BY c.id, c.title
+           ORDER BY sum(vh.hours) DESC, c.title ASC
+           LIMIT ${MAX_HOST_SUMMARY_EVENT_ROWS}`,
+      ])
+      return {
+        daily: await dayCounts(dailyRows),
+        byEvent: byEventRows.map((row) => ({ key: row.key, count: Number(row.n) })),
+        hoursByEvent: hoursRows.map((row) => ({ key: row.key, count: Number(row.n) })),
+      }
     },
   }
 }

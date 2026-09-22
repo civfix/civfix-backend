@@ -89,6 +89,18 @@ function analyticsRepo(over: Partial<AnalyticsRepository> = {}): AnalyticsReposi
     topVolunteers: () => Promise.resolve([]),
     hoursTotals: () => Promise.resolve({ credited: 0, volunteersCredited: 0 }),
     returningAttendees: () => Promise.resolve({ seats: 0, ofRegistered: 0 }),
+    activityTotals: () =>
+      Promise.resolve({
+        registrations: 0,
+        cancellations: 0,
+        hoursTotal: 0,
+        hoursVolunteers: 0,
+        reportsLinked: 0,
+        reportsResolved: 0,
+        postsCreated: 0,
+      }),
+    heldEventTotals: () => Promise.resolve({ events: 0, registered: 0, checkedIn: 0, noShow: 0 }),
+    signupsByDayAcross: () => Promise.resolve({ daily: [], byEvent: [], hoursByEvent: [] }),
     ...over,
   }
 }
@@ -308,7 +320,6 @@ describe("getEventAnalytics", () => {
   it("keeps the full scope's funnel and breakdown panels", async () => {
     const payload = await service().analytics(EVENT, "full", VIEWER)
     expect(payload.reach.funnel.map((step) => step.step)).toEqual([
-      "page_views",
       "signups",
       "checked_in",
       "logged_hours",
@@ -316,6 +327,55 @@ describe("getEventAnalytics", () => {
     expect(payload.signups.bySource?.rows.map((row) => row.key)).toEqual(["self", "walkup"])
     expect(payload.impact.hoursBuckets?.rows).toHaveLength(1)
     expect(payload.eventDay.bySlot?.rows).toHaveLength(1)
+  })
+
+  it("draws the funnel from the same live counts the KPI tiles show", async () => {
+    const payload = await service().analytics(EVENT, "full", VIEWER)
+    expect(payload.reach.funnel.map((step) => step.value)).toEqual([20, 12, 10])
+    expect(payload.reach.funnel.every((step) => step.suppressed === false)).toBe(true)
+    expect(payload.kpis.signups).toBe(20)
+    expect(payload.kpis.checkedIn).toBe(12)
+    expect(payload.kpis.hoursVolunteers).toBe(10)
+  })
+
+  it("does not let an empty page-view rollup zero a funnel with live signups", async () => {
+    const payload = await service({ metrics: [] }).analytics(EVENT, "full", VIEWER)
+    expect(payload.kpis.pageViews).toBeNull()
+    expect(payload.reach.funnel.map((step) => step.value)).toEqual([20, 12, 10])
+  })
+
+  it(`suppresses the whole funnel when its head is under k=${ANALYTICS_SUPPRESSION_K}`, async () => {
+    const thin = service({
+      analytics: {
+        eventKpis: () =>
+          Promise.resolve({
+            registered: 4,
+            checkedIn: 2,
+            waitlisted: 0,
+            cancelled: 0,
+            noShow: 0,
+            capacity: 10,
+          }),
+      },
+    })
+    const payload = await thin.analytics(EVENT, "full", VIEWER)
+    expect(payload.reach.funnel.map((step) => step.step)).toEqual([
+      "signups",
+      "checked_in",
+      "logged_hours",
+    ])
+    expect(payload.reach.funnel.every((step) => step.value === null && step.suppressed)).toBe(true)
+  })
+
+  it("clamps a funnel step that exceeds the one above it", async () => {
+    const clamped = service({
+      analytics: {
+        eventHoursTotals: () =>
+          Promise.resolve({ credited: 90, attendeesCredited: 30, attendeesCheckedIn: 12 }),
+      },
+    })
+    const payload = await clamped.analytics(EVENT, "full", VIEWER)
+    expect(payload.reach.funnel.map((step) => step.value)).toEqual([20, 12, 12])
   })
 
   it("returns the host's own median comparison once there is enough history", async () => {

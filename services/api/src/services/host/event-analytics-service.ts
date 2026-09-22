@@ -276,7 +276,6 @@ export function makeEventAnalyticsService(
     const donationClicks = sumMetric(metricRows, "donation_clicks")
 
     const steps: KeyCount[] = [
-      { key: "page_views", count: pageViews },
       { key: "signups", count: kpis.registered },
       { key: "checked_in", count: kpis.checkedIn },
       { key: "logged_hours", count: hours.attendeesCredited },

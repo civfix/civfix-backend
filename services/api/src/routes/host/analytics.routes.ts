@@ -3,6 +3,7 @@ import {
   EventAnalyticsRequestSchema,
   GetEventAnalyticsRequestSchema,
   GetEventInsightsRequestSchema,
+  HostAnalyticsSummaryRequestSchema,
   HostedEventsAnalyticsRequestSchema,
   type AnalyticsRange,
   type PortfolioAnalyticsRange,
@@ -168,5 +169,24 @@ export async function registerHostAnalyticsRoutes(
     reply
       .status(200)
       .send(await analytics().portfolio(userId, query.orgId ?? null, range, viewerScope))
+  })
+
+  route(app, "hostedEventsAnalyticsSummary", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
+    const userId = requireAuth(request)
+    const query = parse(HostAnalyticsSummaryRequestSchema, request.query)
+    let viewerScope = "self"
+    if (query.orgId !== undefined) {
+      const standing = await requireOrgCapability(
+        container.getDb().sql,
+        query.orgId,
+        userId,
+        "view_analytics",
+      )
+      viewerScope = `org:${standing.orgRole ?? "none"}`
+    }
+    const range: AnalyticsRange = query.range ?? "30d"
+    reply
+      .status(200)
+      .send(await analytics().summary(userId, query.orgId ?? null, range, viewerScope))
   })
 }
