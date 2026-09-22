@@ -107,7 +107,7 @@ function inlineHtml(spans: readonly MarkdownInline[]): string {
     .map((span) => {
       switch (span.type) {
         case "text":
-          return escapeHtml(span.value)
+          return htmlText(span.value)
         case "strong":
           return `<strong>${inlineHtml(span.children)}</strong>`
         case "em":

@@ -131,7 +131,7 @@ function linkedParagraph(text: string): EmailBlock {
   }
   if (spans.length === 0) return paragraph(text)
   if (last < text.length) spans.push({ type: "text", value: text.slice(last) })
-  return richParagraph(spans)
+  return { html: richParagraph(spans).html, text }
 }
 
 function templateParagraphs(rendered: string): EmailBlock[] {
