@@ -154,7 +154,27 @@ describe("host analytics envelopes", () => {
     expect(payload).not.toMatch(/"clicks"/)
   })
 
-  it("suppresses a count below k rather than showing it", async () => {
+  it("publishes the host's own whole-event counts exactly, including under k", async () => {
+    const { service } = build({
+      eventKpis: () =>
+        Promise.resolve({
+          registered: 4,
+          checkedIn: 2,
+          waitlisted: 3,
+          cancelled: 1,
+          noShow: 2,
+          capacity: 10,
+        }),
+    })
+    const payload = await service.overview(EVENT, "30d", "organizer:none")
+    expect(payload.kpis.registered).toBe(4)
+    expect(payload.kpis.checkedIn).toBe(2)
+    expect(payload.kpis.waitlisted).toBe(3)
+    expect(payload.kpis.cancelled).toBe(1)
+    expect(payload.kpis.noShow).toBe(2)
+  })
+
+  it("keeps the rates suppressed even though the counts behind them publish", async () => {
     const { service } = build({
       eventKpis: () =>
         Promise.resolve({
@@ -167,8 +187,27 @@ describe("host analytics envelopes", () => {
         }),
     })
     const payload = await service.overview(EVENT, "30d", "organizer:none")
-    expect(payload.kpis.registered).toBeNull()
-    expect(payload.kpis.checkedIn).toBeNull()
+    expect(payload.checkInRate.suppressed).toBe(true)
+    expect(payload.checkInRate.value).toBeNull()
+    expect(payload.checkInRate.denominator).toBeNull()
+    expect(payload.noShowRate.suppressed).toBe(true)
+  })
+
+  it("reports a rollup count exactly when it has rows and null when it has none", async () => {
+    const { service } = build({}, [
+      { cleanupId: EVENT, day: "2026-02-09", metric: "page_views", bucket: "all", value: 3 },
+    ])
+    const payload = await service.overview(EVENT, "30d", "organizer:none")
+    expect(payload.kpis.pageViews).toBe(3)
+    expect(payload.kpis.donationClicks).toBeNull()
+  })
+
+  it("does not let an empty page-view rollup zero a funnel with live signups", async () => {
+    const { service } = build()
+    const payload = await service.overview(EVENT, "30d", "organizer:none")
+    expect(payload.kpis.pageViews).toBeNull()
+    expect(payload.funnel.map((step) => step.step)).toEqual(["registered", "checked_in"])
+    expect(payload.funnel.map((step) => step.value)).toEqual([20, 12])
   })
 
   it("shows a count at exactly k", async () => {
@@ -457,7 +496,7 @@ describe("host analytics envelopes", () => {
     expect(derivable.has(2)).toBe(false)
   })
 
-  it("withholds the registered KPI that would close the same chain the series left open", async () => {
+  it("publishes the registered KPI while the series the chain left open stays closed", async () => {
     const registrationsByDay = () =>
       Promise.resolve([
         { day: "2026-02-08", count: 6 },
@@ -480,7 +519,7 @@ describe("host analytics envelopes", () => {
       PAGE_VIEW_ROWS,
     )
     const overview = await service.overview(EVENT, "30d", "organizer:none")
-    expect(overview.kpis.registered).toBeNull()
+    expect(overview.kpis.registered).toBe(15)
     expect(overview.checkInRate.suppressed).toBe(true)
     expect(overview.checkInRate.denominator).toBeNull()
     expect(overview.noShowRate.denominator).toBeNull()

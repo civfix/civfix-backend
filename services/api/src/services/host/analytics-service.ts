@@ -146,7 +146,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
       return cached("overview", cleanupId, range, viewerScope, async () => {
         const timezone = await timezoneOf(cleanupId)
         const window = eventRangeWindow(RANGE_DAYS[range], timezone)
-        const [kpis, metricRows, registrationDays, cancellationDays] = await Promise.all([
+        const [kpis, metricRows, registrationDays] = await Promise.all([
           deps.analytics.eventKpis(cleanupId),
           deps.metrics.read(
             cleanupId,
@@ -155,14 +155,12 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
             window.to,
           ),
           deps.analytics.registrationsByDay(cleanupId, timezone, window.from, window.to),
-          deps.analytics.cancellationsByDay(cleanupId, timezone, window.from, window.to),
         ])
         const registeredPublishable = closureAllowsTotal(closureOf(registrationDays, window))
-        const cancelledPublishable = closureAllowsTotal(closureOf(cancellationDays, window))
-        const pageViews = sumMetric(metricRows, "page_views")
-        const donationClicks = sumMetric(metricRows, "donation_clicks")
+        const pageViews = metricTotal(metricRows, "page_views")
+        const donationClicks = metricTotal(metricRows, "donation_clicks")
         const steps: KeyCount[] = [
-          { key: "page_views", count: pageViews },
+          ...(pageViews === null ? [] : [{ key: "page_views", count: pageViews }]),
           { key: "registered", count: kpis.registered },
           { key: "checked_in", count: kpis.checkedIn },
         ]
@@ -170,14 +168,14 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
         return {
           ...envelope(range),
           kpis: {
-            registered: registeredPublishable ? suppressCount(kpis.registered).value : null,
-            checkedIn: suppressCount(kpis.checkedIn).value,
-            waitlisted: suppressCount(kpis.waitlisted).value,
-            cancelled: cancelledPublishable ? suppressCount(kpis.cancelled).value : null,
-            noShow: suppressCount(kpis.noShow).value,
+            registered: kpis.registered,
+            checkedIn: kpis.checkedIn,
+            waitlisted: kpis.waitlisted,
+            cancelled: kpis.cancelled,
+            noShow: kpis.noShow,
             capacity: kpis.capacity,
-            pageViews: suppressCount(pageViews).value,
-            donationClicks: suppressCount(donationClicks).value,
+            pageViews,
+            donationClicks,
           },
           checkInRate: registeredPublishable
             ? toRate(kpis.checkedIn, kpis.registered)
@@ -525,6 +523,12 @@ function sumMetric(rows: readonly MetricRow[], metric: string, bucket?: string):
   return rows
     .filter((row) => row.metric === metric && (bucket === undefined || row.bucket === bucket))
     .reduce((acc, row) => acc + row.value, 0)
+}
+
+function metricTotal(rows: readonly MetricRow[], metric: string): number | null {
+  const matching = rows.filter((row) => row.metric === metric)
+  if (matching.length === 0) return null
+  return matching.reduce((acc, row) => acc + row.value, 0)
 }
 
 function seriesOf(rows: readonly MetricRow[], metric: string): DayCount[] {
