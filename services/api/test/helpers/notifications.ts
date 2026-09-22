@@ -182,9 +182,14 @@ export class InMemoryNotificationRepository implements NotificationRepository {
       (t) => t.platform === args.platform && t.token === args.token,
     )
     if (existing) {
-      if (existing.userId !== args.userId) return Promise.resolve("conflict")
+      if (existing.userId !== args.userId && existing.revokedAt === null) {
+        return Promise.resolve("conflict")
+      }
+      existing.userId = args.userId
       existing.deviceId = args.deviceId
       existing.revokedAt = null
+      this.pushTokens.splice(this.pushTokens.indexOf(existing), 1)
+      this.pushTokens.push(existing)
       this.capActiveTokens(args.userId)
       return Promise.resolve("stored")
     }

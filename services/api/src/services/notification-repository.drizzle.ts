@@ -291,8 +291,9 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         ON CONFLICT (platform, token) DO UPDATE SET
           user_id = EXCLUDED.user_id,
           device_id = EXCLUDED.device_id,
-          revoked_at = NULL
-        WHERE push_tokens.user_id = EXCLUDED.user_id
+          revoked_at = NULL,
+          created_at = now()
+        WHERE push_tokens.user_id = EXCLUDED.user_id OR push_tokens.revoked_at IS NOT NULL
         RETURNING id
       `
       if (rows.length === 0) return "conflict"
