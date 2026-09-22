@@ -343,14 +343,10 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         })
       }
 
-      const packet = buildReportPacket(
-        record,
-        routing,
-        mediaLinks,
-        input.note,
-        routing?.forwardSubjectTemplate ?? null,
-        routing?.forwardBodyTemplate ?? null,
-      )
+      const packet = buildReportPacket(record, routing, mediaLinks, input.note, {
+        subject: routing?.forwardSubjectTemplate ?? null,
+        body: routing?.forwardBodyTemplate ?? null,
+      })
 
       const routeNote = `Sent to jurisdiction (${toAddr})`
       const prepared = await deps.repo.withRouteLock(id, async () => {

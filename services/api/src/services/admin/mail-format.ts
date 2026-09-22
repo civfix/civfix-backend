@@ -6,11 +6,21 @@ import {
   linkList,
   paragraph,
   quote,
+  richParagraph,
   type EmailBlock,
 } from "../../adapters/email-blocks.js"
 import { CITY_FOOTER, renderEmailBody } from "../../adapters/email-layout.js"
-import { REPORT_CATEGORY_LABELS, interpolateForwardTemplate } from "@civfix/shared"
+import {
+  ADMIN_REPORT_STATUS_LABELS,
+  DEFAULT_FORWARD_BODY_TEMPLATE,
+  DEFAULT_FORWARD_SUBJECT_TEMPLATE,
+  REPORT_CATEGORY_LABELS,
+  forwardTemplateIssues,
+  interpolateForwardTemplate,
+  templateUsesToken,
+} from "@civfix/shared"
 import type { AdminReportRecord, AdminReportRoutingRecord } from "./admin-report-types.js"
+import type { MarkdownInline } from "@civfix/shared/markdown"
 
 export const MAX_PACKET_ATTACHMENTS = 10
 export const MAX_PACKET_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -62,14 +72,14 @@ function buildTemplateValues(
   const categoryLabel = REPORT_CATEGORY_LABELS[record.category]
   const place = routing?.place ?? record.place
   const address = record.address && record.address.trim() !== "" ? record.address : place
-  const desc = record.desc && record.desc.trim() !== "" ? record.desc.trim() : ""
+  const desc = record.desc && record.desc.trim() !== "" ? record.desc.trim() : "(none provided)"
   return {
     referenceCode: ref,
     reportId: record.id,
     shortId: record.id.slice(0, 8),
     title: record.title,
     category: categoryLabel,
-    status: record.status,
+    status: ADMIN_REPORT_STATUS_LABELS[record.status],
     place,
     address,
     coordinates: `${record.lat}, ${record.lng}`,
@@ -77,15 +87,58 @@ function buildTemplateValues(
     lng: String(record.lng),
     mapLink: mapLinkFor(record.lat, record.lng),
     description: desc,
-    reporterName: record.reporter?.name ?? "anonymous",
     confirmations: String(record.confirmations),
     submittedDate: formatSubmittedDate(record.createdAt),
     jurisdictionName: routing?.place ?? place,
-    dept: routing?.dept ?? "",
     operatorNote: noteText ?? "",
     photoLinks: mediaLinks.join("\n"),
     photoCount: String(mediaLinks.length),
   }
+}
+
+export interface ForwardTemplates {
+  subject: string | null
+  body: string | null
+}
+
+function resolveTemplate(template: string | null, fallback: string): string {
+  return template !== null && template.trim() !== "" ? template : fallback
+}
+
+function stripUnresolvedTokens(rendered: string): string {
+  const issues = forwardTemplateIssues(rendered)
+  if (issues.length === 0) return rendered
+  let out = rendered
+  for (const issue of [...issues].sort((a, b) => b.index - a.index)) {
+    out = out.slice(0, issue.index) + out.slice(issue.index + issue.token.length)
+  }
+  return out
+}
+
+const URL_RE = /https?:\/\/[^\s<>"']+/g
+
+function linkedParagraph(text: string): EmailBlock {
+  const spans: MarkdownInline[] = []
+  let last = 0
+  for (const match of text.matchAll(URL_RE)) {
+    const start = match.index ?? 0
+    const href = match[0].replace(/[.,;:!?)]+$/, "")
+    if (start > last) spans.push({ type: "text", value: text.slice(last, start) })
+    spans.push({ type: "link", href, children: [{ type: "text", value: href }] })
+    last = start + href.length
+  }
+  if (spans.length === 0) return paragraph(text)
+  if (last < text.length) spans.push({ type: "text", value: text.slice(last) })
+  return richParagraph(spans)
+}
+
+function templateParagraphs(rendered: string): EmailBlock[] {
+  const blocks = rendered
+    .split(/\n[ \t]*\n/)
+    .map((p) => p.trim())
+    .filter((p) => p !== "")
+    .map(linkedParagraph)
+  return blocks.length > 0 ? blocks : [paragraph(rendered.trim())]
 }
 
 export function buildReportPacket(
@@ -93,76 +146,32 @@ export function buildReportPacket(
   routing: AdminReportRoutingRecord | null,
   mediaLinks: string[],
   note: string | null,
-  forwardSubjectTemplate?: string | null,
-  forwardBodyTemplate?: string | null,
+  templates: ForwardTemplates,
 ): ReportPacket {
-  const ref = record.referenceCode ?? record.id.slice(0, 8)
   const categoryLabel = REPORT_CATEGORY_LABELS[record.category]
   const place = routing?.place ?? record.place
-  const address = record.address && record.address.trim() !== "" ? record.address : place
   const noteText = note && note.trim() !== "" ? note.trim() : null
-  const desc = record.desc && record.desc.trim() !== "" ? record.desc.trim() : "(none provided)"
-  const submittedDate = formatSubmittedDate(record.createdAt)
+  const values = buildTemplateValues(record, routing, mediaLinks, noteText)
 
-  const hasCustomBody =
-    typeof forwardBodyTemplate === "string" && forwardBodyTemplate.trim() !== ""
-  const hasCustomSubject =
-    typeof forwardSubjectTemplate === "string" && forwardSubjectTemplate.trim() !== ""
+  const subjectTemplate = resolveTemplate(templates.subject, DEFAULT_FORWARD_SUBJECT_TEMPLATE)
+  const bodyTemplate = resolveTemplate(templates.body, DEFAULT_FORWARD_BODY_TEMPLATE)
 
-  const subject = hasCustomSubject
-    ? sanitizeHeaderValue(
-        interpolateForwardTemplate(
-          forwardSubjectTemplate,
-          buildTemplateValues(record, routing, mediaLinks, noteText),
-        ),
-      )
-    : sanitizeHeaderValue(`[civfix] ${record.title} - ${place} - ${ref}`)
+  const subject = sanitizeHeaderValue(
+    interpolateForwardTemplate(stripUnresolvedTokens(subjectTemplate), values),
+  )
+  const blocks = templateParagraphs(
+    interpolateForwardTemplate(stripUnresolvedTokens(bodyTemplate), values).replace(/\r\n?/g, "\n"),
+  )
 
-  let blocks: EmailBlock[]
-  if (hasCustomBody) {
-    const rendered = interpolateForwardTemplate(
-      forwardBodyTemplate,
-      buildTemplateValues(record, routing, mediaLinks, noteText),
-    ).replace(/\r\n?/g, "\n")
-    blocks = rendered
-      .split(/\n[ \t]*\n/)
-      .map((p) => p.trim())
-      .filter((p) => p !== "")
-      .map((p) => paragraph(p))
-    if (blocks.length === 0) blocks = [paragraph(rendered.trim())]
-  } else {
-    blocks = [
-      paragraph(
-        `A resident reported a ${categoryLabel} issue in ${place} through civfix on ${submittedDate}. ` +
-          `Replies to this email go to the civfix operators, not to the resident.`,
-      ),
-      kvTable([
-        ["Reference", ref],
-        ["Category", categoryLabel],
-        ["Location", address],
-        ["Coordinates", `${record.lat}, ${record.lng}`],
-        ["Confirmed by", `${record.confirmations} neighbors`],
-        ["Submitted", submittedDate],
-      ]),
-      button(mapLinkFor(record.lat, record.lng), "View exact location on map"),
-      heading("What was reported"),
-      paragraph(desc),
-    ]
-    if (noteText !== null) {
-      blocks.push(heading("Note from the civfix team"), quote(noteText))
-    }
-    if (mediaLinks.length > 0) {
-      blocks.push(
-        linkList(
-          `Photos (${mediaLinks.length})`,
-          mediaLinks.map((href, i) => ({ label: `Photo ${i + 1}`, href })),
-        ),
-      )
-    }
+  if (noteText !== null && !templateUsesToken(bodyTemplate, "operatorNote")) {
+    blocks.push(heading("Note from the civfix team"), quote(noteText))
+  }
+  if (mediaLinks.length > 0 && !templateUsesToken(bodyTemplate, "photoLinks")) {
     blocks.push(
-      paragraph(`civfix reference ${ref} - replies to this email reach the civfix operators.`, {
-        muted: true,
-      }),
+      linkList(
+        `Photos (${mediaLinks.length})`,
+        mediaLinks.map((href, i) => ({ label: `Photo ${i + 1}`, href })),
+      ),
     )
   }
 
