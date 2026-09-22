@@ -32,6 +32,7 @@ export type CityForwardGate = (
 ) => Promise<boolean>
 
 export interface CityForwardOptions {
+  enabled?: boolean
   canForward?: CityForwardGate
   audit?: ReportForwardAudit
   messageId?: string
@@ -77,6 +78,9 @@ export async function forwardReportCityMention(
   }
   const geoid = jurisdiction.geoid
   await recordMention(opts, geoid)
+  if (opts.enabled !== true) {
+    return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
+  }
   const contact = jurisdiction.contactEmail
   if (contact === null || contact === "") {
     return { mentioned: true, geoid, forwarded: false, forwardedAt: null }

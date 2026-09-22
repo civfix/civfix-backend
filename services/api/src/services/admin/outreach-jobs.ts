@@ -12,8 +12,11 @@ export { OUTREACH_DIGEST_JOB }
 export async function registerOutreachJobs(container: Container): Promise<void> {
   const service = makeOutreachServiceFromContainer(container)
 
-  await container.jobs.schedule(OUTREACH_DIGEST_JOB, container.env.OUTREACH_DIGEST_CRON)
+  if (container.env.OUTREACH_DIGEST_ENABLED) {
+    await container.jobs.schedule(OUTREACH_DIGEST_JOB, container.env.OUTREACH_DIGEST_CRON)
+  }
   await container.jobs.work(OUTREACH_DIGEST_JOB, async (job) => {
+    if (!container.env.OUTREACH_DIGEST_ENABLED) return
     const geoid = extractGeoid(job.data)
     if (geoid !== null) {
       await auditSent(container, [await service.runForGeoid(geoid)])
