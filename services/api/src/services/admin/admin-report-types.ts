@@ -17,6 +17,7 @@ import type { LinkedEventView } from "../cleanup-service.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import type { AdminPersonRecord } from "./admin-person.js"
 import type { ForwardTemplateReader } from "./forward-template-types.js"
+import type { PresignPacketMedia } from "../media-presign.js"
 
 export type AdminReporterRecord = AdminPersonRecord
 
@@ -153,7 +154,7 @@ export interface AdminReportServiceDeps {
     r2Key: string,
     thumbKey: string | null,
   ) => Promise<{ url: string; thumbUrl?: string }>
-  presignPacketMedia?: (r2Key: string, publiclyVisible: boolean) => Promise<string>
+  presignPacketMedia?: PresignPacketMedia
   loadLinkedEventsForReports?: (
     reportIds: string[],
   ) => Promise<Map<string, LinkedEventView[]>>
