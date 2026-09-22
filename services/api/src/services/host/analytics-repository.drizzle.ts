@@ -150,10 +150,14 @@ export const ZERO_HELD_EVENT_TOTALS: HeldEventTotals = Object.freeze({
   noShow: 0,
 })
 
+export interface LabeledKeyCount extends KeyCount {
+  label: string
+}
+
 export interface HostSummarySignups {
   daily: DayCount[]
-  byEvent: KeyCount[]
-  hoursByEvent: KeyCount[]
+  byEvent: LabeledKeyCount[]
+  hoursByEvent: LabeledKeyCount[]
 }
 
 export interface AnalyticsRepository {
@@ -703,8 +707,8 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
              AND status = 'registered'
              AND (registered_at AT TIME ZONE ${SUMMARY_DAY_ZONE})::date BETWEEN ${fromDay}::date AND ${toDay}::date
            GROUP BY 1 ORDER BY 1 LIMIT 400`,
-        sql<{ key: string; n: string }[]>`
-          SELECT c.title AS key, count(r.id)::text AS n
+        sql<{ key: string; label: string; n: string }[]>`
+          SELECT c.id::text AS key, c.title AS label, count(r.id)::text AS n
             FROM cleanups c
             JOIN cleanup_registrations r
               ON r.cleanup_id = c.id
@@ -713,10 +717,10 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
                    BETWEEN ${fromDay}::date AND ${toDay}::date
            WHERE c.id = ANY(${ids}::uuid[])
            GROUP BY c.id, c.title
-           ORDER BY 2 DESC, c.title ASC
+           ORDER BY 3 DESC, c.title ASC
            LIMIT ${MAX_HOST_SUMMARY_EVENT_ROWS}`,
-        sql<{ key: string; n: string }[]>`
-          SELECT c.title AS key, round(sum(vh.hours))::text AS n
+        sql<{ key: string; label: string; n: string }[]>`
+          SELECT c.id::text AS key, c.title AS label, round(sum(vh.hours))::text AS n
             FROM cleanups c
             JOIN volunteer_hours vh
               ON vh.cleanup_id = c.id
@@ -731,8 +735,16 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
       ])
       return {
         daily: await dayCounts(dailyRows),
-        byEvent: byEventRows.map((row) => ({ key: row.key, count: Number(row.n) })),
-        hoursByEvent: hoursRows.map((row) => ({ key: row.key, count: Number(row.n) })),
+        byEvent: byEventRows.map((row) => ({
+          key: row.key,
+          label: row.label,
+          count: Number(row.n),
+        })),
+        hoursByEvent: hoursRows.map((row) => ({
+          key: row.key,
+          label: row.label,
+          count: Number(row.n),
+        })),
       }
     },
   }

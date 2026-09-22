@@ -15,6 +15,8 @@ import type { AnalyticsRepository } from "../../src/services/host/analytics-repo
 import type { MetricsRepository } from "../../src/services/host/metrics-repository.drizzle.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
+const EVENT_A = "11111111-1111-4111-8111-111111111111"
+const EVENT_B = "22222222-2222-4222-8222-222222222222"
 const NOW = new Date("2026-02-10T00:00:00Z")
 
 function analyticsRepo(overrides: Partial<AnalyticsRepository> = {}): AnalyticsRepository {
@@ -90,10 +92,10 @@ function analyticsRepo(overrides: Partial<AnalyticsRepository> = {}): AnalyticsR
           { day: "2026-02-10", count: 7 },
         ],
         byEvent: [
-          { key: "Beach Cleanup", count: 12 },
-          { key: "Park Cleanup", count: 3 },
+          { key: EVENT_A, label: "Beach Cleanup", count: 12 },
+          { key: EVENT_B, label: "Park Cleanup", count: 3 },
         ],
-        hoursByEvent: [{ key: "Beach Cleanup", count: 31 }],
+        hoursByEvent: [{ key: EVENT_A, label: "Beach Cleanup", count: 31 }],
       }),
     ...overrides,
   }
@@ -762,12 +764,38 @@ describe("hosted-events analytics summary", () => {
     const { service } = build()
     const payload = await service.summary(OWNER, null, "30d", "self")
     expect(payload.byEvent.panelSuppressed).toBe(false)
-    expect(payload.byEvent.rows.map((row) => [row.key, row.value])).toEqual([
-      ["Beach Cleanup", 12],
-      ["Park Cleanup", 3],
+    expect(payload.byEvent.rows.map((row) => [row.key, row.label, row.value])).toEqual([
+      [EVENT_A, "Beach Cleanup", 12],
+      [EVENT_B, "Park Cleanup", 3],
     ])
-    expect(payload.hoursByEvent.rows.map((row) => row.value)).toEqual([31])
+    expect(payload.hoursByEvent.rows.map((row) => [row.key, row.label, row.value])).toEqual([
+      [EVENT_A, "Beach Cleanup", 31],
+    ])
     expect(payload.byEvent.rows.every((row) => row.suppressed === false)).toBe(true)
+  })
+
+  it("keeps per-event rows distinct when two events share a title", async () => {
+    const { service } = build({
+      signupsByDayAcross: () =>
+        Promise.resolve({
+          daily: [],
+          byEvent: [
+            { key: EVENT_A, label: "Test1", count: 5 },
+            { key: EVENT_B, label: "Test1", count: 2 },
+          ],
+          hoursByEvent: [
+            { key: EVENT_A, label: "Test1", count: 9 },
+            { key: EVENT_B, label: "Test1", count: 4 },
+          ],
+        }),
+    })
+    const payload = await service.summary(OWNER, null, "30d", "self")
+    expect(payload.byEvent.rows.map((row) => row.key)).toEqual([EVENT_A, EVENT_B])
+    expect(new Set(payload.byEvent.rows.map((row) => row.key)).size).toBe(2)
+    expect(payload.byEvent.rows.map((row) => row.label)).toEqual(["Test1", "Test1"])
+    expect(payload.hoursByEvent.rows.map((row) => row.key)).toEqual([EVENT_A, EVENT_B])
+    expect(new Set(payload.hoursByEvent.rows.map((row) => row.key)).size).toBe(2)
+    expect(payload.hoursByEvent.rows.map((row) => row.value)).toEqual([9, 4])
   })
 
   it("derives the held-event check-in rate exactly, never suppressed above zero", async () => {

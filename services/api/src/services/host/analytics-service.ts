@@ -33,7 +33,7 @@ import {
   type KeyCount,
   type SeriesClosure,
 } from "@civfix/shared/host"
-import type { AnalyticsRepository } from "./analytics-repository.drizzle.js"
+import type { AnalyticsRepository, LabeledKeyCount } from "./analytics-repository.drizzle.js"
 import { leaderboardEntryOf } from "../volunteer-hours-service.js"
 import type { MetricRow, MetricsRepository } from "./metrics-repository.drizzle.js"
 import { hostAnalyticsCacheKey, type HostAnalyticsCache } from "./host-analytics-cache.js"
@@ -408,8 +408,8 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
           },
           totals: { events: cleanupIds.length },
           signupsDaily: exactSeries(signups.daily, window),
-          byEvent: exactPanel(signups.byEvent),
-          hoursByEvent: exactPanel(signups.hoursByEvent),
+          byEvent: labeledPanel(signups.byEvent),
+          hoursByEvent: labeledPanel(signups.hoursByEvent),
         }
       })
     },
@@ -447,8 +447,8 @@ function emptySummary(
     },
     totals: { events: 0 },
     signupsDaily: exactSeries([], window),
-    byEvent: exactPanel([]),
-    hoursByEvent: exactPanel([]),
+    byEvent: labeledPanel([]),
+    hoursByEvent: labeledPanel([]),
   }
 }
 
@@ -472,6 +472,18 @@ function exactPanel(rows: readonly KeyCount[]): Panel {
     rows: rows.map((row) => ({
       key: row.key,
       label: row.key,
+      value: row.count,
+      suppressed: false,
+    })),
+  }
+}
+
+function labeledPanel(rows: readonly LabeledKeyCount[]): Panel {
+  return {
+    panelSuppressed: false,
+    rows: rows.map((row) => ({
+      key: row.key,
+      label: row.label,
       value: row.count,
       suppressed: false,
     })),
