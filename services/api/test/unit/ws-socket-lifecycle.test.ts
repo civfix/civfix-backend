@@ -186,8 +186,19 @@ function baseOpts(extra: Partial<GatewayOptions> = {}): GatewayOptions {
   }
 }
 
+const realSetTimeout = globalThis.setTimeout
+const realNowMs = performance.now.bind(performance)
+
+const SETTLE_BUDGET_MS = 10_000
+
 function flush(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0))
+}
+
+function realTick(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    realSetTimeout(resolve, 1)
+  })
 }
 
 async function microflush(): Promise<void> {
@@ -201,13 +212,18 @@ async function settle(): Promise<void> {
   }
 }
 
-async function settleUntil(done: () => boolean, maxTicks = 200): Promise<void> {
-  for (let i = 0; i < maxTicks; i += 1) {
+async function settleUntil(done: () => boolean, budgetMs = SETTLE_BUDGET_MS): Promise<void> {
+  const deadline = realNowMs() + budgetMs
+  for (;;) {
     if (done()) return
     if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(1)
     else await flush()
+    if (done()) return
+    if (realNowMs() >= deadline) {
+      throw new Error("settleUntil: condition never became true")
+    }
+    await realTick()
   }
-  if (!done()) throw new Error("settleUntil: condition never became true")
 }
 
 describe("frames sent during the async handshake are buffered, not dropped", () => {
@@ -857,7 +873,7 @@ describe("H2: a ?ticket socket is re-validated against session revocation, exact
     )
     const socket = new MockSocket()
     handler(socket as unknown as WebSocket, ticketRequest(ticket))
-    await settle()
+    await settleUntil(() => socket.closes.length > 0)
 
     expect(socket.closes).toHaveLength(1)
     expect(socket.closes[0]?.reason).toBe("unauthenticated")
