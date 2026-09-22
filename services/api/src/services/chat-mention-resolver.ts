@@ -12,9 +12,48 @@
  * instances; only the scope rules live here. Room kinds added later extend THIS file.
  */
 
-import type { UserMentionDTO } from "@civfix/shared"
+import type { RoomKind, UserMentionDTO } from "@civfix/shared"
+import { parseUserMentions } from "./discussion-mentions.js"
 import { THREAD_SIGNAL_MEMBER_CAP } from "./cleanup-service.js"
 import type { GatewayChatMentions } from "../ws/types.js"
+
+export type ChatMentionRecordSeam = Pick<
+  GatewayChatMentions,
+  "resolveChatMentions" | "recordChatMentions"
+>
+
+export interface RecordChatMentionsInput {
+  body: string
+  mentionedUserIds: string[]
+  authorUserId: string
+  kind: RoomKind
+  roomId: string
+  messageId: string
+}
+
+export async function resolveAndRecordChatMentions(
+  seam: ChatMentionRecordSeam | undefined,
+  input: RecordChatMentionsInput,
+): Promise<UserMentionDTO[]> {
+  if (!seam) return []
+  const handles = parseUserMentions(input.body)
+  if (handles.length === 0 && input.mentionedUserIds.length === 0) return []
+  try {
+    const mentions = await seam.resolveChatMentions({
+      handles,
+      userIds: input.mentionedUserIds,
+      authorUserId: input.authorUserId,
+      kind: input.kind,
+      roomId: input.roomId,
+    })
+    if (mentions.length > 0) {
+      await seam.recordChatMentions(input.messageId, mentions.map((m) => m.id))
+    }
+    return mentions
+  } catch {
+    return []
+  }
+}
 
 export interface ChatMentionResolverDeps {
   /** Handle/id -> mentionable-user lookup (drizzle `resolveMentionTargets` over the shared sql tag). */
