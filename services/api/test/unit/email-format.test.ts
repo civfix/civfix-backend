@@ -19,6 +19,7 @@ function reportRecord(overrides: Partial<AdminReportRecord> = {}): AdminReportRe
     id: "11111111-2222-3333-4444-555555555555",
     category: "graffiti",
     status: "submitted",
+    visibility: "public",
     flagged: false,
     title: "Tag on the underpass",
     place: "Springfield",

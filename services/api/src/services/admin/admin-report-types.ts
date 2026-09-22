@@ -8,6 +8,7 @@ import type {
   ReportCategory,
   ReportOutreachStatus,
   ReportTimelineItem,
+  ReportVisibility,
 } from "@civfix/shared"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 import type { FastifyBaseLogger } from "fastify"
@@ -59,6 +60,7 @@ export interface AdminReportRecord {
   id: string
   category: ReportCategory
   status: AdminReportStatus
+  visibility: ReportVisibility
   flagged: boolean
   title: string
   place: string
@@ -151,10 +153,7 @@ export interface AdminReportServiceDeps {
     r2Key: string,
     thumbKey: string | null,
   ) => Promise<{ url: string; thumbUrl?: string }>
-  presignPacketMedia?: (
-    r2Key: string,
-    thumbKey: string | null,
-  ) => Promise<{ url: string; thumbUrl?: string }>
+  presignPacketMedia?: (r2Key: string, publiclyVisible: boolean) => Promise<string>
   loadLinkedEventsForReports?: (
     reportIds: string[],
   ) => Promise<Map<string, LinkedEventView[]>>
