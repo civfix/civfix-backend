@@ -82,6 +82,19 @@ describe("moderation queue list", () => {
     expect((await svc.list({ filter: "all" })).items).toHaveLength(3)
   })
 
+  it("filters by the user_report kind", async () => {
+    const { repo, svc } = harness()
+    repo.seedItem({ id: "UR1", kind: "user_report", subjectType: "user", priority: "med" })
+    repo.seedItem({ id: "UR2", kind: "user_report", subjectType: "profile", priority: "high" })
+    repo.seedItem({ id: "IMG", kind: "image", priority: "med" })
+    repo.seedItem({ id: "DUP", kind: "duplicate", priority: "med" })
+
+    expect((await svc.list({ filter: "user_report" })).items.map((i) => i.id).sort()).toEqual([
+      "UR1",
+      "UR2",
+    ])
+  })
+
   it("search matches flag/reporter/reason (case-insensitive)", async () => {
     const { repo, svc } = harness()
     repo.seedItem({ id: "A", flag: "NSFW image", reporter: "Jane", reason: "score high" })

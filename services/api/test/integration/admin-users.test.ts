@@ -86,6 +86,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
       q: null,
       status: null,
       flaggedOnly: false,
+      deletedOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -100,6 +101,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
       q: null,
       status: null,
       flaggedOnly: true,
+      deletedOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -116,6 +118,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
       q: LA_CITY.name,
       status: null,
       flaggedOnly: false,
+      deletedOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -144,6 +147,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
       q: LA_CITY.name,
       status: null,
       flaggedOnly: false,
+      deletedOnly: false,
       cursor: null,
       limit: 25,
     })

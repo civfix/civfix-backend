@@ -88,6 +88,7 @@ export interface ListUsersArgs {
   q: string | null
   status: UserStatus | null
   flaggedOnly: boolean
+  deletedOnly: boolean
   cursor: string | null
   limit: number
 }
@@ -143,16 +144,21 @@ const GRANTABLE_ROLES: ReadonlySet<Role> = new Set<Role>(["citizen", "gov_user",
 export function resolveUserFilter(filter: string | undefined): {
   status: UserStatus | null
   flaggedOnly: boolean
+  deletedOnly: boolean
 } {
   switch (filter) {
     case "active":
-      return { status: "active", flaggedOnly: false }
+      return { status: "active", flaggedOnly: false, deletedOnly: false }
     case "suspended":
-      return { status: "suspended", flaggedOnly: false }
+      return { status: "suspended", flaggedOnly: false, deletedOnly: false }
+    case "banned":
+      return { status: "banned", flaggedOnly: false, deletedOnly: false }
     case "flagged":
-      return { status: null, flaggedOnly: true }
+      return { status: null, flaggedOnly: true, deletedOnly: false }
+    case "deleted":
+      return { status: null, flaggedOnly: false, deletedOnly: true }
     default:
-      return { status: null, flaggedOnly: false }
+      return { status: null, flaggedOnly: false, deletedOnly: false }
   }
 }
 
@@ -212,11 +218,12 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
   return {
     async list(query: AdminUserListQuery): Promise<AdminUserListResponse> {
       const ref = now()
-      const { status, flaggedOnly } = resolveUserFilter(query.filter)
+      const { status, flaggedOnly, deletedOnly } = resolveUserFilter(query.filter)
       const args: ListUsersArgs = {
         q: query.q && query.q.trim() !== "" ? query.q.trim() : null,
         status,
         flaggedOnly,
+        deletedOnly,
         cursor: query.cursor ?? null,
         limit: query.limit ?? 25,
       }
@@ -224,7 +231,14 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         deps.repo.listUsers(args),
         args.cursor === null
           ? deps.repo.countByFacet({ q: args.q })
-          : Promise.resolve<AdminUserCounts>({ all: 0, active: 0, suspended: 0, flagged: 0 }),
+          : Promise.resolve<AdminUserCounts>({
+              all: 0,
+              active: 0,
+              suspended: 0,
+              flagged: 0,
+              deleted: 0,
+              banned: 0,
+            }),
       ])
       return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }
     },

@@ -160,6 +160,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       rows = rows.filter((r) => set.has(r.status))
     }
     if (args.flaggedOnly) rows = rows.filter((r) => r.flagged)
+    if (args.needsVerificationOnly) rows = rows.filter((r) => r.verificationVerdict === null)
 
     rows.sort((a, b) => {
       const primary = b.createdAt.getTime() - a.createdAt.getTime()
@@ -183,11 +184,13 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     let inProgress = 0
     let completed = 0
     let flagged = 0
+    let needsVerification = 0
     for (const r of rows) {
       if (submittedSet.has(r.status)) submitted += 1
       else if (inProgressSet.has(r.status)) inProgress += 1
       else if (completedSet.has(r.status)) completed += 1
       if (r.flagged) flagged += 1
+      if (submittedSet.has(r.status) && r.verificationVerdict === null) needsVerification += 1
     }
     return {
       all: submitted + inProgress + completed,
@@ -195,6 +198,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       in_progress: inProgress,
       completed,
       flagged,
+      needsVerification,
     }
   }
 

@@ -133,11 +133,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
   return {
     async list(query: AdminReportListQuery): Promise<AdminReportListResponse> {
       const ref = now()
-      const { statuses, flaggedOnly } = resolveListFilter(query.filter)
+      const { statuses, flaggedOnly, needsVerificationOnly } = resolveListFilter(query.filter)
       const args: ListReportsArgs = {
         q: query.q && query.q.trim() !== "" ? query.q.trim() : null,
         statuses,
         flaggedOnly,
+        needsVerificationOnly,
         cursor: query.cursor ?? null,
         limit: query.limit ?? 25,
       }
@@ -151,6 +152,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
               in_progress: 0,
               completed: 0,
               flagged: 0,
+              needsVerification: 0,
             }),
       ])
       return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }

@@ -96,6 +96,7 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
       q: null,
       statuses: ["rejected"],
       flaggedOnly: false,
+      needsVerificationOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -114,6 +115,7 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
       q: null,
       statuses: null,
       flaggedOnly: false,
+      needsVerificationOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -129,6 +131,7 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
       q: null,
       statuses: null,
       flaggedOnly: true,
+      needsVerificationOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -145,7 +148,14 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
 
     const list = async (q: string): Promise<string[]> =>
       (
-        await repo.listReports({ q, statuses: null, flaggedOnly: false, cursor: null, limit: 25 })
+        await repo.listReports({
+          q,
+          statuses: null,
+          flaggedOnly: false,
+          needsVerificationOnly: false,
+          cursor: null,
+          limit: 25,
+        })
       ).records.map((r) => r.id)
 
     expect(await list("pd-42-000001")).toEqual([withCode])

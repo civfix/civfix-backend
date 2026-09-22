@@ -77,6 +77,8 @@ describe("F119 home summary fan-out is bounded", () => {
       mailSummary: track(() => repo.mailSummary()),
       usersSummary: track(() => repo.usersSummary()),
       livePins24h: track(() => repo.livePins24h()),
+      moderationQueue: track(() => repo.moderationQueue()),
+      inboxUnread: track(() => repo.inboxUnread()),
       recentPins: (limit) => repo.recentPins(limit),
     }
     const trackedAnalytics = {
@@ -88,7 +90,7 @@ describe("F119 home summary fan-out is bounded", () => {
     const svc = makeHomeService({ repo: trackedRepo, analytics: trackedAnalytics, now: () => NOW })
     const res = await svc.summary()
 
-    expect(started).toBe(9)
+    expect(started).toBe(11)
     expect(peak).toBeGreaterThan(1)
     expect(peak).toBeLessThanOrEqual(HOME_SUMMARY_CONCURRENCY)
     expect(res.livePins24h).toBe(9)
@@ -130,6 +132,36 @@ describe("home summary assembly", () => {
     expect(res.analytics.newUsers).toBe(64)
     expect(res.analytics.pinsByWeek).toHaveLength(8)
     expect(res.analytics.pinsByWeek[7]).toBe(11)
+  })
+
+  it("carries the moderation-queue and inbox-unread counts", async () => {
+    const { repo, svc } = harness()
+    repo.moderationQueueValue = 6
+    repo.inboxUnreadValue = 13
+
+    const res = await svc.summary()
+    expect(res.moderationQueue).toBe(6)
+    expect(res.inboxUnread).toBe(13)
+  })
+
+  it("degrades the moderation-queue count to 0 without touching inbox-unread", async () => {
+    const { repo, svc } = harness()
+    repo.moderationQueueError = new Error("moderation db down")
+    repo.inboxUnreadValue = 4
+
+    const res = await svc.summary()
+    expect(res.moderationQueue).toBe(0)
+    expect(res.inboxUnread).toBe(4)
+  })
+
+  it("degrades the inbox-unread count to 0 without touching the moderation queue", async () => {
+    const { repo, svc } = harness()
+    repo.moderationQueueValue = 5
+    repo.inboxUnreadError = new Error("inbox db down")
+
+    const res = await svc.summary()
+    expect(res.moderationQueue).toBe(5)
+    expect(res.inboxUnread).toBe(0)
   })
 
   it("degrades ONE failing section to zeros without sinking the summary", async () => {

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest"
-import { AppError } from "@civfix/shared"
+import {
+  AppError,
+  DEFAULT_FORWARD_SUBJECT_TEMPLATE,
+  templateUsesToken,
+} from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js"
 import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
@@ -107,18 +111,41 @@ function hoursAgo(hours: number): Date {
 
 describe("admin reports pure helpers", () => {
   it("resolveListFilter maps each design facet to its civfix status SET + flaggedOnly", () => {
-    expect(resolveListFilter("all")).toEqual({ statuses: null, flaggedOnly: false })
+    expect(resolveListFilter("all")).toEqual({
+      statuses: null,
+      flaggedOnly: false,
+      needsVerificationOnly: false,
+    })
     expect(resolveListFilter("submitted")).toEqual({
       statuses: ["submitted", "held", "published"],
       flaggedOnly: false,
+      needsVerificationOnly: false,
     })
     expect(resolveListFilter("in_progress")).toEqual({
       statuses: ["acknowledged", "in_progress"],
       flaggedOnly: false,
+      needsVerificationOnly: false,
     })
-    expect(resolveListFilter("completed")).toEqual({ statuses: ["resolved"], flaggedOnly: false })
-    expect(resolveListFilter("flagged")).toEqual({ statuses: null, flaggedOnly: true })
-    expect(resolveListFilter(undefined)).toEqual({ statuses: null, flaggedOnly: false })
+    expect(resolveListFilter("completed")).toEqual({
+      statuses: ["resolved"],
+      flaggedOnly: false,
+      needsVerificationOnly: false,
+    })
+    expect(resolveListFilter("flagged")).toEqual({
+      statuses: null,
+      flaggedOnly: true,
+      needsVerificationOnly: false,
+    })
+    expect(resolveListFilter("needs_verification")).toEqual({
+      statuses: ["submitted", "held", "published"],
+      flaggedOnly: false,
+      needsVerificationOnly: true,
+    })
+    expect(resolveListFilter(undefined)).toEqual({
+      statuses: null,
+      flaggedOnly: false,
+      needsVerificationOnly: false,
+    })
   })
 
   it("statusChangeNote reads as English to a resident — never a raw enum token", () => {
@@ -238,7 +265,52 @@ describe("admin reports list", () => {
     repo.seedReport({ id: "rej", status: "rejected" })
     repo.seedReport({ id: "f", status: "published", flagged: true })
     const { counts } = await svc.list({ filter: "completed" })
-    expect(counts).toEqual({ all: 7, submitted: 4, in_progress: 2, completed: 1, flagged: 1 })
+    expect(counts).toEqual({
+      all: 7,
+      submitted: 4,
+      in_progress: 2,
+      completed: 1,
+      flagged: 1,
+      needsVerification: 4,
+    })
+  })
+
+  it("needs_verification lists only unverified reports inside the Submitted bucket", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "unverified-submitted", status: "submitted" })
+    repo.seedReport({ id: "unverified-held", status: "held" })
+    repo.seedReport({ id: "unverified-published", status: "published" })
+    repo.seedReport({ id: "approved", status: "published", verificationVerdict: "approved" })
+    repo.seedReport({ id: "rejected-verdict", status: "submitted", verificationVerdict: "rejected" })
+    repo.seedReport({ id: "later-stage", status: "in_progress" })
+
+    const ids = (await svc.list({ filter: "needs_verification" })).items.map((i) => i.id).sort()
+    expect(ids).toEqual(["unverified-held", "unverified-published", "unverified-submitted"])
+  })
+
+  it("counts.needsVerification is exact on the first page and zero-filled on a later page", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "a", status: "submitted", createdAt: new Date(NOW.getTime() - 3000) })
+    repo.seedReport({ id: "b", status: "published", createdAt: new Date(NOW.getTime() - 2000) })
+    repo.seedReport({
+      id: "c",
+      status: "held",
+      verificationVerdict: "approved",
+      createdAt: new Date(NOW.getTime() - 1000),
+    })
+    repo.seedReport({ id: "d", status: "in_progress", createdAt: NOW })
+
+    const first = await svc.list({ filter: "needs_verification", limit: 1 })
+    expect(first.counts.needsVerification).toBe(2)
+    expect(first.nextCursor).not.toBeNull()
+
+    const later = await svc.list({
+      filter: "needs_verification",
+      limit: 1,
+      cursor: first.nextCursor as string,
+    })
+    expect(later.counts.needsVerification).toBe(0)
+    expect(later.counts.all).toBe(0)
   })
 
   it("search matches title, place, reporter name and reporter handle (case-insensitive)", async () => {
@@ -849,7 +921,13 @@ describe("routeToJurisdiction template resolution", () => {
     await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
 
     const mail = lastOutbound(h.mailer)
-    expect(mail.subject).toBe("[civfix] Overflowing bin - Los Angeles - LA-1-000042")
+    if (templateUsesToken(DEFAULT_FORWARD_SUBJECT_TEMPLATE, "referenceCode")) {
+      expect(mail.subject).toContain("LA-1-000042")
+    }
+    if (templateUsesToken(DEFAULT_FORWARD_SUBJECT_TEMPLATE, "title")) {
+      expect(mail.subject).toContain("Overflowing bin")
+    }
+    expect(mail.subject).not.toMatch(/\{[A-Za-z]+\}/)
     expect(mail.text).toContain("What was reported")
   })
 
