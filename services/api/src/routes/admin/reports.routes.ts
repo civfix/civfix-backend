@@ -89,6 +89,7 @@ export async function registerAdminReportsRoutes(
           : {}),
         ...(overrides.forwardTemplates !== undefined
           ? { forwardTemplates: overrides.forwardTemplates }
+          : {}),
         ...(overrides.notifications !== undefined
           ? { notifications: overrides.notifications }
           : {}),
