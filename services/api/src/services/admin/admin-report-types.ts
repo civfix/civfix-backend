@@ -13,6 +13,7 @@ import type { OutboundMailService } from "./outbound-mail-service.js"
 import type { LinkedEventView } from "../cleanup-service.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import type { AdminPersonRecord } from "./admin-person.js"
+import type { ForwardTemplateReader } from "./forward-template-types.js"
 
 export type AdminReporterRecord = AdminPersonRecord
 
@@ -163,6 +164,7 @@ export interface AdminReportServiceDeps {
   loadMediaBytes?: (r2Key: string) => Promise<Uint8Array | null>
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter
+  forwardTemplates?: ForwardTemplateReader
 }
 
 export interface FollowupResult {
