@@ -50,5 +50,7 @@ export interface HomeRepository {
   mailSummary(): Promise<MailSectionCounts>
   usersSummary(): Promise<UsersSectionCounts>
   livePins24h(): Promise<number>
+  moderationQueue(): Promise<number>
+  inboxUnread(): Promise<number>
   recentPins(limit: number): Promise<HomeMapPinRecord[]>
 }

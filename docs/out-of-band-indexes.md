@@ -104,12 +104,12 @@ statement through the exported `explainSuggestFollows`. The offline half —
 that the emitted SQL really is a `CROSS JOIN LATERAL` and not a same-level
 cross join — is `test/unit/social-suggest-sql.test.ts`.
 
-### `posts.geom` backfill (migration 0172, issue #100) — data, not an index
+### `posts.geom` backfill (migration 0176, issue #100) — data, not an index
 
 `posts` is NOT a hot table, so `posts_geom_gist` and
-`posts_author_public_recent_idx` are built inline by migrations 0172 and 0173
+`posts_author_public_recent_idx` are built inline by migrations 0176 and 0177
 and need nothing here. What DOES need an out-of-band run is the **backfill**:
-0172 adds the column but deliberately populates no rows, because one `UPDATE`
+0176 adds the column but deliberately populates no rows, because one `UPDATE`
 over the whole table inside the migration's single transaction is a lock
 hazard. The migration RAISEs a `WARNING` when any backfillable post is still
 unpopulated.

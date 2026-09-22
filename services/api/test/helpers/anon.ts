@@ -48,7 +48,7 @@ export interface StoredAnonReport {
   anonSessionId: string | null
   category: string
   description: string | null
-  /** The creation-time address snapshot and its provenance (0175), as the real insert writes them. */
+  /** The creation-time address snapshot and its provenance (0179), as the real insert writes them. */
   addr: string | null
   addrSource: ReportAddressSource | null
   addrPrecision: AddressPrecision | null

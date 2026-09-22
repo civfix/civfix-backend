@@ -24,6 +24,7 @@ interface SeedOptions {
   purpose?: string
   ageHours?: number
   servedKey?: string | null
+  finalizedAt?: Date | null
 }
 
 describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
@@ -44,6 +45,7 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       purpose: over.purpose ?? "report",
       createdAt: new Date(Date.now() - (over.ageHours ?? 0) * 3_600_000),
       ...(over.servedKey !== undefined ? { servedKey: over.servedKey } : {}),
+      ...(over.finalizedAt !== undefined ? { finalizedAt: over.finalizedAt } : {}),
     })
   }
 
@@ -103,10 +105,16 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
   const rejects422 = { httpStatus: 422, code: "VALIDATION" }
 
   describe("resolveAvatarMediaOrThrow gate", () => {
-    it("resolves a ready, unbound image to {id, r2Key}", async () => {
+    it("resolves a ready, unbound image to {id, r2Key, servedKey}", async () => {
       const media = await seedMedia()
       const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId)
-      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey })
+      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey, servedKey: media.servedKey })
+    })
+
+    it("resolves a finalized-but-validating upload to its raw key (the bind may race the worker)", async () => {
+      const media = await seedMedia({ status: "validating", finalizedAt: new Date() })
+      const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId)
+      expect(ref).toEqual({ id: media.id, r2Key: media.r2Key, servedKey: null })
     })
 
     it("rejects a nonexistent uploadId (422)", async () => {
@@ -158,7 +166,7 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
     it("F074: accepts an upload still inside the claim window", async () => {
       const media = await seedMedia({ ageHours: 5 })
       const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId)
-      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey })
+      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey, servedKey: media.servedKey })
     })
 
     it("F074: rejects a verification document (it cannot be laundered into a public avatar)", async () => {
@@ -193,7 +201,7 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       const owner = await seedUser()
       await claimUserAvatar(owner, media.id)
       const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId, { userId: owner })
-      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey })
+      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey, servedKey: media.servedKey })
     })
 
     it("F074: a group may re-apply the avatar it already has", async () => {
@@ -201,7 +209,7 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       const group = await seedGroup()
       await claimGroupAvatar(group, media.id)
       const ref = await resolveAvatarMediaOrThrow(h.sql, media.uploadId, { groupId: group })
-      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey })
+      expect(ref).toEqual({ id: media.id, r2Key: media.servedKey, servedKey: media.servedKey })
     })
   })
 
@@ -234,6 +242,19 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       expect(await avatarMediaIdOf(id)).toBe(media.id)
     })
 
+    it("binds a finalized-but-validating upload and leaves avatar_url for the worker to publish", async () => {
+      const { store, id, handle } = await makeUser()
+      const media = await seedMedia({ status: "validating", finalizedAt: new Date() })
+      const updated = await store.updateProfile(id, {
+        handle,
+        displayName: "Avatar User",
+        avatarUploadId: media.uploadId,
+        presignAvatar: (key) => Promise.resolve(`https://cdn.example.test/${key}`),
+      })
+      expect(updated.avatarUrl).toBeNull()
+      expect(await avatarMediaIdOf(id)).toBe(media.id)
+    })
+
     it("rejects a nonexistent uploadId and leaves the avatar untouched", async () => {
       const { store, id, handle } = await makeUser()
       await expect(
@@ -255,7 +276,7 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       expect(await avatarMediaIdOf(id)).toBeNull()
     })
 
-    it("rejects a still-validating upload", async () => {
+    it("rejects a still-validating upload that was never finalized", async () => {
       const { store, id, handle } = await makeUser()
       const media = await seedMedia({ status: "validating" })
       await expect(
@@ -364,9 +385,14 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
       await expect(groups().findMediaIdByUploadId(media.uploadId)).rejects.toMatchObject(rejects422)
     })
 
-    it("rejects a still-validating upload", async () => {
+    it("rejects a still-validating upload that was never finalized", async () => {
       const media = await seedMedia({ status: "validating" })
       await expect(groups().findMediaIdByUploadId(media.uploadId)).rejects.toMatchObject(rejects422)
+    })
+
+    it("accepts a finalized-but-validating upload", async () => {
+      const media = await seedMedia({ status: "validating", finalizedAt: new Date() })
+      expect(await groups().findMediaIdByUploadId(media.uploadId)).toBe(media.id)
     })
 
     it("rejects a foreign user's private (chat-bound) media", async () => {

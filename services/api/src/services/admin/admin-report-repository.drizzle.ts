@@ -15,7 +15,6 @@ import {
   type AdminReportRoutingRecord,
   type AdminReportTimelineRecord,
   type ListReportsArgs,
-  type NotifyReporterInput,
   type ReportOutreachState,
 } from "./admin-report-service.js"
 import type {
@@ -44,11 +43,13 @@ export function flaggedReportExpr(sql: Queryable): SqlFragment {
 
 function searchReportsFragment(sql: Queryable, q: string | null): SqlFragment {
   if (q === null) return sql``
+  const exact: SqlFragment[] = [sql`r.reference_code = upper(btrim(${q}))`]
+  if (isUuid(q)) exact.push(sql`r.id = ${q}::uuid`)
   return sql`AND ${ilikeAnyOf(
     sql,
-    [sql`r.title`, sql`j.name`, sql`u.display_name`, sql`u.handle::text`],
+    [sql`r.title`, sql`r.addr`, sql`j.name`, sql`u.display_name`, sql`u.handle::text`],
     q,
-    isUuid(q) ? [sql`r.id = ${q}::uuid`] : [],
+    exact,
   )}`
 }
 
@@ -190,6 +191,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         conds.push(sql`AND r.status = ANY(${args.statuses})`)
       }
       if (args.flaggedOnly) conds.push(sql`AND ${flaggedReportExpr(sql)}`)
+      if (args.needsVerificationOnly) conds.push(sql`AND r.verification_verdict IS NULL`)
       if (args.q !== null) conds.push(searchReportsFragment(sql, args.q))
       if (anchor !== null) {
         conds.push(sql`AND (r.created_at, r.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
@@ -204,14 +206,34 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
 
     async countByBucket(args: { q: string | null }): Promise<AdminReportCounts> {
       const search = searchReportsFragment(sql, args.q)
+      const flaggedSearch = searchReportsFragment(sql, args.q)
       const rows = await sql<
-        { submitted: string; in_progress: string; completed: string; flagged: string }[]
+        {
+          submitted: string
+          in_progress: string
+          completed: string
+          flagged: string
+          needs_verification: string
+        }[]
       >`
         SELECT
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.submitted}))::text AS submitted,
+          COUNT(*) FILTER (
+            WHERE r.status = ANY(${STATUS_BUCKETS.submitted}) AND r.verification_verdict IS NULL
+          )::text AS needs_verification,
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.in_progress}))::text AS in_progress,
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.completed}))::text AS completed,
-          COUNT(*) FILTER (WHERE ${flaggedReportExpr(sql)})::text AS flagged
+          (
+            SELECT COUNT(DISTINCT af.subject_id)
+            FROM abuse_flags af
+            JOIN reports r ON r.id::text = af.subject_id
+            LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
+            LEFT JOIN users u ON u.id = r.reporter_user_id
+            WHERE af.subject_type = 'report'
+              AND af.resolved_at IS NULL
+              AND r.deleted_at IS NULL
+              ${flaggedSearch}
+          )::text AS flagged
         FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
         LEFT JOIN users u ON u.id = r.reporter_user_id
@@ -223,8 +245,9 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       const inProgress = Number(row?.in_progress ?? "0")
       const completed = Number(row?.completed ?? "0")
       const flagged = Number(row?.flagged ?? "0")
+      const needsVerification = Number(row?.needs_verification ?? "0")
       const all = submitted + inProgress + completed
-      return { all, submitted, in_progress: inProgress, completed, flagged }
+      return { all, submitted, in_progress: inProgress, completed, flagged, needsVerification }
     },
 
     async getReport(id: string): Promise<AdminReportRecord | null> {
@@ -321,6 +344,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           has_inbound: boolean
           routed_to: string | null
           routed_at: Date | null
+          packet_sent: boolean
           send_failed: boolean
           send_in_flight: boolean
         }[]
@@ -340,6 +364,11 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
             SELECT MIN(m.created_at) FROM mail_messages m
             WHERE m.thread_id = t.id AND m.direction = 'out'
           ) AS routed_at,
+          EXISTS (
+            SELECT 1 FROM mail_messages m
+            WHERE m.thread_id = t.id AND m.direction = 'out'
+              AND COALESCE(m.kind, 'packet') = 'packet'
+          ) AS packet_sent,
           (${sendFailedExpr(sql, sql`t.id`)}) AS send_failed,
           (${sendInFlightExpr(sql, sql`t.id`)}) AS send_in_flight
         FROM mail_threads t
@@ -354,6 +383,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           threadId: null,
           routedTo: null,
           routedAt: null,
+          packetSent: false,
           sendFailed: false,
           sendInFlight: false,
         }
@@ -363,6 +393,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         threadId: row.thread_id,
         routedTo: row.routed_to,
         routedAt: row.routed_at ? row.routed_at.toISOString() : null,
+        packetSent: row.packet_sent,
         sendFailed: row.send_failed,
         sendInFlight: row.send_in_flight,
       }
@@ -495,10 +526,11 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           nowFlagged = true
         }
         await tx`
-          INSERT INTO report_timeline (report_id, status, note, actor_id)
+          INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
           VALUES (
             ${id}, ${report.status},
             ${nowFlagged ? "Flagged for review" : "Flag cleared"},
+            'warn',
             ${input.actorId}
           )
         `
@@ -521,8 +553,8 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         `
         if (updated.length === 0) return false
         await tx`
-          INSERT INTO report_timeline (report_id, status, note, actor_id)
-          VALUES (${id}, 'rejected', ${input.note}, ${input.actorId})
+          INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
+          VALUES (${id}, 'rejected', ${input.note}, 'remove', ${input.actorId})
         `
         await writeAudit(tx, {
           actorId: input.actorId,
@@ -532,13 +564,6 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         })
         return true
       })
-    },
-
-    async notifyReporter(input: NotifyReporterInput): Promise<void> {
-      await sql`
-        INSERT INTO notifications (user_id, type, title, body, link)
-        VALUES (${input.reporterUserId}, 'report_update', ${input.title}, ${input.body}, ${input.link})
-      `
     },
 
     async appendFollowup(
@@ -552,8 +577,8 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
     ): Promise<void> {
       await sql.begin(async (tx) => {
         await tx`
-          INSERT INTO report_timeline (report_id, status, note, actor_id)
-          SELECT ${id}, r.status, ${input.note}, ${input.actorId}
+          INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
+          SELECT ${id}, r.status, ${input.note}, 'followup', ${input.actorId}
           FROM reports r WHERE r.id = ${id}
         `
         await writeAudit(tx, {

@@ -99,34 +99,35 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
     checks, reject_reason, created_at`
 
   return {
-    async listPending(
+    async list(
       args: ListGovClaimsArgs,
     ): Promise<{ records: GovClaimRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
       const anchor = decodeCursor(args.cursor, true)
+      const newestFirst = args.sort === "newest"
 
-      // The pending queue is status='pending'; the facet narrows further (a non-"all"/"pending" facet
-      // yields nothing, which is correct for the pending-only queue).
-      const facet =
-        args.filter !== "all" && args.filter !== "pending"
-          ? sql`AND status = ${args.filter}`
-          : sql``
+      const facet = args.filter === "all" ? sql`` : sql`AND status = ${args.filter}`
       const search =
         args.q !== null
           ? sql`AND ${ilikeAnyOf(sql, [sql`name`, sql`COALESCE(org, '')`], args.q)}`
           : sql``
-      const keyset = anchor
-        ? sql`AND (created_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
-        : sql``
+      const keyset = !anchor
+        ? sql``
+        : newestFirst
+          ? sql`AND (created_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
+          : sql`AND (created_at, id) > (${anchor.createdAt}, ${anchor.id}::uuid)`
+      const order = newestFirst
+        ? sql`ORDER BY created_at DESC, id DESC`
+        : sql`ORDER BY created_at ASC, id ASC`
 
       const rows = await sql<GovClaimRow[]>`
         SELECT ${cols}
         FROM gov_claims
-        WHERE status = 'pending'
+        WHERE true
         ${facet}
         ${search}
         ${keyset}
-        ORDER BY created_at DESC, id DESC
+        ${order}
         LIMIT ${limit + 1}
       `
 

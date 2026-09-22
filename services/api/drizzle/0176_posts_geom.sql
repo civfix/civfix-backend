@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0172_posts_geom.sql
+-- 0176_posts_geom.sql
 -- -----------------------------------------------------------------------------
 -- ISSUE #100 (ranked home feed): the ranker scores a "nearby" term, but `posts`
 -- carried no geometry at all. A post's only location was indirect — through

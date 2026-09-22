@@ -149,6 +149,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     }
     if (args.status !== null) rows = rows.filter((r) => r.accountStatus === args.status)
     if (args.flaggedOnly) rows = rows.filter((r) => r.flagged)
+    if (args.deletedOnly) rows = rows.filter((r) => r.deletedAt !== null)
 
     // Newest-first by joinedAt, id desc tiebreak (a null join sorts oldest).
     rows.sort((a, b) => {
@@ -191,12 +192,16 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     let active = 0
     let suspended = 0
     let flagged = 0
+    let deleted = 0
+    let banned = 0
     for (const r of rows) {
       if (r.accountStatus === "active") active += 1
       else if (r.accountStatus === "suspended") suspended += 1
       if (r.flagged) flagged += 1
+      if (r.deletedAt !== null) deleted += 1
+      if (r.accountStatus === "banned") banned += 1
     }
-    return { all: rows.length, active, suspended, flagged }
+    return { all: rows.length, active, suspended, flagged, deleted, banned }
   }
 
   async listUserReports(

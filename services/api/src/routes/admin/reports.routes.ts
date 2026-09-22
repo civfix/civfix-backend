@@ -28,16 +28,20 @@ import { requireOperator } from "../../auth/admin-guard.js"
 import {
   makeAdminReportService,
   type AdminReportRepository,
+  type ReporterNotifier,
 } from "../../services/admin/admin-report-service.js"
 import { makeDrizzleAdminReportRepository } from "../../services/admin/admin-report-repository.drizzle.js"
+import { makeDrizzleForwardTemplateRepository } from "../../services/admin/forward-template-repository.drizzle.js"
+import type { ForwardTemplateRepository } from "../../services/admin/forward-template-types.js"
 import {
   makeContainerOutboundMailService,
   type OutboundMailService,
 } from "../../services/admin/outbound-mail-service.js"
 import { makeDrizzleCleanupRepository } from "../../services/cleanup-repository.drizzle.js"
-import { makePrivateMediaPresigner } from "../../services/media-presign.js"
+import { makePacketMediaPresigner, makePrivateMediaPresigner } from "../../services/media-presign.js"
 import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "./mail.routes.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
+import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import type { ReportChatSystemEmitter } from "../../services/report-timeline-event.js"
 
 export interface AdminReportRouteOverrides {
@@ -52,6 +56,8 @@ export interface AdminReportRouteOverrides {
   ) => Promise<Map<string, import("../../services/cleanup-service.js").LinkedEventView[]>>
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter
+  forwardTemplates?: ForwardTemplateRepository
+  notifications?: ReporterNotifier
 }
 
 declare module "fastify" {
@@ -81,6 +87,12 @@ export async function registerAdminReportsRoutes(
         ...(overrides.reportChatEmitter !== undefined
           ? { reportChatEmitter: overrides.reportChatEmitter }
           : {}),
+        ...(overrides.forwardTemplates !== undefined
+          ? { forwardTemplates: overrides.forwardTemplates }
+          : {}),
+        ...(overrides.notifications !== undefined
+          ? { notifications: overrides.notifications }
+          : {}),
       }),
     () => {
       const sql = container.getDb().sql
@@ -91,10 +103,14 @@ export async function registerAdminReportsRoutes(
         repo,
         outboundMail,
         presignMedia: makePrivateMediaPresigner(container.storage),
+        presignPacketMedia: makePacketMediaPresigner(container.storage),
         loadLinkedEventsForReports: (reportIds) =>
           cleanupRepo.loadLinkedEventsForReports(reportIds),
         loadMediaBytes: (k) => container.storage.getObject(k),
         reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
+        forwardTemplates: makeDrizzleForwardTemplateRepository(sql),
+        notifications: makeRouteNotificationService(container, app.log),
+        logger: app.log,
       })
     },
   )
@@ -111,26 +127,41 @@ export async function registerAdminReportsRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "setReportStatus", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id, body } = parseBodyWithId(SetReportStatusRequestSchema, request)
-    await service().setStatus(id, { status: body.status, actorId: operatorId })
-    sendOk(reply)
-  })
+  route(
+    app,
+    "setReportStatus",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_REPORT_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const operatorId = requireOperator(request)
+      const { id, body } = parseBodyWithId(SetReportStatusRequestSchema, request)
+      await service().setStatus(id, { status: body.status, actorId: operatorId })
+      sendOk(reply)
+    },
+  )
 
-  route(app, "flagReport", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id, body } = parseBodyWithId(FlagReportRequestSchema, request)
-    await service().flag(id, { reason: body.reason ?? null, actorId: operatorId })
-    sendOk(reply)
-  })
+  route(
+    app,
+    "flagReport",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_REPORT_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const operatorId = requireOperator(request)
+      const { id, body } = parseBodyWithId(FlagReportRequestSchema, request)
+      await service().flag(id, { reason: body.reason ?? null, actorId: operatorId })
+      sendOk(reply)
+    },
+  )
 
-  route(app, "removeReport", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id, body } = parseBodyWithId(RemoveReportRequestSchema, request)
-    await service().remove(id, { reason: body.reason ?? null, actorId: operatorId })
-    sendOk(reply)
-  })
+  route(
+    app,
+    "removeReport",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_REPORT_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const operatorId = requireOperator(request)
+      const { id, body } = parseBodyWithId(RemoveReportRequestSchema, request)
+      await service().remove(id, { reason: body.reason ?? null, actorId: operatorId })
+      sendOk(reply)
+    },
+  )
 
   route(
     app,
@@ -144,13 +175,18 @@ export async function registerAdminReportsRoutes(
     },
   )
 
-  route(app, "setReportVerdict", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireOperator(request)
-    const { id, body } = parseBodyWithId(SetReportVerdictRequestSchema, request)
-    await service().setVerdict({ id, verdict: body.verdict, actorId: operatorId })
-    const payload: SetReportVerdictResponse = { ok: true }
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "setReportVerdict",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_REPORT_MUTATION_RATE_LIMIT } },
+    async (request, reply) => {
+      const operatorId = requireOperator(request)
+      const { id, body } = parseBodyWithId(SetReportVerdictRequestSchema, request)
+      await service().setVerdict({ id, verdict: body.verdict, actorId: operatorId })
+      const payload: SetReportVerdictResponse = { ok: true }
+      reply.status(200).send(payload)
+    },
+  )
 
   route(
     app,
@@ -160,7 +196,6 @@ export async function registerAdminReportsRoutes(
       const operatorId = requireOperator(request)
       const { id, body } = parseBodyWithId(RouteReportRequestSchema, request)
       const { threadId, routedTo } = await service().routeToJurisdiction(id, {
-        contactEmailOverride: body.contactEmailOverride ?? null,
         note: body.note ?? null,
         actorId: operatorId,
       })
@@ -172,6 +207,12 @@ export async function registerAdminReportsRoutes(
 
 export const ROUTE_REPORT_RATE_LIMIT = perIdentity({
   max: 10,
+  timeWindow: "1 minute",
+  skipOnError: false,
+})
+
+export const ADMIN_REPORT_MUTATION_RATE_LIMIT = perIdentity({
+  max: 60,
   timeWindow: "1 minute",
   skipOnError: false,
 })

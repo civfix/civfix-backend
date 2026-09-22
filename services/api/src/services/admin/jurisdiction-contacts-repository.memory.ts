@@ -171,9 +171,9 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     geoid: string,
     input: SaveContactsInput,
     audit: { actorId: string | null },
-  ): Promise<{ routedReports: number; taskResolved: boolean }> {
+  ): Promise<{ taskResolved: boolean }> {
     const j = this.jurisdictions.get(geoid)
-    if (!j) return { routedReports: 0, taskResolved: false }
+    if (!j) return { taskResolved: false }
 
     applyContacts(j, input)
     if (input.forwardSubjectTemplate !== undefined) {
@@ -194,15 +194,6 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       }
     }
 
-    let routedReports = 0
-    for (const r of this.reports) {
-      if (r.geoid === geoid && r.deletedAt === null && !NON_WAITING.has(r.status)) {
-        r.status = "acknowledged"
-        routedReports += 1
-      }
-    }
-    if (routedReports > 0) j.lastRoutedAt = this.now
-
     this.audits.push({
       actorId: audit.actorId,
       action: "discovery.contacts_saved",
@@ -211,12 +202,11 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
         geoid,
         categories: Object.keys(input.contacts),
         defaultEmails: input.defaultEmails,
-        routedReports,
         taskResolved,
       },
     })
 
-    return { routedReports, taskResolved }
+    return { taskResolved }
   }
 
   async patch(

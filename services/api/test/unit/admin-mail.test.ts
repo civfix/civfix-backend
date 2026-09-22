@@ -5,7 +5,6 @@ import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-
 import {
   makeMailService,
   resolveCorrespondent,
-  latestOutbound,
   type MailService,
 } from "../../src/services/admin/mail-service.js"
 
@@ -16,41 +15,55 @@ interface Harness {
   repo: InMemoryMailRepository
   mailer: FakeMailer
   svc: MailService
+  objects: Map<string, Uint8Array>
 }
 
 function harness(): Harness {
   const repo = new InMemoryMailRepository()
   const mailer = new FakeMailer()
+  const objects = new Map<string, Uint8Array>()
   const outboundMail = makeOutboundMailService({
     repo,
     mailer,
     env: { MAIL_FROM_OUTREACH: FROM_OUTREACH, MAIL_REPLY_DOMAIN: "civfix.org" },
   })
-  const svc = makeMailService({ repo, outboundMail })
-  return { repo, mailer, svc }
+  const svc = makeMailService({
+    repo,
+    outboundMail,
+    loadAttachmentBytes: (key) => Promise.resolve(objects.get(key) ?? null),
+  })
+  return { repo, mailer, svc, objects }
 }
 
 describe("mail-service recipient-resolution helpers", () => {
   it("resolveCorrespondent picks the latest non-civfix from address, else null", () => {
     expect(resolveCorrespondent([], FROM_OUTREACH)).toBeNull()
     const msgs = [
-      { id: "a", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "hi", ts: "t", attachments: [] },
-      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [] },
-      { id: "c", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "ok", ts: "t", attachments: [] },
+      { id: "a", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "hi", ts: "t", attachments: [], delivery: "sent" as const },
+      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [], delivery: null },
+      { id: "c", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "ok", ts: "t", attachments: [], delivery: "sent" as const },
     ]
     expect(resolveCorrespondent(msgs, FROM_OUTREACH)).toBe("clerk@city.gov")
     expect(resolveCorrespondent(msgs, "OUTREACH@CIVFIX.ORG")).toBe("clerk@city.gov")
   })
 
-  it("latestOutbound returns the newest out message, else null", () => {
-    expect(latestOutbound([])).toBeNull()
+  it("resolveCorrespondent treats every civfix reply address as ours, not as a correspondent", () => {
     const msgs = [
-      { id: "a", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "first", ts: "t", attachments: [] },
-      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [] },
-      { id: "c", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "last", ts: "t", attachments: [] },
+      { id: "a", who: "civfix", from: '"civfix Reports" <report-abcd2345wxyz@civfix.org>', to: "clerk@city.gov", dir: "out" as const, body: "packet", ts: "t", attachments: [], delivery: "sent" as const },
+      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [], delivery: null },
+      { id: "c", who: "civfix", from: "reply-abcd2345wxyz@civfix.org", to: "clerk@city.gov", dir: "out" as const, body: "ok", ts: "t", attachments: [], delivery: "sent" as const },
     ]
-    expect(latestOutbound(msgs)?.body).toBe("last")
+    expect(resolveCorrespondent(msgs, FROM_OUTREACH, "civfix.org")).toBe("clerk@city.gov")
+    expect(resolveCorrespondent(msgs, FROM_OUTREACH)).toBe("clerk@city.gov")
   })
+
+  it("resolveCorrespondent keeps a real municipal sender on a civfix-shaped local part", () => {
+    const msgs = [
+      { id: "a", who: "clerk", from: "report-desk@lacity.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [], delivery: null },
+    ]
+    expect(resolveCorrespondent(msgs, FROM_OUTREACH, "civfix.org")).toBe("report-desk@lacity.gov")
+  })
+
 })
 
 describe("mail-service: list + getThread", () => {
@@ -67,6 +80,20 @@ describe("mail-service: list + getThread", () => {
     expect(dto.messages).toHaveLength(1)
 
     await expect(svc.getThread("missing")).rejects.toMatchObject({ httpStatus: 404 })
+  })
+
+  it("reports per-message delivery: sent / failed / pending outbound, null inbound", async () => {
+    const { repo, svc } = harness()
+    const t = await repo.createThread({ subject: "Pothole", org: "City of LA" })
+    const sent = await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "one" })
+    const failed = await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "two" })
+    await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "three" })
+    await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "four" })
+    await repo.recordEvent({ threadId: t.id, messageId: sent?.id ?? "", type: "sent" })
+    await repo.recordEvent({ threadId: t.id, messageId: failed?.id ?? "", type: "failed" })
+
+    const dto = await svc.getThread(t.id)
+    expect(dto.messages.map((m) => m.delivery)).toEqual(["sent", "failed", "pending", null])
   })
 
   it("passes through the dir / attn / geoid / q filters", async () => {
@@ -330,6 +357,40 @@ describe("mail-service: resend", () => {
     })
     await svc.resend(t.id, "op-1")
     expect(mailer.sent.at(-1)?.to).toBe("mayor@city.gov")
+  })
+
+  it("replays the untruncated body, the html part and the stored attachments", async () => {
+    const h = harness()
+    const body = "x".repeat(100_000)
+    h.objects.set("media/r2/photo.jpg", new Uint8Array([0xff, 0xd8, 0xff, 0x01]))
+    const t = await h.repo.createThread({ subject: "Pothole", org: "City of LA" })
+    await h.repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: '"civfix Reports" <report-abcd2345wxyz@civfix.org>',
+      toAddr: "clerk@city.gov",
+      subject: "civfix report: Pothole",
+      body,
+      html: "<p>packet</p>",
+      kind: "packet",
+      attachments: [
+        { key: "media/r2/photo.jpg", filename: "photo.jpg", size: 4 },
+        { key: "media/r2/gone.jpg", filename: "gone.jpg", size: 9 },
+      ],
+    })
+
+    await h.svc.resend(t.id, "op-1")
+
+    const sent = h.mailer.sent.at(-1)?.outbound
+    expect(sent?.text).toBe(body)
+    expect(sent?.html).toBe("<p>packet</p>")
+    expect(sent?.subject).toBe("civfix report: Pothole")
+    expect(sent?.attachments?.map((a) => a.filename)).toEqual(["photo.jpg"])
+    expect(sent?.attachments?.[0]?.contentType).toBe("image/jpeg")
+    const replayed = h.repo.messagesOf(t.id).at(-1)
+    expect(replayed?.kind).toBe("resend")
+    expect(replayed?.html).toBe("<p>packet</p>")
+    expect(replayed?.attachments).toEqual([{ key: "media/r2/photo.jpg", filename: "photo.jpg", size: 4 }])
   })
 
   it("404s an unknown thread and 422s a thread with no outbound message to resend", async () => {

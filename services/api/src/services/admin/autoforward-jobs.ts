@@ -7,11 +7,12 @@ import {
   type AdminReportService,
 } from "./admin-report-service.js"
 import { makeDrizzleAdminReportRepository } from "./admin-report-repository.drizzle.js"
+import { makeDrizzleForwardTemplateRepository } from "./forward-template-repository.drizzle.js"
 import {
   isOutboundSendDeadlineError,
   makeContainerOutboundMailService,
 } from "./outbound-mail-service.js"
-import { makeMediaPresigner } from "../media-presign.js"
+import { makePacketMediaPresigner, makePrivateMediaPresigner } from "../media-presign.js"
 import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 
 export { REPORT_AUTOFORWARD_JOB }
@@ -52,11 +53,7 @@ export async function runAutoForwardWith(
       return
     }
 
-    await service.routeToJurisdiction(reportId, {
-      contactEmailOverride: null,
-      note: null,
-      actorId: null,
-    })
+    await service.routeToJurisdiction(reportId, { note: null, actorId: null })
   } catch (err) {
     if (isAlreadyRoutedConflict(err)) {
       logger?.info({ reportId }, "report.autoforward skip: already sent to its jurisdiction")
@@ -90,9 +87,11 @@ function makeAutoForwardService(container: Container): AdminReportService {
   return makeAdminReportService({
     repo: makeDrizzleAdminReportRepository(sql),
     outboundMail,
-    presignMedia: makeMediaPresigner(container.storage),
+    presignMedia: makePrivateMediaPresigner(container.storage),
+    presignPacketMedia: makePacketMediaPresigner(container.storage),
     loadMediaBytes: (k) => container.storage.getObject(k),
     reportChatEmitter: makeContainerReportChatEmitter(container),
+    forwardTemplates: makeDrizzleForwardTemplateRepository(sql),
   })
 }
 

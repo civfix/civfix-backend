@@ -88,6 +88,7 @@ export interface MediaWorkerRepo {
     kind?: "image" | "duplicate"
     note?: string | null
   }): Promise<void>
+  refreshAvatarUrls?(mediaId: string, avatarUrl: string): Promise<number>
 
   recordLeakedObjects?(input: {
     mediaId: string | null
@@ -276,6 +277,17 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
         .returning()
       const row = rows[0]
       return row ? toAsset(row) : null
+    },
+
+    async refreshAvatarUrls(mediaId: string, avatarUrl: string): Promise<number> {
+      const rows = await tag<{ id: string }[]>`
+        UPDATE users
+        SET avatar_url = ${avatarUrl}
+        WHERE avatar_media_id = ${mediaId}::uuid
+          AND deleted_at IS NULL
+        RETURNING id
+      `
+      return rows.length
     },
 
     async r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean> {

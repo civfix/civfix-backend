@@ -1,4 +1,4 @@
-import { ReportTimelineItemSchema } from "@civfix/shared"
+import { ADMIN_REPORT_STATUS_LABELS, ReportTimelineItemSchema } from "@civfix/shared"
 import type { AdminReportStatus, ReportTimelineItem } from "@civfix/shared"
 
 /**
@@ -26,51 +26,59 @@ export const STATUS_BUCKETS: Record<
 
 /**
  * Map the list `filter` facet to a repo query shape. The design facet (all|submitted|in_progress|
- * completed|flagged) reconciles to a SET of civfix statuses to match (via STATUS_BUCKETS) and/or the
- * flagged-only marker. `all` matches everything.
+ * completed|flagged|needs_verification) reconciles to a SET of civfix statuses to match (via
+ * STATUS_BUCKETS) and/or the flagged-only / needs-verification-only markers. `all` matches everything.
  */
 export function resolveListFilter(filter: string | undefined): {
   statuses: AdminReportStatus[] | null
   flaggedOnly: boolean
+  needsVerificationOnly: boolean
 } {
   switch (filter) {
     case "submitted":
-      return { statuses: STATUS_BUCKETS.submitted, flaggedOnly: false }
+      return {
+        statuses: STATUS_BUCKETS.submitted,
+        flaggedOnly: false,
+        needsVerificationOnly: false,
+      }
     case "in_progress":
-      return { statuses: STATUS_BUCKETS.in_progress, flaggedOnly: false }
+      return {
+        statuses: STATUS_BUCKETS.in_progress,
+        flaggedOnly: false,
+        needsVerificationOnly: false,
+      }
     case "completed":
-      return { statuses: STATUS_BUCKETS.completed, flaggedOnly: false }
+      return {
+        statuses: STATUS_BUCKETS.completed,
+        flaggedOnly: false,
+        needsVerificationOnly: false,
+      }
     case "flagged":
-      return { statuses: null, flaggedOnly: true }
+      return { statuses: null, flaggedOnly: true, needsVerificationOnly: false }
+    case "needs_verification":
+      return {
+        statuses: STATUS_BUCKETS.submitted,
+        flaggedOnly: false,
+        needsVerificationOnly: true,
+      }
     default:
-      return { statuses: null, flaggedOnly: false }
+      return { statuses: null, flaggedOnly: false, needsVerificationOnly: false }
   }
 }
 
 export function statusChangeNote(status: AdminReportStatus): string {
-  switch (status) {
-    case "submitted":
-      return "Status set to Submitted"
-    case "in_progress":
-      return "Status set to In progress"
-    case "resolved":
-      return "Status set to Resolved"
-    case "rejected":
-      return "Report removed"
-    default:
-      return `Status set to ${status}`
-  }
+  if (status === "rejected") return "Report removed"
+  return `Status set to ${ADMIN_REPORT_STATUS_LABELS[status]}`
 }
 
 /**
- * The note prefix a jurisdiction-reply timeline row carries (written by the inbound side-effects, §2.7).
- * A row with no recorded `kind` (report_timeline.kind, added by 0031) cannot be identified as a reply from
- * its status, and for those rows this prefix is the only signal. Reply rows are written through
- * appendSystemTimeline, which DOES pass kind — so live reply rows carry it and skip this sniff, which
- * remains the fallback for pre-0031 rows and for any writer that leaves the column NULL (most of them do;
- * see AdminReportTimelineRecord). Keep in lockstep with the inbound processor's note.
+ * The note a jurisdiction-reply timeline row carries, written by the inbound side-effects (§2.7) and read
+ * back by the admin timeline mapper when the row has no recorded `kind` (report_timeline.kind, added by
+ * 0031) — a pre-0031 row, or one from a writer that leaves the column NULL, cannot be identified as a
+ * reply from its status alone. It lives in this leaf module so the note is ONE constant shared by the
+ * writer (inbound-thread-correlation) and the reader without either importing the other.
  */
-export const JURISDICTION_REPLY_NOTE_PREFIX = "Jurisdiction replied"
+export const JURISDICTION_REPLY_NOTE = "The city responded to this report"
 
 /** The contract's timeline kinds, for narrowing a stored (plain-text) `report_timeline.kind` on read. */
 const TIMELINE_KINDS: ReadonlySet<string> = new Set(ReportTimelineItemSchema.shape.kind.options)

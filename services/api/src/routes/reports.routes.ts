@@ -236,6 +236,7 @@ export async function registerReportRoutes(
               : null,
           cityName: jurisdiction?.name ?? null,
           canForwardToCity:
+            container.env.REPORT_AUTOFORWARD_ENABLED &&
             jurisdiction !== null &&
             jurisdiction.contactEmail !== null &&
             jurisdiction.contactEmail !== "",
@@ -283,6 +284,7 @@ export async function registerReportRoutes(
       presignMedia: makeMediaPresigner(container.storage),
       presignPrivateMedia: makePrivateMediaPresigner(container.storage),
       jobs: container.jobs,
+      autoForwardEnabled: container.env.REPORT_AUTOFORWARD_ENABLED,
       isReportVerified: (userId) => isReportVerified(sql, userId),
       joinReportChatAsOwner: (reportId, userId) => reportChatRepo.join(reportId, userId, "owner"),
       reportChatEmitter: makeContainerReportChatEmitter(container, app.log),

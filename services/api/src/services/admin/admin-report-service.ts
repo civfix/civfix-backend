@@ -1,5 +1,10 @@
 
-import { AppError, ErrorCode } from "@civfix/shared"
+import {
+  ADMIN_REPORT_STATUS_LABELS,
+  AppError,
+  canTransitionReportStatus,
+  ErrorCode,
+} from "@civfix/shared"
 import type {
   AdminReportCounts,
   AdminReportDTO,
@@ -13,13 +18,13 @@ import type {
   ReportRouting,
   ReportTimelineItem,
 } from "@civfix/shared"
-import type { OutboundAttachment } from "@civfix/shared/interfaces"
+import type { PacketAttachment } from "./outbound-mail-service.js"
 import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
 import {
-  JURISDICTION_REPLY_NOTE_PREFIX,
+  JURISDICTION_REPLY_NOTE,
   resolveListFilter,
   statusChangeNote,
   timelineKindForStatus,
@@ -64,12 +69,20 @@ export function isAlreadyRoutedConflict(err: unknown): boolean {
   return err instanceof AppError && err.code === ErrorCode.CONFLICT && err.message === ALREADY_ROUTED_CONFLICT
 }
 
+function firstTemplate(...candidates: (string | null | undefined)[]): string | null {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim() !== "") return candidate
+  }
+  return null
+}
+
 export function makeAdminReportService(deps: AdminReportServiceDeps): AdminReportService {
   const now = deps.now ?? (() => new Date())
   const presignMedia =
     deps.presignMedia ??
     (async (r2Key: string, thumbKey: string | null) =>
       thumbKey === null ? { url: r2Key } : { url: r2Key, thumbUrl: thumbKey })
+  const presignPacketMedia = deps.presignPacketMedia ?? presignMedia
 
   async function emitTimeline(event: {
     reportId: string
@@ -119,7 +132,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     const kind: ReportTimelineItem["kind"] =
       (record.kind ?? null) !== null
         ? (record.kind as ReportTimelineItem["kind"])
-        : record.note?.startsWith(JURISDICTION_REPLY_NOTE_PREFIX) === true
+        : record.note?.startsWith(JURISDICTION_REPLY_NOTE) === true
           ? "reply"
           : timelineKindForStatus(record.status)
     return {
@@ -133,11 +146,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
   return {
     async list(query: AdminReportListQuery): Promise<AdminReportListResponse> {
       const ref = now()
-      const { statuses, flaggedOnly } = resolveListFilter(query.filter)
+      const { statuses, flaggedOnly, needsVerificationOnly } = resolveListFilter(query.filter)
       const args: ListReportsArgs = {
         q: query.q && query.q.trim() !== "" ? query.q.trim() : null,
         statuses,
         flaggedOnly,
+        needsVerificationOnly,
         cursor: query.cursor ?? null,
         limit: query.limit ?? 25,
       }
@@ -151,6 +165,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
               in_progress: 0,
               completed: 0,
               flagged: 0,
+              needsVerification: 0,
             }),
       ])
       const items = await mapWithLimit(records, PRESIGN_CONCURRENCY, async (r) =>
@@ -189,6 +204,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         threadId: outreach.threadId,
         routedTo: outreach.routedTo,
         routedAt: outreach.routedAt,
+        ...(outreach.sendFailed !== undefined ? { sendFailed: outreach.sendFailed } : {}),
       }
       return {
         ...base,
@@ -214,13 +230,35 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       id: string,
       input: { status: AdminReportStatus; actorId: string | null },
     ): Promise<void> {
+      const record = await deps.repo.getReport(id)
+      if (!record) throw AppError.notFound("Report not found")
+      if (input.status === "rejected") {
+        throw AppError.validation({ status: "use_remove" }, "Use Remove to reject a report")
+      }
+      if (record.status === input.status) return
+      if (!canTransitionReportStatus(record.status, input.status)) {
+        throw AppError.validation(
+          { status: "illegal_transition" },
+          `Cannot move a report from ${ADMIN_REPORT_STATUS_LABELS[record.status]} to ` +
+            `${ADMIN_REPORT_STATUS_LABELS[input.status]}`,
+        )
+      }
       const note = statusChangeNote(input.status)
-      const ok = await deps.repo.setStatus(id, {
-        status: input.status,
+      const advanced = await deps.repo.advanceStatusIfIn(id, {
+        from: [record.status],
+        to: input.status,
         note,
         actorId: input.actorId,
+        kind: timelineKindForStatus(input.status),
       })
-      if (!ok) throw AppError.notFound("Report not found")
+      if (!advanced) {
+        const current = await deps.repo.getReport(id)
+        if (current?.status === input.status) return
+        throw AppError.conflict(
+          "This report moved on while you were looking at it — reload and try again",
+        )
+      }
+      await notifyReporterOfStatus(deps, id, record.reporter?.id ?? null, input.status)
       await emitTimeline({ reportId: id, status: input.status, kind: timelineKindForStatus(input.status), note })
     },
 
@@ -271,9 +309,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         if (!reporterId || reporterId === "") {
           throw AppError.validation({ to: "report has no reporter account to notify" })
         }
-        await deps.repo.notifyReporter({
-          reportId: id,
-          reporterUserId: reporterId,
+        const notifications = deps.notifications
+        if (notifications === undefined) {
+          throw AppError.internal("Reporter notifications are not wired on this instance")
+        }
+        await notifications.createNotification(reporterId, {
+          type: "report_update",
           title: "Update on your report",
           body: input.body,
           link: `/reports/${id}`,
@@ -294,59 +335,65 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       }
 
       const routing = await deps.repo.getRouting(id)
-      const contact = routing?.contact ?? null
-      if (contact === null || contact === "") {
+      const outreach = await deps.repo.getOutreach(id)
+      assertNoSendInFlight(outreach)
+      if (outreach.threadId === null) {
+        throw AppError.validation(
+          { to: "not_routed" },
+          "Send the report to the jurisdiction first; follow-ups go on that conversation",
+        )
+      }
+      const destination = outreach.routedTo ?? routing?.contact ?? null
+      if (destination === null || destination === "") {
         throw AppError.validation({ to: "no city contact on file for this report" })
       }
-      await deps.outboundMail.sendToCity({
-        geoid: routing?.geoid ?? null,
-        toAddr: contact,
-        subject: `civfix report ${id}`,
+      await deps.outboundMail.appendOutbound(outreach.threadId, {
         body: input.body,
-        reportContext: { reportId: id, category: record.category, place: record.place },
-        org: routing?.dept ?? null,
+        toAddr: destination,
+        audit: {
+          actorId: input.actorId,
+          action: "mail.replied",
+          meta: { reportId: id, to: destination },
+        },
       })
       await recordFollowup(deps, id, {
-        note: `Follow-up sent to ${contact}`,
+        note: `Follow-up sent to ${destination}`,
         actorId: input.actorId,
         to: "city",
-        destination: contact,
+        destination,
       })
       await emitTimeline({
         reportId: id,
         status: record.status,
         kind: "status",
-        note: `Follow-up sent to ${contact}`,
+        note: `Follow-up sent to ${destination}`,
       })
-      return { to: "city", destination: contact }
+      return { to: "city", destination }
     },
 
     async routeToJurisdiction(
       id: string,
-      input: { contactEmailOverride: string | null; note: string | null; actorId: string | null },
+      input: { note: string | null; actorId: string | null },
     ): Promise<RouteToJurisdictionResult> {
       const record = await deps.repo.getReport(id)
       if (!record) throw AppError.notFound("Report not found")
 
       const routing = await deps.repo.getRouting(id)
-      const override =
-        input.contactEmailOverride && input.contactEmailOverride.trim() !== ""
-          ? input.contactEmailOverride.trim()
-          : null
-      if (override !== null) assertOverrideDomainAllowed(override, routing?.contact ?? null)
-      const toAddr = override ?? routing?.contact ?? null
+      const toAddr = routing?.contact ?? null
       if (toAddr === null || toAddr === "") {
-        throw AppError.notRoutable("No routing contact for this report's jurisdiction")
+        throw AppError.notRoutable(
+          "No routing contact for this report's jurisdiction — set one in Jurisdictions first",
+        )
       }
 
       assertRoutable(await deps.repo.getOutreach(id), toAddr)
 
       const media = await deps.repo.listMedia(id)
       const mediaLinks: string[] = []
-      const attachments: OutboundAttachment[] = []
+      const attachments: PacketAttachment[] = []
       let attachedBytesTotal = 0
       for (const m of media) {
-        const { url } = await presignMedia(m.r2Key, m.thumbKey)
+        const { url } = await presignPacketMedia(m.r2Key, m.thumbKey)
         mediaLinks.push(url)
         if (m.kind !== "image" || attachments.length >= MAX_PACKET_ATTACHMENTS) continue
         const bytes = deps.loadMediaBytes ? await deps.loadMediaBytes(m.r2Key) : null
@@ -355,26 +402,21 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         attachedBytesTotal += bytes.byteLength
         const contentType = attachmentContentType(m.contentType, bytes)
         attachments.push({
+          key: m.r2Key,
           filename: attachmentFilename(m.r2Key, attachments.length, contentType),
           contentType,
           content: bytes,
         })
       }
 
-      const packet = buildReportPacket(
-        record,
-        routing,
-        mediaLinks,
-        input.note,
-        routing?.forwardSubjectTemplate ?? null,
-        routing?.forwardBodyTemplate ?? null,
-      )
+      const defaults =
+        deps.forwardTemplates !== undefined ? await deps.forwardTemplates.get() : null
+      const packet = buildReportPacket(record, routing, mediaLinks, input.note, {
+        subject: firstTemplate(routing?.forwardSubjectTemplate, defaults?.subjectTemplate),
+        body: firstTemplate(routing?.forwardBodyTemplate, defaults?.bodyTemplate),
+      })
 
-      const publicRouteAddr = override !== null ? (routing?.contact ?? null) : toAddr
-      const routeNote =
-        publicRouteAddr !== null && publicRouteAddr !== ""
-          ? `Sent to jurisdiction (${publicRouteAddr})`
-          : "Sent to jurisdiction"
+      const routeNote = `Sent to jurisdiction (${toAddr})`
       const prepared = await deps.repo.withRouteLock(id, async () => {
         assertRoutable(await deps.repo.getOutreach(id), toAddr)
         return deps.outboundMail.prepareReportToJurisdiction({
@@ -390,7 +432,6 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
             actorId: input.actorId,
             action: "report.routed",
             target: `report:${id}`,
-            meta: { override: override !== null },
           },
         })
       })
@@ -432,6 +473,16 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         actorId: input.actorId,
       })
       if (!ok) throw AppError.notFound("Report not found")
+      const note =
+        input.verdict === "approved" ? "Approved by an operator" : "Rejected by an operator"
+      await deps.repo.appendSystemTimeline(input.id, { note, kind: "status" })
+      const record = await deps.repo.getReport(input.id)
+      await emitTimeline({
+        reportId: input.id,
+        status: record?.status ?? "submitted",
+        kind: "status",
+        note,
+      })
     },
   }
 }
@@ -466,46 +517,60 @@ function sniffImageMime(bytes: Uint8Array): string | null {
   return null
 }
 
-export function assertOverrideDomainAllowed(override: string, knownContact: string | null): void {
-  const knownDomain = emailDomain(knownContact)
-  if (knownDomain === null) {
-    throw AppError.validation(
-      { contactEmailOverride: "no_jurisdiction_contact" },
-      "This jurisdiction has no routing contact on file, so a one-off destination cannot be verified. " +
-        "Save the jurisdiction's routing contact first, then route the report.",
-    )
-  }
-  if (emailDomain(override) !== knownDomain) {
-    throw AppError.validation(
-      { contactEmailOverride: "domain_not_allowed" },
-      `A one-off destination must be on the jurisdiction's own mail domain (@${knownDomain}).`,
-    )
-  }
-}
-
 function sameAddress(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase()
 }
 
-function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
+function assertNoSendInFlight(existing: ReportOutreachState): void {
   if (existing.sendInFlight === true) {
     throw AppError.conflict(SEND_IN_FLIGHT_CONFLICT)
   }
-  const landed =
-    existing.status === "sent" || existing.status === "delivered" || existing.status === "replied"
+}
+
+function assertRoutable(existing: ReportOutreachState, toAddr: string): void {
+  assertNoSendInFlight(existing)
   const retargeted = existing.routedTo !== null && !sameAddress(existing.routedTo, toAddr)
-  if (landed && existing.sendFailed !== true && !retargeted) {
+  const bounced = existing.status === "bounced"
+  if (existing.packetSent && existing.sendFailed !== true && !retargeted && !bounced) {
     throw AppError.conflict(ALREADY_ROUTED_CONFLICT)
   }
 }
 
-function emailDomain(email: string | null): string | null {
-  if (email === null) return null
-  const trimmed = email.trim().toLowerCase()
-  const at = trimmed.lastIndexOf("@")
-  if (at <= 0 || at === trimmed.length - 1) return null
-  const domain = trimmed.slice(at + 1)
-  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain) ? domain : null
+const STATUS_NOTIFICATION_BODIES: Partial<Record<AdminReportStatus, string>> = {
+  in_progress: "The city is working on your report.",
+  resolved: "Your report has been marked resolved.",
+}
+
+async function notifyReporterOfStatus(
+  deps: AdminReportServiceDeps,
+  reportId: string,
+  reporterUserId: string | null,
+  status: AdminReportStatus,
+): Promise<void> {
+  const body = STATUS_NOTIFICATION_BODIES[status]
+  if (body === undefined) return
+  if (reporterUserId === null || reporterUserId === "") return
+  const notifications = deps.notifications
+  if (notifications === undefined) {
+    deps.logger?.warn(
+      { reportId, status },
+      "report status changed with no notifier wired: the reporter was not told",
+    )
+    return
+  }
+  try {
+    await notifications.createNotification(reporterUserId, {
+      type: "report_update",
+      title: `Your report is ${ADMIN_REPORT_STATUS_LABELS[status].toLowerCase()}`,
+      body,
+      link: `/reports/${reportId}`,
+    })
+  } catch (err) {
+    deps.logger?.warn(
+      { err, reportId, status },
+      "report_update notification failed (suppressed: the status change is committed)",
+    )
+  }
 }
 
 async function recordFollowup(

@@ -7,13 +7,23 @@ import type {
   MailThreadRecord,
 } from "./mail-repository.drizzle.js"
 import { makeDrizzleAdminReportRepository } from "./admin-report-repository.drizzle.js"
-import type { AdminReportRepository } from "./admin-report-service.js"
+import type { AdminReportRepository, ReporterNotifier } from "./admin-report-service.js"
+import { JURISDICTION_REPLY_NOTE } from "./admin-report-status.js"
 import { makeDrizzleCleanupRepository } from "../cleanup-repository.drizzle.js"
 import type { CleanupRepository } from "../cleanup-service.js"
 import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
+import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
+import { MESSAGE_BODY_MAX, segmentGraphemes } from "@civfix/shared"
 import { domainOf, domainsAligned } from "../../adapters/inbound-mail.cf.js"
 
-export const JURISDICTION_REPLY_NOTE = "The city responded to this report"
+export { JURISDICTION_REPLY_NOTE }
+
+export interface InboundEffectDeps {
+  reportRepo?: AdminReportRepository
+  cleanupRepo?: CleanupRepository
+  notifications?: ReporterNotifier
+  chatEmitter?: ReportChatSystemEmitter
+}
 
 export const EFFECTS_LEASE_MS = 10 * 60 * 1000
 
@@ -22,7 +32,81 @@ export const EFFECTS_STAGE_CHAT = 2
 export const EFFECTS_STAGE_NOTIFIED = 3
 
 export const JURISDICTION_REPLY_NOTIFICATION_BODY =
-  "The city responded. A civfix operator is reviewing their message."
+  "The city responded. See their reply in the report chat."
+
+export function inboundEffectDeps(deps: {
+  adminReportRepo?: AdminReportRepository
+  cleanupRepo?: CleanupRepository
+  notifications?: ReporterNotifier
+  chatEmitter?: ReportChatSystemEmitter
+} = {}): InboundEffectDeps {
+  return {
+    ...(deps.adminReportRepo !== undefined ? { reportRepo: deps.adminReportRepo } : {}),
+    ...(deps.cleanupRepo !== undefined ? { cleanupRepo: deps.cleanupRepo } : {}),
+    ...(deps.notifications !== undefined ? { notifications: deps.notifications } : {}),
+    ...(deps.chatEmitter !== undefined ? { chatEmitter: deps.chatEmitter } : {}),
+  }
+}
+
+const QUOTED_ATTRIBUTION_RE = /^On\s.+\swrote:$/
+const OUTLOOK_ORIGINAL_MESSAGE_RE = /^-{2,}\s*Original Message\s*-{2,}$/i
+const OUTLOOK_HEADER_FROM_RE = /^From:\s.+$/
+const OUTLOOK_HEADER_FOLLOW_RE = /^(?:Sent|Date|To):\s/
+const OUTLOOK_HEADER_LOOKAHEAD = 2
+
+function hasReplyTextBefore(lines: string[], index: number): boolean {
+  for (let i = 0; i < index; i++) {
+    const line = lines[i]!.trim()
+    if (line !== "" && !line.startsWith(">")) return true
+  }
+  return false
+}
+
+function isQuotedHistoryStart(lines: string[], index: number): boolean {
+  const line = lines[index]!.trim()
+  if (QUOTED_ATTRIBUTION_RE.test(line)) return true
+  if (OUTLOOK_ORIGINAL_MESSAGE_RE.test(line)) return true
+  if (!OUTLOOK_HEADER_FROM_RE.test(line)) return false
+  if (!hasReplyTextBefore(lines, index)) return false
+  for (let ahead = 1; ahead <= OUTLOOK_HEADER_LOOKAHEAD; ahead++) {
+    const follow = lines[index + ahead]
+    if (follow === undefined) return false
+    if (OUTLOOK_HEADER_FOLLOW_RE.test(follow.trim())) return true
+  }
+  return false
+}
+
+export function stripQuotedHistory(raw: string): string {
+  const lines = raw.replace(/\r\n?/g, "\n").split("\n")
+  let end = lines.length
+  for (let i = 0; i < lines.length; i++) {
+    if (isQuotedHistoryStart(lines, i)) {
+      end = i
+      break
+    }
+  }
+  while (end > 0) {
+    const line = lines[end - 1]!.trim()
+    if (line !== "" && !line.startsWith(">")) break
+    end -= 1
+  }
+  return lines.slice(0, end).join("\n").trim()
+}
+
+export function clipToMessageBody(text: string, max: number = MESSAGE_BODY_MAX): string {
+  if (text.length <= max) return text
+  let kept = ""
+  for (const cluster of segmentGraphemes(text)) {
+    if (kept.length + cluster.length > max) break
+    kept += cluster
+  }
+  return kept
+}
+
+export function cityReplyChatBody(raw: string | null | undefined): string | null {
+  const clipped = clipToMessageBody(stripQuotedHistory(raw ?? ""))
+  return clipped === "" ? null : clipped
+}
 
 export async function findThreadByReferences(
   mailRepo: MailRepository,
@@ -80,8 +164,7 @@ export async function isJurisdictionSender(
 
 export async function applyInboundEffects(
   container: Container,
-  injectedReportRepo: AdminReportRepository | undefined,
-  injectedCleanupRepo: CleanupRepository | undefined,
+  injected: InboundEffectDeps,
   mailRepo: MailRepository,
   thread: MailThreadRecord,
   message: MailMessageRecord,
@@ -95,9 +178,9 @@ export async function applyInboundEffects(
   if (stage === null) return
   try {
     if (thread.reportId !== null) {
-      await onJurisdictionReply(container, injectedReportRepo, mailRepo, thread, message.id, stage)
+      await onJurisdictionReply(container, injected, mailRepo, thread, message, stage)
     } else {
-      await onEventReply(container, injectedCleanupRepo, mailRepo, thread, message, stage)
+      await onEventReply(container, injected.cleanupRepo, mailRepo, thread, message, stage)
     }
     await mailRepo.markMessageEffectsApplied(message.id)
   } catch (err) {
@@ -108,16 +191,17 @@ export async function applyInboundEffects(
 
 export async function onJurisdictionReply(
   container: Container,
-  injectedReportRepo: AdminReportRepository | undefined,
+  injected: InboundEffectDeps,
   mailRepo: MailRepository,
   thread: MailThreadRecord,
-  messageId: string,
+  message: MailMessageRecord,
   stage: number,
 ): Promise<void> {
   const reportId = thread.reportId
   if (reportId === null) return
+  const messageId = message.id
 
-  const reportRepo = injectedReportRepo ?? makeDrizzleAdminReportRepository(container.getDb().sql)
+  const reportRepo = injected.reportRepo ?? makeDrizzleAdminReportRepository(container.getDb().sql)
   const record = await reportRepo.getReport(reportId)
   if (!record) return
 
@@ -141,12 +225,13 @@ export async function onJurisdictionReply(
 
   if (stage < EFFECTS_STAGE_CHAT) {
     const current = await reportRepo.getReport(reportId)
-    await makeContainerReportChatEmitter(container).emit({
+    const emitter = injected.chatEmitter ?? makeContainerReportChatEmitter(container)
+    await emitter.emit({
       reportId,
       status: current?.status ?? record.status,
       kind: "reply",
       note,
-      body: null,
+      body: cityReplyChatBody(message.body),
     })
     await mailRepo.setMessageEffectsStage(messageId, EFFECTS_STAGE_CHAT)
   }
@@ -154,9 +239,9 @@ export async function onJurisdictionReply(
   if (stage < EFFECTS_STAGE_NOTIFIED) {
     const reporterUserId = record.reporter?.id
     if (reporterUserId && reporterUserId !== "") {
-      await reportRepo.notifyReporter({
-        reportId,
-        reporterUserId,
+      const notifications = injected.notifications ?? container.getNotificationService()
+      await notifications.createNotification(reporterUserId, {
+        type: "report_update",
         title: "Your report got a response",
         body: JURISDICTION_REPLY_NOTIFICATION_BODY,
         link: `/reports/${reportId}`,

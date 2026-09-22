@@ -3,8 +3,8 @@
  *
  * Mirrors the Drizzle impl's OBSERVABLE contract so the gov-claims service can be unit-tested with NO
  * database (no Docker):
- *   - listPending pages only PENDING claims, applying the search (name/org) + the status facet,
- *     newest-first by createdAt with an id tiebreak;
+ *   - list pages the claims matching the status facet ("all" applies no status narrowing) + the search
+ *     (name/org), ordered by createdAt in the requested direction with an id tiebreak;
  *   - getClaim returns the seeded record at any status;
  *   - setCheck writes one check into the record's checks map (any status);
  *   - approve links the user + sets status='approved' (only when pending);
@@ -62,14 +62,12 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
     return record
   }
 
-  async listPending(
+  async list(
     args: ListGovClaimsArgs,
   ): Promise<{ records: GovClaimRecord[]; nextCursor: string | null }> {
-    let rows = [...this.claims.values()].filter((r) => r.status === "pending")
+    let rows = [...this.claims.values()]
 
-    // Narrow only for a non-"all"/"pending" facet (matches the Drizzle guard); "all"/"pending" are no-ops
-    // over the pending-only queue, an "approved"/"rejected" facet yields nothing.
-    if (args.filter !== "all" && args.filter !== "pending") {
+    if (args.filter !== "all") {
       rows = rows.filter((r) => r.status === args.filter)
     }
 
@@ -82,12 +80,13 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
       )
     }
 
-    // Newest-first by createdAt; id is the stable tiebreak (desc) so the keyset cursor pages
-    // deterministically.
+    // createdAt in the requested direction; id is the stable tiebreak in the SAME direction the Drizzle
+    // twin's (created_at, id) keyset uses, so a page boundary lands identically.
+    const dir = args.sort === "oldest" ? 1 : -1
     rows.sort((a, b) => {
-      const primary = b.createdAt.getTime() - a.createdAt.getTime()
+      const primary = (a.createdAt.getTime() - b.createdAt.getTime()) * dir
       if (primary !== 0) return primary
-      return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
+      return (a.id > b.id ? 1 : a.id < b.id ? -1 : 0) * dir
     })
 
     return pageInMemoryById(rows, args.cursor, args.limit, (r) => ({

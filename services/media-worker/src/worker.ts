@@ -74,6 +74,7 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
       limits: seams.limits,
       download: seams.download,
       ...(seams.findPhashDuplicate ? { findPhashDuplicate: seams.findPhashDuplicate } : {}),
+      ...(seams.publicMediaBase ? { publicMediaBase: seams.publicMediaBase } : {}),
       report: seams.report,
     })
 

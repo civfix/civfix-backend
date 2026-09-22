@@ -22,7 +22,7 @@ The owner's own detail/list (`mine: true`) and the create-time idempotency
 snapshot also carry full precision; routing to a jurisdiction uses the precise
 `geom`.
 
-**A second stored copy exists as of migration 0172 (issue #100).** `posts.geom`
+**A second stored copy exists as of migration 0176 (issue #100).** `posts.geom`
 denormalises the linked report's or event's point onto the post row so the
 ranked home feed's proximity pool is one bounded KNN scan. It is NOT a new
 class of data and NOT a new exposure: the value is copied server-side from a

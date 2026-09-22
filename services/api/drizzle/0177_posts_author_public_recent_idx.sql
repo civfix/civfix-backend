@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0173_posts_author_public_recent_idx.sql
+-- 0177_posts_author_public_recent_idx.sql
 -- -----------------------------------------------------------------------------
 -- ISSUE #100 (ranked home feed): the ranked feed's in-network candidate pool
 -- selects top-level PUBLIC posts by the viewer plus everyone the viewer

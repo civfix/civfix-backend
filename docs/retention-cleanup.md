@@ -143,9 +143,9 @@ lane (`src/routes/chat-gateway-wiring.ts`) is the remaining step.
 
 ---
 
-## `geocode_cache` — bounding the reverse-geocode cache (0175)
+## `geocode_cache` — bounding the reverse-geocode cache (0179)
 
-`geocode_cache` (migration `0175_address_resolution.sql`) is written by the
+`geocode_cache` (migration `0179_address_resolution.sql`) is written by the
 address ladder on every resolve, and the write path is reachable by an
 UNAUTHENTICATED caller (`POST /map/resolve-address`, 30/min/IP). Its TTLs are
 applied on READ — an expired row is served as a miss and OVERWRITTEN in place —
@@ -159,7 +159,7 @@ is still unbounded, so the sweep owns the deletion side.
 |---|---|
 | Table | `geocode_cache` |
 | Predicate | `resolved_at < now() - 180 days` (`GEOCODE_CACHE_TTL_MS`, the POSITIVE TTL — imported from `@civfix/api/geocode-cache` so the two can never drift) |
-| Index | `geocode_cache_resolved_at_idx` (created by 0175) |
+| Index | `geocode_cache_resolved_at_idx` (created by 0179) |
 | Cron | the existing `retention.sweep` (`37 4 * * *`, daily) |
 | Batching | `DELETE … WHERE point_key IN (SELECT point_key … LIMIT n)`, drained page-wise like the other lanes |
 | Tuning | `runRetentionSweep({ geocodeCacheRetentionMs })` |

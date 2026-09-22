@@ -35,7 +35,7 @@ bucket_name = "civfix-emails"
 [env.staging]
 name = "civfix-inbound-email-staging"
 [env.staging.vars]
-BACKEND_WEBHOOK_URL = "https://api.staging.civfix.org/webhooks/inbound-mail"
+BACKEND_WEBHOOK_URL = "https://api.civfix.dev/webhooks/inbound-mail"
 [[env.staging.r2_buckets]]
 binding = "R2_BUCKET"
 bucket_name = "civfix-emails-staging"

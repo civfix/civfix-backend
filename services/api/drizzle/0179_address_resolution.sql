@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0175_address_resolution.sql
+-- 0179_address_resolution.sql
 -- -----------------------------------------------------------------------------
 -- The address-resolution overhaul. Three concerns, one theme: a pin now yields a
 -- HONEST address line, and every stored address carries where it came from.

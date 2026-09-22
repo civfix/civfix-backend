@@ -107,6 +107,12 @@ const DATA_ROUTES: ReadonlyArray<{ method: "GET" | "POST"; url: string }> = [
   { method: "GET", url: "/v1/admin/discovery" },
   { method: "GET", url: "/v1/admin/jurisdictions" },
   { method: "GET", url: "/v1/admin/reports" },
+  { method: "GET", url: "/v1/admin/reports/11111111-1111-1111-1111-111111111111/messages" },
+  { method: "POST", url: "/v1/admin/reports/11111111-1111-1111-1111-111111111111/messages" },
+  {
+    method: "POST",
+    url: "/v1/admin/reports/11111111-1111-1111-1111-111111111111/messages/22222222-2222-2222-2222-222222222222/remove",
+  },
   { method: "GET", url: "/v1/admin/events" },
   { method: "GET", url: "/v1/admin/users" },
   { method: "GET", url: "/v1/admin/moderation" },

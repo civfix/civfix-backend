@@ -1,6 +1,6 @@
 
 import { sql } from "drizzle-orm"
-import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
+import { check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
 import type { AddressPrecision, ReportAddressSource } from "@civfix/shared"
 import { jurisdictions } from "./jurisdictions.js"
 import { users } from "./users.js"
@@ -36,9 +36,9 @@ export const reports = pgTable(
     title: text("title"),
     description: text("description"),
     addr: text("addr"),
-    /** 0175: where `addr` came from. NULL for legacy rows and for reports with no address. */
+    /** 0179: where `addr` came from. NULL for legacy rows and for reports with no address. */
     addrSource: text("addr_source").$type<ReportAddressSource>(),
-    /** 0175: the ladder rung a RESOLVED addr reached. Always NULL when addrSource is 'user'. */
+    /** 0179: the ladder rung a RESOLVED addr reached. Always NULL when addrSource is 'user'. */
     addrPrecision: text("addr_precision").$type<AddressPrecision>(),
     status: text("status").$type<ReportStatus>().notNull(),
     visibility: text("visibility").$type<ReportVisibility>().notNull().default("public"),
@@ -83,6 +83,10 @@ export const reports = pgTable(
     index("reports_held_anon_created_idx")
       .on(t.createdAt)
       .where(sql`status = 'held' AND reporter_user_id IS NULL AND deleted_at IS NULL`),
+    check(
+      "reports_status_chk",
+      sql`${t.status} IN ('submitted', 'held', 'published', 'acknowledged', 'in_progress', 'resolved', 'rejected')`,
+    ),
   ],
 )
 

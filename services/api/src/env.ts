@@ -343,6 +343,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const TWILIO_SMS_FROM = reqStr("TWILIO_SMS_FROM", { gatedOff: smsCredentialsUnused })
 
   const OUTREACH_DIGEST_CRON = reqCron("OUTREACH_DIGEST_CRON", "0 14 * * *")
+  const OUTREACH_DIGEST_ENABLED = parseBool(source.OUTREACH_DIGEST_ENABLED, false)
+  const REPORT_AUTOFORWARD_ENABLED = parseBool(source.REPORT_AUTOFORWARD_ENABLED, false)
   const GUEST_RETENTION_CRON = reqCron("GUEST_RETENTION_CRON", "15 4 * * *")
   const INBOUND_SWEEP_CRON = reqCron("INBOUND_SWEEP_CRON", "*/5 * * * *")
 
@@ -432,6 +434,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     MAIL_REPLY_DOMAIN: (source.MAIL_REPLY_DOMAIN ?? "").trim() || "civfix.org",
     OUTREACH_THROTTLE_DAYS: parsePositiveIntOr(source.OUTREACH_THROTTLE_DAYS, 7),
     OUTREACH_DIGEST_CRON,
+    OUTREACH_DIGEST_ENABLED,
+    REPORT_AUTOFORWARD_ENABLED,
     INBOUND_SWEEP_CRON,
     GUEST_RETENTION_CRON,
 

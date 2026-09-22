@@ -89,24 +89,111 @@ describe("gov claims queue", () => {
     expect(row.checks.linkedin.status).toBe("verified")
   })
 
-  it("lists only PENDING claims", async () => {
-    const { repo, svc } = harness()
+  function seedOnePerStatus(repo: InMemoryGovClaimsRepository): void {
     repo.seedClaim({ id: "PEND", status: "pending", contactEmail: "a@gov.test" })
     repo.seedClaim({ id: "APPR", status: "approved", contactEmail: "b@gov.test" })
     repo.seedClaim({ id: "REJ", status: "rejected", contactEmail: "c@gov.test" })
+  }
+
+  it("an OMITTED filter lists only PENDING claims (the queue's back-compatible default)", async () => {
+    const { repo, svc } = harness()
+    seedOnePerStatus(repo)
 
     const page = await svc.list({})
     expect(page.items.map((i) => i.id)).toEqual(["PEND"])
   })
 
-  it("search matches name or org (case-insensitive)", async () => {
+  it('filter="all" lists claims of EVERY status', async () => {
+    const { repo, svc } = harness()
+    seedOnePerStatus(repo)
+
+    const page = await svc.list({ filter: "all" })
+    expect(page.items.map((i) => i.id)).toEqual(["REJ", "APPR", "PEND"])
+    expect(page.items.map((i) => i.status).sort()).toEqual(["approved", "pending", "rejected"])
+  })
+
+  it('filter="pending" lists only pending claims', async () => {
+    const { repo, svc } = harness()
+    seedOnePerStatus(repo)
+
+    const page = await svc.list({ filter: "pending" })
+    expect(page.items.map((i) => i.id)).toEqual(["PEND"])
+  })
+
+  it('filter="approved" lists only APPROVED claims', async () => {
+    const { repo, svc } = harness()
+    seedOnePerStatus(repo)
+
+    const page = await svc.list({ filter: "approved" })
+    expect(page.items.map((i) => i.id)).toEqual(["APPR"])
+    expect(page.items[0]?.status).toBe("approved")
+  })
+
+  it('filter="rejected" lists only REJECTED claims', async () => {
+    const { repo, svc } = harness()
+    seedOnePerStatus(repo)
+
+    const page = await svc.list({ filter: "rejected" })
+    expect(page.items.map((i) => i.id)).toEqual(["REJ"])
+    expect(page.items[0]?.status).toBe("rejected")
+  })
+
+  it("search matches name or org (case-insensitive) and composes with the status facet", async () => {
     const { repo, svc } = harness()
     repo.seedClaim({ id: "A", name: "Dana Lee", org: "City of LA", contactEmail: "a@gov.test" })
     repo.seedClaim({ id: "B", name: "Sam Roe", org: "Town of Vienna", contactEmail: "b@gov.test" })
+    repo.seedClaim({
+      id: "C",
+      name: "Dana Fox",
+      org: "City of Reno",
+      contactEmail: "c@gov.test",
+      status: "rejected",
+    })
 
     expect((await svc.list({ q: "dana" })).items.map((i) => i.id)).toEqual(["A"])
+    expect((await svc.list({ q: "dana", filter: "all" })).items.map((i) => i.id)).toEqual([
+      "C",
+      "A",
+    ])
+    expect((await svc.list({ q: "dana", filter: "rejected" })).items.map((i) => i.id)).toEqual([
+      "C",
+    ])
     expect((await svc.list({ q: "vienna" })).items.map((i) => i.id)).toEqual(["B"])
     expect((await svc.list({ q: "nomatch" })).items).toHaveLength(0)
+  })
+
+  it('sort="oldest" reverses the queue order', async () => {
+    const { repo, svc } = harness()
+    repo.seedClaim({ id: "first", contactEmail: "a@gov.test" })
+    repo.seedClaim({ id: "second", contactEmail: "b@gov.test" })
+    repo.seedClaim({ id: "third", contactEmail: "c@gov.test" })
+
+    expect((await svc.list({})).items.map((i) => i.id)).toEqual(["third", "second", "first"])
+    expect((await svc.list({ sort: "oldest" })).items.map((i) => i.id)).toEqual([
+      "first",
+      "second",
+      "third",
+    ])
+    expect((await svc.list({ sort: "sideways" })).items.map((i) => i.id)).toEqual([
+      "third",
+      "second",
+      "first",
+    ])
+  })
+
+  it('pages with a cursor under sort="oldest" without skipping or repeating a row', async () => {
+    const { repo, svc } = harness()
+    repo.seedClaim({ id: "first", contactEmail: "a@gov.test" })
+    repo.seedClaim({ id: "second", contactEmail: "b@gov.test" })
+    repo.seedClaim({ id: "third", contactEmail: "c@gov.test" })
+
+    const page1 = await svc.list({ sort: "oldest", limit: 2 })
+    expect(page1.items.map((i) => i.id)).toEqual(["first", "second"])
+    expect(page1.nextCursor).not.toBeNull()
+
+    const page2 = await svc.list({ sort: "oldest", limit: 2, cursor: page1.nextCursor! })
+    expect(page2.items.map((i) => i.id)).toEqual(["third"])
+    expect(page2.nextCursor).toBeNull()
   })
 })
 
@@ -306,7 +393,7 @@ describe("gov claim approve", () => {
       approve: () => Promise.resolve(null),
       reject: (id: string, input: { reason: string; actorId: string | null }) =>
         repo.reject(id, input),
-      listPending: repo.listPending.bind(repo),
+      list: repo.list.bind(repo),
       setCheck: repo.setCheck.bind(repo),
     }
     const svc = makeGovClaimsService({

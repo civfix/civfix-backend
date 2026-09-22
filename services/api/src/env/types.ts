@@ -56,6 +56,8 @@ export interface Env extends CommsEnv, RegistrationEnv {
   MAIL_REPLY_DOMAIN: string
   OUTREACH_THROTTLE_DAYS: number
   OUTREACH_DIGEST_CRON: string
+  OUTREACH_DIGEST_ENABLED: boolean
+  REPORT_AUTOFORWARD_ENABLED: boolean
   INBOUND_SWEEP_CRON: string
   GUEST_RETENTION_CRON: string
 

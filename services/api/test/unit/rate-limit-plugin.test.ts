@@ -115,7 +115,14 @@ import {
 import { PAGE_VIEW_RATE_LIMIT } from "../../src/routes/host/page-views.routes.js"
 import { UNSUBSCRIBE_RATE_LIMIT } from "../../src/routes/host/unsubscribe.routes.js"
 import { LEGAL_VERSIONS_RATE_LIMIT } from "../../src/routes/legal.routes.js"
-import { ROUTE_REPORT_RATE_LIMIT } from "../../src/routes/admin/reports.routes.js"
+import {
+  ADMIN_REPORT_MUTATION_RATE_LIMIT,
+  ROUTE_REPORT_RATE_LIMIT,
+} from "../../src/routes/admin/reports.routes.js"
+import {
+  ADMIN_REPORT_CHAT_REMOVE_RATE_LIMIT,
+  ADMIN_REPORT_CHAT_SEND_RATE_LIMIT,
+} from "../../src/routes/admin/report-chat.routes.js"
 import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "../../src/routes/admin/mail.routes.js"
 import { PUSH_TOKEN_RATE_LIMIT } from "../../src/routes/notifications.routes.js"
 import { FOLLOW_RATE_LIMIT, FOLLOW_SUGGESTIONS_RATE_LIMIT } from "../../src/routes/social.routes.js"
@@ -460,6 +467,9 @@ const IDENTITY_SCOPED_LIMITS = {
   CERTIFICATE_REVOKE_RATE_LIMIT,
   CREATE_POST_RATE_LIMIT,
   ROUTE_REPORT_RATE_LIMIT,
+  ADMIN_REPORT_MUTATION_RATE_LIMIT,
+  ADMIN_REPORT_CHAT_SEND_RATE_LIMIT,
+  ADMIN_REPORT_CHAT_REMOVE_RATE_LIMIT,
   THREAD_READ_RATE_LIMIT,
   POST_INTERACTION_RATE_LIMIT,
   FEED_COUNTS_RATE_LIMIT,
@@ -591,6 +601,11 @@ describe("rate limiter: route bucket scoping policy (CVX-012)", () => {
   it("keys the outbound-mail admin buckets by operator identity and fails CLOSED on a store error", () => {
     expect(ADMIN_OUTBOUND_MAIL_RATE_LIMIT.skipOnError).toBe(false)
     expect(ROUTE_REPORT_RATE_LIMIT.skipOnError).toBe(false)
+  })
+
+  it("bounds the operator report mutations (status / remove / flag / verdict) and fails CLOSED", () => {
+    expect(ADMIN_REPORT_MUTATION_RATE_LIMIT.max).toBe(60)
+    expect(ADMIN_REPORT_MUTATION_RATE_LIMIT.skipOnError).toBe(false)
   })
 
   it("keys every authenticated-only mutation bucket by identity", () => {

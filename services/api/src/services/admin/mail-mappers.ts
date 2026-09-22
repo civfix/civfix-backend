@@ -2,12 +2,14 @@
 import type { CursorAnchor } from "./pagination.js"
 import { toPreview } from "./mail-preview.js"
 import type {
+  MailMessageKind,
   MailMessageRecord,
   MailThreadRecord,
   OutreachStateRecord,
 } from "./mail-repository.js"
 import type {
   MailAttachment,
+  MailDelivery,
   MailDirection,
   MailMessageDTO,
   MailStatus,
@@ -37,6 +39,8 @@ export interface MessageRowSelect {
   to_addr: string | null
   subject: string | null
   body: string | null
+  html?: string | null
+  kind?: MailMessageKind | null
   attachments: MailAttachment[] | null
   message_id: string | null
   in_reply_to: string | null
@@ -46,6 +50,7 @@ export interface MessageRowSelect {
   effects_stage: number
   created_at: Date
   truncated?: boolean
+  delivery?: MailDelivery | null
 }
 
 export interface OutreachRowSelect {
@@ -79,6 +84,8 @@ export function toMessageRecord(r: MessageRowSelect): MailMessageRecord {
     toAddr: r.to_addr,
     subject: r.subject,
     body: r.body,
+    html: r.html ?? null,
+    kind: r.kind ?? null,
     attachments: r.attachments ?? [],
     messageId: r.message_id,
     inReplyTo: r.in_reply_to,
@@ -88,6 +95,7 @@ export function toMessageRecord(r: MessageRowSelect): MailMessageRecord {
     effectsStage: r.effects_stage,
     createdAt: r.created_at,
     ...(r.truncated === true ? { truncated: true } : {}),
+    delivery: r.delivery ?? null,
   }
 }
 
@@ -135,6 +143,11 @@ export function toThreadListItem(
   }
 }
 
+function deliveryOf(message: MailMessageRecord): MailDelivery | null {
+  if (message.direction === "in") return null
+  return message.delivery ?? "pending"
+}
+
 export function toMessageDTO(message: MailMessageRecord): MailMessageDTO {
   return {
     id: message.id,
@@ -146,6 +159,7 @@ export function toMessageDTO(message: MailMessageRecord): MailMessageDTO {
     ts: message.createdAt.toISOString(),
     attachments: message.attachments,
     ...(message.truncated === true ? { truncated: true } : {}),
+    delivery: deliveryOf(message),
   }
 }
 

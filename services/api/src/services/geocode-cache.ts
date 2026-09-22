@@ -1,5 +1,5 @@
 /**
- * Read-through cache for reverse geocodes (`geocode_cache`, migration 0175).
+ * Read-through cache for reverse geocodes (`geocode_cache`, migration 0179).
  *
  * WHY. A reverse geocode is stable per point and the SAME point is resolved several times over one
  * creation flow: the client previews it while the host drags the pin (debounced, rounded to 5 decimals),

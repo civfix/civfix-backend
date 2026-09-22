@@ -6,7 +6,10 @@ import type { Container } from "../../src/di.js"
 import type { OnReportMessage } from "../../src/ws/types.js"
 import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import type { DiscussionReportView } from "../../src/services/discussion-types.js"
-import type { SendReportInput } from "../../src/services/admin/outbound-mail-service.js"
+import type {
+  AppendOutboundInput,
+  SendReportInput,
+} from "../../src/services/admin/outbound-mail-service.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryChatReadState } from "../../src/services/threads-service.js"
@@ -24,7 +27,7 @@ import {
 
 const { captured, sent } = vi.hoisted(() => ({
   captured: {} as { onReportMessage?: OnReportMessage },
-  sent: [] as SendReportInput[],
+  sent: [] as { threadId: string; input: AppendOutboundInput }[],
 }))
 
 vi.mock("../../src/ws/gateway.js", async (importOriginal) => {
@@ -58,21 +61,27 @@ vi.mock("../../src/services/discussion-repository.drizzle.js", () => ({
   }),
 }))
 
-vi.mock("../../src/services/admin/outbound-mail-service.js", () => ({
-  makeOutboundMailService: () => ({
-    prepareReportToJurisdiction: (input: SendReportInput) => {
-      sent.push(input)
-      return Promise.resolve({
-        thread: {},
-        deliver: () => Promise.resolve({ thread: {}, messageId: "<stub@civfix.org>" }),
-      })
-    },
-    sendReportToJurisdiction: (input: SendReportInput) => {
-      sent.push(input)
-      return Promise.resolve({ thread: {}, messageId: "<stub@civfix.org>" })
-    },
-  }),
-}))
+vi.mock("../../src/services/admin/outbound-mail-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/services/admin/outbound-mail-service.js")>()
+  return {
+    ...actual,
+    makeOutboundMailService: () => ({
+      findReportThread: () =>
+        Promise.resolve({ id: "thread-1", subject: "[civfix] Tag - SF - ABC123" }),
+      prepareReportToJurisdiction: (_input: SendReportInput) =>
+        Promise.resolve({
+          thread: {},
+          deliver: () => Promise.resolve({ thread: {}, messageId: "<stub@civfix.org>" }),
+        }),
+      sendReportToJurisdiction: (_input: SendReportInput) =>
+        Promise.resolve({ thread: {}, messageId: "<stub@civfix.org>" }),
+      appendOutbound: (threadId: string, input: AppendOutboundInput) => {
+        sent.push({ threadId, input })
+        return Promise.resolve({})
+      },
+    }),
+  }
+})
 
 vi.mock("../../src/services/report-forward-audit.drizzle.js", () => ({
   makeReportForwardAudit: () => ({
@@ -135,7 +144,13 @@ function wire(counters: InMemoryCounterStore): OnReportMessage {
     log: { warn: () => {}, error: () => {} },
   } as unknown as FastifyInstance
   const container = {
-    env: { USE_FAKE_CHAT: false, WEB_ORIGINS: [], MAIL_FROM_OUTREACH: "a@b", MAIL_REPLY_DOMAIN: "b" },
+    env: {
+      USE_FAKE_CHAT: false,
+      WEB_ORIGINS: [],
+      MAIL_FROM_OUTREACH: "a@b",
+      MAIL_REPLY_DOMAIN: "b",
+      REPORT_AUTOFORWARD_ENABLED: false,
+    },
     storage: { presignGet: () => Promise.resolve("") },
     mailer: {},
     chatService: {},
@@ -153,6 +168,18 @@ describe("chat-gateway-wiring: the LIVE @city forward gate is the durable thrott
   beforeEach(() => {
     sent.length = 0
     captured.onReportMessage = undefined
+  })
+
+  it("forwards an @city mention into the report's existing mail thread with REPORT_AUTOFORWARD_ENABLED off", async () => {
+    const onReportMessage = wire(new InMemoryCounterStore())
+
+    await onReportMessage(reportId(1), message(1), ACTOR)
+
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.threadId).toBe("thread-1")
+    expect(sent[0]!.input.subject).toBe("Re: [civfix] Tag - SF - ABC123")
+    expect(sent[0]!.input.kind).toBe("discussion")
+    expect(sent[0]!.input.toAddr).toBe("fix@sf.gov")
   })
 
   it("caps one sender across DISTINCT reports — rotating report ids no longer buys a fresh email", async () => {

@@ -276,7 +276,7 @@ describe("duplicateCleanup", () => {
       baseInput({ address: "North gate", addressSource: "manual" }),
       HOST,
     )
-    // What 0175's backfill leaves on a legacy event whose host typed two characters.
+    // What 0179's backfill leaves on a legacy event whose host typed two characters.
     repo.cleanups.get(created.id)!.address = "NW"
 
     const copy = await service.duplicateCleanup(HOST, {

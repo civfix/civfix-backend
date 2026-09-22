@@ -11,9 +11,12 @@ import type {
   ReportTimelineItem,
 } from "@civfix/shared"
 import type { OutboundMailService } from "./outbound-mail-service.js"
+import type { FastifyBaseLogger } from "fastify"
+import type { NotificationService } from "../notification-service.js"
 import type { LinkedEventView } from "../cleanup-service.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import type { AdminPersonRecord } from "./admin-person.js"
+import type { ForwardTemplateReader } from "./forward-template-types.js"
 
 export type AdminReporterRecord = AdminPersonRecord
 
@@ -48,6 +51,7 @@ export interface ReportOutreachState {
   threadId: string | null
   routedTo: string | null
   routedAt: string | null
+  packetSent: boolean
   sendFailed?: boolean
   sendInFlight?: boolean
 }
@@ -78,17 +82,12 @@ export interface ListReportsArgs {
   q: string | null
   statuses: AdminReportStatus[] | null
   flaggedOnly: boolean
+  needsVerificationOnly: boolean
   cursor: string | null
   limit: number
 }
 
-export interface NotifyReporterInput {
-  reportId: string
-  reporterUserId: string
-  title: string
-  body: string
-  link: string | null
-}
+export type ReporterNotifier = Pick<NotificationService, "createNotification">
 
 export interface AdminReportRepository {
   listReports(
@@ -129,7 +128,6 @@ export interface AdminReportRepository {
     input: { reason: string | null; actorId: string | null },
   ): Promise<boolean | null>
   remove(id: string, input: { note: string; actorId: string | null }): Promise<boolean>
-  notifyReporter(input: NotifyReporterInput): Promise<void>
   appendFollowup(
     id: string,
     input: {
@@ -166,12 +164,19 @@ export interface AdminReportServiceDeps {
     r2Key: string,
     thumbKey: string | null,
   ) => Promise<{ url: string; thumbUrl?: string }>
+  presignPacketMedia?: (
+    r2Key: string,
+    thumbKey: string | null,
+  ) => Promise<{ url: string; thumbUrl?: string }>
   loadLinkedEventsForReports?: (
     reportIds: string[],
   ) => Promise<Map<string, LinkedEventView[]>>
   loadMediaBytes?: (r2Key: string) => Promise<Uint8Array | null>
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter
+  forwardTemplates?: ForwardTemplateReader
+  notifications?: ReporterNotifier
+  logger?: Pick<FastifyBaseLogger, "warn">
 }
 
 export interface FollowupResult {
@@ -196,7 +201,7 @@ export interface AdminReportService {
   ): Promise<FollowupResult>
   routeToJurisdiction(
     id: string,
-    input: { contactEmailOverride: string | null; note: string | null; actorId: string | null },
+    input: { note: string | null; actorId: string | null },
   ): Promise<RouteToJurisdictionResult>
   setVerdict(input: {
     id: string

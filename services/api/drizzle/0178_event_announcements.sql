@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0174_event_announcements.sql
+-- 0178_event_announcements.sql
 -- -----------------------------------------------------------------------------
 -- Event announcements ride the existing host-broadcast pipeline as a new
 -- broadcasts.kind rather than a parallel table: segment resolution, delivery

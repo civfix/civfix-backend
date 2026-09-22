@@ -11,16 +11,19 @@ import {
   makeDrizzleInboundRepository,
   type InboundRepository,
 } from "./inbound-repository.drizzle.js"
-import type { AdminReportRepository } from "./admin-report-service.js"
+import type { AdminReportRepository, ReporterNotifier } from "./admin-report-service.js"
 import { detectBounce, handleBounce, type BounceDetection } from "./inbound-bounce.js"
 import {
   applyInboundEffects,
   findThreadByReferences,
+  inboundEffectDeps,
+  type InboundEffectDeps,
   isJurisdictionSender,
   parseMessageIdList,
   resolveMessageId,
 } from "./inbound-thread-correlation.js"
 import type { CleanupRepository } from "../cleanup-service.js"
+import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import { readMailAuthVerdict, type MailAuthVerdict } from "../../adapters/inbound-mail.cf.js"
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
@@ -77,6 +80,8 @@ export interface InboundProcessorDeps {
   inboundRepo?: InboundRepository
   adminReportRepo?: AdminReportRepository
   cleanupRepo?: CleanupRepository
+  notifications?: ReporterNotifier
+  chatEmitter?: ReportChatSystemEmitter
 }
 
 export async function processInboundObject(
@@ -88,8 +93,7 @@ export async function processInboundObject(
   const inboundMail = deps.inboundMail ?? container.inboundMail
   const mailRepo = deps.mailRepo ?? makeDrizzleMailRepository(container.getDb().sql)
   const inboundRepo = deps.inboundRepo ?? makeDrizzleInboundRepository(container.getDb().sql)
-  const injectedReportRepo = deps.adminReportRepo
-  const injectedCleanupRepo = deps.cleanupRepo
+  const injected = inboundEffectDeps(deps)
   const logger = deps.logger ?? NOOP_LOGGER
 
   const bytes = await storage.getObject(key)
@@ -152,8 +156,7 @@ export async function processInboundObject(
   if (resolvedThread !== null) {
     result = await routeThreaded(
       container,
-      injectedReportRepo,
-      injectedCleanupRepo,
+      injected,
       storage,
       mailRepo,
       mail,
@@ -173,8 +176,7 @@ export async function processInboundObject(
 
 async function routeThreaded(
   container: Container,
-  injectedReportRepo: AdminReportRepository | undefined,
-  injectedCleanupRepo: CleanupRepository | undefined,
+  injected: InboundEffectDeps,
   storage: Storage,
   mailRepo: MailRepository,
   mail: ParsedMail,
@@ -213,14 +215,7 @@ async function routeThreaded(
 
   const message = inserted ?? (await mailRepo.findMessageByMessageId(messageId).catch(() => null))
   if (message !== null && message.threadId === thread.id) {
-    await applyInboundEffects(
-      container,
-      injectedReportRepo,
-      injectedCleanupRepo,
-      mailRepo,
-      thread,
-      message,
-    ).catch((err: unknown) => {
+    await applyInboundEffects(container, injected, mailRepo, thread, message).catch((err: unknown) => {
       logger.warn(
         { err: errorText(err), threadId: thread.id, messageId: message.id },
         "inbound: side effects failed (claim released; the sweep re-drives it)",

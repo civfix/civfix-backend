@@ -1,6 +1,7 @@
 import { buildDiscussionForwardPacket } from "./admin/mail-format.js"
 import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-mentions.js"
-import type { OutboundMailService } from "./admin/outbound-mail-service.js"
+import { replySubject, type OutboundMailService } from "./admin/outbound-mail-service.js"
+import type { MailThreadRecord } from "./admin/mail-repository.drizzle.js"
 import type { ReportForwardAudit } from "./report-forward-audit.drizzle.js"
 import type { ReportJurisdictionView } from "./discussion-types.js"
 import type { CounterStore } from "../abuse/counter-store.js"
@@ -11,6 +12,7 @@ export interface CityForwardContext {
   place: string | null
   jurisdiction: ReportJurisdictionView | null
   actorUserId: string
+  actorDisplayName?: string | null
 }
 
 export const CITY_FORWARD_DEDUP_TTL_SECONDS = 10 * 60
@@ -81,27 +83,52 @@ export async function forwardReportCityMention(
   if (contact === null || contact === "") {
     return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
   }
+  const thread = await existingReportThread(outboundMail, ctx.reportId)
+  if (thread === null) {
+    return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
+  }
   if (opts.canForward !== undefined && !(await opts.canForward(ctx.reportId, geoid, ctx.actorUserId))) {
     return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
   }
   const packet = buildDiscussionForwardPacket(
-    { reportId: ctx.reportId, category: ctx.category, place: ctx.place, org: jurisdiction.name },
+    {
+      reportId: ctx.reportId,
+      category: ctx.category,
+      place: ctx.place,
+      org: jurisdiction.name,
+      displayName: ctx.actorDisplayName ?? null,
+    },
     body,
   )
   try {
-    await outboundMail.sendReportToJurisdiction({
-      reportId: ctx.reportId,
-      geoid,
-      org: jurisdiction.name,
+    await outboundMail.appendOutbound(thread.id, {
       toAddr: contact,
-      subject: packet.subject,
-      text: packet.text,
+      subject: discussionForwardSubject(thread.subject, packet.subject),
+      body: packet.text,
       html: packet.html,
+      kind: "discussion",
+      eventMeta: { reportId: ctx.reportId, geoid },
     })
     await markForwarded(opts, geoid)
     return { mentioned: true, geoid, forwarded: true, forwardedAt: createdAt }
   } catch {
     return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
+  }
+}
+
+export function discussionForwardSubject(threadSubject: string | null, fallback: string): string {
+  if (threadSubject === null || threadSubject.trim() === "") return fallback
+  return replySubject(threadSubject)
+}
+
+async function existingReportThread(
+  outboundMail: OutboundMailService,
+  reportId: string,
+): Promise<MailThreadRecord | null> {
+  try {
+    return await outboundMail.findReportThread(reportId)
+  } catch {
+    return null
   }
 }
 

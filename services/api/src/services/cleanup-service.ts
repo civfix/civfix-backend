@@ -546,7 +546,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
    *                             without an address has a bug, and storing it would produce an event
    *                             whose address is "verified" and empty.
    *   addressSource ABSENT   -> an old client. Whatever it sent in `address` is the host's own "name the
-   *                             spot" text, so it is 'manual' (the same call migration 0175 makes for
+   *                             spot" text, so it is 'manual' (the same call migration 0179 makes for
    *                             existing rows). If it sent nothing, the shim resolves the pin and stores
    *                             'resolved' — unverified, but an event with a street line beats an event
    *                             with "Meeting point", and only while old clients are still in the wild.

@@ -17,6 +17,7 @@ import { makeDownloader, type DownloadFn } from "./download.js"
 
 export interface WorkerSeams {
   storage: Storage
+  publicMediaBase: string | undefined
   inboundStorage: Storage | undefined
   abuseChecks: AbuseChecks
   limits: WorkerLimits
@@ -128,8 +129,11 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
         })
       : storage
 
+  const publicMediaBaseRaw = (source.R2_PUBLIC_BASE ?? "").trim()
+
   return {
     storage,
+    publicMediaBase: publicMediaBaseRaw.length > 0 ? publicMediaBaseRaw : undefined,
     inboundStorage,
     abuseChecks,
     limits,

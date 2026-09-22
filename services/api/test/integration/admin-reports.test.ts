@@ -27,10 +27,17 @@ async function insertUser(
 
 async function insertReport(
   h: PgHarness,
-  opts: { category?: string; status?: string; reporterId?: string | null; title?: string },
+  opts: {
+    category?: string
+    status?: string
+    reporterId?: string | null
+    title?: string
+    addr?: string | null
+    referenceCode?: string | null
+  },
 ): Promise<string> {
   const rows = await h.sql<{ id: string }[]>`
-    INSERT INTO reports (reporter_user_id, idempotency_key, geom, geom_source, category, title, status, h3_cell, jurisdiction_geoid)
+    INSERT INTO reports (reporter_user_id, idempotency_key, geom, geom_source, category, title, status, h3_cell, jurisdiction_geoid, addr, reference_code)
     VALUES (
       ${opts.reporterId ?? null},
       gen_random_uuid(),
@@ -40,7 +47,9 @@ async function insertReport(
       ${opts.title ?? "Test report"},
       ${opts.status ?? "submitted"},
       'h0',
-      ${GEOID}
+      ${GEOID},
+      ${opts.addr ?? null},
+      ${opts.referenceCode ?? null}
     )
     RETURNING id
   `
@@ -87,6 +96,7 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
       q: null,
       statuses: ["rejected"],
       flaggedOnly: false,
+      needsVerificationOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -105,6 +115,7 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
       q: null,
       statuses: null,
       flaggedOnly: false,
+      needsVerificationOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -120,10 +131,41 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
       q: null,
       statuses: null,
       flaggedOnly: true,
+      needsVerificationOnly: false,
       cursor: null,
       limit: 25,
     })
     expect(flagged.records.map((x) => x.id)).toEqual([id])
+  })
+
+  it("search matches a reference code exactly and an address substring", async () => {
+    const withCode = await insertReport(h, {
+      title: "Pothole",
+      addr: "1200 S Figueroa St",
+      referenceCode: "PD-42-000001",
+    })
+    await insertReport(h, { title: "Graffiti", addr: "44 Sunset Blvd", referenceCode: "GR-42-000007" })
+
+    const list = async (q: string): Promise<string[]> =>
+      (
+        await repo.listReports({
+          q,
+          statuses: null,
+          flaggedOnly: false,
+          needsVerificationOnly: false,
+          cursor: null,
+          limit: 25,
+        })
+      ).records.map((r) => r.id)
+
+    expect(await list("pd-42-000001")).toEqual([withCode])
+    expect(await list("PD-42")).toEqual([])
+    expect(await list("figueroa")).toEqual([withCode])
+    expect((await repo.countByBucket({ q: "figueroa" })).all).toBe(1)
+
+    await repo.toggleFlag(withCode, { reason: "x", actorId: null })
+    expect((await repo.countByBucket({ q: "figueroa" })).flagged).toBe(1)
+    expect((await repo.countByBucket({ q: "sunset" })).flagged).toBe(0)
   })
 
   it("getRouting resolves the per-category -> default -> legacy contact precedence", async () => {
@@ -186,22 +228,9 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     expect(audit).toHaveLength(1)
   })
 
-  it("notifyReporter inserts a notification; appendFollowup writes a timeline row + audit", async () => {
+  it("appendFollowup writes a 'followup' timeline row + audit", async () => {
     const reporter = await insertUser(h, { handle: "sam" })
     const id = await insertReport(h, { reporterId: reporter })
-    await repo.notifyReporter({
-      reportId: id,
-      reporterUserId: reporter,
-      title: "Update",
-      body: "thanks",
-      link: `/reports/${id}`,
-    })
-    const notes = await h.sql<{ type: string; body: string | null }[]>`
-      SELECT type, body FROM notifications WHERE user_id = ${reporter}
-    `
-    expect(notes[0]?.type).toBe("report_update")
-    expect(notes[0]?.body).toBe("thanks")
-
     await repo.appendFollowup(id, {
       note: "sent",
       actorId: null,
@@ -212,6 +241,10 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
       { action: string }[]
     >`SELECT action FROM audit_log WHERE action = 'report.followup_sent'`
     expect(audit).toHaveLength(1)
+    const rows = await h.sql<{ kind: string | null }[]>`
+      SELECT kind FROM report_timeline WHERE report_id = ${id} AND note = 'sent'
+    `
+    expect(rows.map((r) => r.kind)).toEqual(["followup"])
   })
 
   it("getOutreach derives sendFailed from the mail_events trail ('failed' recorded, no 'sent')", async () => {

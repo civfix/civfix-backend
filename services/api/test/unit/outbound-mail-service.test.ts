@@ -82,14 +82,14 @@ describe("OutboundMailService.sendReportToJurisdiction", () => {
     const dto = await repo.getThread(thread.id)
     expect(dto?.messages).toHaveLength(1)
     expect(dto?.messages[0]?.dir).toBe("out")
-    expect(dto?.messages[0]?.from).toBe("outreach@civfix.org")
+    expect(dto?.messages[0]?.from).toBe(env?.from)
     const out = repo.messagesOf(thread.id)[0]
     expect(out?.messageId).toBe(messageId)
 
     expect(repo.events).toHaveLength(1)
     expect(repo.events[0]?.type).toBe("sent")
     expect(repo.events[0]?.meta).toMatchObject({
-      from: "outreach@civfix.org",
+      from: `"civfix Reports" <report-${thread.threadToken}@civfix.org>`,
       to: "clerk@lacity.gov",
       reportId: "report-1",
       geoid: "0644000",
@@ -232,7 +232,7 @@ describe("OutboundMailService.sendToCity (digest path: minted token)", () => {
     const dto = await repo.getThread(thread.id)
     expect(dto?.messages).toHaveLength(1)
     expect(dto?.messages[0]?.dir).toBe("out")
-    expect(dto?.messages[0]?.from).toBe("outreach@civfix.org")
+    expect(dto?.messages[0]?.from).toMatch(REPLY_FROM_RE)
 
     expect(mailer.sent).toHaveLength(1)
     const env = mailer.lastOutbound()
@@ -245,7 +245,7 @@ describe("OutboundMailService.sendToCity (digest path: minted token)", () => {
     expect(repo.events).toHaveLength(1)
     expect(repo.events[0]?.type).toBe("sent")
     expect(repo.events[0]?.meta).toMatchObject({
-      from: "outreach@civfix.org",
+      from: `"civfix" <reply-${thread.threadToken}@civfix.org>`,
       to: "clerk@city.gov",
       reportId: "42",
       geoid: "0644000",
@@ -406,6 +406,153 @@ describe("OutboundMailService — F109: a delivered send never throws post-deliv
   })
 })
 
+describe("OutboundMailService: the outbound row is a true snapshot of what was sent", () => {
+  it("stores the per-thread From, the html part, the kind and the attachment metadata", async () => {
+    const { repo, svc } = harness()
+    const { thread } = await svc.sendReportToJurisdiction({
+      reportId: "report-1",
+      geoid: "0644000",
+      toAddr: "clerk@lacity.gov",
+      subject: "civfix report: Pothole",
+      text: "A pothole on Main St.",
+      html: "<p>A pothole on Main St.</p>",
+      attachments: [
+        { key: "media/r2/photo.jpg", filename: "photo.jpg", contentType: "image/jpeg", content: new Uint8Array([1, 2, 3]) },
+        { filename: "keyless.jpg", contentType: "image/jpeg", content: new Uint8Array([4]) },
+      ],
+    })
+
+    const stored = repo.messagesOf(thread.id)[0]
+    expect(stored?.fromAddr).toBe(`"civfix Reports" <report-${thread.threadToken}@civfix.org>`)
+    expect(stored?.html).toBe("<p>A pothole on Main St.</p>")
+    expect(stored?.kind).toBe("packet")
+    expect(stored?.attachments).toEqual([{ key: "media/r2/photo.jpg", filename: "photo.jpg", size: 3 }])
+  })
+
+  it("stamps the kind each entry point owns", async () => {
+    const { repo, svc } = harness()
+    const digest = await svc.sendToCity({ geoid: "0644000", toAddr: "clerk@lacity.gov", subject: "Digest", body: "d" })
+    const composed = await svc.compose({ to: "mayor@city.gov", subject: "Intro", body: "hi" })
+    await svc.appendOutbound(composed.id, { toAddr: "mayor@city.gov", body: "again" })
+    await svc.appendOutbound(composed.id, { toAddr: "mayor@city.gov", body: "again", kind: "resend" })
+    const event = await svc.sendEventToJurisdiction({
+      cleanupId: "cleanup-1",
+      geoid: "0644000",
+      toAddr: "parks@lacity.gov",
+      subject: "Cleanup",
+      text: "e",
+    })
+
+    expect(repo.messagesOf(digest.id).map((m) => m.kind)).toEqual(["digest"])
+    expect(repo.messagesOf(composed.id).map((m) => m.kind)).toEqual(["compose", "reply", "resend"])
+    expect(repo.messagesOf(event.thread.id).map((m) => m.kind)).toEqual(["packet"])
+  })
+
+  it("refreshes the thread subject when a re-route carries a new one", async () => {
+    const { repo, svc } = harness()
+    const first = await svc.sendReportToJurisdiction({
+      reportId: "report-1",
+      geoid: "0644000",
+      toAddr: "clerk@lacity.gov",
+      subject: "civfix report: Pothole",
+      text: "one",
+    })
+    await svc.sendReportToJurisdiction({
+      reportId: "report-1",
+      geoid: "0644000",
+      toAddr: "clerk@lacity.gov",
+      subject: "civfix report: Pothole [ref-2]",
+      text: "two",
+    })
+    expect((await repo.getThreadRecord(first.thread.id))?.subject).toBe("civfix report: Pothole [ref-2]")
+  })
+})
+
+describe("OutboundMailService: a failed send is recorded as a failure", () => {
+  it("flips the thread to needs_action and audits mail.send_failed with the report id", async () => {
+    const repo = new InMemoryMailRepository()
+    const mailer = new FakeMailer()
+    mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
+    const svc = makeOutboundMailService({ repo, mailer, env: ENV })
+
+    await expect(
+      svc.sendReportToJurisdiction({
+        reportId: "report-1",
+        geoid: "0644000",
+        toAddr: "clerk@lacity.gov",
+        subject: "Pothole",
+        text: "packet",
+      }),
+    ).rejects.toThrow(/smtp down/)
+
+    const thread = [...repo.threads.values()][0]
+    expect(thread?.status).toBe("needs_action")
+    const failed = repo.events.find((e) => e.type === "failed")
+    expect(failed?.meta).toMatchObject({
+      from: `"civfix Reports" <report-${thread?.threadToken}@civfix.org>`,
+      to: "clerk@lacity.gov",
+      error: "smtp down",
+      reportId: "report-1",
+    })
+    expect(repo.audits.at(-1)).toMatchObject({
+      actorId: null,
+      action: "mail.send_failed",
+      target: "report:report-1",
+      meta: { to: "clerk@lacity.gov", reportId: "report-1", error: "smtp down" },
+    })
+  })
+
+  it("a successful re-route clears the needs_action a failed send left behind", async () => {
+    const repo = new InMemoryMailRepository()
+    const mailer = new FakeMailer()
+    mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
+    const svc = makeOutboundMailService({ repo, mailer, env: ENV, logger: { warn: () => {} } })
+    const input = {
+      reportId: "report-1",
+      geoid: "0644000",
+      toAddr: "clerk@lacity.gov",
+      subject: "Pothole",
+      text: "packet",
+    }
+    await expect(svc.sendReportToJurisdiction(input)).rejects.toThrow(/smtp down/)
+    const thread = [...repo.threads.values()][0]
+    expect(thread?.status).toBe("needs_action")
+
+    mailer.sendOutbound = FakeMailer.prototype.sendOutbound.bind(mailer)
+    await svc.sendReportToJurisdiction(input)
+
+    expect(repo.threads.get(thread?.id ?? "")?.status).toBe("sent")
+  })
+
+  it("a successful resend clears needs_action on a composed thread too", async () => {
+    const repo = new InMemoryMailRepository()
+    const mailer = new FakeMailer()
+    mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
+    const svc = makeOutboundMailService({ repo, mailer, env: ENV, logger: { warn: () => {} } })
+    const t = await repo.createThread({ subject: "S" })
+    await expect(svc.appendOutbound(t.id, { toAddr: "x@y.com", body: "b" })).rejects.toThrow(
+      /smtp down/,
+    )
+    expect(repo.threads.get(t.id)?.status).toBe("needs_action")
+
+    mailer.sendOutbound = FakeMailer.prototype.sendOutbound.bind(mailer)
+    await svc.appendOutbound(t.id, { toAddr: "x@y.com", body: "b", kind: "resend" })
+
+    expect(repo.threads.get(t.id)?.status).toBe("sent")
+  })
+
+  it("writes no audit row when the failed send carries no report", async () => {
+    const repo = new InMemoryMailRepository()
+    const mailer = new FakeMailer()
+    mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
+    const svc = makeOutboundMailService({ repo, mailer, env: ENV })
+    const t = await repo.createThread({ subject: "S" })
+    await expect(svc.appendOutbound(t.id, { toAddr: "x@y.com", body: "b" })).rejects.toThrow(/smtp down/)
+    expect(repo.threads.get(t.id)?.status).toBe("needs_action")
+    expect(repo.audits).toHaveLength(0)
+  })
+})
+
 describe("OutboundMailService: total send deadline", () => {
   function deferredMailer(): {
     mailer: Mailer
@@ -551,6 +698,86 @@ describe("OutboundMailService: total send deadline", () => {
 
     expect(ran).toEqual(["route-outcome"])
     expect(repo.events.map((e) => e.type)).toEqual(["failed", "sent"])
+  })
+
+  it("a LATE success restores the thread the deadline flipped to needs_action", async () => {
+    const repo = new InMemoryMailRepository()
+    const { mailer, resolve } = deferredMailer()
+    const svc = svcFor(mailer, repo, 20)
+
+    await expect(
+      svc.sendReportToJurisdiction({
+        reportId: "77777777-7777-7777-7777-777777777777",
+        geoid: "0644000",
+        toAddr: "pw@lacity.gov",
+        subject: "Pothole",
+        text: "packet",
+      }),
+    ).rejects.toSatisfy(isOutboundSendDeadlineError)
+    const thread = [...repo.threads.values()][0]
+    expect(thread?.status).toBe("needs_action")
+
+    resolve("<late-ok@oci>")
+    await flush()
+
+    expect(repo.threads.get(thread?.id ?? "")?.status).toBe("sent")
+  })
+
+  it("a success landing BEFORE the failure write commits still leaves the thread sent", async () => {
+    const repo = new InMemoryMailRepository()
+    let releaseFailure!: () => void
+    const failureWritten = new Promise<void>((res) => {
+      releaseFailure = res
+    })
+    const recordSendFailure = repo.recordSendFailure.bind(repo)
+    repo.recordSendFailure = async (input) => {
+      await failureWritten
+      await recordSendFailure(input)
+    }
+    const { mailer, resolve } = deferredMailer()
+    const svc = svcFor(mailer, repo, 20)
+
+    const send = svc.sendReportToJurisdiction({
+      reportId: "99999999-9999-9999-9999-999999999999",
+      geoid: "0644000",
+      toAddr: "pw@lacity.gov",
+      subject: "Pothole",
+      text: "packet",
+    })
+    await new Promise((r) => setTimeout(r, 40))
+    resolve("<raced-ok@oci>")
+    await flush()
+    releaseFailure()
+    await expect(send).rejects.toSatisfy(isOutboundSendDeadlineError)
+    await flush()
+    await flush()
+
+    const thread = [...repo.threads.values()][0]
+    expect(repo.events.map((e) => e.type)).toEqual(["failed", "sent"])
+    expect(repo.threads.get(thread?.id ?? "")?.status).toBe("sent")
+  })
+
+  it("leaves a status that is not a delivery failure alone on a late success", async () => {
+    const repo = new InMemoryMailRepository()
+    const { mailer, resolve } = deferredMailer()
+    const svc = svcFor(mailer, repo, 20)
+
+    await expect(
+      svc.sendReportToJurisdiction({
+        reportId: "88888888-8888-8888-8888-888888888888",
+        geoid: "0644000",
+        toAddr: "pw@lacity.gov",
+        subject: "Pothole",
+        text: "packet",
+      }),
+    ).rejects.toSatisfy(isOutboundSendDeadlineError)
+    const thread = [...repo.threads.values()][0]
+    await repo.setThreadStatus(thread?.id ?? "", "replied")
+
+    resolve("<late-ok@oci>")
+    await flush()
+
+    expect(repo.threads.get(thread?.id ?? "")?.status).toBe("replied")
   })
 
   it("a deadline expiry is a CONFLICT for the operator, not a 500", async () => {

@@ -46,7 +46,7 @@ export const cleanups = pgTable(
     status: text("status").$type<CleanupStatus>().notNull(),
     bring: text("bring").array(),
     address: text("address"),
-    /** 0175: where `address` came from - resolved | edited | manual. NULL only for addressless legacy rows. */
+    /** 0179: where `address` came from - resolved | edited | manual. NULL only for addressless legacy rows. */
     addressSource: text("address_source").$type<EventAddressSource>(),
     capacity: integer("capacity"),
     bags: integer("bags").notNull().default(0),

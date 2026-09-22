@@ -10,7 +10,6 @@ import type {
   AdminReportRoutingRecord,
   AdminReportTimelineRecord,
   ListReportsArgs,
-  NotifyReporterInput,
   ReportOutreachState,
 } from "./admin-report-service.js"
 import type {
@@ -20,16 +19,9 @@ import type {
   ReportTimelineItem,
 } from "@civfix/shared"
 import { mapOutreachStatus } from "./admin-report-repository.drizzle.js"
+import { isPacketKind, type MailMessageKind } from "./mail-repository.js"
 import { pickPreviewMedia, REPORT_VERIFIED_THRESHOLD } from "./admin-report-service.js"
 import { STATUS_BUCKETS } from "./admin-report-status.js"
-
-export interface RecordedReportNotification {
-  reportId: string
-  userId: string
-  title: string
-  body: string
-  link: string | null
-}
 
 export interface RecordedAudit {
   action: string
@@ -44,6 +36,8 @@ export interface SeededOutreach {
   hasInbound: boolean
   routedTo: string | null
   routedAt: Date | null
+  packetSent: boolean
+  outboundKinds?: (MailMessageKind | null)[]
   sendFailed: boolean
   sendInFlight?: boolean
 }
@@ -59,7 +53,6 @@ export interface SeededReport {
 export class InMemoryAdminReportRepository implements AdminReportRepository {
   readonly reports = new Map<string, SeededReport>()
   readonly timeline = new Map<string, AdminReportTimelineRecord[]>()
-  readonly notifications: RecordedReportNotification[] = []
   readonly audits: RecordedAudit[] = []
   readonly reporterReportVerified = new Map<string, boolean>()
 
@@ -127,6 +120,11 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
         hasInbound: input.outreach?.hasInbound ?? false,
         routedTo: input.outreach?.routedTo ?? null,
         routedAt: input.outreach?.routedAt ?? null,
+        packetSent:
+          input.outreach?.packetSent ??
+          (input.outreach?.outboundKinds !== undefined
+            ? input.outreach.outboundKinds.some(isPacketKind)
+            : input.outreach?.threadStatus != null),
         sendFailed: input.outreach?.sendFailed ?? false,
         sendInFlight: input.outreach?.sendInFlight ?? false,
       },
@@ -158,11 +156,12 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       .map((s) => this.projectRecord(s.record))
 
     if (args.q !== null) rows = rows.filter((r) => matchesSearch(r, args.q as string))
-    if (args.statuses !== null) {
+    if (args.statuses !== null && args.statuses.length > 0) {
       const set = new Set(args.statuses)
       rows = rows.filter((r) => set.has(r.status))
     }
     if (args.flaggedOnly) rows = rows.filter((r) => r.flagged)
+    if (args.needsVerificationOnly) rows = rows.filter((r) => r.verificationVerdict === null)
 
     rows.sort((a, b) => {
       const primary = b.createdAt.getTime() - a.createdAt.getTime()
@@ -186,11 +185,13 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     let inProgress = 0
     let completed = 0
     let flagged = 0
+    let needsVerification = 0
     for (const r of rows) {
       if (submittedSet.has(r.status)) submitted += 1
       else if (inProgressSet.has(r.status)) inProgress += 1
       else if (completedSet.has(r.status)) completed += 1
       if (r.flagged) flagged += 1
+      if (submittedSet.has(r.status) && r.verificationVerdict === null) needsVerification += 1
     }
     return {
       all: submitted + inProgress + completed,
@@ -198,6 +199,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       in_progress: inProgress,
       completed,
       flagged,
+      needsVerification,
     }
   }
 
@@ -218,13 +220,21 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
   async getOutreach(id: string): Promise<ReportOutreachState> {
     const o = this.reports.get(id)?.outreach
     if (!o || o.threadStatus === null) {
-      return { status: "not_sent", threadId: null, routedTo: null, routedAt: null, sendFailed: false }
+      return {
+        status: "not_sent",
+        threadId: null,
+        routedTo: null,
+        routedAt: null,
+        packetSent: false,
+        sendFailed: false,
+      }
     }
     return {
       status: mapOutreachStatus(o.threadStatus, o.hasInbound),
       threadId: o.threadId,
       routedTo: o.routedTo,
       routedAt: o.routedAt ? o.routedAt.toISOString() : null,
+      packetSent: o.packetSent,
       sendFailed: o.sendFailed,
       sendInFlight: o.sendInFlight ?? false,
     }
@@ -321,6 +331,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     this.appendTimeline(id, {
       status: seeded.record.status,
       note: next ? "Flagged for review" : "Flag cleared",
+      kind: "warn",
       who: "operator",
       createdAt: this.nextDate(),
     })
@@ -340,6 +351,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     this.appendTimeline(id, {
       status: "rejected",
       note: input.note,
+      kind: "remove",
       who: "operator",
       createdAt: this.nextDate(),
     })
@@ -349,16 +361,6 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       meta: { note: input.note },
     })
     return true
-  }
-
-  async notifyReporter(input: NotifyReporterInput): Promise<void> {
-    this.notifications.push({
-      reportId: input.reportId,
-      userId: input.reporterUserId,
-      title: input.title,
-      body: input.body,
-      link: input.link,
-    })
   }
 
   async appendFollowup(
@@ -373,6 +375,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     this.appendTimeline(id, {
       status: this.reports.get(id)?.record.status ?? "submitted",
       note: input.note,
+      kind: "followup",
       who: "operator",
       createdAt: this.nextDate(),
     })
@@ -454,6 +457,8 @@ function matchesSearch(record: AdminReportRecord, q: string): boolean {
   return (
     record.title.toLowerCase().includes(needle) ||
     record.place.toLowerCase().includes(needle) ||
+    record.address.toLowerCase().includes(needle) ||
+    record.referenceCode === q.trim().toUpperCase() ||
     (isUuid(q) && record.id.toLowerCase() === needle) ||
     (record.reporter?.name.toLowerCase().includes(needle) ?? false) ||
     (record.reporter?.handle?.toLowerCase().includes(needle) ?? false)

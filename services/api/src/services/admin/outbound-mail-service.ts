@@ -5,10 +5,12 @@ import type { Env } from "../../env/types.js"
 import {
   makeDrizzleMailRepository,
   type MailAuditInput,
+  type MailMessageKind,
   type MailMessageRecord,
   type MailRepository,
   type MailThreadRecord,
 } from "./mail-repository.drizzle.js"
+import type { MailAttachment, MailStatus } from "@civfix/shared"
 import { domainOf } from "../../adapters/mail-text.js"
 import {
   base64Bytes,
@@ -21,6 +23,10 @@ import {
 export interface OutboundMailEnv {
   MAIL_FROM_OUTREACH: string
   MAIL_REPLY_DOMAIN: string
+}
+
+export interface PacketAttachment extends OutboundAttachment {
+  key?: string
 }
 
 export interface OutboundMailLogger {
@@ -55,7 +61,11 @@ export interface AppendOutboundInput {
   body: string
   toAddr: string
   subject?: string
+  html?: string
+  attachments?: PacketAttachment[]
+  kind?: MailMessageKind
   audit?: OutboundAudit
+  eventMeta?: Record<string, unknown>
 }
 
 export interface SendReportInput {
@@ -66,7 +76,8 @@ export interface SendReportInput {
   subject: string
   text: string
   html?: string
-  attachments?: OutboundAttachment[]
+  attachments?: PacketAttachment[]
+  kind?: MailMessageKind
   audit?: MailAuditInput
 }
 
@@ -91,6 +102,7 @@ export interface PreparedReportOutbound {
 
 export interface OutboundMailService {
   sendToCity(input: SendToCityInput): Promise<MailThreadRecord>
+  findReportThread(reportId: string): Promise<MailThreadRecord | null>
   prepareReportToJurisdiction(input: SendReportInput): Promise<PreparedReportOutbound>
   sendReportToJurisdiction(
     input: SendReportInput,
@@ -114,6 +126,8 @@ export interface OutboundMailServiceDeps {
 
 export const OUTBOUND_DEADLINE_REASON = "deadline"
 
+const THREAD_STATUS_CLEARED_BY_DELIVERY: readonly MailStatus[] = ["needs_action", "bounced"]
+
 export class OutboundSendDeadlineError extends AppError {
   readonly outboundSendDeadline = true
   readonly deadlineMs: number
@@ -131,6 +145,17 @@ export class OutboundSendDeadlineError extends AppError {
 export function isOutboundSendDeadlineError(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false
   return (err as { outboundSendDeadline?: unknown }).outboundSendDeadline === true
+}
+
+export function attachmentMetadata(
+  attachments: readonly PacketAttachment[] | undefined,
+): MailAttachment[] {
+  const stored: MailAttachment[] = []
+  for (const att of attachments ?? []) {
+    if (att.key === undefined || att.key === "") continue
+    stored.push({ key: att.key, filename: att.filename, size: att.content.byteLength })
+  }
+  return stored
 }
 
 export function outboundPayloadBytes(input: {
@@ -177,7 +202,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     subject: string
     body: string
     html?: string
-    attachments?: OutboundAttachment[]
+    attachments?: PacketAttachment[]
     eventMeta?: Record<string, unknown>
     onLateSuccess?: (() => Promise<void>) | undefined
   }): Promise<string> {
@@ -212,18 +237,35 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     })
 
     async function recordFailed(err: unknown, extra: Record<string, unknown>): Promise<void> {
+      const error = err instanceof Error ? err.message : String(err)
+      const reportId = args.eventMeta?.reportId
       try {
-        await repo.recordEvent({
+        await repo.recordSendFailure({
           threadId: args.threadId,
           messageId: args.messageId,
-          type: "failed",
           meta: {
-            from: env.MAIL_FROM_OUTREACH,
+            from: args.fromHeader,
             to: args.toAddr,
-            error: err instanceof Error ? err.message : String(err),
+            error,
             ...extra,
             ...(args.eventMeta ?? {}),
           },
+          ...(typeof reportId === "string" && reportId.length > 0
+            ? {
+                audit: {
+                  actorId: null,
+                  action: "mail.send_failed" as const,
+                  target: `report:${reportId}`,
+                  meta: {
+                    threadId: args.threadId,
+                    messageId: args.messageId,
+                    to: args.toAddr,
+                    reportId,
+                    error,
+                  },
+                },
+              }
+            : {}),
         })
       } catch (recordErr) {
         logger.warn(
@@ -240,12 +282,26 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         messageId: args.messageId,
         type: "sent",
         meta: {
-          from: env.MAIL_FROM_OUTREACH,
+          from: args.fromHeader,
           to: args.toAddr,
           ...extra,
           ...(args.eventMeta ?? {}),
         },
       })
+      await clearDeliveryFailureStatus()
+    }
+
+    async function clearDeliveryFailureStatus(): Promise<void> {
+      try {
+        const fresh = await repo.getThreadRecord(args.threadId)
+        if (fresh === null || !THREAD_STATUS_CLEARED_BY_DELIVERY.includes(fresh.status)) return
+        await repo.setThreadStatus(args.threadId, "sent")
+      } catch (err) {
+        logger.warn(
+          { err, threadId: args.threadId, messageId: args.messageId },
+          "outbound mail delivered but clearing the thread's failure status failed",
+        )
+      }
     }
 
     let sent: SentMail
@@ -256,9 +312,15 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         await recordFailed(err, {})
         throw err
       }
+      const failureWrite = recordFailed(err, {
+        reason: OUTBOUND_DEADLINE_REASON,
+        deadlineMs,
+        bytes,
+      })
       void send.then(
         async (late: SentMail) => {
           try {
+            await failureWrite.catch(() => {})
             await recordSent(late, { late: true })
             if (args.onLateSuccess !== undefined) await args.onLateSuccess()
             logger.warn(
@@ -279,7 +341,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
           )
         },
       )
-      await recordFailed(err, { reason: OUTBOUND_DEADLINE_REASON, deadlineMs, bytes })
+      await failureWrite
       throw err
     }
     try {
@@ -329,13 +391,22 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       subject: input.subject,
       status: "sent",
     })
+    if (thread.subject !== input.subject) {
+      await repo.setThreadSubject(thread.id, input.subject)
+      thread.subject = input.subject
+    }
+    const fromHeader = fromHeaderForThread(thread)
+    const attachments = attachmentMetadata(input.attachments)
     const message = await insertOut({
       threadId: thread.id,
       direction: "out",
-      fromAddr: env.MAIL_FROM_OUTREACH,
+      fromAddr: fromHeader,
       toAddr: input.toAddr,
       subject: input.subject,
       body: input.text,
+      kind: input.kind ?? "packet",
+      ...(input.html !== undefined ? { html: input.html } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.audit
         ? {
             audit: {
@@ -352,7 +423,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
           ...(opts?.onLateSuccess !== undefined ? { onLateSuccess: opts.onLateSuccess } : {}),
           threadId: thread.id,
           messageId: message.id,
-          fromHeader: fromHeaderForThread(thread),
+          fromHeader,
           toAddr: input.toAddr,
           subject: input.subject,
           body: input.text,
@@ -363,22 +434,16 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
             ...(input.geoid != null ? { geoid: input.geoid } : {}),
           },
         })
-        if (thread.status === "bounced") {
-          try {
-            await repo.setThreadStatus(thread.id, "sent")
-          } catch (err) {
-            logger.warn(
-              { err, threadId: thread.id },
-              "report re-route delivered but clearing the thread's 'bounced' status failed",
-            )
-          }
-        }
         return { thread: await freshThread(thread), messageId }
       },
     }
   }
 
   return {
+    findReportThread(reportId: string): Promise<MailThreadRecord | null> {
+      return repo.findReportThread(reportId)
+    },
+
     prepareReportToJurisdiction(input: SendReportInput): Promise<PreparedReportOutbound> {
       return prepareReport(input)
     },
@@ -399,18 +464,21 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         subject: input.subject,
         status: "sent",
       })
+      const fromHeader = fromHeaderForThread(thread)
       const message = await insertOut({
         threadId: thread.id,
         direction: "out",
-        fromAddr: env.MAIL_FROM_OUTREACH,
+        fromAddr: fromHeader,
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.text,
+        kind: "packet",
+        ...(input.html !== undefined ? { html: input.html } : {}),
       })
       const messageId = await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        fromHeader: fromHeaderForThread(thread),
+        fromHeader,
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.text,
@@ -438,13 +506,15 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
               subject: input.subject,
               status: "sent",
             })
+      const fromHeader = fromHeaderForThread(thread)
       const message = await insertOut({
         threadId: thread.id,
         direction: "out",
-        fromAddr: env.MAIL_FROM_OUTREACH,
+        fromAddr: fromHeader,
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.body,
+        kind: "digest",
       })
       const eventMeta: Record<string, unknown> = {}
       if (input.reportContext?.reportId !== undefined) {
@@ -454,7 +524,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        fromHeader: fromHeaderForThread(thread),
+        fromHeader,
         toAddr: input.toAddr,
         subject: input.subject,
         body: input.body,
@@ -465,19 +535,21 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
 
     async compose(input: ComposeInput): Promise<MailThreadRecord> {
       const thread = await repo.createThread({ subject: input.subject, status: "sent" })
+      const fromHeader = fromHeaderForThread(thread)
       const message = await insertOut({
         threadId: thread.id,
         direction: "out",
-        fromAddr: env.MAIL_FROM_OUTREACH,
+        fromAddr: fromHeader,
         toAddr: input.to,
         subject: input.subject,
         body: input.body,
+        kind: "compose",
         ...(input.audit ? { audit: { ...input.audit, target: `mail:${thread.id}` } } : {}),
       })
       await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        fromHeader: fromHeaderForThread(thread),
+        fromHeader,
         toAddr: input.to,
         subject: input.subject,
         body: input.body,
@@ -491,22 +563,30 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         throw AppError.notFound("Mail thread not found")
       }
       const subject = input.subject ?? replySubject(thread.subject)
+      const fromHeader = fromHeaderForThread(thread)
+      const attachments = attachmentMetadata(input.attachments)
       const message = await insertOut({
         threadId: thread.id,
         direction: "out",
-        fromAddr: env.MAIL_FROM_OUTREACH,
+        fromAddr: fromHeader,
         toAddr: input.toAddr,
         subject,
         body: input.body,
+        kind: input.kind ?? "reply",
+        ...(input.html !== undefined ? { html: input.html } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
         ...(input.audit ? { audit: { ...input.audit, target: `mail:${thread.id}` } } : {}),
       })
       await deliverAndRecord({
         threadId: thread.id,
         messageId: message.id,
-        fromHeader: fromHeaderForThread(thread),
+        fromHeader,
         toAddr: input.toAddr,
         subject,
         body: input.body,
+        ...(input.html !== undefined ? { html: input.html } : {}),
+        ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
+        ...(input.eventMeta !== undefined ? { eventMeta: input.eventMeta } : {}),
       })
       return freshThread(thread)
     },
@@ -539,7 +619,7 @@ export function makeContainerOutboundMailService(
   })
 }
 
-function replySubject(subject: string | null): string {
+export function replySubject(subject: string | null): string {
   const base = subject ?? ""
   if (base.length === 0) return "Re:"
   return /^re:/i.test(base) ? base : `Re: ${base}`

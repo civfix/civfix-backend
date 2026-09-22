@@ -383,6 +383,7 @@ describe("createReport: auto-forward enqueue on replay (F062)", () => {
       repo,
       resolveJurisdictionGeoid: () => Promise.resolve("0644000"),
       presignMedia: fakePresign,
+      autoForwardEnabled: true,
       isReportVerified: () => Promise.resolve(true),
       jobs: {
         enqueue: (name: string, data: unknown) => {

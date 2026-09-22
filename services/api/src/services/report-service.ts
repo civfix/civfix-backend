@@ -415,6 +415,7 @@ async function maybeEnqueueAutoForward(
   reportId: string,
   reporterUserId: string,
 ): Promise<void> {
+  if (deps.autoForwardEnabled !== true) return
   if (deps.jobs === undefined || deps.isReportVerified === undefined) return
   try {
     const verified = await deps.isReportVerified(reporterUserId)

@@ -11,12 +11,14 @@ import {
   type MailMessageRecord,
   type MailRepository,
   type MailThreadRecord,
+  type OutboundMessageSnapshot,
   type OutreachStatePatch,
   type OutreachStateRecord,
   type ClaimEffectsInput,
   type PendingEffects,
   type PendingEffectsQuery,
   type RecordEventInput,
+  type RecordSendFailureInput,
   type ThreadInit,
 } from "./mail-repository.js"
 import {
@@ -28,7 +30,7 @@ import {
 import { buildMailStats } from "./mail-stats.js"
 import { ROUTE_DEADLINE_INFLIGHT_SECONDS } from "./outbound-send-policy.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
-import type { MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
+import type { MailDelivery, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
 
 export interface StoredMailEvent {
   id: string
@@ -93,6 +95,8 @@ export class InMemoryMailRepository implements MailRepository {
       toAddr: over.toAddr ?? null,
       subject: over.subject ?? null,
       body: over.body ?? null,
+      html: over.html ?? null,
+      kind: over.kind ?? null,
       attachments: over.attachments ?? [],
       messageId: over.messageId ?? null,
       inReplyTo: over.inReplyTo ?? null,
@@ -162,6 +166,15 @@ export class InMemoryMailRepository implements MailRepository {
     }
     if (best) return Promise.resolve({ ...best })
     return this.createThread({ ...init, reportId, threadToken: mintThreadToken() })
+  }
+
+  findReportThread(reportId: string): Promise<MailThreadRecord | null> {
+    let best: MailThreadRecord | null = null
+    for (const t of this.threads.values()) {
+      if (t.reportId !== reportId) continue
+      if (best === null || cmpThreadNewest(t, best) > 0) best = t
+    }
+    return Promise.resolve(best === null ? null : { ...best })
   }
 
   findOrCreateEventThread(cleanupId: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
@@ -235,6 +248,8 @@ export class InMemoryMailRepository implements MailRepository {
       toAddr: input.toAddr ?? null,
       subject: input.subject ?? null,
       body: input.body ?? null,
+      html: input.html ?? null,
+      kind: input.kind ?? null,
       attachments: input.attachments ?? [],
       messageId: input.messageId ?? null,
       inReplyTo: input.inReplyTo ?? null,
@@ -327,6 +342,17 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve({ items, nextCursor })
   }
 
+  deliveryOf(message: MailMessageRecord): MailDelivery | null {
+    if (message.direction === "in") return null
+    let latest: StoredMailEvent | null = null
+    for (const e of this.events) {
+      if (e.messageId !== message.id) continue
+      if (e.type !== "sent" && e.type !== "failed") continue
+      if (latest === null || e.createdAt.getTime() >= latest.createdAt.getTime()) latest = e
+    }
+    return latest === null ? "pending" : (latest.type as MailDelivery)
+  }
+
   getThread(id: string): Promise<MailThreadDTO | null> {
     const thread = this.threads.get(id)
     if (!thread) return Promise.resolve(null)
@@ -334,7 +360,7 @@ export class InMemoryMailRepository implements MailRepository {
     const latest = messages.length > 0 ? (messages[messages.length - 1] ?? null) : null
     const dto: MailThreadDTO = {
       ...toThreadListItem(thread, latest),
-      messages: messages.map(toMessageDTO),
+      messages: messages.map((m) => toMessageDTO({ ...m, delivery: this.deliveryOf(m) })),
     }
     return Promise.resolve(dto)
   }
@@ -464,6 +490,46 @@ export class InMemoryMailRepository implements MailRepository {
       meta: input.meta ?? null,
     })
     return Promise.resolve(record.id)
+  }
+
+  async recordSendFailure(input: RecordSendFailureInput): Promise<void> {
+    await this.recordEvent({
+      threadId: input.threadId,
+      messageId: input.messageId,
+      type: "failed",
+      meta: input.meta,
+    })
+    const thread = this.threads.get(input.threadId)
+    if (thread) thread.status = "needs_action"
+    this.recordAudit(input.audit)
+  }
+
+  setThreadSubject(id: string, subject: string): Promise<void> {
+    const t = this.threads.get(id)
+    if (t) t.subject = subject
+    return Promise.resolve()
+  }
+
+  latestOutboundMessageId(threadId: string): Promise<string | null> {
+    let best: MailMessageRecord | null = null
+    for (const m of this.messages) {
+      if (m.threadId !== threadId || m.direction !== "out") continue
+      if (best === null || cmpCreated(m, best) > 0) best = m
+    }
+    return Promise.resolve(best?.id ?? null)
+  }
+
+  getOutboundMessageForResend(messageId: string): Promise<OutboundMessageSnapshot | null> {
+    const m = this.messages.find((x) => x.id === messageId && x.direction === "out")
+    if (!m) return Promise.resolve(null)
+    return Promise.resolve({
+      id: m.id,
+      toAddr: m.toAddr,
+      subject: m.subject,
+      body: m.body ?? "",
+      html: m.html,
+      attachments: m.attachments,
+    })
   }
 
   stats7d(): Promise<MailStatsResponse> {
