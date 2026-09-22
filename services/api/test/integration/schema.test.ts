@@ -16,6 +16,7 @@ const EXPECTED_TABLES = [
   "email_otps",
   "sessions",
   "jurisdictions",
+  "forward_template_settings",
   "reports",
   "media_assets",
   "report_timeline",
