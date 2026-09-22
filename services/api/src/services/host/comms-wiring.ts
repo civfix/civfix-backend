@@ -139,7 +139,6 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     ),
     broadcasts,
     config,
-    ...(logger !== undefined ? { logger } : {}),
   })
 
   const pipeline = makeBroadcastPipeline({

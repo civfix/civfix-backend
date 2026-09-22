@@ -87,15 +87,16 @@ export function distanceMeters(
   return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(s)))
 }
 
-/** The ", City, ST" tail, skipping whatever is already the primary and dropping a US country. */
-function localityTail(p: PhotonReverseProps, primary: string): string[] {
-  return [
+/** "<primary>, City, ST" - skips whatever is already the primary and drops a US country. */
+function addressLine(p: PhotonReverseProps, primary: string): string {
+  const tail = [
     p.city && p.city !== primary ? p.city : null,
     p.state,
     p.country && p.country !== "United States" && p.country !== "United States of America"
       ? p.country
       : null,
   ].filter((v): v is string => !!v)
+  return [primary, ...tail].join(", ")
 }
 
 /**
@@ -110,7 +111,7 @@ export function formatPhotonReverse(p: PhotonReverseProps): string | null {
   const street = [p.housenumber, p.street].filter(Boolean).join(" ").trim()
   const primary = street || p.name || p.district || p.city || ""
   if (!primary) return null
-  return [primary, ...localityTail(p, primary)].join(", ")
+  return addressLine(p, primary)
 }
 
 /** True when a feature's `name` could be a private residence label rather than a public landmark. */
@@ -178,14 +179,14 @@ export function composePhotonReverse(
   }
   if (roadProps !== null && roads[0] !== undefined) {
     const primary = roads.length >= 2 ? `${roads[0]} & ${roads[1]}` : roads[0]
-    return { line: [primary, ...localityTail(roadProps, primary)].join(", "), precision: "intersection" }
+    return { line: addressLine(roadProps, primary), precision: "intersection" }
   }
 
   for (const c of candidates) {
     if (c.meters > LANDMARK_RADIUS_M) continue
     const name = landmarkName(c.props)
     if (name === null) continue
-    return { line: [name, ...localityTail(c.props, name)].join(", "), precision: "landmark" }
+    return { line: addressLine(c.props, name), precision: "landmark" }
   }
 
   return null

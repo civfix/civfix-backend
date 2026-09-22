@@ -38,6 +38,7 @@ import {
 } from "./mail-format.js"
 import { pickPreviewMedia, previewThumbnailUrl } from "./admin-report-types.js"
 import type {
+  AdminReportMediaRecord,
   AdminReportRecord,
   AdminReportService,
   AdminReportServiceDeps,
@@ -95,11 +96,13 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     await deps.reportChatEmitter.emit(event)
   }
 
-  async function previewMediaDTO(record: AdminReportRecord): Promise<ReportMedia | null> {
-    const m = record.previewMedia
-    if (m === null) return null
+  async function toMediaDTO(m: AdminReportMediaRecord): Promise<ReportMedia> {
     const { url, thumbUrl } = await presignMedia(m.r2Key, m.thumbKey)
     return { id: m.id, kind: m.kind, url, thumbUrl: thumbUrl ?? null }
+  }
+
+  async function previewMediaDTO(record: AdminReportRecord): Promise<ReportMedia | null> {
+    return record.previewMedia === null ? null : toMediaDTO(record.previewMedia)
   }
 
   function toListItem(
@@ -193,10 +196,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         contact: routing?.contact ?? null,
         routed: routing?.routed ?? false,
       }
-      const mediaDtos: ReportMedia[] = await mapWithLimit(media, PRESIGN_CONCURRENCY, async (m) => {
-        const { url, thumbUrl } = await presignMedia(m.r2Key, m.thumbKey)
-        return { id: m.id, kind: m.kind, url, thumbUrl: thumbUrl ?? null }
-      })
+      const mediaDtos: ReportMedia[] = await mapWithLimit(media, PRESIGN_CONCURRENCY, toMediaDTO)
       const base = toListItem(record, ref, pickPreviewMedia(mediaDtos))
       const linkedEvents: LinkedEventRef[] = (linkedEventsMap.get(id) ?? []).map(toLinkedEventRef)
       const outreachDTO: ReportOutreach = {

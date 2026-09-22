@@ -141,10 +141,6 @@ export function toBroadcastDTO(record: BroadcastRecord): BroadcastDTO {
   }
 }
 
-export interface BroadcastSendOptions {
-  skipEventSendCounters?: boolean
-}
-
 export interface BroadcastService {
   list(cleanupId: string, query: ListEventBroadcastsRequest): Promise<{
     items: BroadcastDTO[]
@@ -168,12 +164,7 @@ export interface BroadcastService {
     body: PreviewEventBroadcastRequest,
   ): Promise<BroadcastPreviewDTO>
   testSend(cleanupId: string, actorId: string, broadcastId: string): Promise<{ ok: true }>
-  send(
-    cleanupId: string,
-    actorId: string,
-    broadcastId: string,
-    options?: BroadcastSendOptions,
-  ): Promise<BroadcastDTO>
+  send(cleanupId: string, actorId: string, broadcastId: string): Promise<BroadcastDTO>
   sendAnnouncement(cleanupId: string, actorId: string, broadcastId: string): Promise<BroadcastDTO>
   schedule(
     cleanupId: string,
@@ -481,13 +472,8 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       return { ok: true }
     },
 
-    async send(cleanupId, actorId, broadcastId, options) {
-      return sendBroadcast(
-        cleanupId,
-        actorId,
-        broadcastId,
-        options?.skipEventSendCounters === true,
-      )
+    async send(cleanupId, actorId, broadcastId) {
+      return sendBroadcast(cleanupId, actorId, broadcastId, false)
     },
 
     async sendAnnouncement(cleanupId, actorId, broadcastId) {

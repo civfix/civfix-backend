@@ -339,6 +339,14 @@ function feedFilterClause(sql: Queryable, filter: FeedFilter): postgres.Fragment
   return sql``
 }
 
+function viewerBlockClause(sql: Queryable, viewerId: string): postgres.Fragment {
+  return sql`AND NOT EXISTS (
+      SELECT 1 FROM user_blocks b
+      WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = p.author_id)
+         OR (b.blocker_id = p.author_id AND b.blocked_id = ${viewerId})
+    )`
+}
+
 export function feedCandidatesStatement(
   sql: Queryable,
   args: FeedCandidateArgs,
@@ -350,11 +358,7 @@ export function feedCandidatesStatement(
     AND p.reply_to_id IS NULL
     AND p.visibility = 'public'
     AND p.created_at >= (SELECT since FROM eligible_window)
-    AND NOT EXISTS (
-      SELECT 1 FROM user_blocks b
-      WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = p.author_id)
-         OR (b.blocker_id = p.author_id AND b.blocked_id = ${viewerId})
-    )
+    ${viewerBlockClause(sql, viewerId)}
     ${filterClause}
   `
   return sql`
@@ -1212,11 +1216,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         WHERE p.id = ANY(${[...ids]}::uuid[])
           AND p.deleted_at IS NULL
           AND p.visibility = 'public'
-          AND NOT EXISTS (
-            SELECT 1 FROM user_blocks b
-            WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = p.author_id)
-               OR (b.blocker_id = p.author_id AND b.blocked_id = ${viewerId})
-          )
+          ${viewerBlockClause(sql, viewerId)}
       `
       const order = new Map(ids.map((id, index) => [id, index]))
       rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
@@ -1246,11 +1246,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         WHERE p.id = ANY(${[...postIds]}::uuid[])
           AND p.deleted_at IS NULL
           AND p.visibility = 'public'
-          AND NOT EXISTS (
-            SELECT 1 FROM user_blocks b
-            WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = p.author_id)
-               OR (b.blocker_id = p.author_id AND b.blocked_id = ${viewerId})
-          )
+          ${viewerBlockClause(sql, viewerId)}
       `
     },
 

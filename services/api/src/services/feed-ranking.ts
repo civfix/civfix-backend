@@ -115,7 +115,7 @@ export function jitterUnit(seed: number, postId: string): number {
   return avalanche(fnv1a32(`${seed}:${postId}`)) / UINT32_SPAN
 }
 
-export function jitterMultiplier(cfg: FeedRankingConfig, seed: number, postId: string): number {
+function jitterMultiplier(cfg: FeedRankingConfig, seed: number, postId: string): number {
   if (cfg.jitterAmount === 0) return 1
   return 1 + cfg.jitterAmount * (2 * jitterUnit(seed, postId) - 1)
 }
@@ -160,17 +160,13 @@ export function rankCandidates(
   base.sort(byScoreThenId)
 
   const seenPerAuthor = new Map<string, number>()
-  const discounted = base.map((entry) => {
+  for (const entry of base) {
     const rank = seenPerAuthor.get(entry.authorId) ?? 0
     seenPerAuthor.set(entry.authorId, rank + 1)
-    return {
-      id: entry.id,
-      authorId: entry.authorId,
-      score: quantizeFeedScore(entry.score * diversityMultiplier(rank, cfg)),
-    }
-  })
-  discounted.sort(byScoreThenId)
-  return discounted
+    entry.score = quantizeFeedScore(entry.score * diversityMultiplier(rank, cfg))
+  }
+  base.sort(byScoreThenId)
+  return base
 }
 
 export function applyCutoff(

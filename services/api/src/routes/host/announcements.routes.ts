@@ -28,16 +28,6 @@ import type {
 export const ANNOUNCEMENT_CREATE_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 minute" })
 export const ANNOUNCEMENT_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
-export interface AnnouncementOverrides {
-  runtime: CommsRuntime
-}
-
-declare module "fastify" {
-  interface FastifyInstance {
-    announcementOverrides?: AnnouncementOverrides
-  }
-}
-
 function mergeParams(request: FastifyRequest): Record<string, unknown> {
   const params = (request.params ?? {}) as Record<string, unknown>
   const body = (request.body ?? {}) as Record<string, unknown>
@@ -58,8 +48,6 @@ export async function registerHostAnnouncementRoutes(
   let cached: CommsRuntime | undefined
 
   function runtime(): CommsRuntime {
-    const override = app.announcementOverrides
-    if (override) return override.runtime
     return (cached ??= makeCommsRuntime(container, app.log))
   }
 

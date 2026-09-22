@@ -1093,11 +1093,12 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         lng: source.lng,
         scheduledAt: scheduledAt.toISOString(),
         ...(source.bring !== null ? { bring: source.bring } : {}),
-        ...(source.address !== null && source.addressSource !== null
-          ? { address: source.address, addressSource: source.addressSource }
-          : source.address !== null
-            ? { address: source.address }
-            : {}),
+        ...(source.address !== null
+          ? {
+              address: source.address,
+              ...(source.addressSource !== null ? { addressSource: source.addressSource } : {}),
+            }
+          : {}),
         slots:
           slots.length > 0
             ? slots.map((slot) => ({

@@ -14,7 +14,6 @@ import type {
   ListEventAnnouncementsResponse,
   PersonDTO,
 } from "@civfix/shared"
-import type { FastifyBaseLogger } from "fastify"
 import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 import type { BroadcastRecord } from "./broadcast-types.js"
@@ -33,7 +32,6 @@ export interface AnnouncementServiceDeps {
   identities: AnnouncementIdentityRepository
   broadcasts: BroadcastService
   config: Pick<BroadcastConfig, "chunkSize" | "linkAllowedHosts" | "webBaseUrl">
-  logger?: Pick<FastifyBaseLogger, "info" | "warn" | "error">
   now?: () => Date
 }
 
@@ -151,6 +149,16 @@ export function makeAnnouncementService(deps: AnnouncementServiceDeps): Announce
     return broadcastLinkWarnings(url, config.linkAllowedHosts).length === 0 ? url : null
   }
 
+  async function hydrateOne(
+    cleanupId: string,
+    record: BroadcastRecord,
+    projection: AnnouncementProjection,
+  ): Promise<AnnouncementDTO> {
+    const [dto] = await hydrate(cleanupId, [record], projection)
+    if (dto === undefined) throw notFound()
+    return dto
+  }
+
   return {
     async create(cleanupId, actorId, body) {
       await deps.broadcasts.assertComposeAllowed(cleanupId, actorId)
@@ -187,9 +195,7 @@ export function makeAnnouncementService(deps: AnnouncementServiceDeps): Announce
 
       const sent = await repo.findForEvent(cleanupId, draft.id)
       if (sent === null) throw notFound()
-      const [dto] = await hydrate(cleanupId, [sent], { host: true })
-      if (dto === undefined) throw notFound()
-      return dto
+      return hydrateOne(cleanupId, sent, { host: true })
     },
 
     async list(cleanupId, query, projection) {
@@ -215,9 +221,7 @@ export function makeAnnouncementService(deps: AnnouncementServiceDeps): Announce
       if (!projection.host && record.status !== "sending" && record.status !== "sent") {
         throw notFound()
       }
-      const [dto] = await hydrate(cleanupId, [record], projection)
-      if (dto === undefined) throw notFound()
-      return dto
+      return hydrateOne(cleanupId, record, projection)
     },
   }
 }

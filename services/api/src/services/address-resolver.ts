@@ -87,8 +87,8 @@ export function makeAddressResolver(deps: AddressResolverDeps): AddressResolver 
     const chainAlreadyMissed = cached !== null
 
     const [hit, label] = await Promise.all([
-      chainAlreadyMissed ? Promise.resolve(null) : orNull(deps.streetReverseGeocode(lat, lng)),
-      orNull(Promise.resolve(deps.geocoder.cityStateLabel(lat, lng))),
+      chainAlreadyMissed ? null : orNull(deps.streetReverseGeocode(lat, lng)),
+      orNull(deps.geocoder.cityStateLabel(lat, lng)),
     ])
 
     const cityStateLabel = label ?? ""
@@ -99,22 +99,13 @@ export function makeAddressResolver(deps: AddressResolverDeps): AddressResolver 
           ? { address: cityStateLabel, precision: "locality", cityStateLabel }
           : { address: null, precision: null, cityStateLabel }
 
-    if (hit !== null) {
+    if (hit !== null || !chainAlreadyMissed) {
       await orNull(
         cache.write(pointKey, {
-          address: hit.line,
-          precision: hit.precision,
+          address: hit?.line ?? null,
+          precision: hit?.precision ?? null,
           cityStateLabel,
-          provider: hit.provider,
-        }),
-      )
-    } else if (!chainAlreadyMissed) {
-      await orNull(
-        cache.write(pointKey, {
-          address: null,
-          precision: null,
-          cityStateLabel,
-          provider: null,
+          provider: hit?.provider ?? null,
         }),
       )
     }

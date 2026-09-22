@@ -148,13 +148,6 @@ export interface NotificationRepository {
     deviceId: string | null
   }): Promise<PushTokenUpsertOutcome>
 
-  revokeDeviceTokensForOtherUsers(args: {
-    userId: string
-    token: string
-    platform: PushPlatform
-    deviceId: string | null
-  }): Promise<number>
-
   revokeToken(userId: string, platform: PushPlatform, token: string): Promise<void>
 
   deletePushTokensForUser(userId: string): Promise<void>
@@ -561,19 +554,6 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         throw AppError.conflict(
           "This push token is registered to another account. Sign out on the other account or reinstall the app.",
         )
-      }
-      try {
-        const revoked = await deps.repo.revokeDeviceTokensForOtherUsers({
-          userId,
-          token: req.token,
-          platform: req.platform,
-          deviceId: req.deviceId ?? null,
-        })
-        if (revoked > 0) {
-          deps.logger?.warn({ userId, platform: req.platform, revoked }, "device-claim revoked other accounts' push tokens")
-        }
-      } catch (err) {
-        deps.logger?.warn({ err, userId }, "device-claim revoke failed (suppressed)")
       }
       try {
         await deps.pushSender.registerToken(userId, req.token, req.platform, req.deviceId)

@@ -312,24 +312,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return "stored"
     },
 
-    async revokeDeviceTokensForOtherUsers(args: {
-      userId: string
-      token: string
-      platform: PushPlatform
-      deviceId: string | null
-    }): Promise<number> {
-      const rows = await sql<{ id: string }[]>`
-        UPDATE push_tokens
-        SET revoked_at = now()
-        WHERE user_id <> ${args.userId}
-          AND revoked_at IS NULL
-          AND platform = ${args.platform}
-          AND token = ${args.token}
-        RETURNING id
-      `
-      return rows.length
-    },
-
     async revokeToken(userId: string, platform: PushPlatform, token: string): Promise<void> {
       await sql`
         UPDATE push_tokens

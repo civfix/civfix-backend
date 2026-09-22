@@ -373,7 +373,7 @@ export function makeEventAnalyticsService(
     registeredPublishable: boolean,
     full: boolean,
   ): Panel {
-    const panel = toPanel(breakdown([...rows], { totalPublishable: registeredPublishable }))
+    const panel = toPanel(breakdown(rows, { totalPublishable: registeredPublishable }))
     if (full) return panel
     return { ...panel, rows: panel.rows.slice(0, EVENT_ANALYTICS_CARD_SLOT_ROWS) }
   }

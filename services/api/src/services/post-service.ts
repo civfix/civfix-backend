@@ -258,9 +258,10 @@ export function makePostService(deps: PostServiceDeps): PostService {
       nowBucketMs,
       seedFor(viewerId, query.filter, isFirstPage, nowBucketMs),
     )
+    const durable = applyCutoff(ranked, feedConfig, false)
     return {
-      page: applyCutoff(ranked, feedConfig, true),
-      durable: applyCutoff(ranked, feedConfig, false),
+      page: isFirstPage ? applyCutoff(ranked, feedConfig, true) : durable,
+      durable,
     }
   }
 

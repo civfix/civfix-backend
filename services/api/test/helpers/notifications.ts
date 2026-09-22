@@ -213,27 +213,6 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     }
   }
 
-  revokeDeviceTokensForOtherUsers(args: {
-    userId: string
-    token: string
-    platform: PushPlatform
-    deviceId: string | null
-  }): Promise<number> {
-    let revoked = 0
-    for (const t of this.pushTokens) {
-      if (
-        t.userId !== args.userId &&
-        t.revokedAt === null &&
-        t.platform === args.platform &&
-        t.token === args.token
-      ) {
-        t.revokedAt = this.now()
-        revoked++
-      }
-    }
-    return Promise.resolve(revoked)
-  }
-
   revokeToken(userId: string, platform: PushPlatform, token: string): Promise<void> {
     for (const t of this.pushTokens) {
       if (
