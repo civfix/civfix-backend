@@ -168,6 +168,15 @@ export class InMemoryMailRepository implements MailRepository {
     return this.createThread({ ...init, reportId, threadToken: mintThreadToken() })
   }
 
+  findReportThread(reportId: string): Promise<MailThreadRecord | null> {
+    let best: MailThreadRecord | null = null
+    for (const t of this.threads.values()) {
+      if (t.reportId !== reportId) continue
+      if (best === null || cmpThreadNewest(t, best) > 0) best = t
+    }
+    return Promise.resolve(best === null ? null : { ...best })
+  }
+
   findOrCreateEventThread(cleanupId: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
     let best: MailThreadRecord | null = null
     for (const t of this.threads.values()) {

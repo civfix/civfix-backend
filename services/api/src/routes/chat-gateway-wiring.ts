@@ -595,11 +595,11 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
             place: report.place,
             jurisdiction: report.jurisdiction,
             actorUserId,
+            actorDisplayName: message.from?.name ?? null,
           },
           body,
           new Date(message.createdAt),
           {
-            enabled: container.env.REPORT_AUTOFORWARD_ENABLED,
             canForward: canForwardCity,
             audit: reportForwardAudit,
             messageId: message.id,

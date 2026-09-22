@@ -9,6 +9,7 @@ import {
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
 import type { ReportForwardAudit } from "../../src/services/report-forward-audit.drizzle.js"
 import type {
+  AppendOutboundInput,
   OutboundMailService,
   SendReportInput,
 } from "../../src/services/admin/outbound-mail-service.js"
@@ -27,7 +28,7 @@ const SF: ReportJurisdictionView = {
 }
 const SF_NO_CONTACT: ReportJurisdictionView = { ...SF, contactEmail: null }
 
-function stubThread(): MailThreadRecord {
+function stubThread(overrides: Partial<MailThreadRecord> = {}): MailThreadRecord {
   return {
     id: "thread-1",
     threadToken: "geo-1",
@@ -35,38 +36,47 @@ function stubThread(): MailThreadRecord {
     cleanupId: null,
     jurisdictionGeoid: null,
     org: null,
-    subject: null,
+    subject: "[civfix] Tag on the underpass - SF - ABC123",
     status: "sent",
     unread: false,
     lastMessageAt: null,
     createdAt: new Date(),
+    ...overrides,
   }
 }
 
-function mailer(opts: { fail?: boolean } = {}): OutboundMailService & { calls: SendReportInput[] } {
-  const calls: SendReportInput[] = []
+type SpyMailer = OutboundMailService & {
+  calls: AppendOutboundInput[]
+  threadIds: string[]
+}
+
+function mailer(opts: { fail?: boolean; thread?: MailThreadRecord | null } = {}): SpyMailer {
+  const calls: AppendOutboundInput[] = []
+  const threadIds: string[] = []
+  const thread = opts.thread === undefined ? stubThread() : opts.thread
   return {
     calls,
-    prepareReportToJurisdiction(input: SendReportInput) {
-      calls.push(input)
+    threadIds,
+    findReportThread: () => Promise.resolve(thread),
+    prepareReportToJurisdiction(_input: SendReportInput) {
       return Promise.resolve({
         thread: stubThread(),
-        deliver: () =>
-          opts.fail
-            ? Promise.reject(new Error("smtp down"))
-            : Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" }),
+        deliver: () => Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" }),
       })
     },
-    sendReportToJurisdiction(input: SendReportInput) {
-      calls.push(input)
-      if (opts.fail) return Promise.reject(new Error("smtp down"))
+    sendReportToJurisdiction(_input: SendReportInput) {
       return Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" })
     },
     sendEventToJurisdiction: () =>
       Promise.resolve({ thread: stubThread(), messageId: "<stub@civfix.org>" }),
     sendToCity: () => Promise.resolve(stubThread()),
     compose: () => Promise.resolve(stubThread()),
-    appendOutbound: () => Promise.resolve(stubThread()),
+    appendOutbound: (threadId: string, input: AppendOutboundInput) => {
+      threadIds.push(threadId)
+      calls.push(input)
+      if (opts.fail) return Promise.reject(new Error("smtp down"))
+      return Promise.resolve(stubThread())
+    },
   }
 }
 
@@ -97,7 +107,6 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     const mail = mailer()
     const audit = spyAudit()
     const res = await forwardReportCityMention(mail, ctx(SF), "pls fix @sf", CREATED, {
-      enabled: true,
       audit,
       messageId: MSG,
     })
@@ -117,7 +126,6 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     const mail = mailer()
     const audit = spyAudit()
     const res = await forwardReportCityMention(mail, ctx(SF_NO_CONTACT), "@sf help", CREATED, {
-      enabled: true,
       audit,
       messageId: MSG,
     })
@@ -133,7 +141,6 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     const mail = mailer({ fail: true })
     const audit = spyAudit()
     const res = await forwardReportCityMention(mail, ctx(SF), "@sf urgent", CREATED, {
-      enabled: true,
       audit,
       messageId: MSG,
     })
@@ -149,7 +156,6 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     const mail = mailer()
     const audit = spyAudit()
     const res = await forwardReportCityMention(mail, ctx(SF), "@sf again", CREATED, {
-      enabled: true,
       audit,
       messageId: MSG,
       canForward: () => Promise.resolve(false),
@@ -162,13 +168,12 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     expect(mail.calls).toHaveLength(0)
   })
 
-  it("records the mention but forwards NOTHING when forwarding is disabled (enabled: false)", async () => {
-    const mail = mailer()
+  it("records the mention but forwards NOTHING when the report was never sent to the city", async () => {
+    const mail = mailer({ thread: null })
     const audit = spyAudit()
     const res = await forwardReportCityMention(mail, ctx(SF), "@sf please fix", CREATED, {
       audit,
       messageId: MSG,
-      enabled: false,
     })
 
     expect(res).toMatchObject({ mentioned: true, geoid: "0600001", forwarded: false })
@@ -177,11 +182,49 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     expect(mail.calls).toHaveLength(0)
   })
 
+  it("rides the report's existing mail thread with a Re: subject and the report/geoid event meta", async () => {
+    const mail = mailer()
+    await forwardReportCityMention(mail, ctx(SF), "pls fix @sf", CREATED, {})
+
+    expect(mail.threadIds).toEqual(["thread-1"])
+    const sent = mail.calls[0]!
+    expect(sent.subject).toBe("Re: [civfix] Tag on the underpass - SF - ABC123")
+    expect(sent.kind).toBe("discussion")
+    expect(sent.toAddr).toBe("fix@sf.gov")
+    expect(sent.eventMeta).toEqual({ reportId: REPORT, geoid: "0600001" })
+  })
+
+  it("does not double-prefix a thread subject that is already a reply, and falls back when it has none", async () => {
+    const already = mailer({ thread: stubThread({ subject: "Re: [civfix] Tag" }) })
+    await forwardReportCityMention(already, ctx(SF), "@sf hi", CREATED, {})
+    expect(already.calls[0]!.subject).toBe("Re: [civfix] Tag")
+
+    const untitled = mailer({ thread: stubThread({ subject: null }) })
+    await forwardReportCityMention(untitled, ctx(SF), "@sf hi", CREATED, {})
+    expect(untitled.calls[0]!.subject).toContain("civfix report: graffiti in SF")
+  })
+
+  it("attributes the commenter by public display name, and stays anonymous without one", async () => {
+    const named = mailer()
+    await forwardReportCityMention(
+      named,
+      { ...ctx(SF), actorDisplayName: "Dana Neighbor" },
+      "@sf there is a tag here",
+      CREATED,
+      {},
+    )
+    expect(named.calls[0]!.body).toContain("Dana Neighbor commented on a graffiti report in SF")
+    expect(named.calls[0]!.body).toContain("there is a tag here")
+
+    const anon = mailer()
+    await forwardReportCityMention(anon, { ...ctx(SF), actorDisplayName: null }, "@sf hi", CREATED, {})
+    expect(anon.calls[0]!.body).toContain("A neighbor commented on a graffiti report in SF")
+  })
+
   it("writes NO audit row when the body @mentions no city handle", async () => {
     const mail = mailer()
     const audit = spyAudit()
     const res = await forwardReportCityMention(mail, ctx(SF), "just chatting", CREATED, {
-      enabled: true,
       audit,
       messageId: MSG,
     })
@@ -197,7 +240,6 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
       recordMention: vi.fn(() => Promise.reject(new Error("db down"))),
     })
     const res = await forwardReportCityMention(mail, ctx(SF), "@sf now", CREATED, {
-      enabled: true,
       audit,
       messageId: MSG,
     })
@@ -208,7 +250,7 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
 
   it("skips auditing entirely when audit/messageId are omitted (opt-in seam)", async () => {
     const mail = mailer()
-    const res = await forwardReportCityMention(mail, ctx(SF), "@sf please", CREATED, { enabled: true })
+    const res = await forwardReportCityMention(mail, ctx(SF), "@sf please", CREATED, {})
     expect(res).toMatchObject({ mentioned: true, forwarded: true })
     expect(mail.calls).toHaveLength(1)
   })

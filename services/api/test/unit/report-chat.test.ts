@@ -14,6 +14,7 @@ import { InMemoryChatRepository, InMemoryThreadsRepository, MockConnection } fro
 import { forwardReportCityMention } from "../../src/services/report-city-forward.js"
 import { makeTokenBucketLimiter, type RateLimiter } from "../../src/ws/report-rate-limit.js"
 import type {
+  AppendOutboundInput,
   OutboundMailService,
   PreparedReportOutbound,
   SendReportInput,
@@ -45,6 +46,11 @@ const SF_JURISDICTION: ReportJurisdictionView = {
 
 class SpyOutboundMail implements OutboundMailService {
   readonly reportCalls: SendReportInput[] = []
+  readonly appendCalls: { threadId: string; input: AppendOutboundInput }[] = []
+  reportThread: MailThreadRecord | null = { ...stubThread(), subject: "[civfix] Tag - SF - ABC123" }
+  findReportThread(): Promise<MailThreadRecord | null> {
+    return Promise.resolve(this.reportThread)
+  }
   prepareReportToJurisdiction(input: SendReportInput): Promise<PreparedReportOutbound> {
     this.reportCalls.push(input)
     return Promise.resolve({
@@ -67,7 +73,8 @@ class SpyOutboundMail implements OutboundMailService {
   compose(): Promise<MailThreadRecord> {
     return Promise.resolve(stubThread())
   }
-  appendOutbound(): Promise<MailThreadRecord> {
+  appendOutbound(threadId: string, input: AppendOutboundInput): Promise<MailThreadRecord> {
+    this.appendCalls.push({ threadId, input })
     return Promise.resolve(stubThread())
   }
 }
@@ -119,10 +126,17 @@ const onReportMessage: OnReportMessage = async (reportId, message, actorUserId) 
   const body = typeof message.body === "string" ? message.body : ""
   await forwardReportCityMention(
     mail,
-    { reportId, category: "graffiti", place: "SF", jurisdiction: SF_JURISDICTION, actorUserId },
+    {
+      reportId,
+      category: "graffiti",
+      place: "SF",
+      jurisdiction: SF_JURISDICTION,
+      actorUserId,
+      actorDisplayName: message.from?.name ?? null,
+    },
     body,
     new Date(message.createdAt),
-    { enabled: true, canForward: canForwardCity },
+    { canForward: canForwardCity },
   )
 }
 
@@ -239,10 +253,27 @@ describe("report chat gateway", () => {
     )
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(mail.reportCalls).toHaveLength(1)
-    expect(mail.reportCalls[0]!.toAddr).toBe("fix@sf.gov")
-    expect(mail.reportCalls[0]!.geoid).toBe("0600001")
-    expect(mail.reportCalls[0]!.text).toContain("@sf")
+    expect(mail.appendCalls).toHaveLength(1)
+    expect(mail.appendCalls[0]!.threadId).toBe("thread-1")
+    expect(mail.appendCalls[0]!.input.toAddr).toBe("fix@sf.gov")
+    expect(mail.appendCalls[0]!.input.eventMeta?.geoid).toBe("0600001")
+    expect(mail.appendCalls[0]!.input.body).toContain("@sf")
+    expect(mail.appendCalls[0]!.input.subject).toBe("Re: [civfix] Tag - SF - ABC123")
+  })
+
+  it("does NOT forward when the report has no existing city mail thread to reply into", async () => {
+    reportChat = makeReportChat(true)
+    mail.reportThread = null
+    const conn = new MockConnection("A")
+    const session = sessionFor(ALICE, conn)
+    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "pls fix @sf" }),
+    )
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(mail.appendCalls).toHaveLength(0)
   })
 
   it("DEDUPES the @city forward within the window (a flood can't email-bomb the jurisdiction)", async () => {
@@ -258,7 +289,7 @@ describe("report chat gateway", () => {
     }
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(mail.reportCalls).toHaveLength(1)
+    expect(mail.appendCalls).toHaveLength(1)
   })
 
   it("does NOT forward a report message that mentions no city handle", async () => {
@@ -272,7 +303,7 @@ describe("report chat gateway", () => {
     )
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(mail.reportCalls).toHaveLength(0)
+    expect(mail.appendCalls).toHaveLength(0)
   })
 
   it("serves report history to an anonymous viewer (public-read, null viewer)", async () => {
@@ -361,8 +392,8 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
     expect((acks[0] as { message: { roomKind?: string } }).message.roomKind).toBe("report")
     expect(observerConn.framesOfType("message")).toHaveLength(1)
     expect(conn.framesOfType("message")).toHaveLength(0)
-    expect(mail.reportCalls).toHaveLength(1)
-    expect(mail.reportCalls[0]!.geoid).toBe("0600001")
+    expect(mail.appendCalls).toHaveLength(1)
+    expect(mail.appendCalls[0]!.input.eventMeta?.geoid).toBe("0600001")
   })
 
   it("advances the report read watermark on ACK (was a no-op)", async () => {
