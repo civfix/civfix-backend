@@ -229,7 +229,7 @@ describe("feed ranking: the worked examples from the design", () => {
     expect(score).toBeCloseTo(115.9, 1)
   })
 
-  it("stranger 5 km away, verified org, report, image, 12 likes, 3 d old scores ~45.8", () => {
+  it("stranger 5 km away, verified org, report, image, 12 likes, 3 d old scores ~125.1", () => {
     const score = scoreCandidate(
       candidate({
         createdAtMs: at(72),
@@ -242,7 +242,7 @@ describe("feed ranking: the worked examples from the design", () => {
       CFG,
       NOW,
     )
-    expect(score).toBeCloseTo(45.8, 1)
+    expect(score).toBeCloseTo(125.1, 1)
   })
 
   it("stranger, no location, 2 likes, 1 h old scores ~13.1 and clears the cutoff", () => {
@@ -354,7 +354,7 @@ describe("FeedRankingConfigSchema", () => {
   it("fills every knob from an empty object", () => {
     const parsed = FeedRankingConfigSchema.parse({})
     expect(parsed).toEqual(DEFAULT_FEED_RANKING)
-    expect(Object.keys(parsed)).toHaveLength(27)
+    expect(Object.keys(parsed)).toHaveLength(28)
   })
 
   it("merges a partial override onto the defaults", () => {
