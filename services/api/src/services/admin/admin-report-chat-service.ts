@@ -4,8 +4,7 @@ import {
   type ChatMessageDTO,
   type ReportChatHistoryRequest,
 } from "@civfix/shared"
-import type { ChatHistorySource } from "../../routes/chat-route-helpers.js"
-import { chatHistoryPayload } from "../../routes/chat-route-helpers.js"
+import { chatHistoryPayload, type ChatHistorySource } from "../../routes/chat-route-helpers.js"
 import {
   sendReportChatMessage,
   type ReportChatSendDeps,

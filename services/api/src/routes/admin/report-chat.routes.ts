@@ -64,21 +64,25 @@ export async function registerAdminReportChatRoutes(
         historySource: historySourceFrom(() => overrides.chatRepo),
         send: overrides.send,
       }),
-    () => {
-      const sql = container.getDb().sql
-      let chatRepo: ChatRepository | undefined
-      const getChatRepo = (): ChatRepository =>
-        (chatRepo ??= makeDrizzleChatRepository(sql, makePrivateMediaPresigner(container.storage)))
-      return makeAdminReportChatService({
-        repo: makeDrizzleAdminReportChatRepository(sql),
-        historySource: historySourceFrom(getChatRepo),
-        send: makeContainerReportChatSendDeps(container, {
-          mentions: chatMentionDeps(app, container),
-          logger: app.log,
-        }),
-      })
-    },
+    () => (containerService ??= buildContainerService()),
   )
+
+  let containerService: AdminReportChatService | undefined
+  let chatRepo: ChatRepository | undefined
+
+  function buildContainerService(): AdminReportChatService {
+    const sql = container.getDb().sql
+    const getChatRepo = (): ChatRepository =>
+      (chatRepo ??= makeDrizzleChatRepository(sql, makePrivateMediaPresigner(container.storage)))
+    return makeAdminReportChatService({
+      repo: makeDrizzleAdminReportChatRepository(sql),
+      historySource: historySourceFrom(getChatRepo),
+      send: makeContainerReportChatSendDeps(container, {
+        mentions: chatMentionDeps(app, container),
+        logger: app.log,
+      }),
+    })
+  }
 
   route(app, "adminReportMessages", async (request, reply) => {
     requireOperator(request)

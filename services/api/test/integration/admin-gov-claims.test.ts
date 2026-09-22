@@ -5,7 +5,8 @@
  * / users / audit_log all exist with their real constraints, including the gov_claims status CHECK).
  *
  * Proven here against the real schema:
- *   - listPending pages pending claims newest-first with the keyset cursor + search (name/org);
+ *   - list pages claims by the status facet ("all" = every status) newest-first with the keyset cursor
+ *     + search (name/org);
  *   - getClaim parses the `checks` jsonb into the typed per-check map;
  *   - setCheck merges one check into the checks jsonb (preserving the others) + audits gov_claim.verified;
  *   - the SERVICE approve provisions the gov user by contact_email (find-or-create) with role gov_admin,
@@ -130,12 +131,30 @@ describe.skipIf(!pg)(
         geoid: null,
       })
 
-      const page = await repo.listPending({ q: null, filter: "all", cursor: null, limit: 25 })
+      const page = await repo.list({
+        q: null,
+        filter: "all",
+        sort: "newest",
+        cursor: null,
+        limit: 25,
+      })
       expect(page.records.map((r) => r.id)).toEqual([b, a]) // newest first
 
-      const byName = await repo.listPending({ q: "dana", filter: "all", cursor: null, limit: 25 })
+      const byName = await repo.list({
+        q: "dana",
+        filter: "all",
+        sort: "newest",
+        cursor: null,
+        limit: 25,
+      })
       expect(byName.records.map((r) => r.id)).toEqual([a])
-      const byOrg = await repo.listPending({ q: "vienna", filter: "all", cursor: null, limit: 25 })
+      const byOrg = await repo.list({
+        q: "vienna",
+        filter: "all",
+        sort: "newest",
+        cursor: null,
+        limit: 25,
+      })
       expect(byOrg.records.map((r) => r.id)).toEqual([b])
     })
 

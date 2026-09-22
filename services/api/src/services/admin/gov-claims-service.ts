@@ -73,13 +73,20 @@ export interface GovClaimRecord {
   createdAt: Date
 }
 
-/** Filter facet for the list (mirrors the shared GovClaimListQuery filter). */
+/** Filter facet for the list (mirrors the shared GovClaimListQuery filter). "all" applies no status clause. */
 export type GovClaimFilter = "all" | GovClaimStatus
 
-/** Normalized list arguments the repo consumes (search + facet + page window). */
+export type GovClaimSort = "newest" | "oldest"
+
+export function parseGovClaimSort(sort: string | undefined): GovClaimSort {
+  return sort === "oldest" ? "oldest" : "newest"
+}
+
+/** Normalized list arguments the repo consumes (search + facet + direction + page window). */
 export interface ListGovClaimsArgs {
   q: string | null
   filter: GovClaimFilter
+  sort: GovClaimSort
   cursor: string | null
   limit: number
 }
@@ -108,8 +115,11 @@ export interface UserProvisioner {
  * pass an in-memory impl. Action methods return a small result so the service can decide the 404 / audit.
  */
 export interface GovClaimsRepository {
-  /** Page the PENDING claims applying the search + status facet, newest-first keyset paged. */
-  listPending(
+  /**
+   * Page the claims matching the status facet ("all" = every status) + the search, keyset paged in the
+   * requested direction.
+   */
+  list(
     args: ListGovClaimsArgs,
   ): Promise<{ records: GovClaimRecord[]; nextCursor: string | null }>
   /** Load one claim by id (any status), or null when it does not exist. */
@@ -241,11 +251,12 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
       const ref = now()
       const args: ListGovClaimsArgs = {
         q: query.q && query.q.trim() !== "" ? query.q.trim() : null,
-        filter: (query.filter ?? "all") as GovClaimFilter,
+        filter: query.filter ?? "pending",
+        sort: parseGovClaimSort(query.sort),
         cursor: query.cursor ?? null,
         limit: clampLimit(query.limit),
       }
-      const { records, nextCursor } = await deps.repo.listPending(args)
+      const { records, nextCursor } = await deps.repo.list(args)
       return { items: records.map((r) => toDTO(r, ref)), nextCursor }
     },
 
