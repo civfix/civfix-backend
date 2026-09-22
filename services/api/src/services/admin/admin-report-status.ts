@@ -26,24 +26,43 @@ export const STATUS_BUCKETS: Record<
 
 /**
  * Map the list `filter` facet to a repo query shape. The design facet (all|submitted|in_progress|
- * completed|flagged) reconciles to a SET of civfix statuses to match (via STATUS_BUCKETS) and/or the
- * flagged-only marker. `all` matches everything.
+ * completed|flagged|needs_verification) reconciles to a SET of civfix statuses to match (via
+ * STATUS_BUCKETS) and/or the flagged-only / needs-verification-only markers. `all` matches everything.
  */
 export function resolveListFilter(filter: string | undefined): {
   statuses: AdminReportStatus[] | null
   flaggedOnly: boolean
+  needsVerificationOnly: boolean
 } {
   switch (filter) {
     case "submitted":
-      return { statuses: STATUS_BUCKETS.submitted, flaggedOnly: false }
+      return {
+        statuses: STATUS_BUCKETS.submitted,
+        flaggedOnly: false,
+        needsVerificationOnly: false,
+      }
     case "in_progress":
-      return { statuses: STATUS_BUCKETS.in_progress, flaggedOnly: false }
+      return {
+        statuses: STATUS_BUCKETS.in_progress,
+        flaggedOnly: false,
+        needsVerificationOnly: false,
+      }
     case "completed":
-      return { statuses: STATUS_BUCKETS.completed, flaggedOnly: false }
+      return {
+        statuses: STATUS_BUCKETS.completed,
+        flaggedOnly: false,
+        needsVerificationOnly: false,
+      }
     case "flagged":
-      return { statuses: null, flaggedOnly: true }
+      return { statuses: null, flaggedOnly: true, needsVerificationOnly: false }
+    case "needs_verification":
+      return {
+        statuses: STATUS_BUCKETS.submitted,
+        flaggedOnly: false,
+        needsVerificationOnly: true,
+      }
     default:
-      return { statuses: null, flaggedOnly: false }
+      return { statuses: null, flaggedOnly: false, needsVerificationOnly: false }
   }
 }
 

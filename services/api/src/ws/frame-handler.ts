@@ -8,7 +8,7 @@ import {
   type UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatConnection, UserChannel } from "@civfix/shared/interfaces"
-import { parseUserMentions } from "../services/discussion-mentions.js"
+import { resolveAndRecordChatMentions } from "../services/chat-mention-resolver.js"
 import { mapWithLimit } from "../services/media-presign.js"
 import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
 import { containsSlur } from "../abuse/slur-filter.js"
@@ -364,22 +364,14 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
     throw err
   }
   void resilience.commit(dedupeKey, message.id)
-  let mentions: UserMentionDTO[] = []
-  if (deps.chatMentions) {
-    const { chatMentions } = deps
-    const handles = parseUserMentions(body)
-    const userIds = frame.mentionedUserIds ?? []
-    if (handles.length > 0 || userIds.length > 0) {
-      try {
-        mentions = await chatMentions.resolveChatMentions({ handles, userIds, authorUserId: userId, kind, roomId: id })
-        if (mentions.length > 0) {
-          await chatMentions.recordChatMentions(message.id, mentions.map((m) => m.id))
-        }
-      } catch {
-        mentions = []
-      }
-    }
-  }
+  const mentions: UserMentionDTO[] = await resolveAndRecordChatMentions(deps.chatMentions, {
+    body,
+    mentionedUserIds: frame.mentionedUserIds ?? [],
+    authorUserId: userId,
+    kind,
+    roomId: id,
+    messageId: message.id,
+  })
   if (mentions.length > 0) message = { ...message, mentions }
 
   conn.send(serverFrame({ type: "ack", clientId: frame.clientId, message }))

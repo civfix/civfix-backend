@@ -23,6 +23,7 @@ import {
   resolveMessageId,
 } from "./inbound-thread-correlation.js"
 import type { CleanupRepository } from "../cleanup-service.js"
+import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import { readMailAuthVerdict, type MailAuthVerdict } from "../../adapters/inbound-mail.cf.js"
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
@@ -80,6 +81,7 @@ export interface InboundProcessorDeps {
   adminReportRepo?: AdminReportRepository
   cleanupRepo?: CleanupRepository
   notifications?: ReporterNotifier
+  chatEmitter?: ReportChatSystemEmitter
 }
 
 export async function processInboundObject(

@@ -86,6 +86,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
       q: null,
       status: null,
       flaggedOnly: false,
+      deletedOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -100,6 +101,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
       q: null,
       status: null,
       flaggedOnly: true,
+      deletedOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -116,6 +118,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
       q: LA_CITY.name,
       status: null,
       flaggedOnly: false,
+      deletedOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -144,6 +147,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
       q: LA_CITY.name,
       status: null,
       flaggedOnly: false,
+      deletedOnly: false,
       cursor: null,
       limit: 25,
     })
@@ -165,7 +169,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
 
   /**
    * countByFacet has two arms and only the SEARCHED one is capped. The unfiltered arm must stay an exact
-   * aggregate: AdminUserCounts is four bare numbers with no truncation flag, so a capped `all` renders on
+   * aggregate: AdminUserCounts is bare numbers with no truncation flag, so a capped `all` renders on
    * the console's chips as if the cap WERE the account total. Pinned against the real schema because the
    * in-memory fake counts exactly either way and so cannot catch a regression here.
    */
@@ -183,13 +187,53 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
       active: 3,
       suspended: 1,
       flagged: 1,
+      deleted: 0,
+      banned: 0,
     })
     // The LEFT JOIN's COALESCE default (no user_moderation row at all) must land in `active`, which is the
     // arm most easily lost when the CTE is replaced by a direct aggregate.
     expect(await repo.getUser(a)).toMatchObject({ accountStatus: "active" })
 
     const searched = await repo.countByFacet({ q: "bobfacet" })
-    expect(searched).toEqual({ all: 1, active: 0, suspended: 1, flagged: 0 })
+    expect(searched).toEqual({
+      all: 1,
+      active: 0,
+      suspended: 1,
+      flagged: 0,
+      deleted: 0,
+      banned: 0,
+    })
+  })
+
+  it("the deleted and banned facets and their counts hold against the real schema", async () => {
+    const banned = await insertUser(h, { name: "Bea", handle: "beafacet" })
+    const tombstoned = await insertUser(h, { name: "Tom", handle: "tomfacet" })
+    await insertUser(h, { name: "Ada", handle: "adafacet" })
+    await repo.setStatus(banned, { status: "banned", reason: null, actorId: null })
+    await h.sql`UPDATE users SET deleted_at = now() WHERE id = ${tombstoned}`
+
+    const bannedList = await repo.listUsers({
+      q: null,
+      status: "banned",
+      flaggedOnly: false,
+      deletedOnly: false,
+      cursor: null,
+      limit: 25,
+    })
+    expect(bannedList.records.map((r) => r.id)).toEqual([banned])
+
+    const deletedList = await repo.listUsers({
+      q: null,
+      status: null,
+      flaggedOnly: false,
+      deletedOnly: true,
+      cursor: null,
+      limit: 25,
+    })
+    expect(deletedList.records.map((r) => r.id)).toEqual([tombstoned])
+
+    const counts = await repo.countByFacet({ q: null })
+    expect(counts).toMatchObject({ all: 3, banned: 1, deleted: 1 })
   })
 
   it("the sub-lists preserve cleanup, standalone group, and report message origins", async () => {

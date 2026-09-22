@@ -41,16 +41,8 @@ import {
   type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
 import type { GatewayGroupChat } from "../ws/types.js"
-import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
-import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
-import {
-  forwardReportCityMention,
-  makeCityForwardThrottle,
-} from "../services/report-city-forward.js"
-import {
-  makeReportForwardAudit,
-  type ReportForwardAudit,
-} from "../services/report-forward-audit.drizzle.js"
+import { makeCityForwardThrottle } from "../services/report-city-forward.js"
+import { makeContainerReportCityForward } from "../services/report-city-forward-wiring.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makeTokenBucketLimiter, type RateLimiter } from "../ws/report-rate-limit.js"
 import type { ReportVisibleFn } from "../ws/gateway.js"
@@ -569,42 +561,15 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
       }
     : undefined
 
-  let reportOutboundMail: ReturnType<typeof makeOutboundMailService> | undefined
-  let reportForwardAudit: ReportForwardAudit | undefined
+  const forwardCityMention = makeContainerReportCityForward(container, {
+    getReportRepo,
+    canForward: canForwardCity,
+  })
   const onReportMessage: OnReportMessage | undefined = useFakeChat
     ? undefined
     : async (reportId, message, actorUserId) => {
         if (notifyReportChatMembers) void notifyReportChatMembers(reportId, message).catch(() => {})
-        reportOutboundMail ??= makeOutboundMailService({
-          repo: makeDrizzleMailRepository(container.getDb().sql),
-          mailer: container.mailer,
-          env: {
-            MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
-            MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
-          },
-        })
-        reportForwardAudit ??= makeReportForwardAudit(container.getDb().sql)
-        const report = await getReportRepo().findReportForDiscussion(reportId)
-        if (report === null) return
-        const body = typeof message.body === "string" ? message.body : ""
-        await forwardReportCityMention(
-          reportOutboundMail,
-          {
-            reportId,
-            category: report.category,
-            place: report.place,
-            jurisdiction: report.jurisdiction,
-            actorUserId,
-          },
-          body,
-          new Date(message.createdAt),
-          {
-            enabled: container.env.REPORT_AUTOFORWARD_ENABLED,
-            canForward: canForwardCity,
-            audit: reportForwardAudit,
-            messageId: message.id,
-          },
-        )
+        await forwardCityMention(reportId, message, actorUserId)
       }
 
   applyWsUpgradeRateLimit(app)

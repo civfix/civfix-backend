@@ -167,6 +167,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         conds.push(sql`AND r.status = ANY(${args.statuses})`)
       }
       if (args.flaggedOnly) conds.push(sql`AND ${flaggedReportExpr(sql)}`)
+      if (args.needsVerificationOnly) conds.push(sql`AND r.verification_verdict IS NULL`)
       if (args.q !== null) conds.push(searchReportsFragment(sql, args.q))
       if (anchor !== null) {
         conds.push(sql`AND (r.created_at, r.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
@@ -183,10 +184,19 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       const search = searchReportsFragment(sql, args.q)
       const flaggedSearch = searchReportsFragment(sql, args.q)
       const rows = await sql<
-        { submitted: string; in_progress: string; completed: string; flagged: string }[]
+        {
+          submitted: string
+          in_progress: string
+          completed: string
+          flagged: string
+          needs_verification: string
+        }[]
       >`
         SELECT
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.submitted}))::text AS submitted,
+          COUNT(*) FILTER (
+            WHERE r.status = ANY(${STATUS_BUCKETS.submitted}) AND r.verification_verdict IS NULL
+          )::text AS needs_verification,
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.in_progress}))::text AS in_progress,
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.completed}))::text AS completed,
           (
@@ -211,8 +221,9 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       const inProgress = Number(row?.in_progress ?? "0")
       const completed = Number(row?.completed ?? "0")
       const flagged = Number(row?.flagged ?? "0")
+      const needsVerification = Number(row?.needs_verification ?? "0")
       const all = submitted + inProgress + completed
-      return { all, submitted, in_progress: inProgress, completed, flagged }
+      return { all, submitted, in_progress: inProgress, completed, flagged, needsVerification }
     },
 
     async getReport(id: string): Promise<AdminReportRecord | null> {

@@ -161,6 +161,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         conds.push(sql`AND COALESCE(um.account_status, 'active') = ${args.status}`)
       }
       if (args.flaggedOnly) conds.push(sql`AND COALESCE(um.flagged, false) = true`)
+      if (args.deletedOnly) conds.push(sql`AND u.deleted_at IS NOT NULL`)
       if (args.q !== null) {
         const cityUserIds = await resolveCityMatchUserIds(sql, args.q)
         conds.push(searchUsersFragment(sql, args.q, cityUserIds))
@@ -181,12 +182,23 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
 
     async countByFacet(args: { q: string | null }): Promise<AdminUserCounts> {
       if (args.q === null) {
-        const rows = await sql<{ all: string; active: string; suspended: string; flagged: string }[]>`
+        const rows = await sql<
+          {
+            all: string
+            active: string
+            suspended: string
+            flagged: string
+            deleted: string
+            banned: string
+          }[]
+        >`
           SELECT
             COUNT(*)::text AS all,
             COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'active')::text AS active,
             COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'suspended')::text AS suspended,
-            COUNT(*) FILTER (WHERE COALESCE(um.flagged, false))::text AS flagged
+            COUNT(*) FILTER (WHERE COALESCE(um.flagged, false))::text AS flagged,
+            COUNT(*) FILTER (WHERE u.deleted_at IS NOT NULL)::text AS deleted,
+            COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'banned')::text AS banned
           FROM users u
           LEFT JOIN user_moderation um ON um.user_id = u.id
         `
@@ -196,19 +208,30 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           active: Number(exact?.active ?? "0"),
           suspended: Number(exact?.suspended ?? "0"),
           flagged: Number(exact?.flagged ?? "0"),
+          deleted: Number(exact?.deleted ?? "0"),
+          banned: Number(exact?.banned ?? "0"),
         }
       }
 
       const cityUserIds = await resolveCityMatchUserIds(sql, args.q)
       const search = searchUsersFragment(sql, args.q, cityUserIds)
       const rows = await sql<
-        { all: string; active: string; suspended: string; flagged: string }[]
+        {
+          all: string
+          active: string
+          suspended: string
+          flagged: string
+          deleted: string
+          banned: string
+        }[]
       >`
         SELECT
           COUNT(*)::text AS all,
           COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'active')::text AS active,
           COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'suspended')::text AS suspended,
-          COUNT(*) FILTER (WHERE COALESCE(um.flagged, false))::text AS flagged
+          COUNT(*) FILTER (WHERE COALESCE(um.flagged, false))::text AS flagged,
+          COUNT(*) FILTER (WHERE u.deleted_at IS NOT NULL)::text AS deleted,
+          COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'banned')::text AS banned
         FROM users u
         LEFT JOIN user_moderation um ON um.user_id = u.id
         WHERE TRUE
@@ -220,6 +243,8 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         active: Number(r?.active ?? "0"),
         suspended: Number(r?.suspended ?? "0"),
         flagged: Number(r?.flagged ?? "0"),
+        deleted: Number(r?.deleted ?? "0"),
+        banned: Number(r?.banned ?? "0"),
       }
     },
 

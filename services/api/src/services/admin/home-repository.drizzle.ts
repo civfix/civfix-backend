@@ -145,6 +145,24 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
       return num(rows[0]?.n)
     },
 
+    async moderationQueue(): Promise<number> {
+      const rows = await sql<{ n: string }[]>`
+        SELECT COUNT(*)::text AS n
+        FROM moderation_items
+        WHERE status = 'open'
+      `
+      return num(rows[0]?.n)
+    },
+
+    async inboxUnread(): Promise<number> {
+      const rows = await sql<{ n: string }[]>`
+        SELECT COUNT(*)::text AS n
+        FROM inbound_emails
+        WHERE status = 'unread'
+      `
+      return num(rows[0]?.n)
+    },
+
     async recentPins(limit: number): Promise<HomeMapPinRecord[]> {
       const half = Math.max(1, Math.floor(limit / 2))
       const [reportRows, eventRows] = await Promise.all([

@@ -194,6 +194,17 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       )
     },
 
+    async findReportThread(reportId: string): Promise<MailThreadRecord | null> {
+      const rows = await sql<ThreadRowSelect[]>`
+        SELECT ${threadColumns(sql)}
+        FROM mail_threads
+        WHERE report_id = ${reportId}
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+      `
+      return rows[0] ? toThreadRecord(rows[0]) : null
+    },
+
     async findOrCreateEventThread(
       cleanupId: string,
       init: ThreadInit = {},

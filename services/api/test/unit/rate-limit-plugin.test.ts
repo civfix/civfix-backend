@@ -110,6 +110,10 @@ import {
   ADMIN_REPORT_MUTATION_RATE_LIMIT,
   ROUTE_REPORT_RATE_LIMIT,
 } from "../../src/routes/admin/reports.routes.js"
+import {
+  ADMIN_REPORT_CHAT_REMOVE_RATE_LIMIT,
+  ADMIN_REPORT_CHAT_SEND_RATE_LIMIT,
+} from "../../src/routes/admin/report-chat.routes.js"
 import { ADMIN_OUTBOUND_MAIL_RATE_LIMIT } from "../../src/routes/admin/mail.routes.js"
 import { PUSH_TOKEN_RATE_LIMIT } from "../../src/routes/notifications.routes.js"
 import { FOLLOW_RATE_LIMIT, FOLLOW_SUGGESTIONS_RATE_LIMIT } from "../../src/routes/social.routes.js"
@@ -455,6 +459,8 @@ const IDENTITY_SCOPED_LIMITS = {
   CREATE_POST_RATE_LIMIT,
   ROUTE_REPORT_RATE_LIMIT,
   ADMIN_REPORT_MUTATION_RATE_LIMIT,
+  ADMIN_REPORT_CHAT_SEND_RATE_LIMIT,
+  ADMIN_REPORT_CHAT_REMOVE_RATE_LIMIT,
   THREAD_READ_RATE_LIMIT,
   POST_INTERACTION_RATE_LIMIT,
   PUSH_TOKEN_RATE_LIMIT,

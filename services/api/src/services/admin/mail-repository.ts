@@ -172,6 +172,7 @@ export interface MailRepository {
   setOutreachState(geoid: string, patch: OutreachStatePatch): Promise<OutreachStateRecord>
   getThreadRecord(id: string): Promise<MailThreadRecord | null>
   findOrCreateReportThread(reportId: string, init?: ThreadInit): Promise<MailThreadRecord>
+  findReportThread(reportId: string): Promise<MailThreadRecord | null>
   findOrCreateEventThread(cleanupId: string, init?: ThreadInit): Promise<MailThreadRecord>
   priorOutboundMessageIds(threadId: string): Promise<string[]>
   upsertThreadByGeoid(geoid: string, init?: ThreadInit): Promise<MailThreadRecord>

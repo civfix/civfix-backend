@@ -65,6 +65,7 @@ export interface AppendOutboundInput {
   attachments?: PacketAttachment[]
   kind?: MailMessageKind
   audit?: OutboundAudit
+  eventMeta?: Record<string, unknown>
 }
 
 export interface SendReportInput {
@@ -101,6 +102,7 @@ export interface PreparedReportOutbound {
 
 export interface OutboundMailService {
   sendToCity(input: SendToCityInput): Promise<MailThreadRecord>
+  findReportThread(reportId: string): Promise<MailThreadRecord | null>
   prepareReportToJurisdiction(input: SendReportInput): Promise<PreparedReportOutbound>
   sendReportToJurisdiction(
     input: SendReportInput,
@@ -438,6 +440,10 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
   }
 
   return {
+    findReportThread(reportId: string): Promise<MailThreadRecord | null> {
+      return repo.findReportThread(reportId)
+    },
+
     prepareReportToJurisdiction(input: SendReportInput): Promise<PreparedReportOutbound> {
       return prepareReport(input)
     },
@@ -580,6 +586,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         body: input.body,
         ...(input.html !== undefined ? { html: input.html } : {}),
         ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
+        ...(input.eventMeta !== undefined ? { eventMeta: input.eventMeta } : {}),
       })
       return freshThread(thread)
     },
@@ -612,7 +619,7 @@ export function makeContainerOutboundMailService(
   })
 }
 
-function replySubject(subject: string | null): string {
+export function replySubject(subject: string | null): string {
   const base = subject ?? ""
   if (base.length === 0) return "Re:"
   return /^re:/i.test(base) ? base : `Re: ${base}`

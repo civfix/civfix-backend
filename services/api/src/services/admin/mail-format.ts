@@ -22,6 +22,8 @@ import {
 import type { AdminReportRecord, AdminReportRoutingRecord } from "./admin-report-types.js"
 import type { MarkdownInline } from "@civfix/shared/markdown"
 
+export const NO_PHOTO_LINKS = "(none)"
+
 export const MAX_PACKET_ATTACHMENTS = 10
 export const MAX_PACKET_ATTACHMENT_BYTES = 10 * 1024 * 1024
 export const MAX_PACKET_TOTAL_BYTES = 8 * 1024 * 1024
@@ -91,7 +93,7 @@ function buildTemplateValues(
     submittedDate: formatSubmittedDate(record.createdAt),
     jurisdictionName: routing?.place ?? place,
     operatorNote: noteText ?? "",
-    photoLinks: mediaLinks.join("\n"),
+    photoLinks: mediaLinks.length > 0 ? mediaLinks.join("\n") : NO_PHOTO_LINKS,
     photoCount: String(mediaLinks.length),
   }
 }
@@ -164,7 +166,7 @@ export function buildReportPacket(
   )
 
   if (noteText !== null && !templateUsesToken(bodyTemplate, "operatorNote")) {
-    blocks.push(heading("Note from the civfix team"), quote(noteText))
+    blocks.push(quote(noteText))
   }
   if (mediaLinks.length > 0 && !templateUsesToken(bodyTemplate, "photoLinks")) {
     blocks.push(
@@ -188,6 +190,14 @@ export interface DiscussionForwardInput {
   category: string
   place: string | null
   org: string | null
+  displayName?: string | null
+}
+
+export const DISCUSSION_FORWARD_ANONYMOUS_AUTHOR = "A neighbor"
+
+export function discussionForwardAuthor(displayName: string | null | undefined): string {
+  const trimmed = (displayName ?? "").trim()
+  return trimmed === "" ? DISCUSSION_FORWARD_ANONYMOUS_AUTHOR : trimmed
 }
 
 export function buildDiscussionForwardPacket(
@@ -198,14 +208,14 @@ export function buildDiscussionForwardPacket(
   const place = input.place ?? input.org ?? "the area"
   const subject = `civfix report: ${sanitizeHeaderValue(`${input.category} in ${place}`)} [${id8}]`
   const body = comment.trim() !== "" ? comment.trim() : "(no comment provided)"
+  const author = discussionForwardAuthor(input.displayName)
+  const lede = `${author} commented on a ${input.category} report in ${place} via civfix and mentioned your office.`
 
   const { text, html } = renderEmailBody({
-    preheader: `A neighbor commented on a ${input.category} report in ${place} and mentioned your office.`,
+    preheader: lede,
     footer: CITY_FOOTER,
     blocks: [
-      paragraph(
-        `A neighbor commented on a ${input.category} report in ${place} via civfix and mentioned your office.`,
-      ),
+      paragraph(lede),
       heading("Their comment"),
       quote(body),
       paragraph(`Reference: ${input.reportId}`, { muted: true }),

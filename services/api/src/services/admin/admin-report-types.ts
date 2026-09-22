@@ -80,6 +80,7 @@ export interface ListReportsArgs {
   q: string | null
   statuses: AdminReportStatus[] | null
   flaggedOnly: boolean
+  needsVerificationOnly: boolean
   cursor: string | null
   limit: number
 }

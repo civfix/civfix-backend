@@ -44,10 +44,36 @@ function hoursAgo(hours: number): Date {
 
 describe("admin users pure helpers", () => {
   it("resolveUserFilter maps the design facet to status + flaggedOnly", () => {
-    expect(resolveUserFilter("all")).toEqual({ status: null, flaggedOnly: false })
-    expect(resolveUserFilter("active")).toEqual({ status: "active", flaggedOnly: false })
-    expect(resolveUserFilter("suspended")).toEqual({ status: "suspended", flaggedOnly: false })
-    expect(resolveUserFilter("flagged")).toEqual({ status: null, flaggedOnly: true })
+    expect(resolveUserFilter("all")).toEqual({
+      status: null,
+      flaggedOnly: false,
+      deletedOnly: false,
+    })
+    expect(resolveUserFilter("active")).toEqual({
+      status: "active",
+      flaggedOnly: false,
+      deletedOnly: false,
+    })
+    expect(resolveUserFilter("suspended")).toEqual({
+      status: "suspended",
+      flaggedOnly: false,
+      deletedOnly: false,
+    })
+    expect(resolveUserFilter("flagged")).toEqual({
+      status: null,
+      flaggedOnly: true,
+      deletedOnly: false,
+    })
+    expect(resolveUserFilter("banned")).toEqual({
+      status: "banned",
+      flaggedOnly: false,
+      deletedOnly: false,
+    })
+    expect(resolveUserFilter("deleted")).toEqual({
+      status: null,
+      flaggedOnly: false,
+      deletedOnly: true,
+    })
   })
 })
 
@@ -112,7 +138,45 @@ describe("admin users list", () => {
     repo.seedUser({ id: "s1", accountStatus: "suspended" })
     repo.seedUser({ id: "b1", accountStatus: "banned" })
     const { counts } = await svc.list({ filter: "suspended" })
-    expect(counts).toEqual({ all: 4, active: 2, suspended: 1, flagged: 1 })
+    expect(counts).toEqual({
+      all: 4,
+      active: 2,
+      suspended: 1,
+      flagged: 1,
+      deleted: 0,
+      banned: 1,
+    })
+  })
+
+  it("filters by deleted (tombstoned) and by banned", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "live", accountStatus: "active" })
+    repo.seedUser({ id: "banned", accountStatus: "banned" })
+    repo.seedUser({ id: "tombstoned", accountStatus: "active", deletedAt: hoursAgo(2) })
+    repo.seedUser({ id: "tombstoned-banned", accountStatus: "banned", deletedAt: hoursAgo(1) })
+
+    expect((await svc.list({ filter: "deleted" })).items.map((i) => i.id).sort()).toEqual([
+      "tombstoned",
+      "tombstoned-banned",
+    ])
+    expect((await svc.list({ filter: "banned" })).items.map((i) => i.id).sort()).toEqual([
+      "banned",
+      "tombstoned-banned",
+    ])
+  })
+
+  it("counts the deleted and banned facets independently of the status facets", async () => {
+    const { repo, svc } = harness()
+    repo.seedUser({ id: "a1", accountStatus: "active" })
+    repo.seedUser({ id: "b1", accountStatus: "banned" })
+    repo.seedUser({ id: "b2", accountStatus: "banned", deletedAt: hoursAgo(3) })
+    repo.seedUser({ id: "d1", accountStatus: "active", deletedAt: hoursAgo(4) })
+
+    const { counts } = await svc.list({})
+    expect(counts?.deleted).toBe(2)
+    expect(counts?.banned).toBe(2)
+    expect(counts?.all).toBe(4)
+    expect(counts?.active).toBe(2)
   })
 
   it("paginates with a cursor (no overlap)", async () => {

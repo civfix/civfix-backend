@@ -138,33 +138,46 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
   return {
     async summary(): Promise<HomeSummaryResponse> {
       const ref = now()
-      const [discovery, reports, events, mail, users, livePins24h, kpis, coverage, pinsByWeek] =
-        await runBounded(HOME_SUMMARY_CONCURRENCY, [
-          () => safeSection(() => deps.repo.discoverySummary(), ZERO_DISCOVERY, report("discovery")),
-          () => safeSection(() => deps.repo.reportsSummary(), ZERO_REPORTS, report("reports")),
-          () => safeSection(() => deps.repo.eventsSummary(), ZERO_EVENTS, report("events")),
-          () => safeSection(() => deps.repo.mailSummary(), ZERO_MAIL, report("mail")),
-          () => safeSection(() => deps.repo.usersSummary(), ZERO_USERS, report("users")),
-          () => safeSection(() => deps.repo.livePins24h(), 0, report("livePins24h")),
-          () => safeSection(() => deps.analytics.kpis(), null, report("analytics.kpis")),
-          () =>
-            safeSection<AnalyticsCoverageResponse | null>(
-              async () => buildCoverage(await deps.analytics.coverage()),
-              null,
-              report("analytics.coverage"),
-            ),
-          () =>
-            safeSection(
-              async () =>
-                buildPinsByWeek(
-                  await deps.analytics.pinsByWeek(PINS_BY_WEEK_WEEKS),
-                  PINS_BY_WEEK_WEEKS,
-                  ref,
-                ).weeks,
-              ZERO_ANALYTICS_MINI.pinsByWeek,
-              report("analytics.pinsByWeek"),
-            ),
-        ] as const)
+      const [
+        discovery,
+        reports,
+        events,
+        mail,
+        users,
+        livePins24h,
+        kpis,
+        coverage,
+        pinsByWeek,
+        moderationQueue,
+        inboxUnread,
+      ] = await runBounded(HOME_SUMMARY_CONCURRENCY, [
+        () => safeSection(() => deps.repo.discoverySummary(), ZERO_DISCOVERY, report("discovery")),
+        () => safeSection(() => deps.repo.reportsSummary(), ZERO_REPORTS, report("reports")),
+        () => safeSection(() => deps.repo.eventsSummary(), ZERO_EVENTS, report("events")),
+        () => safeSection(() => deps.repo.mailSummary(), ZERO_MAIL, report("mail")),
+        () => safeSection(() => deps.repo.usersSummary(), ZERO_USERS, report("users")),
+        () => safeSection(() => deps.repo.livePins24h(), 0, report("livePins24h")),
+        () => safeSection(() => deps.analytics.kpis(), null, report("analytics.kpis")),
+        () =>
+          safeSection<AnalyticsCoverageResponse | null>(
+            async () => buildCoverage(await deps.analytics.coverage()),
+            null,
+            report("analytics.coverage"),
+          ),
+        () =>
+          safeSection(
+            async () =>
+              buildPinsByWeek(
+                await deps.analytics.pinsByWeek(PINS_BY_WEEK_WEEKS),
+                PINS_BY_WEEK_WEEKS,
+                ref,
+              ).weeks,
+            ZERO_ANALYTICS_MINI.pinsByWeek,
+            report("analytics.pinsByWeek"),
+          ),
+        () => safeSection(() => deps.repo.moderationQueue(), 0, report("moderationQueue")),
+        () => safeSection(() => deps.repo.inboxUnread(), 0, report("inboxUnread")),
+      ] as const)
       return {
         discovery,
         reports,
@@ -173,6 +186,8 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
         users,
         analytics: toAnalyticsMini(kpis, coverage, pinsByWeek),
         livePins24h,
+        moderationQueue,
+        inboxUnread,
       }
     },
 

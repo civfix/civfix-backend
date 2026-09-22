@@ -1,11 +1,61 @@
 # Mail effects and the outbound send triad
 
 **Audience:** internal (engineering). Not served publicly.
-**Last updated:** 2026-09-03 (audit-fix pass).
+**Last updated:** 2026-09-21 (city replies are published into the report chat).
 
 An inbound message that correlates to a mail thread can drive **public** effects: a report status
 transition, a public `report_timeline` row, a report-chat system message, and a push to the reporter.
 This documents how those run exactly once, and the one residual that is knowingly accepted.
+
+## Stage 2 publishes the city's reply text (product decision)
+
+The `report_timeline` row (stage 1) and the reporter's push (stage 3) still carry **fixed copy only** —
+`JURISDICTION_REPLY_NOTE` and `JURISDICTION_REPLY_NOTIFICATION_BODY`. Stage 2 is the exception: the
+report-chat system message now carries the city's own words in its `body`, so residents read the reply
+in the report chat rather than waiting for an operator to relay it. The reporter's push says "See their
+reply in the report chat."
+
+**The disclosure and the publication ship in the same delivery.** Publishing the reply text is only
+defensible if the city was told, and the sentence that tells them lives in the contract's
+`DEFAULT_FORWARD_BODY_TEMPLATE`, not in this repo: from `@civfix/shared` **0.53.0** the default outbound
+packet body ends with "replies to this email are made public at `https://civfix.org/pin/{reportId}`".
+This repo adopts 0.53.0 in the same change that turns on stage 2, so no packet sent by this code
+publishes a reply without having disclosed it. An operator who has overridden the body template in
+forward-template settings owns that copy: the override replaces the default wholesale, so a custom
+template that drops the sentence sends an undisclosed packet.
+
+**Accepted residual — retroactive publication of pre-0.53.0 threads.** Mail threads opened before this
+delivery were sent under the older default copy, which promised operator-only handling. A city reply
+arriving on one of those existing threads is published into the report chat anyway: correlation keys off
+the thread, and nothing records which template revision a packet was rendered from. Those cities were
+told their reply went to operators and it now reaches residents. This is knowingly accepted rather than
+fixed — suppressing it would mean stamping a template revision on every historical
+`mail_messages`/`mail_threads` row and gating stage 2 on it, and the alternative of not publishing at all
+defeats the feature. The exposure decays as old threads go quiet.
+
+What reaches the chat is `cityReplyChatBody(message.body)`
+(`services/api/src/services/admin/inbound-thread-correlation.ts`): the **stored plain-text** body (an
+HTML-only reply was already flattened by `htmlToText` before it was stored), conservatively stripped of
+quoted history, whitespace-trimmed, and clipped to `MESSAGE_BODY_MAX` (2000) so it passes chat
+validation. The clip is grapheme-safe (`clipToMessageBody` walks `segmentGraphemes` from
+`@civfix/shared` and stops before the code-unit budget), so the cut can never split a surrogate pair or
+a combining sequence and leave invalid text in the chat. The strip is deliberately conservative and is
+unit-tested; a line is a cut point when it is:
+
+- a Gmail-style attribution — `/^On\s.+\swrote:$/`, anchored at the end so prose like "On Tuesday our
+  crew wrote: see below" is not mistaken for one;
+- an Outlook separator — `-----Original Message-----`, tolerant of the dash count;
+- an unquoted Outlook header block — `/^From:\s.+$/` followed within two lines by `Sent:`, `Date:` or
+  `To:`.
+
+Everything from the first cut point onward is dropped, then a trailing run of `>`-prefixed (or blank)
+lines is dropped. A non-trailing quote is kept — a reply that quotes and then answers keeps both halves.
+
+If the result is empty (a reply that was nothing but quoted history), stage 2 falls back to the previous
+behavior: the note only, with `body: null`.
+
+The chat emitter is injectable (`InboundEffectDeps.chatEmitter`, plumbed through
+`InboundProcessorDeps`), so the stage is observable in the unit suite without a database.
 
 ## Why this is not a boolean
 
@@ -52,8 +102,9 @@ The exposure is bounded and one-sided:
 
 - The window is a single UPDATE, not a network call — orders of magnitude smaller than the
   claim-to-completion window the lease exists for.
-- It can only ever **duplicate a body-less status entry**. No mail content is published (H6: the timeline
-  row, the chat message and the push all carry fixed copy), so a repeat leaks nothing.
+- It can only ever **duplicate one already-published entry**. The timeline row and the push carry fixed
+  copy, so a repeat there leaks nothing; a repeated stage 2 posts the same city reply into the same report
+  chat a second time — visible noise, never new disclosure.
 - It cannot skip a step: the stage is only ever advanced after the effect committed, so the failure mode
   is "at least once", never "never".
 
