@@ -3,20 +3,28 @@ import { DEFAULT_FEED_RANKING, FeedRankingConfigSchema } from "@civfix/shared"
 import type { FeedRankingConfig } from "@civfix/shared"
 import {
   applyCutoff,
+  bucketSeed,
   diversityMultiplier,
+  globalScore,
+  jitterUnit,
   proximity,
   quantizeClock,
   rankCandidates,
   rawScore,
   recency,
   scoreCandidate,
+  viewerScore,
   type FeedCandidate,
 } from "../../src/services/feed-ranking.js"
 
 const NOW = Date.UTC(2026, 8, 15, 12, 0, 0)
 const HOUR = 3_600_000
 
-const CFG = DEFAULT_FEED_RANKING
+const SEED = 0
+
+const CFG: FeedRankingConfig = { ...DEFAULT_FEED_RANKING, jitterAmount: 0 }
+
+const JITTERED = DEFAULT_FEED_RANKING
 
 function candidate(over: Partial<FeedCandidate> = {}): FeedCandidate {
   return {
@@ -164,11 +172,11 @@ describe("feed ranking: author diversity", () => {
     const other = candidate({ id: "b0", authorId: "someone-else", authorFollowed: true })
 
     const undiscounted = [...flood, other]
-      .map((c) => ({ id: c.id, score: scoreCandidate(c, CFG, NOW) }))
+      .map((c) => ({ id: c.id, score: scoreCandidate(c, CFG, NOW, SEED) }))
       .sort((a, b) => b.score - a.score)
     expect(undiscounted.findIndex((entry) => entry.id === "b0")).toBe(flood.length)
 
-    const ranked = rankCandidates([...flood, other], CFG, NOW)
+    const ranked = rankCandidates([...flood, other], CFG, NOW, SEED)
     expect(ranked.findIndex((entry) => entry.id === "b0")).toBeLessThan(flood.length)
   })
 
@@ -181,6 +189,7 @@ describe("feed ranking: author diversity", () => {
       ],
       CFG,
       NOW,
+      SEED,
     )
     const scores = new Set(ranked.map((entry) => entry.score))
     expect(scores.size).toBe(1)
@@ -189,8 +198,8 @@ describe("feed ranking: author diversity", () => {
 
 describe("feed ranking: seen discount", () => {
   it("demotes a post the viewer was already served", () => {
-    const fresh = scoreCandidate(candidate(), CFG, NOW)
-    const seen = scoreCandidate(candidate({ alreadySeen: true }), CFG, NOW)
+    const fresh = scoreCandidate(candidate(), CFG, NOW, SEED)
+    const seen = scoreCandidate(candidate({ alreadySeen: true }), CFG, NOW, SEED)
     expect(seen).toBeCloseTo(fresh * CFG.seenDiscount, 10)
   })
 })
@@ -204,15 +213,15 @@ describe("feed ranking: clock quantisation keeps a cursor stable", () => {
 
   it("produces byte-identical scores 59 seconds apart", () => {
     const rows = [candidate({ id: "a", createdAtMs: NOW - 5 * HOUR, likeCount: 7 })]
-    const first = rankCandidates(rows, CFG, NOW + 1_000)
-    const second = rankCandidates(rows, CFG, NOW + 59_000)
+    const first = rankCandidates(rows, CFG, NOW + 1_000, SEED)
+    const second = rankCandidates(rows, CFG, NOW + 59_000, SEED)
     expect(second).toEqual(first)
   })
 
   it("does move the score once the bucket rolls over", () => {
     const rows = [candidate({ id: "a", createdAtMs: NOW - 5 * HOUR })]
-    const inBucket = rankCandidates(rows, CFG, NOW)
-    const nextBucket = rankCandidates(rows, CFG, NOW + 61_000)
+    const inBucket = rankCandidates(rows, CFG, NOW, SEED)
+    const nextBucket = rankCandidates(rows, CFG, NOW + 61_000, SEED)
     expect(nextBucket[0]!.score).toBeLessThan(inBucket[0]!.score)
   })
 })
@@ -225,6 +234,7 @@ describe("feed ranking: the worked examples from the design", () => {
       candidate({ authorFollowed: true, createdAtMs: at(2), likeCount: 3, replyCount: 1 }),
       CFG,
       NOW,
+      SEED,
     )
     expect(score).toBeCloseTo(115.9, 1)
   })
@@ -241,12 +251,13 @@ describe("feed ranking: the worked examples from the design", () => {
       }),
       CFG,
       NOW,
+      SEED,
     )
     expect(score).toBeCloseTo(125.1, 1)
   })
 
   it("stranger, no location, 2 likes, 1 h old scores ~13.1 and clears the cutoff", () => {
-    const score = scoreCandidate(candidate({ createdAtMs: at(1), likeCount: 2 }), CFG, NOW)
+    const score = scoreCandidate(candidate({ createdAtMs: at(1), likeCount: 2 }), CFG, NOW, SEED)
     expect(score).toBeCloseTo(13.1, 1)
     expect(score).toBeGreaterThanOrEqual(CFG.minScore)
   })
@@ -256,13 +267,14 @@ describe("feed ranking: the worked examples from the design", () => {
       candidate({ createdAtMs: at(24 * 30), likeCount: 2 }),
       CFG,
       NOW,
+      SEED,
     )
     expect(score).toBeCloseTo(2.0, 1)
     expect(score).toBeLessThan(CFG.minScore)
   })
 
   it("stranger, no location, no engagement, 1 h old scores ~9.9, below the cutoff", () => {
-    const score = scoreCandidate(candidate({ createdAtMs: at(1) }), CFG, NOW)
+    const score = scoreCandidate(candidate({ createdAtMs: at(1) }), CFG, NOW, SEED)
     expect(score).toBeCloseTo(9.84, 2)
     expect(score).toBeLessThan(CFG.minScore)
   })
@@ -278,6 +290,7 @@ describe("feed ranking: ordering", () => {
       ],
       CFG,
       NOW,
+      SEED,
     )
     expect(ranked.map((entry) => entry.id)).toEqual([
       "cccccccc-0000-0000-0000-000000000000",
@@ -295,12 +308,12 @@ describe("feed ranking: ordering", () => {
         likeCount: i,
       }),
     )
-    expect(rankCandidates(rows, CFG, NOW)).toEqual(rankCandidates(rows, CFG, NOW))
+    expect(rankCandidates(rows, CFG, NOW, SEED)).toEqual(rankCandidates(rows, CFG, NOW, SEED))
   })
 
   it("never emits a negative score", () => {
     const hostile: FeedRankingConfig = { ...CFG, baseWeight: 0 }
-    const score = scoreCandidate(candidate({ createdAtMs: NOW - 24 * 365 * HOUR }), hostile, NOW)
+    const score = scoreCandidate(candidate({ createdAtMs: NOW - 24 * 365 * HOUR }), hostile, NOW, SEED)
     expect(score).toBeGreaterThanOrEqual(0)
   })
 })
@@ -316,13 +329,13 @@ describe("feed ranking: cutoff and cold start", () => {
     )
 
   it("suspends the cutoff on page 1 when too little clears it", () => {
-    const ranked = rankCandidates(weak(), CFG, NOW)
+    const ranked = rankCandidates(weak(), CFG, NOW, SEED)
     expect(ranked.every((entry) => entry.score < CFG.minScore)).toBe(true)
     expect(applyCutoff(ranked, CFG, true)).toHaveLength(3)
   })
 
   it("never suspends the cutoff on a later page: running out of feed is normal", () => {
-    const ranked = rankCandidates(weak(), CFG, NOW)
+    const ranked = rankCandidates(weak(), CFG, NOW, SEED)
     expect(applyCutoff(ranked, CFG, false)).toHaveLength(0)
   })
 
@@ -335,7 +348,7 @@ describe("feed ranking: cutoff and cold start", () => {
         createdAtMs: NOW,
       }),
     )
-    const ranked = rankCandidates([...strong, ...weak()], CFG, NOW)
+    const ranked = rankCandidates([...strong, ...weak()], CFG, NOW, SEED)
     const kept = applyCutoff(ranked, CFG, true)
     expect(kept).toHaveLength(6)
     expect(kept.every((entry) => entry.score >= CFG.minScore)).toBe(true)
@@ -345,8 +358,192 @@ describe("feed ranking: cutoff and cold start", () => {
     const strangers = Array.from({ length: 3 }, (_, i) =>
       candidate({ id: `n${i}`, authorId: `author-${i}`, createdAtMs: NOW - HOUR }),
     )
-    const ranked = rankCandidates(strangers, CFG, NOW)
+    const ranked = rankCandidates(strangers, CFG, NOW, SEED)
     expect(applyCutoff(ranked, CFG, true).length).toBeGreaterThan(0)
+  })
+})
+
+describe("feed ranking: the global half is viewer-independent by construction", () => {
+  const viewerFields: Array<Partial<FeedCandidate>> = [
+    { authorFollowed: true },
+    { authorIsViewer: true },
+    { viewerMentioned: true },
+    { distanceKm: 0 },
+    { distanceKm: 2 },
+    { authorFollowed: true, authorIsViewer: true, viewerMentioned: true, distanceKm: 1 },
+  ]
+
+  it("scores the same post identically for every viewer", () => {
+    const anonymous = globalScore(candidate(), CFG)
+    for (const over of viewerFields) {
+      expect(globalScore(candidate(over), CFG)).toBe(anonymous)
+    }
+  })
+
+  it("still reacts to the post's own properties", () => {
+    const plain = globalScore(candidate(), CFG)
+    expect(globalScore(candidate({ authorOrgVerified: true }), CFG) - plain).toBeCloseTo(
+      CFG.orgVerifiedWeight,
+      10,
+    )
+    expect(globalScore(candidate({ hasReport: true }), CFG) - plain).toBeCloseTo(
+      CFG.attachReportWeight,
+      10,
+    )
+    expect(globalScore(candidate({ likeCount: 12 }), CFG)).toBeGreaterThan(plain)
+  })
+
+  it("carries every viewer-specific term in the viewer half", () => {
+    expect(viewerScore(candidate(), CFG)).toBe(0)
+    expect(viewerScore(candidate({ authorFollowed: true }), CFG)).toBeCloseTo(CFG.followWeight, 10)
+    expect(viewerScore(candidate({ authorIsViewer: true }), CFG)).toBeCloseTo(CFG.selfWeight, 10)
+    expect(viewerScore(candidate({ viewerMentioned: true }), CFG)).toBeCloseTo(CFG.mentionWeight, 10)
+    expect(viewerScore(candidate({ distanceKm: 0 }), CFG)).toBeCloseTo(CFG.nearbyWeight, 10)
+  })
+
+  it("sums back to the raw score, so the split is a regrouping not a rewrite", () => {
+    for (const over of viewerFields) {
+      const c = candidate({ ...over, likeCount: 9, hasReport: true, authorOrgVerified: true })
+      expect(globalScore(c, CFG) + viewerScore(c, CFG)).toBe(rawScore(c, CFG))
+    }
+  })
+})
+
+describe("feed ranking: location outranks affinity under the 0.54.0 weights", () => {
+  it("puts a stranger two kilometres away above a followed author across town", () => {
+    const nearbyStranger = candidate({
+      id: "aaaaaaaa-0000-0000-0000-000000000000",
+      authorId: "stranger",
+      distanceKm: 2,
+    })
+    const distantFriend = candidate({
+      id: "ffffffff-0000-0000-0000-000000000000",
+      authorId: "friend",
+      authorFollowed: true,
+      distanceKm: 35,
+    })
+
+    const ranked = rankCandidates([distantFriend, nearbyStranger], CFG, NOW, SEED)
+    expect(ranked[0]!.id).toBe(nearbyStranger.id)
+    expect(rawScore(nearbyStranger, CFG)).toBeGreaterThan(rawScore(distantFriend, CFG))
+  })
+
+  it("keeps that ordering even at the widest jitter swing", () => {
+    const nearbyStranger = candidate({ id: "near", authorId: "stranger", distanceKm: 2 })
+    const distantFriend = candidate({
+      id: "far",
+      authorId: "friend",
+      authorFollowed: true,
+      distanceKm: 35,
+    })
+    const worst = rawScore(nearbyStranger, CFG) * (1 - JITTERED.jitterAmount)
+    const best = rawScore(distantFriend, CFG) * (1 + JITTERED.jitterAmount)
+    expect(worst).toBeGreaterThan(best)
+  })
+
+  it("does not let the follow boost alone beat being in the neighbourhood", () => {
+    const followedNowhere = candidate({ authorFollowed: true, distanceKm: null })
+    const strangerNextDoor = candidate({ distanceKm: 0 })
+    expect(viewerScore(strangerNextDoor, CFG)).toBeGreaterThan(viewerScore(followedNowhere, CFG))
+  })
+})
+
+describe("feed ranking: seeded jitter", () => {
+  const spread = () =>
+    Array.from({ length: 40 }, (_, i) =>
+      candidate({
+        id: `${i}`.padStart(8, "0") + "-0000-0000-0000-000000000000",
+        authorId: `author-${i}`,
+        authorFollowed: true,
+      }),
+    )
+
+  it("draws a uniform value in [0, 1) for any seed and post id", () => {
+    for (let seed = 0; seed < 50; seed += 1) {
+      for (const id of ["a", "post-1", "11111111-1111-1111-1111-111111111111"]) {
+        const u = jitterUnit(seed, id)
+        expect(u).toBeGreaterThanOrEqual(0)
+        expect(u).toBeLessThan(1)
+      }
+    }
+  })
+
+  it("is a pure function of the seed and the post id", () => {
+    expect(jitterUnit(7, "post-a")).toBe(jitterUnit(7, "post-a"))
+    expect(jitterUnit(7, "post-a")).not.toBe(jitterUnit(8, "post-a"))
+    expect(jitterUnit(7, "post-a")).not.toBe(jitterUnit(7, "post-b"))
+  })
+
+  it("never moves a score outside plus or minus jitterAmount", () => {
+    for (const row of spread()) {
+      const plain = scoreCandidate(row, CFG, NOW, SEED)
+      for (let seed = 0; seed < 25; seed += 1) {
+        const jittered = scoreCandidate(row, JITTERED, NOW, seed)
+        expect(jittered).toBeGreaterThanOrEqual(plain * (1 - JITTERED.jitterAmount))
+        expect(jittered).toBeLessThanOrEqual(plain * (1 + JITTERED.jitterAmount))
+      }
+    }
+  })
+
+  it("reproduces the unjittered score byte for byte when jitterAmount is 0", () => {
+    const rows = spread()
+    const first = rankCandidates(rows, CFG, NOW, 1)
+    const second = rankCandidates(rows, CFG, NOW, 987_654_321)
+    expect(second).toEqual(first)
+    for (const row of rows) {
+      expect(scoreCandidate(row, CFG, NOW, 4_242)).toBe(scoreCandidate(row, CFG, NOW, SEED))
+    }
+  })
+
+  it("produces an identical ranking for the same seed, every time", () => {
+    const rows = spread()
+    expect(rankCandidates(rows, JITTERED, NOW, 31)).toEqual(rankCandidates(rows, JITTERED, NOW, 31))
+  })
+
+  it("reshuffles a near-tied set when the seed changes", () => {
+    const rows = spread()
+    const unjittered = rankCandidates(rows, CFG, NOW, SEED).map((entry) => entry.id)
+    expect(new Set(rankCandidates(rows, CFG, NOW, SEED).map((e) => e.score)).size).toBe(1)
+
+    const a = rankCandidates(rows, JITTERED, NOW, 1).map((entry) => entry.id)
+    const b = rankCandidates(rows, JITTERED, NOW, 2).map((entry) => entry.id)
+    expect(a).not.toEqual(b)
+    expect(a).not.toEqual(unjittered)
+    expect([...a].sort()).toEqual([...b].sort())
+  })
+
+  it("keeps the score non-negative at the widest jitter", () => {
+    const hostile: FeedRankingConfig = { ...JITTERED, jitterAmount: 1, baseWeight: 0 }
+    for (let seed = 0; seed < 25; seed += 1) {
+      const score = scoreCandidate(candidate({ createdAtMs: NOW - HOUR }), hostile, NOW, seed)
+      expect(score).toBeGreaterThanOrEqual(0)
+    }
+  })
+})
+
+describe("feed ranking: the deterministic bucket seed", () => {
+  it("agrees for two recomputations inside the same clock bucket", () => {
+    const bucket = quantizeClock(NOW + 5_000, CFG.clockBucketSeconds)
+    expect(bucketSeed("viewer-1", "all", bucket)).toBe(
+      bucketSeed("viewer-1", "all", quantizeClock(NOW + 55_000, CFG.clockBucketSeconds)),
+    )
+  })
+
+  it("moves with the viewer, the filter and the bucket", () => {
+    const bucket = quantizeClock(NOW, CFG.clockBucketSeconds)
+    const base = bucketSeed("viewer-1", "all", bucket)
+    expect(bucketSeed("viewer-2", "all", bucket)).not.toBe(base)
+    expect(bucketSeed("viewer-1", "events", bucket)).not.toBe(base)
+    expect(bucketSeed("viewer-1", "all", bucket + 60_000)).not.toBe(base)
+  })
+
+  it("stays a non-negative 32-bit integer", () => {
+    for (let i = 0; i < 50; i += 1) {
+      const seed = bucketSeed(`viewer-${i}`, "all", NOW + i * 60_000)
+      expect(Number.isInteger(seed)).toBe(true)
+      expect(seed).toBeGreaterThanOrEqual(0)
+      expect(seed).toBeLessThan(2 ** 32)
+    }
   })
 })
 

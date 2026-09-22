@@ -43,6 +43,23 @@ describe("FEED_RANKING env var", () => {
     expect(() => load('{"decayFloor":1.5}')).toThrow(/FEED_RANKING\.decayFloor/)
   })
 
+  it("accepts a jitterAmount override, including switching jitter off entirely", () => {
+    expect(load('{"jitterAmount":0.4}').FEED_RANKING.jitterAmount).toBe(0.4)
+    expect(load('{"jitterAmount":0}').FEED_RANKING.jitterAmount).toBe(0)
+    expect(load('{"jitterAmount":1}').FEED_RANKING.jitterAmount).toBe(1)
+  })
+
+  it("keeps the rest of the profile intact when only jitterAmount is overridden", () => {
+    const env = load('{"jitterAmount":0.05}')
+    expect(env.FEED_RANKING).toEqual({ ...DEFAULT_FEED_RANKING, jitterAmount: 0.05 })
+  })
+
+  it("refuses an out-of-range jitterAmount rather than clamping it", () => {
+    expect(() => load('{"jitterAmount":1.5}')).toThrow(/FEED_RANKING\.jitterAmount/)
+    expect(() => load('{"jitterAmount":-0.1}')).toThrow(/FEED_RANKING\.jitterAmount/)
+    expect(() => load('{"jitterAmount":"0.2"}')).toThrow(/FEED_RANKING\.jitterAmount/)
+  })
+
   it("refuses a JSON scalar where an object is required", () => {
     expect(() => load("42")).toThrow(/FEED_RANKING/)
     expect(() => load('"forty-two"')).toThrow(/FEED_RANKING/)

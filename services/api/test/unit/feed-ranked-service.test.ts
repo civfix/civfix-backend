@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { DEFAULT_FEED_RANKING, parseFeedScoreCursor } from "@civfix/shared"
-import type { PostDTO, UserSignal } from "@civfix/shared"
+import type { FeedRankingConfig, PostDTO, UserSignal } from "@civfix/shared"
 import type { UserChannel } from "@civfix/shared/interfaces"
 import type { Sql } from "../../src/db/client.js"
 import { makePostService, type PostService } from "../../src/services/post-service.js"
@@ -17,6 +17,8 @@ const VIEWER = "11111111-1111-1111-1111-111111111111"
 const AUTHOR = "22222222-2222-2222-2222-222222222222"
 const POST = "33333333-3333-3333-3333-333333333333"
 const NOW = Date.UTC(2026, 8, 15, 12, 0, 0)
+
+const NO_JITTER: FeedRankingConfig = { ...DEFAULT_FEED_RANKING, jitterAmount: 0 }
 
 const throwingSql = (() => {
   throw new Error("sql must not be called in these unit paths")
@@ -210,9 +212,9 @@ describe("ranked feed: cursor continuation covers every item exactly once", () =
 describe("ranked feed: warm snapshot continues a cursor without re-ranking", () => {
   const rows = Array.from({ length: 60 }, (_, i) => candidateRow(i + 1))
 
-  function harness() {
+  function harness(config: FeedRankingConfig = DEFAULT_FEED_RANKING) {
     const cache = new InMemoryCacheClient(() => Date.now())
-    const presence = makeFeedPresence({ cache, config: DEFAULT_FEED_RANKING })
+    const presence = makeFeedPresence({ cache, config })
     let candidateQueries = 0
     const svc = makePostService({
       repo: repoOver({
@@ -223,6 +225,7 @@ describe("ranked feed: warm snapshot continues a cursor without re-ranking", () 
       }),
       sql: throwingSql,
       feedPresence: presence,
+      feedRanking: config,
       now: () => NOW,
     })
     return { svc, presence, candidateQueries: () => candidateQueries }
@@ -246,7 +249,7 @@ describe("ranked feed: warm snapshot continues a cursor without re-ranking", () 
   })
 
   it("re-ranks rather than ending the feed when the snapshot has expired under a dwelling reader", async () => {
-    const { svc } = harness()
+    const { svc } = harness(NO_JITTER)
     const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
 
     const expired = makePostService({
@@ -254,8 +257,9 @@ describe("ranked feed: warm snapshot continues a cursor without re-ranking", () 
       sql: throwingSql,
       feedPresence: makeFeedPresence({
         cache: new InMemoryCacheClient(() => Date.now()),
-        config: DEFAULT_FEED_RANKING,
+        config: NO_JITTER,
       }),
+      feedRanking: NO_JITTER,
       now: () => NOW,
     })
     const page = await expired.homeFeed(VIEWER, {
@@ -271,11 +275,11 @@ describe("ranked feed: warm snapshot continues a cursor without re-ranking", () 
   })
 
   it("rebuilds the snapshot on the re-ranked continuation so the next page is served from cache", async () => {
-    const { svc } = harness()
+    const { svc } = harness(NO_JITTER)
     const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
 
     const cache = new InMemoryCacheClient(() => Date.now())
-    const presence = makeFeedPresence({ cache, config: DEFAULT_FEED_RANKING })
+    const presence = makeFeedPresence({ cache, config: NO_JITTER })
     let candidateQueries = 0
     const expired = makePostService({
       repo: repoOver({
@@ -286,6 +290,7 @@ describe("ranked feed: warm snapshot continues a cursor without re-ranking", () 
       }),
       sql: throwingSql,
       feedPresence: presence,
+      feedRanking: NO_JITTER,
       now: () => NOW,
     })
 
@@ -306,7 +311,7 @@ describe("ranked feed: warm snapshot continues a cursor without re-ranking", () 
   })
 
   it("re-ranking a moved clock never re-serves a page-1 item", async () => {
-    const { svc } = harness()
+    const { svc } = harness(NO_JITTER)
     const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
 
     const later = makePostService({
@@ -314,8 +319,9 @@ describe("ranked feed: warm snapshot continues a cursor without re-ranking", () 
       sql: throwingSql,
       feedPresence: makeFeedPresence({
         cache: new InMemoryCacheClient(() => Date.now()),
-        config: DEFAULT_FEED_RANKING,
+        config: NO_JITTER,
       }),
+      feedRanking: NO_JITTER,
       now: () => NOW + 10 * 60_000,
     })
     const page = await later.homeFeed(VIEWER, {
@@ -414,11 +420,15 @@ describe("ranked feed: no Redis is a slower feed, not a one-page feed", () => {
 describe("ranked feed: a signed-out reader keeps scrolling", () => {
   const rows = Array.from({ length: 60 }, (_, i) => candidateRow(i + 1, { author_followed: false }))
 
-  function guestService(presence?: ReturnType<typeof makeFeedPresence>): PostService {
+  function guestService(
+    presence?: ReturnType<typeof makeFeedPresence>,
+    config: FeedRankingConfig = DEFAULT_FEED_RANKING,
+  ): PostService {
     return makePostService({
       repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
       sql: throwingSql,
       ...(presence === undefined ? {} : { feedPresence: presence }),
+      feedRanking: config,
       now: () => NOW,
     })
   }
@@ -448,10 +458,11 @@ describe("ranked feed: a signed-out reader keeps scrolling", () => {
   })
 
   it("keeps a guest continuation stable across a clock bucket boundary", async () => {
-    const first = await guestService().publicFeed({ filter: "all", limit: 20 })
+    const first = await guestService(undefined, NO_JITTER).publicFeed({ filter: "all", limit: 20 })
     const later = makePostService({
       repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
       sql: throwingSql,
+      feedRanking: NO_JITTER,
       now: () => NOW + 5 * 60_000,
     })
     const second = await later.publicFeed({ filter: "all", limit: 20, cursor: first.nextCursor! })
@@ -459,6 +470,26 @@ describe("ranked feed: a signed-out reader keeps scrolling", () => {
     const firstIds = new Set(first.items.map((item) => item.id))
     expect(second.items.length).toBeGreaterThan(0)
     expect(second.items.some((item) => firstIds.has(item.id))).toBe(false)
+  })
+
+  it("keys the guest shuffle to the shared public bucket, not to a viewer id", async () => {
+    const first = await guestService().publicFeed({ filter: "all", limit: 20 })
+    const again = await guestService().publicFeed({ filter: "all", limit: 20 })
+    expect(again.items.map((item) => item.id)).toEqual(first.items.map((item) => item.id))
+
+    const seen: string[] = []
+    let cursor: string | undefined = first.nextCursor ?? undefined
+    seen.push(...first.items.map((item) => item.id))
+    while (cursor !== undefined) {
+      const page: { items: PostDTO[]; nextCursor: string | null } = await guestService().publicFeed({
+        filter: "all",
+        limit: 20,
+        cursor,
+      })
+      seen.push(...page.items.map((item) => item.id))
+      cursor = page.nextCursor ?? undefined
+    }
+    expect(new Set(seen).size).toBe(seen.length)
   })
 
   it("never writes a guest into the shared presence keys", async () => {
@@ -552,6 +583,144 @@ describe("ranked feed: served set feeds the seen discount", () => {
     await svc.homeFeed(VIEWER, { filter: "all", limit: 20, cursor: first.nextCursor! })
 
     expect(lookups).toEqual([VIEWER])
+  })
+})
+
+describe("ranked feed: a refresh reshuffles the near-ties, a cursor page never does", () => {
+  const rows = Array.from({ length: 60 }, (_, i) =>
+    candidateRow(i + 1, { like_count: 0, created_at: new Date(NOW), author_id: `author-${i}` }),
+  )
+
+  function seededService(seed: number) {
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const presence = makeFeedPresence({ cache, config: DEFAULT_FEED_RANKING })
+    const svc = makePostService({
+      repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+      sql: throwingSql,
+      feedPresence: presence,
+      now: () => NOW,
+      feedSeed: () => seed,
+    })
+    return { svc, presence }
+  }
+
+  it("hands two refreshes with different seeds two different orders", async () => {
+    const a = await seededService(11).svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    const b = await seededService(22).svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+
+    expect(a.items.map((item) => item.id)).not.toEqual(b.items.map((item) => item.id))
+    expect(a.items).toHaveLength(20)
+    expect(b.items).toHaveLength(20)
+  })
+
+  it("reproduces the same first page for the same minted seed", async () => {
+    const a = await seededService(11).svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    const b = await seededService(11).svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    expect(a.items.map((item) => item.id)).toEqual(b.items.map((item) => item.id))
+  })
+
+  it("mints the seed once per first-page request, never per candidate", async () => {
+    let mints = 0
+    const cache = new InMemoryCacheClient(() => Date.now())
+    const svc = makePostService({
+      repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+      sql: throwingSql,
+      feedPresence: makeFeedPresence({ cache, config: DEFAULT_FEED_RANKING }),
+      now: () => NOW,
+      feedSeed: () => {
+        mints += 1
+        return 7
+      },
+    })
+
+    const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    expect(mints).toBe(1)
+
+    await svc.homeFeed(VIEWER, { filter: "all", limit: 20, cursor: first.nextCursor! })
+    expect(mints).toBe(1)
+  })
+
+  it("pages a jittered snapshot end to end with no duplicates and no holes", async () => {
+    const { svc } = seededService(99)
+    const seen: string[] = []
+    let cursor: string | undefined
+
+    for (let page = 0; page < 6; page += 1) {
+      const result = await svc.homeFeed(VIEWER, {
+        filter: "all",
+        limit: 20,
+        ...(cursor === undefined ? {} : { cursor }),
+      })
+      seen.push(...result.items.map((item) => item.id))
+      if (result.nextCursor === null) break
+      cursor = result.nextCursor
+    }
+
+    expect(seen).toHaveLength(60)
+    expect(new Set(seen).size).toBe(60)
+  })
+
+  it("falls back to a deterministic seed when no snapshot can carry the minted one", async () => {
+    let mints = 0
+    function noSnapshotService() {
+      return makePostService({
+        repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+        sql: throwingSql,
+        feedPresence: makeFeedPresence({ config: DEFAULT_FEED_RANKING }),
+        now: () => NOW,
+        feedSeed: () => {
+          mints += 1
+          return mints
+        },
+      })
+    }
+
+    const first = await noSnapshotService().homeFeed(VIEWER, { filter: "all", limit: 20 })
+    const again = await noSnapshotService().homeFeed(VIEWER, { filter: "all", limit: 20 })
+
+    expect(mints).toBe(0)
+    expect(again.items.map((item) => item.id)).toEqual(first.items.map((item) => item.id))
+  })
+
+  it("agrees between two fallback recomputations inside the same clock bucket", async () => {
+    function fallbackService(atMs: number) {
+      return makePostService({
+        repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+        sql: throwingSql,
+        feedPresence: makeFeedPresence({ config: DEFAULT_FEED_RANKING }),
+        now: () => atMs,
+      })
+    }
+
+    const first = await fallbackService(NOW + 1_000).homeFeed(VIEWER, { filter: "all", limit: 20 })
+    const second = await fallbackService(NOW + 55_000).homeFeed(VIEWER, {
+      filter: "all",
+      limit: 20,
+      cursor: first.nextCursor!,
+    })
+    const third = await fallbackService(NOW + 30_000).homeFeed(VIEWER, {
+      filter: "all",
+      limit: 20,
+      cursor: first.nextCursor!,
+    })
+
+    expect(second.items.map((item) => item.id)).toEqual(third.items.map((item) => item.id))
+    const firstIds = new Set(first.items.map((item) => item.id))
+    expect(second.items.some((item) => firstIds.has(item.id))).toBe(false)
+  })
+
+  it("gives two viewers different shuffles of the same candidate set", async () => {
+    const other = "99999999-9999-9999-9999-999999999999"
+    const svc = makePostService({
+      repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+      sql: throwingSql,
+      feedPresence: makeFeedPresence({ config: DEFAULT_FEED_RANKING }),
+      now: () => NOW,
+    })
+
+    const mine = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    const theirs = await svc.homeFeed(other, { filter: "all", limit: 20 })
+    expect(mine.items.map((item) => item.id)).not.toEqual(theirs.items.map((item) => item.id))
   })
 })
 

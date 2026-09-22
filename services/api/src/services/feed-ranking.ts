@@ -52,31 +52,92 @@ function logScale(count: number): number {
   return Math.log1p(Math.max(0, count))
 }
 
-export function rawScore(candidate: FeedCandidate, cfg: FeedRankingConfig): number {
+export type GlobalCandidate = Omit<
+  FeedCandidate,
+  "authorFollowed" | "authorIsViewer" | "viewerMentioned" | "distanceKm"
+>
+
+export type ViewerCandidate = Pick<
+  FeedCandidate,
+  "authorFollowed" | "authorIsViewer" | "viewerMentioned" | "distanceKm"
+>
+
+export function globalScore(candidate: GlobalCandidate, cfg: FeedRankingConfig): number {
   return (
     cfg.baseWeight +
-    (candidate.authorFollowed ? cfg.followWeight : 0) +
-    (candidate.authorIsViewer ? cfg.selfWeight : 0) +
-    (candidate.viewerMentioned ? cfg.mentionWeight : 0) +
     (candidate.authorOrgVerified ? cfg.orgVerifiedWeight : 0) +
     (candidate.hasLiveEvent ? cfg.attachEventWeight : 0) +
     (candidate.hasReport ? cfg.attachReportWeight : 0) +
     (candidate.hasMedia ? cfg.imageWeight : 0) +
-    cfg.nearbyWeight * proximity(candidate.distanceKm, cfg.nearbyRadiusKm) +
     cfg.likeWeight * logScale(candidate.likeCount) +
     cfg.replyWeight * logScale(candidate.replyCount) +
     cfg.repostWeight * logScale(candidate.repostCount)
   )
 }
 
+export function viewerScore(candidate: ViewerCandidate, cfg: FeedRankingConfig): number {
+  return (
+    (candidate.authorFollowed ? cfg.followWeight : 0) +
+    (candidate.authorIsViewer ? cfg.selfWeight : 0) +
+    (candidate.viewerMentioned ? cfg.mentionWeight : 0) +
+    cfg.nearbyWeight * proximity(candidate.distanceKm, cfg.nearbyRadiusKm)
+  )
+}
+
+export function rawScore(candidate: FeedCandidate, cfg: FeedRankingConfig): number {
+  return globalScore(candidate, cfg) + viewerScore(candidate, cfg)
+}
+
+const FNV_OFFSET_BASIS = 2_166_136_261
+const FNV_PRIME = 16_777_619
+const UINT32_SPAN = 4_294_967_296
+
+function fnv1a32(text: string): number {
+  let hash = FNV_OFFSET_BASIS
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, FNV_PRIME)
+  }
+  return hash >>> 0
+}
+
+function avalanche(value: number): number {
+  let hash = value >>> 0
+  hash ^= hash >>> 16
+  hash = Math.imul(hash, 2_246_822_507)
+  hash ^= hash >>> 13
+  hash = Math.imul(hash, 3_266_489_909)
+  hash ^= hash >>> 16
+  return hash >>> 0
+}
+
+export function jitterUnit(seed: number, postId: string): number {
+  return avalanche(fnv1a32(`${seed}:${postId}`)) / UINT32_SPAN
+}
+
+export function jitterMultiplier(cfg: FeedRankingConfig, seed: number, postId: string): number {
+  if (cfg.jitterAmount === 0) return 1
+  return 1 + cfg.jitterAmount * (2 * jitterUnit(seed, postId) - 1)
+}
+
+export function bucketSeed(viewerKey: string, filter: string, nowBucketMs: number): number {
+  return avalanche(fnv1a32(`${viewerKey}|${filter}|${nowBucketMs}`))
+}
+
 export function scoreCandidate(
   candidate: FeedCandidate,
   cfg: FeedRankingConfig,
   nowBucketMs: number,
+  seed: number,
 ): number {
   const ageHours = Math.max(0, (nowBucketMs - candidate.createdAtMs) / MS_PER_HOUR)
   const seen = candidate.alreadySeen ? cfg.seenDiscount : 1
-  return Math.max(0, rawScore(candidate, cfg)) * recency(ageHours, cfg) * seen
+  return (
+    Math.max(0, rawScore(candidate, cfg)) *
+    recency(ageHours, cfg) *
+    seen *
+    jitterMultiplier(cfg, seed, candidate.id)
+  )
 }
 
 function byScoreThenId(a: RankedCandidate, b: RankedCandidate): number {
@@ -88,12 +149,13 @@ export function rankCandidates(
   candidates: readonly FeedCandidate[],
   cfg: FeedRankingConfig,
   nowMs: number,
+  seed: number,
 ): RankedCandidate[] {
   const nowBucketMs = quantizeClock(nowMs, cfg.clockBucketSeconds)
   const base = candidates.map((candidate) => ({
     id: candidate.id,
     authorId: candidate.authorId,
-    score: quantizeFeedScore(scoreCandidate(candidate, cfg, nowBucketMs)),
+    score: quantizeFeedScore(scoreCandidate(candidate, cfg, nowBucketMs, seed)),
   }))
   base.sort(byScoreThenId)
 

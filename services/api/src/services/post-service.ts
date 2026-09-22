@@ -15,6 +15,7 @@ import type {
   PostDTO,
 } from "@civfix/shared"
 import type { UserChannel } from "@civfix/shared/interfaces"
+import { randomInt } from "node:crypto"
 import type { Sql } from "../db/client.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { resolveMentionTargets } from "./mention-resolver.drizzle.js"
@@ -30,6 +31,8 @@ import {
 } from "./post-repository.drizzle.js"
 import {
   applyCutoff,
+  bucketSeed,
+  quantizeClock,
   rankCandidates,
   type FeedCandidate,
   type RankedCandidate,
@@ -52,6 +55,10 @@ export const FEED_FANOUT_CONCURRENCY = 16
 
 export const FEED_DISTANCE_RESOLUTION_KM = 1
 
+export const FEED_SEED_SPAN = 2 ** 31
+
+export const PUBLIC_FEED_SEED_KEY = "public"
+
 function coarseDistanceKm(distanceKm: number | null): number | null {
   if (distanceKm === null || !Number.isFinite(distanceKm)) return null
   return Math.round(distanceKm / FEED_DISTANCE_RESOLUTION_KM) * FEED_DISTANCE_RESOLUTION_KM
@@ -72,6 +79,7 @@ export interface PostServiceDeps {
   feedPresence?: FeedPresence
   userChannel?: UserChannel
   now?: () => number
+  feedSeed?: () => number
 }
 
 export interface PostService {
@@ -100,6 +108,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
   const isBlocked = deps.isBlockedEitherWay ?? (() => Promise.resolve(false))
   const feedConfig = deps.feedRanking ?? DEFAULT_FEED_RANKING
   const nowMs = deps.now ?? (() => Date.now())
+  const mintSeed = deps.feedSeed ?? (() => randomInt(0, FEED_SEED_SPAN))
 
   function fanout(recipients: readonly string[], topic: "feed" | "feed_counts", id: string): void {
     const channel = deps.userChannel
@@ -205,6 +214,18 @@ export function makePostService(deps: PostServiceDeps): PostService {
     return { items, nextCursor }
   }
 
+  function seedFor(
+    viewerId: string,
+    filter: string,
+    isFirstPage: boolean,
+    nowBucketMs: number,
+  ): number {
+    const presence = presenceFor(viewerId)
+    if (isFirstPage && presence !== undefined && presence.snapshotsAvailable) return mintSeed()
+    const key = viewerId === NIL_VIEWER_ID ? PUBLIC_FEED_SEED_KEY : viewerId
+    return bucketSeed(key, filter, nowBucketMs)
+  }
+
   async function rankCandidateSet(
     viewerId: string,
     query: HomeFeedQuery,
@@ -230,10 +251,12 @@ export function makePostService(deps: PostServiceDeps): PostService {
             rows.map((r) => r.id),
           )
 
+    const nowBucketMs = quantizeClock(nowMs(), feedConfig.clockBucketSeconds)
     const ranked = rankCandidates(
       rows.map((row) => toCandidate(row, seen)),
       feedConfig,
-      nowMs(),
+      nowBucketMs,
+      seedFor(viewerId, query.filter, isFirstPage, nowBucketMs),
     )
     return {
       page: applyCutoff(ranked, feedConfig, true),
