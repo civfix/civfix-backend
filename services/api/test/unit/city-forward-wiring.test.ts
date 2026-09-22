@@ -135,7 +135,13 @@ function wire(counters: InMemoryCounterStore): OnReportMessage {
     log: { warn: () => {}, error: () => {} },
   } as unknown as FastifyInstance
   const container = {
-    env: { USE_FAKE_CHAT: false, WEB_ORIGINS: [], MAIL_FROM_OUTREACH: "a@b", MAIL_REPLY_DOMAIN: "b" },
+    env: {
+      USE_FAKE_CHAT: false,
+      WEB_ORIGINS: [],
+      MAIL_FROM_OUTREACH: "a@b",
+      MAIL_REPLY_DOMAIN: "b",
+      REPORT_AUTOFORWARD_ENABLED: true,
+    },
     storage: { presignGet: () => Promise.resolve("") },
     mailer: {},
     chatService: {},

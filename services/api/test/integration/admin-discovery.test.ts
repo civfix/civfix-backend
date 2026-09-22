@@ -2,10 +2,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleDiscoveryRepository } from "../../src/services/admin/discovery-repository.drizzle.js"
-import {
-  makeDrizzleJurisdictionContactsRepository,
-  ROUTE_REPORTS_BATCH_SIZE,
-} from "../../src/services/admin/jurisdiction-contacts-repository.drizzle.js"
+import { makeDrizzleJurisdictionContactsRepository } from "../../src/services/admin/jurisdiction-contacts-repository.drizzle.js"
 import type { DiscoveryRepository } from "../../src/services/admin/discovery-service.js"
 import type { JurisdictionContactsRepository } from "../../src/services/admin/jurisdiction-contacts-service.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
@@ -237,7 +234,7 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
     expect(detail?.task.perCategory.hazard).toBe(1)
   })
 
-  it("saveAndRoute upserts contacts, resolves the task, routes waiting reports, audits in-tx (no outreach pre-stamp)", async () => {
+  it("saveAndRoute upserts contacts, resolves the task, leaves every report alone, audits in-tx (no outreach pre-stamp)", async () => {
     const r1 = await insertReport(h, { category: "trash" })
     const r2 = await insertReport(h, { category: "hazard", status: "published" })
     await insertReport(h, { category: "trash", status: "resolved" })
@@ -253,7 +250,6 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
       { actorId: null },
     )
     expect(result.taskResolved).toBe(true)
-    expect(result.routedReports).toBe(2)
 
     const cat = await h.sql<{ email: string }[]>`
       SELECT email FROM jurisdiction_contacts WHERE geoid = ${GEOID} AND category = 'trash'
@@ -273,11 +269,11 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
     const statuses = await h.sql<{ id: string; status: string }[]>`
       SELECT id, status FROM reports WHERE id IN (${r1}, ${r2})
     `
-    expect(statuses.every((s) => s.status === "acknowledged")).toBe(true)
+    expect(statuses.every((s) => s.status === "submitted" || s.status === "published")).toBe(true)
     const timeline = await h.sql<{ count: string }[]>`
       SELECT COUNT(*)::text AS count FROM report_timeline WHERE status = 'acknowledged'
     `
-    expect(Number(timeline[0]?.count)).toBe(2)
+    expect(Number(timeline[0]?.count)).toBe(0)
 
     const outreach = await contacts.getOutreachState(GEOID)
     expect(outreach).toBeNull()
@@ -288,18 +284,16 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
     expect(audit[0]?.target).toBe(`jurisdiction:${GEOID}`)
   })
 
-  it("routes a backlog larger than one batch without an unbounded transaction (F094)", async () => {
-    const total = ROUTE_REPORTS_BATCH_SIZE + 37
+  it("leaves a large waiting backlog untouched (no status flip, no timeline rows, no drain)", async () => {
+    const total = 25
     await insertWaitingReports(h, total)
-    await insertReport(h, { category: "trash", status: "resolved" })
 
-    const result = await contacts.saveAndRoute(
+    await contacts.saveAndRoute(
       GEOID,
       { contacts: { trash: "trash@lacity.gov" }, defaultEmails: [], formUrl: null },
       { actorId: null },
     )
 
-    expect(result.routedReports).toBe(total)
 
     const waiting = await h.sql<{ count: string }[]>`
       SELECT COUNT(*)::text AS count FROM reports
@@ -307,19 +301,18 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
         AND deleted_at IS NULL
         AND status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
     `
-    expect(Number(waiting[0]!.count)).toBe(0)
+    expect(Number(waiting[0]!.count)).toBe(total)
 
     const timeline = await h.sql<{ count: string }[]>`
       SELECT COUNT(*)::text AS count FROM report_timeline WHERE status = 'acknowledged'
     `
-    expect(Number(timeline[0]!.count)).toBe(total)
+    expect(Number(timeline[0]!.count)).toBe(0)
 
-    const audit = await h.sql<{ meta: { routedReports: number; drainPending: boolean } }[]>`
+    const audit = await h.sql<{ meta: { taskResolved: boolean } }[]>`
       SELECT meta FROM audit_log WHERE action = 'discovery.contacts_saved'
     `
     expect(audit).toHaveLength(1)
-    expect(audit[0]!.meta.routedReports).toBe(ROUTE_REPORTS_BATCH_SIZE)
-    expect(audit[0]!.meta.drainPending).toBe(true)
+    expect(audit[0]!.meta).not.toHaveProperty("routedReports")
 
     const contactRow = await h.sql<{ email: string }[]>`
       SELECT email FROM jurisdiction_contacts WHERE geoid = ${GEOID} AND category = 'trash'
@@ -328,7 +321,8 @@ describe.skipIf(!pg)("admin discovery + contacts repositories (integration: real
   })
 
   it("listDirectory projects a routed jurisdiction with last-routed time", async () => {
-    await insertReport(h, { category: "trash" })
+    const reportId = await insertReport(h, { category: "trash", status: "acknowledged" })
+    await h.sql`INSERT INTO report_timeline (report_id, status) VALUES (${reportId}, 'acknowledged')`
     await insertTask(h, null)
     await contacts.saveAndRoute(
       GEOID,

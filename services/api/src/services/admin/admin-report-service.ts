@@ -68,6 +68,13 @@ export function isAlreadyRoutedConflict(err: unknown): boolean {
   return err instanceof AppError && err.code === ErrorCode.CONFLICT && err.message === ALREADY_ROUTED_CONFLICT
 }
 
+function firstTemplate(...candidates: (string | null | undefined)[]): string | null {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim() !== "") return candidate
+  }
+  return null
+}
+
 export function makeAdminReportService(deps: AdminReportServiceDeps): AdminReportService {
   const now = deps.now ?? (() => new Date())
   const presignMedia =
@@ -369,9 +376,11 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         })
       }
 
+      const defaults =
+        deps.forwardTemplates !== undefined ? await deps.forwardTemplates.get() : null
       const packet = buildReportPacket(record, routing, mediaLinks, input.note, {
-        subject: routing?.forwardSubjectTemplate ?? null,
-        body: routing?.forwardBodyTemplate ?? null,
+        subject: firstTemplate(routing?.forwardSubjectTemplate, defaults?.subjectTemplate),
+        body: firstTemplate(routing?.forwardBodyTemplate, defaults?.bodyTemplate),
       })
 
       const routeNote = `Sent to jurisdiction (${toAddr})`

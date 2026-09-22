@@ -456,6 +456,8 @@ function matchesSearch(record: AdminReportRecord, q: string): boolean {
   return (
     record.title.toLowerCase().includes(needle) ||
     record.place.toLowerCase().includes(needle) ||
+    record.address.toLowerCase().includes(needle) ||
+    record.referenceCode === q.trim().toUpperCase() ||
     (isUuid(q) && record.id.toLowerCase() === needle) ||
     (record.reporter?.name.toLowerCase().includes(needle) ?? false) ||
     (record.reporter?.handle?.toLowerCase().includes(needle) ?? false)
