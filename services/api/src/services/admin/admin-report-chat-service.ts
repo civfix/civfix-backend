@@ -55,11 +55,13 @@ export function makeAdminReportChatService(
     },
 
     async sendMessage(reportId, input): Promise<{ message: ChatMessageDTO }> {
+      const body = input.body.trim()
+      if (body === "") throw AppError.validation({ body: "A message needs text." })
       await assertReportExists(reportId)
       const message = await sendReportChatMessage(deps.send, {
         reportId,
         senderId: input.actorId,
-        body: input.body,
+        body,
       })
       return { message }
     },

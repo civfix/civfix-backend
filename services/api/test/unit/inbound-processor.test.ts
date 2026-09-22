@@ -505,6 +505,33 @@ describe("cityReplyChatBody (what a city reply publishes into the report chat)",
     expect(cityReplyChatBody(body)).toBe("Done.")
   })
 
+  it("keeps a reply that OPENS with a From:/To: header block, never returning an empty body", () => {
+    const body = [
+      "From: Public Works Ticketing",
+      "To: reports@civfix.org",
+      "Your request has been assigned to crew 12.",
+    ].join("\n")
+    const out = cityReplyChatBody(body)
+    expect(out).not.toBeNull()
+    expect(out).toContain("Your request has been assigned to crew 12.")
+  })
+
+  it("keeps a header block that only blank or quoted lines precede", () => {
+    const body = ["", "> earlier", "From: Public Works", "Sent: Monday", "Crew 12 assigned."].join(
+      "\n",
+    )
+    const out = cityReplyChatBody(body)
+    expect(out).not.toBeNull()
+    expect(out).toContain("Crew 12 assigned.")
+  })
+
+  it("still cuts a From: header block that real reply text precedes", () => {
+    const body = ["Crew 12 assigned.", "", "From: civfix <x@civfix.org>", "Sent: Monday", "old"].join(
+      "\n",
+    )
+    expect(cityReplyChatBody(body)).toBe("Crew 12 assigned.")
+  })
+
   it("keeps a bare From: line that no Sent/Date/To header follows", () => {
     const body = "From: the front desk\nWe will send someone tomorrow."
     expect(cityReplyChatBody(body)).toBe(body)

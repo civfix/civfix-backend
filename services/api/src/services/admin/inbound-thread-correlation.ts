@@ -54,11 +54,20 @@ const OUTLOOK_HEADER_FROM_RE = /^From:\s.+$/
 const OUTLOOK_HEADER_FOLLOW_RE = /^(?:Sent|Date|To):\s/
 const OUTLOOK_HEADER_LOOKAHEAD = 2
 
+function hasReplyTextBefore(lines: string[], index: number): boolean {
+  for (let i = 0; i < index; i++) {
+    const line = lines[i]!.trim()
+    if (line !== "" && !line.startsWith(">")) return true
+  }
+  return false
+}
+
 function isQuotedHistoryStart(lines: string[], index: number): boolean {
   const line = lines[index]!.trim()
   if (QUOTED_ATTRIBUTION_RE.test(line)) return true
   if (OUTLOOK_ORIGINAL_MESSAGE_RE.test(line)) return true
   if (!OUTLOOK_HEADER_FROM_RE.test(line)) return false
+  if (!hasReplyTextBefore(lines, index)) return false
   for (let ahead = 1; ahead <= OUTLOOK_HEADER_LOOKAHEAD; ahead++) {
     const follow = lines[index + ahead]
     if (follow === undefined) return false
@@ -95,9 +104,8 @@ export function clipToMessageBody(text: string, max: number = MESSAGE_BODY_MAX):
 }
 
 export function cityReplyChatBody(raw: string | null | undefined): string | null {
-  const trimmed = stripQuotedHistory(raw ?? "")
-  if (trimmed === "") return null
-  return clipToMessageBody(trimmed)
+  const clipped = clipToMessageBody(stripQuotedHistory(raw ?? ""))
+  return clipped === "" ? null : clipped
 }
 
 export async function findThreadByReferences(

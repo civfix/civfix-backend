@@ -65,6 +65,15 @@ export function makeContainerReportChatSendDeps(
   const isBlockedEitherWay = (a: string, b: string): Promise<boolean> =>
     container.getBlocksRepo().isBlockedEitherWay(a, b)
 
+  const blockedIdsFor = (():
+    | ((actorId: string, candidateIds: string[]) => Promise<Set<string>>)
+    | undefined => {
+    const repo = container.getBlocksRepo()
+    const batch = repo.blockedIdsAmong
+    if (!batch) return undefined
+    return (actorId, candidateIds) => batch.call(repo, actorId, candidateIds)
+  })()
+
   let cleanupRepo: ReturnType<typeof makeDrizzleCleanupRepository> | undefined
   let groupRepo: ReturnType<typeof makeChatGroupRepository> | undefined
 
@@ -87,6 +96,7 @@ export function makeContainerReportChatSendDeps(
     ...(mutedUserIdsFor ? { mutedUserIdsFor } : {}),
     roomKeyFor,
     isBlockedEitherWay,
+    ...(blockedIdsFor ? { blockedIdsFor } : {}),
   })
 
   return {

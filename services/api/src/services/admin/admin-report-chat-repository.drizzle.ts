@@ -33,7 +33,8 @@ export function makeDrizzleAdminReportChatRepository(sql: Sql): AdminReportChatR
         const removed = await tx<{ id: string }[]>`
           UPDATE chat_messages
           SET deleted_at = now()
-          WHERE id = ${messageId} AND report_id = ${reportId} AND deleted_at IS NULL
+          WHERE id = ${messageId} AND report_id = ${reportId}
+            AND deleted_at IS NULL AND sender_id IS NOT NULL
           RETURNING id
         `
         if (removed.length === 0) return false

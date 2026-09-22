@@ -275,6 +275,19 @@ describe("admin report chat send (attributed operator message, no membership req
     expect(h.send.bells).toHaveLength(0)
   })
 
+  it("trims the body and refuses a whitespace-only message, like the live chat send does", async () => {
+    const h = serviceHarness()
+    h.repo.seedReport(REPORT_ID)
+
+    await expect(
+      h.svc.sendMessage(REPORT_ID, { body: "   \n\t ", actorId: OPERATOR_ID }),
+    ).rejects.toBeInstanceOf(AppError)
+    expect(h.send.persisted).toHaveLength(0)
+
+    await h.svc.sendMessage(REPORT_ID, { body: "  Crew dispatched.  ", actorId: OPERATOR_ID })
+    expect(h.send.persisted[0]?.body).toBe("Crew dispatched.")
+  })
+
   it("404s when the report row does not exist, without persisting anything", async () => {
     const h = serviceHarness()
 
@@ -376,6 +389,18 @@ describe("admin report chat remove (operator tombstone + audit)", () => {
     expect(h.repo.audits).toHaveLength(1)
   })
 
+  it("refuses to tombstone a sender-less SYSTEM row, so timeline entries survive", async () => {
+    const h = serviceHarness()
+    h.repo.seedReport(REPORT_ID)
+    h.repo.seedMessage({ id: MESSAGE_ID, reportId: REPORT_ID, senderId: null })
+
+    await expect(
+      h.svc.removeMessage(REPORT_ID, MESSAGE_ID, { reason: null, actorId: OPERATOR_ID }),
+    ).rejects.toBeInstanceOf(AppError)
+    expect(h.repo.messages.get(MESSAGE_ID)?.deletedAt).toBeNull()
+    expect(h.repo.audits).toHaveLength(0)
+  })
+
   it("404s when the report row does not exist", async () => {
     const h = serviceHarness()
     h.repo.seedMessage({ id: MESSAGE_ID, reportId: REPORT_ID })
@@ -387,7 +412,7 @@ describe("admin report chat remove (operator tombstone + audit)", () => {
   })
 })
 
-describe("sendReportChatMessage core (shared by the WS send path and the admin route)", () => {
+describe("sendReportChatMessage core (the admin route's send; the WS path shares its mention + forward halves)", () => {
   it("attaches mentions to the returned message only when some resolved", async () => {
     const withNone = sendHarness({ mentions: [] })
     const resolved = await sendReportChatMessage(withNone.deps, {

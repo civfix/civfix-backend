@@ -6,6 +6,7 @@ import type {
 export interface MemoryReportChatMessage {
   id: string
   reportId: string
+  senderId: string | null
   deletedAt: Date | null
 }
 
@@ -25,10 +26,16 @@ export class InMemoryAdminReportChatRepository implements AdminReportChatReposit
     this.reports.add(reportId)
   }
 
-  seedMessage(message: { id: string; reportId: string; deletedAt?: Date | null }): void {
+  seedMessage(message: {
+    id: string
+    reportId: string
+    senderId?: string | null
+    deletedAt?: Date | null
+  }): void {
     this.messages.set(message.id, {
       id: message.id,
       reportId: message.reportId,
+      senderId: message.senderId === undefined ? "author" : message.senderId,
       deletedAt: message.deletedAt ?? null,
     })
   }
@@ -43,7 +50,12 @@ export class InMemoryAdminReportChatRepository implements AdminReportChatReposit
     input: RemoveReportMessageInput,
   ): Promise<boolean> {
     const found = this.messages.get(messageId)
-    if (!found || found.reportId !== reportId || found.deletedAt !== null) {
+    if (
+      !found ||
+      found.reportId !== reportId ||
+      found.deletedAt !== null ||
+      found.senderId === null
+    ) {
       return Promise.resolve(false)
     }
     found.deletedAt = new Date()

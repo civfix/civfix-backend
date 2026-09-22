@@ -20,6 +20,7 @@ import {
   type AdminReportChatRepository,
 } from "../../services/admin/admin-report-chat-repository.drizzle.js"
 import { makeDrizzleChatRepository, type ChatRepository } from "../../services/chat-repository.drizzle.js"
+import type { ChatHistorySource } from "../chat-route-helpers.js"
 import { makePrivateMediaPresigner } from "../../services/media-presign.js"
 import { makeContainerReportChatSendDeps } from "../../services/report-chat-send-wiring.js"
 import { chatMentionDeps } from "../chat-gateway-wiring.js"
@@ -135,16 +136,10 @@ export async function registerAdminReportChatRoutes(
 
 function historySourceFrom(
   getChatRepo: () => ChatRepository,
-): AdminReportChatServiceHistorySource {
+): (reportId: string, viewerUserId: string | null) => ChatHistorySource {
   return (reportId, viewerUserId) => ({
     history: (before, pageLimit, around) =>
       getChatRepo().reportHistory(reportId, before, pageLimit, viewerUserId, around),
     listPins: () => getChatRepo().listReportPins(reportId, viewerUserId),
   })
 }
-
-type AdminReportChatServiceHistorySource = Parameters<
-  typeof makeAdminReportChatService
->[0]["historySource"]
-
-export type { AdminReportChatService }

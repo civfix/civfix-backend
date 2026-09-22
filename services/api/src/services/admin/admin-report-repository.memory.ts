@@ -155,7 +155,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
       .map((s) => this.projectRecord(s.record))
 
     if (args.q !== null) rows = rows.filter((r) => matchesSearch(r, args.q as string))
-    if (args.statuses !== null) {
+    if (args.statuses !== null && args.statuses.length > 0) {
       const set = new Set(args.statuses)
       rows = rows.filter((r) => set.has(r.status))
     }

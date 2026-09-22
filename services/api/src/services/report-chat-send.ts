@@ -49,10 +49,8 @@ export async function sendReportChatMessage(
   })
   const message = mentions.length > 0 ? { ...persisted, mentions } : persisted
 
-  await deps.broadcast(
-    roomKeyFor("report", input.reportId),
-    neutralizeChatViewerFields(message),
-  )
+  const roomKey = roomKeyFor("report", input.reportId)
+  void Promise.resolve(deps.broadcast(roomKey, neutralizeChatViewerFields(message))).catch(() => {})
 
   fireMentionBells(deps, input.reportId, input.senderId, mentions, message)
   if (deps.notifyMembers) void deps.notifyMembers(input.reportId, message).catch(() => {})
