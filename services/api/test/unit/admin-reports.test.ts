@@ -87,7 +87,7 @@ function harness(): Harness {
       ...(thumbKey !== null ? { thumbUrl: `https://media.test/${thumbKey}` } : {}),
     }),
   })
-  return { repo, mailRepo, mailer, emitter, forwardTemplates, svc }
+  return { repo, mailRepo, mailer, emitter, forwardTemplates, notifier, svc }
 }
 
 function lastOutbound(mailer: FakeMailer): { subject: string; text: string; html?: string } {
@@ -98,7 +98,6 @@ function lastOutbound(mailer: FakeMailer): { subject: string; text: string; html
     text: outbound.text,
     ...(outbound.html !== undefined ? { html: outbound.html } : {}),
   }
-  return { repo, mailRepo, mailer, emitter, notifier, svc }
 }
 
 function hoursAgo(hours: number): Date {
