@@ -45,6 +45,7 @@ describe("makeMapboxReverseGeocode", () => {
     const geocode = makeMapboxReverseGeocode({
       token: "pk.test",
       fetchImpl: okFetch({
+        feature_type: "address",
         name: "1 Main St",
         context: { place: { name: "Springfield" }, region: { region_code: "IL" }, country: { country_code: "us" } },
       }),
@@ -114,7 +115,18 @@ describe("mapboxPrecision", () => {
     expect(mapboxPrecision({ context: { address: { address_number: "123", name: "123 Main St" } } })).toBe(
       "street",
     )
-    expect(mapboxPrecision({ name: "123 Main St" })).toBe("street")
+    expect(mapboxPrecision({ feature_type: "address", name: "123 Main St" })).toBe("street")
+  })
+
+  it("refuses street for a digit-leading name the response never called an address", () => {
+    expect(mapboxPrecision({ name: "123 Main St" })).toBeNull()
+    expect(
+      mapboxPrecision({
+        feature_type: "poi",
+        name: "24 Hour Fitness",
+        context: { street: { name: "Sepulveda Blvd" } },
+      }),
+    ).toBe("intersection")
   })
 
   it("claims intersection for a named street with no number", () => {

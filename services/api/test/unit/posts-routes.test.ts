@@ -840,7 +840,7 @@ describe("POST /posts (createPost)", () => {
     expect(h.repo.posts.get(res.json().id)?.reportId).toBe(reportId)
   })
 
-  it("rate limits createPost at 120/min PER IP (the route carries its own config.rateLimit bucket)", async () => {
+  it("rate limits createPost at 12/min PER IP (the route carries its own config.rateLimit bucket)", async () => {
     const h = await makeHarness()
     const me = await h.signIn("burst@example.com", "Burst")
     const post = () =>
@@ -851,13 +851,9 @@ describe("POST /posts (createPost)", () => {
         payload: { kind: "post", body: "burst" },
       })
 
-    for (let i = 0; i < 120; i += 1) {
+    for (let i = 0; i < 12; i += 1) {
       expect((await post()).statusCode, `request ${i + 1}`).toBe(201)
     }
-    // Without the route bucket this would sit at the global 300/min and return a 121st 201. The bucket is
-    // keyed by IP (the inherited global keyGenerator), so it is shared by every user behind one exit -
-    // which is why it is 120 and not the 20-30 the other creates use: this endpoint carries thread
-    // replies, and a whole crew replying from one venue Wi-Fi must not 429 each other.
     expect((await post()).statusCode).toBe(429)
   })
 

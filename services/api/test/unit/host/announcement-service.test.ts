@@ -240,6 +240,37 @@ describe("createEventAnnouncement", () => {
     ).rejects.toMatchObject({ code: "RATE_LIMITED" })
   })
 
+  it("admits exactly one of two concurrent creates that race for the last daily slot", async () => {
+    for (let i = 0; i < MAX_EVENT_ANNOUNCEMENTS_PER_DAY - 1; i += 1) {
+      await h.service.create(EVENT, HOST, {
+        id: EVENT,
+        bodyMd: `Body ${i}`,
+        audience: { kind: "all_registered" },
+      })
+    }
+
+    const outcomes = await Promise.allSettled([
+      h.service.create(EVENT, HOST, {
+        id: EVENT,
+        bodyMd: "Racer A",
+        audience: { kind: "all_registered" },
+      }),
+      h.service.create(EVENT, HOST, {
+        id: EVENT,
+        bodyMd: "Racer B",
+        audience: { kind: "all_registered" },
+      }),
+    ])
+
+    expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1)
+    const rejected = outcomes.find((o) => o.status === "rejected")
+    expect(rejected).toBeDefined()
+    expect((rejected as PromiseRejectedResult).reason).toMatchObject({ code: "RATE_LIMITED" })
+    expect(await h.repo.countAnnouncementsSince(EVENT, new Date(0))).toBe(
+      MAX_EVENT_ANNOUNCEMENTS_PER_DAY,
+    )
+  })
+
   it("lets the host announce again once the 24h window has rolled past", async () => {
     for (let i = 0; i < MAX_EVENT_ANNOUNCEMENTS_PER_DAY; i += 1) {
       const dto = await h.service.create(EVENT, HOST, {

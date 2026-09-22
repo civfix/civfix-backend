@@ -71,9 +71,18 @@ export interface AudiencePageQuery {
   limit: number
 }
 
+export interface AnnouncementCap {
+  since: Date
+  max: number
+}
+
 export interface BroadcastRepository {
   create(input: BroadcastCreateInput): Promise<BroadcastRecord>
   createIfAbsent(input: BroadcastCreateInput): Promise<BroadcastRecord | null>
+  createAnnouncementUnderCap(
+    input: BroadcastCreateInput,
+    cap: AnnouncementCap,
+  ): Promise<BroadcastRecord | null>
 
   findById(broadcastId: string): Promise<BroadcastRecord | null>
   findForEvent(cleanupId: string, broadcastId: string): Promise<BroadcastRecord | null>

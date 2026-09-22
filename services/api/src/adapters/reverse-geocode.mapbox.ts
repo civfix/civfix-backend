@@ -11,8 +11,9 @@
  * worse, short-circuit the rest of the chain with the least specific line available. So this adapter
  * returns only what it can prove -
  *
- *   street       a house number is present (context.address.address_number, or a name that starts
- *                with one)                                      "123 Main St, Inglewood, CA"
+ *   street       a house number is present (context.address.address_number, or an address label -
+ *                context.address.name, or the feature's own name when feature_type is `address` -
+ *                that starts with one)                          "123 Main St, Inglewood, CA"
  *   intersection a named street but no number                   "Main St, Inglewood, CA"
  *
  * - and hands anything coarser to the next provider, ending at the local TIGER `locality` label.
@@ -34,6 +35,7 @@ interface MapboxReverseContext {
 }
 export interface MapboxReverseProps {
   name?: string
+  feature_type?: string
   full_address?: string
   place_formatted?: string
   context?: MapboxReverseContext
@@ -60,7 +62,10 @@ export function formatMapboxReverse(p: MapboxReverseProps): string | null {
   return [primary, ...tail].join(", ")
 }
 
-/** A leading house number is the only thing that earns the `street` rung. */
+/**
+ * A leading house number earns the `street` rung, but ONLY on a label the response itself calls an
+ * address. A digit can lead any POI name ("24 Hour Fitness"), and a POI is not a rooftop.
+ */
 function startsWithHouseNumber(name: string | undefined): boolean {
   return name !== undefined && /^\d/.test(name.trim())
 }
@@ -74,7 +79,7 @@ export function mapboxPrecision(p: MapboxReverseProps): AddressPrecision | null 
   const hasNumber =
     (ctx.address?.address_number?.trim().length ?? 0) > 0 ||
     startsWithHouseNumber(ctx.address?.name) ||
-    startsWithHouseNumber(p.name)
+    (p.feature_type === "address" && startsWithHouseNumber(p.name))
   if (hasNumber) return "street"
   const named = ctx.street?.name ?? ctx.address?.street_name ?? null
   if (named !== null && named.trim().length > 0) return "intersection"

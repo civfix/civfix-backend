@@ -24,7 +24,7 @@ export const FEED_COUNTS_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minu
 
 export const HOME_FEED_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
-export const CREATE_POST_RATE_LIMIT = perIdentity({ max: 120, timeWindow: "1 minute" })
+export const CREATE_POST_RATE_LIMIT = perIdentity({ max: 12, timeWindow: "1 minute" })
 
 export const POST_INTERACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 

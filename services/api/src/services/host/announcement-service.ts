@@ -15,7 +15,7 @@ import type {
   PersonDTO,
 } from "@civfix/shared"
 import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
-import type { BroadcastRepository } from "./broadcast-repository.js"
+import type { AnnouncementCap, BroadcastRepository } from "./broadcast-repository.js"
 import type { BroadcastRecord } from "./broadcast-types.js"
 import { broadcastLinkWarnings } from "./broadcast-render.js"
 import { announcementPath } from "./broadcast-pipeline.js"
@@ -138,10 +138,11 @@ export function makeAnnouncementService(deps: AnnouncementServiceDeps): Announce
     )
   }
 
-  async function assertUnderDailyCap(cleanupId: string): Promise<void> {
-    const since = new Date(now().getTime() - ANNOUNCEMENT_WINDOW_MS)
-    const used = await repo.countAnnouncementsSince(cleanupId, since)
-    if (used >= MAX_EVENT_ANNOUNCEMENTS_PER_DAY) throw announcementRateLimited()
+  function dailyCap(): AnnouncementCap {
+    return {
+      since: new Date(now().getTime() - ANNOUNCEMENT_WINDOW_MS),
+      max: MAX_EVENT_ANNOUNCEMENTS_PER_DAY,
+    }
   }
 
   function ctaFor(cleanupId: string, announcementId: string): string | null {
@@ -162,22 +163,25 @@ export function makeAnnouncementService(deps: AnnouncementServiceDeps): Announce
   return {
     async create(cleanupId, actorId, body) {
       await deps.broadcasts.assertComposeAllowed(cleanupId, actorId)
-      await assertUnderDailyCap(cleanupId)
 
       const event = await repo.eventContext(cleanupId)
       if (event === null) throw AppError.notFound("Cleanup not found")
 
-      const draft = await repo.create({
-        cleanupId,
-        createdBy: actorId,
-        kind: ANNOUNCEMENT_BROADCAST_KIND,
-        subject: announcementTitleOf(body.title, event.title),
-        bodyMd: body.bodyMd,
-        segment: announcementAudienceToSegment(body.audience),
-        channels: [...ANNOUNCEMENT_CHANNELS] as BroadcastChannel[],
-        status: "draft",
-        chunkSize: config.chunkSize,
-      })
+      const draft = await repo.createAnnouncementUnderCap(
+        {
+          cleanupId,
+          createdBy: actorId,
+          kind: ANNOUNCEMENT_BROADCAST_KIND,
+          subject: announcementTitleOf(body.title, event.title),
+          bodyMd: body.bodyMd,
+          segment: announcementAudienceToSegment(body.audience),
+          channels: [...ANNOUNCEMENT_CHANNELS] as BroadcastChannel[],
+          status: "draft",
+          chunkSize: config.chunkSize,
+        },
+        dailyCap(),
+      )
+      if (draft === null) throw announcementRateLimited()
 
       try {
         const cta = ctaFor(cleanupId, draft.id)

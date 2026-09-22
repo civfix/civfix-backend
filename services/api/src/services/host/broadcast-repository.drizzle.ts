@@ -6,10 +6,11 @@ import type {
   BroadcastStatus,
   DeliveryStatus,
 } from "@civfix/shared"
-import type { Sql } from "../../db/client.js"
+import type { Queryable, Sql } from "../../db/client.js"
 import { listGuestAudiencePage, listMemberAudiencePage } from "./broadcast-audience-sql.js"
 import type {
   AdminBroadcastListQuery,
+  AnnouncementCap,
   AnnouncementListQuery,
   AudiencePageQuery,
   BroadcastListQuery,
@@ -125,9 +126,11 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
     return rows[0] ? toRecord(rows[0]) : null
   }
 
-  return {
-    async create(input: BroadcastCreateInput): Promise<BroadcastRecord> {
-      const rows = await sql<BroadcastRowSelect[]>`
+  async function insertBroadcast(
+    db: Queryable,
+    input: BroadcastCreateInput,
+  ): Promise<BroadcastRecord> {
+    const rows = await db<BroadcastRowSelect[]>`
         INSERT INTO broadcasts (
           cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
           cta_label, cta_url, segment, channels, reply_to, scheduled_at, chunk_size
@@ -142,7 +145,28 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
                cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
                finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
                suppressed_count, content_scrubbed_at, created_at, updated_at`
-      return toRecord(rows[0]!)
+    return toRecord(rows[0]!)
+  }
+
+  return {
+    create(input: BroadcastCreateInput): Promise<BroadcastRecord> {
+      return insertBroadcast(sql, input)
+    },
+
+    createAnnouncementUnderCap(
+      input: BroadcastCreateInput,
+      cap: AnnouncementCap,
+    ): Promise<BroadcastRecord | null> {
+      return sql.begin(async (tx) => {
+        await tx`SELECT id FROM cleanups WHERE id = ${input.cleanupId} LIMIT 1 FOR UPDATE`
+        const rows = await tx<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM broadcasts
+           WHERE cleanup_id = ${input.cleanupId}
+             AND kind = ${ANNOUNCEMENT_BROADCAST_KIND}
+             AND created_at >= ${cap.since}`
+        if ((rows[0]?.n ?? 0) >= cap.max) return null
+        return insertBroadcast(tx, input)
+      }) as Promise<BroadcastRecord | null>
     },
 
     async createIfAbsent(input: BroadcastCreateInput): Promise<BroadcastRecord | null> {

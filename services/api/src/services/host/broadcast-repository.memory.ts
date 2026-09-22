@@ -3,6 +3,7 @@ import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/shared"
 import type { BroadcastKind, BroadcastStatus } from "@civfix/shared"
 import type {
   AdminBroadcastListQuery,
+  AnnouncementCap,
   AnnouncementListQuery,
   AudiencePageQuery,
   BroadcastListQuery,
@@ -175,6 +176,20 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     }
     this.broadcasts.set(record.id, record)
     return Promise.resolve(record)
+  }
+
+  createAnnouncementUnderCap(
+    input: BroadcastCreateInput,
+    cap: AnnouncementCap,
+  ): Promise<BroadcastRecord | null> {
+    const used = [...this.broadcasts.values()].filter(
+      (b) =>
+        b.cleanupId === input.cleanupId &&
+        b.kind === ANNOUNCEMENT_BROADCAST_KIND &&
+        b.createdAt.getTime() >= cap.since.getTime(),
+    ).length
+    if (used >= cap.max) return Promise.resolve(null)
+    return this.create(input)
   }
 
   async createIfAbsent(input: BroadcastCreateInput): Promise<BroadcastRecord | null> {
