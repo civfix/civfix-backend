@@ -436,7 +436,7 @@ export function feedCandidatesStatement(
       p.reply_count,
       p.repost_count,
       (p.report_id IS NOT NULL) AS has_report,
-      (p.event_id IS NOT NULL AND ev.ends_at >= now()) AS has_live_event,
+      COALESCE(ev.status <> 'cancelled' AND ev.ends_at > now(), false) AS has_live_event,
       EXISTS (
         SELECT 1 FROM media_assets ma
         WHERE ma.post_id = p.id AND ma.status = 'ready' AND ma.served_key IS NOT NULL

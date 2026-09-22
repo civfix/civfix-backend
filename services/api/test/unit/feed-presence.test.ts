@@ -240,7 +240,7 @@ describe("feed presence: degrades instead of failing the request", () => {
     expect(await presence.readSnapshot(VIEWER, "all")).toBeNull()
     await expect(
       presence.writeSnapshot(VIEWER, "all", [{ id: POST, authorId: "a", score: 1 }]),
-    ).resolves.toBeUndefined()
+    ).resolves.toBe(false)
     expect([...(await presence.seenBy(VIEWER, [POST]))]).toEqual([])
     await expect(presence.recordServed(VIEWER, [POST])).resolves.toBeUndefined()
     expect(await presence.viewersOf(POST)).toEqual([])

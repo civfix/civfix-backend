@@ -113,9 +113,11 @@ describe("feed candidate SQL: security invariants", () => {
     expect(stmt.sql).toMatch(/ma\.status = 'ready' AND ma\.served_key IS NOT NULL/)
   })
 
-  it("treats an ended event as not live", async () => {
+  it("reuses the canonical ongoing-event predicate and never yields SQL NULL", async () => {
     const stmt = await emitted()
-    expect(stmt.sql).toMatch(/p\.event_id IS NOT NULL AND ev\.ends_at >= now\(\)/)
+    expect(stmt.sql).toMatch(
+      /COALESCE\(ev\.status <> 'cancelled' AND ev\.ends_at > now\(\), false\) AS has_live_event/,
+    )
   })
 })
 

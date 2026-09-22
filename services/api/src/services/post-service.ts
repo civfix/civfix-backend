@@ -45,6 +45,21 @@ function isVisible(brief: PostBrief): boolean {
   return brief.deletedAt === null && brief.visibility === "public"
 }
 
+interface FeedScoreCursor {
+  score: number
+  postId: string
+}
+
+interface RankedSet {
+  ranked: RankedCandidate[]
+  recomputable: () => RankedCandidate[]
+}
+
+function normalizeScoreCursor(cursor: FeedScoreCursor | null): FeedScoreCursor | null {
+  if (cursor === null) return null
+  return { score: cursor.score, postId: cursor.postId.toLowerCase() }
+}
+
 function isLegacyTimeCursor(cursor: string | null | undefined): boolean {
   if (cursor === null || cursor === undefined || cursor === "") return false
   if (parseFeedScoreCursor(cursor) !== null) return false
@@ -231,7 +246,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
     query: HomeFeedQuery,
     location: FeedViewerLocation | undefined,
     isFirstPage: boolean,
-  ): Promise<{ page: RankedCandidate[]; durable: RankedCandidate[] }> {
+  ): Promise<RankedSet> {
     const rows = await deps.repo.feedCandidates({
       viewerId,
       filter: query.filter,
@@ -252,29 +267,49 @@ export function makePostService(deps: PostServiceDeps): PostService {
           )
 
     const nowBucketMs = quantizeClock(nowMs(), feedConfig.clockBucketSeconds)
-    const ranked = rankCandidates(
-      rows.map((row) => toCandidate(row, seen)),
-      feedConfig,
-      nowBucketMs,
-      seedFor(viewerId, query.filter, isFirstPage, nowBucketMs),
-    )
-    const durable = applyCutoff(ranked, feedConfig, false)
+    function rankWith(seenSet: ReadonlySet<string>, seed: number): RankedCandidate[] {
+      return applyCutoff(
+        rankCandidates(
+          rows.map((row) => toCandidate(row, seenSet)),
+          feedConfig,
+          nowBucketMs,
+          seed,
+        ),
+        feedConfig,
+      )
+    }
+
     return {
-      page: isFirstPage ? applyCutoff(ranked, feedConfig, true) : durable,
-      durable,
+      ranked: rankWith(seen, seedFor(viewerId, query.filter, isFirstPage, nowBucketMs)),
+      recomputable: () =>
+        rankWith(new Set<string>(), seedFor(viewerId, query.filter, false, nowBucketMs)),
     }
   }
 
   function persistSnapshot(
     viewerId: string,
     filter: string,
-    durable: readonly RankedCandidate[],
+    ranked: readonly RankedCandidate[],
   ): void {
     const presence = presenceFor(viewerId)
     if (presence === undefined || !presence.snapshotsAvailable) return
-    void presence.writeSnapshot(viewerId, filter, durable).catch((err: unknown) => {
+    void presence.writeSnapshot(viewerId, filter, ranked).catch((err: unknown) => {
       deps.logger?.warn({ err }, "post: feed snapshot write failed (suppressed)")
     })
+  }
+
+  async function storeFirstSnapshot(
+    viewerId: string,
+    filter: string,
+    ranked: readonly RankedCandidate[],
+  ): Promise<boolean> {
+    const presence = presenceFor(viewerId)
+    if (presence === undefined || !presence.snapshotsAvailable) return true
+    try {
+      return await presence.writeSnapshot(viewerId, filter, ranked)
+    } catch {
+      return false
+    }
   }
 
   async function continueRankedPage(
@@ -295,9 +330,9 @@ export function makePostService(deps: PostServiceDeps): PostService {
       }
     }
 
-    const { durable } = await rankCandidateSet(viewerId, query, location, false)
-    persistSnapshot(viewerId, query.filter, durable)
-    return pageFrom(viewerId, sliceAfterCursor(durable, cursor), limit)
+    const { ranked } = await rankCandidateSet(viewerId, query, location, false)
+    persistSnapshot(viewerId, query.filter, ranked)
+    return pageFrom(viewerId, sliceAfterCursor(ranked, cursor), limit)
   }
 
   async function rankedFeed(
@@ -306,15 +341,21 @@ export function makePostService(deps: PostServiceDeps): PostService {
     location: FeedViewerLocation | undefined,
   ): Promise<FeedPage> {
     const limit = query.limit ?? POSTS_DEFAULT_LIMIT
-    const cursor = parseFeedScoreCursor(query.cursor)
+    const cursor = normalizeScoreCursor(parseFeedScoreCursor(query.cursor))
 
     if (cursor !== null) {
       return continueRankedPage(viewerId, query, location, cursor, limit)
     }
 
-    const { page, durable } = await rankCandidateSet(viewerId, query, location, true)
-    persistSnapshot(viewerId, query.filter, durable)
-    return pageFrom(viewerId, page, limit)
+    const { ranked, recomputable } = await rankCandidateSet(viewerId, query, location, true)
+    if (await storeFirstSnapshot(viewerId, query.filter, ranked)) {
+      return pageFrom(viewerId, ranked, limit)
+    }
+    deps.logger?.warn(
+      { viewerId, filter: query.filter },
+      "post: feed snapshot unavailable, serving the reproducible bucket order",
+    )
+    return pageFrom(viewerId, recomputable(), limit)
   }
 
   async function safeNotify(fn: () => Promise<void>): Promise<void> {

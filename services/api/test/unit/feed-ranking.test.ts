@@ -328,15 +328,18 @@ describe("feed ranking: cutoff and cold start", () => {
       }),
     )
 
-  it("suspends the cutoff on page 1 when too little clears it", () => {
+  it("suspends the cutoff when too little clears it", () => {
     const ranked = rankCandidates(weak(), CFG, NOW, SEED)
     expect(ranked.every((entry) => entry.score < CFG.minScore)).toBe(true)
-    expect(applyCutoff(ranked, CFG, true)).toHaveLength(3)
+    expect(applyCutoff(ranked, CFG)).toHaveLength(3)
   })
 
-  it("never suspends the cutoff on a later page: running out of feed is normal", () => {
+  it("decides leniency from the ranked set alone, so every page of one set agrees", () => {
     const ranked = rankCandidates(weak(), CFG, NOW, SEED)
-    expect(applyCutoff(ranked, CFG, false)).toHaveLength(0)
+    expect(applyCutoff(ranked, CFG)).toEqual(applyCutoff(ranked, CFG))
+    expect(applyCutoff(ranked, CFG).map((entry) => entry.id)).toEqual(
+      ranked.map((entry) => entry.id),
+    )
   })
 
   it("applies the cutoff normally once page 1 has enough strong items", () => {
@@ -349,7 +352,7 @@ describe("feed ranking: cutoff and cold start", () => {
       }),
     )
     const ranked = rankCandidates([...strong, ...weak()], CFG, NOW, SEED)
-    const kept = applyCutoff(ranked, CFG, true)
+    const kept = applyCutoff(ranked, CFG)
     expect(kept).toHaveLength(6)
     expect(kept.every((entry) => entry.score >= CFG.minScore)).toBe(true)
   })
@@ -359,7 +362,7 @@ describe("feed ranking: cutoff and cold start", () => {
       candidate({ id: `n${i}`, authorId: `author-${i}`, createdAtMs: NOW - HOUR }),
     )
     const ranked = rankCandidates(strangers, CFG, NOW, SEED)
-    expect(applyCutoff(ranked, CFG, true).length).toBeGreaterThan(0)
+    expect(applyCutoff(ranked, CFG).length).toBeGreaterThan(0)
   })
 })
 

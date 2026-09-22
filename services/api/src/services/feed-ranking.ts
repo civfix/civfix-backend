@@ -172,9 +172,8 @@ export function rankCandidates(
 export function applyCutoff(
   ranked: readonly RankedCandidate[],
   cfg: FeedRankingConfig,
-  isFirstPage: boolean,
 ): RankedCandidate[] {
   const kept = ranked.filter((entry) => entry.score >= cfg.minScore)
-  if (isFirstPage && kept.length < cfg.minPageItems) return [...ranked]
+  if (kept.length < cfg.minPageItems) return [...ranked]
   return kept
 }

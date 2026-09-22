@@ -26,7 +26,7 @@ export interface FeedSnapshotEntry {
 export interface FeedPresence {
   readonly snapshotsAvailable: boolean
   readSnapshot(userId: string, filter: string): Promise<FeedSnapshotEntry[] | null>
-  writeSnapshot(userId: string, filter: string, ranked: readonly RankedCandidate[]): Promise<void>
+  writeSnapshot(userId: string, filter: string, ranked: readonly RankedCandidate[]): Promise<boolean>
   touchSnapshot(userId: string, filter: string): Promise<void>
   seenBy(userId: string, postIds: readonly string[]): Promise<Set<string>>
   recordServed(userId: string, postIds: readonly string[]): Promise<void>
@@ -90,9 +90,9 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
       userId: string,
       filter: string,
       ranked: readonly RankedCandidate[],
-    ): Promise<void> {
-      if (cfg.snapshotTtlSeconds <= 0) return Promise.resolve()
-      return guarded<void>(undefined, "snapshot write", async () => {
+    ): Promise<boolean> {
+      if (cfg.snapshotTtlSeconds <= 0) return Promise.resolve(false)
+      return guarded<boolean>(false, "snapshot write", async () => {
         const payload = ranked
           .slice(0, cfg.candidateCap)
           .map((entry) => [entry.id, entry.score] as const)
@@ -101,6 +101,7 @@ export function makeFeedPresence(deps: FeedPresenceDeps): FeedPresence {
           JSON.stringify(payload),
           cfg.snapshotTtlSeconds,
         )
+        return true
       })
     },
 

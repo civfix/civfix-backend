@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { DEFAULT_FEED_RANKING, parseFeedScoreCursor } from "@civfix/shared"
+import { DEFAULT_FEED_RANKING, formatFeedScoreCursor, parseFeedScoreCursor } from "@civfix/shared"
 import type { FeedRankingConfig, PostDTO, UserSignal } from "@civfix/shared"
 import type { UserChannel } from "@civfix/shared/interfaces"
 import type { Sql } from "../../src/db/client.js"
@@ -206,6 +206,49 @@ describe("ranked feed: cursor continuation covers every item exactly once", () =
     })
     const firstIds = new Set(first.items.map((item) => item.id))
     expect(second.items.some((item) => firstIds.has(item.id))).toBe(false)
+  })
+})
+
+describe("ranked feed: a cursor is hex, and hex has no case", () => {
+  const rows = Array.from({ length: 60 }, (_, i) =>
+    candidateRow(i + 1, {
+      id: `ab0000${String(i + 1).padStart(2, "0")}-0000-0000-0000-000000000000`,
+      author_id: `author-${i}`,
+      like_count: 0,
+      created_at: new Date(NOW),
+    }),
+  )
+
+  function service(): PostService {
+    const cache = new InMemoryCacheClient(() => Date.now())
+    return makePostService({
+      repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+      sql: throwingSql,
+      feedPresence: makeFeedPresence({ cache, config: NO_JITTER }),
+      feedRanking: NO_JITTER,
+      now: () => NOW,
+    })
+  }
+
+  it("resolves an upper-cased cursor against the lower-cased snapshot ids", async () => {
+    const svc = service()
+    const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    const parsed = parseFeedScoreCursor(first.nextCursor)!
+    expect(parsed.postId.toUpperCase()).not.toBe(parsed.postId)
+
+    const shouted = formatFeedScoreCursor({
+      score: parsed.score,
+      postId: parsed.postId.toUpperCase(),
+    })
+    const second = await svc.homeFeed(VIEWER, { filter: "all", limit: 20, cursor: shouted })
+    const exact = await svc.homeFeed(VIEWER, {
+      filter: "all",
+      limit: 20,
+      cursor: first.nextCursor!,
+    })
+
+    expect(second.items).toHaveLength(20)
+    expect(second.items.map((item) => item.id)).toEqual(exact.items.map((item) => item.id))
   })
 })
 
@@ -504,12 +547,12 @@ describe("ranked feed: a signed-out reader keeps scrolling", () => {
   })
 })
 
-describe("ranked feed: the cold-start fallback is one request, not one session", () => {
+describe("ranked feed: the cold-start leniency pages to exhaustion, it does not dead-end", () => {
   const rows = Array.from({ length: 40 }, (_, i) =>
     candidateRow(i + 1, { author_followed: false, like_count: 0, created_at: new Date(NOW) }),
   )
 
-  it("serves an uncut first page but never lets the cutoff stay suspended on page 2", async () => {
+  function service(): { svc: PostService; presence: ReturnType<typeof makeFeedPresence> } {
     const cache = new InMemoryCacheClient(() => Date.now())
     const presence = makeFeedPresence({ cache, config: DEFAULT_FEED_RANKING })
     const svc = makePostService({
@@ -518,20 +561,138 @@ describe("ranked feed: the cold-start fallback is one request, not one session",
       feedPresence: presence,
       now: () => NOW,
     })
+    return { svc, presence }
+  }
 
+  it("snapshots the same lenient list it served, so the page-1 cursor resolves", async () => {
+    const { svc, presence } = service()
     const first = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
-    await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(first.items).toHaveLength(20)
-    expect(await presence.readSnapshot(VIEWER, "all")).toEqual([])
+    const snapshot = await presence.readSnapshot(VIEWER, "all")
+    expect(snapshot).toHaveLength(40)
 
-    const second = await svc.homeFeed(VIEWER, {
+    const cursor = parseFeedScoreCursor(first.nextCursor)
+    expect(cursor).not.toBeNull()
+    expect(snapshot!.some((entry) => entry.id === cursor!.postId)).toBe(true)
+  })
+
+  it("pages every lenient item exactly once instead of ending at page 1", async () => {
+    const { svc } = service()
+    const seen: string[] = []
+    let cursor: string | undefined
+    let pages = 0
+
+    for (;;) {
+      const page = await svc.homeFeed(VIEWER, {
+        filter: "all",
+        limit: 20,
+        ...(cursor === undefined ? {} : { cursor }),
+      })
+      seen.push(...page.items.map((item) => item.id))
+      pages += 1
+      if (page.nextCursor === null) break
+      cursor = page.nextCursor
+      expect(pages).toBeLessThan(10)
+    }
+
+    expect(pages).toBe(2)
+    expect(seen).toHaveLength(40)
+    expect(new Set(seen).size).toBe(40)
+  })
+
+  it("keeps the re-ranked continuation lenient too, so an expired snapshot still pages", async () => {
+    const first = await service().svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+
+    const expired = makePostService({
+      repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+      sql: throwingSql,
+      feedPresence: makeFeedPresence({
+        cache: new InMemoryCacheClient(() => Date.now()),
+        config: DEFAULT_FEED_RANKING,
+      }),
+      now: () => NOW,
+    })
+    const second = await expired.homeFeed(VIEWER, {
       filter: "all",
       limit: 20,
       cursor: first.nextCursor!,
     })
-    expect(second.items).toEqual([])
-    expect(second.nextCursor).toBeNull()
+
+    expect(second.items.length).toBeGreaterThan(0)
+  })
+})
+
+describe("ranked feed: a page-1 snapshot that cannot be stored is served reproducibly", () => {
+  const rows = Array.from({ length: 60 }, (_, i) =>
+    candidateRow(i + 1, { like_count: 0, created_at: new Date(NOW), author_id: `author-${i}` }),
+  )
+
+  function bucketOrderService(): PostService {
+    return makePostService({
+      repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+      sql: throwingSql,
+      feedPresence: makeFeedPresence({ config: DEFAULT_FEED_RANKING }),
+      now: () => NOW,
+    })
+  }
+
+  function failingSnapshotService(warnings: unknown[]): PostService {
+    const base = makeFeedPresence({
+      cache: new InMemoryCacheClient(() => Date.now()),
+      config: DEFAULT_FEED_RANKING,
+    })
+    return makePostService({
+      repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+      sql: throwingSql,
+      feedPresence: { ...base, writeSnapshot: () => Promise.reject(new Error("redis down")) },
+      feedRanking: DEFAULT_FEED_RANKING,
+      now: () => NOW,
+      feedSeed: () => 4242,
+      logger: { warn: (obj) => warnings.push(obj) },
+    })
+  }
+
+  it("serves the order a later fallback recompute reproduces in the same bucket", async () => {
+    const warnings: unknown[] = []
+    const served = await failingSnapshotService(warnings).homeFeed(VIEWER, {
+      filter: "all",
+      limit: 20,
+    })
+    const fallback = await bucketOrderService().homeFeed(VIEWER, { filter: "all", limit: 20 })
+
+    expect(served.items.map((item) => item.id)).toEqual(fallback.items.map((item) => item.id))
+    expect(warnings).toHaveLength(1)
+  })
+
+  it("still serves the minted shuffle when the snapshot write succeeds", async () => {
+    const svc = makePostService({
+      repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
+      sql: throwingSql,
+      feedPresence: makeFeedPresence({
+        cache: new InMemoryCacheClient(() => Date.now()),
+        config: DEFAULT_FEED_RANKING,
+      }),
+      now: () => NOW,
+      feedSeed: () => 4242,
+    })
+    const minted = await svc.homeFeed(VIEWER, { filter: "all", limit: 20 })
+    const fallback = await bucketOrderService().homeFeed(VIEWER, { filter: "all", limit: 20 })
+
+    expect(minted.items.map((item) => item.id)).not.toEqual(fallback.items.map((item) => item.id))
+  })
+
+  it("continues the fallback page from its own cursor without repeating an item", async () => {
+    const first = await failingSnapshotService([]).homeFeed(VIEWER, { filter: "all", limit: 20 })
+    const second = await bucketOrderService().homeFeed(VIEWER, {
+      filter: "all",
+      limit: 20,
+      cursor: first.nextCursor!,
+    })
+
+    const firstIds = new Set(first.items.map((item) => item.id))
+    expect(second.items).toHaveLength(20)
+    expect(second.items.some((item) => firstIds.has(item.id))).toBe(false)
   })
 })
 
