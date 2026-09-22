@@ -534,7 +534,6 @@ describe("M5: routeToJurisdiction destination + audit", () => {
     const h = harness()
     seedRoutable(h)
     const { threadId, routedTo } = await h.svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: null,
       note: null,
       actorId: "op-1",
     })
@@ -543,51 +542,22 @@ describe("M5: routeToJurisdiction destination + audit", () => {
       actorId: "op-1",
       action: "report.routed",
       target: "report:rep-1",
-      meta: { threadId, to: "311@lacity.gov", override: false },
+      meta: { threadId, to: "311@lacity.gov" },
     })
   })
 
-  it("ACCEPTS an override on the jurisdiction's own domain (the real workflow: a different mailbox)", async () => {
+  it("sends the packet to the jurisdiction's own contact and records it in the resident-visible note", async () => {
     const h = harness()
     seedRoutable(h)
-    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: "Streets@LACity.gov",
-      note: null,
-      actorId: "op-1",
-    })
-    expect(routedTo).toBe("Streets@LACity.gov")
-    expect(h.mailer.sent.some((m) => m.to === "Streets@LACity.gov")).toBe(true)
-    expect(h.mailRepo.audits.at(-1)).toMatchObject({ meta: { override: true } })
+    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
+
+    expect(routedTo).toBe("311@lacity.gov")
+    expect(h.mailer.sent.some((m) => m.to === "311@lacity.gov")).toBe(true)
+    const routeEntry = (await h.svc.get("rep-1")).timeline.find((t) => t.kind === "route")
+    expect(routeEntry?.what).toContain("311@lacity.gov")
   })
 
-  it("REFUSES an override on a foreign domain, and sends NOTHING", async () => {
-    const h = harness()
-    seedRoutable(h)
-    await expect(
-      h.svc.routeToJurisdiction("rep-1", {
-        contactEmailOverride: "attacker@evil.example",
-        note: null,
-        actorId: "op-1",
-      }),
-    ).rejects.toMatchObject({ httpStatus: 422 })
-    expect(h.mailer.sent).toHaveLength(0)
-    expect(h.mailRepo.audits).toHaveLength(0)
-  })
-
-  it("REFUSES a lookalike domain that merely ENDS WITH the jurisdiction's (evil-lacity.gov)", async () => {
-    const h = harness()
-    seedRoutable(h)
-    await expect(
-      h.svc.routeToJurisdiction("rep-1", {
-        contactEmailOverride: "x@evil-lacity.gov",
-        note: null,
-        actorId: "op-1",
-      }),
-    ).rejects.toMatchObject({ httpStatus: 422 })
-    expect(h.mailer.sent).toHaveLength(0)
-  })
-
-  it("REFUSES any override when the jurisdiction has NO contact on file (nothing to verify against)", async () => {
+  it("REFUSES to route when the jurisdiction has NO contact on file (NOT_ROUTABLE, sends NOTHING)", async () => {
     const h = harness()
     h.repo.seedReport({
       id: "rep-2",
@@ -601,20 +571,23 @@ describe("M5: routeToJurisdiction destination + audit", () => {
       },
     })
     await expect(
-      h.svc.routeToJurisdiction("rep-2", {
-        contactEmailOverride: "somebody@lacity.gov",
-        note: null,
-        actorId: "op-1",
-      }),
-    ).rejects.toMatchObject({ httpStatus: 422 })
+      h.svc.routeToJurisdiction("rep-2", { note: null, actorId: "op-1" }),
+    ).rejects.toMatchObject({ code: "NOT_ROUTABLE", httpStatus: 422 })
     expect(h.mailer.sent).toHaveLength(0)
+    expect(h.mailRepo.audits).toHaveLength(0)
   })
 })
 
 describe("routeToJurisdiction re-send gate", () => {
   function seedRouted(
     h: Harness,
-    outreach: { threadStatus: string; hasInbound?: boolean; sendFailed?: boolean; routedTo?: string },
+    outreach: {
+      threadStatus: string
+      hasInbound?: boolean
+      sendFailed?: boolean
+      routedTo?: string
+      contact?: string
+    },
   ): void {
     h.repo.seedReport({
       id: "rep-1",
@@ -625,7 +598,7 @@ describe("routeToJurisdiction re-send gate", () => {
         geoid: "0644000",
         dept: "LA Public Works",
         place: "Los Angeles",
-        contact: "311@lacity.gov",
+        contact: outreach.contact ?? "311@lacity.gov",
         routed: true,
       },
       outreach: {
@@ -642,7 +615,6 @@ describe("routeToJurisdiction re-send gate", () => {
     const h = harness()
     seedRouted(h, { threadStatus: "bounced" })
     const { routedTo } = await h.svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: null,
       note: null,
       actorId: "op-1",
     })
@@ -655,7 +627,7 @@ describe("routeToJurisdiction re-send gate", () => {
     const h = harness()
     seedRouted(h, { threadStatus: "sent" })
     await expect(
-      h.svc.routeToJurisdiction("rep-1", { contactEmailOverride: null, note: null, actorId: "op-1" }),
+      h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" }),
     ).rejects.toMatchObject({ httpStatus: 409 })
     expect(h.mailer.sent).toHaveLength(0)
 
@@ -663,49 +635,33 @@ describe("routeToJurisdiction re-send gate", () => {
       const h2 = harness()
       seedRouted(h2, { threadStatus })
       await expect(
-        h2.svc.routeToJurisdiction("rep-1", { contactEmailOverride: null, note: null, actorId: "op-1" }),
+        h2.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" }),
       ).rejects.toMatchObject({ httpStatus: 409 })
       expect(h2.mailer.sent).toHaveLength(0)
     }
   })
 
-  it("REFUSES a repeat send when the override differs only in CASE (not a corrected address)", async () => {
+  it("REFUSES a repeat send when the contact differs from the sent address only in CASE", async () => {
     const h = harness()
-    seedRouted(h, { threadStatus: "sent" })
+    seedRouted(h, { threadStatus: "sent", contact: "311@LACity.gov" })
     await expect(
-      h.svc.routeToJurisdiction("rep-1", {
-        contactEmailOverride: "311@LACity.gov",
-        note: null,
-        actorId: "op-1",
-      }),
+      h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" }),
     ).rejects.toMatchObject({ httpStatus: 409 })
     expect(h.mailer.sent).toHaveLength(0)
   })
 
-  it("ALLOWS a re-route to a CORRECTED address on the jurisdiction's domain (wrong-but-deliverable mailbox)", async () => {
+  it("ALLOWS a re-route once the operator CORRECTS the jurisdiction's contact (wrong mailbox)", async () => {
     const h = harness()
-    seedRouted(h, { threadStatus: "delivered" })
-    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: "streets@lacity.gov",
-      note: null,
-      actorId: "op-1",
-    })
+    seedRouted(h, { threadStatus: "delivered", contact: "streets@lacity.gov" })
+    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
     expect(routedTo).toBe("streets@lacity.gov")
     expect(h.mailer.sent.some((m) => m.to === "streets@lacity.gov")).toBe(true)
-    await expect(
-      h.svc.routeToJurisdiction("rep-1", {
-        contactEmailOverride: "attacker@evil.example",
-        note: null,
-        actorId: "op-1",
-      }),
-    ).rejects.toMatchObject({ httpStatus: 422 })
   })
 
   it("ALLOWS a re-route when every send attempt THREW (thread stamped 'sent', nothing delivered)", async () => {
     const h = harness()
     seedRouted(h, { threadStatus: "sent", sendFailed: true })
     await h.svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: null,
       note: null,
       actorId: "op-1",
     })
@@ -727,7 +683,7 @@ describe("routeToJurisdiction re-send gate", () => {
     })
     h.mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
     await expect(
-      h.svc.routeToJurisdiction("rep-1", { contactEmailOverride: null, note: null, actorId: "op-1" }),
+      h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" }),
     ).rejects.toThrow(/smtp down/)
     expect(h.mailRepo.events.map((e) => e.type)).toEqual(["failed"])
     expect((await h.svc.get("rep-1")).status).toBe("submitted")
@@ -747,7 +703,6 @@ describe("routeToJurisdiction re-send gate", () => {
     }
     h.mailer.sendOutbound = FakeMailer.prototype.sendOutbound.bind(h.mailer)
     const { routedTo } = await h.svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: null,
       note: null,
       actorId: "op-1",
     })
@@ -763,7 +718,6 @@ describe("routeToJurisdiction re-send gate", () => {
     expect((await h.mailRepo.getThreadRecord(thread.id))?.status).toBe("bounced")
     seedRouted(h, { threadStatus: "bounced" })
     await h.svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: null,
       note: null,
       actorId: "op-1",
     })
@@ -816,8 +770,8 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
     const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
 
     const results = await Promise.allSettled([
-      svc.routeToJurisdiction("rep-1", { contactEmailOverride: null, note: null, actorId: "op-1" }),
-      svc.routeToJurisdiction("rep-1", { contactEmailOverride: null, note: null, actorId: "op-2" }),
+      svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" }),
+      svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-2" }),
     ])
 
     const fulfilled = results.filter((r) => r.status === "fulfilled")
@@ -871,7 +825,6 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
 
     await expect(
       svc.routeToJurisdiction("rep-1", {
-        contactEmailOverride: null,
         note: null,
         actorId: "op-1",
       }),
@@ -930,7 +883,6 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
     const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
     await expect(
       svc.routeToJurisdiction("rep-1", {
-        contactEmailOverride: null,
         note: null,
         actorId: "op-1",
       }),
@@ -1007,7 +959,6 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
 
     const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
     const routing = svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: null,
       note: null,
       actorId: "op-1",
     })
@@ -1071,7 +1022,6 @@ describe("F108 report-packet attachments are bounded in AGGREGATE, not just per 
   it("stops attaching once the running total would exceed MAX_PACKET_TOTAL_BYTES", async () => {
     const h = harnessWithMedia(4, FOUR_MB)
     await h.svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: null,
       note: null,
       actorId: "op-1",
     })
@@ -1084,7 +1034,6 @@ describe("F108 report-packet attachments are bounded in AGGREGATE, not just per 
   it("still lists every skipped photo as a presigned mediaLink so nothing is lost from the packet", async () => {
     const h = harnessWithMedia(4, FOUR_MB)
     await h.svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: null,
       note: null,
       actorId: "op-1",
     })
@@ -1097,40 +1046,10 @@ describe("F108 report-packet attachments are bounded in AGGREGATE, not just per 
   it("attaches every photo when the aggregate stays under the cap", async () => {
     const h = harnessWithMedia(4, 512 * 1024)
     await h.svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: null,
       note: null,
       actorId: "op-1",
     })
     expect(h.mailer.sent.at(-1)?.outbound?.attachments).toHaveLength(4)
-  })
-})
-
-describe("F116 one-off override address is not leaked into the public timeline", () => {
-  it("routes to the override but records the on-file contact in the resident-visible note", async () => {
-    const h = harness()
-    h.repo.seedReport({
-      id: "rep-1",
-      status: "submitted",
-      routing: {
-        geoid: "0644000",
-        dept: "LA Public Works",
-        place: "Los Angeles",
-        contact: "311@lacity.gov",
-        routed: false,
-      },
-    })
-    const { routedTo } = await h.svc.routeToJurisdiction("rep-1", {
-      contactEmailOverride: "streets@lacity.gov",
-      note: null,
-      actorId: "op-1",
-    })
-    expect(routedTo).toBe("streets@lacity.gov")
-    expect(h.mailer.sent.some((m) => m.to === "streets@lacity.gov")).toBe(true)
-
-    const timeline = (await h.svc.get("rep-1")).timeline
-    const routeEntry = timeline.find((t) => t.kind === "route")
-    expect(routeEntry?.what).toContain("311@lacity.gov")
-    expect(timeline.every((t) => !t.what.includes("streets@lacity.gov"))).toBe(true)
   })
 })
 
