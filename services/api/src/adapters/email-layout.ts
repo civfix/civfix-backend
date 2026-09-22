@@ -30,7 +30,7 @@ const WORDMARK_FONT_FAMILY = "civfix-wordmark"
 const WORDMARK_FONT_CSS =
   `@media screen{@font-face{font-family:'${WORDMARK_FONT_FAMILY}';font-style:normal;font-weight:800;` +
   `src:url(data:font/woff2;base64,${WORDMARK_FONT_WOFF2_BASE64}) format('woff2');}` +
-  `.cv-wordmark{font-family:'${WORDMARK_FONT_FAMILY}',${FONT}!important;letter-spacing:-0.02em!important;}}`
+  `.cv-wordmark{font-family:'${WORDMARK_FONT_FAMILY}',${FONT}!important;}}`
 
 const WORDMARK_HTML = WORDMARK.map(
   ([letter, color]) => `<span style="color:${color};">${letter}</span>`,
@@ -99,7 +99,8 @@ export function renderEmailBody(opts: RenderEmailOptions): { text: string; html:
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<meta name="color-scheme" content="light dark">` +
     `<meta name="supported-color-schemes" content="light dark">` +
-    `<style>${WORDMARK_FONT_CSS}@media (max-width:600px){.cv-container{width:100%!important;}.cv-pad{padding-left:20px!important;padding-right:20px!important;}}` +
+    `<style>${WORDMARK_FONT_CSS}</style>` +
+    `<style>@media (max-width:600px){.cv-container{width:100%!important;}.cv-pad{padding-left:20px!important;padding-right:20px!important;}}` +
     `@media (prefers-color-scheme:dark){` +
     `.cv-body{background:${DARK_SURFACE}!important;}` +
     `.cv-card{background:${DARK_SURFACE}!important;border-color:${DARK_BORDER}!important;}` +
