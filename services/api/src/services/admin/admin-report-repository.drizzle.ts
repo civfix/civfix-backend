@@ -484,10 +484,11 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           nowFlagged = true
         }
         await tx`
-          INSERT INTO report_timeline (report_id, status, note, actor_id)
+          INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
           VALUES (
             ${id}, ${report.status},
             ${nowFlagged ? "Flagged for review" : "Flag cleared"},
+            'warn',
             ${input.actorId}
           )
         `
@@ -510,8 +511,8 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         `
         if (updated.length === 0) return false
         await tx`
-          INSERT INTO report_timeline (report_id, status, note, actor_id)
-          VALUES (${id}, 'rejected', ${input.note}, ${input.actorId})
+          INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
+          VALUES (${id}, 'rejected', ${input.note}, 'remove', ${input.actorId})
         `
         await writeAudit(tx, {
           actorId: input.actorId,
@@ -541,8 +542,8 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
     ): Promise<void> {
       await sql.begin(async (tx) => {
         await tx`
-          INSERT INTO report_timeline (report_id, status, note, actor_id)
-          SELECT ${id}, r.status, ${input.note}, ${input.actorId}
+          INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
+          SELECT ${id}, r.status, ${input.note}, 'followup', ${input.actorId}
           FROM reports r WHERE r.id = ${id}
         `
         await writeAudit(tx, {

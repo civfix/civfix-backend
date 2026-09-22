@@ -1,6 +1,6 @@
 
 import { sql } from "drizzle-orm"
-import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
+import { check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
 import { jurisdictions } from "./jurisdictions.js"
 import { users } from "./users.js"
 import {
@@ -78,6 +78,10 @@ export const reports = pgTable(
     index("reports_held_anon_created_idx")
       .on(t.createdAt)
       .where(sql`status = 'held' AND reporter_user_id IS NULL AND deleted_at IS NULL`),
+    check(
+      "reports_status_chk",
+      sql`${t.status} IN ('submitted', 'held', 'published', 'acknowledged', 'in_progress', 'resolved', 'rejected')`,
+    ),
   ],
 )
 
