@@ -44,11 +44,13 @@ export function flaggedReportExpr(sql: Queryable): SqlFragment {
 
 function searchReportsFragment(sql: Queryable, q: string | null): SqlFragment {
   if (q === null) return sql``
+  const exact: SqlFragment[] = [sql`r.reference_code = upper(btrim(${q}))`]
+  if (isUuid(q)) exact.push(sql`r.id = ${q}::uuid`)
   return sql`AND ${ilikeAnyOf(
     sql,
-    [sql`r.title`, sql`j.name`, sql`u.display_name`, sql`u.handle::text`],
+    [sql`r.title`, sql`r.addr`, sql`j.name`, sql`u.display_name`, sql`u.handle::text`],
     q,
-    isUuid(q) ? [sql`r.id = ${q}::uuid`] : [],
+    exact,
   )}`
 }
 
@@ -180,6 +182,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
 
     async countByBucket(args: { q: string | null }): Promise<AdminReportCounts> {
       const search = searchReportsFragment(sql, args.q)
+      const flaggedSearch = searchReportsFragment(sql, args.q)
       const rows = await sql<
         { submitted: string; in_progress: string; completed: string; flagged: string }[]
       >`
@@ -187,7 +190,17 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.submitted}))::text AS submitted,
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.in_progress}))::text AS in_progress,
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.completed}))::text AS completed,
-          COUNT(*) FILTER (WHERE ${flaggedReportExpr(sql)})::text AS flagged
+          (
+            SELECT COUNT(DISTINCT af.subject_id)
+            FROM abuse_flags af
+            JOIN reports r ON r.id::text = af.subject_id
+            LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
+            LEFT JOIN users u ON u.id = r.reporter_user_id
+            WHERE af.subject_type = 'report'
+              AND af.resolved_at IS NULL
+              AND r.deleted_at IS NULL
+              ${flaggedSearch}
+          )::text AS flagged
         FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
         LEFT JOIN users u ON u.id = r.reporter_user_id

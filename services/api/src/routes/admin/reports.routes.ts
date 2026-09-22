@@ -1,5 +1,6 @@
 
 import {
+  AppError,
   AdminReportListQuerySchema,
   FlagReportRequestSchema,
   RemoveReportRequestSchema,
@@ -160,6 +161,12 @@ export async function registerAdminReportsRoutes(
     async (request, reply) => {
       const operatorId = requireOperator(request)
       const { id, body } = parseBodyWithId(RouteReportRequestSchema, request)
+      if (typeof body.contactEmailOverride === "string" && body.contactEmailOverride.trim() !== "") {
+        throw AppError.validation(
+          { contactEmailOverride: "removed" },
+          "One-off destinations were removed. Set the jurisdiction's routing contact in Jurisdictions, then send.",
+        )
+      }
       const { threadId, routedTo } = await service().routeToJurisdiction(id, {
         note: body.note ?? null,
         actorId: operatorId,

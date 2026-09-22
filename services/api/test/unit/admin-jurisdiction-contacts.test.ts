@@ -20,7 +20,7 @@ import {
 /**
  * Offline unit tests for the admin jurisdiction-contacts service over the in-memory repo + FakeJobs (no
  * DB, no Docker). They prove the "Save & route" core action (persist per-category contacts, set
- * contact_updated_at, resolve the discovery task, route the waiting pins, enqueue throttled outreach),
+ * contact_updated_at, resolve the discovery task, leave every report alone, enqueue throttled outreach),
  * the patch path (no routing), the directory projection (coverage / method / status), and the pure
  * helpers.
  */
@@ -40,6 +40,7 @@ function harness(): {
     repo,
     jobs,
     throttleDays: THROTTLE_DAYS,
+    outreachDigestEnabled: true,
     now: () => NOW,
   })
   return { repo, jobs, svc }
@@ -112,11 +113,11 @@ describe("contacts pure helpers", () => {
 })
 
 describe("saveAndRoute", () => {
-  it("persists per-category contacts, sets contact_updated_at, resolves the task, routes pins, enqueues outreach", async () => {
+  it("persists per-category contacts, sets contact_updated_at, resolves the task, touches no report, enqueues outreach", async () => {
     const { repo, jobs, svc } = harness()
     repo.seedJurisdiction({ geoid: "0644000", name: "Los Angeles" })
     repo.seedTask({ id: "JUR-1", geoid: "0644000", status: "open" })
-    // Two waiting reports + one already-resolved (must NOT be routed).
+    // Two waiting reports + one already-resolved; none of them may change.
     repo.seedReport({ id: "r1", geoid: "0644000", category: "trash", status: "submitted" })
     repo.seedReport({ id: "r2", geoid: "0644000", category: "hazard", status: "published" })
     repo.seedReport({ id: "r3", geoid: "0644000", category: "trash", status: "resolved" })
@@ -144,11 +145,10 @@ describe("saveAndRoute", () => {
     // (c) discovery task resolved.
     expect(repo.tasks.find((t) => t.id === "JUR-1")?.status).toBe("done")
     expect(result.taskResolved).toBe(true)
-    // (d) waiting pins routed (r1, r2) but not the resolved one (r3).
-    expect(repo.reports.find((r) => r.id === "r1")?.status).toBe("acknowledged")
-    expect(repo.reports.find((r) => r.id === "r2")?.status).toBe("acknowledged")
+    // (d) NO report is touched: saving a contact mails nobody, so nothing is marked routed.
+    expect(repo.reports.find((r) => r.id === "r1")?.status).toBe("submitted")
+    expect(repo.reports.find((r) => r.id === "r2")?.status).toBe("published")
     expect(repo.reports.find((r) => r.id === "r3")?.status).toBe("resolved")
-    expect(result.routedReports).toBe(2)
     // (e) outreach enqueued (singletonKey=geoid).
     const enqueued = jobs.jobsFor(OUTREACH_DIGEST_JOB)
     expect(enqueued).toHaveLength(1)
@@ -160,8 +160,34 @@ describe("saveAndRoute", () => {
       actorId: "op-1",
       action: "discovery.contacts_saved",
       target: "jurisdiction:0644000",
-      meta: { routedReports: 2, taskResolved: true },
+      meta: { taskResolved: true },
     })
+  })
+
+  it("enqueues NO outreach digest when OUTREACH_DIGEST_ENABLED is off", async () => {
+    const repo = new InMemoryJurisdictionContactsRepository()
+    repo.now = NOW
+    const jobs = new FakeJobs()
+    const svc = makeJurisdictionContactsService({
+      repo,
+      jobs,
+      throttleDays: THROTTLE_DAYS,
+      outreachDigestEnabled: false,
+      now: () => NOW,
+    })
+    repo.seedJurisdiction({ geoid: "0644000", name: "Los Angeles" })
+
+    const result = await svc.saveAndRoute(
+      "0644000",
+      { contacts: { trash: "trash@lacity.gov" }, defaultEmails: [], formUrl: null },
+      "op-1",
+    )
+
+    expect(result.outreachEnqueued).toBe(false)
+    expect(jobs.jobsFor(OUTREACH_DIGEST_JOB)).toHaveLength(0)
+    expect(repo.jurisdictions.get("0644000")?.categoryContacts.get("trash")).toBe(
+      "trash@lacity.gov",
+    )
   })
 
   it("rejects when no contact is provided (nothing to route)", async () => {
@@ -272,6 +298,7 @@ describe("C1/C2: save -> enqueue -> worker send -> stamp -> second save throttle
       repo: contactsRepo,
       jobs,
       throttleDays: THROTTLE_DAYS,
+      outreachDigestEnabled: true,
       now: () => NOW,
     })
 

@@ -97,6 +97,7 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     const mail = mailer()
     const audit = spyAudit()
     const res = await forwardReportCityMention(mail, ctx(SF), "pls fix @sf", CREATED, {
+      enabled: true,
       audit,
       messageId: MSG,
     })
@@ -116,6 +117,7 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     const mail = mailer()
     const audit = spyAudit()
     const res = await forwardReportCityMention(mail, ctx(SF_NO_CONTACT), "@sf help", CREATED, {
+      enabled: true,
       audit,
       messageId: MSG,
     })
@@ -131,6 +133,7 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     const mail = mailer({ fail: true })
     const audit = spyAudit()
     const res = await forwardReportCityMention(mail, ctx(SF), "@sf urgent", CREATED, {
+      enabled: true,
       audit,
       messageId: MSG,
     })
@@ -146,6 +149,7 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     const mail = mailer()
     const audit = spyAudit()
     const res = await forwardReportCityMention(mail, ctx(SF), "@sf again", CREATED, {
+      enabled: true,
       audit,
       messageId: MSG,
       canForward: () => Promise.resolve(false),
@@ -158,10 +162,26 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     expect(mail.calls).toHaveLength(0)
   })
 
+  it("records the mention but forwards NOTHING when forwarding is disabled (enabled: false)", async () => {
+    const mail = mailer()
+    const audit = spyAudit()
+    const res = await forwardReportCityMention(mail, ctx(SF), "@sf please fix", CREATED, {
+      audit,
+      messageId: MSG,
+      enabled: false,
+    })
+
+    expect(res).toMatchObject({ mentioned: true, geoid: "0600001", forwarded: false })
+    expect(audit.recordMention).toHaveBeenCalledOnce()
+    expect(audit.markForwarded).not.toHaveBeenCalled()
+    expect(mail.calls).toHaveLength(0)
+  })
+
   it("writes NO audit row when the body @mentions no city handle", async () => {
     const mail = mailer()
     const audit = spyAudit()
     const res = await forwardReportCityMention(mail, ctx(SF), "just chatting", CREATED, {
+      enabled: true,
       audit,
       messageId: MSG,
     })
@@ -177,6 +197,7 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
       recordMention: vi.fn(() => Promise.reject(new Error("db down"))),
     })
     const res = await forwardReportCityMention(mail, ctx(SF), "@sf now", CREATED, {
+      enabled: true,
       audit,
       messageId: MSG,
     })
@@ -187,7 +208,7 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
 
   it("skips auditing entirely when audit/messageId are omitted (opt-in seam)", async () => {
     const mail = mailer()
-    const res = await forwardReportCityMention(mail, ctx(SF), "@sf please", CREATED, {})
+    const res = await forwardReportCityMention(mail, ctx(SF), "@sf please", CREATED, { enabled: true })
     expect(res).toMatchObject({ mentioned: true, forwarded: true })
     expect(mail.calls).toHaveLength(1)
   })
