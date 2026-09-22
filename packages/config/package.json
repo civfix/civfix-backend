@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Shared build/lint/format presets for civfix backend services: eslint flat config, base tsconfig, and prettier config.",
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "exports": {
     "./eslint": "./eslint.config.js",

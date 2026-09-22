@@ -217,6 +217,7 @@ export interface ReportServiceDeps {
   loadDiscussionMeta?: (reportId: string) => Promise<ReportDiscussionMeta>
   loadReportChatMeta?: (reportId: string, viewerUserId: string | null) => Promise<ReportChatMeta>
   jobs?: Jobs
+  autoForwardEnabled?: boolean
   isReportVerified?: (userId: string) => Promise<boolean>
   joinReportChatAsOwner?: (reportId: string, userId: string) => Promise<void>
   reportChatEmitter?: ReportChatSystemEmitter
