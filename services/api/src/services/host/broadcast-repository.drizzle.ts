@@ -717,12 +717,12 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
         {
           id: string
           email: string | null
-          email_verified_at: Date | null
+          email_verified: boolean | null
           display_name: string | null
           locale: string | null
         }[]
       >`
-        SELECT id, email, email_verified_at, display_name, locale
+        SELECT id, email, email_verified, display_name, locale
           FROM users
          WHERE id = ANY(${[...userIds]}::uuid[]) AND deleted_at IS NULL`
       for (const row of rows) {
@@ -730,7 +730,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
         out.set(row.id, {
           userId: row.id,
           email: row.email,
-          emailVerified: row.email_verified_at !== null,
+          emailVerified: row.email_verified === true,
           displayName,
           firstName: firstName(displayName),
           locale: row.locale,
@@ -859,9 +859,9 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
 
     async hostMessagingState(userId: string): Promise<HostMessagingState | null> {
       const rows = await sql<
-        { suspended: boolean | null; email_verified_at: Date | null; created_at: Date }[]
+        { suspended: boolean | null; email_verified: boolean | null; created_at: Date }[]
       >`
-        SELECT um.host_messaging_suspended AS suspended, u.email_verified_at, u.created_at
+        SELECT um.host_messaging_suspended AS suspended, u.email_verified, u.created_at
           FROM users u
           LEFT JOIN user_moderation um ON um.user_id = u.id
          WHERE u.id = ${userId} AND u.deleted_at IS NULL
@@ -870,7 +870,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       if (row === undefined) return null
       return {
         suspended: row.suspended === true,
-        emailVerified: row.email_verified_at !== null,
+        emailVerified: row.email_verified === true,
         accountCreatedAt: row.created_at,
       }
     },
