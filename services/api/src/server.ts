@@ -284,7 +284,7 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     await registerInboundJobs(app.container)
     await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
     await registerDiscoveryJobs(app.container)
-    await registerAutoForwardJobs(app.container, app.log)
+    if (env.REPORT_AUTOFORWARD_ENABLED) await registerAutoForwardJobs(app.container, app.log)
     await registerDataExportJobs(app.container, { logger: app.log })
     await registerCleanupCancelFanoutJob(app.container, app.log)
     await registerGuestJobs(app.container, app.log)

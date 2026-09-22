@@ -8,6 +8,7 @@ import type {
 } from "./mail-repository.js"
 import type {
   MailAttachment,
+  MailDelivery,
   MailDirection,
   MailMessageDTO,
   MailStatus,
@@ -46,6 +47,7 @@ export interface MessageRowSelect {
   effects_stage: number
   created_at: Date
   truncated?: boolean
+  delivery?: MailDelivery | null
 }
 
 export interface OutreachRowSelect {
@@ -88,6 +90,7 @@ export function toMessageRecord(r: MessageRowSelect): MailMessageRecord {
     effectsStage: r.effects_stage,
     createdAt: r.created_at,
     ...(r.truncated === true ? { truncated: true } : {}),
+    delivery: r.delivery ?? null,
   }
 }
 
@@ -135,6 +138,11 @@ export function toThreadListItem(
   }
 }
 
+function deliveryOf(message: MailMessageRecord): MailDelivery | null {
+  if (message.direction === "in") return null
+  return message.delivery ?? "pending"
+}
+
 export function toMessageDTO(message: MailMessageRecord): MailMessageDTO {
   return {
     id: message.id,
@@ -146,6 +154,7 @@ export function toMessageDTO(message: MailMessageRecord): MailMessageDTO {
     ts: message.createdAt.toISOString(),
     attachments: message.attachments,
     ...(message.truncated === true ? { truncated: true } : {}),
+    delivery: deliveryOf(message),
   }
 }
 

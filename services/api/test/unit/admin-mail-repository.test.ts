@@ -93,6 +93,23 @@ describe("toThreadDTO", () => {
     expect(dto.messages).toHaveLength(2)
     expect(dto.messages[1]?.attachments).toEqual([{ key: "r2/a.pdf", filename: "a.pdf", size: 10 }])
     expect(dto.messages[0]?.who).toBe("outreach@civfix.org")
+    expect(dto.messages[0]?.delivery).toBe("pending")
+    expect(dto.messages[1]?.delivery).toBeNull()
+  })
+
+  it("derives delivery from the message's latest sent/failed mail event", async () => {
+    const repo = new InMemoryMailRepository()
+    const thread = await repo.createThread({ subject: "Pothole", org: "City of LA" })
+    const message = await repo.insertMessage({
+      threadId: thread.id,
+      direction: "out",
+      fromAddr: "outreach@civfix.org",
+      body: "Please review.",
+    })
+    await repo.recordEvent({ threadId: thread.id, messageId: message?.id ?? "", type: "failed" })
+    expect((await repo.getThread(thread.id))?.messages[0]?.delivery).toBe("failed")
+    await repo.recordEvent({ threadId: thread.id, messageId: message?.id ?? "", type: "sent" })
+    expect((await repo.getThread(thread.id))?.messages[0]?.delivery).toBe("sent")
   })
 })
 

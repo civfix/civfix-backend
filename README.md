@@ -353,6 +353,20 @@ required (a missing one fails boot with an aggregated error).
 | `USE_FAKE_CHAT`       | in-process chat fan-out           | `DATABASE_URL` + `REDIS_URL` (Drizzle repo + Redis pub/sub) |
 | `USE_FAKE_JOBS`       | in-memory job queue               | `DATABASE_URL` (pg-boss)                               |
 
+### Outbound mail to cities is opt-in
+
+Two flags, both OFF by default in every environment, decide whether civfix ever emails a city without
+an operator pressing "Approve & send to jurisdiction" on a report:
+
+| Flag                        | When ON                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------- |
+| `REPORT_AUTOFORWARD_ENABLED` | new reports from report-verified reporters are forwarded at submission, and a citizen `@city` mention in a report discussion forwards the comment |
+| `OUTREACH_DIGEST_ENABLED`    | the daily `outreach.digest` cron and the enqueue after saving a jurisdiction's contacts send the per-jurisdiction "reports awaiting your attention" digest |
+
+With both off, the only mail a city receives is the packet an operator sends per report. Enabling either
+is a SOPS edit on the box's `api.sops.env` (`OUTREACH_DIGEST_ENABLED` also needs a restart so the cron is
+scheduled).
+
 To exercise a real seam locally, run the dev infra from the civfix-infra repo
 (`compose/docker-compose.dev.yml` brings up PostGIS + Redis), set `DATABASE_URL` / `REDIS_URL`, and turn
 the relevant flag off (e.g. `USE_FAKE_CHAT=0`).
@@ -391,3 +405,16 @@ blocklist so no real user can take it.
 
 `services/api/PHASE1-ACCEPTANCE.md` maps each Phase-1 done-criterion to the endpoint(s)/code that
 satisfy it and the test(s) that prove it, and marks which are proven locally vs Docker-gated/CI.
+
+## License
+
+civfix-backend is free software, licensed under the
+[GNU Affero General Public License, version 3 only](LICENSE). Every file is
+covered by the declaration in [REUSE.toml](REUSE.toml); there are no per-file
+license headers. The corresponding source for the API and the media worker is
+this repository, <https://github.com/civfix/civfix-backend>; the community web
+app and the operator dashboard link to their own repositories at the deployed
+commit. Contributions are accepted under
+the [Contributor License Agreement](CLA.md) — see
+[CONTRIBUTING.md](CONTRIBUTING.md). civfix is a project of Reach Out Los Angeles Inc.; the civfix name and
+logos are its trademarks and are not covered by the license.

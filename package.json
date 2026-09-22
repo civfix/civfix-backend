@@ -3,7 +3,7 @@
   "version": "1.2.0",
   "private": true,
   "description": "civfix backend monorepo: Fastify API + media worker (VPS infra lives in the civfix-infra repo). Depends on @civfix/shared (from the private npm registry) as the single contract source.",
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "packageManager": "pnpm@9.12.0",
   "pnpm": {

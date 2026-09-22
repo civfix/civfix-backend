@@ -6,6 +6,7 @@ import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-re
 import {
   makeAdminReportService,
   resolveListFilter,
+  statusChangeNote,
   timelineKindForStatus,
   type AdminReportService,
 } from "../../src/services/admin/admin-report-service.js"
@@ -20,6 +21,16 @@ import {
 
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
+
+const REPORT_STATUSES = [
+  "submitted",
+  "held",
+  "published",
+  "acknowledged",
+  "in_progress",
+  "resolved",
+  "rejected",
+] as const
 
 class FakeReportChatEmitter {
   readonly events: { reportId: string; status: string; kind?: string | null; note?: string | null }[] = []
@@ -94,6 +105,19 @@ describe("admin reports pure helpers", () => {
     expect(resolveListFilter("completed")).toEqual({ statuses: ["resolved"], flaggedOnly: false })
     expect(resolveListFilter("flagged")).toEqual({ statuses: null, flaggedOnly: true })
     expect(resolveListFilter(undefined)).toEqual({ statuses: null, flaggedOnly: false })
+  })
+
+  it("statusChangeNote reads as English to a resident — never a raw enum token", () => {
+    expect(statusChangeNote("submitted")).toBe("Status set to Submitted")
+    expect(statusChangeNote("held")).toBe("Status set to Under review")
+    expect(statusChangeNote("published")).toBe("Status set to Published")
+    expect(statusChangeNote("acknowledged")).toBe("Status set to Acknowledged")
+    expect(statusChangeNote("in_progress")).toBe("Status set to In progress")
+    expect(statusChangeNote("resolved")).toBe("Status set to Resolved")
+    expect(statusChangeNote("rejected")).toBe("Report removed")
+    for (const status of REPORT_STATUSES) {
+      expect(statusChangeNote(status)).not.toContain(status)
+    }
   })
 
   it("timelineKindForStatus maps civfix statuses to design timeline icon kinds", () => {
@@ -225,6 +249,27 @@ describe("admin reports list", () => {
     expect((await svc.list({ q: "MURALwatch" })).items.map((i) => i.id)).toEqual(["rep-2"])
   })
 
+  it("search matches a reference code exactly, case- and whitespace-insensitively", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "rep-1", title: "Pothole", referenceCode: "PD-42-000001" })
+    repo.seedReport({ id: "rep-2", title: "Graffiti", referenceCode: "GR-42-000007" })
+
+    expect((await svc.list({ q: "PD-42-000001" })).items.map((i) => i.id)).toEqual(["rep-1"])
+    expect((await svc.list({ q: "  pd-42-000001 " })).items.map((i) => i.id)).toEqual(["rep-1"])
+    expect((await svc.list({ q: "PD-42" })).items).toHaveLength(0)
+    expect((await svc.list({ q: "GR-42-000007" })).counts.all).toBe(1)
+  })
+
+  it("search matches an address substring (case-insensitive)", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "rep-1", title: "Pothole", address: "1200 S Figueroa St" })
+    repo.seedReport({ id: "rep-2", title: "Graffiti", address: "44 Sunset Blvd" })
+
+    expect((await svc.list({ q: "figueroa" })).items.map((i) => i.id)).toEqual(["rep-1"])
+    expect((await svc.list({ q: "SUNSET" })).items.map((i) => i.id)).toEqual(["rep-2"])
+    expect((await svc.list({ q: "figueroa" })).counts.all).toBe(1)
+  })
+
   it("matches an id ONLY on a full uuid — never a substring, never a non-uuid needle", async () => {
     const { repo, svc } = harness()
     const id = "3f2b1c44-0a55-4d66-8e77-99aa00bb11cc"
@@ -309,7 +354,7 @@ describe("admin reports detail", () => {
 describe("admin reports mutations", () => {
   it("setStatus changes the status, appends a timeline row, and audits", async () => {
     const { repo, svc } = harness()
-    repo.seedReport({ id: "rep-1", status: "submitted" })
+    repo.seedReport({ id: "rep-1", status: "published" })
     await svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" })
     expect(repo.reports.get("rep-1")?.record.status).toBe("in_progress")
     expect(repo.timeline.get("rep-1")?.at(-1)).toMatchObject({ status: "in_progress" })
@@ -320,29 +365,68 @@ describe("admin reports mutations", () => {
     })
   })
 
-  it("F114: setStatus('rejected') soft-removes the report so it drops out of the default admin list", async () => {
+  it("setStatus REFUSES a move the lifecycle does not allow, and writes nothing", async () => {
     const { repo, svc } = harness()
     repo.seedReport({ id: "rep-1", status: "submitted" })
-    await svc.setStatus("rep-1", { status: "rejected", actorId: "op-1" })
-    expect(repo.reports.get("rep-1")?.record.status).toBe("rejected")
-    const page = await svc.list({})
-    expect(page.items.some((i) => i.id === "rep-1")).toBe(false)
+    await expect(
+      svc.setStatus("rep-1", { status: "resolved", actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 422, fields: { status: "illegal_transition" } })
+    expect(repo.reports.get("rep-1")?.record.status).toBe("submitted")
+    expect(repo.timeline.get("rep-1") ?? []).toHaveLength(0)
+    expect(repo.audits).toHaveLength(0)
   })
 
-  it("F114: a report rejected via setStatus stays gone even when the caller filters for rejected", async () => {
+  it("setStatus('rejected') is refused: removal is its own action, and it is irreversible", async () => {
     const { repo, svc } = harness()
-    repo.seedReport({ id: "rep-1", status: "submitted" })
-    await svc.setStatus("rep-1", { status: "rejected", actorId: "op-1" })
-    const explicit = await repo.listReports({
-      q: null,
-      statuses: ["rejected"],
-      flaggedOnly: false,
-      cursor: null,
-      limit: 25,
-    })
-    expect(explicit.records.some((r) => r.id === "rep-1")).toBe(false)
-    expect(await repo.getReport("rep-1")).toBeNull()
-    expect(repo.reports.get("rep-1")?.deletedAt).toBeInstanceOf(Date)
+    repo.seedReport({ id: "rep-1", status: "published" })
+    await expect(
+      svc.setStatus("rep-1", { status: "rejected", actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 422, fields: { status: "use_remove" } })
+    expect(repo.reports.get("rep-1")?.record.status).toBe("published")
+    expect(repo.reports.get("rep-1")?.deletedAt).toBeNull()
+    const page = await svc.list({})
+    expect(page.items.some((i) => i.id === "rep-1")).toBe(true)
+  })
+
+  it("setStatus to the status the report already has is a no-op (no timeline row, no audit)", async () => {
+    const { repo, emitter, svc } = harness()
+    repo.seedReport({ id: "rep-1", status: "in_progress" })
+    await svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" })
+    expect(repo.timeline.get("rep-1") ?? []).toHaveLength(0)
+    expect(repo.audits).toHaveLength(0)
+    expect(emitter.events).toHaveLength(0)
+  })
+
+  it("setStatus accepts a concurrent move that reached the SAME status (the operator got what they asked for)", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "rep-1", status: "published" })
+    const seeded = repo.reports.get("rep-1")!
+    const realAdvance = repo.advanceStatusIfIn.bind(repo)
+    repo.advanceStatusIfIn = (id, input) => {
+      seeded.record.status = "in_progress"
+      return realAdvance(id, input)
+    }
+    await expect(
+      svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" }),
+    ).resolves.toBeUndefined()
+    expect(repo.reports.get("rep-1")?.record.status).toBe("in_progress")
+    expect(repo.timeline.get("rep-1") ?? []).toHaveLength(0)
+    expect(repo.audits).toHaveLength(0)
+  })
+
+  it("setStatus is a 409 when the report moved on between the read and the write", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "rep-1", status: "published" })
+    const seeded = repo.reports.get("rep-1")!
+    const realAdvance = repo.advanceStatusIfIn.bind(repo)
+    repo.advanceStatusIfIn = (id, input) => {
+      seeded.record.status = "held"
+      return realAdvance(id, input)
+    }
+    await expect(
+      svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
+    expect(repo.reports.get("rep-1")?.record.status).toBe("held")
   })
 
   it("setStatus throws notFound for an unknown report", async () => {
@@ -356,7 +440,7 @@ describe("admin reports mutations", () => {
 
   it("setStatus emits ONE report-chat system event carrying the NEW status", async () => {
     const { repo, emitter, svc } = harness()
-    repo.seedReport({ id: "rep-1", status: "submitted" })
+    repo.seedReport({ id: "rep-1", status: "published" })
     await svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" })
     expect(emitter.events).toHaveLength(1)
     expect(emitter.events[0]).toMatchObject({
@@ -368,7 +452,7 @@ describe("admin reports mutations", () => {
 
   it("setStatus still succeeds (and changes the status) even when the emitter rejects internally", async () => {
     const { repo, emitter, svc } = harness()
-    repo.seedReport({ id: "rep-1", status: "submitted" })
+    repo.seedReport({ id: "rep-1", status: "acknowledged" })
     emitter.shouldThrow = true
     await expect(
       svc.setStatus("rep-1", { status: "resolved", actorId: "op-1" }),
@@ -443,7 +527,10 @@ describe("admin reports mutations", () => {
       userId: "u-7",
       body: "Thanks, we routed this to the city.",
     })
-    expect(repo.timeline.get("rep-1")?.at(-1)?.note).toBe("Follow-up sent to the reporter")
+    expect(repo.timeline.get("rep-1")?.at(-1)).toMatchObject({
+      note: "Follow-up sent to the reporter",
+      kind: "followup",
+    })
     expect(repo.audits.at(-1)).toMatchObject({
       action: "report.followup_sent",
       meta: { to: "reporter" },
@@ -503,6 +590,25 @@ describe("admin reports mutations", () => {
     await expect(
       svc.sendFollowup("rep-1", { to: "city", body: "hi", actorId: "op-1" }),
     ).rejects.toMatchObject({ httpStatus: 422 })
+  })
+
+  it("setVerdict leaves a timeline row and a report-chat event, not just an audit", async () => {
+    const { repo, emitter, svc } = harness()
+    repo.seedReport({ id: "rep-1", status: "published" })
+    await svc.setVerdict({ id: "rep-1", verdict: "approved", actorId: "op-1" })
+    expect(repo.timeline.get("rep-1")?.at(-1)).toMatchObject({
+      note: "Approved by an operator",
+      kind: "status",
+    })
+    expect(emitter.events.at(-1)).toMatchObject({
+      reportId: "rep-1",
+      status: "published",
+      kind: "status",
+      note: "Approved by an operator",
+    })
+
+    await svc.setVerdict({ id: "rep-1", verdict: "rejected", actorId: "op-1" })
+    expect(repo.timeline.get("rep-1")?.at(-1)?.note).toBe("Rejected by an operator")
   })
 })
 
@@ -919,18 +1025,18 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
     expect(repo.reports.get("rep-1")?.record.status).toBe("published")
     expect(repo.timeline.get("rep-1") ?? []).toHaveLength(0)
 
-    await svc.setStatus("rep-1", { status: "resolved", actorId: "op-1" })
-    expect(repo.reports.get("rep-1")?.record.status).toBe("resolved")
+    await svc.setStatus("rep-1", { status: "in_progress", actorId: "op-1" })
+    expect(repo.reports.get("rep-1")?.record.status).toBe("in_progress")
     const afterOperator = (repo.timeline.get("rep-1") ?? []).length
 
     expect(lateSuccess).toBeDefined()
     await lateSuccess?.()
 
-    expect(repo.reports.get("rep-1")?.record.status).toBe("resolved")
+    expect(repo.reports.get("rep-1")?.record.status).toBe("in_progress")
     const timeline = repo.timeline.get("rep-1") ?? []
     expect(timeline).toHaveLength(afterOperator + 1)
     expect(timeline.at(-1)?.note).toContain("Sent to jurisdiction")
-    expect(timeline.at(-1)?.status).toBe("resolved")
+    expect(timeline.at(-1)?.status).toBe("in_progress")
     expect(timeline.filter((t) => t.status === "acknowledged")).toHaveLength(0)
     expect(
       repo.audits.filter(

@@ -95,10 +95,9 @@ export interface JurisdictionGeometryRecord {
   geometry: { type: string; coordinates: unknown[] }
 }
 
-/** The outcome of a save-and-route, returned for the route to audit + the test to assert. */
+/** The outcome of a contact save, returned for the route to audit + the test to assert. */
 export interface SaveAndRouteResult {
   geoid: string
-  routedReports: number
   taskResolved: boolean
   /** Whether outreach was enqueued (false when throttled/suppressed). */
   outreachEnqueued: boolean
@@ -144,22 +143,18 @@ export interface JurisdictionContactsRepository {
   /** Whether the jurisdiction exists (so the route can 404 an unknown geoid). */
   jurisdictionExists(geoid: string): Promise<boolean>
   /**
-   * Persist contacts + route. ONE short transaction commits the operator's input: upsert
-   * jurisdiction_contacts (+ legacy mirror), set contact_updated_at, mark the open discovery task done,
-   * route the FIRST bounded batch of waiting reports (-> acknowledged + a routed timeline row), AND
-   * write the discovery.contacts_saved audit row (H4: "did + recorded" is atomic; an audit failure rolls
-   * the save back). Routing the rest of the backlog is deliberately OUTSIDE that transaction, in bounded
-   * batches committed one at a time (F094): an unbounded UPDATE over every waiting report of a large
-   * jurisdiction blew the 15s statement_timeout and rolled the operator's contacts back, and held row
-   * locks on the whole backlog meanwhile. Each batch commits on its own, so a timeout or a dropped
-   * connection loses only the un-drained tail - re-saving resumes it. Does NOT enqueue outreach (the
-   * service does, via Jobs, after the write commits).
+   * Persist contacts. ONE short transaction commits the operator's input: upsert jurisdiction_contacts
+   * (+ legacy mirror), set contact_updated_at, mark the open discovery task done, AND write the
+   * discovery.contacts_saved audit row (H4: "did + recorded" is atomic; an audit failure rolls the save
+   * back). Saving a contact mails nobody, so it no longer flips the geoid's waiting reports to
+   * `acknowledged` - that claimed a routing that never happened; operators route each report themselves
+   * from the Reports screen. Does NOT enqueue outreach (the service does, via Jobs, after the write commits).
    */
   saveAndRoute(
     geoid: string,
     input: SaveContactsInput,
     audit: { actorId: string | null },
-  ): Promise<{ routedReports: number; taskResolved: boolean }>
+  ): Promise<{ taskResolved: boolean }>
   /**
    * Patch contacts/notes/form WITHOUT routing, AND write the jurisdiction.patched audit row, all in ONE
    * transaction (H4). Returns false when the geoid is unknown.
@@ -187,6 +182,7 @@ export interface JurisdictionContactsServiceDeps {
   jobs: OutreachEnqueuer
   /** Outreach throttle window in days (env.OUTREACH_THROTTLE_DAYS); suppresses re-enqueue inside it. */
   throttleDays: number
+  outreachDigestEnabled: boolean
   /** Injectable clock (defaults to Date.now) so the throttle window is deterministic in tests. */
   now?: () => Date
 }
