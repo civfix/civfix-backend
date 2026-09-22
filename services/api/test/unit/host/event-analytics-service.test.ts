@@ -225,10 +225,12 @@ describe("getEventAnalytics", () => {
     expect(payload.kpis.shares).toBeNull()
   })
 
-  it(`suppresses a head count under k=${ANALYTICS_SUPPRESSION_K} but publishes one at or above it`, async () => {
+  it(`publishes the host's own whole-event counts exactly, including under k=${ANALYTICS_SUPPRESSION_K}`, async () => {
     const payload = await service().analytics(EVENT, "full", VIEWER)
-    expect(payload.kpis.walkUps).toBeNull()
-    expect(payload.kpis.waitlisted).toBeNull()
+    expect(payload.kpis.walkUps).toBe(4)
+    expect(payload.kpis.waitlisted).toBe(3)
+    expect(payload.kpis.cancelled).toBe(2)
+    expect(payload.kpis.noShow).toBe(1)
     expect(payload.kpis.checkedIn).toBe(12)
   })
 
@@ -259,6 +261,7 @@ describe("getEventAnalytics", () => {
     expect(payload.rates.checkIn.value).toBeNull()
     expect(payload.rates.fill.suppressed).toBe(true)
     expect(payload.kpis.capacity).toBe(4)
+    expect(payload.kpis.signups).toBe(3)
   })
 
   it("survives an event with no data at all and still parses", async () => {
@@ -336,6 +339,49 @@ describe("getEventAnalytics", () => {
     expect(payload.kpis.signups).toBe(20)
     expect(payload.kpis.checkedIn).toBe(12)
     expect(payload.kpis.hoursVolunteers).toBe(10)
+  })
+
+  it("publishes the whole-event signup count when the daily buckets are mostly under k", async () => {
+    const thinDays = service({
+      analytics: {
+        eventClock: () => Promise.resolve(clock({ createdAt: new Date("2026-02-07T00:00:00Z") })),
+        eventKpis: () =>
+          Promise.resolve({
+            registered: 25,
+            checkedIn: 12,
+            waitlisted: 3,
+            cancelled: 2,
+            noShow: 1,
+            capacity: 40,
+          }),
+        registrationsByDay: () =>
+          Promise.resolve([
+            { day: "2026-02-07", count: 8 },
+            { day: "2026-02-08", count: 7 },
+            { day: "2026-02-09", count: 7 },
+            { day: "2026-02-19", count: 1 },
+            { day: "2026-02-20", count: 2 },
+          ]),
+      },
+    })
+
+    const payload = await thinDays.analytics(EVENT, "full", VIEWER)
+    expect(payload.kpis.signups).toBe(25)
+    expect(payload.reach.funnel[0]?.value).toBe(25)
+    expect(payload.signups.daily).toHaveLength(14)
+    expect(payload.signups.daily.filter((point) => point.suppressed)).toHaveLength(11)
+    expect(payload.signups.cumulative.every((point) => point.suppressed)).toBe(true)
+    expect(payload.signups.bySlot?.panelSuppressed).toBe(true)
+    expect(payload.rates.checkIn.suppressed).toBe(true)
+  })
+
+  it("keeps rollup counts exact when the rollup has rows and null when it has none", async () => {
+    const sparse = service({
+      metrics: [{ day: "2026-02-18", metric: "page_views", bucket: "", value: 3 }],
+    })
+    const payload = await sparse.analytics(EVENT, "full", VIEWER)
+    expect(payload.kpis.pageViews).toBe(3)
+    expect(payload.kpis.donationClicks).toBeNull()
   })
 
   it("does not let an empty page-view rollup zero a funnel with live signups", async () => {

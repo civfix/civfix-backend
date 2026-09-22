@@ -23,7 +23,6 @@ import {
   eventPhase,
   funnel,
   seriesClosure,
-  suppressCount,
   suppressRate,
   type DayCount,
   type DayRange,
@@ -128,8 +127,10 @@ function toFunnelSteps(
   }))
 }
 
-function sumMetric(rows: readonly MetricRow[], metric: string): number {
-  return rows.filter((row) => row.metric === metric).reduce((acc, row) => acc + row.value, 0)
+function metricTotal(rows: readonly MetricRow[], metric: string): number | null {
+  const matching = rows.filter((row) => row.metric === metric)
+  if (matching.length === 0) return null
+  return matching.reduce((acc, row) => acc + row.value, 0)
 }
 
 function seriesOf(rows: readonly MetricRow[], metric: string): DayCount[] {
@@ -272,8 +273,8 @@ export function makeEventAnalyticsService(
     const registeredPublishable = closureAllowsTotal(closure)
     const cancellations = dailySeries(cancellationDays, window, { suppressPoints: true })
     const viewsSeries = dailySeries(seriesOf(metricRows, "page_views"), window)
-    const pageViews = sumMetric(metricRows, "page_views")
-    const donationClicks = sumMetric(metricRows, "donation_clicks")
+    const pageViews = metricTotal(metricRows, "page_views")
+    const donationClicks = metricTotal(metricRows, "donation_clicks")
 
     const steps: KeyCount[] = [
       { key: "signups", count: kpis.registered },
@@ -298,17 +299,17 @@ export function makeEventAnalyticsService(
         completedAt: clock.completedAt?.toISOString() ?? null,
       },
       kpis: {
-        signups: registeredPublishable ? suppressCount(kpis.registered).value : null,
+        signups: kpis.registered,
         capacity: kpis.capacity,
-        waitlisted: suppressCount(kpis.waitlisted).value,
-        cancelled: suppressCount(kpis.cancelled).value,
-        checkedIn: suppressCount(kpis.checkedIn).value,
-        noShow: suppressCount(kpis.noShow).value,
-        walkUps: suppressCount(facts.walkUps).value,
-        pageViews: suppressCount(pageViews).value,
+        waitlisted: kpis.waitlisted,
+        cancelled: kpis.cancelled,
+        checkedIn: kpis.checkedIn,
+        noShow: kpis.noShow,
+        walkUps: facts.walkUps,
+        pageViews,
         uniqueViewers: null,
         shares: null,
-        donationClicks: suppressCount(donationClicks).value,
+        donationClicks,
         hoursTotal: hours.credited,
         hoursVolunteers: hours.attendeesCredited,
         reportsLinked: facts.reportsLinked,
@@ -323,7 +324,7 @@ export function makeEventAnalyticsService(
             ? emptyRate()
             : toRate(kpis.registered, kpis.capacity),
         viewToSignup:
-          pageViews === 0 || !registeredPublishable
+          pageViews === null || pageViews === 0 || !registeredPublishable
             ? emptyRate()
             : toRate(kpis.registered, pageViews),
         waitlistConversion: toRate(waitlist.promoted, waitlist.joined),
