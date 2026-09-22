@@ -28,7 +28,7 @@ import {
 import { buildMailStats } from "./mail-stats.js"
 import { ROUTE_DEADLINE_INFLIGHT_SECONDS } from "./outbound-send-policy.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
-import type { MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
+import type { MailDelivery, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
 
 export interface StoredMailEvent {
   id: string
@@ -327,6 +327,17 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve({ items, nextCursor })
   }
 
+  deliveryOf(message: MailMessageRecord): MailDelivery | null {
+    if (message.direction === "in") return null
+    let latest: StoredMailEvent | null = null
+    for (const e of this.events) {
+      if (e.messageId !== message.id) continue
+      if (e.type !== "sent" && e.type !== "failed") continue
+      if (latest === null || e.createdAt.getTime() >= latest.createdAt.getTime()) latest = e
+    }
+    return latest === null ? "pending" : (latest.type as MailDelivery)
+  }
+
   getThread(id: string): Promise<MailThreadDTO | null> {
     const thread = this.threads.get(id)
     if (!thread) return Promise.resolve(null)
@@ -334,7 +345,7 @@ export class InMemoryMailRepository implements MailRepository {
     const latest = messages.length > 0 ? (messages[messages.length - 1] ?? null) : null
     const dto: MailThreadDTO = {
       ...toThreadListItem(thread, latest),
-      messages: messages.map(toMessageDTO),
+      messages: messages.map((m) => toMessageDTO({ ...m, delivery: this.deliveryOf(m) })),
     }
     return Promise.resolve(dto)
   }

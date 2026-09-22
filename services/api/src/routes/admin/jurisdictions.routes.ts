@@ -65,6 +65,7 @@ export async function registerAdminJurisdictionsRoutes(
         repo: overrides.repo,
         jobs: overrides.jobs ?? container.jobs,
         throttleDays: overrides.throttleDays ?? container.env.OUTREACH_THROTTLE_DAYS,
+        outreachDigestEnabled: container.env.OUTREACH_DIGEST_ENABLED,
         ...spreadNow(overrides),
       }),
     () => {
@@ -75,6 +76,7 @@ export async function registerAdminJurisdictionsRoutes(
         repo,
         jobs: container.jobs,
         throttleDays: container.env.OUTREACH_THROTTLE_DAYS,
+        outreachDigestEnabled: container.env.OUTREACH_DIGEST_ENABLED,
       })
     },
   )

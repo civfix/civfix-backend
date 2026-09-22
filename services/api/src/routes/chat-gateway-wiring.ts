@@ -598,7 +598,12 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           },
           body,
           new Date(message.createdAt),
-          { canForward: canForwardCity, audit: reportForwardAudit, messageId: message.id },
+          {
+            enabled: container.env.REPORT_AUTOFORWARD_ENABLED,
+            canForward: canForwardCity,
+            audit: reportForwardAudit,
+            messageId: message.id,
+          },
         )
       }
 

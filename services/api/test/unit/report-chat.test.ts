@@ -122,7 +122,7 @@ const onReportMessage: OnReportMessage = async (reportId, message, actorUserId) 
     { reportId, category: "graffiti", place: "SF", jurisdiction: SF_JURISDICTION, actorUserId },
     body,
     new Date(message.createdAt),
-    { canForward: canForwardCity },
+    { enabled: true, canForward: canForwardCity },
   )
 }
 

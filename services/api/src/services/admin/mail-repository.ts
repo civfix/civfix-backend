@@ -2,6 +2,7 @@
 import type { AdminAuditAction } from "./audit.js"
 import type {
   MailAttachment,
+  MailDelivery,
   MailDirection,
   MailStatsResponse,
   MailStatus,
@@ -40,6 +41,7 @@ export interface MailMessageRecord {
   effectsStage: number
   createdAt: Date
   truncated?: boolean
+  delivery?: MailDelivery | null
 }
 
 export type MailEventType = "sent" | "delivered" | "bounced" | "complained" | "opened" | "failed"
