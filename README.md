@@ -353,6 +353,20 @@ required (a missing one fails boot with an aggregated error).
 | `USE_FAKE_CHAT`       | in-process chat fan-out           | `DATABASE_URL` + `REDIS_URL` (Drizzle repo + Redis pub/sub) |
 | `USE_FAKE_JOBS`       | in-memory job queue               | `DATABASE_URL` (pg-boss)                               |
 
+### Outbound mail to cities is opt-in
+
+Two flags, both OFF by default in every environment, decide whether civfix ever emails a city without
+an operator pressing "Approve & send to jurisdiction" on a report:
+
+| Flag                        | When ON                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------- |
+| `REPORT_AUTOFORWARD_ENABLED` | new reports from report-verified reporters are forwarded at submission, and a citizen `@city` mention in a report discussion forwards the comment |
+| `OUTREACH_DIGEST_ENABLED`    | the daily `outreach.digest` cron and the enqueue after saving a jurisdiction's contacts send the per-jurisdiction "reports awaiting your attention" digest |
+
+With both off, the only mail a city receives is the packet an operator sends per report. Enabling either
+is a SOPS edit on the box's `api.sops.env` (`OUTREACH_DIGEST_ENABLED` also needs a restart so the cron is
+scheduled).
+
 To exercise a real seam locally, run the dev infra from the civfix-infra repo
 (`compose/docker-compose.dev.yml` brings up PostGIS + Redis), set `DATABASE_URL` / `REDIS_URL`, and turn
 the relevant flag off (e.g. `USE_FAKE_CHAT=0`).

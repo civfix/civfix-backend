@@ -211,6 +211,27 @@ describe("admin reports list", () => {
     expect((await svc.list({ q: "MURALwatch" })).items.map((i) => i.id)).toEqual(["rep-2"])
   })
 
+  it("search matches a reference code exactly, case- and whitespace-insensitively", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "rep-1", title: "Pothole", referenceCode: "PD-42-000001" })
+    repo.seedReport({ id: "rep-2", title: "Graffiti", referenceCode: "GR-42-000007" })
+
+    expect((await svc.list({ q: "PD-42-000001" })).items.map((i) => i.id)).toEqual(["rep-1"])
+    expect((await svc.list({ q: "  pd-42-000001 " })).items.map((i) => i.id)).toEqual(["rep-1"])
+    expect((await svc.list({ q: "PD-42" })).items).toHaveLength(0)
+    expect((await svc.list({ q: "GR-42-000007" })).counts.all).toBe(1)
+  })
+
+  it("search matches an address substring (case-insensitive)", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "rep-1", title: "Pothole", address: "1200 S Figueroa St" })
+    repo.seedReport({ id: "rep-2", title: "Graffiti", address: "44 Sunset Blvd" })
+
+    expect((await svc.list({ q: "figueroa" })).items.map((i) => i.id)).toEqual(["rep-1"])
+    expect((await svc.list({ q: "SUNSET" })).items.map((i) => i.id)).toEqual(["rep-2"])
+    expect((await svc.list({ q: "figueroa" })).counts.all).toBe(1)
+  })
+
   it("matches an id ONLY on a full uuid — never a substring, never a non-uuid needle", async () => {
     const { repo, svc } = harness()
     const id = "3f2b1c44-0a55-4d66-8e77-99aa00bb11cc"

@@ -16,6 +16,7 @@ const DRIZZLE = join(HERE, "../../drizzle")
 const SEED_MIGRATIONS = [
   "0151_legal_documents_consents.sql",
   "0171_legal_documents_2026_09_16.sql",
+  "0172_legal_documents_2026_09_21.sql",
 ] as const
 
 const RETIRED_TYPES = ["donations", "org_donation_agreement", "donation_disclosure"] as const
