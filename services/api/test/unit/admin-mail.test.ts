@@ -34,9 +34,9 @@ describe("mail-service recipient-resolution helpers", () => {
   it("resolveCorrespondent picks the latest non-civfix from address, else null", () => {
     expect(resolveCorrespondent([], FROM_OUTREACH)).toBeNull()
     const msgs = [
-      { id: "a", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "hi", ts: "t", attachments: [] },
-      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [] },
-      { id: "c", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "ok", ts: "t", attachments: [] },
+      { id: "a", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "hi", ts: "t", attachments: [], delivery: "sent" as const },
+      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [], delivery: null },
+      { id: "c", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "ok", ts: "t", attachments: [], delivery: "sent" as const },
     ]
     expect(resolveCorrespondent(msgs, FROM_OUTREACH)).toBe("clerk@city.gov")
     expect(resolveCorrespondent(msgs, "OUTREACH@CIVFIX.ORG")).toBe("clerk@city.gov")
@@ -45,9 +45,9 @@ describe("mail-service recipient-resolution helpers", () => {
   it("latestOutbound returns the newest out message, else null", () => {
     expect(latestOutbound([])).toBeNull()
     const msgs = [
-      { id: "a", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "first", ts: "t", attachments: [] },
-      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [] },
-      { id: "c", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "last", ts: "t", attachments: [] },
+      { id: "a", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "first", ts: "t", attachments: [], delivery: "sent" as const },
+      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [], delivery: null },
+      { id: "c", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "last", ts: "t", attachments: [], delivery: "sent" as const },
     ]
     expect(latestOutbound(msgs)?.body).toBe("last")
   })
@@ -67,6 +67,20 @@ describe("mail-service: list + getThread", () => {
     expect(dto.messages).toHaveLength(1)
 
     await expect(svc.getThread("missing")).rejects.toMatchObject({ httpStatus: 404 })
+  })
+
+  it("reports per-message delivery: sent / failed / pending outbound, null inbound", async () => {
+    const { repo, svc } = harness()
+    const t = await repo.createThread({ subject: "Pothole", org: "City of LA" })
+    const sent = await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "one" })
+    const failed = await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "two" })
+    await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "three" })
+    await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "four" })
+    await repo.recordEvent({ threadId: t.id, messageId: sent?.id ?? "", type: "sent" })
+    await repo.recordEvent({ threadId: t.id, messageId: failed?.id ?? "", type: "failed" })
+
+    const dto = await svc.getThread(t.id)
+    expect(dto.messages.map((m) => m.delivery)).toEqual(["sent", "failed", "pending", null])
   })
 
   it("passes through the dir / attn / geoid / q filters", async () => {
