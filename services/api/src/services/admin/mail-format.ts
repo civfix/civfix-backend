@@ -164,7 +164,7 @@ export function buildReportPacket(
   )
 
   if (noteText !== null && !templateUsesToken(bodyTemplate, "operatorNote")) {
-    blocks.push(heading("Note from the civfix team"), quote(noteText))
+    blocks.push(quote(noteText))
   }
   if (mediaLinks.length > 0 && !templateUsesToken(bodyTemplate, "photoLinks")) {
     blocks.push(
@@ -188,6 +188,14 @@ export interface DiscussionForwardInput {
   category: string
   place: string | null
   org: string | null
+  displayName?: string | null
+}
+
+export const DISCUSSION_FORWARD_ANONYMOUS_AUTHOR = "A neighbor"
+
+export function discussionForwardAuthor(displayName: string | null | undefined): string {
+  const trimmed = (displayName ?? "").trim()
+  return trimmed === "" ? DISCUSSION_FORWARD_ANONYMOUS_AUTHOR : trimmed
 }
 
 export function buildDiscussionForwardPacket(
@@ -198,14 +206,14 @@ export function buildDiscussionForwardPacket(
   const place = input.place ?? input.org ?? "the area"
   const subject = `civfix report: ${sanitizeHeaderValue(`${input.category} in ${place}`)} [${id8}]`
   const body = comment.trim() !== "" ? comment.trim() : "(no comment provided)"
+  const author = discussionForwardAuthor(input.displayName)
+  const lede = `${author} commented on a ${input.category} report in ${place} via civfix and mentioned your office.`
 
   const { text, html } = renderEmailBody({
-    preheader: `A neighbor commented on a ${input.category} report in ${place} and mentioned your office.`,
+    preheader: lede,
     footer: CITY_FOOTER,
     blocks: [
-      paragraph(
-        `A neighbor commented on a ${input.category} report in ${place} via civfix and mentioned your office.`,
-      ),
+      paragraph(lede),
       heading("Their comment"),
       quote(body),
       paragraph(`Reference: ${input.reportId}`, { muted: true }),

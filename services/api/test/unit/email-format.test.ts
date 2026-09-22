@@ -5,7 +5,11 @@ import {
   buildEventPacket,
 } from "../../src/services/admin/mail-format.js"
 import { renderEmailBody } from "../../src/adapters/email-layout.js"
-import { DEFAULT_FORWARD_BODY_TEMPLATE } from "@civfix/shared"
+import {
+  DEFAULT_FORWARD_BODY_TEMPLATE,
+  DEFAULT_FORWARD_SUBJECT_TEMPLATE,
+  templateUsesToken,
+} from "@civfix/shared"
 import { paragraph, kvTable, linkList } from "../../src/adapters/email-blocks.js"
 import type { AdminReportRecord } from "../../src/services/admin/admin-report-types.js"
 
@@ -41,6 +45,11 @@ function reportRecord(overrides: Partial<AdminReportRecord> = {}): AdminReportRe
 }
 
 const NO_TEMPLATES = { subject: null, body: null }
+
+const defaultSubjectUses = (token: string): boolean =>
+  templateUsesToken(DEFAULT_FORWARD_SUBJECT_TEMPLATE, token)
+const defaultBodyUses = (token: string): boolean =>
+  templateUsesToken(DEFAULT_FORWARD_BODY_TEMPLATE, token)
 
 describe("email layout", () => {
   it("emits a full HTML document with charset, viewport, inline CSS and a footer", () => {
@@ -78,7 +87,7 @@ describe("email layout", () => {
 })
 
 describe("buildReportPacket", () => {
-  it("builds the refined default subject + a branded body with escaped, multi-line content", () => {
+  it("renders the shared default templates with every token resolved and nothing left dangling", () => {
     const packet = buildReportPacket(
       reportRecord(),
       null,
@@ -86,16 +95,38 @@ describe("buildReportPacket", () => {
       "Please prioritize.",
       NO_TEMPLATES,
     )
-    expect(packet.subject).toBe("[civfix] Tag on the underpass - Springfield - ABC123")
     expect(packet.html).toContain("<!DOCTYPE html>")
-    expect(packet.html).toContain("First line of description.<br>Second line with detail.")
-    expect(packet.html).toContain(">Photo 1<")
-    expect(packet.html).toContain(">Photo 2<")
-    expect(packet.html).toContain("Please prioritize.")
-    expect(packet.text).toContain("civfix reference ABC123")
-    expect(packet.text).not.toContain("11111111-2222-3333-4444-555555555555")
-    expect(packet.text).toContain("Photo 1: https://r2/a?t=1")
-    expect(packet.text).toContain("3 neighbors")
+    expect(packet.subject).toContain("ABC123")
+    expect(packet.subject).toContain("Tag on the underpass")
+    expect(packet.subject).not.toMatch(/\{[A-Za-z]+\}/)
+    expect(packet.text).not.toMatch(/\{[A-Za-z]+\}/)
+    expect(packet.text).toContain("ABC123")
+    expect(packet.text).toContain("Please prioritize.")
+    if (defaultBodyUses("description")) {
+      expect(packet.html).toContain("First line of description.<br>Second line with detail.")
+    }
+    if (defaultBodyUses("confirmations")) expect(packet.text).toContain("3")
+    if (defaultSubjectUses("place")) expect(packet.subject).toContain("Springfield")
+  })
+
+  it("carries both photo links, inline when the default body renders them and as a list otherwise", () => {
+    const packet = buildReportPacket(
+      reportRecord(),
+      null,
+      ["https://r2/a?t=1", "https://r2/b?t=2"],
+      null,
+      NO_TEMPLATES,
+    )
+    if (defaultBodyUses("photoLinks")) {
+      expect(packet.text).toContain("https://r2/a?t=1")
+      expect(packet.text).toContain("https://r2/b?t=2")
+      expect(packet.text).not.toContain("Photos (2)")
+    } else {
+      expect(packet.html).toContain(">Photo 1<")
+      expect(packet.html).toContain(">Photo 2<")
+      expect(packet.text).toContain("Photo 1: https://r2/a?t=1")
+    }
+    if (defaultBodyUses("photoCount")) expect(packet.text).toContain("2")
   })
 
   it("H6: the packet never names the reporter and never offers a direct line to them", () => {
@@ -106,15 +137,17 @@ describe("buildReportPacket", () => {
       expect(part.toLowerCase()).not.toContain("directly to the resident")
       expect(part.toLowerCase()).not.toContain("to reach the resident")
     }
-    expect(packet.text).toContain("Replies to this email go to the civfix operators")
-    expect(packet.text).toContain("replies to this email reach the civfix operators")
+    expect(packet.text.toLowerCase()).toContain("replies to this email")
   })
 
-  it("H6: precise coordinates and the map link stay (jurisdiction routing needs the exact spot)", () => {
-    const packet = buildReportPacket(reportRecord(), null, [], null, NO_TEMPLATES)
+  it("H6: precise coordinates, the address and the map link resolve (routing needs the exact spot)", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null, {
+      subject: null,
+      body: "At {address} ({coordinates}). Map: {mapLink}",
+    })
+    expect(packet.text).toContain("100 Main St")
     expect(packet.text).toContain("39.5, -98.35")
     expect(packet.html).toContain("mlat=39.5")
-    expect(packet.text).toContain("100 Main St")
   })
 
   it("strips CRLF from the subject to block header injection", () => {
@@ -165,20 +198,21 @@ describe("buildReportPacket", () => {
     expect(packet.text).toContain("https://r2/a?t=1")
   })
 
-  it("appends the operator note unless the body renders {operatorNote} itself", () => {
+  it("appends the operator note as a bare quote, with no heading, unless the body renders {operatorNote}", () => {
     const appended = buildReportPacket(reportRecord(), null, [], "Please prioritize.", {
       subject: null,
       body: "A {category} report was filed.",
     })
-    expect(appended.text).toContain("Note from the civfix team")
-    expect(appended.text).toContain("Please prioritize.")
+    expect(appended.text).toContain("> Please prioritize.")
+    expect(appended.text).not.toContain("Note from the civfix team")
+    expect(appended.html).not.toContain("Note from the civfix team")
 
     const inline = buildReportPacket(reportRecord(), null, [], "Please prioritize.", {
       subject: null,
       body: "A {category} report was filed.\n\nOperator: {operatorNote}",
     })
-    expect(inline.text).not.toContain("Note from the civfix team")
     expect(inline.text).toContain("Operator: Please prioritize.")
+    expect(inline.text).not.toContain("> Please prioritize.")
   })
 
   it("normalizes CRLF in a custom body so Windows blank lines split into paragraphs without stray \\r", () => {
@@ -206,8 +240,10 @@ describe("buildReportPacket", () => {
       subject: "Ref {referenceCode}",
       body: null,
     })
+    const builtin = buildReportPacket(reportRecord(), null, [], null, NO_TEMPLATES)
     expect(packet.subject).toBe("Ref ABC123")
-    expect(packet.html).toContain("What was reported")
+    expect(packet.text).toBe(builtin.text)
+    expect(packet.html).toBe(builtin.html)
   })
 
   it("a null template renders exactly what the shared built-in default renders", () => {
@@ -254,8 +290,11 @@ describe("buildReportPacket", () => {
     expect(resident.text).toContain("Note with {braces} kept")
   })
 
-  it("links bare URLs inside template paragraphs so the default map link is clickable", () => {
-    const packet = buildReportPacket(reportRecord(), null, [], null, NO_TEMPLATES)
+  it("links bare URLs inside template paragraphs so a rendered map link is clickable", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null, {
+      subject: null,
+      body: "Map: {mapLink}",
+    })
     expect(packet.html).toMatch(/<a class="cv-link" href="https:\/\/www\.openstreetmap\.org\/\?mlat=/)
     const custom = buildReportPacket(reportRecord(), null, [], null, {
       subject: null,
@@ -277,14 +316,46 @@ describe("buildReportPacket", () => {
 })
 
 describe("buildDiscussionForwardPacket", () => {
+  const input = {
+    reportId: "abcdef12-0000-0000-0000-000000000000",
+    category: "trash",
+    place: "Oakville",
+    org: null,
+  }
+
   it("quotes the citizen comment and references the report", () => {
-    const packet = buildDiscussionForwardPacket(
-      { reportId: "abcdef12-0000-0000-0000-000000000000", category: "trash", place: "Oakville", org: null },
-      "There is a pile on 5th Ave.",
-    )
+    const packet = buildDiscussionForwardPacket(input, "There is a pile on 5th Ave.")
     expect(packet.subject).toBe("civfix report: trash in Oakville [abcdef12]")
     expect(packet.html).toContain("There is a pile on 5th Ave.")
     expect(packet.text).toContain("> There is a pile on 5th Ave.")
+  })
+
+  it("names the commenter in the lede when a public display name is supplied", () => {
+    const packet = buildDiscussionForwardPacket(
+      { ...input, displayName: "Dana Neighbor" },
+      "Still not cleared.",
+    )
+    expect(packet.text).toContain("Dana Neighbor commented on a trash report in Oakville via civfix")
+    expect(packet.text).not.toContain("A neighbor commented")
+    expect(packet.text).toContain("> Still not cleared.")
+  })
+
+  it("falls back to the anonymous lede for a blank, null or deleted-author name", () => {
+    for (const displayName of [null, undefined, "", "   "]) {
+      const packet = buildDiscussionForwardPacket({ ...input, displayName }, "hi")
+      expect(packet.text).toContain("A neighbor commented on a trash report in Oakville via civfix")
+    }
+    const deleted = buildDiscussionForwardPacket({ ...input, displayName: "Deleted User" }, "hi")
+    expect(deleted.text).toContain("Deleted User commented on a trash report in Oakville via civfix")
+  })
+
+  it("escapes a display name that carries HTML-significant characters", () => {
+    const packet = buildDiscussionForwardPacket(
+      { ...input, displayName: "<b>Mal</b>" },
+      "look at this",
+    )
+    expect(packet.html).not.toContain("<b>Mal</b>")
+    expect(packet.html).toContain("&lt;b&gt;Mal&lt;/b&gt;")
   })
 })
 

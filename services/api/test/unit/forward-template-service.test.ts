@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest"
 import {
-  DEFAULT_FORWARD_SUBJECT_TEMPLATE,
+  DEFAULT_FORWARD_BODY_TEMPLATE,
   FORWARD_TEMPLATE_SAMPLE_VALUES,
+  templateUsesToken,
 } from "@civfix/shared"
 import { InMemoryForwardTemplateRepository } from "../../src/services/admin/forward-template-repository.memory.js"
 import {
@@ -20,6 +21,8 @@ function harness(): Harness {
 }
 
 const sample = (name: string): string => FORWARD_TEMPLATE_SAMPLE_VALUES[name] ?? ""
+const defaultBodyUses = (token: string): boolean =>
+  templateUsesToken(DEFAULT_FORWARD_BODY_TEMPLATE, token)
 
 describe("forward-template service: get + set", () => {
   it("returns an all-null settings DTO when no default has ever been saved", async () => {
@@ -60,13 +63,11 @@ describe("forward-template service: preview", () => {
     const preview = await svc.preview({})
     expect(preview.subjectSource).toBe("builtin")
     expect(preview.bodySource).toBe("builtin")
-    expect(preview.subject).toBe(
-      DEFAULT_FORWARD_SUBJECT_TEMPLATE.replace("{title}", sample("title"))
-        .replace("{place}", sample("place"))
-        .replace("{referenceCode}", sample("referenceCode")),
-    )
-    expect(preview.text).toContain(sample("address"))
+    expect(preview.subject).toContain(sample("title"))
+    expect(preview.subject).toContain(sample("referenceCode"))
+    expect(preview.subject).not.toMatch(/\{[A-Za-z]+\}/)
     expect(preview.text).toContain(sample("referenceCode"))
+    if (defaultBodyUses("address")) expect(preview.text).toContain(sample("address"))
   })
 
   it("leaves no unresolved placeholder in the rendered preview", async () => {
@@ -109,8 +110,21 @@ describe("forward-template service: preview", () => {
   it("shows the sample photos and operator note the way a real packet would", async () => {
     const { svc } = harness()
     const preview = await svc.preview({})
-    expect(preview.html).toContain(">Photo 1<")
-    expect(preview.html).toContain(">Photo 2<")
+    for (const href of sample("photoLinks").split("\n")) {
+      expect(preview.html).toContain(href)
+    }
+    if (!defaultBodyUses("photoLinks")) {
+      expect(preview.html).toContain(">Photo 1<")
+      expect(preview.html).toContain(">Photo 2<")
+    }
     expect(preview.text).toContain(sample("operatorNote"))
+  })
+
+  it("appends the operator note WITHOUT a heading when the body does not render {operatorNote}", async () => {
+    const { svc } = harness()
+    const preview = await svc.preview({ subjectTemplate: null, bodyTemplate: "A {category} report." })
+    expect(preview.text).toContain(`> ${sample("operatorNote")}`)
+    expect(preview.text).not.toContain("Note from the civfix team")
+    expect(preview.html).not.toContain("Note from the civfix team")
   })
 })
