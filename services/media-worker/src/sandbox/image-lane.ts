@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs"
 import { z } from "zod"
-import { loadImageLaneEntry, type WorkerLimits } from "../config.js"
+import { imageLaneTimeoutMs, loadImageLaneEntry, type WorkerLimits } from "../config.js"
 import { ImageProcessingError, processImage, type ProcessedImage } from "./image.js"
 import { perceptualHash } from "./phash.js"
 import { runTool, sandboxIdentity, SandboxSpawnError } from "./exec.js"
@@ -11,15 +11,7 @@ export interface ImageLaneResult extends ProcessedImage {
   phash: string | null
 }
 
-const SPAWN_OVERHEAD_MS = 5_000
-
-// The child bounds metadata, strip + thumbnail, and the perceptual hash by imageTimeoutMs EACH and runs them
-// in sequence, so killing it at a single imageTimeoutMs rejected (and deleted) slow but legitimate photos.
-const CHILD_TIMED_PHASES = 3
-
-export function imageLaneTimeoutMs(limits: WorkerLimits): number {
-  return CHILD_TIMED_PHASES * limits.imageTimeoutMs + SPAWN_OVERHEAD_MS
-}
+export { imageLaneTimeoutMs }
 
 export const ALLOWED_OUTPUT_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp"] as const
 
