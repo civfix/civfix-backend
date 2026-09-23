@@ -334,25 +334,36 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       await sql`DELETE FROM push_tokens WHERE user_id = ${userId}`
     },
 
-    async findRecentDuplicate(args: {
-      userId: string
-      type: NotificationType
-      link: string | null
-      body: string | null
-      since: Date
-    }): Promise<NotificationRecord | null> {
-      const rows = await sql<NotificationRowSelect[]>`
-        SELECT id, user_id, type, title, body, link, read_at, created_at
-        FROM notifications
-        WHERE user_id = ${args.userId}
-          AND type = ${args.type}
-          AND link IS NOT DISTINCT FROM ${args.link}
-          AND body IS NOT DISTINCT FROM ${args.body}
-          AND created_at > ${args.since}
-        ORDER BY created_at DESC
-        LIMIT 1
-      `
-      return rows[0] ? toRecord(rows[0]) : null
+    async insertUnlessRecentDuplicate(
+      args: NewNotificationArgs & { since: Date },
+    ): Promise<{ record: NotificationRecord; deduped: boolean }> {
+      return sql.begin(async (tx) => {
+        // A plain look-then-insert lets two concurrent writers both miss and both insert; the key
+        // lock makes the second wait for the first's commit and then find its row.
+        await tx`
+          SELECT pg_advisory_xact_lock(
+            hashtext('notification_dedupe:' || ${args.userId} || ':' || ${args.type} || ':' || COALESCE(${args.link}::text, ''))
+          )
+        `
+        const existing = await tx<NotificationRowSelect[]>`
+          SELECT id, user_id, type, title, body, link, read_at, created_at
+          FROM notifications
+          WHERE user_id = ${args.userId}
+            AND type = ${args.type}
+            AND link IS NOT DISTINCT FROM ${args.link}
+            AND body IS NOT DISTINCT FROM ${args.body}
+            AND created_at > ${args.since}
+          ORDER BY created_at DESC
+          LIMIT 1
+        `
+        if (existing[0]) return { record: toRecord(existing[0]), deduped: true }
+        const rows = await tx<NotificationRowSelect[]>`
+          INSERT INTO notifications (user_id, type, title, body, link)
+          VALUES (${args.userId}, ${args.type}, ${args.title}, ${args.body}, ${args.link})
+          RETURNING id, user_id, type, title, body, link, read_at, created_at
+        `
+        return { record: toRecord(rows[0]!), deduped: false }
+      }) as Promise<{ record: NotificationRecord; deduped: boolean }>
     },
 
     refreshUnreadNotification(args: RefreshUnreadArgs): Promise<NotificationRecord | null> {

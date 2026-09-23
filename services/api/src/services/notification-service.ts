@@ -104,13 +104,9 @@ export interface NotificationRepository {
 
   clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
 
-  findRecentDuplicate(args: {
-    userId: string
-    type: NotificationType
-    link: string | null
-    body: string | null
-    since: Date
-  }): Promise<NotificationRecord | null>
+  insertUnlessRecentDuplicate(
+    args: NewNotificationArgs & { since: Date },
+  ): Promise<{ record: NotificationRecord; deduped: boolean }>
 
   refreshUnreadNotification(args: {
     userId: string
@@ -346,18 +342,18 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     }
     if (input.dedupeWindowMs !== undefined) {
       try {
-        const existing = await deps.repo.findRecentDuplicate({
+        return await deps.repo.insertUnlessRecentDuplicate({
           userId,
           type: input.type,
-          link,
+          title,
           body,
+          link,
           since: new Date(now().getTime() - input.dedupeWindowMs),
         })
-        if (existing) return { record: existing, deduped: true }
       } catch (err) {
         deps.logger?.warn(
           { err, userId, type: input.type },
-          "notification dedupe lookup failed; creating anyway",
+          "notification dedupe insert failed; creating anyway",
         )
       }
     }

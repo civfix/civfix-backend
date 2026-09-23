@@ -84,6 +84,7 @@ function harness(options: { organizationSuspended: boolean }) {
     service,
     notifications: {
       createNotifications: () => Promise.resolve(),
+      createNotificationsReportingFailures: () => Promise.resolve({ failed: [] }),
     } as unknown as NotificationService,
     mailer,
     cache,

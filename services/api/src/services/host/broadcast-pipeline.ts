@@ -4,6 +4,7 @@ import type { BroadcastVarValues } from "@civfix/shared/host"
 import type { Mailer } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
 import type { CacheClient } from "../../auth/cache.js"
+import type { AdminAuditAction } from "../admin/audit.js"
 import { mailFailure } from "../../adapters/mail-failure.js"
 import { isWithinQuietHours, pushGateAllows, type PushGateMode } from "../notification-helpers.js"
 import type { NotificationService } from "../notification-service.js"
@@ -88,7 +89,7 @@ export interface BroadcastPipelineDeps {
     opts?: { startAfterSec?: number; authRetry?: number },
   ) => Promise<void>
   audit: (
-    action: string,
+    action: AdminAuditAction,
     actorId: string | null,
     target: string,
     meta: Record<string, unknown>,
@@ -535,22 +536,26 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
     let fanOutError: unknown = null
     for (const group of groups.values()) {
       try {
-        await deps.notifications.createNotifications(group.userIds, {
-          type,
-          title: group.rendering.inAppTitle,
-          body: group.rendering.inAppBody,
-          link: notificationLink(record, event),
-          push: mode,
-        })
+        const { failed } = await deps.notifications.createNotificationsReportingFailures(
+          group.userIds,
+          {
+            type,
+            title: group.rendering.inAppTitle,
+            body: group.rendering.inAppBody,
+            link: notificationLink(record, event),
+            push: mode,
+          },
+        )
+        for (const userId of failed) undelivered.add(userId)
       } catch (err) {
         fanOutError = err
         for (const userId of group.userIds) undelivered.add(userId)
       }
     }
-    if (fanOutError === null) return
+    if (undelivered.size === 0) return
     deps.logger?.error(
       { err: fanOutError, broadcastId: record.id, undelivered: undelivered.size },
-      "broadcast: in-app fan-out failed for some groups; only those rows return to pending",
+      "broadcast: in-app fan-out failed for some recipients; only those rows return to pending",
     )
     for (const claim of relevant) {
       if (claim.userId === null || !undelivered.has(claim.userId)) continue

@@ -63,3 +63,24 @@ describe("fan-out notifications report the recipients whose row was never writte
     ).resolves.toEqual({ failed: [] })
   })
 })
+
+describe("deduped notifications written concurrently", () => {
+  it("writes one row when two writers race on the same dedupe key", async () => {
+    const repo = new InMemoryNotificationRepository()
+    const service = makeNotificationService({ repo, pushSender: new FakePushSender() })
+    const input = {
+      type: "event_broadcast" as const,
+      title: "Parking moved",
+      body: "Use the north lot",
+      link: "/e/abc",
+      dedupeWindowMs: 60_000,
+    }
+
+    await Promise.all([
+      service.createNotification(OK_USER, input),
+      service.createNotification(OK_USER, input),
+    ])
+
+    expect(repo.notifications).toHaveLength(1)
+  })
+})
