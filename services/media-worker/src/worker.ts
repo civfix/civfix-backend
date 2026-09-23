@@ -10,7 +10,8 @@ import {
   RETENTION_SWEEP_JOB,
   SHARED_QUEUE_POLICY,
 } from "@civfix/api/queue-names"
-import { releaseAnonHoldIfReady, type HeldReportView } from "@civfix/api/anon-hold-release"
+import { releaseAnonHoldIfReady } from "@civfix/api/anon-hold-release"
+import type { HeldReportView } from "@civfix/api/anon-hold-release-repository"
 import {
   makeJobs,
   stopGraceMsFor,

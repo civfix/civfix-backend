@@ -13,8 +13,8 @@ import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import {
   makeDrizzleMediaWorkerRepository,
   ensureNextMonthChatPartition,
-  type MediaWorkerRepository,
 } from "@civfix/api/media-repo"
+import type { MediaWorkerRepository } from "@civfix/api/media-worker-repository"
 import { loadLimits } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
 import { runMediaChecksJob } from "../../src/jobs/media-checks.js"

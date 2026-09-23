@@ -21,7 +21,10 @@ import {
   loadLimits,
 } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
-import type { AnonHoldReleaseRepository, HeldReportView } from "@civfix/api/anon-hold-release"
+import type {
+  AnonHoldReleaseRepository,
+  HeldReportView,
+} from "@civfix/api/anon-hold-release-repository"
 import { FakeJobs, FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 import * as fx from "../fixtures/make.js"

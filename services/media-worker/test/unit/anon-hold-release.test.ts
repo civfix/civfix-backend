@@ -12,7 +12,7 @@ import type {
   AnonHoldReleaseRepository,
   HeldReportView,
   ReleaseMediaView,
-} from "@civfix/api/anon-hold-release"
+} from "@civfix/api/anon-hold-release-repository"
 import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 import * as fx from "../fixtures/make.js"
 

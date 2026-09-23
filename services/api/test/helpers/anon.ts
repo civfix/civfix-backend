@@ -34,7 +34,7 @@ import type {
   AnonHoldReleaseRepository,
   HeldReportView,
   ReleaseMediaView,
-} from "../../src/services/anon-hold-release.js"
+} from "../../src/services/anon-hold-release-repository.js"
 import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
 import type { ReportType } from "@civfix/shared"
 

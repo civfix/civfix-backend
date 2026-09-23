@@ -2,12 +2,10 @@ import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import type { AbuseChecks, Storage } from "@civfix/shared/interfaces"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import { makeDb, type DbHandle } from "@civfix/api/db"
-import {
-  makeDrizzleMediaWorkerRepository,
-  type MediaWorkerRepository,
-} from "@civfix/api/media-repo"
+import { makeDrizzleMediaWorkerRepository } from "@civfix/api/media-repo"
+import type { MediaWorkerRepository } from "@civfix/api/media-worker-repository"
+import type { AnonHoldReleaseRepository } from "@civfix/api/anon-hold-release-repository"
 import { makeDrizzleAnonHoldReleaseRepository } from "@civfix/api/anon-hold-repo"
-import type { AnonHoldReleaseRepository } from "@civfix/api/anon-hold-release"
 import { R2Storage } from "@civfix/api/adapters/storage"
 import { LOCAL_STORAGE_DEV_SIGNING_KEY, LocalDiskStorage } from "@civfix/api/adapters/storage-local"
 import { captureError, initErrorReporting, flushErrorReporting } from "@civfix/api/errors"

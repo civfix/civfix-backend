@@ -3,7 +3,7 @@ import type {
   AnonHoldReleaseRepository,
   HeldReportView,
   ReleaseMediaView,
-} from "./anon-hold-release.js"
+} from "./anon-hold-release-repository.js"
 
 const RELEASE_TIMELINE_NOTE = "Released after automated review"
 

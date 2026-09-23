@@ -4,8 +4,8 @@ import {
   INBOUND_EMAIL_RETENTION_BATCH,
   INBOUND_EMAIL_RETENTION_MS,
   makeDrizzleInboundRetentionRepository,
-  type InboundRetentionRepository,
 } from "@civfix/api/inbound-retention-repo"
+import type { InboundRetentionRepository } from "@civfix/api/inbound-retention-repository"
 import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
 import { makeDrizzleRetentionRepository } from "@civfix/api/retention-repo"
 import { drainPages } from "./drain.js"

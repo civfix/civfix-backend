@@ -21,10 +21,8 @@
  */
 
 import type { AbuseChecks } from "@civfix/shared/interfaces"
-import {
-  releaseAnonHoldIfReady,
-  type AnonHoldReleaseRepository,
-} from "@civfix/api/anon-hold-release"
+import { releaseAnonHoldIfReady } from "@civfix/api/anon-hold-release"
+import type { AnonHoldReleaseRepository } from "@civfix/api/anon-hold-release-repository"
 import { ANON_HOLD_RELEASE_SWEEP_JOB } from "@civfix/api/queue-names"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 

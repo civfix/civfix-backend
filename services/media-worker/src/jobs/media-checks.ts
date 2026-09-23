@@ -4,7 +4,7 @@ import type {
   MediaResultPatch,
   MediaWorkerAsset,
   MediaWorkerRepository,
-} from "@civfix/api/media-repo"
+} from "@civfix/api/media-worker-repository"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import { settleWithin } from "@civfix/api/timeout"
 import type { WorkerLimits } from "../config.js"

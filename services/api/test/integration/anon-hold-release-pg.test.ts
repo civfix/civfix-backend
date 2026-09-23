@@ -15,7 +15,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleAnonHoldReleaseRepository } from "../../src/services/anon-hold-release-repository.drizzle.js"
-import type { AnonHoldReleaseRepository } from "../../src/services/anon-hold-release.js"
+import type { AnonHoldReleaseRepository } from "../../src/services/anon-hold-release-repository.js"
 
 const pg = await withPg()
 

@@ -1,5 +1,9 @@
 import type { Storage } from "@civfix/shared/interfaces"
-import type { LeakedObjectRow, MediaWorkerRepository, OrphanRow } from "@civfix/api/media-repo"
+import type {
+  LeakedObjectRow,
+  MediaWorkerRepository,
+  OrphanRow,
+} from "@civfix/api/media-worker-repository"
 import type { WorkerLimits } from "../config.js"
 import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from "./obs.js"

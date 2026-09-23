@@ -7,7 +7,7 @@ import type {
   NewAbuseFlag,
   OrphanRow,
   StuckMediaRow,
-} from "@civfix/api/media-repo"
+} from "@civfix/api/media-worker-repository"
 
 export interface StoredWorkerMedia extends MediaWorkerAsset {
   createdAt: Date
