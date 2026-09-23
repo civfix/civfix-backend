@@ -3,7 +3,8 @@
   // Turbo runs tasks with a STRICT env by default, so anything not listed here is stripped before the
   // task sees it. The integration suites boot Postgres via testcontainers and SKIP THEMSELVES (they do
   // not fail) when Docker is unreachable, so without this passthrough a local `pnpm test` silently
-  // reports a green run with every integration test skipped, which reads exactly like a full pass. CI on ubuntu-latest needs none of these (Docker is at the default /var/run/docker.sock);
+  // reports a green run with every integration test skipped, which reads exactly like a full pass.
+  // CI on ubuntu-latest needs none of these (Docker is at the default /var/run/docker.sock);
   // they exist for colima/Rancher/Podman on a developer machine, where the daemon socket lives
   // elsewhere and the in-VM path has to be named separately for the reaper's bind mount.
   "globalPassThroughEnv": [

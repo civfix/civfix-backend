@@ -8,7 +8,7 @@
  *   - GET /admin/users/:id/messages: the full text of that user's DMs, group chats and report chats,
  *     including messages the user soft-deleted. The most sensitive read in the product.
  *   - GET /admin/users/:id: the user's identity and moderation dossier.
- *   - GET /admin/inbox/:id: one citizen↔city email with its body and attachments.
+ *   - GET /admin/inbox/:id: one citizen-to-city email with its body and attachments.
  *   - GET /admin/mail/:id: one full correspondence thread.
  *
  * Best-effort, deliberately: a read need not be atomic with its audit, and failing a read on an

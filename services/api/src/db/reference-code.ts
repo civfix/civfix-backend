@@ -21,8 +21,8 @@ export const UNKNOWN_JURCODE = 0
 export const EVENT_PREFIX = "EVENT"
 
 /**
- * Falls back to UNKNOWN_JURCODE rather than failing, so a code is always mintable. Called before the
- * create transaction, so it does not disturb the lock order.
+ * Falls back to UNKNOWN_JURCODE rather than failing, so a code is always mintable. It is a plain SELECT
+ * that takes no row lock, so it cannot disturb the allocator's lock order wherever it is called.
  */
 export async function resolveJurisdictionCode(
   sql: Queryable,

@@ -1,7 +1,7 @@
 /**
- * Government boundaries used to route reports to the responsible authority. `priority` orders
- * overlapping layers so the most specific authority wins (place < county < state). The GiST index on
- * geom lives in 0001_core.sql because drizzle-kit cannot emit GiST.
+ * Government boundaries used to route reports to the responsible authority. Which layer wins is decided
+ * by the layer rank in db/sql/jurisdiction.ts; `priority` only breaks ties between polygons of the same
+ * layer. The GiST index on geom lives in 0001_core.sql because drizzle-kit cannot emit GiST.
  *
  * geom is nullable (0015): the write-time Census fallback upserts rows with geoid + name + layer but no
  * polygon, because the Census Geographies API returns an identity, not a boundary. A NULL-geom row never

@@ -94,8 +94,8 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 RUN pnpm --filter @civfix/media-worker... build
 # Production-pruned, self-contained deployment of just the worker at /out. The native/external deps
 # (sharp, ...) are installed here for the target platform and carried into runtime.
-# ffmpeg-static/ffprobe-static are devDependencies and are pruned out on purpose: the runtime ffmpeg is the pinned, checksummed
-# one from the `ffmpeg` stage.
+# ffmpeg-static/ffprobe-static are devDependencies and are pruned out on purpose: the runtime ffmpeg
+# is the pinned, checksummed one from the `ffmpeg` stage.
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/media-worker --prod deploy /out
 

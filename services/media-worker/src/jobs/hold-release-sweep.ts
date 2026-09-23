@@ -2,8 +2,7 @@
  * Self-healing backstop for the anon hold-then-publish release. The normal release path is the
  * media.checks post-success HOOK: after a media asset reaches a terminal status, the worker enqueues
  * anon.hold.release for the media's report, and that job re-evaluates + publishes the held anon report
- * once all its media are ready + clean. That inline enqueue
- * is best-effort: if SIGTERM lands such that pg-boss begins stopping while a handler sits between
+ * once all its media are ready + clean. That inline enqueue is best-effort: if SIGTERM lands such that pg-boss begins stopping while a handler sits between
  * "persisted the media result" and "enqueued anon.hold.release", the enqueue can fail (boss stopping) and
  * is swallowed (the media job still completes). For a single-media anon report there is then no other
  * media event to ever re-trigger the release, so the report could stay HELD forever.

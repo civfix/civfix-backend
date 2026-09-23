@@ -10,6 +10,10 @@
  * short-lived ?ticket minted over authenticated HTTP. The legacy ?token= session bearer is off by default
  * because a full-privilege credential in a URL leaks into every proxy, CDN and APM log. A handshake that
  * resolves to no user is rejected, and a live socket is re-authorized on every heartbeat.
+ *
+ * Implemented in ws/handshake.ts (origin allowlist, ?ticket, the WS_ALLOW_QUERY_TOKEN break-glass for
+ * ?token=), ws/socket-lifecycle.ts (heartbeat re-authorization) and ws/frame-handler.ts (per-room
+ * membership checks in authorizeRoom).
  */
 
 export * from "./types.js"
