@@ -177,8 +177,9 @@ describe("POST /users/:id/block", () => {
       expect(res.statusCode, id).toBe(403)
       expect(res.json().code).toBe("FORBIDDEN")
     }
-    expect((await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })).json())
-      .toEqual({ blocked: [] })
+    expect(
+      (await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })).json(),
+    ).toEqual({ blocked: [] })
   })
 
   it("422s a non-uuid :id before any store lookup", async () => {
