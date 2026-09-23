@@ -65,6 +65,7 @@ function makeServices() {
   const otp = new OtpService({
     store: new InMemoryOtpStore(),
     users,
+    identities: oauthStore,
     cache: new InMemoryCacheClient(() => nowMs.value),
     mailer,
     now: () => nowMs.value,
@@ -111,6 +112,58 @@ describe("provider sign-in with an unverified email", () => {
     verifier.register("t", claims("owner-sub", VICTIM_EMAIL))
 
     expect((await oauth.signInWithGoogleIdToken("t")).id).toBe(owner.id)
+  })
+})
+
+describe("provider sign-in onto an account whose email was never verified", () => {
+  const ACCOUNT_EXISTS_MESSAGE =
+    "An account already uses this email address. Sign in the way you did before, or contact support."
+
+  async function plantedAccount(users: InMemoryUserStore) {
+    return users.create(VICTIM_EMAIL, {
+      displayName: "Planted",
+      role: "citizen",
+      emailVerified: false,
+    })
+  }
+
+  it("refuses to adopt the row instead of linking the verified identity to it", async () => {
+    const { oauth, users, oauthStore, verifier } = makeServices()
+    const planted = await plantedAccount(users)
+    verifier.register("t", claims("owner-sub", VICTIM_EMAIL))
+
+    const attempt = oauth.signInWithGoogleIdToken("t")
+
+    await expect(attempt).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: ACCOUNT_EXISTS_MESSAGE,
+    })
+    expect(await oauthStore.findByProvider("google", "owner-sub")).toBeNull()
+    const after = await users.findById(planted.id)
+    expect(after).toMatchObject({
+      email: VICTIM_EMAIL,
+      emailVerified: false,
+      displayName: "Planted",
+      deletedAt: null,
+    })
+  })
+
+  it("refuses the same row when a concurrent insert surfaces it", async () => {
+    const { oauth, users, oauthStore, verifier } = makeServices()
+    const planted = await plantedAccount(users)
+    verifier.register("t", claims("owner-sub", VICTIM_EMAIL))
+    const findByEmail = users.findByEmail.bind(users)
+    let calls = 0
+    users.findByEmail = (email: string) => {
+      calls += 1
+      return calls === 1 ? Promise.resolve(null) : findByEmail(email)
+    }
+
+    await expect(oauth.signInWithAppleIdToken("t", undefined)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(await oauthStore.findByProvider("apple", "owner-sub")).toBeNull()
+    expect((await users.findById(planted.id))?.emailVerified).toBe(false)
   })
 })
 

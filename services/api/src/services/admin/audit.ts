@@ -6,6 +6,7 @@ export type AdminAuditAction =
   | "operator.login_denied"
   | "account.deleted"
   | "data_export.undeliverable"
+  | "auth.otp_refused_unverified_account"
   | "discovery.contacts_saved"
   | "discovery.draft_saved"
   | "discovery.note_added"

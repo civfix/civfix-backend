@@ -130,6 +130,7 @@ export function makeContainerOrganizationService(
       ...(overrides.newToken !== undefined ? { newToken: overrides.newToken } : {}),
       ...(overrides.mailer !== undefined ? { mailer: overrides.mailer } : {}),
       ...(overrides.notifier !== undefined ? { notifier: overrides.notifier } : {}),
+      webOrigin: webBaseUrlOf(container.env),
       logger: app.log,
     })
   }

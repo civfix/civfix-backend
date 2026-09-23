@@ -40,6 +40,7 @@ import {
 export const CHUNK_STALE_MS = 10 * 60 * 1000
 export const SENDING_STALE_MS = 5 * 60 * 1000
 export const MAX_DELIVERY_ATTEMPTS = 3
+const ORG_SUSPENDED_REASON = "org_suspended"
 export const AUTH_ABORT_BACKOFF_SEC = [60, 300, 900] as const
 export const CRITICAL_KINDS = CRITICAL_BROADCAST_KINDS
 export const AUTOMATED_KINDS = new Set([
@@ -222,15 +223,21 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
   ): Promise<boolean> {
     const moved = await repo.transition(record.id, [from], "failed", { finishedAt: at })
     if (moved === null) return false
-    await repo.suppressRemaining(record.id, "kill_switch")
+    const suppressed = await repo.suppressRemaining(record.id, "kill_switch")
     await repo.refreshCounts(record.id)
     await insights.bumpInsightsGeneration(record.cleanupId)
+    await deps.audit("event.broadcast_killed", record.createdBy, `broadcast:${record.id}`, {
+      cleanupId: record.cleanupId,
+      kind: record.kind,
+      reason: ORG_SUSPENDED_REASON,
+      suppressed,
+    })
     deps.logger?.warn(
       {
         evt: "broadcast.failed",
         broadcastId: record.id,
         cleanupId: record.cleanupId,
-        reason: "org_suspended",
+        reason: ORG_SUSPENDED_REASON,
       },
       "broadcast refused: the event's organization is suspended",
     )
@@ -364,6 +371,12 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
     }
     const event = await repo.eventContext(record.cleanupId)
     if (event === null) return
+    // An operator can suspend the organization after plan() passed; every chunk rechecks so the
+    // suspension stops what is still pending rather than only the next broadcast.
+    if (HOST_COMPOSED_BROADCAST_KINDS.has(record.kind) && event.organizationSuspended) {
+      await failForSuspendedOrganization(record, "sending", now())
+      return
+    }
 
     const claims = await repo.claimChunk({
       broadcastId,

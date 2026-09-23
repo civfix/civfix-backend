@@ -8,6 +8,7 @@ import {
 import { sha256Hex } from "../../src/auth/crypto.js"
 import type { Queryable, Sql } from "../../src/db/client.js"
 import { mediaBoundElsewhere } from "../../src/services/media-bindings.js"
+import { anonUploader } from "../../src/services/media-uploader.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 
 const REPORT_ID = "44444444-4444-4444-8444-444444444444"
@@ -40,6 +41,7 @@ function createArgs(): CreateAnonReportTxArgs {
     addrPrecision: null,
     h3Cell: "8a2830828767fff",
     mediaUploadIds: [],
+    mediaUploaders: [anonUploader(ANON_ID)],
     claimCodeHash: "hash-of-original",
     reportCap: 5,
     responseSnapshot: { reportId: REPORT_ID, status: "held", claimCode: ORIGINAL_CODE },
@@ -146,7 +148,7 @@ describe("replaying an anonymous submit", () => {
     expect(fake.statements.some((s) => /UPDATE reports/i.test(s.sql))).toBe(false)
   })
 
-  it("replays with a fresh code when the key race is lost inside the create transaction", async () => {
+  it("leaves the winner's claim code alive when the key race is lost inside the create transaction", async () => {
     const fake = makeFakeSql([
       { match: /reference_counters/i, rows: [{ next_val: 1 }] },
       storedSnapshot({ reportId: REPORT_ID, status: "held" }),
@@ -155,14 +157,30 @@ describe("replaying an anonymous submit", () => {
     const sql = fake.sql as unknown as Sql & { begin: unknown }
     sql.begin = () => Promise.reject(UNIQUE_VIOLATION)
 
-    const result = await makeDrizzleAnonReportRepository(sql, {
-      newClaimCode: () => FRESH_CODE,
-    }).createAnonReportTx(createArgs())
+    await expect(
+      makeDrizzleAnonReportRepository(sql, {
+        newClaimCode: () => FRESH_CODE,
+      }).createAnonReportTx(createArgs()),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "Report submit is still settling; retry" })
 
-    expect(result).toEqual({
-      kind: "replayed",
-      snapshot: { reportId: REPORT_ID, status: "held", claimCode: FRESH_CODE },
-    })
+    expect(fake.statements.some((s) => /UPDATE reports/i.test(s.sql))).toBe(false)
+  })
+
+  it("still rotates on a later replay of the same key, so a retry after the race gets a working code", async () => {
+    const fake = makeFakeSql([
+      storedSnapshot({ reportId: REPORT_ID, status: "held" }),
+      rotation([{ id: REPORT_ID }]),
+    ])
+
+    const replay = await repoOver(fake).findIdempotentSnapshot(
+      IDEMPOTENCY_KEY,
+      ANON_REPORT_CREATE_SCOPE,
+      ANON_ID,
+    )
+
+    expect(replay?.claimCode).toBe(FRESH_CODE)
+    const rotate = fake.statements.find((s) => /UPDATE reports/i.test(s.sql))!
+    expect(rotate.values).toContain(await sha256Hex(FRESH_CODE))
   })
 })
 

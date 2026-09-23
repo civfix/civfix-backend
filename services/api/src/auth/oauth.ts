@@ -18,6 +18,9 @@ export const APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
 export const PROVIDER_GOOGLE = "google"
 export const PROVIDER_APPLE = "apple"
 
+export const UNVERIFIED_ACCOUNT_EXISTS_MESSAGE =
+  "An account already uses this email address. Sign in the way you did before, or contact support."
+
 export interface OAuthConfig {
   google?: {
     clientId: string
@@ -209,6 +212,9 @@ export class OAuthService {
   ): Promise<UserRecord | null> {
     const byEmail = await this.users.findByEmail(verifiedEmail)
     if (!byEmail || byEmail.deletedAt !== null) return null
+    // A row holding an address nobody proved could have been planted by whoever presented it, so a
+    // verified identity is never attached to it. The row is left exactly as it is.
+    if (!byEmail.emailVerified) throw AppError.conflict(UNVERIFIED_ACCOUNT_EXISTS_MESSAGE)
     await this.oauthStore.linkIdentity(byEmail.id, provider, providerUserId)
     return byEmail
   }

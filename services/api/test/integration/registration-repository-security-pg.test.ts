@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
+import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeDrizzleHostRegistrationRepository } from "../../src/services/host/registration-repository.drizzle.js"
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import type {
@@ -220,7 +221,7 @@ describe.skipIf(!pg)("registration security (integration)", () => {
     })
 
     expect(outcome.kind).toBe("cancelled")
-    expect(outcome.releasedWaitlistTicketTypeIds).toEqual([vip])
+    expect([...outcome.releasedWaitlistTicketTypeIds].sort()).toEqual([main, vip].sort())
     expect(await waitlistStatuses(userId)).toEqual(["cancelled", "cancelled"])
     expect(await reservedSeats(vip)).toBe(0)
     expect(await reservedSeats(main)).toBe(0)
@@ -229,5 +230,143 @@ describe.skipIf(!pg)("registration security (integration)", () => {
        WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
     `
     expect(bans[0]?.n).toBe(1)
+  })
+
+  async function claimSlot(cleanupId: string, userId: string): Promise<void> {
+    const [slot] = await h.sql<{ id: string }[]>`
+      INSERT INTO cleanup_slots (cleanup_id, title, sort_order)
+      VALUES (${cleanupId}, ${`Slot ${randomUUID().slice(0, 8)}`}, 0)
+      RETURNING id
+    `
+    await h.sql`
+      INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id)
+      VALUES (${cleanupId}, ${userId}, ${(slot as { id: string }).id})
+    `
+  }
+
+  async function banState(cleanupId: string, userId: string) {
+    const [row] = await h.sql<
+      { active: number; active_seats: number; claims: number; members: number; bans: number }[]
+    >`
+      SELECT
+        (SELECT count(*)::int FROM cleanup_registrations
+          WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND status = 'registered') AS active,
+        (SELECT count(*)::int FROM cleanup_registration_seats s
+           JOIN cleanup_registrations r ON r.id = s.registration_id
+          WHERE r.cleanup_id = ${cleanupId} AND r.user_id = ${userId} AND s.status = 'active')
+          AS active_seats,
+        (SELECT count(*)::int FROM cleanup_slot_claims
+          WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}) AS claims,
+        (SELECT count(*)::int FROM cleanup_members
+          WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}) AS members,
+        (SELECT count(*)::int FROM cleanup_bans
+          WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}) AS bans
+    `
+    return row
+  }
+
+  it("removing a ticket holder from the event cancels the ticket and frees its seats", async () => {
+    const cleanupId = await newCleanup()
+    const type = await newTicketType(cleanupId)
+    const userId = await newUser("Ticket holder")
+    const registered = await repo.registerTx(selfRegistration(cleanupId, userId, type, 2))
+    if (registered.kind !== "registered") throw new Error("expected registered")
+    await claimSlot(cleanupId, userId)
+    expect(await reservedSeats(type)).toBe(2)
+
+    const outcome = await makeDrizzleCleanupRepository(h.sql).removeMember(
+      cleanupId,
+      userId,
+      await newUser("Host"),
+    )
+
+    expect(outcome).toMatchObject({ kind: "removed", releasedWaitlistTicketTypeIds: [type] })
+    expect(await reservedSeats(type)).toBe(0)
+    expect(await banState(cleanupId, userId)).toEqual({
+      active: 0,
+      active_seats: 0,
+      claims: 0,
+      members: 0,
+      bans: 1,
+    })
+    const seatId = registered.registration.seats[0]?.id as string
+    const scanned = await repo.checkInByToken({
+      cleanupId,
+      tokenHash: tokens.hashFor(seatId),
+      actorId: await newUser("Door"),
+      method: "scan",
+      now: new Date(),
+    })
+    expect(scanned.outcome).toBe("cancelled")
+  })
+
+  it("a roster ban through an old registration also cancels the one the user holds now", async () => {
+    const cleanupId = await newCleanup()
+    const type = await newTicketType(cleanupId)
+    const userId = await newUser("Returning")
+    const first = await repo.registerTx(selfRegistration(cleanupId, userId, type))
+    if (first.kind !== "registered") throw new Error("expected registered")
+    await repo.cancelRegistration({
+      cleanupId,
+      registrationId: first.registration.id,
+      actorId: userId,
+      now: new Date(),
+    })
+    const again = await repo.registerTx(selfRegistration(cleanupId, userId, type))
+    if (again.kind !== "registered") throw new Error("expected registered again")
+    await claimSlot(cleanupId, userId)
+
+    const outcome = await repo.removeRegistration({
+      cleanupId,
+      registrationId: first.registration.id,
+      actorId: await newUser("Host"),
+      ban: true,
+      now: new Date(),
+    })
+
+    expect(outcome.kind).toBe("already_cancelled")
+    expect(outcome.releasedWaitlistTicketTypeIds).toEqual([type])
+    expect(await reservedSeats(type)).toBe(0)
+    expect(await banState(cleanupId, userId)).toMatchObject({
+      active: 0,
+      active_seats: 0,
+      claims: 0,
+      bans: 1,
+    })
+    await expect(repo.registerTx(selfRegistration(cleanupId, userId, type))).resolves.toEqual({
+      kind: "banned",
+    })
+  })
+
+  it("leaves a banned user's stale waiting row out of the queue positions behind it", async () => {
+    const cleanupId = await newCleanup()
+    const type = await newTicketType(cleanupId, { capacity: 1 })
+    const banned = await newUser("Banned before")
+    const next = await newUser("Behind")
+    const now = new Date()
+    let nextEntry = ""
+    for (const [index, userId] of [banned, next].entries()) {
+      const joined = await repo.joinWaitlist({
+        cleanupId,
+        ticketTypeId: type,
+        subject: { kind: "user", userId },
+        partySize: 1,
+        accessCodeHash: null,
+        now: new Date(now.getTime() + index * 1000),
+      })
+      if (joined.kind === "joined") nextEntry = joined.entry.id
+    }
+    await h.sql`INSERT INTO cleanup_bans (cleanup_id, user_id) VALUES (${cleanupId}, ${banned})`
+
+    expect((await repo.findWaitlistEntry(cleanupId, nextEntry))?.position).toBe(1)
+    const listed = await repo.listWaitlist({
+      cleanupId,
+      ticketTypeId: null,
+      status: null,
+      cursor: null,
+      limit: 10,
+    })
+    expect(listed.rows.map((row) => row.userId)).toEqual([next])
+    expect((await repo.checkinCounters(cleanupId)).waitlisted).toBe(1)
   })
 })

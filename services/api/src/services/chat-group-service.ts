@@ -90,11 +90,6 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     }
   }
 
-  async function resolveAvatar(uploadId: string | undefined): Promise<string | null> {
-    if (uploadId === undefined) return null
-    return groups.findMediaIdByUploadId(uploadId)
-  }
-
   async function filterInvitees(actorId: string, memberIds: string[]): Promise<string[]> {
     const unique = [...new Set(memberIds)].filter((id) => id !== actorId && !isOfficialAccount(id))
     return groups.invitableIdsOf(actorId, unique)
@@ -170,18 +165,14 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     async createGroup(ownerId, req) {
       assertNoSlur(req.name, "name")
       assertNoSlur(req.description ?? null, "description")
-      const [avatarMediaId, actorFiltered] = await Promise.all([
-        resolveAvatar(req.avatarUploadId),
-        filterInvitees(ownerId, req.memberIds),
-      ])
-      const memberIds = await filterPairwise(actorFiltered)
+      const memberIds = await filterPairwise(await filterInvitees(ownerId, req.memberIds))
       const id = await groups.create(
         {
           kind: req.kind,
           name: req.name,
           description:
             req.description !== undefined && req.description !== "" ? req.description : null,
-          avatarMediaId,
+          avatarUploadId: req.avatarUploadId ?? null,
           ownerId,
           visibility: req.visibility,
         },
@@ -213,16 +204,18 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
           "visibility_owner_only",
         )
       }
-      await groups.update(req.id, {
-        ...(req.name !== undefined ? { name: req.name } : {}),
-        ...(req.description !== undefined
-          ? { description: req.description === "" ? null : req.description }
-          : {}),
-        ...(req.avatarUploadId !== undefined
-          ? { avatarMediaId: await groups.findMediaIdByUploadId(req.avatarUploadId, req.id) }
-          : {}),
-        ...(req.visibility !== undefined ? { visibility: req.visibility } : {}),
-      })
+      await groups.update(
+        req.id,
+        {
+          ...(req.name !== undefined ? { name: req.name } : {}),
+          ...(req.description !== undefined
+            ? { description: req.description === "" ? null : req.description }
+            : {}),
+          ...(req.avatarUploadId !== undefined ? { avatarUploadId: req.avatarUploadId } : {}),
+          ...(req.visibility !== undefined ? { visibility: req.visibility } : {}),
+        },
+        userId,
+      )
       const updated = await requireGroup(req.id)
       return toGroupDTO(updated, userId, role)
     },

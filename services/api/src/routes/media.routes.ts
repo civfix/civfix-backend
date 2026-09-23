@@ -186,6 +186,7 @@ function ownerOf(request: FastifyRequest): MediaOwner {
   return {
     userId: auth?.userId ?? undefined,
     anonSessionId: auth?.anonSessionId ?? undefined,
+    guestAnonSessionId: auth?.guestAnonSessionId ?? undefined,
     // Last-resort quota bucket: a caller with neither an account nor an anon cookie is metered by IP.
     ipKey: normalizeIp(request.ip),
   }

@@ -11,9 +11,11 @@ import {
 } from "../../db/cursor-helpers.js"
 import { DEFAULT_EVENT_DURATION_MS, eventWindowOfRow, hasEventEnded } from "../cleanup-rules.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
-import { mediaBoundElsewhere, mediaBoundToCleanup } from "../media-bindings.js"
+import { mediaBoundElsewhere, mediaBoundToCleanup, uploadedByClaimant } from "../media-bindings.js"
+import { userUploader } from "../media-uploader.js"
 import { likeContains } from "../admin/like.js"
-import { MEDIA_CLAIM_WINDOW_SEC } from "./event-media.js"
+import { isEventPubliclyVisible } from "./authz.js"
+import { publicServedKeyExpr } from "../media-served-key.js"
 import { deterministicUuid } from "../deterministic-uuid.js"
 import {
   isCheckViolationOn,
@@ -34,6 +36,7 @@ import {
   toTicketTypeRecord,
   toWaitlistRecord,
   waitlistColumns,
+  waitlistEntryNotBanned,
   waitlistJoins,
   type AnswerRowSelect,
   type PageRowSelect,
@@ -157,14 +160,6 @@ async function claimSlotIn(
   `
 }
 
-/** Backstop for a waiting row whose user was banned by a path that did not cancel it. */
-function waitlistEntryNotBanned(tag: Queryable) {
-  return tag`NOT EXISTS (
-    SELECT 1 FROM cleanup_bans b
-     WHERE b.cleanup_id = w.cleanup_id AND b.user_id = w.user_id
-  )`
-}
-
 /**
  * An EXISTS probe, not a join: a join under FOR UPDATE would also lock the cleanups row and invert the
  * cleanups -> cleanup_ticket_types -> cleanup_waitlist lock order every writer takes. The end instant
@@ -226,6 +221,86 @@ export async function cancelWaitlistEntriesIn(
   }
 }
 
+export interface AppliedBan {
+  cancelledRegistrations: { id: string; ticketTypeId: string | null }[]
+  /** Ticket types that got seats back, from cancelled registrations or released waitlist offers. */
+  releasedTicketTypeIds: string[]
+}
+
+/**
+ * The one ban path behind removing an attendee from the event and removing them from the roster.
+ * The event row lock comes first: every registration, join and waitlist path reads the ban under
+ * FOR SHARE on the same row, so one racing the ban either commits before it (and is undone here) or
+ * reads the ban. Waitlist rows are cancelled before registrations, the cleanup_waitlist ->
+ * cleanup_ticket_types order the expiry sweep and leaveWaitlist take, so the two cannot deadlock.
+ */
+export async function applyBanIn(
+  tx: Queryable,
+  args: { cleanupId: string; userId: string; actorId: string; now: Date },
+): Promise<AppliedBan> {
+  await tx`
+    SELECT id FROM cleanups WHERE id = ${args.cleanupId} LIMIT 1 FOR NO KEY UPDATE
+  `
+  await tx`
+    INSERT INTO cleanup_bans (cleanup_id, user_id, banned_by_user_id)
+    VALUES (${args.cleanupId}, ${args.userId}, ${args.actorId})
+    ON CONFLICT (cleanup_id, user_id) DO NOTHING
+  `
+  await tx`
+    DELETE FROM cleanup_members
+     WHERE cleanup_id = ${args.cleanupId} AND user_id = ${args.userId} AND role = 'member'
+  `
+  const waitlist = await cancelWaitlistEntriesIn(tx, {
+    cleanupId: args.cleanupId,
+    ticketTypeId: null,
+    subject: { kind: "user", userId: args.userId },
+    now: args.now,
+  })
+  const cancelled = await tx<{ id: string; ticket_type_id: string | null }[]>`
+    WITH cancelled AS (
+      UPDATE cleanup_registrations
+         SET status = 'cancelled', cancelled_at = ${args.now}, cancelled_by = ${args.actorId}
+       WHERE cleanup_id = ${args.cleanupId}
+         AND user_id = ${args.userId}
+         AND status = 'registered'
+      RETURNING id, ticket_type_id, party_size
+    ), seats AS (
+      UPDATE cleanup_registration_seats s
+         SET status = 'cancelled'
+        FROM cancelled c
+       WHERE s.registration_id = c.id AND s.status = 'active'
+      RETURNING s.id
+    ), held AS (
+      SELECT ticket_type_id, sum(party_size)::int AS seats
+        FROM cancelled
+       WHERE ticket_type_id IS NOT NULL
+       GROUP BY ticket_type_id
+    ), released AS (
+      UPDATE cleanup_ticket_types t
+         SET reserved_seats = GREATEST(t.reserved_seats - h.seats, 0),
+             updated_at = ${args.now}
+        FROM held h
+       WHERE t.id = h.ticket_type_id
+      RETURNING t.id
+    )
+    SELECT id, ticket_type_id FROM cancelled
+  `
+  await tx`
+    DELETE FROM cleanup_slot_claims
+     WHERE cleanup_id = ${args.cleanupId} AND user_id = ${args.userId}
+  `
+  const registrationTypes = cancelled
+    .map((row) => row.ticket_type_id)
+    .filter((id): id is string => id !== null)
+  return {
+    cancelledRegistrations: cancelled.map((row) => ({
+      id: row.id,
+      ticketTypeId: row.ticket_type_id,
+    })),
+    releasedTicketTypeIds: [...new Set([...waitlist.releasedTicketTypeIds, ...registrationTypes])],
+  }
+}
+
 class RegistrationRefusal extends Error {
   readonly outcome: RegisterTxOutcome
 
@@ -251,6 +326,7 @@ async function claimPageMediaInTx(
   cleanupId: string,
   mediaIds: readonly string[],
   asCover: "event_cover" | null,
+  claimantUserId: string,
 ): Promise<string[]> {
   const wanted = [...new Set(mediaIds)]
   if (wanted.length === 0) return []
@@ -274,7 +350,7 @@ async function claimPageMediaInTx(
       AND NOT (${mediaBoundElsewhere(tx, cleanupId)})
       AND (
         (${mediaBoundToCleanup(tx, cleanupId)})
-        OR media_assets.created_at > now() - make_interval(secs => ${MEDIA_CLAIM_WINDOW_SEC})
+        OR (${uploadedByClaimant(tx, [userUploader(claimantUserId)])})
       )
     RETURNING media_assets.id
   `
@@ -296,7 +372,9 @@ export function guestSelfRegistrationOnPrivateEvent(
   args: Pick<RegisterTxArgs, "subject" | "source">,
   visibility: EventVisibility,
 ): boolean {
-  return args.subject.kind === "guest" && args.source === "self" && visibility === "private"
+  return (
+    args.subject.kind === "guest" && args.source === "self" && !isEventPubliclyVisible(visibility)
+  )
 }
 
 function withinSalesWindow(now: Date, opensAt: Date | null, closesAt: Date | null): boolean {
@@ -634,6 +712,12 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       args.status === null
         ? tag`AND w.status IN ('waiting', 'offered')`
         : tag`AND w.status = ${args.status}`
+    // A banned user can never be seated, so their open rows are not part of the host's queue; closed
+    // rows stay listed as history.
+    const bannedFilter =
+      args.status === null || args.status === "waiting" || args.status === "offered"
+        ? tag`AND ${waitlistEntryNotBanned(tag)}`
+        : tag``
     const cursor = parseTimeCursor(args.cursor, { direction: "asc" })
     const cursorFilter =
       cursor === null ? tag`` : tag`AND (w.created_at, w.id) > (${cursor.at}, ${cursor.id}::uuid)`
@@ -645,6 +729,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
          ${typeFilter}
          ${statusFilter}
          ${cursorFilter}
+         ${bannedFilter}
        ORDER BY w.created_at ASC, w.id ASC
        LIMIT ${args.limit + 1}
     `
@@ -663,7 +748,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
              p.blocks,
              p.seo,
              c.cover_media_id,
-             m.r2_key AS cover_key,
+             ${publicServedKeyExpr(tag, "m")} AS cover_key,
              c.visibility,
              p.published_at,
              p.updated_at,
@@ -1672,29 +1757,30 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
         `
         if (target.length === 0) return { kind: "not_found", releasedWaitlistTicketTypeIds: [] }
         const bannedUserId = args.ban ? (target[0]?.user_id ?? null) : null
-        let releasedWaitlistTicketTypeIds: string[] = []
-        if (bannedUserId !== null) {
-          await tx`
-            INSERT INTO cleanup_bans (cleanup_id, user_id, banned_by_user_id)
-            VALUES (${args.cleanupId}, ${bannedUserId}, ${args.actorId})
-            ON CONFLICT (cleanup_id, user_id) DO NOTHING
-          `
-          await tx`
-            DELETE FROM cleanup_members
-             WHERE cleanup_id = ${args.cleanupId} AND user_id = ${bannedUserId} AND role = 'member'
-          `
-          // Waitlist rows before the registration: the same cleanup_waitlist -> cleanup_ticket_types
-          // order the expiry sweep and leaveWaitlist take, so the two cannot deadlock.
-          const cancelled = await cancelWaitlistEntriesIn(tx, {
-            cleanupId: args.cleanupId,
-            ticketTypeId: null,
-            subject: { kind: "user", userId: bannedUserId },
-            now: args.now,
-          })
-          releasedWaitlistTicketTypeIds = cancelled.releasedTicketTypeIds
+        if (bannedUserId === null) {
+          const outcome = await cancelRegistrationIn(tx, args)
+          return { ...outcome, releasedWaitlistTicketTypeIds: [] }
         }
-        const outcome = await cancelRegistrationIn(tx, args)
-        return { ...outcome, releasedWaitlistTicketTypeIds }
+        const ban = await applyBanIn(tx, {
+          cleanupId: args.cleanupId,
+          userId: bannedUserId,
+          actorId: args.actorId,
+          now: args.now,
+        })
+        const releasedWaitlistTicketTypeIds = ban.releasedTicketTypeIds
+        const removed = ban.cancelledRegistrations.find((r) => r.id === args.registrationId)
+        if (removed === undefined) {
+          const outcome = await cancelRegistrationIn(tx, args)
+          return { ...outcome, releasedWaitlistTicketTypeIds }
+        }
+        const registration = await loadRegistrationById(tx, args.cleanupId, removed.id)
+        if (registration === null) return { kind: "not_found", releasedWaitlistTicketTypeIds }
+        return {
+          kind: "cancelled",
+          registration,
+          ticketTypeId: removed.ticketTypeId,
+          releasedWaitlistTicketTypeIds,
+        }
       })
     },
 
@@ -1705,6 +1791,14 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       now: Date
     }): Promise<TransferRegistrationOutcome> {
       return sql.begin(async (tx) => {
+        // The event row first, as applyBanIn takes it: a ban holds it while it moves ticket-type seats and
+        // then cancels registrations, so a transfer that locked its registration before the ticket types
+        // could wait on the ban from the opposite end. registerIn's FOR SHARE on the same row keeps the
+        // same order.
+        const event = await tx<{ id: string }[]>`
+          SELECT id FROM cleanups WHERE id = ${args.cleanupId} LIMIT 1 FOR NO KEY UPDATE
+        `
+        if (event[0] === undefined) return { kind: "not_found" as const }
         const locked = await tx<
           { id: string; ticket_type_id: string | null; party_size: number; status: string }[]
         >`
@@ -2364,6 +2458,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
           COALESCE((
             SELECT sum(w.party_size)::int FROM cleanup_waitlist w
              WHERE w.cleanup_id = ${cleanupId} AND w.status IN ('waiting', 'offered')
+               AND ${waitlistEntryNotBanned(sql)}
           ), 0) AS waitlisted,
           (
             SELECT CASE
@@ -2398,6 +2493,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
                COALESCE((
                  SELECT sum(w.party_size)::int FROM cleanup_waitlist w
                   WHERE w.ticket_type_id = t.id AND w.status IN ('waiting', 'offered')
+                    AND ${waitlistEntryNotBanned(sql)}
                ), 0) AS waitlisted,
                t.capacity
           FROM cleanup_ticket_types t
@@ -2445,7 +2541,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
                p.blocks,
                p.seo,
                c.cover_media_id,
-               m.r2_key AS cover_key,
+               ${publicServedKeyExpr(sql, "m")} AS cover_key,
                c.visibility,
                p.published_at,
                p.updated_at,
@@ -2468,13 +2564,15 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     ): Promise<Map<string, string>> {
       const out = new Map<string, string>()
       if (mediaIds.length === 0) return out
-      const rows = await sql<{ id: string; r2_key: string }[]>`
-        SELECT media_assets.id, media_assets.r2_key FROM media_assets
+      const rows = await sql<{ id: string; served_key: string }[]>`
+        SELECT media_assets.id, ${publicServedKeyExpr(sql, "media_assets")} AS served_key
+          FROM media_assets
          WHERE media_assets.id = ANY(${[...new Set(mediaIds)]}::uuid[])
            AND media_assets.status = 'ready'
+           AND media_assets.served_key IS NOT NULL
            AND (${mediaBoundToCleanup(sql, cleanupId)})
       `
-      for (const row of rows) out.set(row.id, row.r2_key)
+      for (const row of rows) out.set(row.id, row.served_key)
       return out
     },
 
@@ -2488,7 +2586,13 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
 
           const blockIds = [...new Set(args.blockMediaIds)]
           if (blockIds.length > 0) {
-            const claimed = await claimPageMediaInTx(tx, args.cleanupId, blockIds, null)
+            const claimed = await claimPageMediaInTx(
+              tx,
+              args.cleanupId,
+              blockIds,
+              null,
+              args.actorUserId,
+            )
             if (claimed.length !== blockIds.length) {
               return { kind: "block_media_not_found" as const }
             }
@@ -2501,6 +2605,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
                 args.cleanupId,
                 [args.coverMediaId],
                 "event_cover",
+                args.actorUserId,
               )
               if (claimed.length !== 1) return { kind: "cover_not_found" as const }
             }
@@ -2609,7 +2714,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
                p.blocks,
                p.seo,
                c.cover_media_id,
-               m.r2_key AS cover_key,
+               ${publicServedKeyExpr(sql, "m")} AS cover_key,
                c.visibility,
                p.published_at,
                p.updated_at,
@@ -2617,7 +2722,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
                p.flag_reason,
                COALESCE(p.view_count, 0) AS view_count,
                c.donation_url,
-               lm.r2_key AS logo_key
+               ${publicServedKeyExpr(sql, "lm")} AS logo_key
           FROM cleanups c
           LEFT JOIN cleanup_pages p ON p.cleanup_id = c.id
           LEFT JOIN media_assets m ON m.id = c.cover_media_id AND m.status = 'ready'
@@ -2668,6 +2773,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
           LEFT JOIN LATERAL (
             SELECT sum(w.party_size)::int AS n FROM cleanup_waitlist w
              WHERE w.cleanup_id = c.id AND w.status IN ('waiting', 'offered')
+               AND ${waitlistEntryNotBanned(sql)}
           ) wl ON true
           LEFT JOIN LATERAL (
             SELECT count(*)::int AS n FROM cleanup_registration_seats s

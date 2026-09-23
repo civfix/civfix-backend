@@ -305,6 +305,7 @@ describe("waitlist offers skip cancelled and ended events", () => {
 describe("a transfer names the ticket type it vacated", () => {
   it("returns the previous ticket type so the caller can promote its waitlist", async () => {
     const fake = makeFakeSql([
+      { match: /FROM cleanups WHERE id = \? LIMIT 1 FOR NO KEY UPDATE/, rows: [{ id: EVENT }] },
       {
         match:
           /FROM cleanup_registrations\s+WHERE id = \? AND cleanup_id = \?\s+LIMIT 1 FOR UPDATE/,

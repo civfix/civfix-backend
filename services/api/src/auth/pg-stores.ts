@@ -23,7 +23,12 @@ import {
 } from "@civfix/shared"
 import type { Jobs } from "@civfix/shared/interfaces"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
-import { resolveAvatarMediaOrThrow } from "../services/avatar-media.js"
+import {
+  avatarClaimQuery,
+  avatarMediaRefOrThrow,
+  type AvatarMediaRow,
+} from "../services/avatar-media.js"
+import { userUploader } from "../services/media-uploader.js"
 import { enqueueWaitlistPromotion } from "../services/host/waitlist-promotion.js"
 import type { NotificationService } from "../services/notification-service.js"
 import {
@@ -246,15 +251,6 @@ export class PgUserStore implements UserStore {
     if (input.donationUrl !== undefined) {
       set.donationUrl = input.donationUrl === "" ? null : input.donationUrl
     }
-    if (input.avatarUploadId !== undefined) {
-      const media = await resolveAvatarMediaOrThrow(this.db.$client, input.avatarUploadId, {
-        userId: id,
-      })
-      set.avatarMediaId = media.id
-      if (input.presignAvatar && media.servedKey !== null) {
-        set.avatarUrl = await input.presignAvatar(media.servedKey)
-      }
-    }
     if (input.socialLinks !== undefined) {
       const links = input.socialLinks
       const clean: SocialLinks = {}
@@ -274,13 +270,27 @@ export class PgUserStore implements UserStore {
         : current.handle === null
           ? isNull(users.handle)
           : eq(users.handle, current.handle)
+    const avatarUploadId = input.avatarUploadId
     let updated: (typeof users.$inferSelect)[]
     try {
-      updated = await this.db
-        .update(users)
-        .set(set)
-        .where(and(eq(users.id, id), isNull(users.deletedAt), renameGuard))
-        .returning()
+      updated = await this.db.transaction(async (tx) => {
+        if (avatarUploadId !== undefined) {
+          const media = avatarMediaRefOrThrow(
+            await tx.execute<AvatarMediaRow>(
+              avatarClaimQuery(sql, avatarUploadId, { uploader: userUploader(id), userId: id }),
+            ),
+          )
+          set.avatarMediaId = media.id
+          if (input.presignAvatar && media.servedKey !== null) {
+            set.avatarUrl = await input.presignAvatar(media.servedKey)
+          }
+        }
+        return tx
+          .update(users)
+          .set(set)
+          .where(and(eq(users.id, id), isNull(users.deletedAt), renameGuard))
+          .returning()
+      })
     } catch (err) {
       if (isUniqueViolation(err)) throw AppError.conflict("That username is taken.")
       throw err
@@ -478,8 +488,8 @@ export class PgUserStore implements UserStore {
       `)
     }
     await tx.execute(sql`DELETE FROM organization_members WHERE user_id = ${id}`)
-    // Accepting an invite seats the role it names without re-checking the inviter, so an invite must not
-    // outlive the admin who sent it; one addressed to the closed account can never be accepted.
+    // A pending invite must not outlive the admin who sent it (accept re-checks the inviter too, but a
+    // revoked row keeps it out of every inbox); one addressed to the closed account can never be accepted.
     await tx.execute(sql`
       WITH revoked AS (
         UPDATE organization_invites
@@ -518,22 +528,8 @@ export class PgUserStore implements UserStore {
   }
 
   private async scrubAttendeeContributions(tx: DbTransaction, id: string): Promise<string[]> {
-    await tx.execute(sql`
-      UPDATE cleanup_registrations SET host_note = NULL
-       WHERE user_id = ${id} AND host_note IS NOT NULL
-    `)
-    await tx.execute(sql`
-      UPDATE cleanup_registration_seats s
-         SET attendee_name = NULL
-        FROM cleanup_registrations r
-       WHERE s.registration_id = r.id AND r.user_id = ${id} AND s.attendee_name IS NOT NULL
-    `)
-    await tx.execute(sql`
-      UPDATE cleanup_answers a
-         SET value_text = NULL, value_json = NULL, scrubbed_at = now()
-        FROM cleanup_registrations r
-       WHERE a.registration_id = r.id AND r.user_id = ${id} AND a.scrubbed_at IS NULL
-    `)
+    // Waitlist and ticket-type rows before registrations, the order applyBanIn and the waitlist sweep
+    // take, so an erasure racing a ban on one of the user's events cannot deadlock with it.
     const released = await tx.execute<{ id: string }>(sql`
       WITH cancelled_waitlist AS (
         UPDATE cleanup_waitlist SET status = 'cancelled'
@@ -551,6 +547,22 @@ export class PgUserStore implements UserStore {
         FROM releases r
        WHERE t.id = r.ticket_type_id
       RETURNING t.id
+    `)
+    await tx.execute(sql`
+      UPDATE cleanup_registrations SET host_note = NULL
+       WHERE user_id = ${id} AND host_note IS NOT NULL
+    `)
+    await tx.execute(sql`
+      UPDATE cleanup_registration_seats s
+         SET attendee_name = NULL
+        FROM cleanup_registrations r
+       WHERE s.registration_id = r.id AND r.user_id = ${id} AND s.attendee_name IS NOT NULL
+    `)
+    await tx.execute(sql`
+      UPDATE cleanup_answers a
+         SET value_text = NULL, value_json = NULL, scrubbed_at = now()
+        FROM cleanup_registrations r
+       WHERE a.registration_id = r.id AND r.user_id = ${id} AND a.scrubbed_at IS NULL
     `)
     await tx.execute(sql`
       UPDATE donations
@@ -748,6 +760,15 @@ export class PgOAuthIdentityStore implements OAuthIdentityStore {
 
   async deleteAllForUser(userId: string): Promise<void> {
     await this.db.delete(oauthIdentities).where(eq(oauthIdentities.userId, userId))
+  }
+
+  async hasIdentityForUser(userId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ id: oauthIdentities.id })
+      .from(oauthIdentities)
+      .where(eq(oauthIdentities.userId, userId))
+      .limit(1)
+    return rows.length > 0
   }
 }
 

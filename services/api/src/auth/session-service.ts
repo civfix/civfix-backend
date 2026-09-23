@@ -268,7 +268,7 @@ export class SessionService {
   }
 
   async banUser(userId: string): Promise<number> {
-    await this.cache.set(bannedKey(userId), "1", this.ttlSeconds + BANNED_MARKER_GRACE_SECONDS)
+    await this.markBanned(userId)
     await this.bumpEpoch(userId)
     const ids = await this.store.deleteAllForUser(userId)
     await this.evictSessionCaches(ids, userId)
@@ -297,6 +297,12 @@ export class SessionService {
         )
       }
     })
+  }
+
+  // Outlives every cached projection (their TTL never exceeds ttlSeconds), so the marker alone is enough
+  // to reject a session whose durable row is already gone.
+  async markBanned(userId: string): Promise<void> {
+    await this.cache.set(bannedKey(userId), "1", this.ttlSeconds + BANNED_MARKER_GRACE_SECONDS)
   }
 
   async clearBan(userId: string): Promise<void> {
@@ -330,11 +336,9 @@ export class SessionService {
   }
 
   private async enforceRevokedStatus(userId: string, hash: string): Promise<void> {
-    await this.cache
-      .set(bannedKey(userId), "1", this.ttlSeconds + BANNED_MARKER_GRACE_SECONDS)
-      .catch((err: unknown) => {
-        this.logger?.error({ userId, err }, "ban marker refresh failed during resolve")
-      })
+    await this.markBanned(userId).catch((err: unknown) => {
+      this.logger?.error({ userId, err }, "ban marker refresh failed during resolve")
+    })
     await this.expireSession(hash)
   }
 

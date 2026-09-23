@@ -51,6 +51,7 @@ describe("the open-invite cap is enforced inside the invite transaction", () => 
 
   it("refuses an organization invite once the cap is reached, counted under a per-org lock", async () => {
     const fake = makeFakeSql([
+      { match: /SELECT role FROM organization_members/, rows: [{ role: "owner" }] },
       {
         match: /SELECT count\(\*\)::int AS count FROM organization_invites/,
         rows: [{ count: MAX_ORG_INVITES_PER_ORG }],
@@ -73,7 +74,7 @@ describe("the open-invite cap is enforced inside the invite transaction", () => 
       code: "CONFLICT",
       message: "This organization already has the maximum number of open invitations.",
     })
-    const lock = indexOf(fake, /pg_advisory_xact_lock/)
+    const lock = indexOf(fake, /FROM organizations WHERE id = \? LIMIT 1 FOR UPDATE/)
     const count = indexOf(fake, /count\(\*\)::int AS count FROM organization_invites/)
     expect(lock).toBeGreaterThanOrEqual(0)
     expect(lock).toBeLessThan(count)

@@ -173,6 +173,7 @@ export async function processInboundObject(
           injected,
           storage,
           mailRepo,
+          bytes,
           mail,
           messageId,
           resolvedThread,
@@ -214,6 +215,7 @@ async function routeThreaded(
   injected: InboundEffectDeps,
   storage: Storage,
   mailRepo: MailRepository,
+  raw: Uint8Array,
   mail: ParsedMail,
   messageId: string,
   thread: MailThreadRecord,
@@ -224,17 +226,16 @@ async function routeThreaded(
     authVerdict !== "pass" || !(await isJurisdictionSender(mailRepo, thread.id, mail))
   // Message-ID is globally unique, so a stored row means this mail can only be a replay. Skipping
   // the upload keeps a sender who reuses someone else's Message-ID from writing any object. A failed
-  // lookup falls through to insertMessage, which is idempotent on Message-ID and throws if the DB is
-  // really down.
-  const existing = await mailRepo.findMessageByMessageId(messageId).catch(() => null)
-  const inserted =
-    existing !== null
-      ? null
-      : await insertThreadedMessage(storage, mailRepo, mail, messageId, thread, unaffiliated)
-  if (inserted !== null) {
+  // lookup throws so the pending object stays for the sweep instead of being treated as new mail.
+  const existing = await mailRepo.findMessageByMessageId(messageId)
+  const insert =
+    existing === null
+      ? await insertThreadedMessage(storage, mailRepo, raw, mail, messageId, thread, unaffiliated)
+      : null
+  if (insert?.inserted === true) {
     await mailRepo.recordEvent({
       threadId: thread.id,
-      messageId: inserted.message.id,
+      messageId: insert.message.id,
       type: "delivered",
       meta: {
         direction: "in",
@@ -242,7 +243,7 @@ async function routeThreaded(
         messageId,
         authVerdict,
         ...(unaffiliated ? { unaffiliated: true } : {}),
-        ...(inserted.oversize.length > 0 ? { oversizeAttachments: inserted.oversize } : {}),
+        ...(insert.oversize.length > 0 ? { oversizeAttachments: insert.oversize } : {}),
       },
     })
   }
@@ -250,9 +251,7 @@ async function routeThreaded(
   // A failed re-read only defers the side effects: the sweep re-drives every message whose effects
   // were never applied.
   const message =
-    inserted?.message ??
-    existing ??
-    (await mailRepo.findMessageByMessageId(messageId).catch(() => null))
+    existing ?? (insert === null ? null : insert.inserted ? insert.message : insert.stored)
   if (message !== null && message.threadId === thread.id) {
     await applyInboundEffects(container, injected, mailRepo, thread, message).catch(
       (err: unknown) => {
@@ -263,21 +262,29 @@ async function routeThreaded(
       },
     )
   }
-  if (inserted === null) return { outcome: "replay" }
-  return { outcome: "threaded", id: inserted.message.id }
+  if (insert?.inserted !== true) return { outcome: "replay" }
+  return { outcome: "threaded", id: insert.message.id }
 }
+
+type ThreadedInsert =
+  | { inserted: true; message: MailMessageRecord; oversize: string[] }
+  | { inserted: false; stored: MailMessageRecord | null }
 
 async function insertThreadedMessage(
   storage: Storage,
   mailRepo: MailRepository,
+  raw: Uint8Array,
   mail: ParsedMail,
   messageId: string,
   thread: MailThreadRecord,
   unaffiliated: boolean,
-): Promise<{ message: MailMessageRecord; oversize: string[] } | null> {
+): Promise<ThreadedInsert> {
+  // One folder per raw message, as in routeInbox: a lost insert race discards the objects its row
+  // does not hold, and a folder shared with another message of the thread would lose that message's
+  // attachment.
   const { attachments, oversize } = await streamAttachments(
     storage,
-    `inbound-mail/${thread.id}`,
+    `inbound-mail/${thread.id}/${contentDigest(raw)}`,
     mail,
   )
   const message = await mailRepo.insertMessage({
@@ -292,7 +299,10 @@ async function insertThreadedMessage(
     inReplyTo: mail.inReplyTo ?? null,
     unaffiliated,
   })
-  return message === null ? null : { message, oversize }
+  if (message !== null) return { inserted: true, message, oversize }
+  const stored = await mailRepo.findMessageByMessageId(messageId)
+  await discardUnreferenced(storage, attachments, stored?.attachments ?? [])
+  return { inserted: false, stored }
 }
 
 function plainTextBody(mail: ParsedMail): string | null {

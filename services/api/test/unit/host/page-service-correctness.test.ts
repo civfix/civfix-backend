@@ -41,7 +41,7 @@ describe("the daily publish budget", () => {
       })
     }
 
-    await service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] })
+    await service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] }, HOST)
     const published = await service.publish({ id: EVENT, published: true }, HOST)
 
     expect(published.status).toBe("published")
@@ -51,7 +51,7 @@ describe("the daily publish budget", () => {
 describe("publishing a page flagged between the read and the write", () => {
   it("answers 403, not a page", async () => {
     const { repo, service } = build()
-    await service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] })
+    await service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] }, HOST)
     repo.publishPage = () => Promise.resolve({ kind: "flagged" })
 
     await expect(service.publish({ id: EVENT, published: true }, HOST)).rejects.toMatchObject({
@@ -103,11 +103,14 @@ describe("block media lookups", () => {
   it("surfaces a database failure instead of rendering the page without its images", async () => {
     const { repo, service } = build()
     repo.mediaKeys.set(MEDIA, "event-media/hero.jpg")
-    await service.save({
-      id: EVENT,
-      slug: "beach-sweep",
-      blocks: [{ id: "h1", kind: "hero", mediaId: MEDIA }],
-    })
+    await service.save(
+      {
+        id: EVENT,
+        slug: "beach-sweep",
+        blocks: [{ id: "h1", kind: "hero", mediaId: MEDIA }],
+      },
+      HOST,
+    )
     repo.mediaKeysFor = () => Promise.reject(new Error("connection terminated"))
 
     await expect(service.get({ id: EVENT })).rejects.toThrow("connection terminated")
@@ -122,11 +125,14 @@ describe("block media lookups", () => {
       presignCover: () => Promise.reject(new Error("signer offline")),
       now: () => NOW,
     })
-    await service.save({
-      id: EVENT,
-      slug: "beach-sweep",
-      blocks: [{ id: "h1", kind: "hero", mediaId: MEDIA }],
-    })
+    await service.save(
+      {
+        id: EVENT,
+        slug: "beach-sweep",
+        blocks: [{ id: "h1", kind: "hero", mediaId: MEDIA }],
+      },
+      HOST,
+    )
 
     const page = await service.get({ id: EVENT })
 

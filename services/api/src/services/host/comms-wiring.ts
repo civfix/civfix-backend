@@ -59,7 +59,7 @@ export interface CommsRuntime {
 export { apiBaseUrlOf, webBaseUrlOf } from "../../lib/base-url.js"
 
 /**
- * The effect this row records has already happened (a send, an export enqueue), so a failed audit
+ * The effect this row records has already happened (a send), so a failed audit
  * write must not turn it into an error the caller would retry. It is logged instead of dropped so the
  * gap in the trail is visible.
  */

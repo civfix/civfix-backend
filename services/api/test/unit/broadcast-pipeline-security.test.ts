@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { BroadcastKind } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
@@ -15,6 +15,7 @@ import type { NotificationService } from "../../src/services/notification-servic
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const HOST = "00000000-0000-0000-0000-0000000000aa"
 const MEMBER_COUNT = 3
+const STALE_SENDING_AGE_MS = 60 * 60 * 1000
 
 const CONFIG: BroadcastConfig = {
   killSwitch: false,
@@ -77,6 +78,7 @@ function harness(options: { organizationSuspended: boolean }) {
     enqueuePlan: () => Promise.resolve(),
   })
   const chunks: number[] = []
+  const audits: Array<{ action: string; target: string; meta: Record<string, unknown> }> = []
   const pipeline = makeBroadcastPipeline({
     repo,
     service,
@@ -91,9 +93,12 @@ function harness(options: { organizationSuspended: boolean }) {
       chunks.push(chunkNo)
       return Promise.resolve()
     },
-    audit: () => Promise.resolve(),
+    audit: (action, _actorId, target, meta) => {
+      audits.push({ action, target, meta })
+      return Promise.resolve()
+    },
   })
-  return { repo, cache, pipeline, chunks, counterKeys }
+  return { repo, cache, mailer, pipeline, chunks, counterKeys, audits }
 }
 
 type Harness = ReturnType<typeof harness>
@@ -196,5 +201,64 @@ describe("plan under a suspended organization", () => {
 
     expect(outcome.kind).toBe("planned")
     expect(h.repo.allDeliveries()).toHaveLength(MEMBER_COUNT)
+  })
+})
+
+describe("a chunk under an organization suspended after planning", () => {
+  it("delivers nothing and fails the broadcast with the suspension reason", async () => {
+    const h = harness({ organizationSuspended: false })
+    const id = await seedBroadcast(h, "host_broadcast", "sending")
+    expect((await h.pipeline.plan(id)).kind).toBe("planned")
+    const before = await generation(h)
+
+    h.repo.setEventOrganizationSuspended(EVENT, true)
+    await h.pipeline.runChunk(id, h.chunks[0]!)
+
+    expect(h.mailer.sent).toHaveLength(0)
+    expect((await h.repo.findById(id))?.status).toBe("failed")
+    const deliveries = h.repo.allDeliveries()
+    expect(deliveries).toHaveLength(MEMBER_COUNT)
+    expect(deliveries.every((d) => d.status === "suppressed")).toBe(true)
+    expect(await generation(h)).toBeGreaterThan(before)
+    expect(h.audits).toEqual([
+      {
+        action: "event.broadcast_killed",
+        target: `broadcast:${id}`,
+        meta: expect.objectContaining({ reason: "org_suspended", cleanupId: EVENT }) as unknown,
+      },
+    ])
+  })
+
+  it("stops a chunk the stale-sending sweep resumes", async () => {
+    const h = harness({ organizationSuspended: false })
+    const id = await seedBroadcast(h, "host_broadcast", "sending")
+    await h.pipeline.plan(id)
+    const planned = h.chunks.length
+
+    h.repo.setEventOrganizationSuspended(EVENT, true)
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      vi.setSystemTime(Date.now() + STALE_SENDING_AGE_MS)
+      expect((await h.pipeline.sweep()).resumed).toBe(1)
+      for (const chunkNo of h.chunks.slice(planned)) await h.pipeline.runChunk(id, chunkNo)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(h.mailer.sent).toHaveLength(0)
+    expect((await h.repo.findById(id))?.status).toBe("failed")
+  })
+
+  it("still delivers a critical automated notice", async () => {
+    const h = harness({ organizationSuspended: false })
+    const id = await seedBroadcast(h, "event_cancelled", "sending")
+    await h.pipeline.plan(id)
+
+    h.repo.setEventOrganizationSuspended(EVENT, true)
+    for (const chunkNo of h.chunks) await h.pipeline.runChunk(id, chunkNo)
+
+    expect(h.mailer.sent.length).toBeGreaterThan(0)
+    expect((await h.repo.findById(id))?.status).toBe("sent")
+    expect(h.audits).toHaveLength(0)
   })
 })

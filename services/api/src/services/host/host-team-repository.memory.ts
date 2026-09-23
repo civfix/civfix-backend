@@ -47,7 +47,6 @@ interface StoredPerson {
   displayName: string
   handle: string | null
   email: string | null
-  /** Mirrors users.email_verified. */
   emailVerified: boolean
   avatarUrl: string | null
 }

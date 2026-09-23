@@ -95,6 +95,7 @@ export async function registerHostTeamRoutes(
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
         ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
         ...(overrides.newToken !== undefined ? { newToken: overrides.newToken } : {}),
+        webOrigin: webBaseUrlOf(container.env),
         logger: app.log,
       })
     }

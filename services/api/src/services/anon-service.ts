@@ -28,6 +28,7 @@ import {
 } from "../abuse/anon-token.js"
 import { generateToken, constantTimeStringEqual, sha256Hex } from "../auth/crypto.js"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
+import { UNSESSIONED_UPLOADER, anonUploader } from "./media-uploader.js"
 import {
   addressProvenance,
   resolveAddressOrNull,
@@ -61,6 +62,7 @@ export interface CreateAnonReportTxArgs {
   addrPrecision: AddressPrecision | null
   h3Cell: string
   mediaUploadIds: string[]
+  mediaUploaders: readonly string[]
   claimCodeHash: string
   reportCap: number
   responseSnapshot: AnonReportResponse
@@ -241,6 +243,7 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         addrPrecision: addressWrite.addrPrecision,
         h3Cell,
         mediaUploadIds: input.mediaUploadIds,
+        mediaUploaders: anonMediaUploaders(tokenRow.id, input.anonToken, deps.anonTokenSigningKey),
         claimCodeHash,
         reportCap: ANON_TOKEN_REPORT_CAP,
         responseSnapshot,
@@ -277,6 +280,20 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
       }
     },
   }
+}
+
+// Guest uploads carry the anon cookie the upload request presented, and a first report's uploads carry no
+// session at all. The presented token counts by signature alone: an expired one is re-issued at submit,
+// yet the uploads made under it are still this guest's.
+function anonMediaUploaders(
+  tokenId: string,
+  presentedToken: string | undefined,
+  signingKey: string,
+): string[] {
+  const presentedId = presentedToken ? verifyAnonTokenSignature(presentedToken, signingKey) : null
+  const sessions =
+    presentedId !== null && presentedId !== tokenId ? [tokenId, presentedId] : [tokenId]
+  return [...sessions.map(anonUploader), UNSESSIONED_UPLOADER]
 }
 
 function resolveTrustedCfGeo(

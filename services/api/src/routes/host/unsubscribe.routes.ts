@@ -75,8 +75,8 @@ export async function registerUnsubscribeRoutes(
           await runtime().broadcasts.unsubscribe(parsed.data.token)
         } catch (err) {
           // Only a verified token reaches the write, so a failure here reveals nothing about token
-          // validity. 5xx is the retry signal RFC 8058 senders and the web confirmation page act on;
-          // a 200 would drop the opt-out for good.
+          // validity. A 5xx is the retry signal for RFC 8058 one-click senders, where a 200 would
+          // drop the opt-out for good; the exposed copy only replaces the generic internal message.
           throw exposeMessage(
             new AppError(ErrorCode.INTERNAL, UNSUBSCRIBE_UNAVAILABLE_COPY, {
               httpStatus: 503,

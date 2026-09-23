@@ -394,6 +394,7 @@ describe("admin org verification decision", () => {
 describe("admin host list", () => {
   it("returns a suspended host even with no broadcast activity in the window", async () => {
     const h = await harness()
+    h.broadcasts.seedHost(HOST)
     await h.broadcasts.setHostMessagingSuspended(HOST, true, {
       action: "host.messaging_suspended",
       actorId: OPERATOR,
@@ -419,6 +420,7 @@ describe("admin host list", () => {
 
   it("filters to the suspended set when asked", async () => {
     const h = await harness()
+    h.broadcasts.seedHost(HOST)
     await h.broadcasts.setHostMessagingSuspended(HOST, true, {
       action: "host.messaging_suspended",
       actorId: OPERATOR,

@@ -28,6 +28,9 @@ function recordingDb(respond: Responder): { db: Db; statements: Recorded[] } {
       result.values = () => Promise.resolve(rows)
       return result
     },
+    begin<T>(callback: (tx: unknown) => Promise<T>): Promise<T> {
+      return callback(client)
+    },
   }
   return { db: drizzle(client as never, { schema }) as unknown as Db, statements }
 }

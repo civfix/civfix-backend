@@ -256,7 +256,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
       await Promise.all([
         presign
-          ? loadChatAttachments(sql, ids, presign)
+          ? loadChatAttachments(sql, ids, presign, viewerUserId)
           : Promise.resolve(new Map<string, MediaDTO[]>()),
         loadChatReactionsFor(sql, ids, viewerUserId),
         loadChatMentionsFor(sql, ids),
@@ -284,7 +284,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       liveIds.length > 0 ? loadChatReactions(sql, row.id, viewerUserId) : Promise.resolve([]),
       liveIds.length > 0 ? loadChatMentions(sql, row.id) : Promise.resolve([]),
       presign
-        ? loadChatAttachments(sql, liveIds, presign)
+        ? loadChatAttachments(sql, liveIds, presign, viewerUserId)
         : Promise.resolve(new Map<string, MediaDTO[]>()),
       replyMapForRows(sql, "dm_messages", [row]),
     ])
@@ -394,13 +394,20 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       const rows = wantsMedia
         ? await sql.begin(async (tx) => {
             const inserted = await run(tx)
-            await attachChatMedia(tx, inserted[0]!.id, uploadIds, inserted[0]!.created_at)
+            await attachChatMedia(
+              tx,
+              inserted[0]!.id,
+              uploadIds,
+              inserted[0]!.created_at,
+              input.senderId,
+            )
             return inserted
           })
         : await run(sql)
       const messageId = rows[0]!.id
       const attachments = wantsMedia
-        ? ((await loadChatAttachments(sql, [messageId], presign!)).get(messageId) ?? [])
+        ? ((await loadChatAttachments(sql, [messageId], presign!, input.senderId)).get(messageId) ??
+          [])
         : []
       return toMessageDTO(rows[0]!, [], [], input.senderId, input.clientId, attachments, replyTo)
     },

@@ -39,6 +39,7 @@ describe.skipIf(!pg)("media_assets.upload_etag (integration)", () => {
       r2Key: `uploads/2026/09/${uploadId}`,
       status: "validating",
       byteSize: 1024,
+      uploader: "u:00000000-0000-4000-8000-0000000000e1",
     })
     return { id, uploadId }
   }

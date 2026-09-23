@@ -1,15 +1,20 @@
 import { Writable } from "node:stream"
 import Fastify, { type FastifyInstance } from "fastify"
 import { afterEach, describe, expect, it } from "vitest"
-import type { BroadcastDTO, HostExportDTO } from "@civfix/shared"
+import type { BroadcastDTO } from "@civfix/shared"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { makeErrorHandler, makeNotFoundHandler } from "../../src/errors/http-mapper.js"
 import type { Container } from "../../src/di.js"
 import { registerHostExportRoutes } from "../../src/routes/host/exports.routes.js"
 import { registerHostBroadcastRoutes } from "../../src/routes/host/broadcasts.routes.js"
-import type { HostExportService } from "../../src/services/host/export-service.js"
+import {
+  makeHostExportService,
+  type HostExportService,
+} from "../../src/services/host/export-service.js"
+import { makeDrizzleHostExportRepository } from "../../src/services/host/export-repository.drizzle.js"
+import type { Sql } from "../../src/db/client.js"
 import type { CommsRuntime } from "../../src/services/host/comms-wiring.js"
-import { makeFakeSql } from "../helpers/fake-sql.js"
+import { makeFakeSql, type FakeSqlControl, type SqlHandler } from "../helpers/fake-sql.js"
 
 const USER = "11111111-1111-4111-8111-111111111111"
 const EVENT = "22222222-2222-4222-8222-222222222222"
@@ -104,13 +109,106 @@ function auditWarnings(logs: LogLine[]): LogLine[] {
   return logs.filter((line) => line.level === WARN_LEVEL && line.action !== undefined)
 }
 
-describe("host export request when the audit write fails", () => {
-  it("answers the export it already queued instead of a 500, and logs the lost audit row", async () => {
-    const exports = {
-      request: () => Promise.resolve({ id: EXPORT_ID, kind: "roster" } as HostExportDTO),
-    } as unknown as HostExportService
+const EXPORT_ROW = {
+  id: EXPORT_ID,
+  cleanup_id: EVENT,
+  organization_id: null,
+  requested_by: USER,
+  kind: "roster",
+  filters: {},
+  status: "queued",
+  r2_key: null,
+  row_count: null,
+  byte_size: null,
+  truncated: false,
+  error_code: null,
+  run_token: null,
+  requested_at: new Date("2026-09-01T00:00:00.000Z"),
+  started_at: null,
+  completed_at: null,
+  expires_at: null,
+}
+
+const exportInsert: SqlHandler = { match: /INSERT INTO host_exports/, rows: [EXPORT_ROW] }
+const auditOk: SqlHandler = { match: /INSERT INTO audit_log/, rows: [{ id: "audit-1" }] }
+const auditDown: SqlHandler = {
+  match: /INSERT INTO audit_log/,
+  rows: () => {
+    throw new Error("audit_log unavailable")
+  },
+}
+
+function exportServiceOn(sql: FakeSqlControl): HostExportService {
+  return makeHostExportService({
+    repo: makeDrizzleHostExportRepository(sql.sql as unknown as Sql),
+    storage: {
+      put: () => Promise.resolve(),
+      presignGet: () => Promise.resolve("https://signed.example/x"),
+      delete: () => Promise.resolve(),
+    },
+    config: { maxRows: 10, maxBytes: 1024, ttlHours: 24 },
+  })
+}
+
+describe("roster export audit rides the export row's transaction", () => {
+  it("writes the export row and its audit row inside one transaction", async () => {
+    const outer = makeFakeSql()
+    const tx = makeFakeSql([exportInsert, auditOk])
+    outer.sql.begin = (cb) => cb(tx.sql)
+    const repo = makeDrizzleHostExportRepository(outer.sql as unknown as Sql)
+
+    const record = await repo.create(
+      {
+        cleanupId: EVENT,
+        organizationId: null,
+        requestedBy: USER,
+        kind: "roster",
+        filters: {},
+      },
+      (exportId) => ({
+        action: "event.roster_exported",
+        actorId: USER,
+        target: `cleanup:${EVENT}`,
+        meta: { exportId, kind: "roster" },
+      }),
+    )
+
+    expect(record.id).toBe(EXPORT_ID)
+    expect(outer.statements).toEqual([])
+    expect(tx.statements.map((s) => /INSERT INTO (\w+)/.exec(s.sql)?.[1])).toEqual([
+      "host_exports",
+      "audit_log",
+    ])
+    expect(tx.statements[1]?.values).toEqual([
+      USER,
+      "event.roster_exported",
+      `cleanup:${EVENT}`,
+      { exportId: EXPORT_ID, kind: "roster" },
+    ])
+  })
+})
+
+describe("host export request and its audit row", () => {
+  it("fails the request and queues nothing when the audit row cannot be written", async () => {
+    const repoSql = makeFakeSql([exportInsert, auditDown])
     const h = await build(registerHostExportRoutes, (instance) =>
-      instance.decorate("hostExportOverrides", { exports }),
+      instance.decorate("hostExportOverrides", { exports: exportServiceOn(repoSql) }),
+    )
+
+    const res = await h.app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${EVENT}/exports`,
+      payload: { kind: "roster" },
+    })
+
+    expect(res.statusCode).toBe(500)
+    expect(h.enqueued).toHaveLength(0)
+  })
+
+  it("audits the export it queued with the export id", async () => {
+    const repoSql = makeFakeSql([exportInsert, auditOk])
+    const h = await build(registerHostExportRoutes, (instance) =>
+      instance.decorate("hostExportOverrides", { exports: exportServiceOn(repoSql) }),
     )
 
     const res = await h.app.inject({
@@ -121,8 +219,12 @@ describe("host export request when the audit write fails", () => {
 
     expect(res.statusCode).toBe(200)
     expect(h.enqueued).toHaveLength(1)
-    expect(auditWarnings(h.logs)).toEqual([
-      expect.objectContaining({ action: "event.roster_exported", target: `cleanup:${EVENT}` }),
+    const audit = repoSql.statements.find((s) => /INSERT INTO audit_log/.test(s.sql))
+    expect(audit?.values).toEqual([
+      USER,
+      "event.roster_exported",
+      `cleanup:${EVENT}`,
+      { exportId: EXPORT_ID, kind: "roster" },
     ])
   })
 })

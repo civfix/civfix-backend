@@ -1283,7 +1283,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         ...(patch.bring !== undefined ? { bring: patch.bring } : {}),
         ...(reresolvedGeoid !== undefined ? { jurisdictionGeoid: reresolvedGeoid } : {}),
       }
-      const updated = await deps.repo.updateCleanup(id, scalarPatch)
+      const updated = await deps.repo.updateCleanup(id, scalarPatch, requesterUserId)
       if (!updated) notFoundCleanup()
 
       if (desiredLinks !== null) {

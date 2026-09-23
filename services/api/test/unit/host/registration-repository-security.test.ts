@@ -581,3 +581,71 @@ describe("roster search", () => {
     expect(roster.sql.match(/ILIKE \? ESCAPE '\\'/g)).toHaveLength(4)
   })
 })
+
+describe("ticket transfer lock order", () => {
+  const OTHER_TYPE = "99999999-9999-4999-8999-999999999999"
+
+  function transferHandlers(): SqlHandler[] {
+    return [
+      { match: /FROM cleanups\s+WHERE id = \?/, rows: [{ id: EVENT }] },
+      {
+        match: /FROM cleanup_registrations\s+WHERE id = \?/,
+        rows: [
+          { id: REGISTRATION, ticket_type_id: HIDDEN_TYPE, party_size: 1, status: "registered" },
+        ],
+      },
+      {
+        match: /FROM cleanup_ticket_types\s+WHERE cleanup_id/,
+        rows: [
+          { id: HIDDEN_TYPE, max_party_size: 4, capacity: null, reserved_seats: 1 },
+          { id: OTHER_TYPE, max_party_size: 4, capacity: null, reserved_seats: 0 },
+        ],
+      },
+      {
+        match: /UPDATE cleanup_ticket_types\s+SET reserved_seats = reserved_seats \+/,
+        rows: [{ id: OTHER_TYPE }],
+      },
+    ]
+  }
+
+  it("locks the event row before the registration and its ticket types, as a ban does", async () => {
+    const fake = makeFakeSql(transferHandlers())
+    const repo = makeDrizzleHostRegistrationRepository(fake.sql as unknown as Sql)
+
+    await repo.transferRegistration({
+      cleanupId: EVENT,
+      registrationId: REGISTRATION,
+      ticketTypeId: OTHER_TYPE,
+      now: NOW,
+    })
+
+    const eventLock = fake.statements.findIndex((s) =>
+      /FROM cleanups\s+WHERE id = \?\s+LIMIT 1 FOR NO KEY UPDATE/.test(s.sql),
+    )
+    const registrationLock = fake.statements.findIndex((s) =>
+      /FROM cleanup_registrations[\s\S]*FOR UPDATE/.test(s.sql),
+    )
+    const typeLock = fake.statements.findIndex((s) =>
+      /FROM cleanup_ticket_types[\s\S]*FOR UPDATE/.test(s.sql),
+    )
+    expect(eventLock).toBe(0)
+    expect(fake.statements[eventLock]!.values).toEqual([EVENT])
+    expect(registrationLock).toBeGreaterThan(eventLock)
+    expect(typeLock).toBeGreaterThan(registrationLock)
+  })
+
+  it("answers not found without touching the registration when the event is gone", async () => {
+    const fake = makeFakeSql(transferHandlers().slice(1))
+    const repo = makeDrizzleHostRegistrationRepository(fake.sql as unknown as Sql)
+
+    const outcome = await repo.transferRegistration({
+      cleanupId: EVENT,
+      registrationId: REGISTRATION,
+      ticketTypeId: OTHER_TYPE,
+      now: NOW,
+    })
+
+    expect(outcome).toEqual({ kind: "not_found" })
+    expect(fake.statements.some((s) => /cleanup_registrations/.test(s.sql))).toBe(false)
+  })
+})

@@ -42,7 +42,9 @@ export async function registerPostRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const input = parse(PostComposeInputSchema, request.body)
-      reply.status(201).send(await service().createPost(input, userId))
+      reply
+        .status(201)
+        .send(await service().createPost(input, userId, request.auth.guestAnonSessionId))
     },
   )
 

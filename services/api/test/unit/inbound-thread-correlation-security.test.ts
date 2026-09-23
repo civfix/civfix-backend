@@ -65,6 +65,39 @@ describe("isJurisdictionSender on a consumer mail domain", () => {
     expect(await sentBy(["clerk@mail.yahoo.com"], "other@yahoo.com")).toBe(false)
   })
 
+  it("covers US ISP, legacy webmail and regional consumer providers", async () => {
+    const providers = [
+      "rr.com",
+      "twc.com",
+      "roadrunner.com",
+      "charter.net",
+      "frontier.com",
+      "frontiernet.net",
+      "juno.com",
+      "netzero.net",
+      "mindspring.com",
+      "embarqmail.com",
+      "aim.com",
+      "yahoo.co.uk",
+      "yahoo.ca",
+      "hotmail.co.uk",
+      "gmx.de",
+      "web.de",
+      "gmx.net",
+      "t-online.de",
+    ]
+    for (const provider of providers) {
+      expect(await sentBy([`clerk@${provider}`], `other@${provider}`), provider).toBe(false)
+      expect(await sentBy([`clerk@${provider}`], `clerk@${provider}`), provider).toBe(true)
+    }
+  })
+
+  it("treats a regional subdomain of a consumer provider as that provider", async () => {
+    expect(await sentBy(["clerk@socal.rr.com"], "other@socal.rr.com")).toBe(false)
+    expect(await sentBy(["clerk@socal.rr.com"], "other@nyc.rr.com")).toBe(false)
+    expect(await sentBy(["clerk@socal.rr.com"], "clerk@socal.rr.com")).toBe(true)
+  })
+
   it("still aligns by organizational domain for a jurisdiction's own domain", async () => {
     expect(await sentBy(["publicworks@lacity.org"], "clerk@bss.lacity.org")).toBe(true)
     expect(await sentBy([CONSUMER_CONTACT, "publicworks@lacity.org"], "clerk@lacity.org")).toBe(

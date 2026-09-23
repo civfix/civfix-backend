@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { seedMediaAsset, type SeededMedia } from "../helpers/media-pg.js"
 import { attachChatMedia } from "../../src/services/chat-attachments.drizzle.js"
+import { userUploader } from "../../src/services/media-uploader.js"
 import {
   makeDrizzlePostRepository,
   type PostRepository,
@@ -99,8 +100,19 @@ describe.skipIf(!pg)("post and chat media claims (integration: only unbound fres
     expect((await mediaRow(document.id)).purpose).toBe("verification")
   })
 
+  it("a post refuses another user's replaced avatar that nothing binds any more", async () => {
+    const victim = await newUser("avatar replacer")
+    const replaced = await seedMediaAsset(h.sql, { uploader: userUploader(victim) })
+
+    await expect(createPost(replaced.uploadId)).rejects.toMatchObject({
+      httpStatus: 422,
+      fields: { mediaUploadIds: UNAVAILABLE },
+    })
+    expect((await mediaRow(replaced.id)).post_id).toBeNull()
+  })
+
   it("a post still claims the author's own fresh upload", async () => {
-    const media = await seedMediaAsset(h.sql)
+    const media = await seedMediaAsset(h.sql, { uploader: userUploader(attackerId) })
 
     const postId = await createPost(media.uploadId)
 
@@ -115,19 +127,38 @@ describe.skipIf(!pg)("post and chat media claims (integration: only unbound fres
     const avatar = await victimAvatar()
     const logo = await orgLogo()
 
-    await attachChatMedia(h.sql, randomUUID(), [avatar.uploadId, logo.uploadId], new Date())
+    await expect(
+      attachChatMedia(
+        h.sql,
+        randomUUID(),
+        [avatar.uploadId, logo.uploadId],
+        new Date(),
+        attackerId,
+      ),
+    ).rejects.toMatchObject({ httpStatus: 422, fields: { mediaUploadIds: UNAVAILABLE } })
 
     expect((await mediaRow(avatar.id)).chat_message_id).toBeNull()
     expect((await mediaRow(logo.id)).chat_message_id).toBeNull()
   })
 
+  it("a chat message refuses an erased user's upload", async () => {
+    const erased = await newUser("erased user")
+    const media = await seedMediaAsset(h.sql, { uploader: userUploader(erased) })
+    await h.sql`UPDATE users SET deleted_at = now() WHERE id = ${erased}`
+
+    await expect(
+      attachChatMedia(h.sql, randomUUID(), [media.uploadId], new Date(), attackerId),
+    ).rejects.toMatchObject({ httpStatus: 422, fields: { mediaUploadIds: UNAVAILABLE } })
+    expect((await mediaRow(media.id)).chat_message_id).toBeNull()
+  })
+
   it("a chat message still claims the sender's own fresh upload, and re-claims it idempotently", async () => {
-    const media = await seedMediaAsset(h.sql)
+    const media = await seedMediaAsset(h.sql, { uploader: userUploader(attackerId) })
     const messageId = randomUUID()
     const sentAt = new Date()
 
-    await attachChatMedia(h.sql, messageId, [media.uploadId], sentAt)
-    await attachChatMedia(h.sql, messageId, [media.uploadId], sentAt)
+    await attachChatMedia(h.sql, messageId, [media.uploadId], sentAt, attackerId)
+    await attachChatMedia(h.sql, messageId, [media.uploadId], sentAt, attackerId)
 
     expect((await mediaRow(media.id)).chat_message_id).toBe(messageId)
   })

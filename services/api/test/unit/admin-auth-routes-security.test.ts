@@ -98,6 +98,35 @@ describe("admin Cloudflare Access exchange for a restricted account", () => {
   })
 })
 
+describe("admin Cloudflare Access exchange onto an account whose email was never verified", () => {
+  it("refuses to adopt the row, leaves it untouched and audits the denial", async () => {
+    const h = await harness()
+    const planted = await h.stores.users.create(ALLOWED, {
+      displayName: "Planted",
+      role: "citizen",
+      emailVerified: false,
+    })
+
+    const res = await h.app.inject({ method: "POST", url: EXCHANGE_URL, headers: ACCESS_HEADER })
+
+    expect(res.statusCode).toBe(403)
+    expect(res.json().message).toBe("This account is not authorized for the operator dashboard.")
+    expect(await h.stores.users.findById(planted.id)).toMatchObject({
+      role: "citizen",
+      email: ALLOWED,
+      emailVerified: false,
+      displayName: "Planted",
+    })
+    expect(h.audits.map((a) => a.action)).toEqual(["operator.login_denied"])
+    expect(h.audits[0]).toMatchObject({
+      actorId: planted.id,
+      target: `user:${planted.id}`,
+      meta: { email: ALLOWED, reason: "email_unverified", via: "cf-access" },
+    })
+    expect(res.headers["set-cookie"]).toBeUndefined()
+  })
+})
+
 describe("admin Cloudflare Access exchange without Access configured", () => {
   it("tells the operator in production that Access is not configured", async () => {
     const h = await harness({ accessConfigured: false })

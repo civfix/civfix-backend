@@ -9,11 +9,15 @@ import type {
 import { can } from "@civfix/shared/host"
 import type { CleanupOrganizationView, CleanupPersonView } from "../cleanup-repository.types.js"
 
-export type InviterRevocationReason = "inviter_removed" | "inviter_demoted"
+export type InviterRevocationReason = "inviter_removed" | "inviter_demoted" | "account_deleted"
+
+export function canManageOrgMembers(role: OrganizationMemberRole | null): boolean {
+  return role !== null && can({ eventRole: null, orgRole: role }, "manage_org_members")
+}
 
 /**
- * An accepted invite seats `invite.role` without re-checking the inviter, so a role change that takes
- * away the power to invite must also withdraw the invites already sent with it.
+ * A role change that takes away the power to invite withdraws the invites already sent with it, so
+ * they stop showing up as open in the inviter's org and the invitee's inbox.
  */
 export const ORG_INVITE_CAP_MESSAGE =
   "This organization already has the maximum number of open invitations."
@@ -22,9 +26,27 @@ export function roleChangeWithdrawsInvites(
   from: OrganizationMemberRole,
   to: OrganizationMemberRole,
 ): boolean {
-  const canInvite = (role: OrganizationMemberRole): boolean =>
-    can({ eventRole: null, orgRole: role }, "manage_org_members")
-  return canInvite(from) && !canInvite(to)
+  return canManageOrgMembers(from) && !canManageOrgMembers(to)
+}
+
+/** The inviter as the organization knows them at accept time; `null` when the account is gone. */
+export interface InviterStanding {
+  role: OrganizationMemberRole | null
+  deleted: boolean
+}
+
+/**
+ * An invite seats the role it names on the inviter's authority, so accepting re-checks that authority:
+ * an invite that outlived it (sent concurrently with the demotion, or before revocation on demotion
+ * existed) must not seat anyone. `null` means the inviter still holds it.
+ */
+export function inviterRevocationReason(
+  inviter: InviterStanding | null,
+): InviterRevocationReason | null {
+  if (inviter === null) return "inviter_removed"
+  if (inviter.deleted) return "account_deleted"
+  if (inviter.role === null) return "inviter_removed"
+  return canManageOrgMembers(inviter.role) ? null : "inviter_demoted"
 }
 
 export interface OrganizationBaseRecord {
@@ -260,10 +282,14 @@ export interface CreateOrganizationInviteArgs {
   now: Date
 }
 
-/** `already_invited` carries the open invite so the caller can answer with it (idempotent re-invite). */
+/**
+ * `already_invited` carries the open invite so the caller can answer with it (idempotent re-invite).
+ * `forbidden`: the inviter no longer holds the power to invite once the organization is locked.
+ */
 export type CreateOrganizationInviteOutcome =
   | { kind: "created"; invite: OrganizationInviteRecord }
   | { kind: "already_invited"; invite: OrganizationInviteRecord }
+  | { kind: "forbidden" }
 
 export type RevokeOrganizationInviteOutcome = "revoked" | "not_found"
 
@@ -292,7 +318,11 @@ export type AcceptOrganizationInviteOutcome =
   | { kind: "wrong_recipient" }
   | { kind: "suspended" }
 
-export type AddOrganizationMemberOutcome = "added" | "already_member" | "user_not_found"
+export type AddOrganizationMemberOutcome =
+  | "added"
+  | "already_member"
+  | "user_not_found"
+  | "forbidden"
 
 export type RemoveOrganizationMemberOutcome = "removed" | "not_member" | "owner" | "last_admin"
 
@@ -309,6 +339,7 @@ export interface OrganizationRepository {
     id: string,
     patch: UpdateOrganizationPatch,
     now: Date,
+    actorId: string,
     audit?: UpdateOrganizationAudit,
   ): Promise<UpdateOrganizationOutcome>
   roleOf(organizationId: string, userId: string): Promise<OrganizationMemberRole | null>

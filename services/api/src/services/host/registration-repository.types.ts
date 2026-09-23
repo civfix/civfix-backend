@@ -381,6 +381,7 @@ export interface PageRecord {
 
 export interface SavePageArgs {
   cleanupId: string
+  actorUserId: string
   slug: string | null | undefined
   themeAccent: ThemeAccent | undefined
   blocks: EventPageBlock[]

@@ -403,7 +403,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       pollsByMessage,
     ] = await Promise.all([
       presign
-        ? loadChatAttachments(sql, ids, presign)
+        ? loadChatAttachments(sql, ids, presign, viewerUserId)
         : Promise.resolve(new Map<string, MediaDTO[]>()),
       loadChatReactionsFor(sql, ids, viewerUserId),
       loadChatMentionsFor(sql, ids),
@@ -437,7 +437,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
         liveIds.length > 0 ? loadChatReactions(sql, row.id, viewerUserId) : Promise.resolve([]),
         liveIds.length > 0 ? loadChatMentions(sql, row.id) : Promise.resolve([]),
         presign
-          ? loadChatAttachments(sql, liveIds, presign)
+          ? loadChatAttachments(sql, liveIds, presign, viewerUserId)
           : Promise.resolve(new Map<string, MediaDTO[]>()),
         resolveReportCity(scope),
         replyMapForRows(sql, "chat_messages", [row]),
@@ -616,7 +616,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           ? sql.begin(async (tx) => {
               const inserted = await run(tx)
               const createdAt = inserted[0]!.created_at
-              if (wantsMedia) await attachChatMedia(tx, id, uploadIds, createdAt)
+              if (wantsMedia) await attachChatMedia(tx, id, uploadIds, createdAt, input.userId)
               if (inTx) await inTx(tx, { id, createdAt })
               return inserted
             })
@@ -626,7 +626,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           : Promise.resolve(null),
       ])
       const attachments = wantsMedia
-        ? ((await loadChatAttachments(sql, [id], presign!)).get(id) ?? [])
+        ? ((await loadChatAttachments(sql, [id], presign!, input.userId)).get(id) ?? [])
         : []
       return toMessageDTO(
         rows[0]!,

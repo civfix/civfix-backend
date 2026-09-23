@@ -43,6 +43,11 @@ export interface ReportOwner {
   anonSessionId?: string | undefined
 }
 
+export interface SignedInReportOwner {
+  userId: string
+  guestAnonSessionId?: string | undefined
+}
+
 export interface ReportMediaView {
   id: string
   kind: "image" | "video"
@@ -103,6 +108,7 @@ export interface ReportMapPoint {
 export interface CreateReportTxArgs {
   reportId: string
   reporterUserId: string
+  guestAnonSessionId?: string | undefined
   idempotencyKey: string
   lat: number
   lng: number
@@ -244,7 +250,7 @@ export interface ReportServiceDeps {
 }
 
 export interface ReportService {
-  createReport(input: CreateReportRequest, owner: { userId: string }): Promise<ReportDTO>
+  createReport(input: CreateReportRequest, owner: SignedInReportOwner): Promise<ReportDTO>
   getReport(id: string, viewer: ReportOwner): Promise<ReportDTO>
   listMyReports(userId: string, pagination: PaginationQuery): Promise<ListMyReportsResponse>
   listReportsInBBox(

@@ -3,9 +3,10 @@ import { AppError } from "@civfix/shared"
 import { constantTimeStringEqual, generateNumericCode } from "./crypto.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import type { CacheClient } from "./cache.js"
-import type { OtpStore, UserStore } from "./stores.js"
+import type { OAuthIdentityStore, OtpStore, UserRecord, UserStore } from "./stores.js"
 import { newAccountDisplayName } from "./official-account.js"
 import type { Mailer } from "@civfix/shared/interfaces"
+import type { WriteAuditInput } from "../services/admin/audit.js"
 
 export const OTP_CODE_LENGTH = 6
 export const OTP_TTL_SECONDS = 5 * 60
@@ -45,6 +46,14 @@ export function verifyOtpCode(codeHash: string, code: string): Promise<boolean> 
   return argonVerify(codeHash, code)
 }
 
+export const OTP_REFUSED_UNVERIFIED_ACCOUNT_ACTION = "auth.otp_refused_unverified_account"
+export const OTP_REFUSED_UNVERIFIED_ACCOUNT_REASON = "email_unverified_with_provider_identity"
+
+export function unverifiedAccountNeedsReviewMessage(supportEmail: string | null): string {
+  const contact = supportEmail === null ? "Contact support" : `Contact support at ${supportEmail}`
+  return `This email address is linked to an account that needs a quick check before you can sign in. ${contact} and we'll sort it out.`
+}
+
 export const REVIEWER_OTP_EMAIL = "reviewer@civfix.org"
 export const REVIEWER_HANDLE = "reviewer"
 export const REVIEWER_DISPLAY_NAME = "Reviewer Reviewer"
@@ -58,6 +67,10 @@ export interface OtpLogger {
   warn(obj: unknown, msg?: string): void
 }
 
+export type OtpAuditSink = (input: WriteAuditInput) => Promise<void>
+
+type InboxProof = "reviewer" | "code"
+
 type LocaleAwareMailer = Mailer & {
   sendOtp(to: string, code: string, locale?: string): Promise<void>
 }
@@ -65,11 +78,14 @@ type LocaleAwareMailer = Mailer & {
 export interface OtpServiceOptions {
   store: OtpStore
   users: UserStore
+  identities: Pick<OAuthIdentityStore, "hasIdentityForUser">
   cache: CacheClient
   mailer: Mailer
   now?: () => number
   logger?: OtpLogger
   reviewer?: ReviewerOtpConfig
+  supportEmail?: string
+  audit?: OtpAuditSink
 }
 
 export interface IssueResult {
@@ -79,15 +95,19 @@ export interface IssueResult {
 export class OtpService {
   private readonly store: OtpStore
   private readonly users: UserStore
+  private readonly identities: Pick<OAuthIdentityStore, "hasIdentityForUser">
   private readonly cache: CacheClient
   private readonly mailer: LocaleAwareMailer
   private readonly now: () => number
   private readonly logger?: OtpLogger
   private readonly reviewer: ReviewerOtpConfig | null
+  private readonly supportEmail: string | null
+  private readonly audit?: OtpAuditSink
 
   constructor(opts: OtpServiceOptions) {
     this.store = opts.store
     this.users = opts.users
+    this.identities = opts.identities
     this.cache = opts.cache
     this.mailer = opts.mailer
     this.now = opts.now ?? Date.now
@@ -95,6 +115,8 @@ export class OtpService {
     this.reviewer = opts.reviewer
       ? { email: opts.reviewer.email.trim().toLowerCase(), code: opts.reviewer.code }
       : null
+    this.supportEmail = opts.supportEmail ?? null
+    this.audit = opts.audit
   }
 
   private isReviewerEmail(normalizedEmail: string): boolean {
@@ -151,6 +173,48 @@ export class OtpService {
 
   async verifyOtp(email: string, code: string, ip: string | null): Promise<string> {
     const normalized = email.trim().toLowerCase()
+    if ((await this.proveInbox(normalized, code, ip)) === "reviewer") {
+      return this.ensureReviewerUser(normalized)
+    }
+    const existing = await this.users.findByEmail(normalized)
+    if (existing) {
+      await this.refuseUnverifiedIdentityHolder(existing)
+      return existing.id
+    }
+    const created = await this.users.create(normalized, {
+      displayName: newAccountDisplayName(
+        defaultDisplayName(normalized),
+        UNNAMED_CITIZEN_DISPLAY_NAME,
+      ),
+      role: "citizen",
+      emailVerified: true,
+    })
+    return created.id
+  }
+
+  /**
+   * Confirms a code for a caller who is already signed in, and answers the account the address belongs
+   * to (or null) for the caller to compare with its own. It never signs anyone in, so the check that
+   * keeps an inbox owner out of an account a provider identity holds does not apply here: the session
+   * already proves the account and the code proves the inbox.
+   */
+  async verifyOtpForExistingAccount(
+    email: string,
+    code: string,
+    ip: string | null,
+  ): Promise<string | null> {
+    const normalized = email.trim().toLowerCase()
+    if ((await this.proveInbox(normalized, code, ip)) === "reviewer") {
+      return this.ensureReviewerUser(normalized)
+    }
+    return (await this.users.findByEmail(normalized))?.id ?? null
+  }
+
+  private async proveInbox(
+    normalized: string,
+    code: string,
+    ip: string | null,
+  ): Promise<InboxProof> {
     const now = new Date(this.now())
     const ipBucket = ip === null ? null : normalizeIp(ip)
 
@@ -160,7 +224,7 @@ export class OtpService {
 
     if (this.isReviewerEmail(normalized)) {
       if (this.reviewer !== null && constantTimeStringEqual(code, this.reviewer.code)) {
-        return this.ensureReviewerUser(normalized)
+        return "reviewer"
       }
       await this.bumpVerifyFailure(null, ipBucket)
       throw AppError.unauthorized("Invalid or expired code.")
@@ -203,17 +267,27 @@ export class OtpService {
         "otp: failed to release per-email cooldown after successful verify",
       )
     })
-    const existing = await this.users.findByEmail(normalized)
-    if (existing) return existing.id
-    const created = await this.users.create(normalized, {
-      displayName: newAccountDisplayName(
-        defaultDisplayName(normalized),
-        UNNAMED_CITIZEN_DISPLAY_NAME,
-      ),
-      role: "citizen",
-      emailVerified: true,
-    })
-    return created.id
+    return "code"
+  }
+
+  // The code proves who owns the inbox, not who created the row. A row that never verified its address
+  // but carries a provider identity may have been planted by whoever holds that identity, and signing
+  // the owner into it would share one account between them. Support untangles it; nothing is changed
+  // here. A row with no identity has no second holder, so it keeps signing in.
+  private async refuseUnverifiedIdentityHolder(account: UserRecord): Promise<void> {
+    if (account.emailVerified) return
+    if (!(await this.identities.hasIdentityForUser(account.id))) return
+    if (this.audit) {
+      await this.audit({
+        actorId: null,
+        action: OTP_REFUSED_UNVERIFIED_ACCOUNT_ACTION,
+        target: `user:${account.id}`,
+        meta: { reason: OTP_REFUSED_UNVERIFIED_ACCOUNT_REASON },
+      }).catch((err: unknown) => {
+        this.logger?.warn({ err }, "otp: refused sign-in audit write failed")
+      })
+    }
+    throw AppError.conflict(unverifiedAccountNeedsReviewMessage(this.supportEmail))
   }
 
   private async ensureReviewerUser(normalizedEmail: string): Promise<string> {

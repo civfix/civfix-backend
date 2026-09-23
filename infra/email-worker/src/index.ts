@@ -11,8 +11,7 @@ export default {
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
     const rawBytes = await new Response(message.raw).arrayBuffer()
 
-    const messageId = await deriveMessageId(message.headers, rawBytes)
-    const key = await derivePendingKey(message.headers, rawBytes)
+    const { messageId, key } = await derivePendingIdentity(message.headers, rawBytes)
 
     try {
       await env.R2_BUCKET.put(key, rawBytes, {
@@ -38,19 +37,35 @@ export default {
 const PENDING_SLUG_MAX_CHARS = 120
 const PENDING_DIGEST_CHARS = 32
 
+export interface PendingIdentity {
+  messageId: string
+  key: string
+}
+
 // The sender picks the Message-ID, so a key made from it alone lets a later mail (or a Message-ID
 // that slugs alike) overwrite a pending .eml before the backend drains it; the content digest makes
-// the key follow the bytes, while an identical redelivery still lands on the same key.
-export async function derivePendingKey(headers: Headers, raw: ArrayBuffer): Promise<string> {
+// the key follow the bytes, while an identical redelivery still lands on the same key. One digest
+// serves both the key and the fallback id, so a message is hashed once however it is addressed.
+export async function derivePendingIdentity(
+  headers: Headers,
+  raw: ArrayBuffer,
+): Promise<PendingIdentity> {
   const digest = await contentDigest(raw)
-  const slug = slugify(headers.get("message-id") ?? "").slice(0, PENDING_SLUG_MAX_CHARS)
-  const name = slug.length > 0 ? `${slug}.${digest.slice(0, PENDING_DIGEST_CHARS)}` : digest
-  return `${PENDING_PREFIX}${name}.eml`
+  const slug = slugify(headers.get("message-id") ?? "")
+  const keySlug = slug.slice(0, PENDING_SLUG_MAX_CHARS)
+  const name = keySlug.length > 0 ? `${keySlug}.${digest.slice(0, PENDING_DIGEST_CHARS)}` : digest
+  return {
+    messageId: slug.length > 0 ? slug : digest,
+    key: `${PENDING_PREFIX}${name}.eml`,
+  }
+}
+
+export async function derivePendingKey(headers: Headers, raw: ArrayBuffer): Promise<string> {
+  return (await derivePendingIdentity(headers, raw)).key
 }
 
 export async function deriveMessageId(headers: Headers, raw: ArrayBuffer): Promise<string> {
-  const slug = slugify(headers.get("message-id") ?? "")
-  return slug.length > 0 ? slug : contentDigest(raw)
+  return (await derivePendingIdentity(headers, raw)).messageId
 }
 
 async function contentDigest(raw: ArrayBuffer): Promise<string> {

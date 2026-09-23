@@ -9,9 +9,16 @@ import { loadEnv } from "../../src/env.js"
 import { buildServer } from "../../src/server.js"
 import type { HostStandingResolution } from "../../src/services/host/host-standing.js"
 import { InMemoryHostTeamRepository } from "../../src/services/host/host-team-repository.memory.js"
-import { makeHostTeamService } from "../../src/services/host/host-team-service.js"
+import {
+  makeHostTeamService,
+  type HostTeamServiceDeps,
+} from "../../src/services/host/host-team-service.js"
 import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
-import { makeOrganizationService } from "../../src/services/host/organization-service.js"
+import {
+  makeOrganizationService,
+  type OrganizationServiceDeps,
+} from "../../src/services/host/organization-service.js"
+import { webBaseUrlOf } from "../../src/lib/base-url.js"
 import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"
 import { fakeCleanupDTO } from "../helpers/host-team.js"
 
@@ -48,6 +55,7 @@ describe("links mailed from a runtime with no web origin configured", () => {
       loadEvent: (cleanupId: string) => Promise.resolve(fakeCleanupDTO(cleanupId)),
       notifier: { createNotification: () => Promise.resolve(null) },
       eventTitleOf: () => Promise.resolve("Beach cleanup"),
+      webOrigin: webBaseUrlOf({ NODE_ENV: "test" }),
     })
 
     await service.inviteMember(EVENT, ORGANIZER, {
@@ -69,6 +77,7 @@ describe("links mailed from a runtime with no web origin configured", () => {
       counters: new InMemoryCounterStore(),
       newId: () => randomUUID(),
       mailer,
+      webOrigin: webBaseUrlOf({ NODE_ENV: "test" }),
     })
     const org = await service.createOrganization(
       { name: "Creek Trust", slug: "creek-trust" } as Parameters<
@@ -126,5 +135,20 @@ describe("links mailed from a runtime with no web origin configured", () => {
     } finally {
       await app.close()
     }
+  })
+})
+
+describe("services that mail links", () => {
+  it("cannot be built without the web origin the route wiring resolves from the environment", () => {
+    // @ts-expect-error a missing origin would otherwise fall back to localhost even in production
+    const team: HostTeamServiceDeps = {
+      repo: new InMemoryHostTeamRepository(),
+      standing: () => Promise.reject(new Error("unused")),
+      loadEvent: () => Promise.reject(new Error("unused")),
+    }
+    // @ts-expect-error a missing origin would otherwise fall back to localhost even in production
+    const org: OrganizationServiceDeps = { repo: new InMemoryOrganizationRepository() }
+
+    expect([team, org]).toHaveLength(2)
   })
 })

@@ -34,8 +34,10 @@ export const WS_HANDSHAKE_FRAME_BUFFER = 32
 
 export const WS_HANDSHAKE_BUFFER_BYTES = 64 * 1024
 
-// Counts the frame in flight, so a client may pipeline this many frames behind one slow handler.
-export const WS_MAX_QUEUED_FRAMES = 32
+// Counts the frame in flight. A full token-bucket burst, or a reconnect re-joining every room, has to
+// fit behind one slow handler without closing the socket (a close makes the client reconnect and
+// replay the same burst); the bucket still rejects the excess as each frame is dequeued.
+export const WS_MAX_QUEUED_FRAMES = Math.max(WS_FRAME_LIMIT.capacity, WS_MAX_JOINED_ROOMS)
 
 export const WS_MAX_QUEUED_BYTES = 256 * 1024
 

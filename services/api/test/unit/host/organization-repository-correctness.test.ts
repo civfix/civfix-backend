@@ -69,17 +69,22 @@ describe("creating an organization", () => {
 describe("seating a member by handle", () => {
   it("is audited as a member added, not a role change", async () => {
     const fake = makeFakeSql([
+      { match: /SELECT role FROM organization_members/, rows: [{ role: "owner" }] },
       { match: /INSERT INTO organization_members/, rows: [{ user_id: MEMBER }] },
       { match: /INSERT INTO audit_log/, rows: [{ id: "audit-1" }] },
     ])
 
-    await makeDrizzleOrganizationRepository(fake.sql as unknown as Sql).addMemberTx({
-      organizationId: ORG,
-      userId: MEMBER,
-      role: "member",
-      actorId: OWNER,
-      now: NOW,
-    })
+    const outcome = await makeDrizzleOrganizationRepository(fake.sql as unknown as Sql).addMemberTx(
+      {
+        organizationId: ORG,
+        userId: MEMBER,
+        role: "member",
+        actorId: OWNER,
+        now: NOW,
+      },
+    )
+
+    expect(outcome).toBe("added")
 
     const audit = fake.statements.find((s) => s.values.includes("org.member_added"))
     expect(audit).toBeDefined()
@@ -88,14 +93,17 @@ describe("seating a member by handle", () => {
 
   it("is audited the same way by the in-memory repository", async () => {
     const repo = new InMemoryOrganizationRepository()
+    await repo.createOrganizationTx(createArgs())
 
-    await repo.addMemberTx({
+    const outcome = await repo.addMemberTx({
       organizationId: ORG,
       userId: MEMBER,
       role: "member",
       actorId: OWNER,
       now: NOW,
     })
+
+    expect(outcome).toBe("added")
 
     expect(repo.audits.map((a) => a.action)).toEqual(["org.member_added"])
   })

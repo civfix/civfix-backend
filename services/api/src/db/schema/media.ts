@@ -36,6 +36,7 @@ export const mediaAssets = pgTable(
     thumbKey: text("thumb_key"),
     status: text("status").$type<MediaStatus>().notNull(),
     purpose: text("purpose").$type<MediaPurpose>().notNull().default("report"),
+    uploader: text("uploader"),
     width: integer("width"),
     height: integer("height"),
     byteSize: bigint("byte_size", { mode: "number" }),

@@ -62,17 +62,6 @@ export function makeIsDmBlocked(
   }
 }
 
-/** The user's global users.role, or null when the row is missing. */
-export async function globalRoleOf(
-  sql: ReturnType<Container["getDb"]>["sql"],
-  userId: string,
-): Promise<GlobalRole | null> {
-  const rows = await sql<{ role: GlobalRole }[]>`
-    SELECT role FROM users WHERE id = ${userId} LIMIT 1
-  `
-  return rows[0]?.role ?? null
-}
-
 /**
  * The global role that counts for chat powers. users.role is never demoted when an operator is
  * off-boarded, so the operator role only carries authority while the row's current email passes the same

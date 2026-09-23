@@ -20,7 +20,15 @@ response can be answered truthfully. It is the source of record for the
 `[auth][csrf]`) performs a **soft delete**:
 
 0. An **email-OTP gate**: the caller must re-prove control of the account email
-   before any destructive work runs.
+   before any destructive work runs. Then **the session ban marker is set**
+   (`SessionService.markBanned`), before anything is erased. A cached session
+   projection is checked against that marker and the session epoch, never against the `sessions` table, so deleting the rows alone would
+   leave a cached bearer (and a websocket re-auth) working, and sliding its
+   expiry forward, up to the 90-day absolute session cap. If the marker cannot be written the request fails with 503 and
+   nothing is erased; if the erasure transaction below then fails, the marker is
+   cleared again so the still-live account keeps working (a failure to clear it
+   is logged: the account stays locked out until the marker expires or an
+   operator restores its status).
 1. `UserStore.softDeleteAndAnonymize(userId)` — see
    `services/api/src/auth/pg-stores.ts`. **One transaction**, so a partial erasure
    is not a reachable state:
@@ -56,16 +64,18 @@ response can be answered truthfully. It is the source of record for the
 2. Clears the session + CSRF cookies on the response.
 3. Three independent best-effort steps after the commit (`allSettled`, each logged
    on failure, none of them able to fail a deletion that already happened):
-   `SessionStore.banUser(userId)` sets the ban/veto marker, bumps the session
-   epoch and drops the write-through cache entries, so a cached session
-   projection is rejected on its next request; unlink the OAuth identities; and
-   write the audit-log row (`account.deleted`, actor = the user).
+   `SessionService.banUser(userId)` refreshes the ban marker, bumps the session
+   epoch and drops any write-through cache entries it can still find; unlink the
+   OAuth identities; and write the audit-log row (`account.deleted`, actor = the
+   user). Revocation does not depend on this step: by the time it runs every
+   session row is gone and the marker set in step 0 already rejects every
+   cached projection.
 
 ## What is scrubbed vs. kept
 
 | Data | After `DELETE /me` |
 |---|---|
-| Live sessions / login | **Revoked**: every session row deleted inside the erasure transaction; afterwards (best-effort) the ban marker is set and the cached sessions evicted; cookies cleared. |
+| Live sessions / login | **Revoked**: the ban marker is set before the erasure (the deletion is refused if it cannot be), every session row is deleted inside the erasure transaction; afterwards (best-effort) the epoch is bumped and the cached sessions evicted; cookies cleared. |
 | DM reachability | **Off** — `allow_direct_messages = false`. |
 | `display_name`, `handle`, `email`, `bio`, `avatar_url`, `avatar_media_id`, `social_links`, `donation_url`, `primary_organization_id` | **Scrubbed** on the `users` row — nulled, or replaced with the `Deleted User` label / a generated placeholder handle. |
 | OAuth identity links | **Deleted** (best-effort, step 3); otherwise a provider sign-in walks back into the tombstone once the ban marker's TTL lapses. |
@@ -85,6 +95,7 @@ response can be answered truthfully. It is the source of record for the
 | `donations` | **Kept.** `user_id` NULLed and `profile_unlinked_at` stamped immediately. On a CHARGED donation `donor_email` / `donor_name` survive until `charged_at + 7 years`; on one that never charged they are NULLed at once. ⚖️ DECISION below. |
 | `org_payouts` | **Kept, with the FK intact.** The row records that an organization moved its own money, not anything about the person who pressed the button; `requested_by` declares `ON DELETE SET NULL`, but civfix erasure is a SOFT delete, so that action never fires and the actor stays the tombstoned account. There is no contact detail in the table to scrub. |
 | `cleanup_slot_claims` (which signup slot they took, P9) | **Kept**. The row is `(cleanup_id, user_id, slot_id, claimed_at)` — roster data with no free-text PII, held exactly like the `cleanup_members` row it accompanies, and with no `ON DELETE CASCADE` to `users` by design (`drizzle/0063_cleanup_slots.sql`). The attendee/roster read joins `users` with `deleted_at IS NULL`, so a tombstoned claimant disappears from the visible roster; the row still counts toward the slot's `claimed` total. |
+| `media_assets.uploader` (who created an upload, 0181) | **Kept**, like `reports.reporter_user_id`: it names the tombstoned account, never an email or IP. Nulling it would make the departed user's unbound uploads claimable by anyone inside the claim window. |
 | `service_hours_certificates` (issued PDF transcripts, P5) | **Revoked + scrubbed**, rows kept, **R2 objects deleted**. See the next section. |
 
 ### The host-transfer ladder

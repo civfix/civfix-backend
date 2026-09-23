@@ -49,6 +49,7 @@ beforeEach(() => {
     now: () => clock,
     newId: () => randomUUID(),
     presignLogo: (key) => Promise.resolve(`https://cdn.test/${key}`),
+    webOrigin: "https://civfix.test",
   })
 })
 
