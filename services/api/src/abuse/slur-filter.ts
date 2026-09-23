@@ -22,12 +22,15 @@ const SLUR_BASES: readonly string[] = [
   "retarded",
 ]
 
+const LETTER_RUN_RE = /(.)\1*/g
+
+// A doubled letter becomes one `x{k,}` term, not `x+x+`: the two forms accept the same strings, but
+// adjacent `x+x+` terms make V8 try every split of a long run, which is quadratic in its length.
 function buildPatterns(bases: readonly string[]): readonly RegExp[] {
   return bases.map((base) => {
-    const expanded = base
-      .split("")
-      .map((ch) => `${ch}+`)
-      .join("")
+    const expanded = base.replace(LETTER_RUN_RE, (run: string, ch: string) =>
+      run.length === 1 ? `${ch}+` : `${ch}{${run.length},}`,
+    )
     return new RegExp(`\\b${expanded}(?:e?s)?\\b`, "i")
   })
 }
