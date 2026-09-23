@@ -47,7 +47,7 @@ import { assertNoSlur } from "../abuse/slur-filter.js"
 import { smsFailureKind } from "../errors/sms-failure.js"
 import { mapWithLimit } from "./media-presign.js"
 import { renderMessage } from "../i18n/renderMessage.js"
-import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
+import { parseKeysetCursor, type KeysetCursor } from "../db/cursor-helpers.js"
 import { eventEndedError, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
 import { isEventPubliclyVisible } from "./host/authz.js"
 import { enqueueWaitlistPromotion } from "./host/waitlist-promotion.js"
@@ -202,7 +202,7 @@ export interface GuestRsvpRepository {
   cancelGuest(guestId: string, now: Date): Promise<string[]>
   listGuests(args: {
     cleanupId: string
-    cursor: TimeCursor | null
+    cursor: KeysetCursor | null
     limit: number
   }): Promise<{ rows: GuestRosterRow[]; nextCursor: string | null }>
   listContactableGuests(cleanupId: string, limit: number): Promise<GuestRecipient[]>
@@ -995,7 +995,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       const limit = query.limit ?? GUESTS_DEFAULT_LIMIT
       const { rows, nextCursor } = await deps.repo.listGuests({
         cleanupId: event.id,
-        cursor: parseTimeCursor(query.cursor, { direction: "desc" }),
+        cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
         limit,
       })
       const count = await deps.repo.countActiveGuests(event.id)
