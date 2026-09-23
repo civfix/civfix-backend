@@ -207,18 +207,20 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
     async hostedEventIds(userId, organizationId, limit) {
       const orgFilter =
         organizationId !== null ? sql`AND c.organization_id = ${organizationId}` : sql``
+      // Each UNION arm is one of the three hosting relations as an indexed lookup by user; an OR of
+      // correlated EXISTS over cleanups can only be planned as a sequential scan of every event.
       const rows = await sql<{ id: string }[]>`
         SELECT c.id
           FROM cleanups c
-         WHERE (c.organizer_user_id = ${userId}
-                OR EXISTS (
-                  SELECT 1 FROM cleanup_members m
-                   WHERE m.cleanup_id = c.id AND m.user_id = ${userId}
-                     AND m.role IN ('organizer','cohost','coordinator'))
-                OR EXISTS (
-                  SELECT 1 FROM organization_members om
-                   WHERE om.organization_id = c.organization_id AND om.user_id = ${userId}
-                     AND om.role IN ('owner','admin')))
+         WHERE c.id IN (
+                 SELECT oc.id FROM cleanups oc WHERE oc.organizer_user_id = ${userId}
+                 UNION
+                 SELECT m.cleanup_id FROM cleanup_members m
+                  WHERE m.user_id = ${userId} AND m.role IN ('organizer','cohost','coordinator')
+                 UNION
+                 SELECT hc.id FROM organization_members om
+                   JOIN cleanups hc ON hc.organization_id = om.organization_id
+                  WHERE om.user_id = ${userId} AND om.role IN ('owner','admin'))
            ${orgFilter}
          ORDER BY c.scheduled_at DESC
          LIMIT ${limit}`
