@@ -15,7 +15,6 @@ import type { Container } from "../di.js"
 import type { Env } from "../env.js"
 import { isAdminEmail } from "../auth/admin-allowlist.js"
 import { makeChatPowersResolver, type ResolveChatPowers } from "../services/chat-room-roles.js"
-import type { ROLE_VALUES } from "../db/schema/types.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import {
   makeReportChatRepository,
@@ -28,8 +27,10 @@ import {
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import { makeDmPeerOf } from "../services/dm-peer.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
-
-type GlobalRole = (typeof ROLE_VALUES)[number]
+import {
+  makeDrizzleUsersRepository,
+  type GlobalRole,
+} from "../services/users-repository.drizzle.js"
 
 /**
  * A thread the caller is not in resolves to no peer and answers false: isDmParticipant already gates
@@ -57,10 +58,7 @@ export async function chatAuthorityRoleOf(
   env: Pick<Env, "ADMIN_EMAILS">,
   userId: string,
 ): Promise<GlobalRole | null> {
-  const rows = await sql<{ role: GlobalRole; email: string | null }[]>`
-    SELECT role, email FROM users WHERE id = ${userId} LIMIT 1
-  `
-  const row = rows[0]
+  const row = await makeDrizzleUsersRepository(sql).findRoleAndEmail(userId)
   if (!row) return null
   if (row.role === "operator" && (row.email === null || !isAdminEmail(env, row.email))) return null
   return row.role
