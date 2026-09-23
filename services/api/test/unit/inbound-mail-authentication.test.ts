@@ -7,6 +7,8 @@ import {
   readMailAuthVerdict,
 } from "../../src/adapters/inbound-mail.cf.js"
 import { sanitizeInboundHtml } from "../../src/services/admin/inbound-html-sanitizer.js"
+import { isJurisdictionSender } from "../../src/services/admin/inbound-thread-correlation.js"
+import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 
 /**
  * M7 — forged inbound email could impersonate a jurisdiction: there was NO message authentication at
@@ -44,6 +46,7 @@ describe("readMailAuthVerdict (M7)", () => {
   it("returns 'unknown' when the MTA stamped no Authentication-Results header (FAIL CLOSED)", () => {
     expect(readMailAuthVerdict(mail())).toBe("unknown")
     expect(readMailAuthVerdict(mail({ headers: { "authentication-results": "  " } }))).toBe("unknown")
+    expect(verdict(cf("none"))).toBe("unknown")
   })
 
   it("returns 'unknown' when the header was not stamped by Cloudflare's MX", () => {
@@ -139,10 +142,34 @@ describe("readMailAuthVerdict (M7)", () => {
     expect(readMailAuthVerdict(mail({ from: null, headers: { "authentication-results": header } }))).toBe("fail")
   })
 
-  it("rejects a lookalike domain as aligned (suffix match is dot-anchored)", () => {
+  it("aligns on the organizational domain, never on a public suffix or a lookalike", () => {
     expect(domainsAligned("mail.city.gov", "city.gov")).toBe(true)
     expect(domainsAligned("city.gov", "city.gov")).toBe(true)
+    expect(domainsAligned("bss.lacity.org", "ita.lacity.org")).toBe(true)
     expect(domainsAligned("evilcity.gov", "city.gov")).toBe(false)
+    expect(domainsAligned("evil.org", "org")).toBe(false)
+    expect(domainsAligned("org", "lacity.org")).toBe(false)
+    expect(domainsAligned("evil.co.uk", "council.co.uk")).toBe(false)
+    expect(domainsAligned("lacity.gov;x", "lacity.gov")).toBe(false)
+  })
+
+  it("fails a public-suffix From domain that the sender's own domain would suffix-match", () => {
+    const noPolicy = "dmarc=none header.from=org policy.dmarc=none"
+    expect(verdict(cf("dkim=pass header.d=evil.org", noPolicy), "x@org")).toBe("fail")
+    expect(verdict(cf("dkim=pass header.d=evil.co.uk", "dmarc=none header.from=co.uk"), "x@co.uk")).toBe("fail")
+  })
+})
+
+describe("isJurisdictionSender", () => {
+  it("matches the contact on file by organizational domain, never by a bare public suffix", async () => {
+    const mailRepo = new InMemoryMailRepository()
+    const thread = mailRepo.seedThread({ threadToken: "abcdefgh1234" })
+    mailRepo.seedMessage({ threadId: thread.id, direction: "out", toAddr: "publicworks@lacity.org" })
+    const sentBy = (address: string) => isJurisdictionSender(mailRepo, thread.id, mail({ from: { address } }))
+    expect(await sentBy("x@org")).toBe(false)
+    expect(await sentBy("clerk@evil.org")).toBe(false)
+    expect(await sentBy("clerk@lacity.org")).toBe(true)
+    expect(await sentBy("clerk@bss.lacity.org")).toBe(true)
   })
 })
 

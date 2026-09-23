@@ -6,6 +6,7 @@ import type {
   ParsedMailAttachment,
 } from "@civfix/shared/interfaces"
 import type { AddressObject, Attachment, EmailAddress, HeaderLines } from "mailparser"
+import { getDomain } from "tldts"
 import { domainOfOrNull } from "./mail-text.js"
 
 const THREAD_TOKEN_RE = /^[a-z0-9]{8,40}$/
@@ -98,13 +99,17 @@ const AUTHENTICATION_RESULTS_HEADER = "authentication-results"
 
 const DMARC_NO_POLICY_RESULTS: ReadonlySet<string> = new Set(["none", "temperror", "permerror"])
 
-const METHOD_SPEC_RE = /^([a-z0-9_-]+)(?:\/[0-9]+)?=([a-z0-9_-]+)/
+const METHOD_SPEC_RE = /^([a-z0-9_-]+)(?:\/[0-9]+)?=([a-z0-9_-]+)$/
 
 const PROP_SPEC_RE = /^([a-z0-9_-]+\.[a-z0-9_.-]+)=(\S+)$/
 
 const QUOTED_REMOTE_IP_RE = /smtp\.remote-ip\s*=\s*"[0-9a-f:.]+"/gi
 
 const FLAT_COMMENT_RE = /\([^()]*\)/g
+
+const HOSTNAME_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+
+const ORGANIZATIONAL_DOMAIN_OPTIONS = { allowPrivateDomains: true, extractHostname: false } as const
 
 interface AuthResult {
   method: string
@@ -119,7 +124,7 @@ export function readMailAuthVerdict(mail: ParsedMail): MailAuthVerdict {
   if (results === null) return "fail"
   if (results.length === 0) return "unknown"
   const fromDomain = domainOfOrNull(mail.from?.address ?? null)
-  if (fromDomain === null) return "fail"
+  if (fromDomain === null || organizationalDomain(fromDomain) === null) return "fail"
 
   const dmarcResults = results.filter((r) => r.method === "dmarc")
   if (dmarcResults.length > 1) return "fail"
@@ -145,15 +150,14 @@ function parseStamp(stamp: string): AuthResult[] | null {
   if (/[()]/.test(uncommented)) return null
   const results: AuthResult[] = []
   for (const resinfo of uncommented.split(";").slice(1)) {
-    const tokens = resinfo.replace(/\s*=\s*/g, "=").trim().toLowerCase().split(/\s+/)
-    const [methodSpec, ...propSpecs] = tokens
-    const [, method, result] = METHOD_SPEC_RE.exec(methodSpec ?? "") ?? []
-    if (method === undefined || result === undefined) continue
+    const [methodSpec = "", ...propSpecs] = resinfo.replace(/\s*=\s*/g, "=").trim().toLowerCase().split(/\s+/)
+    if (propSpecs.length === 0 && (methodSpec === "" || methodSpec === "none")) continue
+    const [, method, result] = METHOD_SPEC_RE.exec(methodSpec) ?? []
+    if (method === undefined || result === undefined) return null
     const props = new Map<string, string>()
     for (const spec of propSpecs) {
       const [, name, value] = PROP_SPEC_RE.exec(spec) ?? []
-      if (name === undefined || value === undefined) continue
-      if (props.has(name)) return null
+      if (name === undefined || value === undefined || props.has(name)) return null
       props.set(name, value)
     }
     results.push({ method, result, props })
@@ -183,9 +187,14 @@ function identityDomain(identity: string): string | null {
 
 export const domainOf = domainOfOrNull
 
+export function organizationalDomain(domain: string): string | null {
+  const host = domain.toLowerCase()
+  return HOSTNAME_RE.test(host) ? getDomain(host, ORGANIZATIONAL_DOMAIN_OPTIONS) : null
+}
+
 export function domainsAligned(a: string, b: string): boolean {
-  if (a === b) return true
-  return a.endsWith(`.${b}`) || b.endsWith(`.${a}`)
+  const organizational = organizationalDomain(a)
+  return organizational !== null && organizational === organizationalDomain(b)
 }
 
 function singleFromMailbox(
