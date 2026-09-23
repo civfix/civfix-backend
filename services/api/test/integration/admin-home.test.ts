@@ -112,6 +112,56 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
     expect(e.attending).toBe(1)
   })
 
+  it("eventsSummary: members of completed and cancelled events are not attending; an empty live event counts", async () => {
+    const org = await insertUser(h, "Org")
+    const done = await seedCleanup(h.sql, { organizerUserId: org, title: "Done", status: "done" })
+    const cancelled = await seedCleanup(h.sql, {
+      organizerUserId: org,
+      title: "Cancelled",
+      status: "cancelled",
+    })
+    await seedCleanup(h.sql, { organizerUserId: org, title: "Empty live", status: "active" })
+    const up = await seedCleanup(h.sql, { organizerUserId: org, title: "Up", status: "upcoming" })
+    const a = await insertUser(h, "A")
+    const b = await insertUser(h, "B")
+    await h.sql`
+      INSERT INTO cleanup_members (cleanup_id, user_id, role)
+      VALUES (${done}, ${a}, 'attendee'), (${done}, ${b}, 'attendee'),
+             (${cancelled}, ${a}, 'attendee'), (${up}, ${a}, 'attendee'), (${up}, ${b}, 'attendee')
+    `
+
+    const e = await repo.eventsSummary()
+    expect(e.upcoming).toBe(1)
+    expect(e.live).toBe(1)
+    expect(e.attending).toBe(2)
+  })
+
+  it("eventsSummary: no live or upcoming event reads as zero", async () => {
+    const org = await insertUser(h, "Org")
+    await seedCleanup(h.sql, { organizerUserId: org, title: "Done", status: "done" })
+    expect(await repo.eventsSummary()).toEqual({ upcoming: 0, live: 0, attending: 0 })
+  })
+
+  it("reportsSummary: submitted, published and held reports count in no tile", async () => {
+    await insertReport(h, { status: "submitted" })
+    await insertReport(h, { status: "published" })
+    await insertReport(h, { status: "held" })
+    await insertReport(h, { status: "acknowledged" })
+    const s = await repo.reportsSummary()
+    expect(s).toEqual({ flagged: 0, inProgress: 1, completed: 0 })
+  })
+
+  it("recentPins: the newest public reports fill the report half", async () => {
+    const at = (m: number): Date => new Date(Date.UTC(2026, 5, 1, 12, m))
+    await insertReport(h, { createdAt: at(1) })
+    const newest = await insertReport(h, { createdAt: at(3) })
+    const second = await insertReport(h, { createdAt: at(2) })
+    await insertReport(h, { createdAt: at(4), visibility: "hidden" })
+
+    const pins = await repo.recentPins(4)
+    expect(pins.filter((p) => p.refType === "report").map((p) => p.id)).toEqual([newest, second])
+  })
+
   it("usersSummary: flagged / high-risk / suspended from user_moderation", async () => {
     const u1 = await insertUser(h, "Flagged")
     const u2 = await insertUser(h, "Risky")
