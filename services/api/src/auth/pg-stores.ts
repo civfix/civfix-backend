@@ -4,8 +4,10 @@ import type { Db } from "../db/client.js"
 import {
   cleanups,
   emailOtps,
+  notifications,
   oauthIdentities,
   posts,
+  pushTokens,
   reports,
   serviceHoursCertificates,
   sessions,
@@ -25,6 +27,7 @@ import { resolveAvatarMediaOrThrow } from "../services/avatar-media.js"
 import { enqueueWaitlistPromotion } from "../services/host/waitlist-promotion.js"
 import type { NotificationService } from "../services/notification-service.js"
 import {
+  EmailTakenError,
   generatePlaceholderHandle,
   generateTombstoneHandle,
   type AccountStatus,
@@ -81,7 +84,7 @@ export class PgSessionStore implements SessionStore {
         ip: sessions.ip,
       })
       .from(sessions)
-      .innerJoin(users, eq(users.id, sessions.userId))
+      .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
       .leftJoin(userModeration, eq(userModeration.userId, sessions.userId))
       .where(eq(sessions.id, hash))
       .limit(1)
@@ -193,6 +196,9 @@ export class PgUserStore implements UserStore {
     const row = inserted[0]
     if (row) return toUserRecord(row)
 
+    if (normalizedEmail !== null && input.onEmailConflict === "reject") {
+      throw new EmailTakenError()
+    }
     if (normalizedEmail !== null) {
       const existing = await this.findByEmail(normalizedEmail)
       if (existing) return existing
@@ -453,6 +459,20 @@ export class PgUserStore implements UserStore {
       `)
     }
     await tx.execute(sql`DELETE FROM organization_members WHERE user_id = ${id}`)
+    // Accepting an invite seats the role it names without re-checking the inviter, so an invite must not
+    // outlive the admin who sent it; one addressed to the closed account can never be accepted.
+    await tx.execute(sql`
+      WITH revoked AS (
+        UPDATE organization_invites
+        SET status = 'revoked', revoked_at = now()
+        WHERE status = 'pending' AND (invited_by = ${id} OR user_id = ${id})
+        RETURNING id, organization_id
+      )
+      INSERT INTO audit_log (actor_id, action, target, meta)
+      SELECT ${id}::uuid, 'org.invite_revoked', 'organization:' || organization_id,
+             jsonb_build_object('inviteId', id, 'reason', 'account_deleted')
+      FROM revoked
+    `)
     if (ownedOrgIds.length > 0) {
       const orphaned = await tx.execute<{ id: string }>(sql`
         UPDATE organizations SET deleted_at = now(), updated_at = now()
@@ -548,6 +568,11 @@ export class PgUserStore implements UserStore {
         .returning()
       const r = updated[0]
       if (!r) throw new Error("PgUserStore.softDeleteAndAnonymize: user not found")
+      // Revocation commits with the tombstone: if these ran after commit, a failure between the two would
+      // leave a deleted account whose tokens still authenticate and whose devices still get pushes.
+      await tx.delete(sessions).where(eq(sessions.userId, id))
+      await tx.delete(pushTokens).where(eq(pushTokens.userId, id))
+      await tx.delete(notifications).where(eq(notifications.userId, id))
       await tx
         .update(reports)
         .set({ visibility: "hidden" })

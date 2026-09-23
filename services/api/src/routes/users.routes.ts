@@ -23,7 +23,6 @@ import { searchByHandlePrefix, searchMentionable } from "../services/social-repo
 import { toUserDTO } from "../auth/auth-services.js"
 import { writeAudit } from "../services/admin/audit.js"
 import { DATA_EXPORT_JOB, dataExportSupportEmail } from "../services/data-export-jobs.js"
-import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { dropContainerSuggestions } from "../services/social-suggestions-wiring.js"
 import { route } from "../versioning/route.js"
@@ -198,24 +197,16 @@ export async function registerUsersRoutes(
         }
       }
 
+      // The erasure transaction also deletes the durable sessions, push tokens and notifications. The
+      // steps below run after it commits: the ban marker and epoch bump retire cached session projections,
+      // and a failure is logged rather than failing a deletion that already happened.
       await store.softDeleteAndAnonymize(userId)
-      await sessions.banUser(userId)
 
       clearSessionCookie(reply)
       clearCsrfCookie(reply)
       const cleanups: ReadonlyArray<readonly [step: string, run: () => Promise<unknown>]> = [
+        ["sessions.ban", () => sessions.banUser(userId)],
         ["oauth.unlink", () => oauth.unlinkAllForUser(userId)],
-        [
-          "push-tokens.delete",
-          () =>
-            makeDrizzleNotificationRepository(container.getDb().sql).deletePushTokensForUser(
-              userId,
-            ),
-        ],
-        [
-          "notifications.delete",
-          () => container.getDb().sql`DELETE FROM notifications WHERE user_id = ${userId}`,
-        ],
         [
           "audit.account-deleted",
           () =>

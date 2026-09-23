@@ -226,6 +226,46 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     expect(rows[0]!.email_scrubbed_at).not.toBeNull()
   })
 
+  it("revokes the pending organization invites the departing user sent or received, audited", async () => {
+    const h = pg!
+    const orgOwner = await user(h, "org-invite-owner")
+    const leavingAdmin = await user(h, "org-invite-admin")
+    const bystander = await user(h, "org-invite-bystander")
+    const orgId = await organization(h, `org-invites-${Date.now()}`, orgOwner)
+    await addOrgMember(h, orgId, leavingAdmin, "admin", 3)
+    const stamp = Date.now()
+    const [sent, received, unrelated] = await h.sql<{ id: string }[]>`
+      INSERT INTO organization_invites
+        (organization_id, email, user_id, role, token_hash, status, invited_by, expires_at)
+      VALUES
+        (${orgId}, 'sock@example.test', NULL, 'admin', ${`sent-${stamp}`}, 'pending',
+         ${leavingAdmin}, now() + interval '14 days'),
+        (${orgId}, NULL, ${leavingAdmin}, 'member', ${`received-${stamp}`}, 'pending',
+         ${orgOwner}, now() + interval '14 days'),
+        (${orgId}, NULL, ${bystander}, 'member', ${`unrelated-${stamp}`}, 'pending',
+         ${orgOwner}, now() + interval '14 days')
+      RETURNING id
+    `
+
+    await new PgUserStore(h.db).softDeleteAndAnonymize(leavingAdmin)
+
+    const statuses = await h.sql<{ id: string; status: string; revoked_at: Date | null }[]>`
+      SELECT id, status, revoked_at FROM organization_invites WHERE organization_id = ${orgId}
+    `
+    const statusOfInvite = (id: string) => statuses.find((row) => row.id === id)
+    expect(statusOfInvite(sent!.id)?.status).toBe("revoked")
+    expect(statusOfInvite(sent!.id)?.revoked_at).not.toBeNull()
+    expect(statusOfInvite(received!.id)?.status).toBe("revoked")
+    expect(statusOfInvite(unrelated!.id)?.status).toBe("pending")
+
+    const audits = await h.sql<{ meta: Record<string, unknown> }[]>`
+      SELECT meta FROM audit_log
+       WHERE action = 'org.invite_revoked' AND target = ${`organization:${orgId}`}
+    `
+    expect(audits.map((a) => a.meta.inviteId).sort()).toEqual([sent!.id, received!.id].sort())
+    expect(audits.every((a) => a.meta.reason === "account_deleted")).toBe(true)
+  })
+
   it("releases the seats an OFFERED waitlist entry reserved, and only those", async () => {
     const h = pg!
     const host = await user(h, "host-waitlist")

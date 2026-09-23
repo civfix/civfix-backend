@@ -163,8 +163,10 @@ describe("DELETE /me post-revocation cleanup isolation", () => {
     expect(res.json()).toEqual({ ok: true })
 
     const pushDelete = fake.statements.find((s) => /DELETE FROM push_tokens/i.test(s.sql))
-    expect(pushDelete, "push-token erasure must not be skipped by the unlink failure").toBeDefined()
-    expect(pushDelete?.values).toContain(userId)
+    expect(
+      pushDelete,
+      "push tokens are purged inside the erasure transaction, not by a post-commit route step",
+    ).toBeUndefined()
 
     const audit = fake.statements.find((s) => /INSERT INTO audit_log/i.test(s.sql))
     expect(
@@ -174,8 +176,10 @@ describe("DELETE /me post-revocation cleanup isolation", () => {
     expect(audit?.values.slice(0, 3)).toEqual([userId, "account.deleted", `user:${userId}`])
 
     const notifDelete = fake.statements.find((s) => /DELETE FROM notifications/i.test(s.sql))
-    expect(notifDelete, "the deleted user's notification rows must be purged (F088)").toBeDefined()
-    expect(notifDelete?.values).toContain(userId)
+    expect(
+      notifDelete,
+      "notifications are purged inside the erasure transaction, not by a post-commit route step",
+    ).toBeUndefined()
 
     const after = await services.users.findById(userId)
     expect(after?.deletedAt ?? null).not.toBeNull()
