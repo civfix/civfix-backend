@@ -2,7 +2,7 @@
  * render-sample-certificate: write a set of sample service-hours transcripts to disk so a HUMAN can look
  * at them. Run once per layout change.
  *
- *   pnpm --filter @civfix/api exec tsx scripts/render-sample-certificate.ts [outDir]
+ *   pnpm --filter @civfix/api render:sample-certificate [outDir]
  *
  * NOT a CI step, deliberately. The unit suite proves the structure (page count, byte band, Info
  * dictionary, the Hangul path); it cannot prove that the seal overlaps the QR, that a long Korean event
