@@ -110,12 +110,39 @@ describe("host daily recipient budget", () => {
 
   it("keeps the refusal when the refund cannot be recorded, and logs it", async () => {
     const { service, counters, logger } = build({ config: { recipientsPerDay: 10 } })
-    const incrBy = counters.incrBy.bind(counters)
-    counters.incrBy = (key, by, ttl) =>
-      key.endsWith(":refunded") && by > 0
-        ? Promise.reject(new Error("redis down"))
-        : incrBy(key, by, ttl)
+    counters.decrBy = () => Promise.reject(new Error("redis down"))
     expect(await service.reserveRecipientBudget(HOST, 11)).toBe(false)
+    expect(logger.warn).toHaveBeenCalled()
+  })
+
+  it("gives a refused charge back by decrementing the charged counter", async () => {
+    const { service, counters } = build({ config: { recipientsPerDay: 1000 } })
+    const incremented: string[] = []
+    const decremented: Array<[string, number]> = []
+    const incrBy = counters.incrBy.bind(counters)
+    const decrBy = counters.decrBy.bind(counters)
+    counters.incrBy = (key, by, ttl) => {
+      incremented.push(key)
+      return incrBy(key, by, ttl)
+    }
+    counters.decrBy = (key, by) => {
+      decremented.push([key, by])
+      return decrBy(key, by)
+    }
+
+    expect(await service.reserveRecipientBudget(HOST, 900)).toBe(true)
+    expect(await service.reserveRecipientBudget(HOST, 200)).toBe(false)
+
+    const charged = incremented[0]!
+    expect(new Set(incremented)).toEqual(new Set([charged]))
+    expect(decremented).toEqual([[charged, 200]])
+    expect(counters.peek(charged)).toBe(900)
+  })
+
+  it("refuses, fail closed, when the charge cannot be counted", async () => {
+    const { service, counters, logger } = build({ config: { recipientsPerDay: 1000 } })
+    counters.incrBy = () => Promise.reject(new Error("redis down"))
+    expect(await service.reserveRecipientBudget(HOST, 1)).toBe(false)
     expect(logger.warn).toHaveBeenCalled()
   })
 })

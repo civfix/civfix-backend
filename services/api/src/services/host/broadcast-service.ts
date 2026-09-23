@@ -649,22 +649,12 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
 
     reserveSendSlot,
 
-    /**
-     * The counter store only counts up, so a refused send cannot give its charge back. Refused charges
-     * are added to a second counter and subtracted instead. The refund total is read BEFORE charging: a
-     * refund visible then belongs to a charge already inside the total, so the difference never
-     * undercounts what was actually accepted (a concurrent refusal can only make this call stricter).
-     */
     async reserveRecipientBudget(actorId, recipients) {
       if (recipients <= 0) return true
-      const day = utcDayKey(now())
-      const chargedKey = `bcast:host:${actorId}:${day}`
-      const refundedKey = `${chargedKey}:refunded`
+      const chargedKey = `bcast:host:${actorId}:${utcDayKey(now())}`
       let used: number
       try {
-        const refunded = await deps.counters.incrBy(refundedKey, 0, DAY_SECONDS)
-        const charged = await deps.counters.incrBy(chargedKey, recipients, DAY_SECONDS)
-        used = charged - refunded
+        used = await deps.counters.incrBy(chargedKey, recipients, DAY_SECONDS)
       } catch (err) {
         deps.logger?.warn(
           { err, actorId },
@@ -674,11 +664,11 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       }
       if (used <= config.recipientsPerDay) return true
       try {
-        await deps.counters.incrBy(refundedKey, recipients, DAY_SECONDS)
+        await deps.counters.decrBy(chargedKey, recipients)
       } catch (err) {
         deps.logger?.warn(
           { err, actorId, recipients },
-          "broadcast: refused recipients could not be refunded; they stay charged until the UTC day rolls",
+          "broadcast: refused recipients could not be given back; they stay charged until the UTC day rolls",
         )
       }
       return false
