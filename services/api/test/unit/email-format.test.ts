@@ -455,7 +455,7 @@ describe("footer rendering", () => {
       unsubscribeUrl: "https://civfix.org/unsubscribe?t=abc",
       manageUrl: "https://civfix.org/e/beach",
     })
-    expect(footer).toContain("\n")
+    expect(footer.segments.map((segment) => segment.text).join("")).toContain("\n")
     const { html, text } = renderEmailBody({ blocks: [paragraph("x")], footer })
     expect(html).toContain('href="https://civfix.org/unsubscribe?t=abc"')
     expect(html).toContain('href="https://civfix.org/e/beach"')
@@ -472,7 +472,7 @@ describe("footer rendering", () => {
     })
     expect(html).not.toContain("<b>bold</b>")
     expect(html).toContain("&lt;b&gt;bold&lt;/b&gt;")
-    expect(html).toContain('href="https://civfix.org"')
+    expect(html).not.toContain('href="https://civfix.org"')
   })
 })
 

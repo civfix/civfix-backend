@@ -52,53 +52,86 @@ export interface EventFooterOptions {
   manageUrl?: string
 }
 
-export function eventFooter(opts: EventFooterOptions): string {
-  const lines: string[] = []
-  if (opts.critical === true) {
-    lines.push(
-      `This is a service message about "${opts.eventTitle}", an event you signed up for on civfix. ` +
-        `You receive these even if you have turned off updates from this organizer.`,
-    )
-  } else {
-    lines.push(
-      `You're receiving this because you signed up for "${opts.eventTitle}" on civfix. ` +
-        `The organizer wrote this message; civfix delivered it and never gave them your email address.`,
-    )
-  }
-  if (opts.replyTo !== undefined && opts.replyTo !== null && opts.replyTo.length > 0) {
-    lines.push(`Replies go to the organizer at ${opts.replyTo}.`)
-  } else {
-    lines.push("Replies to this address are not monitored.")
-  }
-  if (opts.critical !== true && opts.unsubscribeUrl !== undefined) {
-    lines.push(`Stop receiving messages about this event: ${opts.unsubscribeUrl}`)
-  }
-  if (opts.manageUrl !== undefined) {
-    lines.push(`Manage your signup: ${opts.manageUrl}`)
-  }
-  lines.push("civfix.org")
-  return lines.join("\n")
+export interface FooterSegment {
+  text: string
+  href?: string
 }
 
-const FOOTER_URL_RE = /https?:\/\/[^\s<>"]+/g
+// A footer built from segments so that only the URLs the code supplies become links. Host-authored text
+// (an event title, a reply address) sits in civfix-branded footer copy, where an auto-linked URL would
+// read as a link civfix vouches for.
+export interface EmailFooter {
+  segments: readonly FooterSegment[]
+}
 
-function footerHtml(footer: string): string {
-  return escapeHtml(footer)
-    .replace(
-      FOOTER_URL_RE,
-      (url) => `<a class="cv-link" href="${url}" style="color:inherit;">${url}</a>`,
-    )
-    .replace(/\n/g, "<br>")
+const LINE_BREAK: FooterSegment = { text: "\n" }
+
+function linkLine(label: string, url: string): FooterSegment[] {
+  return [{ text: label }, { text: url, href: url }]
+}
+
+export function eventFooter(opts: EventFooterOptions): EmailFooter {
+  const lines: FooterSegment[][] = []
+  if (opts.critical === true) {
+    lines.push([
+      {
+        text:
+          `This is a service message about "${opts.eventTitle}", an event you signed up for on civfix. ` +
+          `You receive these even if you have turned off updates from this organizer.`,
+      },
+    ])
+  } else {
+    lines.push([
+      {
+        text:
+          `You're receiving this because you signed up for "${opts.eventTitle}" on civfix. ` +
+          `The organizer wrote this message; civfix delivered it and never gave them your email address.`,
+      },
+    ])
+  }
+  if (opts.replyTo !== undefined && opts.replyTo !== null && opts.replyTo.length > 0) {
+    lines.push([{ text: `Replies go to the organizer at ${opts.replyTo}.` }])
+  } else {
+    lines.push([{ text: "Replies to this address are not monitored." }])
+  }
+  if (opts.critical !== true && opts.unsubscribeUrl !== undefined) {
+    lines.push(linkLine("Stop receiving messages about this event: ", opts.unsubscribeUrl))
+  }
+  if (opts.manageUrl !== undefined) {
+    lines.push(linkLine("Manage your signup: ", opts.manageUrl))
+  }
+  lines.push([{ text: "civfix.org" }])
+  return { segments: lines.flatMap((line, i) => (i === 0 ? line : [LINE_BREAK, ...line])) }
+}
+
+function footerSegments(footer: string | EmailFooter): readonly FooterSegment[] {
+  return typeof footer === "string" ? [{ text: footer }] : footer.segments
+}
+
+function footerText(footer: string | EmailFooter): string {
+  return footerSegments(footer)
+    .map((segment) => segment.text)
+    .join("")
+}
+
+function footerHtml(footer: string | EmailFooter): string {
+  return footerSegments(footer)
+    .map((segment) => {
+      const text = escapeHtml(segment.text)
+      if (segment.href === undefined) return text.replace(/\n/g, "<br>")
+      return `<a class="cv-link" href="${escapeHtml(segment.href)}" style="color:inherit;">${text}</a>`
+    })
+    .join("")
 }
 
 export interface RenderEmailOptions {
   preheader?: string
-  footer?: string
+  footer?: string | EmailFooter
   blocks: EmailBlock[]
 }
 
 export function renderEmailBody(opts: RenderEmailOptions): { text: string; html: string } {
-  const footerText = opts.footer ?? DEFAULT_FOOTER
+  const footer = opts.footer ?? DEFAULT_FOOTER
   const blocksHtml = opts.blocks.map((b) => b.html).join("")
   const preheader =
     opts.preheader !== undefined && opts.preheader.length > 0
@@ -130,9 +163,9 @@ export function renderEmailBody(opts: RenderEmailOptions): { text: string; html:
     `<table role="presentation" class="cv-container cv-card" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:600px;background:${CARD};border:1px solid ${BORDER};border-radius:14px;overflow:hidden;">` +
     `<tr><td class="cv-pad cv-rule" style="padding:22px 28px 16px;border-bottom:1px solid ${BORDER};"><span class="cv-wordmark" style="font-family:${FONT};font-size:24px;font-weight:800;letter-spacing:0.01em;">${WORDMARK_HTML}</span></td></tr>` +
     `<tr><td class="cv-pad" style="padding:26px 28px;">${blocksHtml}</td></tr>` +
-    `<tr><td class="cv-pad cv-rule" style="padding:18px 28px 24px;border-top:1px solid ${BORDER};"><p class="cv-ink3" style="margin:0;font-family:${FONT};font-size:12px;line-height:1.5;color:${INK3};">${footerHtml(footerText)}</p></td></tr>` +
+    `<tr><td class="cv-pad cv-rule" style="padding:18px 28px 24px;border-top:1px solid ${BORDER};"><p class="cv-ink3" style="margin:0;font-family:${FONT};font-size:12px;line-height:1.5;color:${INK3};">${footerHtml(footer)}</p></td></tr>` +
     `</table></td></tr></table></body></html>`
 
-  const text = [...opts.blocks.map((b) => b.text), "--", footerText].join("\n\n")
+  const text = [...opts.blocks.map((b) => b.text), "--", footerText(footer)].join("\n\n")
   return { text, html }
 }
