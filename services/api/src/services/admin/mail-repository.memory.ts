@@ -471,6 +471,10 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   hasWithheldReply(threadId: string): Promise<boolean> {
+    const thread = this.threads.get(threadId)
+    if (!thread || (thread.reportId === null && thread.cleanupId === null)) {
+      return Promise.resolve(false)
+    }
     return Promise.resolve(
       this.messages.some(
         (m) =>

@@ -595,11 +595,13 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       const rows = await sql<{ ok: boolean }[]>`
         SELECT EXISTS (
           SELECT 1
-          FROM mail_messages
-          WHERE thread_id = ${threadId}
-            AND direction = 'in'
-            AND unaffiliated = true
-            AND effects_applied_at IS NULL
+          FROM mail_messages m
+          JOIN mail_threads t ON t.id = m.thread_id
+          WHERE m.thread_id = ${threadId}
+            AND m.direction = 'in'
+            AND m.unaffiliated = true
+            AND m.effects_applied_at IS NULL
+            AND (t.report_id IS NOT NULL OR t.cleanup_id IS NOT NULL)
         ) AS ok
       `
       return rows[0]?.ok ?? false

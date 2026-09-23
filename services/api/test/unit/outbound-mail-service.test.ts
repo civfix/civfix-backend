@@ -552,6 +552,24 @@ describe("OutboundMailService: a failed send is recorded as a failure", () => {
     expect(repo.threads.get(t.id)?.status).toBe("needs_action")
   })
 
+  it("a successful resend clears needs_action on a composed thread holding an unaffiliated reply", async () => {
+    const repo = new InMemoryMailRepository()
+    const mailer = new FakeMailer()
+    mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
+    const svc = makeOutboundMailService({ repo, mailer, env: ENV, logger: { warn: () => {} } })
+    const t = await repo.createThread({ subject: "S" })
+    repo.seedMessage({ threadId: t.id, direction: "in", unaffiliated: true })
+    await expect(svc.appendOutbound(t.id, { toAddr: "x@y.com", body: "b" })).rejects.toThrow(
+      /smtp down/,
+    )
+    expect(repo.threads.get(t.id)?.status).toBe("needs_action")
+
+    mailer.sendOutbound = FakeMailer.prototype.sendOutbound.bind(mailer)
+    await svc.appendOutbound(t.id, { toAddr: "x@y.com", body: "b", kind: "resend" })
+
+    expect(repo.threads.get(t.id)?.status).toBe("sent")
+  })
+
   it("writes no audit row when the failed send carries no report", async () => {
     const repo = new InMemoryMailRepository()
     const mailer = new FakeMailer()

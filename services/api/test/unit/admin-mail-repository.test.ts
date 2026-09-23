@@ -233,6 +233,14 @@ describe("InMemoryMailRepository: withheld replies", () => {
     withheld.effectsAppliedAt = new Date()
     expect(await repo.hasWithheldReply(thread.id)).toBe(false)
   })
+
+  it("withholds nothing on a thread with no report or event", async () => {
+    const repo = new InMemoryMailRepository()
+    const thread = repo.seedThread()
+    repo.seedMessage({ threadId: thread.id, direction: "in", unaffiliated: true })
+    expect(await repo.hasWithheldReply(thread.id)).toBe(false)
+    expect(await repo.hasWithheldReply("missing-thread")).toBe(false)
+  })
 })
 
 describe("InMemoryMailRepository: getThread", () => {

@@ -243,7 +243,16 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
   })
 
   it("stores the auth verdict and flags the thread in the same insert", async () => {
-    const t = await repo.createThread({ subject: "Verdict", status: "replied" })
+    const [report] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
+      VALUES (gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
+              'published', '8a2a1072b59ffff', ${GEOID})
+      RETURNING id
+    `
+    const t = await repo.createThread({ subject: "Verdict", status: "replied", reportId: report!.id })
+    const loose = await repo.createThread({ subject: "Composed" })
+    await repo.insertMessage({ threadId: loose.id, direction: "in", unaffiliated: true })
+    expect(await repo.hasWithheldReply(loose.id)).toBe(false)
     const withheld = await repo.insertMessage({
       threadId: t.id,
       direction: "in",
