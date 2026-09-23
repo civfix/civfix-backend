@@ -42,9 +42,10 @@ const LOG_SENSITIVE_KEYS: ReadonlySet<string> = new Set(
 const SMTP_KEY = "smtp"
 const SMTP_RESPONSE_KEY = "response"
 
-// Every log line pays for this walk, so it stops at a fixed depth; anything deeper is dropped rather than
-// written unredacted.
+// Every log line pays for this walk, so it stops at a fixed depth and a fixed number of visited values;
+// anything past either bound is dropped rather than written unredacted.
 const MAX_REDACTION_DEPTH = 10
+const MAX_REDACTION_NODES = 1_000
 const TRUNCATED = "[Truncated]"
 const CIRCULAR = "[Circular]"
 
@@ -61,7 +62,47 @@ function isPlainObject(value: object): value is Record<string, unknown> {
 
 interface Walk {
   depth: number
+  visited: number
   ancestors: Set<object>
+}
+
+function budgetSpent(walk: Walk): boolean {
+  walk.visited += 1
+  return walk.visited > MAX_REDACTION_NODES
+}
+
+function redactArray(value: readonly unknown[], parentKey: string | null, walk: Walk): unknown[] {
+  const out: unknown[] = []
+  for (let i = 0; i < value.length; i++) {
+    if (budgetSpent(walk)) {
+      out.push(TRUNCATED)
+      break
+    }
+    out.push(redactValue(value[i], parentKey, walk))
+  }
+  return out
+}
+
+function redactEntries(
+  source: Record<string, unknown>,
+  target: Record<string, unknown>,
+  parentKey: string | null,
+  walk: Walk,
+  ownOnly: boolean,
+): void {
+  // for...in rather than Object.entries: a wide object is abandoned at the budget without first
+  // materializing every entry. An error keeps its inherited enumerable keys, because the serializer
+  // would otherwise read them unredacted through the shadow's shared prototype.
+  for (const key in source) {
+    if (ownOnly && !Object.prototype.hasOwnProperty.call(source, key)) continue
+    if (budgetSpent(walk)) {
+      target[key] = TRUNCATED
+      break
+    }
+    target[key] = isSensitiveLogKey(key, parentKey)
+      ? LOG_REDACTION_CENSOR
+      : redactValue(source[key], key, walk)
+  }
 }
 
 function redactValue(value: unknown, parentKey: string | null, walk: Walk): unknown {
@@ -73,14 +114,10 @@ function redactValue(value: unknown, parentKey: string | null, walk: Walk): unkn
   walk.ancestors.add(value)
   walk.depth += 1
   try {
-    if (Array.isArray(value)) return value.map((item) => redactValue(item, parentKey, walk))
+    if (Array.isArray(value)) return redactArray(value, parentKey, walk)
     if (value instanceof Error) return shadowError(value, walk)
     const out: Record<string, unknown> = {}
-    for (const [key, child] of Object.entries(value)) {
-      out[key] = isSensitiveLogKey(key, parentKey)
-        ? LOG_REDACTION_CENSOR
-        : redactValue(child, key, walk)
-    }
+    redactEntries(value, out, parentKey, walk, true)
     return out
   } finally {
     walk.depth -= 1
@@ -98,13 +135,13 @@ function shadowError(error: Error, walk: Walk): Error {
   if ("cause" in error) hideOn(shadow, "cause", redactValue(error.cause, null, walk))
   if (error instanceof AggregateError)
     hideOn(shadow, "errors", redactValue(error.errors, null, walk))
-  const shadowRecord = shadow as unknown as Record<string, unknown>
-  const errorRecord = error as unknown as Record<string, unknown>
-  for (const key in error) {
-    shadowRecord[key] = isSensitiveLogKey(key, null)
-      ? LOG_REDACTION_CENSOR
-      : redactValue(errorRecord[key], key, walk)
-  }
+  redactEntries(
+    error as unknown as Record<string, unknown>,
+    shadow as unknown as Record<string, unknown>,
+    null,
+    walk,
+    false,
+  )
   return shadow
 }
 
@@ -123,5 +160,8 @@ function hideOn(target: object, key: string, value: unknown): void {
  * and reply the framework logs) pass through untouched for their own serializers.
  */
 export function redactLogObject(object: Record<string, unknown>): Record<string, unknown> {
-  return redactValue(object, null, { depth: 0, ancestors: new Set() }) as Record<string, unknown>
+  return redactValue(object, null, { depth: 0, visited: 0, ancestors: new Set() }) as Record<
+    string,
+    unknown
+  >
 }

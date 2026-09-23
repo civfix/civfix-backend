@@ -3,6 +3,7 @@ import Fastify from "fastify"
 import { AppError, ErrorCode } from "@civfix/shared"
 import { loggerOptions } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
+import { redactLogObject } from "../../src/errors/log-redaction.js"
 
 const SECRET = "leak-canary-7f3a"
 const SENSITIVE_KEYS = ["email", "token", "otp", "phone", "password", "accessCode"] as const
@@ -101,6 +102,55 @@ describe("log lines redact sensitive keys at any depth", () => {
     const line = capture((log) => log.info({ deep }, "deep"))
     expect(line).toContain("deep")
     expect(line).not.toContain(SECRET)
+  })
+})
+
+describe("the redaction pass bounds its breadth", () => {
+  const WIDE = 5_000
+  const NODE_BUDGET_CEILING = 1_100
+
+  function countNodes(value: unknown): number {
+    if (value === null || typeof value !== "object") return 1
+    const children = Array.isArray(value) ? value : Object.values(value)
+    return 1 + children.reduce<number>((sum, child) => sum + countNodes(child), 0)
+  }
+
+  it("truncates a wide array instead of copying every element", () => {
+    const rows = Array.from({ length: WIDE }, (_, i) => ({ i, email: SECRET }))
+    const out = redactLogObject({ rows }) as { rows: unknown[] }
+
+    expect(out.rows.length).toBeLessThan(WIDE)
+    expect(out.rows.at(-1)).toBe("[Truncated]")
+    expect(countNodes(out)).toBeLessThan(NODE_BUDGET_CEILING)
+    expect(JSON.stringify(out)).not.toContain(SECRET)
+  })
+
+  it("truncates a wide object instead of copying every key", () => {
+    const wide: Record<string, unknown> = {}
+    for (let i = 0; i < WIDE; i++) wide[`k${i}`] = { email: SECRET, n: i }
+    const out = redactLogObject({ wide }) as { wide: Record<string, unknown> }
+
+    const values = Object.values(out.wide)
+    expect(values.length).toBeLessThan(WIDE)
+    expect(values.at(-1)).toBe("[Truncated]")
+    expect(countNodes(out)).toBeLessThan(NODE_BUDGET_CEILING)
+    expect(JSON.stringify(out)).not.toContain(SECRET)
+  })
+
+  it("keeps a wide payload's log line readable and redacted", () => {
+    const line = capture((log) =>
+      log.info({ rows: Array.from({ length: WIDE }, () => ({ token: SECRET })) }, "wide"),
+    )
+    expect(line).toContain("wide")
+    expect(line).toContain("[Truncated]")
+    expect(line).not.toContain(SECRET)
+  })
+
+  it("leaves an ordinary payload whole", () => {
+    const rows = Array.from({ length: 50 }, (_, i) => ({ i, email: SECRET }))
+    const out = redactLogObject({ rows }) as { rows: Array<{ i: number; email: string }> }
+    expect(out.rows).toHaveLength(50)
+    expect(out.rows[49]).toEqual({ i: 49, email: "[REDACTED]" })
   })
 })
 
