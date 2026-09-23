@@ -8,6 +8,7 @@ import {
   mintThreadToken,
   toThreadDTO,
   deriveWho,
+  type MailMessageRecord,
   type MailThreadRecord,
 } from "../../src/services/admin/mail-repository.drizzle.js"
 import { normalizeAuthVerdict } from "../../src/services/admin/mail-mappers.js"
@@ -105,6 +106,26 @@ describe("toThreadDTO", () => {
     expect(dto.messages[0]?.who).toBe("outreach@civfix.org")
     expect(dto.messages[0]?.delivery).toBe("pending")
     expect(dto.messages[1]?.delivery).toBeNull()
+    expect(dto.messages[0]).toMatchObject({ authVerdict: null, publication: null })
+    expect(dto.messages[1]).toMatchObject({ authVerdict: "pass", publication: null })
+  })
+
+  it("carries the verdict and publication state on a linked thread's inbound messages", async () => {
+    const repo = new InMemoryMailRepository()
+    const thread = repo.seedThread({ reportId: "r1" })
+    const seed = (over: Partial<MailMessageRecord>) =>
+      repo.seedMessage({ threadId: thread.id, direction: "in", ...over })
+    seed({ direction: "out" })
+    seed({ unaffiliated: true, authVerdict: "fail" })
+    seed({ authVerdict: "pass" })
+    seed({ effectsAppliedAt: new Date() })
+    const messages = (await repo.getThread(thread.id))?.messages ?? []
+    expect(messages.map((m) => [m.authVerdict, m.publication])).toEqual([
+      [null, null],
+      ["fail", "withheld"],
+      ["pass", "pending"],
+      [null, "published"],
+    ])
   })
 
   it("derives delivery from the message's latest sent/failed mail event", async () => {
