@@ -5,6 +5,7 @@ import type { FastifyBaseLogger } from "fastify"
 import { csvProvenanceRow, csvRow } from "./export-csv.js"
 import { hostExportBuilder, type HostExportContext } from "./export-builders.js"
 import type { HostExportRecord, HostExportRepository } from "./export-repository.drizzle.js"
+import type { WriteAuditInput } from "../admin/audit.js"
 
 export const EXPORT_DOWNLOAD_URL_TTL_SEC = 300
 export const EXPORT_LIST_LIMIT = 50
@@ -58,6 +59,7 @@ export interface HostExportService {
     requestedBy: string
     kind: HostExportKind
     filters: HostExportFilters | undefined
+    audit?: (exportId: string) => WriteAuditInput
   }): Promise<HostExportDTO>
   listForEvent(cleanupId: string): Promise<HostExportDTO[]>
   listForOrganization(organizationId: string): Promise<HostExportDTO[]>
@@ -80,13 +82,16 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
 
   return {
     async request(args) {
-      const record = await deps.repo.create({
-        cleanupId: args.cleanupId,
-        organizationId: args.organizationId,
-        requestedBy: args.requestedBy,
-        kind: args.kind,
-        filters: (args.filters ?? {}) as Record<string, unknown>,
-      })
+      const record = await deps.repo.create(
+        {
+          cleanupId: args.cleanupId,
+          organizationId: args.organizationId,
+          requestedBy: args.requestedBy,
+          kind: args.kind,
+          filters: (args.filters ?? {}) as Record<string, unknown>,
+        },
+        args.audit,
+      )
       return toHostExportDTO(record)
     },
 

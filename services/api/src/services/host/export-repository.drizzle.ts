@@ -1,5 +1,6 @@
 import type { HostExportKind, HostExportStatus } from "@civfix/shared"
 import type { Sql } from "../../db/client.js"
+import { writeAudit, type WriteAuditInput } from "../admin/audit.js"
 
 export interface HostExportRecord {
   id: string
@@ -22,13 +23,16 @@ export interface HostExportRecord {
 }
 
 export interface HostExportRepository {
-  create(input: {
-    cleanupId: string | null
-    organizationId: string | null
-    requestedBy: string
-    kind: HostExportKind
-    filters: Record<string, unknown>
-  }): Promise<HostExportRecord>
+  create(
+    input: {
+      cleanupId: string | null
+      organizationId: string | null
+      requestedBy: string
+      kind: HostExportKind
+      filters: Record<string, unknown>
+    },
+    audit?: (exportId: string) => WriteAuditInput,
+  ): Promise<HostExportRecord>
   findById(exportId: string): Promise<HostExportRecord | null>
   listForEvent(cleanupId: string, limit: number): Promise<HostExportRecord[]>
   listForOrganization(organizationId: string, limit: number): Promise<HostExportRecord[]>
@@ -94,15 +98,21 @@ function toRecord(row: RowSelect): HostExportRecord {
 
 export function makeDrizzleHostExportRepository(sql: Sql): HostExportRepository {
   return {
-    async create(input) {
-      const rows = await sql<RowSelect[]>`
-        INSERT INTO host_exports (cleanup_id, organization_id, requested_by, kind, filters)
-        VALUES (${input.cleanupId}, ${input.organizationId}, ${input.requestedBy}, ${input.kind},
-                ${sql.json(input.filters as Parameters<typeof sql.json>[0])})
-        RETURNING id, cleanup_id, organization_id, requested_by, kind, filters, status, r2_key,
-                  row_count, byte_size, truncated, error_code, run_token, requested_at, started_at,
-                  completed_at, expires_at`
-      return toRecord(rows[0]!)
+    create(input, audit) {
+      // The export hands member PII out of the platform, so its request is never on record without
+      // its audit row: both commit or neither does.
+      return sql.begin(async (tx) => {
+        const rows = await tx<RowSelect[]>`
+          INSERT INTO host_exports (cleanup_id, organization_id, requested_by, kind, filters)
+          VALUES (${input.cleanupId}, ${input.organizationId}, ${input.requestedBy}, ${input.kind},
+                  ${tx.json(input.filters as Parameters<typeof tx.json>[0])})
+          RETURNING id, cleanup_id, organization_id, requested_by, kind, filters, status, r2_key,
+                    row_count, byte_size, truncated, error_code, run_token, requested_at,
+                    started_at, completed_at, expires_at`
+        const record = toRecord(rows[0]!)
+        if (audit !== undefined) await writeAudit(tx, audit(record.id))
+        return record
+      }) as Promise<HostExportRecord>
     },
 
     async findById(exportId) {
