@@ -21,10 +21,13 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 
+// Whitespace-collapsed so the assertions pin the script's structure, not the formatter's line breaks.
 const SCRIPT = readFileSync(
   fileURLToPath(new URL("../../scripts/refresh-boundaries.ts", import.meta.url)),
   "utf8",
 )
+  .replace(/\(\s+/g, "(")
+  .replace(/\s+/g, " ")
 
 describe("refresh-boundaries: connection posture (F141)", () => {
   it("opens its connection with the long-running-CLI timeouts, not the request-path defaults", () => {
