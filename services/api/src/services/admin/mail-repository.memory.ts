@@ -486,6 +486,26 @@ export class InMemoryMailRepository implements MailRepository {
     )
   }
 
+  findInboundMessage(threadId: string, messageId: string): Promise<MailMessageRecord | null> {
+    const found = this.messages.find(
+      (m) => m.id === messageId && m.threadId === threadId && m.direction === "in",
+    )
+    return Promise.resolve(found ? { ...found } : null)
+  }
+
+  approveWithheldReply(
+    messageId: string,
+    audit: MailAuditInput,
+  ): Promise<MailMessageRecord | null> {
+    const m = this.messages.find((x) => x.id === messageId)
+    if (!m || m.direction !== "in" || !m.unaffiliated || m.effectsAppliedAt !== null) {
+      return Promise.resolve(null)
+    }
+    m.unaffiliated = false
+    this.recordAudit(audit)
+    return Promise.resolve({ ...m })
+  }
+
   markThreadRead(id: string): Promise<boolean> {
     const t = this.threads.get(id)
     if (!t) return Promise.resolve(false)

@@ -82,6 +82,15 @@ interface PendingEffectsRowSelect extends MessageRowSelect {
 }
 
 
+function messageColumns(sql: Queryable): SqlFragment {
+  return sql`
+    id, thread_id, direction, from_addr, to_addr, subject,
+    left(body, ${MAIL_BODY_DETAIL_CHARS}) AS body,
+    kind, attachments, message_id, in_reply_to, unaffiliated, effects_claimed_at,
+    effects_applied_at, effects_stage, auth_verdict, created_at
+  `
+}
+
 function threadColumns(sql: Queryable, alias?: string): SqlFragment {
   const p = alias === undefined ? sql`` : sql`${sql(alias)}.`
   return sql`
@@ -496,15 +505,51 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async findMessageByMessageId(messageId: string): Promise<MailMessageRecord | null> {
       const rows = await sql<MessageRowSelect[]>`
-        SELECT id, thread_id, direction, from_addr, to_addr, subject,
-               left(body, ${MAIL_BODY_DETAIL_CHARS}) AS body,
-               kind, attachments, message_id, in_reply_to, unaffiliated, effects_claimed_at,
-                    effects_applied_at, effects_stage, auth_verdict, created_at
+        SELECT ${messageColumns(sql)}
         FROM mail_messages
         WHERE message_id = ${messageId}
         LIMIT 1
       `
       return rows[0] ? toMessageRecord(rows[0]) : null
+    },
+
+    async findInboundMessage(
+      threadId: string,
+      messageId: string,
+    ): Promise<MailMessageRecord | null> {
+      const rows = await sql<MessageRowSelect[]>`
+        SELECT ${messageColumns(sql)}
+        FROM mail_messages
+        WHERE id = ${messageId} AND thread_id = ${threadId} AND direction = 'in'
+        LIMIT 1
+      `
+      return rows[0] ? toMessageRecord(rows[0]) : null
+    },
+
+    async approveWithheldReply(
+      messageId: string,
+      audit: MailAuditInput,
+    ): Promise<MailMessageRecord | null> {
+      return sql.begin(async (tx) => {
+        const rows = await tx<MessageRowSelect[]>`
+          UPDATE mail_messages
+          SET unaffiliated = false
+          WHERE id = ${messageId}
+            AND direction = 'in'
+            AND unaffiliated = true
+            AND effects_applied_at IS NULL
+          RETURNING ${messageColumns(tx)}
+        `
+        const row = rows[0]
+        if (!row) return null
+        await writeAudit(tx, {
+          actorId: audit.actorId,
+          action: audit.action,
+          target: audit.target,
+          meta: audit.meta ?? null,
+        })
+        return toMessageRecord(row)
+      })
     },
 
     async hasSendInFlight(threadId: string): Promise<boolean> {
