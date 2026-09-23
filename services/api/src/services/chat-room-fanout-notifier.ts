@@ -3,7 +3,7 @@ import type { FastifyBaseLogger } from "fastify"
 import type { NotificationService } from "./notification-service.js"
 import type { MessageKey } from "../i18n/renderMessage.js"
 import { CONVERSATION_BELL } from "./conversation-bell.js"
-import { textPreview } from "../routes/chat-notify-copy.js"
+import { textPreview } from "./chat-notify-copy.js"
 import { mapWithLimit } from "../lib/concurrency.js"
 
 export type RoomFanoutKind = "report" | "group"
