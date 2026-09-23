@@ -518,18 +518,16 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             signals, "similar", status, meta, created_at
           )
           SELECT
-            -- L5: derive the kind from the held media instead of hardcoding 'image'. A report with any
-            -- media asset is a media hold ('image'; the moderation kind enum has no 'video', so image is
-            -- the closest media kind), one without media is a content/behavioral hold ('pattern').
+            -- A report with any media asset is a media hold ('image': the moderation kind enum has no
+            -- 'video'), one without media is a content/behavioral hold ('pattern').
             CASE WHEN EXISTS (SELECT 1 FROM media_assets ma WHERE ma.report_id = r.id)
                  THEN 'image' ELSE 'pattern' END,
             'report', r.id, 'Held report', 'Awaiting automated review', r.category,
             j.name, 'med', 'Hidden pending review', '[]'::jsonb, '[]'::jsonb, 'open',
             jsonb_build_object(
               'reporter', COALESCE(u.display_name, 'Anonymous'),
-              -- For a held report the reporter display string IS the report's own reporter (the person
-              -- who filed it), so reporterUserId deep-links to that same account (null when anonymous).
-              -- This is NOT the subject-author conflation: here reporter == author genuinely.
+              -- For a held report the reporter is the report's own author, so reporterUserId deep-links to
+              -- that account (null when anonymous). This is not the subject-author conflation.
               'reporterUserId', u.id::text,
               'desc', COALESCE(r.description, ''),
               'user', CASE WHEN u.id IS NOT NULL THEN jsonb_build_object(

@@ -175,7 +175,7 @@ function fetchSource(job: BoundaryJob, outDir: string): boolean {
     return true
   } catch (err) {
     if (!isFederal(job)) throw err
-    warn(`PAD-US source fetch failed (${job.sourceUrl}) — federal layer will be skipped`)
+    warn(`PAD-US source fetch failed (${job.sourceUrl}); federal layer will be skipped`)
     return false
   } finally {
     rmSync(zip, { force: true })
@@ -194,7 +194,7 @@ function convert(job: BoundaryJob, outDir: string): string | null {
     execFileSync("ogr2ogr", [...job.ogr2ogrArgs, outPath, src], { stdio: "inherit" })
   } catch (err) {
     if (isFederal(job)) {
-      warn(`PAD-US convert failed — federal layer will be skipped`)
+      warn(`PAD-US convert failed; federal layer will be skipped`)
       return null
     }
     throw err
@@ -270,7 +270,7 @@ async function main(): Promise<void> {
       execFileSync("ogr2ogr", ["--version"], { stdio: "ignore" })
     } catch {
       console.error(
-        `${PREFIX}: ogr2ogr (GDAL) not found on PATH — install it (e.g. \`brew install gdal\`) and re-run.`,
+        `${PREFIX}: ogr2ogr (GDAL) not found on PATH; install it (e.g. \`brew install gdal\`) and re-run.`,
       )
       process.exit(2)
     }
@@ -301,7 +301,7 @@ async function main(): Promise<void> {
       const total = Object.values(rowCounts).reduce((a, b) => a + b, 0)
       if (total === 0)
         warn(
-          "no jurisdictions in the DB — run a full load first (this backfill will resolve nothing)",
+          "no jurisdictions in the DB; run a full load first (this backfill will resolve nothing)",
         )
     } else {
       log(`vintage ${year}: ${boundaryManifest(year).length} layer job(s); work dir ${outDir}`)
@@ -315,7 +315,7 @@ async function main(): Promise<void> {
         if (out) converted.push({ job, path: out })
       }
       if (!converted.some((c) => !isFederal(c.job))) {
-        throw new Error("no census layers converted — refusing to load a partial-coverage dataset")
+        throw new Error("no census layers converted; refusing to load a partial-coverage dataset")
       }
 
       rowCounts = {}
@@ -337,11 +337,11 @@ async function main(): Promise<void> {
               )
           rowCounts[job.layer] = (rowCounts[job.layer] ?? 0) + upserted
           log(`[${job.layer}] upserted ${upserted} (skipped ${skipped} of ${features})`)
-          if (upserted === 0) warn(`[${job.layer}] upserted 0 rows — check the source/conversion`)
+          if (upserted === 0) warn(`[${job.layer}] upserted 0 rows; check the source/conversion`)
           if (isFederal(job)) federalLoaded = true
         } catch (err) {
           if (!isFederal(job)) throw err
-          warn(`[federal] ingest failed — skipping federal layer (${(err as Error).message})`)
+          warn(`[federal] ingest failed; skipping federal layer (${(err as Error).message})`)
         }
       }
 
@@ -362,7 +362,7 @@ async function main(): Promise<void> {
 
     const tag = federalLoaded ? vintageTag(year) : `${vintageTag(year)}-nofed`
     await stampVintage(handle.sql, tag, year, rowCounts)
-    log(`done — vintage ${tag}; row counts: ${JSON.stringify(rowCounts)}`)
+    log(`done: vintage ${tag}; row counts: ${JSON.stringify(rowCounts)}`)
     completed = true
   } finally {
     if (handle) await handle.close()
@@ -370,7 +370,7 @@ async function main(): Promise<void> {
     if (!keep && !backfillOnly && completed) {
       rmSync(outDir, { recursive: true, force: true })
     } else if (!keep && !backfillOnly && !completed) {
-      warn(`run did not complete — keeping the work dir for retry/inspection: ${outDir}`)
+      warn(`run did not complete; keeping the work dir for retry/inspection: ${outDir}`)
     }
   }
 }

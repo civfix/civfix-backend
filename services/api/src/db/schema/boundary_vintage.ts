@@ -1,17 +1,12 @@
 /**
- * boundary_vintage: single-row audit record of the active jurisdiction-boundary dataset, stamped by the
- * local refresh tool (scripts/refresh-boundaries.ts) after each successful nationwide load. Canonical DDL:
- * drizzle/0028_boundary_vintage.sql.
- *
- * Mirrors the hand-authored DDL for typed queries + drizzle-kit diff inspection only (the refresh tool
- * writes this row through raw `sql` like the other db/* scripts). The singleton CHECK (id) and the jsonb
- * default live in the SQL (drizzle-kit cannot model the CHECK), so they are NOT re-declared here.
+ * Single-row record of the active boundary dataset, stamped by scripts/refresh-boundaries.ts after each
+ * nationwide load. The singleton CHECK (id) lives only in 0028_boundary_vintage.sql because drizzle-kit
+ * cannot model it.
  */
 
 import { boolean, integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core"
 
 export const boundaryVintage = pgTable("boundary_vintage", {
-  // Singleton primary key (always true). The CHECK (id) enforcing exactly one row lives in the DDL.
   id: boolean("id").primaryKey().default(true),
   vintageTag: text("vintage_tag").notNull(),
   tigerVintage: integer("tiger_vintage").notNull(),

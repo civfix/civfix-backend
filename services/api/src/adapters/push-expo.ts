@@ -6,7 +6,7 @@ export interface ExpoPushConfig {
   endpoint?: string
   timeoutMs?: number
   fetchImpl?: typeof fetch
-  /** Base backoff before the single 429/5xx retry (jitter is added on top). Injectable for tests. */
+  /** Jitter is added on top. */
   retryDelayMs?: number
 }
 
@@ -16,7 +16,6 @@ const EXPO_TIMEOUT_MS = 4000
 /** Expo asks senders to back off and retry a 429 / 5xx rather than dropping the batch. */
 const EXPO_RETRY_DELAY_MS = 250
 
-/** True for the HTTP statuses Expo documents as retryable (rate limit / transient server error). */
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500
 }
@@ -36,9 +35,8 @@ export interface ExpoTicket {
 }
 
 /**
- * Walk one chunk's tickets, returning the tokens Expo says are dead (DeviceNotRegistered -> prune) and
- * logging every other ticket error. Pure + exported so the prune-vs-warn matrix is unit-testable without
- * an HTTP round trip. `tickets` is index-aligned with `chunk`.
+ * Only DeviceNotRegistered prunes a token; every other ticket error is logged. `tickets` is index-aligned
+ * with `chunk`.
  */
 export function collectExpoInvalidTokens(
   tickets: readonly ExpoTicket[],

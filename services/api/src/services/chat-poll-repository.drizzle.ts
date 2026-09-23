@@ -1,29 +1,17 @@
 /**
- * P6 Task 6.3/6.4: chat_polls + chat_poll_options + chat_poll_votes persistence (migration 0048).
+ * A poll IS a chat_messages row with kind='poll' (body = the question, for previews and excerpts) plus a
+ * three-table subtree keyed on that message's id.
  *
- * A poll IS a chat_messages row with kind='poll' (body = the question, for previews/excerpts) plus the
- * three-table poll subtree keyed on that message's id. This repo owns the WRITE side (create the message
- * + poll rows in ONE transaction, atomic vote-replace, close) and the poll HYDRATION reader
- * (`loadPollsFor`) that chat-repository.drizzle wires into its page/single-row hydration so history reads,
- * broadcasts, and re-reads all carry the poll DTO.
+ * This repo never re-reads a ChatMessageDTO itself: the service re-reads through the chat repository,
+ * which depends on `loadPollsFor` here. One direction, so no import cycle.
  *
- * SEAM SPLIT (avoids an import cycle): the poll repo NEVER re-reads a ChatMessageDTO itself — after a
- * write, the chat-poll-service re-reads through the chat repository's findXMessage (which now attaches
- * `poll` via loadPollsFor). So this file depends only on `sql` + the shared PollDTO shape; chat-repository
- * depends on THIS file's `loadPollsFor`. One direction, no cycle.
- *
- * COUNTS + `mine` + totalVoters (loadPollsFor):
- *   - option.count   = COUNT(votes) for that (poll, idx).
- *   - option.mine    = the viewer cast a vote for that idx.
- *   - totalVoters    = COUNT(DISTINCT user_id) across the poll (a multi-select ballot is ONE voter).
- *   - myVote         = the idxs the viewer chose (derived from option.mine).
- * anonymous never exposes voter identity — the DTO simply has no voter field (privacy by construction).
+ * An anonymous poll never exposes voter identity because the DTO has no voter field at all.
  */
 
 import type { Queryable, Sql } from "../db/client.js"
 import type { PollDTO, PollOptionDTO } from "@civfix/shared"
 
-/** The room the poll message lands in. dm is excluded upstream (a poll needs an audience). */
+/** dm is excluded upstream: a poll needs an audience. */
 export type PollRoomColumn = "cleanup_id" | "report_id" | "group_id"
 
 export interface CreatePollRow {
@@ -36,37 +24,25 @@ export interface CreatePollRow {
   createdBy: string
 }
 
-/** Poll-body metadata for the vote/close gate ladder (no hydration). Null when the id is not a poll. */
 export interface PollMeta {
   messageId: string
   createdBy: string
   closedAt: Date | null
   allowMultiple: boolean
-  /** The poll's valid option ordinals (for the invalid-idx 422 check). */
   optionIdxs: number[]
 }
 
 export interface ChatPollRepository {
-  /**
-   * Create a poll: INSERT the chat_messages row (kind 'poll', body = question, correct room ref) +
-   * chat_polls + chat_poll_options in ONE transaction. Returns the new message id; the caller re-reads
-   * the hydrated ChatMessageDTO through the chat repository. `messageId` is injected (the container's id
-   * factory) so it matches the rest of the chat write paths.
-   */
+  /** `messageId` comes from the container's id factory so it matches the other chat write paths. */
   create(input: CreatePollRow, messageId: string): Promise<string>
-  /** Resolve poll gate metadata by message id alone. Null when the id is not a poll (or unknown). */
   findPollMeta(messageId: string): Promise<PollMeta | null>
   /**
-   * Atomic vote replace: DELETE the voter's existing ballots for this poll, then INSERT the new set, in
-   * ONE transaction. An empty `optionIdxs` retracts (delete only). The option idxs are assumed already
-   * validated against the poll's options (the service does that off findPollMeta). The tx re-asserts the
-   * poll is still OPEN under a share lock, so a close racing the vote wins and the replace no-ops.
+   * An empty `optionIdxs` retracts. The idxs must already be validated against the poll's options. The
+   * tx re-asserts the poll is still open under a share lock, so a close racing the vote wins and the
+   * replace no-ops.
    */
   replaceVotes(pollId: string, userId: string, optionIdxs: number[]): Promise<void>
-  /**
-   * Close the poll (set closed_at). IDEMPOTENT: a re-close keeps the ORIGINAL closed_at (COALESCE), so a
-   * second close is a no-op that never moves the timestamp.
-   */
+  /** Idempotent: a re-close keeps the original closed_at and never moves the timestamp. */
   close(pollId: string): Promise<void>
 }
 
@@ -77,8 +53,7 @@ export function makeChatPollRepository(sql: Sql): ChatPollRepository {
       const reportId = input.roomColumn === "report_id" ? input.roomId : null
       const groupId = input.roomColumn === "group_id" ? input.roomId : null
       await sql.begin(async (tx) => {
-        // The poll message: kind 'poll', body = the question (drives previews/excerpts/threads),
-        // no attachments / reply. Exactly one room ref is set (the 0047 three-way XOR).
+        // Exactly one room ref is set, as the chat_messages three-way XOR check requires.
         await tx`
           INSERT INTO chat_messages (id, cleanup_id, report_id, group_id, sender_id, body, kind)
           VALUES (${messageId}, ${cleanupId}, ${reportId}, ${groupId}, ${input.createdBy}, ${input.question}, 'poll')
@@ -173,12 +148,8 @@ interface PollOptionRowSelect {
 }
 
 /**
- * Batch-hydrate the poll DTO for a set of poll-kind message ids (viewer-aware). Returns a map keyed by
- * message id; ids that are not polls simply don't appear. Three grouped queries (polls, options+counts,
- * distinct voters) regardless of page size — zero queries when the page carries no polls.
- *
- * Callers (chat-repository.drizzle) pass ONLY live (non-tombstoned) poll-kind ids: a deleted poll
- * hydrates as a plain tombstone with no `poll` field (the poll body must not survive its deletion).
+ * Three grouped queries regardless of page size. Callers pass only live poll-kind ids: a deleted poll
+ * hydrates as a plain tombstone with no `poll` field, because the poll body must not survive deletion.
  */
 export async function loadPollsFor(
   sql: Queryable,
@@ -194,8 +165,7 @@ export async function loadPollsFor(
       FROM chat_polls
       WHERE message_id = ANY(${distinct}::uuid[])
     `,
-    // Per-option tally + whether the VIEWER voted this idx, in one grouped scan. A viewer-null filter
-    // (`v.user_id = NULL`) is never true, so mine_count = 0 for anonymous/unauthenticated reads.
+    // A viewer-null filter (`v.user_id = NULL`) is never true, so mine_count is 0 for signed-out reads.
     sql<PollOptionRowSelect[]>`
       SELECT
         o.poll_id,
@@ -209,7 +179,7 @@ export async function loadPollsFor(
       GROUP BY o.poll_id, o.idx, o.text
       ORDER BY o.poll_id, o.idx ASC
     `,
-    // totalVoters = DISTINCT users, NOT vote rows (a multi-select ballot is one voter).
+    // Distinct users, not vote rows: a multi-select ballot is one voter.
     sql<{ poll_id: string; total: number }[]>`
       SELECT poll_id, COUNT(DISTINCT user_id)::int AS total
       FROM chat_poll_votes

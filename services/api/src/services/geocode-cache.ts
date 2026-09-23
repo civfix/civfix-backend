@@ -1,7 +1,7 @@
 /**
  * Read-through cache for reverse geocodes (`geocode_cache`, migration 0179).
  *
- * WHY. A reverse geocode is stable per point and the SAME point is resolved several times over one
+ * A reverse geocode is stable per point and the SAME point is resolved several times over one
  * creation flow: the client previews it while the host drags the pin (debounced, rounded to 5 decimals),
  * then the create path resolves it again server-side. Keying on the shared `geocodePointKey` - the same
  * 5-decimal rounding the client's preview query uses - collapses all of that onto one row, so a pin
@@ -33,9 +33,7 @@
 import { isLocatedPrecision, type AddressPrecision } from "@civfix/shared"
 import type { Queryable } from "../db/client.js"
 
-/** A chain answer past this age is re-resolved (and the row overwritten) on next read. */
 export const GEOCODE_CACHE_TTL_MS = 180 * 24 * 60 * 60 * 1000
-/** A negative entry ("the chain had nothing") is trusted for minutes, not months. */
 export const GEOCODE_CACHE_NEGATIVE_TTL_MS = 15 * 60 * 1000
 
 export interface GeocodeCacheEntry {
@@ -59,8 +57,8 @@ interface GeocodeCacheRowSelect {
 }
 
 /**
- * Did the provider chain prove a located rung for this row? The one definition of "worth the long TTL",
- * read by the freshness rule here and by the resolver that decides what to store.
+ * The one definition of "worth the long TTL", read by the freshness rule here and by the resolver that
+ * decides what to store.
  */
 export function isChainAnswer(entry: {
   address: string | null
@@ -69,7 +67,6 @@ export function isChainAnswer(entry: {
   return entry.address !== null && isLocatedPrecision(entry.precision)
 }
 
-/** True while the row may still be served. Anything but a chain answer expires far sooner. */
 export function isFreshEntry(
   row: { address: string | null; precision: AddressPrecision | null; resolvedAt: Date },
   now: Date,
@@ -145,7 +142,7 @@ export function makeGeocodeCache(opts: GeocodeCacheOptions): GeocodeCache {
   }
 }
 
-/** A cache that never hits and never stores - the wiring for a process with no database. */
+/** The wiring for a process with no database. */
 export const NO_GEOCODE_CACHE: GeocodeCache = {
   read: async () => null,
   write: async () => undefined,

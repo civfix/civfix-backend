@@ -1,17 +1,5 @@
-/**
- * Admin jurisdiction-contacts service (Phase 2): the "Save & route" core action + the jurisdictions
- * directory.
- *
- * "Save & route" persists a per-category routing contact for a GEOID (upserts jurisdiction_contacts +
- * mirrors the legacy contact_emails[]/report_form_url), sets contact_updated_at, marks the geoid's open
- * discovery task done, and enqueues throttled outreach when the digest is enabled. It does NOT touch the
- * geoid's reports: nothing is mailed per report here, so nothing is marked routed. Audit is the in-tx
- * repo's responsibility (H4); the service returns the outcome so the route can audit + the test can
- * assert. See endpoints #13/#14/#15.
- *
- * The pure types live in jurisdiction-contacts-types.ts and the pure directory projectors in
- * jurisdiction-directory-projection.ts; this module re-exports both so external importers keep resolving.
- */
+// "Save & route" does not touch the geoid's reports: nothing is mailed per report here, so nothing is
+// marked routed. The types and directory projectors are re-exported so external importers keep resolving.
 
 import { AppError } from "@civfix/shared"
 import type { JurisdictionListQuery } from "@civfix/shared"
@@ -47,17 +35,16 @@ export function makeJurisdictionContactsService(
         throw AppError.validation({ contacts: "At least one contact is required to route." })
       }
 
-      // The save + the audit run atomically in the repo (H4); the outreach enqueue is a post-commit
-      // action, audited separately by the worker on send.
+      // The save and its audit commit together in the repo; the outreach enqueue is post-commit and is
+      // audited separately by the worker on send.
       const { taskResolved } = await deps.repo.saveAndRoute(geoid, input, { actorId })
       const outreachEnqueued = await maybeEnqueueOutreach(geoid)
       return { geoid, taskResolved, outreachEnqueued }
     },
 
     async patch(geoid: string, input: PatchContactsInput, actorId: string): Promise<void> {
-      // Reject a reserved @handle BEFORE the write (the same blocklist that bars user handles from
-      // impersonating system/jurisdiction names). A null/empty handle (clearing it) is always allowed; the
-      // DB-dependent uniqueness check lives in the repo (it needs the live table, in-transaction).
+      // The same blocklist that bars user handles from impersonating system or jurisdiction names.
+      // Uniqueness is checked in the repo, which needs the live table in-transaction.
       if (
         typeof input.handle === "string" &&
         input.handle !== "" &&
@@ -70,8 +57,7 @@ export function makeJurisdictionContactsService(
     },
 
     async listDirectory(query: JurisdictionListQuery) {
-      // query.filter / query.sort are the shared Zod enums enforced at the wire boundary, so they are
-      // structurally the ListDirectoryArgs unions; default to "all" / "population" when omitted.
+      // The shared Zod enums enforced at the wire boundary are structurally the ListDirectoryArgs unions.
       const { records, nextCursor, total, facets } = await deps.repo.listDirectory({
         q: query.q && query.q.trim() !== "" ? query.q.trim() : null,
         filter: (query.filter ?? "all") as DirectoryFilter,
@@ -83,7 +69,6 @@ export function makeJurisdictionContactsService(
       return {
         items: records.map(toDirectoryDTO),
         nextCursor,
-        // Omit the first-page-only fields on deeper pages (null -> undefined) so the wire stays clean.
         ...(total !== null ? { total } : {}),
         ...(facets !== null ? { facets } : {}),
       }
@@ -96,9 +81,8 @@ export function makeJurisdictionContactsService(
     },
   }
 
-  // maybeEnqueueOutreach is best-effort throttling: the worker's outreach_state stamp is the real guard,
-  // so a lost race here only risks a redundant enqueue (deduped by the singletonKey under a deduping queue
-  // policy), never a missed send.
+  // Best-effort throttling: the worker's outreach_state stamp is the real guard, so a lost race here only
+  // risks a redundant enqueue (deduped by singletonKey), never a missed send.
   async function maybeEnqueueOutreach(geoid: string): Promise<boolean> {
     if (!deps.outreachDigestEnabled) return false
     const state = await deps.repo.getOutreachState(geoid)

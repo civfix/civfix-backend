@@ -175,7 +175,7 @@ function reportSelect(
       r.reference_code,
       r.verification_verdict,
       r.verified_at,
-      -- The reporter's earned report-verified flag (D7); null for an anonymous report (no user_moderation
+      -- The reporter's earned report-verified flag; null for an anonymous report (no user_moderation
       -- row joins), false when the reporter has a user row but no moderation row yet.
       CASE WHEN u.id IS NULL THEN NULL ELSE COALESCE(um.report_verified, false) END AS reporter_report_verified,
       ${personSelect(sql, "u", "reporter")}

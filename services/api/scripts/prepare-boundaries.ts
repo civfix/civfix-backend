@@ -1,8 +1,7 @@
 /**
- * Boundary-prep convert tool (ops / air-gapped fallback): the thin imperative wrapper around the PURE
- * boundaryManifest (src/db/boundaries/manifest.ts). For each layer job it shells `ogr2ogr` to convert one
- * already-downloaded Census/USGS source into a reprojected (EPSG:4326) GeoJSON file, then prints the
- * matching `pnpm db:ingest` line.
+ * Boundary-prep convert tool (ops / air-gapped fallback) around the PURE boundaryManifest
+ * (src/db/boundaries/manifest.ts): it shells `ogr2ogr` to convert each already-downloaded Census/USGS
+ * source into a reprojected (EPSG:4326) GeoJSON file, then prints the matching `pnpm db:ingest` line.
  *
  *   pnpm db:prepare-boundaries             # default vintage, outDir data/boundaries
  *   pnpm db:prepare-boundaries 2025 out    # explicit vintage + outDir
@@ -12,9 +11,9 @@
  * only the standalone CONVERT step, kept for the air-gapped path: convert here, copy the GeoJSON to the
  * box, then `node dist/db/ingest-jurisdictions.js <file> <layer> [geoid-prefix]` per layer there.
  *
- * Scope + constraints: REQUIRES GDAL/ogr2ogr; run on a box that has it (never inside the API image — this
+ * Scope + constraints: REQUIRES GDAL/ogr2ogr; run on a box that has it (never inside the API image: this
  * is a `scripts/` tsx tool, never a tsup entry). Touches NO database, NO env, NO npm deps beyond node
- * builtins. It does NOT download the sources — it expects each job's source already extracted under
+ * builtins. It does NOT download the sources; it expects each job's source already extracted under
  * `<outDir>/sources/` at the path the manifest's `sourcePath` names (TIGER `.shp`; PAD-US `.gdb`).
  *
  * Exit codes: 0 = at least one layer converted; 1 = NOTHING converted; 2 = GDAL not found / bad args.
@@ -26,19 +25,16 @@ import { boundaryManifest, type BoundaryJob } from "../src/db/boundaries/manifes
 
 const PREFIX = "prepare-boundaries"
 
-/** The local dataset path ogr2ogr reads for a job: <outDir>/sources/<job.sourcePath> (the .shp or .gdb
- *  the source archive extracts to). */
 function localSourceFor(job: BoundaryJob, outDir: string): string {
   return `${outDir}/sources/${job.sourcePath}`
 }
 
-/** Verify GDAL/ogr2ogr is on PATH; exit(2) with an actionable message if not. */
 function assertOgr2ogr(): void {
   try {
     execFileSync("ogr2ogr", ["--version"], { stdio: "ignore" })
   } catch {
     console.error(
-      `${PREFIX}: ogr2ogr (GDAL) not found on PATH — install GDAL (e.g. \`brew install gdal\`) and re-run.`,
+      `${PREFIX}: ogr2ogr (GDAL) not found on PATH; install GDAL (e.g. \`brew install gdal\`) and re-run.`,
     )
     process.exit(2)
   }
@@ -68,8 +64,8 @@ function main(): void {
   for (const job of jobs) {
     const source = localSourceFor(job, outDir)
     const outPath = `${outDir}/${job.outFile}`
-    // The full argv: the manifest's conversion args, then OUTPUT then SOURCE (ogr2ogr's dst-then-src order).
-    // No geoid prefix appears here — prefixing is an ingest-time concern (see the manifest header).
+    // OUTPUT before SOURCE: ogr2ogr's dst-then-src order. No geoid prefix here: prefixing is an
+    // ingest-time concern (see the manifest header).
     const args = [...job.ogr2ogrArgs, outPath, source]
     console.log(`${PREFIX}: [${job.layer}] ogr2ogr ${args.join(" ")}`)
     try {
@@ -87,7 +83,7 @@ function main(): void {
     }
   }
 
-  console.log(`${PREFIX}: done — ${converted} converted, ${failed.length} failed`)
+  console.log(`${PREFIX}: done: ${converted} converted, ${failed.length} failed`)
   if (failed.length > 0) console.error(`${PREFIX}: failed/missing jobs: ${failed.join(", ")}`)
   if (converted === 0) process.exit(1)
 }

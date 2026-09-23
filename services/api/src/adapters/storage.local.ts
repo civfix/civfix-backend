@@ -78,7 +78,7 @@ export class LocalDiskStorage implements Storage {
     if (config.nodeEnv === "production") {
       throw new Error(
         "LOCAL_STORAGE_DIR selects the local-disk storage driver, which serves objects from the API " +
-          "process and mounts development-only PUT/GET routes. It is refused in production — " +
+          "process and mounts development-only PUT/GET routes. It is refused in production; " +
           "configure R2 (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET) instead.",
       )
     }
@@ -91,7 +91,7 @@ export class LocalDiskStorage implements Storage {
         `LOCAL_STORAGE_DIR must be an ABSOLUTE path, got "${rootDirectory}". The API service ` +
           "(services/api) and the media-worker service (services/media-worker) run from different " +
           "working directories, so a relative path resolves against each process's own cwd and gives " +
-          "them two divergent storage trees — the worker would write thumbnails the API then serves as " +
+          "them two divergent storage trees, so the worker would write thumbnails the API then serves as " +
           "404s. Set the SAME absolute path in LOCAL_STORAGE_DIR for both services.",
       )
     }

@@ -1,11 +1,7 @@
 /**
- * Service-hours transcript routes (P5 / DP §9.3): three holder endpoints plus ONE public verification
- * read.
- *
- * Shape copied from `volunteer-hours.routes.ts`: an overrides interface + `declare module "fastify"`, a
- * LAZY `service()` closure, then the `route()` calls. The laziness is load-bearing — `container.getDb()`
- * / `getRedis()` at MOUNT time has produced 500s in this repo before, and the offline route-coverage
- * harness boots this router with no database at all.
+ * The `service()` closure is lazy on purpose: calling `container.getDb()` / `getRedis()` at mount time
+ * has produced 500s here before, and the offline route-coverage harness boots this router with no
+ * database at all.
  */
 
 import {
@@ -36,13 +32,13 @@ import { parse } from "./_validate.js"
 
 export interface CertificateOverrides {
   repo: CertificateRepository
-  /** Only `entriesForCertificate` is used; a test may pass the full in-memory volunteer-hours twin. */
+  /** A test may pass the full in-memory volunteer-hours twin. */
   hours?: Pick<VolunteerHoursRepository, "entriesForCertificate">
   /**
    * Injected so a test can wrap the storage adapter and ASSERT the presign arguments. `FakeStorage`
    * ignores its third parameter and always returns `memory://<key>`, so asserting on the returned string
-   * proves nothing about `forceSigned` — and getting `forceSigned` wrong publishes every transcript
-   * permanently (H9).
+   * proves nothing about `forceSigned`, and getting `forceSigned` wrong publishes every transcript
+   * permanently.
    */
   storage?: CertificateStorage
 }
@@ -53,17 +49,15 @@ declare module "fastify" {
   }
 }
 
-/** The path param, before the shared schema's normalizing transform runs over it. */
+/** Validates the raw path param before the shared schema's normalizing transform runs. */
 const CodeParamsSchema = z.object({ code: z.string().min(1).max(32) }).strict()
 
 /**
- * C3 rate limits.
- *
  * ISSUE renders a PDF synchronously and mints a durable public artifact from personal data; 6/hour caps
  * the worst case (1000 rows, ~500 ms) at ~3 s of event-loop blocking per user per hour.
  *
  * VERIFY is 60/min, RAISED from the design's 20/min: the limit is keyed per IP and a school office behind
- * one NAT address would 429 after twenty checks. Enumeration is not the threat model — the code space is
+ * one NAT address would 429 after twenty checks. Enumeration is not the threat model: the code space is
  * 2^60.
  */
 export const CERTIFICATE_ISSUE_RATE_LIMIT = perIdentity({
@@ -128,9 +122,9 @@ export async function registerServiceHoursCertificateRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { code } = parse(CodeParamsSchema, request.params)
-      // `:code` is followed by a static segment, so the typed client cannot extract it — the contract
-      // schema carries it and the path param is folded back in here (the documented logEventHours merge
-      // pattern), which also runs the shared normalizing transform over a hand-typed dashed code.
+      // `:code` is followed by a static segment, so the typed client cannot extract it: the contract
+      // schema carries it and the path param is folded back in here, which also runs the shared
+      // normalizing transform over a hand-typed dashed code.
       const body = parse(RevokeCertificateRequestSchema, {
         ...((request.body as object | undefined) ?? {}),
         code,
@@ -141,12 +135,12 @@ export async function registerServiceHoursCertificateRoutes(
   )
 
   /**
-   * PUBLIC. No auth, no CSRF, and no `showVolunteerHours` gate (C2/DB B32c): the profile privacy flag
-   * governs the profile projection, while a certificate is a document the holder deliberately handed to a
-   * verifier. Revocation is the control here.
+   * PUBLIC. No auth, no CSRF, and no `showVolunteerHours` gate: the profile privacy flag governs the
+   * profile projection, while a certificate is a document the holder deliberately handed to a verifier.
+   * Revocation is the control here.
    *
-   * The response is never cacheable by a shared cache in a way that matters — it is keyed by a secret
-   * capability — but it is also never personalized by session, so no `Vary` juggling is required.
+   * The response is keyed by a secret capability and never personalized by session, so no `Vary`
+   * juggling is required.
    */
   route(
     app,

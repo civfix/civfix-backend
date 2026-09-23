@@ -138,9 +138,9 @@ export class RemoteJwksVerifier implements JwksVerifier {
   private async fetchKeys(jwksUrl: string): Promise<Jwk[]> {
     const res = await this.fetchImpl(jwksUrl)
     if (!res.ok) {
-      // NOT 401: we could not reach Apple/Google, which says nothing about the presented credential.
-      // Reporting it as "unauthorized" told the client to re-authenticate during a provider outage —
-      // and every retry burns another single-use sign-in nonce. 503 says "retry", not "sign in again".
+      // Not 401: failing to reach Apple or Google says nothing about the presented credential. A 401 tells
+      // the client to re-authenticate during a provider outage, and every retry burns another single-use
+      // sign-in nonce. 503 says "retry", not "sign in again".
       // A genuinely unknown `kid` still yields 401 (resolveKey).
       throw exposeMessage(
         new AppError(ErrorCode.INTERNAL, "Could not reach the identity provider.", {

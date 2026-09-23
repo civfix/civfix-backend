@@ -1,22 +1,12 @@
 /**
- * Mapbox reverse geocoder - the OPT-IN primary. Selected only when MAPBOX_TOKEN is configured (di.ts);
- * with no token the chain is Photon-only and everything still works, one ladder rung lower on average.
- * Mapbox interpolates rooftop/parcel addresses where OSM simply has no house number, which is the single
- * biggest quality lever available here, but it is a spend decision, so nothing requires it.
+ * Opt-in primary, selected only when MAPBOX_TOKEN is set: Mapbox interpolates rooftop addresses where OSM
+ * has no house number, but it is a spend decision, so nothing requires it. Never throws; null on any
+ * failure.
  *
- * Same contract as every provider on this seam: never throws, never blocks, null on any failure.
- *
- * PRECISION. Mapbox will happily answer a coordinate in the middle of nowhere with the city name. That
- * answer is worse than useless HERE: returning it would claim a rung this adapter did not reach and, far
- * worse, short-circuit the rest of the chain with the least specific line available. So this adapter
- * returns only what it can prove -
- *
- *   street       a house number is present (context.address.address_number, or an address label -
- *                context.address.name, or the feature's own name when feature_type is `address` -
- *                that starts with one)                          "123 Main St, Inglewood, CA"
- *   intersection a named street but no number                   "Main St, Inglewood, CA"
- *
- * - and hands anything coarser to the next provider, ending at the local TIGER `locality` label.
+ * Mapbox answers a coordinate in the middle of nowhere with the city name. Returning that would claim a
+ * rung this adapter did not reach and short-circuit the rest of the chain with the least specific line,
+ * so only `street` (a house number is present) and `intersection` (a named street, no number) are
+ * returned; anything coarser goes to the next provider.
  */
 
 import type { AddressPrecision } from "@civfix/shared"
@@ -70,10 +60,6 @@ function startsWithHouseNumber(name: string | undefined): boolean {
   return name !== undefined && /^\d/.test(name.trim())
 }
 
-/**
- * The rung this feature proves, or null when it proves nothing better than a locality (which this
- * adapter never claims - the chain's last provider owns that rung).
- */
 export function mapboxPrecision(p: MapboxReverseProps): AddressPrecision | null {
   const ctx = p.context ?? {}
   const hasNumber =

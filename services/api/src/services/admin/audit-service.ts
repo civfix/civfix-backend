@@ -1,21 +1,6 @@
-/**
- * Admin audit-log view service (Phase 2): the read side of the audit_log table (#67).
- *
- * Every admin write records an audit_log row via writeAudit (services/admin/audit.ts). This service is
- * the OPERATOR-facing reader: a paginated, filterable view of those rows (filter by actor / action /
- * target). It is read-only (no mutations) and infra-free: all access flows through AuditRepository so the
- * shaping (the row -> AuditLogEntryDTO projection, the actor-name resolution) is unit-testable with the
- * in-memory repo (audit-repository.memory.ts) and the raw-SQL impl (audit-repository.drizzle.ts) is
- * Docker-gated.
- *
- * Pagination reuses the shared keyset cursor (services/admin/pagination.ts): audit rows page newest-first
- * by (created_at DESC, id DESC) with the opaque "<iso>|<id>" cursor, identical to every other admin list.
- */
-
 import type { AuditListQuery, AuditListResponse, AuditLogEntryDTO } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
 
-/** Normalized list arguments the repo consumes (the filters + the page window). */
 export interface ListAuditArgs {
   actor: string | null
   action: string | null
@@ -24,13 +9,10 @@ export interface ListAuditArgs {
   limit: number
 }
 
-/**
- * An audit_log row projected into the service's record shape. `actorName` is the joined display name of
- * the acting user (null for a system action or an unknown actor); the rest mirror the columns.
- */
 export interface AuditRecord {
   id: string
   actorId: string | null
+  /** Null for a system action or an unknown actor. */
   actorName: string | null
   action: string
   target: string | null
@@ -38,20 +20,12 @@ export interface AuditRecord {
   createdAt: Date
 }
 
-/**
- * Persistence seam for the audit-log view. The Drizzle impl runs one raw SQL read (LEFT JOIN users for
- * the actor name) with a keyset cursor + the optional filters; the offline tests pass an in-memory impl.
- */
 export interface AuditRepository {
-  /** Page audit rows newest-first applying the actor / action / target filters with a keyset cursor. */
   list(args: ListAuditArgs): Promise<{ records: AuditRecord[]; nextCursor: string | null }>
 }
 
-/**
- * Project an audit record into the strict AuditLogEntryDTO. `target` falls back to "" and `meta` to {}
- * for the strict DTO's required fields. `createdAt` is `DEFAULT now()` (nullable in the DDL); a
- * hand-inserted NULL row would otherwise throw on `.toISOString()` → 500 on the list, so guard it.
- */
+// `created_at` is `DEFAULT now()` but nullable in the DDL: a hand-inserted NULL row would otherwise throw
+// on `.toISOString()` and 500 the whole list.
 export function toAuditEntryDTO(record: AuditRecord): AuditLogEntryDTO {
   return {
     id: record.id,
@@ -64,7 +38,6 @@ export function toAuditEntryDTO(record: AuditRecord): AuditLogEntryDTO {
   }
 }
 
-/** Trim a query filter to null when absent/blank (so the repo only filters on a real value). */
 function cleanFilter(value: string | undefined): string | null {
   if (value === undefined) return null
   const trimmed = value.trim()

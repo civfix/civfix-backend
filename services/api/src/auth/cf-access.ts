@@ -1,25 +1,18 @@
 /**
- * Cloudflare Access (Zero Trust) JWT verifier (doc 16 §6.2).
+ * Cloudflare Access JWT verifier for the admin Access exchange (`/admin/auth/access/exchange`), which reads
+ * the `Cf-Access-Jwt-Assertion` header Cloudflare adds after an Access login.
  *
- * After a user authenticates at the Cloudflare Access login, Cloudflare proxies each request to the
- * origin with a per-account-signed JWT in the `Cf-Access-Jwt-Assertion` header. The admin Access
- * exchange route (`/admin/auth/access/exchange`) reads that header and calls the verifier built here to
- * confirm the token before minting an operator session.
+ * Checking the header's presence is not enough: a forged token would elevate to operator. The RS256
+ * signature is verified against Cloudflare's published JWKS along with `iss`, `aud` and `exp`, and the
+ * algorithm is pinned to prevent alg-confusion. The edge Access app and the firewall-locked tunnel are the
+ * complementary controls, in deployment.
  *
- * SECURITY: checking the header's PRESENCE is not enough — a forged/altered token would otherwise let an
- * attacker elevate to operator. This verifier cryptographically validates the RS256 signature against
- * Cloudflare's published JWKS and checks `iss` (team domain), `aud` (the per-app AUD tag), and `exp`.
- * The algorithm is pinned to RS256 to prevent alg-confusion. The complementary controls (the Access app
- * at the edge + the firewall-locked cloudflared tunnel) live in deployment, not in this file.
- *
- * The JWKS is created ONCE per verifier (it caches keys and refetches on an unknown `kid`, handling
- * Cloudflare's key rotation) — never per request. The key resolver is injectable so unit tests can serve
- * a locally generated key set (`createLocalJWKSet`) with no network.
+ * The JWKS is created once per verifier, never per request: it caches keys and refetches on an unknown
+ * `kid`, which handles Cloudflare's key rotation.
  */
 
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose"
 
-/** The verified identity carried by an Access JWT. */
 export interface AccessIdentity {
   /** Verified email for an interactive (human) login; null for a service-token (machine) login. */
   email: string | null
@@ -27,26 +20,25 @@ export interface AccessIdentity {
   commonName: string | null
   /** Cloudflare's stable user id for the identity ("" for service tokens). */
   sub: string
-  /** The raw verified payload, for any claim not surfaced above. */
   raw: JWTPayload
 }
 
 export interface AccessVerifierConfig {
   /**
-   * The team Access domain — the expected JWT `iss` and the JWKS base, e.g.
-   * `https://civfix.cloudflareaccess.com`. A trailing slash, if present, is trimmed.
+   * The expected JWT `iss` and the JWKS base, e.g. `https://civfix.cloudflareaccess.com`. A trailing slash
+   * is trimmed.
    */
   teamDomain: string
   /** The Application Audience (AUD) tag of the path-scoped Access app on api.civfix.org/admin. */
   aud: string
 }
 
-/** Verify a Cloudflare Access JWT and return its identity; throws (jose) on any validation failure. */
+/** Throws (from jose) on any validation failure. */
 export type VerifyAccessJwt = (token: string) => Promise<AccessIdentity>
 
 /**
- * Build an Access JWT verifier. `jwks` is injectable purely for offline unit tests (production omits it
- * and a remote, auto-rotating JWKS is fetched from the team's `/cdn-cgi/access/certs`).
+ * `jwks` exists for offline unit tests; production omits it and fetches the auto-rotating remote set from
+ * the team's `/cdn-cgi/access/certs`.
  */
 export function createAccessVerifier(
   config: AccessVerifierConfig,
@@ -61,8 +53,8 @@ export function createAccessVerifier(
       audience: config.aud,
       algorithms: ["RS256"], // pin to prevent alg-confusion
       clockTolerance: 30, // seconds; tolerate minor clock drift
-      // Require the claims to be PRESENT (jose validates iss/aud/exp values, but without this a token
-      // omitting exp would skip the expiry check). Makes the in-app validation match doc 16 §4.1/§6.3.
+      // jose validates iss/aud/exp only when present; without this a token omitting exp would skip the
+      // expiry check.
       requiredClaims: ["exp", "iss", "aud"],
     })
     return {

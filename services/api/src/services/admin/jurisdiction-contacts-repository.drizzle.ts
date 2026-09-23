@@ -360,15 +360,10 @@ export function makeDrizzleJurisdictionContactsRepository(
             WHERE r2.jurisdiction_geoid = j.geoid AND rt.status = 'acknowledged'
           ) AS last_routed_at,
           (
-            -- A contact is 'bounced' when ANY of the geoid's contact rows has a bounce marker (the inbound
-            -- bounce handler stamps jurisdiction_contacts.bounced_at; this takes precedence over
-            -- verified/pending). The legacy mail_events signal is OR'd in for threads with no per-contact
-            -- row (e.g. a digest-only bounce), so an existing bounce never silently disappears.
-            --
-            -- That fallback is scoped to events NEWER than the last contact save: mail_events rows are never
-            -- deleted, so an unscoped EXISTS pinned the directory to 'bounced' forever — re-entering a good
-            -- address cleared bounced_at (and cleared the flag in the in-memory repo, which is what the
-            -- offline tests asserted) yet the row still read bounced in production.
+            -- The legacy mail_events signal is OR'd in for threads with no per-contact row (a digest-only
+            -- bounce), so an existing bounce never silently disappears. It is scoped to events newer than
+            -- the last contact save: mail_events rows are never deleted, so an unscoped EXISTS would pin the
+            -- row to 'bounced' forever even after a good address is re-entered.
             EXISTS (
               SELECT 1 FROM jurisdiction_contacts bc
               WHERE bc.geoid = j.geoid AND bc.bounced_at IS NOT NULL

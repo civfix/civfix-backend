@@ -1,24 +1,17 @@
 /**
- * Signup-seat backfill (DECISIONS §44). A sign-up on an event with NO ticket types now writes a free
- * `cleanup_registrations` row plus one `cleanup_registration_seats` row, so the host roster, the
- * check-in scanner, the counters and the attendee's own ticket all work on slot-based events. Rows
- * that predate that change have a `cleanup_members` row and nothing else — this CLI mints the missing
- * registration + seat for them.
+ * A sign-up on an event with no ticket types writes a free registration plus one seat (DECISIONS §44);
+ * members who joined before that have neither, and this CLI mints them.
  *
- * It is a Node one-shot and NOT a SQL migration because `ticket_token_hash` is
- * sha256(base32(hmac(TICKET_TOKEN_SECRET, seat_id))) — the HMAC is not computable in Postgres without
- * putting the ticket secret in the database.
+ * A Node one-shot rather than a SQL migration because `ticket_token_hash` is an HMAC over the ticket
+ * secret, which is not computable in Postgres without putting the secret in the database.
  *
  *   DATABASE_URL=postgres://... pnpm db:backfill:signup-seats              # rehearse (rollback), report
  *   DATABASE_URL=postgres://... pnpm db:backfill:signup-seats -- --yes     # commit
  *   DATABASE_URL=postgres://... pnpm db:backfill:signup-seats -- --yes --batch 200
  *
- * Scope: every `cleanup_members` row of an event that is not cancelled and has not ended
- * (`ends_at > now()`), that has zero ticket types, where the member holds no active registration —
- * organizers included, because the live `claimSlot` path mints a seat for an organizer who claims
- * their own shift and 0169 gave every existing member a slot claim. Safe to re-run: the insert
- * carries the same `ON CONFLICT (cleanup_id, user_id) WHERE status = 'registered'` arbiter the
- * runtime path uses, and the candidate query already excludes anyone who has a registration.
+ * Organizers are included, because the live claimSlot path mints a seat for an organizer who claims
+ * their own shift and 0169 gave every existing member a slot claim. Safe to re-run: the insert carries
+ * the same ON CONFLICT arbiter the runtime path uses.
  */
 
 import { randomUUID } from "node:crypto"
@@ -238,7 +231,7 @@ export async function main(): Promise<void> {
       ...(batchSize !== undefined ? { batchSize } : {}),
     })
     console.log(
-      `backfill-signup-seats: done — scanned=${result.scanned} seats=${result.created} batches=${result.batches}` +
+      `backfill-signup-seats: done: scanned=${result.scanned} seats=${result.created} batches=${result.batches}` +
         (commit ? "" : " (rolled back; re-run with --yes to commit)"),
     )
   })

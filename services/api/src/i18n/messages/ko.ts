@@ -2,15 +2,12 @@
  * Korean (ko) catalog for server-generated, user-facing copy. Translated key-by-key from en.ts.
  * Preserves all {{interpolation}} placeholders exactly. "civfix", URLs, and @handles are not translated.
  * Tone: natural, friendly Hangul appropriate for a community app (informal-polite 해요체 register).
- *
- * SCOPE: push/bell notification titles + bodies; account/OTP email subjects + bodies.
- * Falls back to English (via renderMessage) for any key not present here.
+ * Missing keys fall back to English in renderMessage.
  */
 
 import type { MessageKey } from "./en.js"
 
 export const ko: Partial<Record<MessageKey, string>> = {
-  // ---- Push / in-app bell notifications --------------------------------------------------------
   "notification.follower.title": "새 팔로워",
   "notification.follower.body": "{{name}}님이 팔로우하기 시작했어요.",
 
@@ -72,7 +69,6 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.cleanup_slot.moved.body":
     '{{title}}의 "{{slot}}" 교대 시간이 바뀌었어요. 이벤트를 열어 확인해 주세요.',
 
-  // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "civfix 로그인 코드",
   "email.otp.body_line1": "civfix 로그인 코드는 {{code}}입니다.",
   "email.otp.body_expiry":
@@ -84,7 +80,6 @@ export const ko: Partial<Record<MessageKey, string>> = {
 
   "email.generic.subject": "civfix 알림",
   "email.generic.body": "새로운 civfix 알림이 있어요.",
-  // ---- 자원봉사 활동 증명서 (PDF, P5) --------------------------------------------------------------
   "certificate.doc.title": "자원봉사 활동 증명서",
   "certificate.doc.pdf_title": "civfix 봉사 시간 — {{name}} — {{code}}",
   "certificate.header.number": "증명서 번호",
@@ -117,7 +112,6 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "certificate.footer.timezone": "날짜는 태평양 시간(America/Los_Angeles) 기준이에요.",
   "certificate.error.no_hours": "아직 기록된 봉사 시간이 없어요.",
 
-  // ---- Guest event RSVP -------------------------------------------------------------------------
   "email.guest_otp.subject": "{{title}} 참가 신청 코드",
   "email.guest_otp.html_intro": "{{title}} 참가 신청 코드:",
   "email.guest_otp.body_expiry":

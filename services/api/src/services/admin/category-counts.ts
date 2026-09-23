@@ -1,33 +1,20 @@
-/**
- * The per-category report-count aggregate shared by every "waiting reports by category" query: the
- * outreach digest (outreach-repository.drizzle.ts), the jurisdiction directory + its unmapped bucket
- * (jurisdiction-contacts-repository.drizzle.ts). All three used to hand-roll the identical seven
- * `COUNT(*) FILTER (WHERE category = '…')` columns plus a matching seven-key parse block, so adding a
- * ReportCategory took seven coordinated edits; everything here derives from ADMIN_CATEGORIES instead.
- *
- * The counts are cast to text in SQL on purpose: postgres.js surfaces int8 without a lossless numeric
- * parser, so every count in this codebase crosses the wire as text and is parsed back here.
- */
+// The counts are cast to text in SQL on purpose: postgres.js surfaces int8 without a lossless numeric
+// parser, so every count in this codebase crosses the wire as text and is parsed back here.
 
 import type { Queryable } from "../../db/client.js"
 import { ReportCategorySchema, type ReportCategory } from "@civfix/shared"
 import type { SqlFragment } from "./sql-fragments.js"
 
 /**
- * The canonical ReportCategory list in schema (display) order, derived from the shared zod enum so a new
- * category cannot be half-added. Iteration order is load-bearing for the digest's contact-preference
- * `array_position` ordering and for the directory's coverage label.
+ * Derived from the shared zod enum so a new category cannot be half-added. Iteration order is
+ * load-bearing for the digest's contact-preference `array_position` ordering and the directory's coverage
+ * label.
  */
 export const ADMIN_CATEGORIES: readonly ReportCategory[] = ReportCategorySchema.options
 
-/** The `cat_<category>` text columns as selected back from SQL. */
 export type CategoryCountRow = Partial<Record<`cat_${ReportCategory}`, string | null>>
 
-/**
- * The aggregate columns: one `COUNT(*) FILTER (…)::text AS cat_<category>` per ReportCategory, filtered on
- * `<alias>.category`. Belongs in a GROUP BY / LATERAL aggregate over `reports`; the caller owns the
- * waiting predicate (the statuses differ between the digest and the directory).
- */
+// The caller owns the waiting predicate: the statuses differ between the digest and the directory.
 export function categoryCountsFragment(sql: Queryable, alias: string): SqlFragment {
   return joinColumns(
     sql,
@@ -38,10 +25,7 @@ export function categoryCountsFragment(sql: Queryable, alias: string): SqlFragme
   )
 }
 
-/**
- * The outer projection over an aggregate produced by categoryCountsFragment: `COALESCE(<alias>.cat_x, '0')
- * AS cat_x` per category, so a jurisdiction with no matching report still yields a parseable row.
- */
+// COALESCE so a jurisdiction with no matching report still yields a parseable row.
 export function categoryCountsProjection(sql: Queryable, alias: string): SqlFragment {
   return joinColumns(
     sql,
@@ -52,13 +36,12 @@ export function categoryCountsProjection(sql: Queryable, alias: string): SqlFrag
   )
 }
 
-/** Parse a text count column; absent/malformed reads as 0 (a missing aggregate row means "none"). */
+// A missing aggregate row means "none", so absent or malformed reads as 0.
 export function parseCount(value: string | null | undefined): number {
   const n = Number.parseInt(value ?? "0", 10)
   return Number.isNaN(n) ? 0 : n
 }
 
-/** Turn the `cat_*` columns into the sparse per-category map the records carry (zeros are omitted). */
 export function parseCategoryCounts(
   row: CategoryCountRow | undefined,
 ): Partial<Record<ReportCategory, number>> {
@@ -71,7 +54,6 @@ export function parseCategoryCounts(
   return counts
 }
 
-/** Comma-join column fragments (no trailing comma for an empty list). */
 function joinColumns(sql: Queryable, parts: SqlFragment[]): SqlFragment {
   let out = sql``
   let first = true

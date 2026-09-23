@@ -1,18 +1,3 @@
-/**
- * In-memory AdminUserRepository (Phase 2): the offline binding of the admin users persistence seam.
- *
- * Mirrors the Drizzle impl's OBSERVABLE contract so the admin user service can be unit-tested with NO
- * database (no Docker):
- *   - listUsers applies the search (name/handle/city) + the status + flagged-only facet and pages
- *     newest-id-keyset;
- *   - getUser reads the seeded user (+ moderation + counts);
- *   - listUserReports/Events/Messages page the seeded sub-activity rows;
- *   - toggleFlag flips user_moderation.flagged (+ records an audit); setStatus sets account_status (+
- *     audit); recordRoleAudit records the role-change audit.
- * Seed/inspect helpers (seedUser, seedReport/Event/Message, the public maps + audits) let tests arrange
- * + assert state directly. The session-revoke + setRole seams are injected into the SERVICE, not here.
- */
-
 import { randomUUID } from "node:crypto"
 import { pageInMemoryById } from "./pagination.js"
 import type {
@@ -26,26 +11,20 @@ import type {
 } from "./admin-user-service.js"
 import type { AdminUserCounts, Role, UserStatus } from "@civfix/shared"
 
-/** A recorded audit row (mirrors the Drizzle impl's writeAudit), inspectable by tests. */
 export interface RecordedUserAudit {
   action: string
   target: string
   meta: Record<string, unknown>
 }
 
-/** An in-memory AdminUserRepository faithful to the Drizzle impl's observable behavior. */
 export class InMemoryAdminUserRepository implements AdminUserRepository {
-  /** Seeded users keyed by id (insertion order preserved for stable paging). */
   readonly users = new Map<string, AdminUserRecord>()
-  /** Seeded sub-activity rows keyed by user id. */
   readonly reports = new Map<string, UserReportRecord[]>()
   readonly events = new Map<string, UserEventRecord[]>()
   readonly messages = new Map<string, UserMessageRecord[]>()
   readonly organizations = new Map<string, AdminUserOrganizationRecord[]>()
-  /** Recorded audit rows. */
   readonly audits: RecordedUserAudit[] = []
 
-  /** Seed a user. Defaults fill the optional fields so a test only sets what it asserts on. */
   seedUser(input: {
     id?: string
     name?: string
@@ -82,7 +61,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       accountStatus: input.accountStatus ?? "active",
       reports: input.reports ?? 0,
       cleanups: input.cleanups ?? 0,
-      messages: 0, // recomputed from the seeded messages map in getUser (the detail's tab badge).
+      messages: 0, // recomputed from the seeded messages in getUser
       removals: input.removals ?? 0,
       strikes: input.strikes ?? 0,
       risk: input.risk ?? "low",
@@ -96,25 +75,18 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     return record
   }
 
-  /** Seed a row in a user's Reports tab. */
   seedReport(userId: string, row: UserReportRecord): void {
     const list = this.reports.get(userId) ?? []
     list.push(row)
     this.reports.set(userId, list)
   }
 
-  /** Seed a row in a user's Events tab. */
   seedEvent(userId: string, row: UserEventRecord): void {
     const list = this.events.get(userId) ?? []
     list.push(row)
     this.events.set(userId, list)
   }
 
-  /**
-   * Seed a row in a user's Messages tab. `deletedAt` defaults to null (a live message) and `source`
-   * defaults to "chat" (the Messages tab unions cleanup chat, standalone group chat, DM, and report
-   * discussion, so tests may seed any source; the union shape is the same single keyed list here).
-   */
   seedMessage(
     userId: string,
     row: Omit<UserMessageRecord, "deletedAt" | "source" | "sourceId"> & {
@@ -151,7 +123,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     if (args.flaggedOnly) rows = rows.filter((r) => r.flagged)
     if (args.deletedOnly) rows = rows.filter((r) => r.deletedAt !== null)
 
-    // Newest-first by joinedAt, id desc tiebreak (a null join sorts oldest).
+    // A null join sorts oldest.
     rows.sort((a, b) => {
       const at = a.joinedAt?.getTime() ?? 0
       const bt = b.joinedAt?.getTime() ?? 0
@@ -166,15 +138,14 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
   }
 
   async userExists(id: string): Promise<boolean> {
-    // Existence only, matching getUser's reach: a soft-deleted account still EXISTS for the console (the
-    // list/detail render it with deletedAt set), so its sub-activity tabs must keep resolving.
+    // A soft-deleted account still exists for the console (list and detail render it with deletedAt set),
+    // so its sub-activity tabs must keep resolving.
     return this.users.has(id)
   }
 
   async getUser(id: string): Promise<AdminUserRecord | null> {
     const r = this.users.get(id)
-    // Recompute the messages count from the seeded sub-activity (the detail's Messages tab badge), mirroring
-    // the Drizzle COUNT(chat_messages) so a test that seeds messages sees the badge count.
+    // Mirrors the Drizzle COUNT(chat_messages) so a test that seeds messages sees the badge count.
     return r ? { ...r, messages: this.messages.get(id)?.length ?? 0 } : null
   }
 
@@ -272,7 +243,6 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     if (!r) return false
     r.accountStatus = input.status
     this.audits.push({
-      // A ban gets the dedicated user.banned action; other transitions are user.status_changed.
       action: input.status === "banned" ? "user.banned" : "user.status_changed",
       target: `user:${id}`,
       meta: { status: input.status, reason: input.reason },
@@ -280,7 +250,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     return true
   }
 
-  /** L5 mirror: the role write and its audit are one indivisible step (see the Drizzle impl's tx). */
+  /** The role write and its audit are one indivisible step, as in the Drizzle impl's transaction. */
   async applyRole(id: string, input: { role: Role; actorId: string | null }): Promise<boolean> {
     const r = this.users.get(id)
     if (!r) return false
@@ -298,7 +268,6 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     return Promise.resolve([...(this.organizations.get(id) ?? [])])
   }
 
-  /** Seed the organization memberships the Users detail page lists. */
   seedUserOrganizations(userId: string, orgs: AdminUserOrganizationRecord[]): void {
     this.organizations.set(userId, orgs)
   }

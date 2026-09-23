@@ -13,20 +13,14 @@ export interface DbHandle {
   close(): Promise<void>
 }
 
-/**
- * The postgres.js `ssl` option shapes we produce. `false` = plaintext (dev/testcontainers only).
- */
+/** `false` = plaintext, for dev and testcontainers only. */
 export type DbSslOption = false | "require" | "verify-full" | { rejectUnauthorized: true }
 
 /**
- * Derive the postgres.js `ssl` option from the connection string's `sslmode` (M15).
- *
- * postgres.js defaults `ssl` to **false**: without an explicit option a URL that merely *looks* secure
- * still ships credentials and rows in cleartext. It does read `sslmode` itself, but silently — so we
- * resolve it here instead, pass the result explicitly to BOTH postgres() clients, and unit-test the
- * mapping. `prefer`/`allow`/`disable`/absent stay plaintext on purpose: local dev and the testcontainers
- * integration suite talk to a loopback container with no TLS. Production can never reach that branch —
- * loadEnv refuses to boot unless DATABASE_URL carries a TLS sslmode.
+ * postgres.js defaults `ssl` to false, so a URL that merely looks secure would still ship credentials in
+ * cleartext; it reads `sslmode` itself only silently. Resolving it here makes the mapping explicit and
+ * testable. `prefer`/`allow`/`disable`/absent stay plaintext on purpose for loopback dev and test
+ * containers; production never reaches that branch because loadEnv refuses a non-TLS sslmode.
  */
 export function sslOptionForUrl(databaseUrl: string): DbSslOption {
   let mode: string | null = null
@@ -39,8 +33,8 @@ export function sslOptionForUrl(databaseUrl: string): DbSslOption {
   switch (mode?.trim().toLowerCase()) {
     case "verify-full":
       return "verify-full"
-    // verify-ca = TLS with a verified CA chain but no hostname check; postgres.js has no named mode for
-    // it, so express it as the equivalent tls option.
+    // verify-ca (verified chain, no hostname check) has no named postgres.js mode, so it is expressed
+    // as the equivalent tls option.
     case "verify-ca":
       return { rejectUnauthorized: true }
     case "require":
@@ -56,7 +50,6 @@ export function makeDb(
     max?: number
     statementTimeoutMs?: number
     idleInTxTimeoutMs?: number
-    /** Override the sslmode-derived TLS setting (tests / callers with out-of-band TLS config). */
     ssl?: DbSslOption
   } = {},
 ): DbHandle {

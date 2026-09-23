@@ -1,17 +1,17 @@
 /**
- * Font resolution for the service-hours transcript PDF (P5).
+ * Font resolution for the service-hours transcript PDF.
  *
  * The faces live in `services/api/assets/fonts/` and reach the image because `.dockerignore` excludes no
  * `assets/` path and `services/api/package.json` declares no `files` field, so `pnpm --filter @civfix/api
- * --prod deploy` copies the whole package directory — exactly how `drizzle/*.sql` reaches the migrate
+ * --prod deploy` copies the whole package directory, exactly how `drizzle/*.sql` reaches the migrate
  * container. If a `files` field is ever added it MUST list `assets` (and keep listing `drizzle`).
  *
- * ⚠ THE PATH TRAP. `tsup.config.ts` has `splitting: false`, so this module is bundled INTO
- * `dist/main.js` — depth 1 under the package root — while under tsx/vitest it runs from `src/services/`
+ * THE PATH TRAP. `tsup.config.ts` has `splitting: false`, so this module is bundled INTO
+ * `dist/main.js` (depth 1 under the package root), while under tsx/vitest it runs from `src/services/`
  * at depth 2. An `import.meta.url`-relative path is therefore different in dev and prod, so the directory
  * is found by PROBING for `MANIFEST.json` and memoized.
  *
- * ⚠ STATIC INSTANCES ONLY. pdfkit/fontkit embed a variable font's default instance only; a `wght`-axis VF
+ * STATIC INSTANCES ONLY. pdfkit/fontkit embed a variable font's default instance only; a `wght`-axis VF
  * would render SemiBold as Regular with no error. See `assets/fonts/PROVENANCE.md`.
  */
 
@@ -25,7 +25,6 @@ const CANDIDATES = ["..", "../..", "../../.."] as const
 
 let cachedDir: string | undefined
 
-/** Absolute path of the vendored font directory. Probed once, then memoized for the process. */
 export function fontsDir(): string {
   if (cachedDir) return cachedDir
   for (const up of CANDIDATES) {
@@ -38,7 +37,6 @@ export function fontsDir(): string {
   throw new Error(`certificate fonts not found; probed ${CANDIDATES.join(", ")} from ${HERE}`)
 }
 
-/** One vendored face, as recorded in `assets/fonts/MANIFEST.json`. */
 export interface FontManifestEntry {
   file: string
   family: string
@@ -56,7 +54,6 @@ export interface FontManifest {
 
 let cachedManifest: FontManifest | undefined
 
-/** Parsed `MANIFEST.json`. Read once per process. */
 export function fontManifest(): FontManifest {
   if (cachedManifest) return cachedManifest
   const parsed = JSON.parse(readFileSync(join(fontsDir(), "MANIFEST.json"), "utf8")) as FontManifest
@@ -92,7 +89,7 @@ export const FONT = {
   /** Certificate code, hours column, document fingerprint. */
   mono: "JetBrainsMono-Regular.ttf",
   /**
-   * Korean/CJK fallback. Only the Regular weight is vendored (C1): a CJK Bold is another ~4.8 MB in the
+   * Korean/CJK fallback. Only the Regular weight is vendored: a CJK Bold is another ~4.8 MB in the
    * image for one typographic nuance, so `fontFor(text, "bold")` returns this same face for CJK text.
    */
   cjk: "NotoSansKR-Regular.otf",
@@ -120,7 +117,6 @@ const CJK_RANGES: readonly (readonly [number, number])[] = [
   [0xff00, 0xffef], // Halfwidth and fullwidth forms
 ]
 
-/** Does this string contain a character no Latin brand face can render? */
 export function needsCjk(text: string): boolean {
   for (const ch of text) {
     const cp = ch.codePointAt(0) ?? 0

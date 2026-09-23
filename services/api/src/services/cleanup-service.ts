@@ -271,8 +271,8 @@ export interface CleanupServiceDeps {
   resolveJurisdictionGeoid?: (lat: number, lng: number) => Promise<string | null>
   resolveJurisdictionCode?: (geoid: string | null) => Promise<number>
   /**
-   * Only ever called for an OLD client (one that sends no `addressSource`) that also sent no address —
-   * the compat shim in resolveEventAddress. A new client always confirms its own address with the host,
+   * Only ever called for an OLD client (one that sends no `addressSource`) that also sent no address,
+   * via the compat shim in resolveEventAddress. A new client always confirms its own address with the host,
    * which is the whole point of the feature; the server never resolves one behind a host's back.
    */
   resolveAddress?: AddressResolver
@@ -585,13 +585,13 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
    *
    *   addressSource PRESENT  -> a new client. It resolved the pin, showed the line to the host, and the
    *                             host published with it on screen. That is the confirmation, so the
-   *                             server only has to refuse a blank one — a client that sends a source
+   *                             server only has to refuse a blank one; a client that sends a source
    *                             without an address has a bug, and storing it would produce an event
    *                             whose address is "verified" and empty.
    *   addressSource ABSENT   -> an old client. Whatever it sent in `address` is the host's own "name the
    *                             spot" text, so it is 'manual' (the same call migration 0179 makes for
    *                             existing rows). If it sent nothing, the shim resolves the pin and stores
-   *                             'resolved' — unverified, but an event with a street line beats an event
+   *                             'resolved': unverified, but an event with a street line beats an event
    *                             with "Meeting point", and only while old clients are still in the wild.
    *
    * The shim stores NOTHING when the ladder only reached `locality`: "Los Angeles, CA" is not a meeting

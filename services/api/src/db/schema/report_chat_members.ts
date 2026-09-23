@@ -1,14 +1,3 @@
-/**
- * report_chat_members: join table of users who have JOINED a report's group chat, with a
- * per-report role (owner|member). Mirrors cleanup_members (schema/cleanup_members.ts) but scoped
- * to a report instead of a cleanup. Composite PK(report_id, user_id) means a user joins a report's
- * chat at most once. Deleting the report cascades; deleting the user cascades (unlike
- * cleanup_members, which intentionally leaves the user FK non-cascading).
- *
- * CANONICAL DDL: drizzle/0041_report_chat_members.sql. This mirror exists for typed queries / diff
- * inspection only; nothing reads/writes it yet (membership repo lands in D-C1).
- */
-
 import { index, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { reports } from "./reports.js"
 import { users } from "./users.js"
@@ -27,8 +16,7 @@ export const reportChatMembers = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     role: text("role").$type<ReportChatRole>().notNull().default("member"),
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
-    // Chat read watermark, same convention as cleanup_members.lastReadAt: NULL = never read;
-    // unread baseline falls back to joined_at.
+    // NULL = never read; the unread baseline falls back to joined_at.
     lastReadAt: timestamp("last_read_at", { withTimezone: true }),
   },
   (t) => [

@@ -4,11 +4,9 @@
  *   pnpm db:backfill-population            # latest default ACS vintage
  *   pnpm db:backfill-population 2023       # explicit ACS5 vintage year
  *
- * Runs against the env DATABASE_URL (open your own tunnel + export it, or use
- * `pnpm db:boundaries:refresh --backfill-only` which auto-tunnels to prod and includes this step). The
- * upsert LOGIC lives in the guard-free ./backfill-population-core.js (imported here + by refresh-boundaries).
- * REQUIRES CENSUS_API_KEY — the Census API now rejects unkeyed requests (redirects to missing_key.html).
- * Get a free, instant key at https://api.census.gov/data/key_signup.html and export it before running.
+ * Runs against the env DATABASE_URL (open your own tunnel and export it, or use
+ * `pnpm db:boundaries:refresh --backfill-only`, which includes this step). Requires CENSUS_API_KEY: the
+ * Census API rejects unkeyed requests. A free key: https://api.census.gov/data/key_signup.html
  */
 
 import { runDbCli, runIfMain } from "./cli.js"

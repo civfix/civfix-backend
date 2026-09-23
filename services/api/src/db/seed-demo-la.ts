@@ -1,30 +1,26 @@
 /**
- * seed-demo-la: seeds a realistic Los Angeles demo community — 250 users with a follow graph, posts
- * (top-level / replies / quotes / reposts), likes, saves, mentions, reports (+ timeline + reference
- * codes + H3 cells + jurisdiction resolution), cleanup events (+ members, slots, slot claims, linked
- * reports) and volunteer hours (+ per-jurisdiction rollups + audit journal).
+ * Seeds a realistic Los Angeles demo community: users with a follow graph, posts, reports, cleanup
+ * events and volunteer hours.
  *
  * INVARIANTS (each mirrors the live write path so seeded rows are indistinguishable from organic ones):
- *   - Reference codes come from allocateReportReferenceCode / allocateEventReferenceCode, i.e. the SAME
- *     reference_counters atomic upsert the create transactions use, so live creates can never collide.
- *   - reports.h3_cell uses reportH3Cell (H3 res 10) and reports.jurisdiction_geoid / cleanups.
- *     jurisdiction_geoid come from resolveJurisdiction (the canonical ORDER BY), same as create paths.
- *   - Every denormalized counter is exact: posts.like_count/reply_count/repost_count/save_count
- *     (repost_count counts PURE reposts only — quotes do not bump it, matching createPost),
- *     users.follower_count/following_count, and user_jurisdiction_hours.total_hours. A SQL
- *     verification pass recomputes all of them inside the transaction and aborts on any mismatch.
- *   - Volunteer hours follow the logEventHours shape: an 'event'-source volunteer_hours row per
- *     credited attendee, the user_jurisdiction_hours rollup upsert, and one volunteer_hours_audit row.
+ *   - Reference codes come from the same reference_counters allocator the create transactions use, so
+ *     live creates can never collide.
+ *   - reports.h3_cell and the jurisdiction_geoid columns come from reportH3Cell and resolveJurisdiction,
+ *     as on the create paths.
+ *   - Every denormalized counter is exact (repost_count counts pure reposts only; quotes do not bump it,
+ *     matching createPost). A SQL verification pass recomputes them all inside the transaction and
+ *     aborts on any mismatch.
+ *   - Volunteer hours follow the logEventHours shape: a ledger row per credited attendee, the rollup
+ *     upsert, and one audit row.
  *
  * CLOSED WORLD: all follows / likes / replies / memberships the seeder writes stay inside the seeded
  * cohort. Real users can still interact with demo content once it is live, so --purge recomputes the
  * counters of every real user and post a demo account touched, and refuses (naming the rows) when real
  * replies, reposts or volunteer hours depend on demo content.
  *
- * SAFETY: the default run is a REHEARSAL — the entire seed executes in one transaction, the
- * verification queries run, and then everything rolls back. Pass --yes to commit. Seeded accounts use
- * the reserved @DEMO_EMAIL_DOMAIN so a real person can never collide with (or inherit) one via the
- * OTP flow, and --purge keys off that domain.
+ * SAFETY: the default run is a rehearsal: the seed and its verification run in one transaction that
+ * then rolls back. Pass --yes to commit. Seeded accounts use the reserved DEMO_EMAIL_DOMAIN so a real
+ * person can never collide with (or inherit) one via the OTP flow, and --purge keys off that domain.
  *
  * Usage:
  *   DATABASE_URL=postgres://... pnpm db:seed:demo                # rehearse (rollback), print report
@@ -59,10 +55,7 @@ import { touchUserActivity } from "./sql/user-activity.js"
 const SEEDED_REPORT_ADDR_SOURCE = "user"
 const SEEDED_EVENT_ADDRESS_SOURCE = "manual"
 
-// ---------------------------------------------------------------------------------------------------
-// Deterministic PRNG (mulberry32) + sampling helpers. Seeded so a rehearsal and the committed run (or
-// a re-run after purge) generate the same cohort.
-// ---------------------------------------------------------------------------------------------------
+// Seeded so a rehearsal, the committed run and a re-run after purge generate the same cohort.
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0
@@ -103,7 +96,6 @@ function shuffle<T>(arr: T[]): T[] {
   }
   return arr
 }
-/** Sample up to n distinct items by weight, excluding `exclude`. */
 function sampleWeighted<T>(
   items: readonly T[],
   weightOf: (t: T) => number,
@@ -166,7 +158,6 @@ export function laLocalToUtc(dayMs: number, hour: number, minute: number, second
   return new Date(wallAsUtc - offset * HOUR)
 }
 
-/** Weighted local hour: mornings light, lunchtime medium, evenings heavy, small overnight tail. */
 function localHour(): number {
   return pickWeighted<number>([
     [6, 1],
@@ -192,7 +183,6 @@ function localHour(): number {
   ])
 }
 
-/** A timestamp on the given local calendar day with a realistic local time, converted to UTC. */
 function atLocalTime(dayMs: number): Date {
   const hour = localHour()
   const minute = rint(0, 59)
@@ -200,14 +190,12 @@ function atLocalTime(dayMs: number): Date {
   return laLocalToUtc(dayMs, hour, minute, second)
 }
 
-/** Random realistic timestamp in [start, end], weekend-boosted. */
 function randTimestamp(start: Date, end: Date): Date {
   const span = Math.max(end.getTime() - start.getTime(), 60_000)
   for (let attempt = 0; attempt < 6; attempt++) {
     const t = atLocalTime(start.getTime() + rand() * span)
     if (t.getTime() < start.getTime() || t.getTime() > end.getTime()) continue
     const dow = t.getUTCDay()
-    // Weekend boost: keep weekday picks with p=0.75, always keep weekend picks.
     if (dow === 0 || dow === 6 || chance(0.75)) return t
   }
   return new Date(start.getTime() + rand() * span)
@@ -220,10 +208,7 @@ function later(a: Date, b: Date): Date {
   return a.getTime() >= b.getTime() ? a : b
 }
 
-// ---------------------------------------------------------------------------------------------------
-// Name pools. Predominantly Hispanic (about 70% of the cohort), with the rest reflecting LA's mix
-// (Korean, Armenian, Filipino, Black and White American, Chinese, Vietnamese).
-// ---------------------------------------------------------------------------------------------------
+// About 70% of the cohort is Hispanic, with the rest reflecting LA's mix.
 
 const HISPANIC_FIRST_M = [
   "Jose",
@@ -405,7 +390,7 @@ const HISPANIC_LAST = [
   "Renteria",
 ] as const
 
-/** Accent variants for display names only (handles and emails stay ASCII). */
+/** Display names only: handles and emails stay ASCII. */
 const ACCENTED: Record<string, string> = {
   Jose: "José",
   Maria: "María",
@@ -488,10 +473,8 @@ const OTHER_POOLS: readonly {
   },
 ]
 
-// ---------------------------------------------------------------------------------------------------
-// Geography: neighborhoods (approx centers + jitter radius in degrees), streets, parks.
-// Weighted toward the Eastside, Southeast LA and the harbor corridor.
-// ---------------------------------------------------------------------------------------------------
+// Neighborhood jitter radii are in degrees. Weighted toward the Eastside, Southeast LA and the harbor
+// corridor.
 
 interface Hood {
   name: string
@@ -770,12 +753,9 @@ function jitterPoint(lat: number, lng: number, r: number): { lat: number; lng: n
   }
 }
 
-// ---------------------------------------------------------------------------------------------------
-// Content pools. Deliberately casual: lowercase drift, loose punctuation, Spanish and Spanglish mixed
-// in, occasional emoji, no long-form writing and no em dashes anywhere.
-// ---------------------------------------------------------------------------------------------------
+// Deliberately casual: lowercase drift, loose punctuation, Spanish and Spanglish mixed in, occasional
+// emoji, no long-form writing and no em dashes anywhere (validate() enforces the last).
 
-/** Neutral bios usable by anyone. */
 const BIO_NEUTRAL: readonly string[] = [
   "{hood} born and raised",
   "trying to keep {hood} clean one block at a time",
@@ -792,7 +772,6 @@ const BIO_NEUTRAL: readonly string[] = [
   "{hood} neighborhood watch",
 ]
 
-/** Gendered bios. */
 const BIO_MALE: readonly string[] = [
   "dad of 3. tired of the dumping on our streets",
   "girl dad in {hood}",
@@ -804,7 +783,7 @@ const BIO_FEMALE: readonly string[] = [
   "abuela energy. {hood}",
 ]
 
-/** Spanish or culture-specific bios, only for Hispanic users; vecino/vecina gendered. */
+/** Only for Hispanic users; vecino/vecina gendered. */
 const BIO_HISPANIC_NEUTRAL: readonly string[] = [
   "orgullosamente de {hood} 🇲🇽",
   "aqui puro {hood} 💪",
@@ -813,7 +792,7 @@ const BIO_HISPANIC_NEUTRAL: readonly string[] = [
 const BIO_HISPANIC_M: readonly string[] = ["vecino de {hood}, aqui para ayudar"]
 const BIO_HISPANIC_F: readonly string[] = ["vecina de {hood}, aqui para ayudar"]
 
-/** Standalone top-level posts (English). {street}/{street2}/{hood} slots are filled per author. */
+/** {street}/{street2}/{hood} slots are filled per author. */
 const POST_TEMPLATES_EN: readonly string[] = [
   "third couch this month dumped on {street}. who keeps doing this",
   "the graffiti on the handball courts finally got painted over 🙏",
@@ -858,7 +837,7 @@ const POST_TEMPLATES_EN: readonly string[] = [
   "if every block had 2 people who cared we could keep this whole neighborhood clean",
 ]
 
-/** Spanish and Spanglish top-level posts, drawn only by Hispanic authors. */
+/** Drawn only by Hispanic authors. */
 const POST_TEMPLATES_ES: readonly string[] = [
   "mucha basura en la calle otra vez. ya reporte, a ver si hacen algo",
   "el alley behind my place is getting bad again, gonna report it manana",
@@ -871,7 +850,6 @@ const POST_TEMPLATES_ES: readonly string[] = [
   "que bonito se ve {hood} cuando todos ayudamos",
 ]
 
-/** Bodies for posts that attach a report card (post.report_id set). */
 const REPORT_POST_EN: readonly string[] = [
   "reported this dump on {street}, yall check it out so the city sees it",
   "this has been here over a week. finally reported it",
@@ -888,7 +866,6 @@ const REPORT_POST_ES: readonly string[] = [
   "miren esto. reportado. compartan para que lo vean",
 ]
 
-/** Bodies for posts that attach an upcoming event card (post.event_id set). */
 const EVENT_POST_EN: readonly string[] = [
   "hosting a cleanup this weekend, bring gloves if you got em. everyone welcome",
   "cleanup this saturday 🧹 kids welcome, we got extra grabbers",
@@ -903,7 +880,6 @@ const EVENT_POST_ES: readonly string[] = [
   "este sabado nos toca limpiar. lleguenle con la familia",
 ]
 
-/** Recap bodies posted by organizers after a done event (post.event_id set). */
 const EVENT_RECAP_EN: readonly string[] = [
   "{bags} bags today. arms are dead but the block looks brand new. thank you everyone 🙏",
   "we got {bags} bags out of the park today. proud of this neighborhood",
@@ -916,7 +892,6 @@ const EVENT_RECAP_ES: readonly string[] = [
   "terminamos con {bags} bolsas. gracias a mi gente que llego temprano",
 ]
 
-/** Generic replies (agreement, support, banter). */
 const REPLY_GENERIC_EN: readonly string[] = [
   "same thing on my street",
   "reported one like this last week, took 3 weeks but they picked it up",
@@ -952,7 +927,6 @@ const REPLY_GENERIC_ES: readonly string[] = [
   "orale, buen trabajo",
 ]
 
-/** Replies to event posts (RSVPs, logistics). */
 const REPLY_EVENT_EN: readonly string[] = [
   "i'll be there",
   "count me in",
@@ -969,7 +943,6 @@ const REPLY_EVENT_EN: readonly string[] = [
 ]
 const REPLY_EVENT_ES: readonly string[] = ["yo tambien voy", "ahi estare", "llevare bolsas extra"]
 
-/** Replies to report posts. */
 const REPLY_REPORT_EN: readonly string[] = [
   "just liked it so it gets visibility",
   "reported the same spot last month, they cleared it but it came back",
@@ -982,7 +955,6 @@ const REPLY_REPORT_EN: readonly string[] = [
 ]
 const REPLY_REPORT_ES: readonly string[] = ["eso esta a una cuadra de mi casa", "gracias vecino"]
 
-/** Quote-post bodies. */
 const QUOTE_EN: readonly string[] = [
   "this right here",
   "everyone in {hood} needs to see this",
@@ -993,7 +965,7 @@ const QUOTE_EN: readonly string[] = [
 ]
 const QUOTE_ES: readonly string[] = ["lo que siempre digo", "mi gente 💪"]
 
-/** Report content per type: [titles, descriptions]. Slots: {street} {street2}. */
+/** [titles, descriptions]; slots: {street} {street2}. */
 const REPORT_CONTENT: Record<
   ReportType,
   { titles: readonly string[]; descs: readonly string[]; descsEs?: readonly string[] }
@@ -1196,10 +1168,6 @@ const TIMELINE_RESOLVE_NOTES: readonly string[] = [
   "Cleared by sanitation crew",
 ]
 
-// ---------------------------------------------------------------------------------------------------
-// In-memory model
-// ---------------------------------------------------------------------------------------------------
-
 type Tier = "power" | "casual" | "light" | "lurker"
 
 interface SeedUser {
@@ -1300,10 +1268,6 @@ interface SeedHours {
   createdAt: Date
 }
 
-// ---------------------------------------------------------------------------------------------------
-// Generation
-// ---------------------------------------------------------------------------------------------------
-
 function fill(template: string, user: SeedUser, extra?: Record<string, string>): string {
   const streets = user.hood.streets
   const s1 = pick(streets)
@@ -1318,7 +1282,6 @@ function fill(template: string, user: SeedUser, extra?: Record<string, string>):
     .replaceAll("{n}", extra?.n ?? "")
 }
 
-/** Pick a body for `user`: Hispanic authors draw from the Spanish pool some of the time. */
 function bilingual(user: SeedUser, en: readonly string[], es: readonly string[]): string {
   const useEs = user.hispanic && es.length > 0 && chance(user.locale === "es" ? 0.55 : 0.18)
   return pick(useEs ? es : en)
@@ -1341,7 +1304,6 @@ function makeUsers(count: number, start: Date, end: Date): SeedUser[] {
       last = pick(pool.last)
     }
 
-    // Display name variants; a slice of Hispanic users display accented forms.
     const dFirst = hispanic && chance(0.35) ? (ACCENTED[first] ?? first) : first
     const dLast = hispanic && chance(0.2) ? (ACCENTED[last] ?? last) : last
     const displayName = pickWeighted<string>([
@@ -1357,7 +1319,7 @@ function makeUsers(count: number, start: Date, end: Date): SeedUser[] {
       ],
     ])
 
-    // Handle: ASCII, matches HANDLE_REGEX (3-20 of [A-Za-z0-9_]).
+    // Must match HANDLE_REGEX (3-20 of [A-Za-z0-9_]).
     const fl = first.toLowerCase().replace(/[^a-z0-9]/g, "")
     const ll = last.toLowerCase().replace(/[^a-z0-9]/g, "")
     const candidates = [
@@ -1449,7 +1411,6 @@ function makeFollows(users: SeedUser[], now: Date): SeedFollow[] {
       edges.set(key(u.id, f.id), { followerId: u.id, followeeId: f.id, createdAt: at })
     }
   }
-  // Reciprocity: ~30% of edges get a follow-back.
   for (const e of [...edges.values()]) {
     if (!chance(0.3)) continue
     const back = key(e.followeeId, e.followerId)
@@ -1478,7 +1439,6 @@ function makeEvents(users: SeedUser[], now: Date): SeedEvent[] {
     const organizer = organizers[i % organizers.length]!
     const park = parkPool[i % parkPool.length]!
     const hood = hoodByName(park.hood)
-    // 13 past done, 1 cancelled, 6 upcoming.
     const kind: SeedEvent["status"] = i < 13 ? "done" : i === 13 ? "cancelled" : "upcoming"
     const scheduledAt =
       kind === "upcoming"
@@ -1525,7 +1485,6 @@ function makeEvents(users: SeedUser[], now: Date): SeedEvent[] {
       hood,
     }
 
-    // Members: neighbors + followers-of-organizer flavored sample.
     const memberTarget = kind === "cancelled" ? rint(3, 8) : rint(6, 26)
     const weight = (c: SeedUser) =>
       (c.hood.name === hood.name ? 4 : 1) *
@@ -1579,7 +1538,6 @@ function makeEvents(users: SeedUser[], now: Date): SeedEvent[] {
   return events
 }
 
-/** A Saturday-or-Sunday-leaning date at least `minDays` ahead of base (bounded by `latest`). */
 function nextSaturdayish(base: Date, minDays: number, latest?: Date): Date {
   let d = new Date(base.getTime() + minDays * DAY)
   for (let i = 0; i < 7; i++) {
@@ -1729,7 +1687,6 @@ function makePosts(
     return p
   }
 
-  // 1) Plain top-level posts, volume by tier.
   for (const u of users) {
     const n =
       u.tier === "power"
@@ -1750,7 +1707,6 @@ function makePosts(
     }
   }
 
-  // 2) Event promo + recap posts by organizers (and some cohosts).
   for (const ev of events) {
     if (ev.status !== "cancelled") {
       const promoAt = randTimestamp(
@@ -1798,7 +1754,6 @@ function makePosts(
     }
   }
 
-  // 3) Report share posts by the reporter (~30% of published reports).
   for (const r of reports) {
     if (r.status === "submitted" || !chance(0.3)) continue
     const at = minutesAfter(r.publishedAt ?? r.createdAt, 5, 36 * 60)
@@ -1814,7 +1769,6 @@ function makePosts(
     )
   }
 
-  // 4) Replies (threaded). Popular posts attract more; repliers lean followers + neighbors.
   const topLevel = posts.filter((p) => p.depth === 0)
   for (const p of topLevel) {
     const base = p.eventId ? 2.2 : p.reportId ? 1.6 : 1
@@ -1837,7 +1791,7 @@ function makePosts(
       const followerPool = followersOf.get(parent.author.id) ?? []
       const replier =
         parent.depth > 0 && parent.author.id !== p.author.id && chance(0.4)
-          ? p.author // the root author responding to someone in their thread
+          ? p.author
           : followerPool.length > 0 && chance(0.65)
             ? pick(followerPool)
             : pickWeighted(users.map((u) => [u, u.tier === "lurker" ? 0.2 : 1] as const))
@@ -1883,7 +1837,6 @@ function makePosts(
     }
   }
 
-  // 5) Reposts (pure) + quotes on popular top-level posts.
   const repostKeys = new Set<string>()
   const popularTargets = topLevel.filter((p) => (followersOf.get(p.author.id)?.length ?? 0) >= 3)
   for (const target of popularTargets) {
@@ -2032,10 +1985,6 @@ function makeHours(events: SeedEvent[], now: Date): SeedHours[] {
   return rows
 }
 
-// ---------------------------------------------------------------------------------------------------
-// Validation (in-memory, before any DB writes)
-// ---------------------------------------------------------------------------------------------------
-
 const HANDLE_RE = /^[a-zA-Z0-9_]{3,20}$/
 
 function validate(
@@ -2060,7 +2009,6 @@ function validate(
     if (!u.email.endsWith(`@${DEMO_EMAIL_DOMAIN}`))
       errors.push(`email outside demo domain: ${u.email}`)
   }
-  // Closed world + counter consistency.
   const followerCounts = new Map<string, number>()
   const followingCounts = new Map<string, number>()
   const edgeKeys = new Set<string>()
@@ -2079,7 +2027,6 @@ function validate(
     if ((followingCounts.get(u.id) ?? 0) !== u.followingCount)
       errors.push(`followingCount drift for @${u.handle}`)
   }
-  // Posts: thread + counter integrity, no em dashes anywhere, repost uniqueness, ordering.
   const likeAgg = new Map<string, number>()
   for (const l of likes) likeAgg.set(l.postId, (likeAgg.get(l.postId) ?? 0) + 1)
   const saveAgg = new Map<string, number>()
@@ -2088,7 +2035,8 @@ function validate(
   const repostAgg = new Map<string, number>()
   const repostKeys = new Set<string>()
   for (const p of posts) {
-    if (p.body && p.body.includes("—")) errors.push(`em dash in post body: ${p.body.slice(0, 40)}`)
+    if (p.body && p.body.includes("\u2014"))
+      errors.push(`em dash in post body: ${p.body.slice(0, 40)}`)
     if (p.kind === "reply") {
       if (!p.replyTo || !p.threadRoot) errors.push("reply missing parent/root")
       else {
@@ -2112,7 +2060,6 @@ function validate(
     if ((replyAgg.get(p.id) ?? 0) !== p.replyCount) errors.push("replyCount drift")
     if ((repostAgg.get(p.id) ?? 0) !== p.repostCount) errors.push("repostCount drift")
   }
-  // Events: membership uniqueness, slot claim rules, capacity.
   for (const ev of events) {
     const seen = new Set<string>()
     for (const m of ev.members) {
@@ -2137,7 +2084,8 @@ function validate(
       if (r.timeline[i]!.createdAt.getTime() < r.timeline[i - 1]!.createdAt.getTime())
         errors.push("timeline out of order")
     }
-    if (r.description.includes("—") || r.title.includes("—")) errors.push("em dash in report")
+    if (r.description.includes("\u2014") || r.title.includes("\u2014"))
+      errors.push("em dash in report")
   }
   if (errors.length > 0) {
     throw new Error(
@@ -2145,10 +2093,6 @@ function validate(
     )
   }
 }
-
-// ---------------------------------------------------------------------------------------------------
-// Write phase
-// ---------------------------------------------------------------------------------------------------
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = []
@@ -2174,7 +2118,6 @@ export async function writeAll(
   const { now, users, follows, events, reports, posts, likes, saves, hours } = data
   const resolver = tx as unknown as Sql
 
-  // Users + prefs.
   for (const rows of chunk(users, 200)) {
     await tx`INSERT INTO users ${tx(
       rows.map((u) => ({
@@ -2224,7 +2167,7 @@ export async function writeAll(
     )}`
   }
 
-  // Events: per-row (geometry + reference code allocation, counter FIRST like createCleanupTx).
+  // Per row, with the reference-code counter allocated first as in createCleanupTx (lock order).
   for (const ev of events) {
     const jur = await resolveJurisdiction(resolver, ev.lng, ev.lat)
     const jurCode = await resolveJurisdictionCode(tx, jur?.geoid ?? null)
@@ -2249,7 +2192,6 @@ export async function writeAll(
       lat: ev.lat,
       at: ev.createdAt,
     })
-    // Stamp resolved geoid onto pending hours rows for this event.
     for (const h of hours) if (h.cleanupId === ev.id) h.jurisdictionGeoid = jur?.geoid ?? null
   }
   for (const ev of events) {
@@ -2295,7 +2237,7 @@ export async function writeAll(
     }
   }
 
-  // Reports: per-row (geometry, H3, jurisdiction, reference code with the counter allocation first).
+  // Per row, with the reference-code counter allocated first (lock order).
   for (const r of reports) {
     const jur = await resolveJurisdiction(resolver, r.lng, r.lat)
     const jurCode = await resolveJurisdictionCode(tx, jur?.geoid ?? null)
@@ -2329,7 +2271,6 @@ export async function writeAll(
     await tx`INSERT INTO report_timeline ${tx(rows)}`
   }
 
-  // Link a few nearby reports to cleanup events (the "reports we'll handle" gallery).
   const linkRows: {
     cleanup_id: string
     report_id: string
@@ -2358,7 +2299,7 @@ export async function writeAll(
   }
   if (linkRows.length > 0) await tx`INSERT INTO cleanup_reports ${tx(linkRows)}`
 
-  // Posts, in dependency waves (parents before replies, targets before reposts/quotes).
+  // Dependency waves: parents before replies, targets before reposts and quotes.
   const waves = new Map<number, SeedPost[]>()
   for (const p of posts) {
     const arr = waves.get(p.depth) ?? []
@@ -2418,7 +2359,6 @@ export async function writeAll(
     )}`
   }
 
-  // Volunteer hours: rows + audit journal + per-jurisdiction rollups (logEventHours shape).
   for (const rows of chunk(hours, 300)) {
     await tx`INSERT INTO volunteer_hours ${tx(
       rows.map((h) => ({
@@ -2464,9 +2404,7 @@ export async function writeAll(
   }
 }
 
-// ---------------------------------------------------------------------------------------------------
-// SQL verification (inside the same transaction; throws -> rollback)
-// ---------------------------------------------------------------------------------------------------
+// Runs inside the seed transaction, so a mismatch rolls the whole seed back.
 
 async function verify(tx: TransactionSql, now: Date): Promise<string[]> {
   const lines: string[] = []
@@ -2551,10 +2489,6 @@ async function verify(tx: TransactionSql, now: Date): Promise<string[]> {
   if (fail.length > 0) throw new Error(`verification failed:\n${fail.join("\n")}`)
   return lines
 }
-
-// ---------------------------------------------------------------------------------------------------
-// Purge
-// ---------------------------------------------------------------------------------------------------
 
 const PURGE_BLOCKER_SAMPLE = 20
 
@@ -2697,10 +2631,6 @@ export async function purgeDemo(tx: TransactionSql): Promise<Record<string, numb
   return counts
 }
 
-// ---------------------------------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------------------------------
-
 function argValue(name: string): string | undefined {
   const idx = process.argv.indexOf(name)
   return idx >= 0 ? process.argv[idx + 1] : undefined
@@ -2777,7 +2707,6 @@ export async function main(): Promise<void> {
 
     const verification = await handle.sql
       .begin(async (tx) => {
-        // Refuse to double-seed: purge first if demo users already exist.
         const [existing] = await tx<{ n: number }[]>`
           SELECT count(*)::int AS n FROM users WHERE email LIKE ${"%@" + DEMO_EMAIL_DOMAIN}
         `

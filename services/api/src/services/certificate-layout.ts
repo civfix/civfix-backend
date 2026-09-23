@@ -1,9 +1,9 @@
 /**
- * PURE pagination for the transcript table (P5). Measured row heights come IN as numbers — the renderer
- * supplies real `doc.heightOfString` values — so this module has no pdfkit dependency and every page
+ * PURE pagination for the transcript table. Measured row heights come IN as numbers (the renderer
+ * supplies real `doc.heightOfString` values), so this module has no pdfkit dependency and every page
  * boundary is unit-testable.
  *
- * Geometry (DP §3.1/§3.3/§3.4), all in PostScript points on US Letter 612x792:
+ * Geometry, all in PostScript points on US Letter 612x792:
  *   page 1        first row at y 344 (below the letterhead, holder card, summary tiles, column band)
  *   continuation  first row at y 100 (below the running header + a redrawn column band)
  *   content floor y 730; nothing may cross it, because the footer band starts at y 738
@@ -48,7 +48,7 @@ export interface PagePlan {
  * Split measured row heights into pages. Always returns at least one page, so an empty ledger still
  * yields a well-formed (row-less) document rather than a zero-page one.
  *
- * A row taller than a whole page is placed alone on its page rather than dropped — pdfkit will clip it,
+ * A row taller than a whole page is placed alone on its page rather than dropped: pdfkit will clip it,
  * which is visible, whereas silently losing a credited activity is not.
  */
 export function planPages(
@@ -81,21 +81,19 @@ export function planPages(
 }
 
 /**
- * Does the totals row still fit under the last table row? When it does not, the renderer starts a
- * continuation page for it — a totals line stranded across a page break reads as a different number.
+ * When the totals row does not fit under the last table row, the renderer starts a continuation page
+ * for it: a totals line stranded across a page break reads as a different number.
  */
 export function totalsFitsOnPage(endY: number, opts: Partial<PagePlanOptions> = {}): boolean {
   const { contentFloor, totalsHeight } = { ...DEFAULT_PAGE_PLAN_OPTIONS, ...opts }
   return endY + totalsHeight <= contentFloor
 }
 
-/** DP §3.5: the issuer/attestation block is forced onto a fresh page when < `issuerHeight` remains. */
 export function issuerNeedsNewPage(y: number, opts: Partial<PagePlanOptions> = {}): boolean {
   const { contentFloor, issuerHeight } = { ...DEFAULT_PAGE_PLAN_OPTIONS, ...opts }
   return contentFloor - y < issuerHeight
 }
 
-/** Rows that fit on a page whose first row starts at `top`, at a uniform `rowHeight`. */
 export function rowsPerPage(
   top: number,
   rowHeight: number,

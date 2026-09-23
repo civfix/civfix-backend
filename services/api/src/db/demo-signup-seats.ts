@@ -1,8 +1,7 @@
 /**
- * The free registration + seat minting both demo CLIs share (seed-demo-la.ts, demo-join-event.ts).
- * Guard-free module (no run-as-main CLI guard) for the same reason as seed-demo-domain.ts: tsup
- * (splitting: false) inlines imports into each bundled entry, so a runIfMain guard in an imported
- * CLI fires inside the importing bundle and runs the wrong main.
+ * Guard-free module (no runIfMain), shared by both demo CLIs: tsup (splitting: false) inlines imports
+ * into each bundled entry, so a guard in an imported CLI would fire inside the importing bundle and run
+ * the wrong main.
  */
 
 import { randomUUID } from "node:crypto"
@@ -35,7 +34,7 @@ export function demoTicketTokenHasher(
   return (seatId) => signer.hashFor(seatId)
 }
 
-/** Mint the live join path's free registration + seat for each member; a no-op on ticketed events. */
+/** A no-op on ticketed events: only the free join path mints a registration. */
 export async function mintDemoSignupSeats(
   tx: Queryable,
   args: {

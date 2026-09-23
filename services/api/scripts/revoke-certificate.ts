@@ -8,7 +8,7 @@
  *
  * WHY THIS EXISTS. The product's only revoke is HOLDER-gated: `POST /service-hours/certificates/:code/
  * revoke` runs `requireAuth`, the service hardcodes the reason `"holder"`, and the repository scopes its
- * UPDATE by `WHERE user_id = <session user>`. An operator cannot reach it — they are not the holder — and
+ * UPDATE by `WHERE user_id = <session user>`. An operator cannot reach it (they are not the holder), and
  * even if they had the holder sign in, `verify()` would then publicly report `revokedReason: "holder"`,
  * i.e. that the VOLUNTEER withdrew their own record rather than that civfix corrected the ledger. This
  * script is the seam that makes the documented remedy real: same repository call, an operator reason, and
@@ -16,22 +16,21 @@
  *
  * THE MOTIVATING CASE (`drizzle/0065_void_report_volunteer_hours.sql`): filing a report stopped being
  * volunteer service, so every historical `source='report'` credit was voided. A transcript issued before
- * that itemised those rows and OVERSTATES service. It cannot be corrected in place — the row is an
+ * that itemised those rows and OVERSTATES service. It cannot be corrected in place: the row is an
  * immutable snapshot, `verify()` reports it verbatim, and editing `snapshot`/`total_hours` would break
  * `document_sha256` against the stored PDF. Revoke, notify the holder, let them re-issue: after the void
  * their ledger fingerprint differs, so the `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL`
- * idempotency index does not block the new document. The detection query is in the migration banner and in
- * docs/security/2026-07-24-full-backend-security-review.md §1b.
+ * idempotency index does not block the new document. The detection query is in the migration banner.
  *
  * DELIBERATELY NOT AN HTTP ROUTE. An admin endpoint that revokes another person's signed document is a
  * standing capability on a public-verification surface; this is a rare, deliberate, per-code action, so it
- * lives where `refresh-boundaries.ts` lives — a `scripts/` tsx tool, never bundled into the API image.
+ * lives where `refresh-boundaries.ts` lives: a `scripts/` tsx tool, never bundled into the API image.
  *
  * ENV. `DATABASE_URL` only (open your own SSH tunnel to prod Postgres and export it). The R2 delete is
  * skipped with a warning unless R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET are
  * also set. Skipping it is SAFE, never an exposure: `findLiveByFingerprint` filters `revoked_at IS NULL`
  * and is the only path that re-presigns an object, so a revoked certificate's PDF is unreachable through
- * the API either way — any already-issued URL simply expires. Deleting is still preferred, because the
+ * the API either way; any already-issued URL simply expires. Deleting is still preferred, because the
  * object is otherwise an orphan nothing will ever collect.
  *
  * IDEMPOTENT. The repository's `revoked_reason = COALESCE(revoked_reason, …)` means re-running never
@@ -53,7 +52,7 @@ const warn = (m: string): void => console.warn(`${PREFIX}: ⚠ ${m}`)
  * on its own (`holder` = the volunteer withdrew it; `account_closed` = erasure tombstoned the holder).
  */
 const OPERATOR_REASONS = {
-  /** The ledger the document was built from was itself wrong — the 0065 case. */
+  /** The ledger the document was built from was itself wrong (the 0065 case). */
   ledger_corrected: "the underlying volunteer-hours ledger was corrected after issue",
   /** The document was issued from data obtained by fraud or abuse. */
   issued_in_error: "the document should never have been issued",
@@ -155,21 +154,21 @@ async function main(): Promise<void> {
     )
 
     if (args.dryRun) {
-      log(`dry run — nothing changed`)
+      log(`dry run: nothing changed`)
       return
     }
 
     const row = await repo.revoke(before.userId, args.code, args.reason, new Date())
     if (row === null) {
       // Unreachable: findByCode just resolved this code, and revoke scopes by that row's own user_id.
-      console.error(`${PREFIX}: revoke matched no row — did the certificate disappear mid-run?`)
+      console.error(`${PREFIX}: revoke matched no row; did the certificate disappear mid-run?`)
       process.exit(1)
     }
 
     if (before.revokedAt !== null) {
       warn(
         `already revoked; COALESCE preserved the original timestamp and reason ` +
-          `(${row.revokedReason ?? "no reason"}) — "${args.reason}" was NOT written`,
+          `(${row.revokedReason ?? "no reason"}); "${args.reason}" was NOT written`,
       )
     } else {
       log(
@@ -185,7 +184,7 @@ async function main(): Promise<void> {
     await deleteObject(row.r2Key)
 
     log(
-      `done. Notify the holder — after the ledger correction they can re-issue a corrected transcript.`,
+      `done. Notify the holder: after the ledger correction they can re-issue a corrected transcript.`,
     )
   } finally {
     await handle.close()
@@ -203,7 +202,7 @@ async function deleteObject(key: string): Promise<void> {
   const bucket = process.env.R2_BUCKET
   if (!accountId || !accessKeyId || !secretAccessKey || !bucket) {
     warn(
-      `R2_* not set — leaving ${key} in place. The certificate is revoked and no API path re-presigns ` +
+      `R2_* not set; leaving ${key} in place. The certificate is revoked and no API path re-presigns ` +
         `a revoked row, so this is an orphaned object, not an exposure. Re-run with R2 credentials (or ` +
         `delete the key by hand) to reclaim it.`,
     )

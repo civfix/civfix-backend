@@ -1,16 +1,10 @@
 /**
- * demo-join-event: joins a subset of the seeded demo users (seed-demo-la.ts) to ONE existing event,
- * exactly the way the live join path does — a cleanup_members row per user (role 'member') plus, on an
- * event with no ticket types, the free registration + seat the roster and check-in read, refusing
- * closed (done/cancelled) events and banned users, and never exceeding the event's RSVP capacity
- * (counting existing members + non-cancelled guests, the same sum goingCount uses). If the event has
- * signup slots with open capacity, some joiners also claim one (one slot per person, capacity
- * respected against existing claims), matching cleanup_slot_claims semantics.
- *
+ * Joins seeded demo users to one existing event the way the live join path does, including its refusals
+ * (closed events, banned users, RSVP capacity) and the free registration + seat on unticketed events.
  * Only accounts on the reserved demo domain are ever touched, so this cannot RSVP a real user.
  *
- * SAFETY: same stance as seed-demo-la — the default run is a REHEARSAL (everything runs in one
- * transaction, prints what it would do, then rolls back). Pass --yes to commit.
+ * SAFETY: the default run is a rehearsal (one transaction, printed, then rolled back). Pass --yes to
+ * commit.
  *
  * The seat token hash is keyed by TICKET_TOKEN_SECRET, resolved exactly as the API resolves it (the
  * development fallback included), or the demo seats will not scan at check-in; the api container
@@ -28,8 +22,6 @@ import { runIfMain } from "./cli.js"
 import { DEMO_EMAIL_DOMAIN } from "./seed-demo-domain.js"
 import { demoTicketTokenHasher, mintDemoSignupSeats } from "./demo-signup-seats.js"
 import { deriveCleanupStatus, eventWindowOf } from "../services/cleanup-rules.js"
-
-// --- deterministic PRNG (mulberry32), same generator seed-demo-la uses ---------------------------
 
 let rand = (): number => Math.random()
 
@@ -57,10 +49,7 @@ function shuffle<T>(arr: T[]): T[] {
   return arr
 }
 
-/**
- * A plausible joined_at: spread over the window from `start` to now, biased toward the recent end
- * (RSVPs cluster after a promo post), with daytime/evening minutes.
- */
+/** Biased toward the recent end, because RSVPs cluster after a promo post. */
 function joinTimestamp(start: Date, now: Date): Date {
   const span = Math.max(now.getTime() - start.getTime(), 60_000)
   const t = new Date(now.getTime() - Math.pow(rand(), 2) * span)
@@ -97,7 +86,6 @@ async function loadEvent(tx: TransactionSql, ref: string): Promise<EventRow | nu
     `
     return rows[0] ?? null
   }
-  // Reference code, with or without the EVENT- prefix (codes are stored as EVENT-{JURCODE}-{NNNNNN}).
   const code = ref.toUpperCase().startsWith("EVENT-") ? ref.toUpperCase() : `EVENT-${ref}`
   const rows = await tx<EventRow[]>`
     SELECT id, title, status, scheduled_at, ends_at, created_at, capacity, organizer_user_id
@@ -154,7 +142,6 @@ export async function main(): Promise<void> {
           `event: ${event.title} (${derived}, scheduled ${event.scheduled_at.toISOString()})`,
         )
 
-        // Demo users not already members, not banned, not the organizer; skip soft-deleted.
         const candidates = await tx<{ id: string; handle: string; created_at: Date }[]>`
           SELECT u.id, u.handle, u.created_at
           FROM users u
@@ -170,7 +157,7 @@ export async function main(): Promise<void> {
           )
         }
 
-        // Respect the RSVP capacity the way goingCount measures it: members + non-cancelled guests.
+        // The same sum goingCount measures: members plus non-cancelled guests.
         let room = Number.POSITIVE_INFINITY
         if (event.capacity !== null) {
           const [going] = await tx<{ n: number }[]>`
@@ -210,7 +197,6 @@ export async function main(): Promise<void> {
           hashFor,
         })
 
-        // Some joiners claim an open signup slot, respecting per-slot capacity + one-claim-per-person.
         const slots = await tx<
           { id: string; title: string; capacity: number | null; claims: number }[]
         >`
@@ -245,7 +231,6 @@ export async function main(): Promise<void> {
         )
         console.log(`  ${handles}`)
 
-        // Verify: capacity + slot invariants still hold after the writes.
         const [overCap] = await tx<{ n: number }[]>`
           SELECT count(*)::int AS n FROM cleanup_slots s
           WHERE s.cleanup_id = ${event.id} AND s.capacity IS NOT NULL

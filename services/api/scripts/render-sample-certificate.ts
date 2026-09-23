@@ -15,7 +15,7 @@
  *   sample-en-1200.pdf             the 1000-row cap + the truncation banner under the totals
  *
  * This is a `scripts/` tsx tool: it is never bundled into the API image and touches no DB, no storage and
- * no network — the renderer is pure, so a sample needs nothing but the vendored fonts.
+ * no network: the renderer is pure, so a sample needs nothing but the vendored fonts.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs"

@@ -1,16 +1,6 @@
-/**
- * Admin inbox routes (catch-all inbound mail).
- *
- *   GET  /admin/inbox            the inbox list (filter status / recipient local-part / search) (InboxListResponse).
- *   GET  /admin/inbox/:id        one inbound email + body + attachment links (GetInboxMessageResponse).
- *   POST /admin/inbox/:id/status set the triage status (mark read / archive) (SetInboxStatusRequest). [csrf]
- *
- * The detail route presigns each attachment's R2 key into a time-limited GET URL (the DTO carries the
- * key field; on the wire it is a fetchable URL the admin reader links to). The requireOperator guard is
- * applied by routes/admin/index.ts (this router runs inside the guarded child context); the mutation
- * additionally carries csrfProtect. The repo is built lazily from the container (Drizzle inbound repo)
- * or from a per-instance test override.
- */
+// The requireOperator guard is applied by routes/admin/index.ts: this router runs inside the guarded
+// child context. On the wire an attachment's `key` field carries a time-limited presigned GET URL, never
+// the raw R2 key.
 
 import {
   InboxListQuerySchema,
@@ -33,13 +23,10 @@ import {
   type InboundRepository,
 } from "../../services/admin/inbound-repository.drizzle.js"
 
-/** Hard cap on attachments presigned per inbound email (defends a crafted mail with thousands of parts). */
+/** Defends against a crafted mail with thousands of parts. */
 const MAX_INBOX_ATTACHMENTS = 50
 
-/**
- * Optional injected inbox dependencies (tests). When present the routes use the in-memory inbound repo +
- * a fake Storage instead of the container, so the HTTP flow runs offline with no DB and no R2.
- */
+/** Test-only: an in-memory repo and a fake Storage so the HTTP flow runs offline with no DB and no R2. */
 export interface AdminInboxRouteOverrides {
   repo: InboundRepository
   storage: Storage
@@ -47,7 +34,6 @@ export interface AdminInboxRouteOverrides {
 
 declare module "fastify" {
   interface FastifyInstance {
-    /** Injected admin-inbox route overrides (tests). See AdminInboxRouteOverrides. */
     adminInboxOverrides?: AdminInboxRouteOverrides
   }
 }
@@ -65,16 +51,14 @@ export async function registerAdminInboxRoutes(
     return app.adminInboxOverrides?.storage ?? container.inboundStorage
   }
 
-  // GET /admin/inbox
   route(app, "listInbox", async (request, reply) => {
     const query = parse(InboxListQuerySchema, request.query)
     const payload: InboxListResponse = await repo().list(query)
     reply.status(200).send(payload)
   })
 
-  // GET /admin/inbox/:id  (presign attachment keys -> time-limited GET URLs)
-  // L4: a per-subject read — one citizen<->city email with its full body and its attachments presigned
-  // into fetchable URLs. Audited (best-effort) so the disclosure is attributable.
+  // A per-subject read (one citizen<->city email with its full body and fetchable attachments), audited
+  // best-effort so the disclosure is attributable.
   route(app, "getInboxMessage", async (request, reply) => {
     const { id } = idParam(request)
     const dto = await repo().get(id)
@@ -84,10 +68,9 @@ export async function registerAdminInboxRoutes(
       target: `inbound_email:${id}`,
       meta: { attachments: dto.attachments.length },
     })
-    // Over the cap the extra parts are ELIDED from the payload with no wire signal (the DTO has no
-    // truncation flag), so the omission is recorded here and in the audit meta above — otherwise an
-    // operator reading the message cannot know evidence was left out. FOLLOW-UP: a truncation flag on
-    // InboundEmailDTO in @civfix/shared would surface it in the console itself.
+    // Over the cap the extra parts are dropped with no wire signal (the DTO has no truncation flag), so
+    // the omission is recorded here and in the audit meta above; otherwise nobody could tell evidence was
+    // left out.
     if (dto.attachments.length > MAX_INBOX_ATTACHMENTS) {
       request.log.warn(
         { inboundEmailId: id, attachments: dto.attachments.length, cap: MAX_INBOX_ATTACHMENTS },
@@ -104,9 +87,7 @@ export async function registerAdminInboxRoutes(
     reply.status(200).send(payload)
   })
 
-  // POST /admin/inbox/:id/status  [csrf]
-  // L6: the acting operator is threaded into the repo, which writes the inbox.status_changed audit row in
-  // the SAME transaction as the UPDATE (mirroring mail.routes.ts and every other admin mutation).
+  // The repo writes the inbox.status_changed audit row in the same transaction as the UPDATE.
   route(app, "setInboxStatus", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SetInboxStatusRequestSchema, request)

@@ -1,6 +1,4 @@
 /**
- * Cumulative presigned-BYTE quota for media uploads (security review M10).
- *
  * The media presign endpoint is reachable without an account, and its only control was a 30/min/IP
  * REQUEST cap. Requests are the wrong unit: 30 requests x 50 MB x 60 minutes is 90 GB/hour from a
  * single source, against an orphan sweep that reclaims a bounded batch per hour. This meters the
@@ -11,23 +9,22 @@
  * be extended by continuing to spend, while a key that lost its expiry still gets one.
  *
  * FAIL CLOSED: `charge` never swallows a store error. A meter that cannot be read must not silently
- * become "unlimited" — that is exactly the failure mode H4 flagged in the rate limiter.
+ * become "unlimited".
  */
 
 import type { RedisClient } from "../adapters/redis.js"
 import { attachAtomicIncrBy } from "../adapters/redis-incr.js"
 
-/** Per-subject daily budget. Generous for a real reporter (a handful of photos and a short video). */
+/** Generous for a real reporter: a handful of photos and a short video. */
 export const MEDIA_UPLOAD_BYTES_PER_DAY = 512 * 1024 * 1024
 
-/** Window length for the byte budget, in seconds. */
 export const MEDIA_UPLOAD_BYTE_WINDOW_SECONDS = 24 * 60 * 60
 
-/** Redis key prefix. Distinct bucket from every other abuse counter (see abuse/counter-store.ts). */
+/** Distinct bucket from every other abuse counter (see abuse/counter-store.ts). */
 export const MEDIA_UPLOAD_BYTE_PREFIX = "abuse:media:bytes:"
 
 export interface ByteMeter {
-  /** Add `bytes` to the subject's window and return the running total after the add. */
+  /** Returns the running total after the add. */
   add(subject: string, bytes: number): Promise<number>
 }
 
@@ -43,7 +40,7 @@ export class RedisByteMeter implements ByteMeter {
   }
 }
 
-/** In-memory meter for offline harnesses/tests. Same create-anchored-TTL semantics as the Redis one. */
+/** Same create-anchored-TTL semantics as the Redis meter. */
 export class InMemoryByteMeter implements ByteMeter {
   private readonly store = new Map<string, { total: number; expiresAtMs: number }>()
   private readonly clock: () => number

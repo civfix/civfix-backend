@@ -1,18 +1,12 @@
 import type { Queryable, Sql } from "../db/client.js"
 import type { ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
 
-// The reaction tables share an identical layout (message_id, user_id, emoji, created_at) and a
-// PK(message_id, user_id, emoji), so one parameterized repo serves them. `table` is a module-constant union
-// literal (never user input), interpolated as a postgres.js identifier (`sql(table)`). Today cleanup chat,
-// report chat, group chat and DMs all ride the ONE chat table (message ids are globally-unique uuids), so
-// the union has a single member; the removed "report_message_reactions" belonged to the deleted per-report
-// discussion stack and had no caller left.
+// `table` is a module-constant union literal, never user input, interpolated as a postgres.js identifier.
+// Every room kind and DMs share the one chat table because message ids are globally unique uuids.
 export type ReactionTable = "chat_message_reactions"
 
 export interface MessageReactionRepo {
-  // True when the reaction is now PRESENT (added), false when it was removed.
   toggle(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean>
-  // Batched: one grouped query for the whole id set, never one query per message (the N+1 fix).
   loadFor(
     messageIds: string[],
     viewerUserId: string | null,
@@ -45,8 +39,8 @@ export function makeReactionRepo(sql: Sql, table: ReactionTable): MessageReactio
   }
 }
 
-// Standalone batched loader so a repo can pass its own transaction/tag (history reads run inside the
-// same connection as the page select). `mine` is false for an anonymous viewer.
+// Standalone so a repo can pass its own transaction: history reads run on the same connection as the
+// page select.
 export async function loadReactionsFor(
   tag: Queryable,
   table: ReactionTable,

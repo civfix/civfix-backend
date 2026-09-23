@@ -1,19 +1,10 @@
-/**
- * oauth_identities: external identity-provider links (Apple, Google) for a user.
- *
- * A user may have multiple identities (one per provider). The (provider, provider_user_id) pair is
- * globally unique so the same external account cannot be attached to two civfix users.
- */
-
 import { sql } from "drizzle-orm"
 import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 
-// NOTE: `provider` is intentionally left as plain `text` (NOT $type-narrowed to the shared
-// OAuthProvider union). The OAuthIdentityStore seam queries/links by a `string` provider (the
-// OAuthService passes its PROVIDER_* string constants), so narrowing the column would force a cast at
-// every call site for no real safety gain. The values are still mirrored + drift-tested via
-// OAUTH_PROVIDER_VALUES in db/schema/types.ts.
+// `provider` stays plain text rather than the OAuthProvider union: the OAuthIdentityStore seam takes a
+// string provider, so narrowing would force a cast at every call site for no safety gain. The values
+// are still drift-tested via OAUTH_PROVIDER_VALUES in types.ts.
 export const oauthIdentities = pgTable(
   "oauth_identities",
   {

@@ -1,12 +1,6 @@
 /**
- * Admin events (cleanups) routes (Phase 2): list / detail / set-status / outcome / flag / cancel / message
- * / link-reports / unlink-report.
- *
- * Every body/query is validated against the shared Zod schema via parse(). The requireOperator guard is
- * applied by routes/admin/index.ts; mutations additionally carry csrfProtect. The acting operator's userId
- * is resolved once per handler via requireOperator(request) and recorded on every audit write (the audit
- * is written inside the service's repo transaction, atomic with the effect). The service is built lazily
- * from the container (Drizzle event repo) or from a per-instance test override (in-memory repo).
+ * Every audit is written inside the service's repo transaction with the operator id resolved here, so the
+ * audit row and the effect commit or roll back together.
  */
 
 import {
@@ -55,7 +49,7 @@ declare module "fastify" {
   }
 }
 
-/** The admin event service, from the test overrides when present, else from the container. Shared with the org routes (adminListOrgEvents). */
+/** Shared with the org routes (adminListOrgEvents). */
 export function makeContainerAdminEventService(
   app: FastifyInstance,
   container: Container,
@@ -106,7 +100,7 @@ export async function registerAdminEventsRoutes(
     sendOk(reply)
   })
 
-  // Log bags collected — the only write path for cleanups.bags.
+  // The only write path for cleanups.bags.
   route(app, "setEventOutcome", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SetEventOutcomeRequestSchema, request)
@@ -135,8 +129,6 @@ export async function registerAdminEventsRoutes(
     sendOk(reply)
   })
 
-  // The audit (event.reports_linked) is written inside the service's repo transaction (atomic with the
-  // junction + timeline rows), using the operator userId resolved here.
   route(app, "linkEventReports", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(LinkEventReportsRequestSchema, request)

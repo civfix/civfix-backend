@@ -1,21 +1,8 @@
 /**
- * In-memory AdminEventRepository (Phase 2): the offline binding of the admin events persistence seam.
- *
- * Mirrors the Drizzle impl's OBSERVABLE contract so the admin event service can be unit-tested with NO
- * database (no Docker):
- *   - listEvents applies the search (title/address/organizer name+handle, exact-uuid id — see
- *     matchesQuery) + the status + flagged-only facet and pages newest-id-keyset; flagged is derived from
- *     the seeded timeline kinds;
- *   - getEvent/listTimeline/listMessages read the seeded cleanup + its extras;
- *   - toggleFlag / cancel mutate the cleanup + append a cleanup_timeline row;
- *
- * STATUS (0.46.0): like the Drizzle repo, this fake DERIVES the status from scheduled_at/ends_at against
- * the wall clock and reads the stored value only for 'cancelled' (cleanup-rules.deriveCleanupStatus, the
- * TS twin of cleanupStatusExpr). seedEvent takes an EventStatus (or a raw legacy `storedStatus`) and,
- * unless the caller pins `scheduledAt`/`endsAt`, seeds a window that derives back to it.
- *   - postMessage appends a chat message + a 'message' timeline row + returns the seeded members;
- *   - notifyMember records a notification row (inspectable for the message-attendees test).
- * Seed/inspect helpers (seedEvent, seedMember, the public maps) let tests arrange + assert state.
+ * Mirrors the Drizzle repo's observable behavior so the admin event service is unit-tested with no
+ * database. Like the Drizzle repo it derives status from scheduled_at/ends_at against the clock and reads
+ * the stored value only for 'cancelled'; seedEvent seeds a window that derives back to the requested
+ * status unless the test pins `scheduledAt`/`endsAt`.
  */
 
 import { randomUUID } from "node:crypto"
@@ -60,7 +47,6 @@ function defaultStartOffsetMs(status: string): number {
   return 7 * 86_400_000
 }
 
-/** A recorded member notification (the message-attendees fan-out), inspectable by tests. */
 export interface RecordedMemberNotification {
   cleanupId: string
   userId: string
@@ -69,26 +55,23 @@ export interface RecordedMemberNotification {
   link: string | null
 }
 
-/** A recorded audit row (mirrors the Drizzle impl's in-tx writeAudit), inspectable by tests. */
+/** Mirrors the Drizzle repo's in-transaction writeAudit. */
 export interface RecordedEventAudit {
   action: string
   target: string
   meta: Record<string, unknown>
 }
 
-/** A seeded cleanup plus its detail extras held in one place. */
 export interface SeededEvent {
   record: AdminEventRecord
   /** The raw stored cleanups.status; only 'cancelled' is consulted, exactly as the SQL does. */
   storedStatus: string
-  /** cleanups.ends_at — the derivation's right edge. */
+  /** cleanups.ends_at, the derivation's right edge. */
   endsAt: Date
-  /** cleanups.organization_id (the org link), for the admin org events list. */
   organizationId: string | null
   members: EventMemberRef[]
 }
 
-/** A seeded report (the subset the link gallery + the visibility filter need). */
 export interface SeededAdminReport {
   id: string
   category: ReportCategory
@@ -102,21 +85,16 @@ export interface SeededAdminReport {
   deleted: boolean
 }
 
-/** An in-memory AdminEventRepository faithful to the Drizzle impl's observable behavior. */
 export class InMemoryAdminEventRepository implements AdminEventRepository {
-  /** Seeded cleanups keyed by id (insertion order preserved for stable paging). */
+  /** Insertion order gives stable paging. */
   readonly events = new Map<string, SeededEvent>()
-  /** Timeline rows keyed by cleanup id, oldest first. */
+  /** Oldest first. */
   readonly timeline = new Map<string, AdminEventTimelineRecord[]>()
-  /** Chat messages keyed by cleanup id, oldest first. */
+  /** Oldest first. */
   readonly messages = new Map<string, AdminEventMessageRecord[]>()
-  /** Recorded member notifications (the message-attendees side effect). */
   readonly notifications: RecordedMemberNotification[] = []
-  /** Recorded audit rows. */
   readonly audits: RecordedEventAudit[] = []
-  /** Seeded reports keyed by id (for the link gallery + visibility filter). */
   readonly reports = new Map<string, SeededAdminReport>()
-  /** cleanup_reports junction rows ({cleanupId, reportId, linkedAt}). */
   readonly links: { cleanupId: string; reportId: string; linkedAt: Date }[] = []
 
   /** Deterministic clock for appended rows; each row advances by one millisecond. */
@@ -129,14 +107,13 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
   }
 
   /**
-   * Seed a cleanup. Defaults fill the optional fields so a test only sets what it asserts on. Pass
-   * `status` (an EventStatus, mapped to the stored Phase-1 value) for the common case, or `storedStatus`
-   * to seed a RAW Phase-1 value directly (e.g. a legacy 'active'/'done' row, for the H1 filter test).
+   * Defaults fill the optional fields so a test only sets what it asserts on. `storedStatus` seeds a raw
+   * legacy value (e.g. 'active'/'done') instead of an EventStatus.
    */
   seedEvent(input: {
     id?: string
     status?: EventStatus
-    /** Raw stored cleanups.status override (Phase-1 enum). Wins over `status` when provided. */
+    /** Wins over `status` when provided. */
     storedStatus?: string
     eventKind?: EventKind
     title?: string
@@ -190,7 +167,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     return seeded
   }
 
-  /** Seed a report so the link gallery + visibility filter resolve. Defaults to visible (published+public). */
+  /** Defaults to a visible (published, public) report. */
   seedReport(over: Partial<SeededAdminReport> & { id?: string } = {}): SeededAdminReport {
     const report: SeededAdminReport = {
       id: over.id ?? randomUUID(),
@@ -208,16 +185,14 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     return report
   }
 
-  /** Seed a cleanup_reports link directly. */
   seedLink(cleanupId: string, reportId: string): void {
     this.links.push({ cleanupId, reportId, linkedAt: this.nextDate() })
   }
 
   /**
-   * True when a report is publicly visible - mirrors publicReportFilter(sql), which the Drizzle repo uses
-   * for both the gallery read and the link-insert validator. Reads the status set from
-   * report-visibility.ts rather than re-typing it: a hardcoded `status === "published"` here would make
-   * the fake UNDER-select relative to prod (a resolved report would vanish from an event's gallery).
+   * Mirrors publicReportFilter(sql), which the Drizzle repo uses for both the gallery read and the link
+   * insert. Reads the status set from report-visibility.ts: a hardcoded `status === "published"` would make
+   * the fake under-select relative to prod (a resolved report would vanish from an event's gallery).
    */
   private reportVisible(r: SeededAdminReport | undefined): r is SeededAdminReport {
     return (
@@ -394,7 +369,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
       who: "operator",
       createdAt: this.nextDate(),
     })
-    // L4: fan out a notification per member in the same call (mirrors the Drizzle set-based in-tx insert).
+    // Mirrors the Drizzle repo's set-based in-transaction fan-out.
     for (const member of seeded.members) {
       this.notifications.push({
         cleanupId: id,
@@ -497,16 +472,9 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
 }
 
 /**
- * The search-needle filter shared by listEvents + countByBucket.
- *
- * MIRRORS searchEventsFragment (admin-event-sql.ts) COLUMN FOR COLUMN:
- *   `c.title ILIKE %q% OR c.address ILIKE %q% OR u.display_name ILIKE %q% OR u.handle ILIKE %q%`
- *   `OR c.id = $q::uuid` — the id branch only when q is a uuid.
- * The id was previously matched as a SUBSTRING, which SQL never does (an exact uuid equality), so an
- * id-prefix search passed offline and returned nothing in production. `place` and `address` are both
- * checked because the SQL projection reads ONE column into both (`c.address AS place, c.address`) while
- * the fake lets a test seed them separately — so whichever a test set is the address SQL would search.
- * The organizer HANDLE (`u.handle::text`) was missing entirely.
+ * Mirrors searchEventsFragment (admin-event-sql.ts) column for column, including the exact-uuid id match:
+ * a substring match here would pass offline and return nothing in production. `place` and `address` are
+ * both checked because SQL reads one column into both while the fake lets a test seed them separately.
  */
 function matchesQuery(record: AdminEventRecord, q: string): boolean {
   const needle = q.toLowerCase()
@@ -520,7 +488,6 @@ function matchesQuery(record: AdminEventRecord, q: string): boolean {
   )
 }
 
-/** Default seeded organizer (a claimed account with a verified email + oauth). */
 function defaultOrganizer(): AdminOrganizerRecord {
   return {
     id: randomUUID(),

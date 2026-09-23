@@ -1,31 +1,12 @@
 /**
- * Unified chat-message EDIT service (P0 Task 0.2): one roomKind-dispatching `editMessage` behind the DM
- * edit route today and the upcoming PATCH /messages route (Task 0.3). Mirrors chat-reaction-service's
- * shape: a factory over optional per-room deps, so a DM-only caller (dm.routes) wires only the dm half.
- *
- * Gate ladder (in order):
- *   1. Room-send permission still held (the SAME checks the WS send path runs): cleanup member, report
- *      chat member (preceded by the report VISIBILITY check when deps.isReportVisible is wired -> 404),
- *      group member, dm thread peer + not blocked either way -> plain 403. This runs BEFORE the message
- *      lookup, like chat-reaction-service, so a non-member probing leaked UUIDs gets the same generic
- *      403 whether or not the message exists, belongs to the room, is deleted, or is a system row.
- *   2. Resolve the message by id in the correct table (dm_messages for "dm", chat_messages otherwise)
- *      and verify its room ref matches roomId -> 404 otherwise (also plain-missing).
- *   3. Sender-only -> 403 (machine code "not_sender" in the error envelope's `fields.code`). A
- *      sender-less SYSTEM row skips this gate and fails the kind gate below instead (422) — "not your
- *      message" would be misleading for a message nobody authored.
- *   4. Not soft-deleted -> 409.
- *   5. kind === "text" only -> 422.
- *   6. Within EDIT_WINDOW_HOURS of created_at -> 403 (code "edit_window_expired").
- * Then: slur filter (App Store 1.2a, same helper as WS send / the old DM edit), the sender-gated UPDATE
- * (body + edited_at = now()), mention re-resolution under the same scope rules the send path records
- * with (the recorded set is REPLACED so dropped @mentions clear), a {type:"message_update"}
- * broadcast to the room key, and the refreshed fully-hydrated ChatMessageDTO back to the caller.
+ * The room-send permission check (the same one the WS send path runs) comes BEFORE the message lookup,
+ * so a non-member probing leaked UUIDs gets the same generic 403 whether or not the message exists,
+ * belongs to the room, is deleted, or is a system row. A sender-less SYSTEM row skips the sender gate
+ * and fails the kind gate instead (422): "not your message" would mislead for a message nobody wrote.
  *
  * The machine subcodes ride AppError's `fields` ({ code: "..." }) because ErrorCode is a closed enum;
  * clients key off httpStatus + fields.code.
  */
-
 import { AppError, EDIT_WINDOW_HOURS, ErrorCode } from "@civfix/shared"
 import type { ChatMessageDTO, ChatMessageKind, RoomKind, WsServerMessage } from "@civfix/shared"
 import { assertNoSlur } from "../abuse/slur-filter.js"
@@ -46,24 +27,18 @@ export interface ChatEditServiceDeps {
   isCleanupMember?: IsRoomMemberFn
   isReportMember?: IsRoomMemberFn
   /**
-   * Report VISIBILITY (isReportVisibleTo: a publicly-visible status + public, or the reporter's own).
-   * Optional; when wired it runs BEFORE the membership gate so an unlisted / held / soft-deleted report
-   * answers 404 exactly like report-chat.routes' requireVisibleReport — the same shape and ordering
-   * chat-reaction-service's report lane uses. Absent = not enforced in-service, which is why the route
-   * keeps its own requireVisibleReport pre-gate; wiring this closes the gap for any OTHER caller (a
-   * membership row survives a report being held, so membership alone is not the visibility gate).
+   * Runs before the membership gate so an unlisted, held or soft-deleted report answers 404 like
+   * report-chat.routes' requireVisibleReport. A membership row survives a report being held, so
+   * membership alone is not the visibility gate; when this is absent the route's own pre-gate is the
+   * only one.
    */
   isReportVisible?: (reportId: string, userId: string) => Promise<boolean>
-  /** P4 4.4 group lane: chat_group_members membership (the SAME gate the WS group send runs). */
   isGroupMember?: IsRoomMemberFn
   dmPeerOf?: (threadId: string, userId: string) => Promise<string | null>
   isBlockedEitherWay?: (a: string, b: string) => Promise<boolean>
-  /**
-   * Optional mention seam (resolve + record). Absent -> the edit leaves the recorded mentions as-is.
-   * notifyChatMention is deliberately excluded: editing a message never re-fires mention bells.
-   */
+  /** notifyChatMention is deliberately excluded: editing a message never re-fires mention bells. */
   chatMentions?: Pick<GatewayChatMentions, "resolveChatMentions" | "recordChatMentions" | "logger">
-  /** Room fan-out seam (chatService.broadcastEvent). Best-effort: a failure never fails the edit. */
+  /** Best-effort: a failure never fails the edit. */
   broadcastEvent?: (roomKey: string, frame: WsServerMessage) => Promise<void> | void
 }
 
@@ -88,7 +63,6 @@ const editWindowExpired = () =>
     fields: { code: "edit_window_expired" },
   })
 
-/** Gates 2-5 over the resolved row metadata (shared by the dm and chat flows). */
 function assertEditable(
   meta: { senderId: string | null; kind: ChatMessageKind; createdAt: Date; deletedAt: Date | null },
   userId: string,
@@ -105,11 +79,6 @@ function assertEditable(
 }
 
 export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService {
-  /**
-   * Re-resolve + REPLACE the message's recorded mention set from the edited body (the resolver scopes it
-   * to the dm peer or the room's members). Best-effort like the WS send path: a mention failure never
-   * fails the edit.
-   */
   async function rerecordMentions(
     kind: RoomKind,
     roomId: string,
@@ -141,7 +110,6 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     }
   }
 
-  /** Fire-and-forget the {type:"message_update"} frame to the room key (SAME helper the delete routes use). */
   function fireMessageUpdate(roomKind: RoomKind, roomId: string, message: ChatMessageDTO): void {
     broadcastMessageUpdate(
       { broadcastEvent: deps.broadcastEvent },
@@ -167,12 +135,11 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     assertEditable(meta, userId)
     assertNoSlur(body, "body")
 
-    // Record mentions BEFORE the sender-gated edit so the returned (re-read) DTO already carries them.
-    // Lost-race residue is harmless: if the row is tombstoned underneath us the edit below no-ops (409)
-    // and the replaced mention set sits on a deleted message no reader ever hydrates.
+    // Mentions are recorded before the sender-gated edit so the re-read DTO already carries them. If
+    // the row is tombstoned underneath us the edit no-ops (409) and the residue sits on a deleted
+    // message no reader ever hydrates.
     await rerecordMentions("dm", roomId, userId, messageId, body, input.mentionedUserIds)
     const updated = await dm.editMessage(roomId, messageId, userId, body)
-    // The gate ladder passed above, so a null here is a lost race (e.g. deleted underneath us).
     if (updated === null) throw AppError.conflict("This message was deleted.")
     fireMessageUpdate("dm", roomId, updated)
     return updated
@@ -185,8 +152,8 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     const isReport = roomKind === "report"
     const isGroup = roomKind === "group"
     if (isReport) {
-      // Visibility first (when wired), so a report that went held/unlisted answers 404 like the routes'
-      // requireVisibleReport rather than leaking a 403 keyed on a stale membership row.
+      // Visibility first, so a held or unlisted report answers 404 rather than leaking a 403 keyed on a
+      // stale membership row.
       if (deps.isReportVisible && !(await deps.isReportVisible(roomId, userId))) {
         throw AppError.notFound("Report not found")
       }
@@ -214,8 +181,8 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     assertEditable(meta, userId)
     assertNoSlur(body, "body")
 
-    // Mentions are REPLACED before the sender-gated UPDATE (so the re-read DTO carries them); a lost
-    // race leaves the residue on a tombstoned row, which is harmless — no reader hydrates it.
+    // Mentions are replaced before the sender-gated UPDATE so the re-read DTO carries them; a lost race
+    // leaves the residue on a tombstoned row no reader hydrates.
     await rerecordMentions(roomKind, roomId, userId, messageId, body, input.mentionedUserIds)
     const updated = isReport
       ? await chat.editReportMessage(roomId, messageId, userId, body)

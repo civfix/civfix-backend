@@ -1,8 +1,6 @@
 /**
- * The reserved email domain that marks seeded demo accounts (see seed-demo-la.ts). Guard-free module
- * (no run-as-main CLI guard) so BOTH demo CLIs can import it: tsup (splitting: false) inlines imports
- * into each bundled entry, and importing a file that carries a runIfMain guard would fire that guard
- * inside the importing bundle at boot (see the tsup.config.ts header for the precedent).
+ * Guard-free module (no runIfMain) so both demo CLIs can import it: tsup (splitting: false) inlines
+ * imports into each bundled entry, and an imported runIfMain guard would fire inside the importing bundle.
  *
  * A real person can never sign up with this domain, so it is safe to key purges and lookups on it.
  */

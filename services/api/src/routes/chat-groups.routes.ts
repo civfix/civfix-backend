@@ -1,32 +1,6 @@
-/**
- * P4 Task 4.3: the /groups HTTP surface — ALL NINE group endpoints from the shared registry.
- *
- *   POST   /groups                          [auth][csrf][10/hour]  create group/channel  -> ChatGroupDTO (201)
- *   GET    /groups/:id                      [auth]                 fetch one             -> ChatGroupDTO
- *   PATCH  /groups/:id                      [auth][csrf]           owner/admin update    -> ChatGroupDTO
- *   GET    /groups/:id/members              [auth]                 keyset member list    -> ListGroupMembersResponse
- *   POST   /groups/:id/members              [auth][csrf][30/min]   owner/admin add       -> refreshed first page
- *   DELETE /groups/:id/members/:userId      [auth][csrf]           remove / leave        -> {ok:true}
- *   PUT    /groups/:id/members/:userId/role [auth][csrf]           owner sets role       -> GroupMemberDTO
- *   GET    /groups/:id/messages             [auth]                 room history + pins   -> ChatHistoryResponse
- *   DELETE /groups/:id/messages/:messageId  [auth][csrf]           sender/moderator del  -> tombstone ChatMessageDTO
- *
- * The management gate ladder lives in chat-group-service.ts (see its role matrix); the two message
- * routes ride the unified chat rails: history via chat-repository's group_id scope (pins on the
- * INITIAL page only, like the cleanup/report/dm history routes), delete via softDeleteGroup with the
- * chat-powers resolver's group lane (owner/admin delete-others, sender self-delete) and the standard
- * {type:"message_update"} tombstone broadcast.
- *
- * Readability: members always; NON-members may read a PUBLIC group's surface (get / members /
- * history — the "viewable pre-join" contract on ChatGroupDTO.myRole); private groups 403 with
- * fields.code not_a_member. WS join/send for group rooms lands in Task 4.4 — until then the gateway
- * fails group frames closed (see ws/frame-handler authorizeRoom).
- *
- * Repo wiring mirrors messages.routes: injected chatOverrides fakes win (chatOverrides.groups /
- * chatRepo / conversationMutes), else lazily-built Drizzle repos over the container's sql tag —
- * lazy so the offline route-coverage boot never touches getDb(). Invitee validation (existence +
- * blocked-pair) is one bulk query inside the group repo (invitableIdsOf), so no blocks repo here.
- */
+// NON-members may read a PUBLIC group's surface (get, members, history: the "viewable pre-join"
+// contract on ChatGroupDTO.myRole); a private group answers 403 not_a_member. Repos are built lazily
+// so the offline route-coverage boot never touches getDb().
 
 import {
   AddGroupMembersRequestSchema,
@@ -86,13 +60,12 @@ const GROUP_HISTORY_MAX = 50
 export const CREATE_GROUP_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 hour" })
 /** Bulk invites: bounded so a hijacked session can't blast invite sweeps; ample for normal use. */
 export const ADD_GROUP_MEMBERS_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
-/** Self-serve join (P5): 20/min bounds scripted join sweeps across public rooms; ample for a real user. */
+/** 20/min bounds scripted join sweeps across public rooms; ample for a real user. */
 export const JOIN_GROUP_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" })
 /**
- * L11: the remaining state-changing group routes carried no route limit at all (only the global
- * 300/min/IP). Each of these is a moderation action a human performs a handful of times per session,
- * so 30/min is generous while bounding a hijacked session's ability to churn a room's name/roster/roles
- * or sweep its history. Same order of magnitude as ADD_GROUP_MEMBERS_RATE_LIMIT.
+ * Each of these is a moderation action a human performs a handful of times per session, so 30/min is
+ * generous while bounding a hijacked session's ability to churn a room's name, roster or roles or
+ * sweep its history.
  */
 export const GROUP_MODERATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
@@ -120,8 +93,8 @@ export async function registerChatGroupRoutes(
       makePrivateMediaPresigner(container.storage),
     ))
 
-  // Mute lookup for ChatGroupDTO.muted. When chatOverrides is present WITHOUT a mutes fake we must
-  // not touch getDb() (offline harness) — fail open to muted:false, mirroring listThreads' stance.
+  // With chatOverrides present but no mutes fake, getDb() must not be touched (offline harness), so
+  // ChatGroupDTO.muted fails open to false, as listThreads does.
   let mutesRepo: ConversationMutesRepository | undefined
   const getMutes = (): ConversationMutesRepository | undefined =>
     overrides
@@ -129,9 +102,8 @@ export async function registerChatGroupRoutes(
       : (mutesRepo ??= makeConversationMutesRepository(container.getDb().sql))
 
   /**
-   * Nudge a user's open inbox to refetch (the same best-effort signal joinReportChat sends): a room the
-   * user just joined — or was added to — otherwise only surfaces on the client's next manual refresh.
-   * Carries no room id, so it is safe to fire at anyone whose membership may have changed.
+   * A room the user just joined or was added to otherwise only surfaces on the client's next manual
+   * refresh. Carries no room id, so it is safe to fire at anyone whose membership may have changed.
    */
   const nudgeThreads = (userId: string): void => {
     void Promise.resolve(container.userChannel?.publishToUser(userId, { topic: "threads" })).catch(
@@ -186,7 +158,6 @@ export async function registerChatGroupRoutes(
     { preHandler: csrfProtect, config: { rateLimit: JOIN_GROUP_RATE_LIMIT } },
     async (request, reply) => {
       const userId = requireAuth(request)
-      // Same params shape as getChatGroup ({ id }); the body is empty on the wire.
       const { id } = parse(GetChatGroupRequestSchema, request.params)
       const dto = await svc().joinGroup(userId, id)
       nudgeThreads(userId)
@@ -210,11 +181,9 @@ export async function registerChatGroupRoutes(
       const { id } = parse(GroupIdParamsSchema, request.params)
       const body = parse(AddGroupMembersRequestSchema, { ...(request.body as object), id })
       const { page, added } = await svc().addMembers(userId, body)
-      // Nudge exactly the invitees the service seated. `added` (not the returned page) is the source of
-      // truth: an invitee the block filter (M12) dropped is absent from it and must learn nothing, while a
-      // real invitee is absent from PAGE ONE in any group at/over GROUP_MEMBERS_DEFAULT_LIMIT members
-      // (fresh members sort last), which is why deriving the nudge set from the page silently stopped
-      // nudging anyone in exactly the big rooms where it matters most.
+      // `added`, not the returned page, decides who is nudged: an invitee the block filter dropped must
+      // learn nothing, and in a group at or over GROUP_MEMBERS_DEFAULT_LIMIT members a fresh member sorts
+      // past page one, so a page-derived set skips exactly the big rooms.
       for (const memberId of added) nudgeThreads(memberId)
       reply.status(200).send(page)
     },
@@ -252,11 +221,8 @@ export async function registerChatGroupRoutes(
     const userId = requireAuth(request)
     const { id } = parse(GroupIdParamsSchema, request.params)
     const q = parse(GroupHistoryRequestSchema, { ...(request.query as object), id })
-    // 404 unknown / 403 private non-member; a PUBLIC group's history is readable pre-join.
     await svc().requireReadable(userId, id)
     const limit = Math.min(Math.max(q.limit ?? GROUP_HISTORY_DEFAULT, 1), GROUP_HISTORY_MAX)
-    // Pins ride ONLY the initial page (no before, no around) — same contract as the other rooms, owned
-    // by chatHistoryPayload.
     const payload: ChatHistoryResponse = await chatHistoryPayload(
       {
         history: (before, pageLimit, around) =>
@@ -278,9 +244,8 @@ export async function registerChatGroupRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const { id, messageId } = parse(GroupMessageParamsSchema, request.params)
-      // Readability pre-gate doubles as the room-existence check (404 unknown / 403 private non-member).
-      // A public group's NON-member (role null) still reaches the ladder, where the group lane's
-      // owner/admin-only delete-others power decides.
+      // A public group's non-member (role null) still reaches the powers ladder, where the owner/admin
+      // delete-others power decides.
       const role = await svc().requireReadable(userId, id)
       const chatRepo = getChatRepo()
       const tombstone = await deleteMessageWithPowers({
@@ -293,8 +258,8 @@ export async function registerChatGroupRoutes(
         findMessageMeta: (mid) => chatRepo.findMessageMeta(mid),
         resolveChatPowers,
         chat: container.chatService,
-        // Group rooms shipped after P0: they never emitted the legacy {type:"message"} frame, and one
-        // here would re-insert the deleted bubble on clients that upsert by id.
+        // Group rooms never emitted the legacy {type:"message"} frame, and one here would re-insert the
+        // deleted bubble on clients that upsert by id.
         legacyBroadcast: false,
       })
       reply.status(200).send(tombstone)

@@ -1,14 +1,10 @@
 /**
- * In-memory ActivityRepository for the offline activity-service unit tests (no DB, no Docker).
+ * Mirrors the Drizzle impl's observable behavior. Cursors share its format but not its precision: the
+ * Drizzle cursor carries microseconds a JS Date cannot hold.
  *
- * Faithful to the Drizzle impl's observable behavior: it merges all seeded source records, drops the L4
- * read audits the SQL branch excludes, applies the same search / kind facet / direction, and keyset-pages
- * on (ts, id) through the shared pageInMemoryById helper so the cursors share the Drizzle impl's format
- * (the Drizzle cursor carries microseconds a JS Date cannot hold, so the strings differ in precision). seedRecord appends a normalized source record; the public `records` array is inspectable.
- *
- * The kind facet is evaluated by CLASSIFYING each record (classifyActivity) rather than by re-deriving the
- * action prefixes — the fake is allowed the round trip the SQL branch cannot afford, and it is the sharper
- * test of the two: it fails if the repo's SQL predicate and the service's classifier ever disagree.
+ * The kind facet classifies each record (classifyActivity) rather than re-deriving the action prefixes.
+ * The fake can afford the round trip the SQL cannot, and it makes tests fail if the repo's SQL predicate
+ * and the service's classifier ever disagree.
  */
 
 import { AUDIT_READ_ACTIONS } from "./audit.js"
@@ -20,10 +16,8 @@ import {
   type ListActivityArgs,
 } from "./activity-service.js"
 
-/** The excluded read-audit actions as a set (the SQL branch's `action <> ALL(...)`, in memory). */
 const READ_ACTIONS: ReadonlySet<string> = new Set(AUDIT_READ_ACTIONS)
 
-/** The columns the SQL branches search, flattened into the text a record contributes to `q`. */
 function searchText(record: ActivitySourceRecord): string {
   return [
     record.who,
@@ -37,10 +31,8 @@ function searchText(record: ActivitySourceRecord): string {
 }
 
 export class InMemoryActivityRepository implements ActivityRepository {
-  /** All seeded source records (insertion order; list() sorts a copy). */
   readonly records: ActivitySourceRecord[] = []
 
-  /** Append a normalized source record. */
   seedRecord(record: ActivitySourceRecord): ActivitySourceRecord {
     this.records.push(record)
     return record
@@ -62,7 +54,7 @@ export class InMemoryActivityRepository implements ActivityRepository {
     const dir = args.sort === "newest" ? -1 : 1
     const sorted = [...feedable].sort((a, b) => {
       const byTs = (a.ts.getTime() - b.ts.getTime()) * dir
-      // The same (ts, id) TOTAL order the SQL keyset uses, so a page boundary lands identically.
+      // The same (ts, id) total order the SQL keyset uses, so a page boundary lands identically.
       return byTs !== 0 ? byTs : a.id < b.id ? dir : a.id > b.id ? -dir : 0
     })
     return pageInMemoryById(sorted, args.cursor, args.limit, (r) => ({ createdAt: r.ts, id: r.id }))

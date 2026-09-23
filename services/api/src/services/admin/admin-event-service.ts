@@ -1,15 +1,8 @@
 /**
- * Admin events service (Phase 2): the civfix cleanups domain. Backs the events list, the detail, and the
- * operator actions (set status / log outcome / flag / cancel / post update / link reports), each audited
- * inside the repo transaction with the operator userId the route resolves.
+ * Every operator action is audited inside the repo transaction with the operator id the route resolves.
  *
- * STATUS RECONCILIATION (H1): cleanups.status is the Phase-1 enum (upcoming|active|done|cancelled, no
- * CHECK); every read maps stored -> EventStatus and every write maps EventStatus -> stored via
- * event-status.ts, so a filter and a write never disagree and no invalid value is leaked or written.
- *
- * FLAG MODEL: abuse_flags has no `cleanup` subject_type (frozen Phase-1 enum), so an event's "flagged"
- * boolean is tracked via cleanup_timeline rows (kind 'flag'/'unflag'); flagged = the most recent
- * flag/unflag entry is a 'flag'.
+ * abuse_flags has no `cleanup` subject_type, so an event's flagged state lives in cleanup_timeline rows
+ * (kind 'flag'/'unflag'): the most recent of them decides.
  */
 
 import { AppError } from "@civfix/shared"
@@ -36,8 +29,7 @@ import {
   timelineDefaultNote,
 } from "./admin-event-helpers.js"
 
-// The pure helpers historically lived here; re-export them so existing importers (tests, the memory repo)
-// keep their import path.
+// Re-exported so importers of the helpers' old home (tests, the memory repo) keep their import path.
 export {
   resolveEventFilter,
   eventStatusNote,
@@ -45,14 +37,9 @@ export {
   eventTimelineKind,
 } from "./admin-event-helpers.js"
 
-/**
- * The organizer of a cleanup, as the repo resolves it. Field-identical to a report's reporter, so both read
- * the shared admin-person shape (admin-person.ts, which also owns the SQL columns and both projections);
- * the name is kept because it is what the events domain calls this person.
- */
+/** Field-identical to a report's reporter; the alias keeps the events domain's name for this person. */
 export type AdminOrganizerRecord = AdminPersonRecord
 
-// A cleanup_timeline row as the repo reads it back. `kind` is the stored free-text kind.
 export interface AdminEventTimelineRecord {
   kind: string
   note: string | null
@@ -69,9 +56,8 @@ export interface AdminEventMessageRecord {
 export interface AdminEventRecord {
   id: string
   status: EventStatus
-  // cleanup vs other_volunteer (0018); only 'cleanup' events may link reports / show the gallery.
+  // Only 'cleanup' events may link reports or show the linked-report gallery.
   eventKind: EventKind
-  // Derived from cleanup_timeline (net flag/unflag toggles).
   flagged: boolean
   title: string
   place: string
@@ -86,7 +72,7 @@ export interface AdminEventRecord {
   scheduledAt: Date
 }
 
-// `status` is the event status to match (null = any).
+// A null `status` matches any status.
 export interface ListEventsArgs {
   q: string | null
   status: EventStatus | null
@@ -104,8 +90,8 @@ export interface EventMemberRef {
 }
 
 export interface AdminEventRepository {
-  // Per-facet totals for the filter chips, over the SEARCHED (q) set — accurate + stable across the facet
-  // instead of capped to the first keyset page.
+  // Totals over the whole searched set rather than the first keyset page, so the filter chips stay
+  // accurate as the operator switches facets.
   countByBucket(args: { q: string | null }): Promise<AdminEventCounts>
   listEvents(
     args: ListEventsArgs,
@@ -113,21 +99,21 @@ export interface AdminEventRepository {
   getEvent(id: string): Promise<AdminEventRecord | null>
   listTimeline(id: string): Promise<AdminEventTimelineRecord[]>
   listMessages(id: string): Promise<AdminEventMessageRecord[]>
-  // The ONLY write path for cleanups.bags. Returns false when the cleanup is absent.
+  // The only write path for cleanups.bags. Returns false when the cleanup is absent.
   setBags(id: string, input: { bags: number; actorId: string | null }): Promise<boolean>
-  // Toggle flagged via cleanup_timeline. Returns the resulting state, or null when the cleanup is absent.
+  // Returns the resulting flagged state, or null when the cleanup is absent.
   toggleFlag(
     id: string,
     input: { reason: string | null; actorId: string | null },
   ): Promise<boolean | null>
   cancel(id: string, input: { note: string; actorId: string | null }): Promise<boolean>
-  // Insert a chat row + a 'message' timeline row + a set-based per-member notification fan-out, ALL in one
+  // The chat row, the 'message' timeline row and the per-member notification fan-out commit in one
   // transaction. Returns the number of members notified, or null when the cleanup does not exist.
   postMessage(
     id: string,
     input: { body: string; actorId: string },
   ): Promise<{ notified: number } | null>
-  // The linked-report gallery: only published+public reports, geom decoded + ready-media thumb key.
+  // Only publicly visible reports appear in the gallery.
   loadLinkedReports(id: string): Promise<LinkedReportView[]>
   // Returns the newly-linked ids, or null when the event is missing. Skips non-visible (held/hidden) ids.
   linkReports(
@@ -141,10 +127,8 @@ export interface AdminEventRepository {
 
 export interface AdminEventServiceDeps {
   repo: AdminEventRepository
-  // Presign a linked report's thumb object key into a client-usable URL. Defaults to an identity
-  // pass-through (raw key) when omitted, so offline tests see a thumb without a storage SDK.
+  // Defaults to returning the raw key, so offline tests see a thumb without a storage SDK.
   presignThumb?: (thumbKey: string) => Promise<string>
-  // Injectable clock so the relative-age labels are deterministic in tests.
   now?: () => Date
 }
 
@@ -198,8 +182,6 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
   function toTimelineDTO(record: AdminEventTimelineRecord, ref: Date): EventTimelineItem {
     return {
       who: record.who,
-      // A note-less row gets a label derived from its own kind, NOT a blanket "Status set to Upcoming"
-      // (which would mislead on a join/done/flag row).
       what: record.note ?? timelineDefaultNote(record.kind),
       when: toRelAbs(record.createdAt, ref).rel,
       kind: eventTimelineKind(record.kind),
@@ -221,9 +203,8 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
         cursor: query.cursor ?? null,
         limit: query.limit ?? 25,
       }
-      // Counts span the searched set but ignore the facet, so the chips stay accurate as the operator
-      // switches them — and because they describe the whole set rather than the page, they are computed on
-      // PAGE 1 ONLY (the shared admin-list policy; the console reads them off the first page).
+      // The counts describe the whole searched set rather than the page, so they are computed on page 1
+      // only (the shared admin-list policy; the console reads them off the first page).
       const [{ records, nextCursor }, counts] = await Promise.all([
         deps.repo.listEvents(args),
         args.cursor === null
@@ -263,7 +244,6 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
       const [timeline, messages, linkedViews] = await Promise.all([
         deps.repo.listTimeline(id),
         deps.repo.listMessages(id),
-        // Only a 'cleanup' event has a linked-report gallery (cleanup-only linking).
         record.eventKind === "cleanup" ? deps.repo.loadLinkedReports(id) : Promise.resolve([]),
       ])
       const linkedReports: LinkedReportRef[] = await mapWithLimit(
@@ -338,7 +318,7 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
       reportIds: string[],
       actorId: string | null,
     ): Promise<{ linked: string[] }> {
-      // CLEANUP-ONLY LINKING (decision 3): reject linking on a non-cleanup event before any write.
+      // Rejected before any write, so a non-cleanup event never gains a link.
       const record = await deps.repo.getEvent(id)
       if (!record) throw AppError.notFound("Event not found")
       if (record.eventKind !== "cleanup") {

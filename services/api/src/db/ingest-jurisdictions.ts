@@ -1,14 +1,7 @@
 /**
- * Ingest CLI: load REAL jurisdiction boundaries from an external GeoJSON FeatureCollection into the
- * `jurisdictions` table.
- *
  *   pnpm db:ingest <path/to/boundaries.geojson> [layer] [geoid-prefix]
  *
- * `layer` (default "federal") is the fallback layer for features whose properties carry none. The
- * geoid-prefix rule (AIANNH-/PADUS- for the non-FIPS layers) and the ingest LOGIC live in the guard-free
- * ./ingest-jurisdictions-core.js (imported by both this shell and scripts/refresh-boundaries.ts; see that
- * file's header for the prefix rule, the contact-preserving upsert, the public-domain sources, and the
- * tsup-bundling rationale that requires the split). This file is ONLY the CLI shell (args + run).
+ * `layer` (default "federal") is the fallback for features whose properties carry none.
  */
 
 import { readFile } from "node:fs/promises"
@@ -20,8 +13,7 @@ import {
   type IngestRow,
 } from "./ingest-jurisdictions-core.js"
 
-// Re-export the core API from the historical path so existing importers (e.g. the unit test importing
-// `normalizeFeatures` from this module) keep resolving against this module.
+// Re-exported from the historical path so existing importers keep resolving.
 export {
   normalizeFeatures,
   upsertJurisdiction,
@@ -47,7 +39,7 @@ async function main(): Promise<void> {
     process.exit(2)
   }
 
-  // Read the file up front so a missing/unreadable path is a clear error, not confused with a DB failure.
+  // Read up front so a missing path is a clear error rather than something that looks like a DB failure.
   let text: string
   try {
     text = await readFile(file, "utf8")

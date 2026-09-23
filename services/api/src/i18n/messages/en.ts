@@ -1,39 +1,30 @@
 /**
- * English (source) catalog for SERVER-generated, user-facing copy. This is the source of truth; es/de/ko
- * are translated from these strings key-by-key and fall back here for any missing key.
+ * Source catalog for server-generated, user-facing copy; es/de/ko are translated key-by-key and fall back
+ * here for any missing key.
  *
- * SCOPE (per the i18n design spec §4 + worklist-backend.json):
- *   - backend-notifications: push/bell titles + bodies (DM, mention, comment/reply, follower).
- *   - backend-emails: account/OTP email subjects + bodies.
- * EXCLUDED: jurisdiction report-packet emails (mail-format.ts) stay English (recipients are officials),
- * and validation errors are conveyed by stable error CODES (clients localize by code), not message text.
+ * Excluded: jurisdiction report-packet emails (mail-format.ts) stay English because the recipients are
+ * officials, and validation errors travel as stable error CODES that clients localize.
  *
- * Interpolation uses `{{var}}` placeholders (see renderMessage). User-authored content echoed into a
- * notification body (a DM/mention preview) is passed as a `{{preview}}` var and truncated by the caller;
- * only the surrounding wrapper copy is translated.
+ * User-authored content echoed into a notification (a DM/mention preview) arrives as a `{{preview}}` var,
+ * truncated by the caller; only the wrapper copy is translated.
  */
 
 export type MessageCatalog = Record<string, string>
 
 export const en = {
-  // ---- Push / in-app bell notifications (backend-notifications) ----------------------------------
-  // New follower (social-service onNewFollower). {{name}} = follower @handle/display name.
+  // {{name}} = follower @handle/display name.
   "notification.follower.title": "New follower",
   "notification.follower.body": "{{name}} started following you.",
 
-  // Report-discussion comment on your report (discussion.routes notifyOnMessage, top-level comment).
   "notification.comment.title": "New comment on your report",
   "notification.comment.body": "Someone commented on your report.",
 
-  // Report-discussion reply to your comment.
   "notification.reply.title": "New reply on your comment",
   "notification.reply.body": "Someone replied to your comment.",
 
-  // You were @-mentioned in a report discussion (discussion.routes notifyMention).
   "notification.report_mention.title": "You were mentioned",
   "notification.report_mention.body": "Someone mentioned you in a report discussion.",
 
-  // Social-feed post interactions (notification-service onPostLike/Repost/Reply/Quote/Mention).
   // {{name}} = the actor's display name / @handle.
   "notification.post.like.title": "New like",
   "notification.post.like.body": "{{name}} liked your post.",
@@ -46,24 +37,20 @@ export const en = {
   "notification.post.mention.title": "{{name}} mentioned you",
   "notification.post.mention.body": "{{name}} mentioned you in a post.",
 
-  // @-mention in a cleanup/report group chat (chat-bells makeChatMentionNotifier). {{name}} = author handle/name.
+  // {{name}} = author handle/name.
   "notification.chat_mention.title": "{{name}} mentioned you",
-  // Reply to YOUR message in any chat room (chat-bells makeChatReplyNotifier / makeDmBellNotifier,
-  // P2 2.5 — the bell that pierces conversation mutes). {{name}} = author handle/name.
+  // The one chat bell that pierces conversation mutes. {{name}} = author handle/name.
   "notification.chat_reply.title": "{{name}} replied to you",
-  // Direct message delivered bell (chat-gateway-wiring onDmDelivered). {{name}} = sender handle/name.
-  // {{preview}} = the caller-truncated message preview (user content); the wrapper is what we localize.
+  // {{name}} = sender handle/name.
   "notification.dm.title": "{{name}}",
   "notification.dm.title_fallback": "New message",
-  // Report-chat member bell (report-chat-notifier). Title fallback for a SYSTEM / author-less report
-  // message (e.g. a status/timeline event) that has no sender name to show.
+  // For a system / author-less report message (a status or timeline event) with no sender name to show.
   "notification.report_chat.title_fallback": "New message",
   "notification.group_chat.title_fallback": "New message",
-  // Body shown when the message has no text preview (a non-text frame: share_pin / rsvp / task_complete).
+  // For a non-text frame (share_pin / rsvp / task_complete) that has no text preview.
   "notification.message.no_preview": "Sent you a message",
 
-  // Cleanup membership-role bells (WS4, type 'cleanup_role'): the organizer promoted/demoted you, or a
-  // host removed you from the event. {{title}} = the event title.
+  // {{title}} = the event title.
   "notification.cleanup_role.promoted.title": "You're now a co-host",
   "notification.cleanup_role.promoted.body": "You're now a co-host of {{title}}.",
   "notification.cleanup_role.demoted.title": "Co-host role removed",
@@ -79,26 +66,21 @@ export const en = {
   "role.coordinator": "coordinator",
   "role.staff": "staff",
 
-  // Event-cancellation bell (L24, type 'cleanup_cancelled'): the host called the event off. Fanned out to
-  // every OTHER member by cleanup-service.notifyCancellation. The reason is OPTIONAL on the wire, so there
-  // are two bodies rather than one with an empty tail; {{reason}} is the host's own words (user content,
-  // slur-gated by assertEventTextClean) and only the wrapper copy is translated.
+  // The reason is optional on the wire, so there are two bodies rather than one with an empty tail.
+  // {{reason}} is the host's own words (user content, slur-gated by assertEventTextClean).
   "notification.cleanup_cancelled.title": "Event cancelled",
   "notification.cleanup_cancelled.body": "This event has been cancelled by the host.",
   "notification.cleanup_cancelled.body_reason":
     "This event has been cancelled by the host. Reason: {{reason}}",
 
-  // Service-hours credit bell (P4/B33, type 'hours_logged'): a host logged hours for a completed
-  // event and you were credited. Fired by volunteer-hours-service.logEventHours ONLY when the credit is
-  // NEW or has INCREASED — re-logging is how a host fixes a typo, and a downward correction is
-  // deliberately silent. {{hours}} = the credited amount, {{title}} = the event title.
+  // Sent only when a credit is new or has increased: re-logging is how a host fixes a typo, and a
+  // downward correction is deliberately silent. {{hours}} = the credited amount, {{title}} = the event.
   "notification.hours_logged.title": "Service hours credited",
   "notification.hours_logged.body": "{{hours}} hours were credited for {{title}}.",
 
-  // Event-slot bell (P4/B34, type 'cleanup_slot'): the host edited the event's roles and the one you had
-  // claimed no longer exists, so you are back in the crew with no role. Fired by cleanup-service's slot
-  // reconciliation; the actor is excluded. {{slot}} = the removed role's title, {{title}} = the event.
-  // (There is deliberately NO "slot claimed" bell to the host — see B35.)
+  // The host edited the event's roles and the one you had claimed no longer exists, so you are back in
+  // the crew with no role. {{slot}} = the removed role's title, {{title}} = the event. There is
+  // deliberately no "slot claimed" bell to the host.
   "notification.cleanup_slot.removed.title": "Your event role changed",
   "notification.cleanup_slot.removed.body": 'The "{{slot}}" role was removed from {{title}}.',
 
@@ -106,23 +88,19 @@ export const en = {
   "notification.cleanup_slot.moved.body":
     'The "{{slot}}" shift at {{title}} has a new time. Open the event to check it.',
 
-  // ---- Service-hours transcript / certificate (P5) ------------------------------------------------
-  // Every chrome string the SERVER-RENDERED PDF prints (services/certificate-pdf.ts). This is an
-  // official document a volunteer hands to a school, an employer or a court, so the register is plain
-  // and the attestation paragraph states ONLY what the shipped crediting rules actually enforce
-  // (volunteer-hours-service.ts: organizer/cohost gate, self-credit block). Do
-  // not soften or embellish it — an untrue attestation on an official document is the worst failure mode
-  // this feature has.
+  // Chrome for the server-rendered certificate PDF (services/certificate-pdf.ts). It is an official
+  // document a volunteer hands to a school, an employer or a court, so the attestation states ONLY what
+  // the crediting rules in volunteer-hours-service.ts enforce (organizer/cohost gate, self-credit block).
+  // An untrue attestation is the worst failure mode this feature has: do not soften or embellish it.
   //
-  // 0065 RETIRED THE REPORT AUTO-AWARD, so the attestation no longer claims one: `logEventHours` is the
-  // ONLY writer of credited hours, and a sentence saying the platform auto-awards report-verification
-  // hours would now be false on the face of the document. Do not reinstate it.
-  // test/unit/adapters-i18n-messages.test.ts pins that absence in all four locales.
+  // Migration 0065 retired the report auto-award, so `logEventHours` is the only writer of credited hours
+  // and the attestation must not claim an auto-award. test/unit/adapters-i18n-messages.test.ts pins that
+  // absence in all four locales.
   //
-  // Dates print in America/Los_Angeles (CERTIFICATE_TIME_ZONE, a code constant, not an env var), which
-  // is exactly what certificate.footer.timezone states on page 1.
+  // Dates print in America/Los_Angeles (CERTIFICATE_TIME_ZONE, a code constant), which is what
+  // certificate.footer.timezone states.
   "certificate.doc.title": "Record of Volunteer Service",
-  // PDF /Title in the Info dictionary. {{name}} = holder, {{code}} = the CFX-XXXX-XXXX-XXXX display code.
+  // PDF /Title in the Info dictionary. {{code}} = the CFX-XXXX-XXXX-XXXX display code.
   "certificate.doc.pdf_title": "civfix service hours — {{name}} — {{code}}",
   "certificate.header.number": "Certificate No.",
   "certificate.holder.eyebrow": "Issued to",
@@ -138,15 +116,15 @@ export const en = {
   "certificate.table.hours": "Hours",
   "certificate.table.credited_by": "Credited by",
   "certificate.table.total": "Total",
-  // Above MAX_CERTIFICATE_ENTRIES the transcript STILL issues — refusing the most prolific volunteers
-  // would be the wrong failure. B40b: the printed total is the sum of the PRINTED LINES, so this banner
-  // says so plainly instead of claiming the total covers rows the document does not itemise.
+  // Above MAX_CERTIFICATE_ENTRIES the transcript still issues (refusing the most prolific volunteers would
+  // be the wrong failure). The printed total is the sum of the printed lines, so this says so instead of
+  // claiming the total covers rows the document does not itemise.
   "certificate.table.truncated":
     "Showing the {{shown}} most recent of {{total}} activities. The total above is the sum of the {{shown}} listed.",
   // Report credits are awarded by the PLATFORM, never by a person: naming someone would be a fabricated
   // attestation.
   "certificate.credited_by.automatic": "Automatic (report verified)",
-  // The report itself is never named or linked — a transcript is handed to strangers and reports can be
+  // The report itself is never named or linked: a transcript is handed to strangers and reports can be
   // held, unlisted or sensitive. {{ref}} is the already-public reference code, and may be empty.
   "certificate.activity.report": "Verified report {{ref}}",
   "certificate.activity.manual": "Adjustment",
@@ -161,28 +139,25 @@ export const en = {
   "certificate.verify.fingerprint": "Document fingerprint",
   "certificate.footer.page": "Page {{page}} of {{total}}",
   "certificate.footer.timezone": "Dates shown in Pacific Time (America/Los_Angeles).",
-  // 409 body when the ledger is empty: we refuse to mint an empty official-looking document.
+  // The ledger is empty: we refuse to mint an empty official-looking document.
   "certificate.error.no_hours": "You have no recorded service hours yet.",
 
-  // ---- Account / OTP emails (backend-emails) -----------------------------------------------------
-  // Sign-in passcode email. {{code}} = the numeric OTP.
   "email.otp.subject": "Your civfix sign-in code",
   "email.otp.body_line1": "Your civfix sign-in code is {{code}}.",
   "email.otp.body_expiry":
     "It expires in {{minutes}} minutes. If you did not request it, you can ignore this email.",
-  // HTML-variant intro (the code itself is rendered in a styled block by the template).
+  // The code itself is rendered in a styled block by the template.
   "email.otp.html_intro": "Your civfix sign-in code is:",
 
-  // Report status-update transactional email. {{status}} = localized/raw status label.
+  // {{status}} = localized/raw status label.
   "email.report_update.subject": "Your civfix report was {{status}}",
   "email.report_update.body": "Your report has a new status: {{status}}.",
 
-  // Generic transactional fallback (unknown template). {{subject}}/{{message}} supplied by the caller.
+  // Fallback for an unknown template.
   "email.generic.subject": "A civfix notification",
   "email.generic.body": "You have a new civfix notification.",
 
-  // ---- Guest event RSVP (contract 0.38.0) --------------------------------------------------------
-  // Sent to people who are NOT users, so there is no users.locale to key off: the guest service renders
+  // Guest RSVP messages go to people who are NOT users, so there is no users.locale to key off: the guest service renders
   // these in "en". They are catalogued anyway so a future guest-locale field needs no code change.
   "email.guest_otp.subject": "Your code to RSVP for {{title}}",
   "email.guest_otp.html_intro": "Your code to RSVP for {{title}} is:",
@@ -218,5 +193,5 @@ export const en = {
   "sms.guest_cancelled.body": "{{title}} has been cancelled by the host. Reply STOP to opt out.",
 } satisfies MessageCatalog
 
-/** The exhaustive set of message keys, derived from the EN source so es/de/ko can be checked complete. */
+/** Derived from the EN source so es/de/ko can be checked complete. */
 export type MessageKey = keyof typeof en

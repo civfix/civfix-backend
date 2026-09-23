@@ -14,11 +14,9 @@ import type {
   ReportCategory,
 } from "@civfix/shared"
 
-// The canonical report categories in canonical order — the dashboard's fixed bar series, so a category
-// with no reports still renders a 0 bar. ONE derivation for the whole admin domain lives in
-// category-counts.ts (ADMIN_CATEGORIES, from the contract enum); this alias keeps the analytics shaping
-// reading in domain terms. A hand-listed copy here drifted out of sight of REPORT_CATEGORY_VALUES, and a
-// category missing from this array is silently missing from every category chart.
+// The dashboard's fixed bar series, so a category with no reports still renders a 0 bar. Derived from
+// ADMIN_CATEGORIES (from the contract enum): a hand-listed copy drifted from REPORT_CATEGORY_VALUES, and a
+// category missing here is silently missing from every category chart.
 export const ANALYTICS_CATEGORIES: readonly ReportCategory[] = ADMIN_CATEGORIES
 
 export const PINS_BY_WEEK_WEEKS = 8
@@ -113,10 +111,6 @@ export interface RetentionRow {
   activeByPeriod: number[]
 }
 
-/**
- * Persistence seam for analytics. The Drizzle impl runs the raw SQL aggregates; the offline tests pass an
- * in-memory impl that returns canned aggregates so the SHAPING is unit-tested without a database.
- */
 export interface AnalyticsRepository {
   kpis(): Promise<KpiAggregates>
   pinsByWeek(weeks: number): Promise<WeekBucket[]>

@@ -1,5 +1,4 @@
-// Composable SQL fragments + the row->record projector for the Drizzle admin-event repo. Extracted so the
-// repo file holds query orchestration only and the flagged/search expressions have ONE definition each.
+// Kept apart from the repo so the flagged and search expressions have one definition each.
 
 import type { Queryable } from "../../db/client.js"
 import { isUuid } from "../../db/cursor-helpers.js"
@@ -11,9 +10,7 @@ import type { EventKind } from "@civfix/shared"
 import { adminEventStatusExpr } from "../cleanup-sql.js"
 import { keysetInstant } from "./pagination.js"
 
-// The "is flagged" boolean: the most recent cleanup_timeline flag/unflag row is a 'flag'. The ONE
-// definition — eventSelect + countByBucket both build their flagged column/filter from this so they can't
-// drift.
+// eventSelect and countByBucket both build their flagged column/filter from this so they cannot drift.
 export function flaggedEventExpr(sql: Queryable): SqlFragment {
   return sql`COALESCE((
     SELECT ct.kind = 'flag'
@@ -24,8 +21,7 @@ export function flaggedEventExpr(sql: Queryable): SqlFragment {
   ), false)`
 }
 
-// The event-search predicate (title / address / organizer name+handle, + exact id on a uuid q), shared by
-// listEvents + countByBucket. Assumes the query selects `cleanups c` LEFT JOIN `users u`. Empty when null.
+// Assumes the query selects `cleanups c` LEFT JOIN `users u`.
 export function searchEventsFragment(sql: Queryable, q: string | null): SqlFragment {
   if (q === null) return sql``
   // ilikeAnyOf escapes the LIKE metacharacters so %/_ in q match literally (wildcard injection/trigram DoS).
@@ -37,10 +33,8 @@ export function searchEventsFragment(sql: Queryable, q: string | null): SqlFragm
   )}`
 }
 
-// A cleanups list/detail row as selected back (geom decoded, organizer joined, aggregates computed).
 export interface EventRowSelect {
   id: string
-  // Raw stored cleanups.status (Phase-1 enum); mapped to EventStatus in toRecord.
   status: string
   event_kind: EventKind
   flagged: boolean
@@ -77,8 +71,6 @@ export function toRecord(r: EventRowSelect): AdminEventRecord {
   )
   return {
     id: r.id,
-    // Map the stored Phase-1 cleanups.status -> the Phase-2 EventStatus DTO (H1); defensive so a legacy
-    // active/done (or a previously-mis-stored Phase-2 value) never leaks an invalid EventStatus.
     status: toEventStatus(r.status),
     eventKind: r.event_kind,
     flagged: r.flagged,
@@ -96,9 +88,7 @@ export function toRecord(r: EventRowSelect): AdminEventRecord {
   }
 }
 
-// The shared cleanup SELECT (geom decoded, organizer joined, attendees + flagged computed). `extraWhere`/
-// `orderLimit` narrow it. `place`/`address`: cleanups carry a free-text `address`; the place label falls
-// back to that address (cleanups are not jurisdiction-scoped in Phase 1).
+// Cleanups carry only a free-text address and no jurisdiction, so the place label is that address.
 export function eventSelect(
   sql: Queryable,
   extraWhere: SqlFragment,

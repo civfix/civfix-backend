@@ -1,13 +1,11 @@
 /**
- * Drizzle/postgres.js implementation of `CertificateRepository` (P5).
- *
- * ⚠ THE RULE FOR THIS FILE: **every read SELECTs an explicit column list; none of them selects
+ * THE RULE FOR THIS FILE: **every read SELECTs an explicit column list; none of them selects
  * `snapshot`, and none of them uses `SELECT *`.**
  *
  * `service_hours_certificates.snapshot` is the exact rendered model. At the 1000-entry cap it is ~200 KB
  * of jsonb, which Postgres stores out of line in TOAST. A `SELECT *` (or any projection naming
- * `snapshot`) detoasts that blob on EVERY holder list read and on EVERY anonymous public verification —
- * the highest-traffic read in this feature, served to a school registrar who needs six scalars. The
+ * `snapshot`) detoasts that blob on EVERY holder list read and on EVERY anonymous public verification
+ * (the highest-traffic read in this feature, served to a school registrar who needs six scalars). The
  * column is written once and read back by nothing; `service-hours-certificates-pg.test.ts` greps this
  * source to keep it that way.
  *
@@ -173,7 +171,7 @@ export function makeDrizzleCertificateRepository(sql: Sql): CertificateRepositor
     /**
      * The PUBLIC verification read. The join to `users` exists ONLY to surface the tombstone: filtering
      * `deleted_at IS NULL` out of the result would collapse "that account was closed" into "no such
-     * code", which are different answers for the person holding the paper (DP §5.3).
+     * code", which are different answers for the person holding the paper.
      */
     async findByCode(code: string): Promise<CertificateVerifyRow | null> {
       const rows = await sql<(CertificateRowSelect & { holder_deleted: boolean })[]>`
@@ -195,7 +193,7 @@ export function makeDrizzleCertificateRepository(sql: Sql): CertificateRepositor
     /**
      * `COALESCE` makes this idempotent: revoking an already-revoked code returns the row unchanged
      * (200, "still revoked") rather than the 404 a `WHERE revoked_at IS NULL` guard would produce on a
-     * double tap. Null comes back only for an unknown code or someone else's — both 404 at the service.
+     * double tap. Null comes back only for an unknown code or someone else's; both 404 at the service.
      */
     async revoke(
       userId: string,

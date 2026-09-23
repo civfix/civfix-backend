@@ -1,9 +1,5 @@
-/**
- * Chat/DM message reactions: thin binders over the table-parameterized message-reactions repo
- * (message-reactions.drizzle.ts). chat_message_reactions serves BOTH the cleanup group chat and 1:1 DMs
- * (message ids are globally-unique uuids across both), so the chat + dm repos toggle/aggregate it
- * identically — the shared module is the single algorithm; these are the chat-table bindings.
- */
+// chat_message_reactions serves both room chat and 1:1 DMs because message ids are globally unique
+// uuids across both tables.
 
 import type { Queryable, Sql } from "../db/client.js"
 import type { ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
@@ -11,7 +7,6 @@ import { loadReactionsFor, makeReactionRepo } from "./message-reactions.drizzle.
 
 const CHAT_REACTIONS = "chat_message_reactions" as const
 
-/** Aggregate ONE chat/dm message's reactions for the viewer. */
 export async function loadChatReactions(
   tag: Queryable,
   messageId: string,
@@ -22,7 +17,6 @@ export async function loadChatReactions(
   )
 }
 
-/** Batched: one grouped query for a whole page of message ids (the N+1 fix for list reads). */
 export function loadChatReactionsFor(
   tag: Queryable,
   messageIds: string[],
@@ -31,7 +25,7 @@ export function loadChatReactionsFor(
   return loadReactionsFor(tag, CHAT_REACTIONS, messageIds, viewerUserId)
 }
 
-/** Toggle a reaction in one tx; true when now present (added), false when removed. */
+/** true when the reaction is now present, false when it was removed. */
 export function toggleChatReaction(
   sql: Sql,
   messageId: string,

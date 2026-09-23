@@ -7,9 +7,8 @@ export const PROBE_TIMEOUT_MS = 2000
 const PG_UNDEFINED_TABLE = "42P01"
 
 /**
- * LIKE pattern for the media worker's pg-boss queues (today: "media.checks"). The depth probe used to count
- * EVERY queue's pending jobs, so an outreach-digest or inbound-sweep backlog warned on the "Media worker"
- * tile.
+ * Only the media worker's pg-boss queues, so another queue's backlog (outreach digest, inbound sweep)
+ * never warns on the "Media worker" tile.
  */
 const MEDIA_QUEUE_LIKE = "media.%"
 
@@ -56,8 +55,8 @@ export function makeSystemHealthProbes(deps: SystemProbeDeps): SystemHealthProbe
   const probes: SystemHealthProbes = {}
 
   if (deps.getSql) {
-    // Resolved INSIDE each probe: `getSql` is a lazy seam (the DB handle may not exist when the probes are
-    // constructed), and calling it here defeated that.
+    // `getSql` is a lazy seam (the DB handle may not exist when the probes are constructed), so it is
+    // resolved inside each probe.
     const getSql = deps.getSql
     probes.postgres = async (): Promise<ProbeResult> => {
       const sql = getSql()

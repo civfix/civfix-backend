@@ -1,6 +1,4 @@
 /**
- * Jobs seam for the media worker (pg-boss-backed, real or fake).
- *
  * The worker is a separate process from the API and does its own minimal seam wiring rather than
  * importing the API's Fastify DI container. Real-vs-fake is chosen by USE_FAKE_JOBS, mirroring the
  * API's rule (default ON outside production so the worker boots offline with FakeJobs).
@@ -28,25 +26,20 @@ function useFakeJobs(source: NodeJS.ProcessEnv = process.env): boolean {
   return parseBool(source.USE_FAKE_JOBS, !isProd)
 }
 
-/** Options accepted when registering a worker handler (concurrency mapping). */
 export interface WorkSettings {
-  /** Max jobs delivered + processed per poll (bounds in-flight concurrency). */
+  /** Bounds in-flight concurrency. */
   batchSize?: number
-  /** Poll interval seconds (pg-boss default ~2s). */
   pollingIntervalSeconds?: number
 }
 
 /**
- * Queue-level retry policy (pg-boss v10 createQueue options). Applied to every job on the queue, so it
- * governs how a job whose handler THROWS is retried. This is the knob that makes media.checks' infra
- * throws (MediaInfraError) recover with bounded backoff: pg-boss v10's default retryLimit is 2 (retries
- * are opt-OUT), but we set it explicitly so the value is intentional, not a default we inherit. Set on
- * the WORKER's createQueue (the worker owns the work side); the fake ignores it.
+ * The queue-level retry policy is what makes media.checks' infra throws (MediaInfraError) recover with
+ * bounded backoff. pg-boss v10's default retryLimit is 2 (retries are opt-OUT), but callers set it
+ * explicitly so the value is intentional, not inherited. The worker owns the work side, so it is set on
+ * the worker's createQueue; the fake ignores it.
  */
 export interface QueueOptions {
-  /** Max retries before a job is marked failed for good (pg-boss v10 default is 2; retries are opt-OUT). */
   retryLimit?: number
-  /** Exponential backoff between retries (pg-boss spaces them out instead of retrying immediately). */
   retryBackoff?: boolean
   /**
    * pg-boss queue policy. MUST be set explicitly for any queue the worker shares with another creator or
@@ -60,38 +53,30 @@ export interface QueueOptions {
   policy?: PgBoss.Queue["policy"]
 }
 
-/** Per-schedule options for a cron (worker extension over Jobs.schedule's data-only signature). */
 export interface ScheduleOptions {
-  /** Expire (and allow re-delivery) a scheduled job after this many seconds; sized above worst-case run. */
+  /** Sized above the worst-case run, since an expired job is re-delivered. */
   expireInSeconds?: number
   /** Single-flight key so two fires of the same cron never overlap. */
   singletonKey?: string
 }
 
-/** The worker's Jobs handle: the shared Jobs surface plus worker-only lifecycle + queue helpers. */
 export interface WorkerJobs extends Jobs {
   start(): Promise<void>
   stop(): Promise<void>
-  /**
-   * Ensure a queue exists (idempotent). Required by pg-boss v10 before send/work. Optional retry policy
-   * is applied to the queue (so a throwing handler retries with bounded backoff rather than failing once).
-   */
+  /** Idempotent; pg-boss v10 requires the queue before send/work. */
   createQueue(name: string, options?: QueueOptions): Promise<void>
-  /** Register a handler with concurrency/poll settings (worker extension over Jobs.work). */
   workWithSettings(name: string, handler: JobHandler, settings?: WorkSettings): Promise<void>
-  /** Schedule a cron, widened over Jobs.schedule with optional expire/singleton options. */
   schedule(name: string, cron: string, data?: unknown, options?: ScheduleOptions): Promise<void>
 }
 
 /**
- * Shape the failure written to the job's `output` column. pg-boss serializes an Error faithfully
- * (serialize-error), so pass it straight through; anything else is wrapped so the reason is never lost.
+ * pg-boss serializes an Error faithfully (serialize-error) into the job's `output`; anything else is
+ * wrapped so the reason is never lost.
  */
 function toFailureOutput(err: unknown): object {
   return err instanceof Error ? err : { message: String(err) }
 }
 
-/** Map the shared EnqueueOptions onto pg-boss SendOptions. */
 function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {
   const out: PgBoss.SendOptions = {}
   if (opts?.singletonKey !== undefined) out.singletonKey = opts.singletonKey
@@ -100,7 +85,6 @@ function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {
   return out
 }
 
-/** Map the worker QueueOptions onto the pg-boss queue policy/retry fields (only set the provided ones). */
 function toQueueOptions(
   opts?: QueueOptions,
 ): Pick<PgBoss.Queue, "retryLimit" | "retryBackoff" | "policy"> {
@@ -118,8 +102,6 @@ function toQueueOptions(
 const STOP_GRACE_MARGIN_MS = 5_000
 
 /**
- * How many times a media.checks handler can pay the per-job budget in one run.
- *
  * MEDIA_JOB_TIMEOUT_MS is applied PER PHASE, not per job: jobs/media-checks.ts wraps the download in one
  * withJobTimeout and processMedia in a SECOND one, so a job that stalls in both phases runs for ~2x the
  * budget before it even reaches the persist writes. Sizing the graceful stop at 1x therefore abandoned an
@@ -130,18 +112,15 @@ const STOP_GRACE_MARGIN_MS = 5_000
 const STOP_GRACE_PHASES = 2
 
 /**
- * The graceful-stop timeout for a given per-job budget: every phase's budget plus the persist margin.
  * Exported because it is the number the CONTAINER's SIGKILL grace must exceed (civfix-infra compose
- * `stop_grace_period`) - see stop().
+ * `stop_grace_period`); see stop().
  */
 export function stopGraceMsFor(jobTimeoutMs: number): number {
   return STOP_GRACE_PHASES * jobTimeoutMs + STOP_GRACE_MARGIN_MS
 }
 
-/** Real pg-boss-backed implementation of the worker Jobs handle. */
 export class PgBossWorkerJobs implements WorkerJobs {
   private readonly connectionString: string
-  /** Graceful-stop timeout (ms), DERIVED from the per-job budget rather than a constant. See stop(). */
   private readonly stopGraceMs: number
   private boss: PgBoss | undefined
 
@@ -154,7 +133,7 @@ export class PgBossWorkerJobs implements WorkerJobs {
     if (this.boss) return
     const { default: PgBossCtor } = await import("pg-boss")
     const boss = new PgBossCtor(this.connectionString)
-    // Surface internal errors loudly instead of crashing the process.
+    // Without a listener an internal pg-boss error would crash the process.
     boss.on("error", (err: Error) => console.error("pg-boss error:", err))
     await boss.start()
     this.boss = boss
@@ -162,8 +141,7 @@ export class PgBossWorkerJobs implements WorkerJobs {
 
   async stop(): Promise<void> {
     if (!this.boss) return
-    // Graceful: let in-flight jobs finish, then close. wait:true resolves after fully stopped. The
-    // explicit timeout must EXCEED the longest per-job budget (media.checks' MEDIA_JOB_TIMEOUT_MS
+    // The explicit timeout must EXCEED the longest per-job budget (media.checks' MEDIA_JOB_TIMEOUT_MS
     // wall-clock, charged ONCE PER PHASE - see stopGraceMsFor): pg-boss's 30s graceful default would
     // abandon an in-flight media job on SIGTERM (the asset stuck `validating` until a sweep reconciles).
     // That budget is ENV-TUNABLE, so the timeout is derived from it at construction instead of being a
@@ -184,9 +162,8 @@ export class PgBossWorkerJobs implements WorkerJobs {
 
   async createQueue(name: string, options?: QueueOptions): Promise<void> {
     const boss = this.requireBoss()
-    // Build the pg-boss queue policy from the optional retry knobs. createQueue is a no-op if the queue
-    // already exists, so updateQueue is what actually brings a previously-created (e.g. retryLimit=0)
-    // queue to the right policy. Both are idempotent (mirrors the API adapter's createQueue/updateQueue).
+    // createQueue is a no-op if the queue already exists, so updateQueue is what brings a
+    // previously-created (e.g. retryLimit=0) queue to the right policy. Mirrors the API adapter.
     const queuePolicy: PgBoss.Queue = { name, ...toQueueOptions(options) }
     await boss.createQueue(name, queuePolicy)
     if (
@@ -298,10 +275,6 @@ export interface JobsHandle {
   stop(): Promise<void>
 }
 
-/**
- * Fake-backed handle: wraps FakeJobs to satisfy the WorkerJobs surface (createQueue/workWithSettings
- * are no-ops/aliases) so the same worker wiring runs offline.
- */
 class FakeWorkerJobs extends FakeJobs implements WorkerJobs {
   start(): Promise<void> {
     return Promise.resolve()
@@ -317,10 +290,9 @@ class FakeWorkerJobs extends FakeJobs implements WorkerJobs {
   }
 }
 
-/** Build the Jobs seam for the worker, selecting fake vs real per USE_FAKE_JOBS. */
 export function buildJobs(source: NodeJS.ProcessEnv = process.env): JobsHandle {
   const fakeJobs = useFakeJobs(source)
-  // PRODUCTION GUARD (mirrors buildSeams' USE_FAKE_STORAGE guard): FakeJobs consumes NOTHING from
+  // Mirrors buildSeams' USE_FAKE_STORAGE guard: FakeJobs consumes NOTHING from
   // pg-boss, so a worker booted with it in production starts cleanly, reports healthy, and every uploaded
   // media stays `validating` forever with no error anywhere - the silent no-op the storage guard exists
   // to prevent, in the one seam that makes the whole process pointless.

@@ -1,47 +1,25 @@
 /**
- * Postgres-backed implementations of the anonymous-reporting persistence seams.
+ * Postgres implementations of the anonymous-reporting seams: AnonReportRepository (held create, status,
+ * the anon_tokens store), AnonHoldReleaseRepo (the worker's release gate) and ClaimRepository
+ * (claim-by-code linking and the nudge lookup).
  *
- * Three repositories share this file because they all touch the same tables (reports, media_assets,
- * report_timeline, anon_tokens, abuse_flags, idempotency_keys) and the same PostGIS geometry handling:
+ * Raw postgres-js rather than the Drizzle query builder, because every report row carries PostGIS geometry
+ * that Drizzle does not model and the held create must run as a single transaction.
  *
- *   makeDrizzleAnonReportRepository  -> AnonReportRepository (held-create tx + status + the anon_tokens
- *                                       resolve/issue store; the claim code is per-report and rests
- *                                       ONLY as its SHA-256 on reports.claim_code_hash (0091), never
- *                                       in plaintext and never on the anon_tokens row)
- *   makeDrizzleAnonHoldReleaseRepo   -> AnonHoldReleaseRepo  (the worker's release gate)
- *   makeDrizzleClaimRepository       -> ClaimRepository      (claim-by-code linking + nudge lookup)
+ * The claim code is per report and rests only as its SHA-256 on reports.claim_code_hash, never in
+ * plaintext and never on the shared anon_tokens row: the plaintext exists only in the one-time response to
+ * the submitter. Storing the digest per report, not on the token row a later submit would overwrite, is
+ * what keeps each of a token's reports independently status-queryable and claimable.
  *
- * Like report-repository.drizzle.ts, everything runs against the raw postgres-js tag (`Sql`) rather than
- * the Drizzle query builder, because every report row carries PostGIS geometry
- * (ST_SetSRID(ST_MakePoint(lng,lat),4326) on write) which Drizzle does not model, and because the
- * held-create flow must run as a SINGLE transaction (sql.begin) to guarantee the no-duplicate +
- * no-orphan + quota-consistency contract.
+ * A UNIQUE(idempotency_key) race rolls the held-create transaction back and answers the retryable 409: the
+ * winner's claim code is not at rest to hand back, and rotating it here would kill the code the winner's
+ * response is carrying at that moment.
  *
- * HELD-CREATE TRANSACTION (createAnonReportTx):
- *   1. ATOMIC per-token cap: UPDATE anon_tokens SET report_count = report_count + 1
- *      WHERE id = token AND report_count < cap. 0 rows -> cap reached -> rollback. (The cap is a TOKEN
- *      property; the claim code is NOT stamped here anymore - it lives on the report row, see step 2.)
- *   2. INSERT the report (reporter_user_id NULL, anon_session_id = token id, status 'held',
- *      visibility 'public', published_at NULL, geom from the point, h3_cell precomputed, AND the
- *      SHA-256 of the per-report single-use claim code). The plaintext code is NEVER persisted
- *      (F150): it exists only in the one-time response to the submitter, and every read path hashes
- *      the presented code to match reports.claim_code_hash (0091). Storing the digest PER REPORT
- *      (not on the shared anon_tokens row, which a later submit would overwrite) is what makes each
- *      of a token's up-to-5 reports independently status-queryable + claimable (0005).
- *   3. Attach each media_asset by setting report_id, but only when unattached or already ours (never
- *      steal a foreign asset; unknown ids no-op) - identical safety to the authed path.
- *   4. INSERT the initial timeline rows: 'submitted' then 'held'.
- *   5. INSERT the response snapshot WITHOUT its claim code into idempotency_keys.response_snapshot,
- *      owner-scoped by user_or_anon = the anon token id (0078/0079).
- *   All five happen atomically. A UNIQUE(idempotency_key) (or unique-index) race rolls the tx back and
- *   answers the retryable 409: the winner's claim code is not at rest to hand back, and rotating it here
- *   would kill the code the winner's response is carrying at that moment.
- *
- * REPLAY: the snapshot holds only { reportId, status }, so a replay mints a fresh claim code and rotates
- * that report's claim_code_hash onto it (the code the first response carried stops working). That keeps
+ * Replay: the idempotency snapshot holds only { reportId, status }, so a replay mints a fresh claim code
+ * and rotates that report's claim_code_hash onto it (the first response's code stops working). That keeps
  * the plaintext out of idempotency_keys and its backups while the replayed response still carries a
- * working code, and keeps exactly one live code per report. A replay is only ever a request that
- * arrived after the winner committed, which is a client that lost the first response.
+ * working code, and keeps exactly one live code per report. A replay is only ever a request that arrived
+ * after the winner committed, which is a client that lost the first response.
  */
 
 import type { Sql } from "../db/client.js"
@@ -61,7 +39,6 @@ import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
 import { insertModerationItem } from "./admin/moderation-repository.drizzle.js"
 import { claimableAsReportMedia, lockUploadsForClaim } from "./media-bindings.js"
 
-/** Postgres unique-violation SQLSTATE; surfaced on the idempotency-key race. */
 const PG_UNIQUE_VIOLATION = "23505"
 
 function isUniqueViolation(err: unknown): boolean {
@@ -72,7 +49,6 @@ function isUniqueViolation(err: unknown): boolean {
   )
 }
 
-/** Project an anon_tokens row select to the AnonTokenRecord shape. */
 interface AnonTokenRowSelect {
   id: string
   created_at: Date
@@ -93,7 +69,6 @@ function toTokenRecord(r: AnonTokenRowSelect): AnonTokenRecord {
   }
 }
 
-/** The shared AnonTokenStore over anon_tokens (both anon repos compose it). */
 function anonTokenStore(sql: Sql): AnonTokenStore {
   return {
     async insert(row: AnonTokenRecord): Promise<void> {
@@ -173,19 +148,14 @@ export function makeDrizzleAnonReportRepository(
     async createAnonReportTx(args: CreateAnonReportTxArgs): Promise<CreateAnonReportTxResult> {
       try {
         const snapshot = await sql.begin(async (tx) => {
-          // 0) D4 LOCK ORDER: allocate the reference code FIRST — the reference_counters upsert must be the
-          // FIRST write in EVERY create tx so each path takes the counter-row lock before any report/token
-          // row lock (a consistent acquisition order that rules out an ABBA deadlock). jurCode is resolved
-          // pre-tx (0 = unknown bucket when no jurisdiction, D5). Anon reports still get a code (#56 / M3);
-          // they simply never auto-forward.
+          // The reference_counters upsert must be the first write in every create transaction, so each
+          // path takes the counter-row lock before any report or token row lock; that consistent order rules
+          // out an ABBA deadlock. Anon reports still get a code; they simply never auto-forward.
           const referenceCode = await allocateReportReferenceCode(tx, args.type, args.jurCode)
 
-          // 1) ATOMIC per-token cap (bugs P0-1): bump report_count ONLY while the token is still under
-          // the cap. Folding the cap into the WHERE makes the check-and-consume a single statement, so N
-          // concurrent submits on one token cannot all pass a stale read and overshoot. 0 rows updated
-          // means the cap is reached: throw, which rolls the whole tx back. NOTE: the claim code is NOT
-          // stamped here - it is a PER-REPORT secret stored on the report row in step 2 (0005), so each
-          // of the token's reports keeps its own code instead of the latest submit overwriting the rest.
+          // Folding the cap into the WHERE makes check-and-consume a single statement, so concurrent submits
+          // on one token cannot all pass a stale read and overshoot. Zero rows means the cap is reached, and
+          // the throw rolls the whole transaction back.
           const bumped = await tx<{ report_count: number }[]>`
             UPDATE anon_tokens
             SET report_count = report_count + 1
@@ -198,11 +168,9 @@ export function makeDrizzleAnonReportRepository(
             )
           }
 
-          // 2) Insert the report HELD (anon: reporter_user_id NULL, anon_session_id = token id) with the
-          // SHA-256 of its own single-use claim code (0005 + 0091). The plaintext column is written NULL:
-          // the code never rests in the database (F150), so a dump/backup/replica leak cannot bind anyone
-          // else's anonymous report to an account, and the deferred DROP of reports.claim_code is a no-op
-          // for every write and read here.
+          // The plaintext claim_code column is written NULL: the code never rests in the database, so a
+          // dump, backup or replica leak cannot bind anyone else's anonymous report to an account, and the
+          // column's deferred DROP changes nothing here.
           await tx`
             INSERT INTO reports (
               id, reporter_user_id, anon_session_id, idempotency_key, geom, geom_source,
@@ -234,14 +202,11 @@ export function makeDrizzleAnonReportRepository(
             )
           `
 
-          // 3) Attach media (set report_id only when unattached or already ours; never steal a foreign).
-          // Set-based UPDATE over all upload ids in ONE round-trip (postgres-js array binding) instead of
-          // a per-id loop, so attaching N photos doesn't lengthen the held-create tx by N statements while
-          // it holds the report + token row locks. Skipped when there are no ids, since `IN ()` is invalid
-          // SQL. Semantics are unchanged: each row's report_id is set only when unattached or already ours,
-          // foreign assets stay untouched, and unknown ids no-op. An asset bound to a post, a chat/DM
-          // message or any other owner is never re-bindable to a report, or the holder of an uploadId
-          // could cross-publish private media into a public report gallery.
+          // An asset bound to a post, a chat or DM message or any other owner is never re-bindable to a
+          // report, or the holder of an uploadId could cross-publish private media into a public report
+          // gallery. One set-based UPDATE rather than a per-id loop, so N photos don't lengthen the
+          // transaction while it holds the report and token row locks; skipped with no ids because `IN ()`
+          // is invalid SQL.
           if (args.mediaUploadIds.length > 0) {
             await lockUploadsForClaim(tx, args.mediaUploadIds)
             const claimed = await tx<{ upload_id: string }[]>`
@@ -254,10 +219,10 @@ export function makeDrizzleAnonReportRepository(
                 AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
               RETURNING upload_id
             `
-            // M-media-claim: reject the whole submit when any id is unclaimable (unknown, rejected, or
-            // already bound elsewhere) instead of committing a report with the photo silently missing —
-            // the same rule the authed create path and post-repository.createPost enforce. The throw rolls
-            // the tx back, so the token quota bump does not persist either.
+            // Reject the whole submit when any id is unclaimable (unknown, rejected, or already bound
+            // elsewhere) rather than commit a report with the photo silently missing, the same rule the
+            // authed create path and post-repository.createPost enforce. The throw also rolls back the
+            // token quota bump.
             if (claimed.length !== new Set(args.mediaUploadIds).size) {
               throw AppError.validation({
                 mediaUploadIds: "One or more media uploads are unavailable.",
@@ -265,10 +230,9 @@ export function makeDrizzleAnonReportRepository(
             }
           }
 
-          // 4) Initial timeline: submitted, then held (the anon flow records both transitions). Both
-          // rows share now() (constant within a transaction) and report_timeline.id is a random uuid, so
-          // ORDER BY created_at, id had NO stable tiebreaker — a reader could get held-before-submitted.
-          // Stamp held 1ms after submitted so the chronological order is deterministic for every reader.
+          // Both rows would share now() (constant within a transaction) and report_timeline.id is a random
+          // uuid, so ORDER BY created_at, id has no stable tiebreaker; held is stamped 1ms later so every
+          // reader sees submitted first.
           await tx`
             INSERT INTO report_timeline (report_id, status, note, actor_id, created_at)
             VALUES
@@ -276,12 +240,9 @@ export function makeDrizzleAnonReportRepository(
               (${args.reportId}, ${"held"}, ${"Awaiting automated review"}, ${null}, now() + interval '1 millisecond')
           `
 
-          // 4b) Enqueue the moderation_items row for this held report (Phase 2 producer hook). The anon
-          // hold-then-publish path holds EVERY anon report pending automated review, so the operator
-          // moderation queue surfaces it immediately. Done inside the SAME tx as the report insert so the
-          // item and the held report are atomic (never an item without its report, or vice versa). Kept
-          // lean: kind 'image', subject the report, the dominant category + description carried for the
-          // detail; signals/user are enriched later by the media-worker / abuse detection if applicable.
+          // Every anon report is held pending automated review, so the operator moderation queue surfaces it
+          // immediately. The same transaction keeps the item and the held report atomic; signals and user
+          // are enriched later by the media worker or abuse detection.
           await insertModerationItem(tx, {
             kind: "image",
             subjectType: "report",
@@ -294,8 +255,7 @@ export function makeDrizzleAnonReportRepository(
             desc: args.description ?? "",
           })
 
-          // 5) Persist the snapshot under the idempotency key (same tx), without the plaintext claim
-          // code: a replay mints a fresh one instead.
+          // Stored without the plaintext claim code: a replay mints a fresh one instead.
           const storedSnapshot: StoredAnonSnapshot = {
             reportId: args.responseSnapshot.reportId,
             status: args.responseSnapshot.status,
@@ -328,9 +288,9 @@ export function makeDrizzleAnonReportRepository(
     },
 
     async findAnonReportStatus(reportId: string): Promise<AnonReportStatusRow | null> {
-      // The claim code DIGEST is stored PER REPORT (0005 + 0091), so read it straight off the report row
-      // - no anon_tokens join (which used to return the LATEST submit's code, breaking older reports).
-      // The caller hashes the presented code and compares digests, so no secret is read back here.
+      // Read off the report row, not through anon_tokens, which held only the latest submit's code and
+      // broke older reports. The caller hashes the presented code and compares digests, so no secret is
+      // read back here.
       const rows = await sql<
         {
           id: string
@@ -366,12 +326,11 @@ export function makeDrizzleClaimRepository(sql: Sql): ClaimRepository {
       tokenId: string,
       claimCodeHash: string,
     ): Promise<PendingAnonReport | null> {
-      // Only the DIGEST of a claim code is stored (0091), so the nudge cannot read a code back: it
-      // stamps the caller's freshly minted code onto the token's most recent not-deleted, not-yet-claimed
-      // report (reporter_user_id IS NULL = not yet claimed; claim_code_hash IS NOT NULL = not yet
-      // consumed), which supersedes whatever code that report carried. Still exactly one live code per
-      // report, still single-use, and older reports stay claimable directly via /claim/report by their
-      // own code. Selecting FOR UPDATE serializes two concurrent nudges on one token.
+      // Only the digest of a claim code is stored, so the nudge cannot read a code back: it stamps the
+      // caller's freshly minted code onto the token's most recent unclaimed report (reporter_user_id IS
+      // NULL) whose code is not yet consumed (claim_code_hash IS NOT NULL), superseding that report's old
+      // code. Still one live single-use code per report; older reports stay claimable via /claim/report by
+      // their own code. FOR UPDATE serializes two concurrent nudges on one token.
       const rows = await sql<{ id: string }[]>`
         UPDATE reports
         SET claim_code_hash = ${claimCodeHash}, claim_code = ${null}
@@ -394,13 +353,11 @@ export function makeDrizzleClaimRepository(sql: Sql): ClaimRepository {
 
     async claimByCode(claimCodeHash: string, userId: string): Promise<{ reportId: string } | null> {
       return sql.begin(async (tx) => {
-        // Atomically claim THE report whose stored digest matches: lock + link + clear in one statement.
-        // The caller hashes the presented code, so the lookup is an index probe on the partial-unique
-        // reports_claim_code_hash_key (0091) - exactly one report, and no timing oracle on the secret.
-        // Backfilled pre-0091 rows already carry their digest, so old reports stay claimable. A consumed
-        // code is cleared (both columns, so a legacy plaintext row cannot linger), so it no longer matches
-        // (single-use). reporter_user_id IS NULL guards against double-claim; anon_session_id is KEPT as
-        // an audit trail (documented in claim-service).
+        // Lock, link and clear in one statement. The caller hashes the presented code, so the lookup is an
+        // index probe on the partial-unique reports_claim_code_hash_key: exactly one report, and no timing
+        // oracle on the secret. Clearing both columns makes the code single-use and leaves no legacy
+        // plaintext behind. reporter_user_id IS NULL guards against double-claim; anon_session_id is kept
+        // as an audit trail (documented in claim-service).
         const updated = await tx<{ id: string }[]>`
           UPDATE reports
           SET reporter_user_id = ${userId}, claim_code = ${null}, claim_code_hash = ${null}

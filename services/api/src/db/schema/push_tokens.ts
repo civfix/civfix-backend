@@ -1,8 +1,4 @@
-/**
- * push_tokens: registered device push tokens (APNs/FCM/WebPush). `platform`+`token` is UNIQUE so a
- * re-register upserts rather than duplicates. `revoked_at` soft-revokes a token without deleting the
- * row (audit trail of devices).
- */
+/** `revoked_at` soft-revokes a token so the row stays as the device audit trail. */
 
 import { sql } from "drizzle-orm"
 import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"

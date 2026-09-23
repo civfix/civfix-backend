@@ -1,17 +1,8 @@
 /**
- * Room-scope rules for resolving chat @-mentions — the SINGLE source consumed by both the WS gateway
- * wiring (send path) and the PATCH /messages route (edit path):
- *
- *   - report rooms resolve only current report_chat_members (D11, P2 2.5): a @mention of a non-member
- *     silently resolves to nothing — no row, no bell;
- *   - dm resolves only the thread PEER (a @mention of anyone else silently drops);
- *   - cleanup resolves only current cleanup_members;
- *   - group rooms (P4 4.4) resolve only current chat_group_members.
- *
- * Membership is checked for the resolved users only, never against a capped roster listing, so a member
- * of any seniority stays mentionable. The user lookup, dm-peer lookup, and member filters are injected so
- * each call site wires its own repo instances; only the scope rules live here. Room kinds added later
- * extend THIS file.
+ * The single source of mention scope for both the send and the edit path: a @mention of anyone outside
+ * the room (the dm peer, or the room's current members) silently resolves to nothing, so no row and no
+ * bell. Membership is checked for the resolved users only, never against a capped roster listing, so a
+ * member of any seniority stays mentionable.
  */
 
 import type { RoomKind, UserMentionDTO } from "@civfix/shared"
@@ -64,23 +55,18 @@ export async function resolveAndRecordChatMentions(
 }
 
 export interface ChatMentionResolverDeps {
-  /** Handle/id -> mentionable-user lookup (drizzle `resolveMentionTargets` over the shared sql tag). */
   resolveTargets(input: {
     handles: string[]
     userIds: string[]
     authorUserId: string
   }): Promise<UserMentionDTO[]>
-  /** The OTHER dm participant, or null when the author is not in the thread. */
+  /** null when the author is not in the thread. */
   dmPeerOf(threadId: string, userId: string): Promise<string | null>
-  /** The cleanup members among `candidateIds`. */
   listCleanupMemberIds(cleanupId: string, candidateIds: string[]): Promise<string[]>
-  /** The report chat members (report_chat_members) among `candidateIds`. */
   listReportChatMemberIds(reportId: string, candidateIds: string[]): Promise<string[]>
-  /** The group room members (chat_group_members; P4 4.4) among `candidateIds`. */
   listGroupMemberIds(groupId: string, candidateIds: string[]): Promise<string[]>
 }
 
-/** Build the seam's `resolveChatMentions` half over the injected lookups. */
 export function makeChatMentionResolver(
   deps: ChatMentionResolverDeps,
 ): GatewayChatMentions["resolveChatMentions"] {
