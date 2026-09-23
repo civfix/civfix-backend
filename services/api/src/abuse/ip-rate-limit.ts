@@ -12,24 +12,29 @@ import type { CounterStore } from "./counter-store.js"
 
 export const IP_HARD_LIMIT_PER_HOUR = 10
 
-/** Higher soft cap reserved for a future known-clean-ASN classifier; unused until `classifyIpAllowance` consults it. */
-export const IP_SOFT_LIMIT_PER_HOUR = 50
-
-export const IP_WINDOW_SECONDS = 60 * 60
+const IP_WINDOW_SECONDS = 60 * 60
 
 const IP_COUNTER_PREFIX = "abuse:ip:"
 
 const IPV6_PREFIX_HEXTETS = 4
 
+const UNKNOWN_IP_BUCKET = "unknown"
+
+const IPV4_MAPPED_IPV6_RE = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/
+
+const IPV4_RE = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
+
+const LEADING_ZEROS_RE = /^0+(?=.)/
+
 /** A missing IP normalizes to a stable "unknown" bucket so it is still limited instead of bypassing. */
 export function normalizeIp(ip: string | undefined | null): string {
   const raw = (ip ?? "").trim().toLowerCase()
-  if (raw === "") return "unknown"
+  if (raw === "") return UNKNOWN_IP_BUCKET
 
-  const mapped = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(raw)
+  const mapped = IPV4_MAPPED_IPV6_RE.exec(raw)
   if (mapped) return mapped[1]!
 
-  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(raw)) return raw
+  if (IPV4_RE.test(raw)) return raw
 
   if (raw.includes(":")) {
     return ipv6Prefix64(raw)
@@ -46,14 +51,14 @@ function ipv6Prefix64(addr: string): string {
   const prefix: string[] = []
   for (let i = 0; i < IPV6_PREFIX_HEXTETS; i++) {
     const h = hextets[i] ?? "0"
-    const trimmed = h.replace(/^0+(?=.)/, "")
+    const trimmed = h.replace(LEADING_ZEROS_RE, "")
     prefix.push(trimmed === "" ? "0" : trimmed)
   }
   return `${prefix.join(":")}::/64`
 }
 
 // The hard cap for every IP today: no GeoIP/ASN database ships. This is the one place to wire an ASN
-// lookup that grants IP_SOFT_LIMIT_PER_HOUR to known-clean residential or shared-NAT ranges.
+// lookup that grants a higher cap to known-clean residential or shared-NAT ranges.
 export function classifyIpAllowance(_normalizedIp: string): number {
   return IP_HARD_LIMIT_PER_HOUR
 }

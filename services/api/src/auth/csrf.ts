@@ -34,6 +34,8 @@ export const CSRF_HEADER = "x-csrf-token"
 /** Domain separation: the signing key is shared with cookie signing, so label what is being signed. */
 const CSRF_HMAC_LABEL = "civfix-csrf-v1:"
 
+const CSRF_REJECTED_MESSAGE = "CSRF token missing or invalid."
+
 /** Read lazily, so a lazily-loaded env is not forced early. */
 export type CsrfEnv = Pick<Env, "SESSION_SIGNING_KEY">
 
@@ -74,12 +76,12 @@ export function makeCsrf(env: CsrfEnv): Csrf {
     const headerValue = request.headers[CSRF_HEADER]
     const headerToken = Array.isArray(headerValue) ? headerValue[0] : headerValue
     if (!headerToken) {
-      throw AppError.forbidden("CSRF token missing or invalid.")
+      throw AppError.forbidden(CSRF_REJECTED_MESSAGE)
     }
 
     const expected = await tokenForSession(sessionCookie)
     if (!constantTimeStringEqual(expected, headerToken)) {
-      throw AppError.forbidden("CSRF token missing or invalid.")
+      throw AppError.forbidden(CSRF_REJECTED_MESSAGE)
     }
   }
 

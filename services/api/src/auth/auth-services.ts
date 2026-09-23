@@ -1,5 +1,6 @@
 import type { Container } from "../di.js"
 import type { OAuthProvider, UserDTO } from "@civfix/shared"
+import type { Mailer } from "@civfix/shared/interfaces"
 import { RedisCacheClient, type CacheClient } from "./cache.js"
 import { SessionService, type SessionLogger } from "./session-service.js"
 import {
@@ -32,7 +33,7 @@ export interface AuthServices {
   enabledProviders: OAuthProvider[]
 }
 
-export function enabledProvidersFromConfig(config: OAuthConfig): OAuthProvider[] {
+function enabledProvidersFromConfig(config: OAuthConfig): OAuthProvider[] {
   const providers: OAuthProvider[] = []
   if (config.apple) providers.push("apple")
   if (config.google) providers.push("google")
@@ -43,7 +44,7 @@ export function enabledProvidersFromConfig(config: OAuthConfig): OAuthProvider[]
 export interface BuildAuthServicesOptions {
   stores: AuthStores
   cache: CacheClient
-  mailer: import("@civfix/shared/interfaces").Mailer
+  mailer: Mailer
   oauthConfig: OAuthConfig
   verifier?: JwksVerifier
   now?: () => number
@@ -120,10 +121,10 @@ export const REVIEWER_OTP_MIN_CODE_LENGTH = REVIEWER_OTP_CODE_MIN_LENGTH
 
 export function reviewerOtpConfigFromEnv(env: Container["env"]): ReviewerOtpConfig | null {
   if (env.REVIEWER_OTP_BYPASS !== true) return null
-  const code = (env as { REVIEWER_OTP_CODE?: string }).REVIEWER_OTP_CODE
+  const code = env.REVIEWER_OTP_CODE
   if (typeof code !== "string") return null
   const trimmed = code.trim()
-  if (trimmed.length < REVIEWER_OTP_MIN_CODE_LENGTH) return null
+  if (trimmed.length < REVIEWER_OTP_CODE_MIN_LENGTH) return null
   return { email: REVIEWER_OTP_EMAIL, code: trimmed }
 }
 

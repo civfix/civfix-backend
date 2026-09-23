@@ -39,7 +39,13 @@ export const CSRF_COOKIE = "civfix_csrf"
 export const CSRF_COOKIE_HOST = "__Host-civfix_csrf"
 export const ANON_COOKIE = "civfix_anon"
 
-export function sessionCookieName(): string {
+const CLIENT_HEADER = "x-client"
+
+const MOBILE_CLIENT = "mobile"
+
+const BEARER_RE = /^Bearer\s+(.+)$/i
+
+function sessionCookieName(): string {
   return isProd() ? SESSION_COOKIE_HOST : SESSION_COOKIE
 }
 
@@ -63,21 +69,19 @@ function firstNonEmptyCookie(request: FastifyRequest, ...names: string[]): strin
   return null
 }
 
-export const CLIENT_HEADER = "x-client"
-
 export type ClientKind = "web" | "mobile"
 
 export function clientKind(request: FastifyRequest): ClientKind {
   const raw = request.headers[CLIENT_HEADER]
   const value = (Array.isArray(raw) ? raw[0] : raw)?.trim().toLowerCase()
-  return value === "mobile" ? "mobile" : "web"
+  return value === MOBILE_CLIENT ? "mobile" : "web"
 }
 
 export function bearerToken(request: FastifyRequest): string | null {
   const raw = request.headers.authorization
   const header = Array.isArray(raw) ? raw[0] : raw
   if (!header) return null
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim())
+  const match = BEARER_RE.exec(header.trim())
   return match ? match[1]!.trim() : null
 }
 

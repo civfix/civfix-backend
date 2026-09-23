@@ -36,7 +36,6 @@ import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 import { setCsrfCookie, clearCsrfCookie, type Csrf } from "../auth/csrf.js"
 import { makeSingleUseSecretStore, type SingleUseSecretStore } from "../auth/single-use-secret.js"
-import type { CacheClient } from "../auth/cache.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import {
   clientKind,
@@ -52,38 +51,32 @@ import type { UserRecord } from "../auth/stores.js"
 const OAUTH_STATE_COOKIE = "civfix_oauth"
 const OAUTH_STATE_TTL_SECONDS = 10 * 60
 
+const OAUTH_NONCE_TTL_SECONDS = 10 * 60
+const OAUTH_NONCE_PREFIX = "oauthnonce:"
+
+const FORM_URLENCODED = "application/x-www-form-urlencoded"
+
+const INVALID_OAUTH_STATE_MESSAGE = "Invalid OAuth state."
+
 export const OTP_REQUEST_RATE_LIMIT = perHost({ max: 5, timeWindow: "1 minute" })
 export const OTP_VERIFY_RATE_LIMIT = perHost({ max: 10, timeWindow: "1 minute" })
 export const OAUTH_RATE_LIMIT = perHost({ max: 20, timeWindow: "1 minute" })
 
-export function guestSmsEnabledFor(env: Container["env"]): boolean {
+function guestSmsEnabledFor(env: Container["env"]): boolean {
   return env.SMS_GUEST_ENABLED && (env.USE_FAKE_SMS || env.TWILIO_SMS_FROM.length > 0)
 }
 
-const OAUTH_NONCE_TTL_SECONDS = 10 * 60
-const OAUTH_NONCE_PREFIX = "oauthnonce:"
-
-function oauthNonces(cache: CacheClient): SingleUseSecretStore {
-  return makeSingleUseSecretStore(cache, {
-    prefix: OAUTH_NONCE_PREFIX,
-    ttlSeconds: OAUTH_NONCE_TTL_SECONDS,
-  })
-}
-
-async function mintOAuthNonce(
-  cache: CacheClient,
-): Promise<{ nonce: string; expiresInSeconds: number }> {
-  const { secret, expiresInSeconds } = await oauthNonces(cache).mint()
-  return { nonce: secret, expiresInSeconds }
-}
-
-async function redeemOAuthNonce(cache: CacheClient, presented: string): Promise<string | null> {
-  const issued = await oauthNonces(cache).redeem(presented)
-  return issued === null ? null : presented
+interface AuthRouteContext {
+  container: Container
+  services: AuthServices
+  csrf: Csrf
+  guestSmsEnabled: boolean
+  webOrigins: readonly string[]
+  oauthNonces: SingleUseSecretStore
 }
 
 async function requireIssuedNonce(
-  cache: CacheClient,
+  nonces: SingleUseSecretStore,
   presented: string | undefined,
   opts: { required: boolean; log: FastifyBaseLogger },
 ): Promise<string | undefined> {
@@ -97,11 +90,10 @@ async function requireIssuedNonce(
     )
     return undefined
   }
-  const redeemed = await redeemOAuthNonce(cache, presented)
-  if (redeemed === null) {
+  if ((await nonces.redeem(presented)) === null) {
     throw AppError.unauthorized("Sign-in nonce is unknown, expired, or already used.")
   }
-  return redeemed
+  return presented
 }
 
 export async function registerAuthRoutes(
@@ -109,16 +101,26 @@ export async function registerAuthRoutes(
   container: Container,
 ): Promise<void> {
   const services = app.authServices
-  const guestSmsEnabled = guestSmsEnabledFor(container.env)
-  const webOrigins = container.env.WEB_ORIGINS
-  const csrf = container.csrf
-  const csrfProtect = csrf.protect
-
-  async function isReservedOrJurisdiction(handle: string): Promise<boolean> {
-    if (isReservedHandle(handle)) return true
-    if (!container.env.DATABASE_URL) return false
-    return handleCollidesWithJurisdiction(container.getDb().sql, handle)
+  const ctx: AuthRouteContext = {
+    container,
+    services,
+    csrf: container.csrf,
+    guestSmsEnabled: guestSmsEnabledFor(container.env),
+    webOrigins: container.env.WEB_ORIGINS,
+    oauthNonces: makeSingleUseSecretStore(services.cache, {
+      prefix: OAUTH_NONCE_PREFIX,
+      ttlSeconds: OAUTH_NONCE_TTL_SECONDS,
+    }),
   }
+  registerOtpRoutes(app, ctx)
+  registerNativeOAuthRoutes(app, ctx)
+  await registerWebOAuthRoutes(app, ctx)
+  registerSessionRoutes(app, ctx)
+  registerProfileRoutes(app, ctx)
+}
+
+function registerOtpRoutes(app: FastifyInstance, ctx: AuthRouteContext): void {
+  const { services, csrf, guestSmsEnabled } = ctx
 
   route(
     app,
@@ -142,19 +144,23 @@ export async function registerAuthRoutes(
       await issueSession(services, csrf, request, reply, userId, { guestSmsEnabled })
     },
   )
+}
+
+function registerNativeOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContext): void {
+  const { container, services, csrf, guestSmsEnabled, oauthNonces } = ctx
 
   app.post(
     "/v1/auth/oauth/nonce",
     { config: { rateLimit: OAUTH_RATE_LIMIT } },
     async (_request, reply) => {
-      const payload = await mintOAuthNonce(services.cache)
-      reply.status(200).send(payload)
+      const { secret, expiresInSeconds } = await oauthNonces.mint()
+      reply.status(200).send({ nonce: secret, expiresInSeconds })
     },
   )
 
   route(app, "appleSignIn", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
     const body = parse(AppleSignInRequestSchema, request.body)
-    const expectedNonce = await requireIssuedNonce(services.cache, body.nonce, {
+    const expectedNonce = await requireIssuedNonce(oauthNonces, body.nonce, {
       required: container.env.OAUTH_REQUIRE_NONCE,
       log: request.log,
     })
@@ -172,7 +178,7 @@ export async function registerAuthRoutes(
     { config: { rateLimit: OAUTH_RATE_LIMIT } },
     async (request, reply) => {
       const body = parse(GoogleSignInRequestSchema, request.body)
-      const expectedNonce = await requireIssuedNonce(services.cache, body.nonce, {
+      const expectedNonce = await requireIssuedNonce(oauthNonces, body.nonce, {
         required: container.env.OAUTH_REQUIRE_NONCE,
         log: request.log,
       })
@@ -180,29 +186,23 @@ export async function registerAuthRoutes(
       await issueSessionForUser(services, csrf, request, reply, user, { guestSmsEnabled })
     },
   )
+}
+
+async function registerWebOAuthRoutes(app: FastifyInstance, ctx: AuthRouteContext): Promise<void> {
+  const { services, csrf, guestSmsEnabled, webOrigins } = ctx
 
   route(app, "googleStart", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
-    const startQuery = parse(OAuthStartQuerySchema, request.query)
-    if (
-      startQuery.redirect !== undefined &&
-      !isAllowedPostLoginRedirect(startQuery.redirect, webOrigins)
-    ) {
-      throw AppError.validation({ redirect: "must be an allowed origin or a relative path" })
-    }
+    const redirect = allowedStartRedirect(request, webOrigins)
     const auth = services.oauth.createGoogleAuthUrl()
-    const stash: OAuthStash = {
-      state: auth.state,
-      codeVerifier: auth.codeVerifier,
-      ...(startQuery.redirect !== undefined ? { redirect: startQuery.redirect } : {}),
-    }
-    reply.setCookie(OAUTH_STATE_COOKIE, JSON.stringify(stash), {
-      signed: true,
-      httpOnly: true,
-      sameSite: "lax",
-      secure: isProd(),
-      path: "/",
-      maxAge: OAUTH_STATE_TTL_SECONDS,
-    })
+    setOAuthStateCookie(
+      reply,
+      {
+        state: auth.state,
+        codeVerifier: auth.codeVerifier,
+        ...(redirect !== undefined ? { redirect } : {}),
+      },
+      "lax",
+    )
     reply.redirect(auth.url)
   })
 
@@ -215,9 +215,9 @@ export async function registerAuthRoutes(
       const query = parse(OAuthCallbackQuerySchema, request.query)
       const stash = readOAuthStash(request)
       if (!stash || stash.state !== query.state || stash.codeVerifier === undefined) {
-        throw AppError.unauthorized("Invalid OAuth state.")
+        throw AppError.unauthorized(INVALID_OAUTH_STATE_MESSAGE)
       }
-      reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
+      clearOAuthStateCookie(reply)
       const user = await services.oauth.completeGoogleCallback(query.code, stash.codeVerifier)
       const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
       await issueSessionForUser(services, csrf, request, reply, user, {
@@ -229,42 +229,22 @@ export async function registerAuthRoutes(
   )
 
   route(app, "appleStart", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
-    const startQuery = parse(OAuthStartQuerySchema, request.query)
-    if (
-      startQuery.redirect !== undefined &&
-      !isAllowedPostLoginRedirect(startQuery.redirect, webOrigins)
-    ) {
-      throw AppError.validation({ redirect: "must be an allowed origin or a relative path" })
-    }
+    const redirect = allowedStartRedirect(request, webOrigins)
     const auth = services.oauth.createAppleAuthUrl()
-    const stash: OAuthStash = {
-      state: auth.state,
-      ...(startQuery.redirect !== undefined ? { redirect: startQuery.redirect } : {}),
-    }
-    const httpsCrossSite = isProd()
-    reply.setCookie(OAUTH_STATE_COOKIE, JSON.stringify(stash), {
-      signed: true,
-      httpOnly: true,
-      sameSite: httpsCrossSite ? "none" : "lax",
-      secure: httpsCrossSite,
-      path: "/",
-      maxAge: OAUTH_STATE_TTL_SECONDS,
-    })
+    // Apple returns by a cross-site form POST, which a Lax cookie would not ride along with; SameSite=None
+    // needs Secure, so plain-http dev keeps Lax.
+    setOAuthStateCookie(
+      reply,
+      { state: auth.state, ...(redirect !== undefined ? { redirect } : {}) },
+      isProd() ? "none" : "lax",
+    )
     reply.redirect(auth.url)
   })
 
   await app.register(async (appleScope) => {
-    appleScope.addContentTypeParser(
-      "application/x-www-form-urlencoded",
-      { parseAs: "string" },
-      (_req, body, done) => {
-        try {
-          done(null, Object.fromEntries(new URLSearchParams(body as string)))
-        } catch (err) {
-          done(err as Error)
-        }
-      },
-    )
+    appleScope.addContentTypeParser(FORM_URLENCODED, { parseAs: "string" }, (_req, body, done) => {
+      done(null, Object.fromEntries(new URLSearchParams(body as string)))
+    })
     route(
       appleScope,
       "appleCallback",
@@ -274,9 +254,9 @@ export async function registerAuthRoutes(
         const body = parse(AppleCallbackBodySchema, request.body)
         const stash = readOAuthStash(request)
         if (!stash || stash.state !== body.state) {
-          throw AppError.unauthorized("Invalid OAuth state.")
+          throw AppError.unauthorized(INVALID_OAUTH_STATE_MESSAGE)
         }
-        reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
+        clearOAuthStateCookie(reply)
         const fullName = appleFullNameFromUserField(body.user)
         const user = await services.oauth.completeAppleCallback(body.code, fullName)
         const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
@@ -288,16 +268,21 @@ export async function registerAuthRoutes(
       },
     )
   })
+}
+
+function registerSessionRoutes(app: FastifyInstance, ctx: AuthRouteContext): void {
+  const { services, csrf, guestSmsEnabled } = ctx
+  const wsTickets = makeWsTicketStore(services.cache)
 
   route(app, "session", async (request, reply) => {
     const payload = await buildSessionCheck(services, csrf, request, reply)
-    reply.status(200).send({ ...payload, guestSmsEnabled: guestSmsEnabledFor(container.env) })
+    reply.status(200).send({ ...payload, guestSmsEnabled })
   })
 
   route(
     app,
     "logout",
-    { preHandler: csrfProtect, config: { allowSuspended: true } },
+    { preHandler: csrf.protect, config: { allowSuspended: true } },
     async (request, reply) => {
       const token = presentedSessionToken(request)
       if (token === null) {
@@ -311,39 +296,46 @@ export async function registerAuthRoutes(
     },
   )
 
-  route(app, "wsTicket", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "wsTicket", { preHandler: csrf.protect }, async (request, reply) => {
     const userId = requireAuth(request)
     const token = presentedSessionToken(request)
     if (token === null) throw AppError.unauthorized()
-    const payload = await makeWsTicketStore(services.cache).mint(userId, await sha256Hex(token))
+    const payload = await wsTickets.mint(userId, await sha256Hex(token))
     reply.status(200).send(payload)
   })
+}
+
+function registerProfileRoutes(app: FastifyInstance, ctx: AuthRouteContext): void {
+  const { container, services, csrf } = ctx
+
+  async function isReservedOrJurisdiction(handle: string): Promise<boolean> {
+    if (isReservedHandle(handle)) return true
+    if (!container.env.DATABASE_URL) return false
+    return handleCollidesWithJurisdiction(container.getDb().sql, handle)
+  }
+
+  async function handleAvailability(
+    userId: string,
+    handle: string,
+  ): Promise<HandleAvailableResponse> {
+    if (!isValidHandle(handle)) return { available: false, reason: "invalid" }
+    const existing = await services.users.findByHandle(handle.trim())
+    if (existing !== null && existing.id === userId) return { available: true, reason: null }
+    if (await isReservedOrJurisdiction(handle.trim()))
+      return { available: false, reason: "reserved" }
+    return existing === null
+      ? { available: true, reason: null }
+      : { available: false, reason: "taken" }
+  }
 
   route(app, "checkHandle", async (request, reply) => {
     const userId = requireAuth(request)
     const { handle } = parse(HandleAvailableRequestSchema, request.query)
-    if (!isValidHandle(handle)) {
-      const payload: HandleAvailableResponse = { available: false, reason: "invalid" }
-      reply.status(200).send(payload)
-      return
-    }
-    const existing = await services.users.findByHandle(handle.trim())
-    if (existing !== null && existing.id === userId) {
-      const payload: HandleAvailableResponse = { available: true, reason: null }
-      reply.status(200).send(payload)
-      return
-    }
-    if (await isReservedOrJurisdiction(handle.trim())) {
-      const payload: HandleAvailableResponse = { available: false, reason: "reserved" }
-      reply.status(200).send(payload)
-      return
-    }
-    const payload: HandleAvailableResponse =
-      existing === null ? { available: true, reason: null } : { available: false, reason: "taken" }
+    const payload = await handleAvailability(userId, handle)
     reply.status(200).send(payload)
   })
 
-  route(app, "updateProfile", { preHandler: csrfProtect }, async (request, reply) => {
+  route(app, "updateProfile", { preHandler: csrf.protect }, async (request, reply) => {
     const userId = requireAuth(request)
     const body = parse(UpdateProfileRequestSchema, request.body)
     assertNoSlur(body.displayName, "displayName")
@@ -382,6 +374,36 @@ export async function registerAuthRoutes(
     const payload: UpdateProfileResponse = { user: toUserDTO(updated) }
     reply.status(200).send(payload)
   })
+}
+
+function allowedStartRedirect(
+  request: FastifyRequest,
+  webOrigins: readonly string[],
+): string | undefined {
+  const { redirect } = parse(OAuthStartQuerySchema, request.query)
+  if (redirect !== undefined && !isAllowedPostLoginRedirect(redirect, webOrigins)) {
+    throw AppError.validation({ redirect: "must be an allowed origin or a relative path" })
+  }
+  return redirect
+}
+
+function setOAuthStateCookie(
+  reply: FastifyReply,
+  stash: OAuthStash,
+  sameSite: "lax" | "none",
+): void {
+  reply.setCookie(OAUTH_STATE_COOKIE, JSON.stringify(stash), {
+    signed: true,
+    httpOnly: true,
+    sameSite,
+    secure: isProd(),
+    path: "/",
+    maxAge: OAUTH_STATE_TTL_SECONDS,
+  })
+}
+
+function clearOAuthStateCookie(reply: FastifyReply): void {
+  reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
 }
 
 interface IssueSessionOptions {
@@ -547,7 +569,7 @@ function redirectOnProviderError(
   if (failure === null) return false
   const stash = readOAuthStash(request)
   const own = stash !== null && failure.state !== undefined && stash.state === failure.state
-  if (own) reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
+  if (own) clearOAuthStateCookie(reply)
   request.log.info({ providerError: failure.error }, "web OAuth sign-in ended at the provider")
   reply.redirect(resolvePostLoginRedirect(own ? stash.redirect : undefined, webOrigins))
   return true

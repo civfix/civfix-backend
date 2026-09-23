@@ -12,7 +12,7 @@ export const OTP_CODE_LENGTH = 6
 export const OTP_TTL_SECONDS = 5 * 60
 export const OTP_MAX_ATTEMPTS = 3
 export const OTP_EMAIL_WINDOW_SECONDS = 60
-export const OTP_IP_WINDOW_SECONDS = 60 * 60
+const OTP_IP_WINDOW_SECONDS = 60 * 60
 export const OTP_IP_MAX_PER_WINDOW = 10
 
 export const OTP_VERIFY_FAIL_WINDOW_SECONDS = 15 * 60
@@ -21,6 +21,14 @@ export const OTP_VERIFY_IP_FAIL_MAX = 30
 
 const ARGON2ID = 2
 const UNNAMED_CITIZEN_DISPLAY_NAME = "citizen"
+
+const OTP_ISSUE_IP_KEY_PREFIX = "otp:rl:ip:"
+const OTP_EMAIL_COOLDOWN_KEY_PREFIX = "otp:rl:email:"
+const OTP_VERIFY_CODE_FAIL_KEY_PREFIX = "otp:vf:code:"
+const OTP_VERIFY_IP_FAIL_KEY_PREFIX = "otp:vf:ip:"
+
+const INVALID_CODE_MESSAGE = "Invalid or expired code."
+const TOO_MANY_INCORRECT_MESSAGE = "Too many incorrect attempts. Request a new code."
 
 const ARGON_OPTS_FULL = {
   algorithm: ARGON2ID,
@@ -36,7 +44,7 @@ const ARGON_OPTS_TEST = {
   parallelism: 1,
 } as const
 
-export const ARGON_OPTS = process.env.NODE_ENV === "test" ? ARGON_OPTS_TEST : ARGON_OPTS_FULL
+const ARGON_OPTS = process.env.NODE_ENV === "test" ? ARGON_OPTS_TEST : ARGON_OPTS_FULL
 
 export function hashOtpCode(code: string): Promise<string> {
   return argonHash(code, ARGON_OPTS)
@@ -47,15 +55,15 @@ export function verifyOtpCode(codeHash: string, code: string): Promise<boolean> 
 }
 
 export const OTP_REFUSED_UNVERIFIED_ACCOUNT_ACTION = "auth.otp_refused_unverified_account"
-export const OTP_REFUSED_UNVERIFIED_ACCOUNT_REASON = "email_unverified_with_provider_identity"
+const OTP_REFUSED_UNVERIFIED_ACCOUNT_REASON = "email_unverified_with_provider_identity"
 
-export function unverifiedAccountNeedsReviewMessage(supportEmail: string | null): string {
+function unverifiedAccountNeedsReviewMessage(supportEmail: string | null): string {
   const contact = supportEmail === null ? "Contact support" : `Contact support at ${supportEmail}`
   return `This email address is linked to an account that needs a quick check before you can sign in. ${contact} and we'll sort it out.`
 }
 
 export const REVIEWER_OTP_EMAIL = "reviewer@civfix.org"
-export const REVIEWER_HANDLE = "reviewer"
+const REVIEWER_HANDLE = "reviewer"
 export const REVIEWER_DISPLAY_NAME = "Reviewer Reviewer"
 
 export interface ReviewerOtpConfig {
@@ -113,7 +121,7 @@ export class OtpService {
     this.now = opts.now ?? Date.now
     this.logger = opts.logger
     this.reviewer = opts.reviewer
-      ? { email: opts.reviewer.email.trim().toLowerCase(), code: opts.reviewer.code }
+      ? { email: normalizeEmail(opts.reviewer.email), code: opts.reviewer.code }
       : null
     this.supportEmail = opts.supportEmail ?? null
     this.audit = opts.audit
@@ -124,7 +132,7 @@ export class OtpService {
   }
 
   async issueOtp(email: string, ip: string | null): Promise<IssueResult> {
-    const normalized = email.trim().toLowerCase()
+    const normalized = normalizeEmail(email)
 
     if (this.isReviewerEmail(normalized)) {
       return { resendAfterSec: OTP_EMAIL_WINDOW_SECONDS }
@@ -132,7 +140,7 @@ export class OtpService {
 
     const ipBucket = ip === null ? null : normalizeIp(ip)
     if (ipBucket) {
-      const ipKey = `otp:rl:ip:${ipBucket}`
+      const ipKey = OTP_ISSUE_IP_KEY_PREFIX + ipBucket
       const ipHits = await this.cache.incr(ipKey, OTP_IP_WINDOW_SECONDS)
       if (ipHits > OTP_IP_MAX_PER_WINDOW) {
         throw AppError.rateLimited("Too many code requests from this network.")
@@ -172,7 +180,7 @@ export class OtpService {
   }
 
   async verifyOtp(email: string, code: string, ip: string | null): Promise<string> {
-    const normalized = email.trim().toLowerCase()
+    const normalized = normalizeEmail(email)
     if ((await this.proveInbox(normalized, code, ip)) === "reviewer") {
       return this.ensureReviewerUser(normalized)
     }
@@ -203,7 +211,7 @@ export class OtpService {
     code: string,
     ip: string | null,
   ): Promise<string | null> {
-    const normalized = email.trim().toLowerCase()
+    const normalized = normalizeEmail(email)
     if ((await this.proveInbox(normalized, code, ip)) === "reviewer") {
       return this.ensureReviewerUser(normalized)
     }
@@ -227,25 +235,35 @@ export class OtpService {
         return "reviewer"
       }
       await this.bumpVerifyFailure(null, ipBucket)
-      throw AppError.unauthorized("Invalid or expired code.")
+      throw AppError.unauthorized(INVALID_CODE_MESSAGE)
     }
 
+    await this.consumeCode(normalized, code, ipBucket, now)
+    return "code"
+  }
+
+  private async consumeCode(
+    normalized: string,
+    code: string,
+    ipBucket: string | null,
+    now: Date,
+  ): Promise<void> {
     const record = await this.store.findLatestActive(normalized, now)
     if (!record) {
       await this.bumpVerifyFailure(null, ipBucket)
-      throw AppError.unauthorized("Invalid or expired code.")
+      throw AppError.unauthorized(INVALID_CODE_MESSAGE)
     }
 
     if ((await this.readCounter(codeFailKey(record.id))) >= OTP_VERIFY_CODE_FAIL_MAX) {
       await this.store.markConsumed(record.id, now)
-      throw AppError.unauthorized("Too many incorrect attempts. Request a new code.")
+      throw AppError.unauthorized(TOO_MANY_INCORRECT_MESSAGE)
     }
 
     const attempts = await this.store.incrementAttempts(record.id)
     if (attempts > OTP_MAX_ATTEMPTS) {
       await this.store.markConsumed(record.id, now)
       await this.bumpVerifyFailure(record.id, ipBucket)
-      throw AppError.unauthorized("Too many incorrect attempts. Request a new code.")
+      throw AppError.unauthorized(TOO_MANY_INCORRECT_MESSAGE)
     }
 
     const ok = await verifyOtpCode(record.codeHash, code)
@@ -254,12 +272,12 @@ export class OtpService {
         await this.store.markConsumed(record.id, now)
       }
       await this.bumpVerifyFailure(record.id, ipBucket)
-      throw AppError.unauthorized("Invalid or expired code.")
+      throw AppError.unauthorized(INVALID_CODE_MESSAGE)
     }
 
     const claimed = await this.store.markConsumed(record.id, now)
     if (!claimed) {
-      throw AppError.unauthorized("Invalid or expired code.")
+      throw AppError.unauthorized(INVALID_CODE_MESSAGE)
     }
     await this.cache.del(emailCooldownKey(normalized)).catch((err: unknown) => {
       this.logger?.warn(
@@ -267,7 +285,6 @@ export class OtpService {
         "otp: failed to release per-email cooldown after successful verify",
       )
     })
-    return "code"
   }
 
   // The code proves who owns the inbox, not who created the row. A row that never verified its address
@@ -325,16 +342,20 @@ export class OtpService {
   }
 }
 
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase()
+}
+
 function emailCooldownKey(normalizedEmail: string): string {
-  return `otp:rl:email:${normalizedEmail}`
+  return OTP_EMAIL_COOLDOWN_KEY_PREFIX + normalizedEmail
 }
 
 function codeFailKey(codeId: string): string {
-  return `otp:vf:code:${codeId}`
+  return OTP_VERIFY_CODE_FAIL_KEY_PREFIX + codeId
 }
 
 function ipFailKey(ip: string): string {
-  return `otp:vf:ip:${ip}`
+  return OTP_VERIFY_IP_FAIL_KEY_PREFIX + ip
 }
 
 function defaultDisplayName(email: string): string {

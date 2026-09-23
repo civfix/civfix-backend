@@ -13,6 +13,14 @@
 
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose"
 
+const ACCESS_JWT_ALG = "RS256"
+
+const ACCESS_CLOCK_TOLERANCE_SECONDS = 30
+
+const ACCESS_CERTS_PATH = "/cdn-cgi/access/certs"
+
+const TRAILING_SLASHES_RE = /\/+$/
+
 export interface AccessIdentity {
   /** Verified email for an interactive (human) login; null for a service-token (machine) login. */
   email: string | null
@@ -44,15 +52,16 @@ export function createAccessVerifier(
   config: AccessVerifierConfig,
   jwks?: JWTVerifyGetKey,
 ): VerifyAccessJwt {
-  const issuer = config.teamDomain.replace(/\/+$/, "")
-  const keySet = jwks ?? createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`))
+  const issuer = config.teamDomain.replace(TRAILING_SLASHES_RE, "")
+  const keySet = jwks ?? createRemoteJWKSet(new URL(`${issuer}${ACCESS_CERTS_PATH}`))
 
   return async function verifyAccessJwt(token: string): Promise<AccessIdentity> {
     const { payload } = await jwtVerify(token, keySet, {
       issuer,
       audience: config.aud,
-      algorithms: ["RS256"], // pin to prevent alg-confusion
-      clockTolerance: 30, // seconds; tolerate minor clock drift
+      // Pinned to prevent alg-confusion.
+      algorithms: [ACCESS_JWT_ALG],
+      clockTolerance: ACCESS_CLOCK_TOLERANCE_SECONDS,
       // jose validates iss/aud/exp only when present; without this a token omitting exp would skip the
       // expiry check.
       requiredClaims: ["exp", "iss", "aud"],

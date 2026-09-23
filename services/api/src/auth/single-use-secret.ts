@@ -35,13 +35,15 @@ export interface SingleUseSecretOptions {
 
 const PRESENT = "1"
 
+const CLAIM_SEGMENT = "claim:"
+
 export function makeSingleUseSecretStore(
   cache: CacheClient,
   opts: SingleUseSecretOptions,
 ): SingleUseSecretStore {
   const { prefix, ttlSeconds } = opts
   const newSecret = opts.newSecret ?? (() => generateToken())
-  const claimPrefix = `${prefix}claim:`
+  const claimPrefix = prefix + CLAIM_SEGMENT
 
   return {
     async mint(value: string = PRESENT): Promise<{ secret: string; expiresInSeconds: number }> {

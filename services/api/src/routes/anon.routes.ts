@@ -1,7 +1,9 @@
 import {
   AnonReportRequestSchema,
+  AnonReportResponseSchema,
   AnonReportStatusRequestSchema,
   IdSchema,
+  ReportStatusSchema,
   type AnonReportResponse,
   type AnonReportStatusResponse,
 } from "@civfix/shared"
@@ -47,7 +49,7 @@ const AnonReportResponseJsonSchema = {
   type: "object",
   properties: {
     reportId: { type: "string" },
-    status: { type: "string", enum: ["held", "published"] },
+    status: { type: "string", enum: [...AnonReportResponseSchema.shape.status.options] },
     claimCode: { type: "string" },
   },
   required: ["reportId", "status", "claimCode"],
@@ -56,18 +58,7 @@ const AnonReportResponseJsonSchema = {
 const AnonReportStatusResponseJsonSchema = {
   type: "object",
   properties: {
-    status: {
-      type: "string",
-      enum: [
-        "submitted",
-        "held",
-        "published",
-        "acknowledged",
-        "in_progress",
-        "resolved",
-        "rejected",
-      ],
-    },
+    status: { type: "string", enum: [...ReportStatusSchema.options] },
     publishedAt: { type: "string", nullable: true },
   },
   required: ["status"],

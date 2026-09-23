@@ -33,6 +33,7 @@ import {
   addressProvenance,
   resolveAddressOrNull,
   type AddressResolver,
+  type ReportAddressWrite,
 } from "./address-resolver.js"
 import type { AddressPrecision, ReportAddressSource } from "@civfix/shared"
 
@@ -41,6 +42,12 @@ export const ANON_REPORT_CREATE_SCOPE = "anon_report_create"
 export const ANON_TURNSTILE_ACTION = "anon-report"
 
 export const ANON_MAX_MEDIA_UPLOADS = 5
+
+const HONEYPOT_REJECTION_MESSAGE = "Please review your report and try again."
+
+const REPORT_NOT_FOUND_MESSAGE = "Report not found"
+
+export type AnonLog = (line: string, extra?: Record<string, unknown>) => void
 
 export type AnonAbuseReason = "honeypot" | "gps"
 
@@ -110,12 +117,11 @@ export interface AnonServiceDeps {
     subjectId: string,
     reason: AnonAbuseReason,
   ) => Promise<void>
-  enqueueMediaChecks?: (reportId: string, mediaUploadIds: string[]) => Promise<void>
   newId?: () => string
   newClaimCode?: () => string
   now?: () => Date
   newAnonTokenId?: () => string
-  log?: (line: string, extra?: Record<string, unknown>) => void
+  log?: AnonLog
 }
 
 export interface AnonSubmitResult {
@@ -134,7 +140,6 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
   const newClaimCode = deps.newClaimCode ?? (() => generateToken())
   const log = deps.log ?? (() => {})
   const raiseAbuseFlag = deps.raiseAbuseFlag ?? (() => Promise.resolve())
-  const enqueueMediaChecks = deps.enqueueMediaChecks ?? (() => Promise.resolve())
 
   const tokenDeps: AnonTokenDeps = {
     store: deps.repo,
@@ -143,30 +148,82 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
     ...(deps.newAnonTokenId !== undefined ? { newId: deps.newAnonTokenId } : {}),
   }
 
+  async function rejectBots(input: AnonReportRequest, ctx: AnonSubmitContext): Promise<void> {
+    const human = await deps.abuseChecks.verifyTurnstile(input.turnstileToken, ctx.ip ?? "", {
+      action: ANON_TURNSTILE_ACTION,
+    })
+    if (!human) {
+      throw AppError.turnstileFailed()
+    }
+
+    if (!honeypotTripped(input.honeypot)) return
+    const presentedId = input.anonToken
+      ? verifyAnonTokenSignature(input.anonToken, deps.anonTokenSigningKey)
+      : null
+    if (presentedId) {
+      await raiseAbuseFlag("anon_token", presentedId, "honeypot").catch((err) => {
+        log("anon-submit: honeypot raiseAbuseFlag failed (non-fatal)", { err: String(err) })
+      })
+    }
+    log("anon-submit: honeypot tripped; rejecting", { ip: ctx.ip })
+    throw AppError.validation({ description: HONEYPOT_REJECTION_MESSAGE })
+  }
+
+  async function enforceContentAndQuotas(
+    input: AnonReportRequest,
+    ctx: AnonSubmitContext,
+  ): Promise<void> {
+    if (input.mediaUploadIds.length > ANON_MAX_MEDIA_UPLOADS) {
+      throw AppError.validation({ mediaUploadIds: "Too many media uploads." })
+    }
+
+    assertNoSlur(input.title ?? null, "title")
+    assertNoSlur(input.description ?? null, "description")
+    assertNoSlur(input.addr ?? null, "addr")
+
+    await enforceIpRateLimit(ctx.ip, { counters: deps.counters })
+
+    await enforceH3CellCap(input.lat, input.lng, { counters: deps.counters })
+
+    const ipGeo = resolveTrustedCfGeo(ctx, log)
+    const gps = await gpsSanityCheck(
+      { point: { lat: input.lat, lng: input.lng }, ipGeo },
+      { abuseChecks: deps.abuseChecks, log },
+    )
+    if (!gps.ok) {
+      throw AppError.gpsImplausible()
+    }
+  }
+
+  async function resolveLocation(input: AnonReportRequest): Promise<{
+    jurisdictionGeoid: string | null
+    jurCode: number
+    addressWrite: ReportAddressWrite
+  }> {
+    const suppliedAddr = input.addr?.trim() ?? ""
+    const [jurisdictionGeoid, resolvedAddr] = await Promise.all([
+      deps.resolveJurisdictionGeoid(input.lat, input.lng),
+      suppliedAddr.length > 0
+        ? Promise.resolve(null)
+        : resolveAddressOrNull(deps.resolveAddress, input.lat, input.lng),
+    ])
+    const jurCode =
+      deps.resolveJurisdictionCode !== undefined
+        ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
+        : UNKNOWN_JURCODE
+    return {
+      jurisdictionGeoid,
+      jurCode,
+      addressWrite: addressProvenance(suppliedAddr, resolvedAddr),
+    }
+  }
+
   return {
     async submitAnonReport(
       input: AnonReportRequest,
       ctx: AnonSubmitContext,
     ): Promise<AnonSubmitResult> {
-      const human = await deps.abuseChecks.verifyTurnstile(input.turnstileToken, ctx.ip ?? "", {
-        action: ANON_TURNSTILE_ACTION,
-      })
-      if (!human) {
-        throw AppError.turnstileFailed()
-      }
-
-      if (honeypotTripped(input.honeypot)) {
-        if (input.anonToken) {
-          const presentedId = verifyAnonTokenSignature(input.anonToken, deps.anonTokenSigningKey)
-          if (presentedId) {
-            await raiseAbuseFlag("anon_token", presentedId, "honeypot").catch((err) => {
-              log("anon-submit: honeypot raiseAbuseFlag failed (non-fatal)", { err: String(err) })
-            })
-          }
-        }
-        log("anon-submit: honeypot tripped; rejecting", { ip: ctx.ip })
-        throw AppError.validation({ description: "Please review your report and try again." })
-      }
+      await rejectBots(input, ctx)
 
       const presentedToken = await resolveAnonToken(input.anonToken, tokenDeps)
 
@@ -179,45 +236,15 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         return { response: existing }
       }
 
-      if (input.mediaUploadIds.length > ANON_MAX_MEDIA_UPLOADS) {
-        throw AppError.validation({ mediaUploadIds: "Too many media uploads." })
-      }
-
-      assertNoSlur(input.title ?? null, "title")
-      assertNoSlur(input.description ?? null, "description")
-      assertNoSlur(input.addr ?? null, "addr")
-
-      await enforceIpRateLimit(ctx.ip, { counters: deps.counters })
-
-      await enforceH3CellCap(input.lat, input.lng, { counters: deps.counters })
-
-      const ipGeo = resolveTrustedCfGeo(ctx, log)
-      const gps = await gpsSanityCheck(
-        { point: { lat: input.lat, lng: input.lng }, ipGeo },
-        { abuseChecks: deps.abuseChecks, log },
-      )
-      if (!gps.ok) {
-        throw AppError.gpsImplausible()
-      }
+      await enforceContentAndQuotas(input, ctx)
 
       const { record: tokenRow, issuedToken } = await ensureAnonToken(presentedToken, tokenDeps)
 
-      const suppliedAddr = input.addr?.trim() ?? ""
-      const [jurisdictionGeoid, resolvedAddr] = await Promise.all([
-        deps.resolveJurisdictionGeoid(input.lat, input.lng),
-        suppliedAddr.length > 0
-          ? Promise.resolve(null)
-          : resolveAddressOrNull(deps.resolveAddress, input.lat, input.lng),
-      ])
-      const jurCode =
-        deps.resolveJurisdictionCode !== undefined
-          ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
-          : UNKNOWN_JURCODE
+      const { jurisdictionGeoid, jurCode, addressWrite } = await resolveLocation(input)
       const h3Cell = reportH3Cell(input.lat, input.lng)
       const reportId = newId()
       const claimCode = newClaimCode()
       const claimCodeHash = await sha256Hex(claimCode)
-      const addressWrite = addressProvenance(suppliedAddr, resolvedAddr)
 
       const responseSnapshot: AnonReportResponse = {
         reportId,
@@ -249,15 +276,6 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         responseSnapshot,
       })
 
-      if (result.kind === "created" && input.mediaUploadIds.length > 0) {
-        await enqueueMediaChecks(reportId, input.mediaUploadIds).catch((err) => {
-          log("anon-submit: media.checks enqueue failed (non-fatal)", {
-            reportId,
-            err: String(err),
-          })
-        })
-      }
-
       return {
         response: result.snapshot,
         ...(result.kind === "created" && issuedToken !== undefined
@@ -269,10 +287,10 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
     async anonReportStatus(reportId: string, claimCode: string): Promise<AnonReportStatusResponse> {
       const row = await deps.repo.findAnonReportStatus(reportId)
       if (!row || row.claimCodeHash === null) {
-        throw AppError.notFound("Report not found")
+        throw AppError.notFound(REPORT_NOT_FOUND_MESSAGE)
       }
       if (!constantTimeStringEqual(row.claimCodeHash, await sha256Hex(claimCode))) {
-        throw AppError.notFound("Report not found")
+        throw AppError.notFound(REPORT_NOT_FOUND_MESSAGE)
       }
       return {
         status: row.status,
@@ -296,10 +314,7 @@ function anonMediaUploaders(
   return [...sessions.map(anonUploader), UNSESSIONED_UPLOADER]
 }
 
-function resolveTrustedCfGeo(
-  ctx: AnonSubmitContext,
-  log: (line: string, extra?: Record<string, unknown>) => void,
-): LatLng | null {
+function resolveTrustedCfGeo(ctx: AnonSubmitContext, log: AnonLog): LatLng | null {
   if (!ctx.cfGeo) return null
   if (!ctx.cfGeoTrusted) {
     const parsed = parseCfGeo(ctx.cfGeo)

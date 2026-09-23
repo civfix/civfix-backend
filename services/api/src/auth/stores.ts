@@ -5,22 +5,30 @@ import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 
 export const HANDLE_RENAME_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000
 
+const PLACEHOLDER_HANDLE_PREFIX = "user"
+
+const TOMBSTONE_HANDLE_PREFIX = "deleted_"
+
+const GENERATED_HANDLE_HEX_LENGTH = 12
+
 export function handleChangeableAtFrom(handleChangedAt: Date | null, now: Date): string | null {
   if (handleChangedAt === null) return null
   const next = new Date(handleChangedAt.getTime() + HANDLE_RENAME_COOLDOWN_MS)
   return next.getTime() > now.getTime() ? next.toISOString() : null
 }
 
+function uuidHexPrefix(uuid: string): string {
+  return uuid.replace(/-/g, "").slice(0, GENERATED_HANDLE_HEX_LENGTH).toLowerCase()
+}
+
 export function generatePlaceholderHandle(id?: string): string {
-  const hex = (id ?? randomUUID()).replace(/-/g, "").slice(0, 12).toLowerCase()
-  return `user${hex}`
+  return PLACEHOLDER_HANDLE_PREFIX + uuidHexPrefix(id ?? randomUUID())
 }
 
 export const TOMBSTONE_HANDLE_RE = /^deleted_[0-9a-f]{12}$/
 
 export function generateTombstoneHandle(): string {
-  const hex = randomUUID().replace(/-/g, "").slice(0, 12).toLowerCase()
-  return `deleted_${hex}`
+  return TOMBSTONE_HANDLE_PREFIX + uuidHexPrefix(randomUUID())
 }
 
 export type AccountStatus = "active" | "suspended" | "review" | "banned"
@@ -215,25 +223,24 @@ export class InMemoryUserStore implements UserStore {
     return Promise.resolve(row ? { ...row } : null)
   }
 
-  findByEmail(email: string): Promise<UserRecord | null> {
+  private rowByEmail(email: string): UserRecord | undefined {
     const normalized = email.toLowerCase()
     for (const row of this.byId.values()) {
-      if (row.email !== null && row.email.toLowerCase() === normalized) {
-        return Promise.resolve({ ...row })
-      }
+      if (row.email !== null && row.email.toLowerCase() === normalized) return row
     }
-    return Promise.resolve(null)
+    return undefined
+  }
+
+  findByEmail(email: string): Promise<UserRecord | null> {
+    const row = this.rowByEmail(email)
+    return Promise.resolve(row ? { ...row } : null)
   }
 
   create(email: string | null, input: CreateUserInput): Promise<UserRecord> {
-    if (email !== null) {
-      const normalized = email.toLowerCase()
-      for (const existing of this.byId.values()) {
-        if (existing.email !== null && existing.email.toLowerCase() === normalized) {
-          if (input.onEmailConflict === "reject") return Promise.reject(new EmailTakenError())
-          return Promise.resolve({ ...existing })
-        }
-      }
+    const existing = email === null ? undefined : this.rowByEmail(email)
+    if (existing) {
+      if (input.onEmailConflict === "reject") return Promise.reject(new EmailTakenError())
+      return Promise.resolve({ ...existing })
     }
     const id = randomUUID()
     const row: UserRecord = {

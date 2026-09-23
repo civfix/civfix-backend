@@ -9,15 +9,19 @@ export const DEFAULT_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 
 export const ABSOLUTE_SESSION_MAX_SECONDS = 90 * 24 * 60 * 60
 
-export const BANNED_MARKER_GRACE_SECONDS = 60
+const BANNED_MARKER_GRACE_SECONDS = 60
 
-export const DEFAULT_SLIDE_GRANULARITY_MS = 60 * 60 * 1000
+const DEFAULT_SLIDE_GRANULARITY_MS = 60 * 60 * 1000
 
 const SESSION_KEY_PREFIX = "sess:"
 
 const BANNED_KEY_PREFIX = "banned:"
 
 const EPOCH_KEY_PREFIX = "sessepoch:"
+
+const BANNED_MARKER_VALUE = "1"
+
+const MINT_REFUSED_MESSAGE = "This account cannot start a new session."
 
 export interface ResolvedSession {
   userId: string
@@ -57,6 +61,9 @@ interface UserGate {
 }
 
 const REVOKED_STATUSES: ReadonlySet<AccountStatus> = new Set<AccountStatus>(["banned"])
+
+// Distinct from null, which is a decided rejection: a miss sends the lookup on to the durable row.
+const CACHE_MISS = Symbol("session-cache-miss")
 
 function isMintRefused(status: AccountStatus): boolean {
   return status === "banned" || status === "suspended"
@@ -119,7 +126,7 @@ export class SessionService {
 
   async createSession(userId: string, roles: Role[], meta: SessionMeta = {}): Promise<string> {
     if (isOfficialAccount(userId)) {
-      throw AppError.forbidden("This account cannot start a new session.")
+      throw AppError.forbidden(MINT_REFUSED_MESSAGE)
     }
     const token = generateToken()
     const hash = await sha256Hex(token)
@@ -134,7 +141,7 @@ export class SessionService {
         : Promise.resolve(meta.accountStatus ?? "active"),
     ])
     if (isMintRefused(mintStatus)) {
-      throw AppError.forbidden("This account cannot start a new session.")
+      throw AppError.forbidden(MINT_REFUSED_MESSAGE)
     }
     await this.store.insert({
       id: hash,
@@ -176,7 +183,7 @@ export class SessionService {
     const status = await this.users.accountStatus(userId)
     if (isMintRefused(status)) {
       await this.store.deleteById(hash)
-      throw AppError.forbidden("This account cannot start a new session.")
+      throw AppError.forbidden(MINT_REFUSED_MESSAGE)
     }
     return { epoch, status }
   }
@@ -187,31 +194,41 @@ export class SessionService {
 
   async resolveSessionByHash(hash: string): Promise<ResolveResult | null> {
     const nowMs = this.now()
+    const fromCache = await this.resolveFromCache(hash, nowMs)
+    if (fromCache !== CACHE_MISS) return fromCache
+    return this.resolveFromStore(hash, nowMs)
+  }
 
+  private async resolveFromCache(
+    hash: string,
+    nowMs: number,
+  ): Promise<ResolveResult | null | typeof CACHE_MISS> {
     const cachedRaw = await this.cache.get(sessionKey(hash))
-    if (cachedRaw !== null) {
-      const cached = this.parseCache(cachedRaw)
-      if (cached && cached.expiresAtMs > nowMs && !REVOKED_STATUSES.has(cached.accountStatus)) {
-        if (this.absolutelyExpired(cached.createdAtMs, nowMs)) {
-          await this.expireSession(hash)
-          return null
-        }
-        const gate = await this.userGate(cached.userId)
-        if (!gate.active) return null
-        if (cached.epoch === gate.epoch) {
-          await this.maybeSlide(hash, cached.expiresAtMs, cached.createdAtMs, nowMs)
-          return {
-            userId: cached.userId,
-            roles: cached.roles,
-            accountStatus: cached.accountStatus,
-            source: "cache",
-            expiresAtMs: cached.expiresAtMs,
-          }
+    if (cachedRaw === null) return CACHE_MISS
+    const cached = this.parseCache(cachedRaw)
+    if (cached && cached.expiresAtMs > nowMs && !REVOKED_STATUSES.has(cached.accountStatus)) {
+      if (this.absolutelyExpired(cached.createdAtMs, nowMs)) {
+        await this.expireSession(hash)
+        return null
+      }
+      const gate = await this.userGate(cached.userId)
+      if (!gate.active) return null
+      if (cached.epoch === gate.epoch) {
+        await this.maybeSlide(hash, cached.expiresAtMs, cached.createdAtMs, nowMs)
+        return {
+          userId: cached.userId,
+          roles: cached.roles,
+          accountStatus: cached.accountStatus,
+          source: "cache",
+          expiresAtMs: cached.expiresAtMs,
         }
       }
-      await this.evictSessionCache(hash, "rejected session cache eviction failed")
     }
+    await this.evictSessionCache(hash, "rejected session cache eviction failed")
+    return CACHE_MISS
+  }
 
+  private async resolveFromStore(hash: string, nowMs: number): Promise<ResolveResult | null> {
     const row = await this.store.findById(hash)
     if (!row) return null
     if (
@@ -302,7 +319,11 @@ export class SessionService {
   // Outlives every cached projection (their TTL never exceeds ttlSeconds), so the marker alone is enough
   // to reject a session whose durable row is already gone.
   async markBanned(userId: string): Promise<void> {
-    await this.cache.set(bannedKey(userId), "1", this.ttlSeconds + BANNED_MARKER_GRACE_SECONDS)
+    await this.cache.set(
+      bannedKey(userId),
+      BANNED_MARKER_VALUE,
+      this.ttlSeconds + BANNED_MARKER_GRACE_SECONDS,
+    )
   }
 
   async clearBan(userId: string): Promise<void> {
