@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance, FastifyRequest } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { SessionService } from "../../src/auth/session-service.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
@@ -35,7 +35,7 @@ async function makeThreadsHarness(seed: (repo: InMemoryThreadsRepository) => voi
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -51,7 +51,7 @@ async function makeThreadsHarness(seed: (repo: InMemoryThreadsRepository) => voi
     threadsRepo,
   }
 
-  const app = await buildServer({ env, authServices, chatOverrides })
+  const app = await makeServer({ env, authServices, chatOverrides })
   current = app
   return { app, mailer }
 }
@@ -101,7 +101,7 @@ describe("GET /threads", () => {
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
     const mailer = new FakeMailer()
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores,
       cache,
       mailer,
@@ -114,7 +114,7 @@ describe("GET /threads", () => {
       isMember: () => Promise.resolve(true),
       threadsRepo,
     }
-    const app = await buildServer({ env, authServices, chatOverrides })
+    const app = await makeServer({ env, authServices, chatOverrides })
     current = app
 
     const { token, userId } = await signIn(app, mailer, "member@example.com")

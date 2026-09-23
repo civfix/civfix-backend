@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { publishMediaAsReady } from "../helpers/media-pg.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { MEDIA_CHECKS_JOB } from "../../src/lib/queue-names.js"
 import type { FakeStorage, FakeJobs } from "@civfix/shared/fakes"
@@ -22,8 +22,8 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     h = pg as PgHarness
     // No injected repo, so the routes use the Drizzle-backed MediaRepository.
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
-    const container = buildContainer(env)
-    app = await buildServer({ env, container })
+    const container = makeContainer(env)
+    app = await makeServer({ env, container })
     storage = container.storage as unknown as FakeStorage
     jobs = container.jobs as unknown as FakeJobs
   })

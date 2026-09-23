@@ -37,7 +37,7 @@ export interface ReadAuditInput {
  * break nothing.
  *
  * Read off `request.server`, so it covers every read-audited route and is inherited through the
- * encapsulated admin scope's prototype chain (a test may install it after buildServer).
+ * encapsulated admin scope's prototype chain (a test may install it after makeServer).
  */
 export interface AdminReadAuditOverrides {
   sink(input: WriteAuditInput): Promise<void>

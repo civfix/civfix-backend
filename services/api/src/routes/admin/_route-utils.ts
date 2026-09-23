@@ -65,7 +65,7 @@ export function sendOk(reply: FastifyReply): void {
 
 /**
  * The override slot is re-read on every call rather than captured, so a test that installs it after
- * buildServer still wins (it is reached through the encapsulated admin scope's prototype chain).
+ * makeServer still wins (it is reached through the encapsulated admin scope's prototype chain).
  */
 export function overridableService<K extends keyof FastifyInstance, S>(
   app: FastifyInstance,

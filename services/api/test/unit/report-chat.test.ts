@@ -25,12 +25,12 @@ import type {
 } from "../../src/services/admin/outbound-mail-service.js"
 import type { MailThreadRecord } from "../../src/services/admin/mail-repository.drizzle.js"
 import type { ReportJurisdictionView } from "../../src/services/discussion-types.js"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import {
   InMemoryBlocksRepository,
@@ -594,7 +594,7 @@ describe("GET /reports/:id/messages visibility gate", () => {
     const env = loadEnv({ NODE_ENV: "test" })
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores,
       cache,
       mailer: new FakeMailer(),
@@ -616,7 +616,7 @@ describe("GET /reports/:id/messages visibility gate", () => {
       reporterUserId: null,
     })
     const blocks = new InMemoryBlocksRepository()
-    const built = await buildServer({
+    const built = await makeServer({
       env,
       authServices,
       chatOverrides: {

@@ -3,13 +3,13 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { endpoints, versionedPath } from "@civfix/shared/client"
-import { buildServer } from "../../../src/server.js"
-import { buildContainer } from "../../../src/di.js"
+import { makeServer } from "../../../src/server.js"
+import { makeContainer } from "../../../src/di.js"
 import { loadEnv } from "../../../src/env.js"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { InMemoryCacheClient } from "../../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../../src/auth/stores.js"
-import { buildAuthServices } from "../../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../../helpers/auth.js"
 import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
 import {
@@ -39,7 +39,7 @@ async function makeHarness(guards: HostGuards = OPEN_HOST_GUARDS): Promise<Harne
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -52,9 +52,9 @@ async function makeHarness(guards: HostGuards = OPEN_HOST_GUARDS): Promise<Harne
   repo.tokenHashResolver = (seatId) => tokens.hashFor(seatId)
   repo.seedEvent({ cleanupId: EVENT })
 
-  const container = buildContainer(env)
+  const container = makeContainer(env)
   const counters = new InMemoryCounterStore(() => Date.now())
-  const app = await buildServer({
+  const app = await makeServer({
     env,
     container,
     authServices,

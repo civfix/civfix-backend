@@ -2,11 +2,11 @@ import { describe, it, expect, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { ChatMessageDTO } from "@civfix/shared"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryChatRepository, InMemoryThreadsRepository } from "../helpers/chat.js"
 import { InMemoryDiscussionRepository } from "../helpers/discussion.js"
@@ -68,7 +68,7 @@ async function makeHarness(
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -90,7 +90,7 @@ async function makeHarness(
     ...(opts.isMember !== undefined ? { isMember: opts.isMember } : {}),
   })
 
-  const app = await buildServer({
+  const app = await makeServer({
     env,
     authServices,
     chatOverrides: {

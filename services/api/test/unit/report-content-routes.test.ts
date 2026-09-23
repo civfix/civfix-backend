@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
 import type { ContentSubjectGate } from "../../src/services/content-report-subject.js"
@@ -37,7 +37,7 @@ async function harness(gate?: ContentSubjectGate): Promise<{
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -46,7 +46,7 @@ async function harness(gate?: ContentSubjectGate): Promise<{
     now: () => Date.now(),
   })
   const repo = new InMemoryModerationRepository()
-  const app = await buildServer({
+  const app = await makeServer({
     env,
     authServices,
     moderationOverrides: { repo },

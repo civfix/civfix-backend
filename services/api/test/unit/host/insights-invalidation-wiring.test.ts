@@ -1,7 +1,7 @@
 import { TEST_TICKET_SIGNER } from "../../helpers/ticket-signer.js"
 import { randomUUID } from "node:crypto"
 import { beforeEach, describe, expect, it } from "vitest"
-import { buildContainer } from "../../../src/di.js"
+import { makeContainer } from "../../../src/di.js"
 import { loadEnv } from "../../../src/env.js"
 import { InMemoryCacheClient } from "../../../src/auth/cache.js"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
@@ -66,7 +66,7 @@ interface Harness {
 
 function build(): Harness {
   const env = loadEnv({ NODE_ENV: "test" })
-  const container = buildContainer(env)
+  const container = makeContainer(env)
   const repo = new InMemoryHostRegistrationRepository()
   repo.tokenHashResolver = (seatId) => tokens.hashFor(seatId)
   repo.seedEvent({ cleanupId: EVENT, scheduledAt: STARTS_AT })

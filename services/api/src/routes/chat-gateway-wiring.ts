@@ -263,7 +263,7 @@ interface WiringContext {
   useFakeChat: boolean
 }
 
-function buildPresence({ container, overrides, useFakeChat }: WiringContext): ChatPresence {
+function makePresence({ container, overrides, useFakeChat }: WiringContext): ChatPresence {
   return (
     overrides?.presence ??
     (useFakeChat ? new InMemoryChatPresence() : new RedisChatPresence(container.getRedis()))
@@ -284,7 +284,7 @@ interface ChatRepos {
   getReportRepo(): DiscussionRepository
 }
 
-function buildChatRepos({ container, overrides, useFakeChat }: WiringContext): ChatRepos {
+function makeChatRepos({ container, overrides, useFakeChat }: WiringContext): ChatRepos {
   let cleanupRepo: CleanupRepository | undefined
   const getCleanupRepo = (): CleanupRepository =>
     (cleanupRepo ??= makeDrizzleCleanupRepository(container.getDb().sql))
@@ -326,7 +326,7 @@ function buildChatRepos({ container, overrides, useFakeChat }: WiringContext): C
   }
 }
 
-function buildGroupChat(repos: ChatRepos): GatewayGroupChat | undefined {
+function makeGroupChat(repos: ChatRepos): GatewayGroupChat | undefined {
   if (!repos.groupWired) return undefined
   const groups = (): ChatGroupRepository => repos.getGroupsRepo()!
   return {
@@ -371,7 +371,7 @@ interface ChatNotifications {
   >
 }
 
-function buildChatNotifications({
+function makeChatNotifications({
   app,
   container,
   overrides,
@@ -439,7 +439,7 @@ function makeThreadRecipientsOf(
   }
 }
 
-function buildBellDeps(
+function makeBellDeps(
   { useFakeChat }: WiringContext,
   repos: ChatRepos,
   notifications: ChatNotifications,
@@ -565,7 +565,7 @@ interface RoomMemberNotifiers {
   onGroupMessage: OnGroupMessage | undefined
 }
 
-function buildRoomMemberNotifiers(
+function makeRoomMemberNotifiers(
   { app }: WiringContext,
   repos: ChatRepos,
   notifications: ChatNotifications,
@@ -640,7 +640,7 @@ function makeOnReportMessage(
   }
 }
 
-function buildGatewayReportChat(
+function makeWiredGatewayReportChat(
   { overrides, useFakeChat }: WiringContext,
   repos: ChatRepos,
   clearBell: ClearBell,
@@ -663,14 +663,14 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   }
 
   const { readState, markRoomRead } = conversationReadSeam(app, container)
-  const presence = buildPresence(ctx)
-  const repos = buildChatRepos(ctx)
+  const presence = makePresence(ctx)
+  const repos = makeChatRepos(ctx)
   const { isMember, dmRepo, isBlockedEitherWay } = repos
-  const groupChat = buildGroupChat(repos)
+  const groupChat = makeGroupChat(repos)
   const listGroupMembers = makeSharedGroupMemberList(repos.getGroupsRepo)
   const dmPeerOf = makeDmPeerOf(dmRepo)
 
-  const notifications = buildChatNotifications(ctx)
+  const notifications = makeChatNotifications(ctx)
   const { notificationService, isMutedFor } = notifications
   const clearBell = makeClearBell(() => notificationService, app.log)
 
@@ -682,7 +682,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const advanceCleanupWatermark = makeCleanupWatermark(ctx, readState)
   const threadRecipientsOf = makeThreadRecipientsOf(ctx, repos, dmPeerOf, listGroupMembers)
 
-  const bellDeps = buildBellDeps(ctx, repos, notifications, presence)
+  const bellDeps = makeBellDeps(ctx, repos, notifications, presence)
   const chatMentions: GatewayChatMentions | undefined =
     ctx.overrides?.chatMentions ??
     (bellDeps
@@ -697,7 +697,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const fanoutHandoff = makeRoomFanoutHandoff(ctx)
   const chatWithResilience = withSendResilience(ctx, repos, makeLazySendDedupe(ctx))
 
-  const { notifyReportChatMembers, onGroupMessage } = buildRoomMemberNotifiers(
+  const { notifyReportChatMembers, onGroupMessage } = makeRoomMemberNotifiers(
     ctx,
     repos,
     notifications,
@@ -709,7 +709,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   applyWsUpgradeRateLimit(app)
 
-  const reportChat = buildGatewayReportChat(ctx, repos, clearBell)
+  const reportChat = makeWiredGatewayReportChat(ctx, repos, clearBell)
 
   const wsTicketCache = app.authServices?.cache
   registerChatGateway(app, {

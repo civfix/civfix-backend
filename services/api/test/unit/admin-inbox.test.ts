@@ -2,11 +2,11 @@ import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer, FakeStorage } from "@civfix/shared/fakes"
 import type { MailAttachment } from "@civfix/shared"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../src/services/media-intake-service.js"
@@ -39,7 +39,7 @@ interface Harness {
 async function makeHarness(): Promise<Harness> {
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores,
     cache,
     mailer: new FakeMailer(),
@@ -48,7 +48,7 @@ async function makeHarness(): Promise<Harness> {
     now: () => Date.now(),
   })
   const env = loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: OPERATOR })
-  const app = await buildServer({ env, authServices: services })
+  const app = await makeServer({ env, authServices: services })
   const repo = new InMemoryInboundRepository()
   const storage = new RecordingStorage()
   app.adminInboxOverrides = { repo, storage }

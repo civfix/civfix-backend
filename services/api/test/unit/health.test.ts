@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import type { RedisClient } from "../../src/adapters/redis.js"
 import { loadEnv } from "../../src/env.js"
 
@@ -16,7 +16,7 @@ describe("health routes", () => {
   })
 
   it("GET /healthz returns 200 { ok: true }", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({ method: "GET", url: "/healthz" })
     expect(res.statusCode).toBe(200)
     const body = res.json()
@@ -27,7 +27,7 @@ describe("health routes", () => {
   })
 
   it("L19: /readyz is rate limited (no longer on the limiter allowlist), /healthz is not", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const ready = await app.inject({ method: "GET", url: "/readyz" })
     expect(ready.headers["x-ratelimit-limit"]).toBeDefined()
     expect(ready.headers["cache-control"]).toBe("no-store")
@@ -38,11 +38,11 @@ describe("health routes", () => {
   it("L19: /readyz memoizes its verdict so a flood costs one backend probe", async () => {
     let pings = 0
     const env = loadEnv()
-    const container = buildContainer(env)
+    const container = makeContainer(env)
     const stub = { ping: async () => (pings++, "PONG") } as unknown as RedisClient
     Object.defineProperty(container, "redis", { get: () => stub })
     Object.defineProperty(container, "getRedis", { value: () => stub })
-    app = await buildServer({ env, container })
+    app = await makeServer({ env, container })
 
     for (let i = 0; i < 5; i++) {
       const res = await app.inject({ method: "GET", url: "/readyz" })
@@ -52,7 +52,7 @@ describe("health routes", () => {
   })
 
   it("echoes x-request-id header", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({
       method: "GET",
       url: "/healthz",
@@ -62,7 +62,7 @@ describe("health routes", () => {
   })
 
   it("GET /readyz returns 200 with skipped checks in all-fakes mode", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({ method: "GET", url: "/readyz" })
     expect(res.statusCode).toBe(200)
     const body = res.json()
@@ -80,7 +80,7 @@ describe("health routes", () => {
       USE_FAKE_JOBS: "1",
       USE_FAKE_USER_CHANNEL: "1",
     })
-    const container = buildContainer(env)
+    const container = makeContainer(env)
     expect(container.usesRealDb).toBe(true)
     expect(container.usesRealRedis).toBe(false)
     Object.defineProperty(container, "getDb", {
@@ -88,7 +88,7 @@ describe("health routes", () => {
         sql: () => Promise.reject(new Error("db down")),
       }),
     })
-    app = await buildServer({ env, container })
+    app = await makeServer({ env, container })
     const res = await app.inject({ method: "GET", url: "/readyz" })
     expect(res.statusCode).toBe(503)
     const body = res.json()
@@ -97,7 +97,7 @@ describe("health routes", () => {
   })
 
   it("unknown route returns the 404 error envelope", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({ method: "GET", url: "/v1/does-not-exist" })
     expect(res.statusCode).toBe(404)
     const body = res.json()
@@ -106,7 +106,7 @@ describe("health routes", () => {
   })
 
   it("P2-6: sets a lock-down CSP and keeps nosniff on responses", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({ method: "GET", url: "/healthz" })
     const csp = res.headers["content-security-policy"]
     expect(typeof csp).toBe("string")

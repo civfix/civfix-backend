@@ -7,7 +7,7 @@
  *   authed user (self-serve join + WS read-only presence join + pre-join history reads); 'private'
  *   stays member-only.
  *
- *   HTTP (buildServer + chatOverrides on real repos):
+ *   HTTP (makeServer + chatOverrides on real repos):
  *     - POST /groups/:id/join: public 200 (myRole 'member', memberCount bumps) + idempotent re-join
  *       (no dupe row, count stable); private 403 not_public;
  *     - GET /groups/:id/messages: a non-member reads a PUBLIC channel's history 200, a PRIVATE one 403;
@@ -32,12 +32,12 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository, MockConnection } from "../helpers/chat.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
@@ -125,7 +125,7 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
 
     beforeAll(async () => {
       const env = loadEnv({ NODE_ENV: "test" })
-      authServices = buildAuthServices({
+      authServices = makeAuthServices({
         stores: makeInMemoryStores(),
         cache: new InMemoryCacheClient(() => Date.now()),
         mailer: new FakeMailer(),
@@ -142,8 +142,8 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
         reportChat: makeReportChatRepository(h.sql),
         groups: makeChatGroupRepository(h.sql),
       }
-      container = buildContainer(env)
-      app = await buildServer({ env, container, authServices, chatOverrides: overrides })
+      container = makeContainer(env)
+      app = await makeServer({ env, container, authServices, chatOverrides: overrides })
     })
 
     afterAll(async () => {

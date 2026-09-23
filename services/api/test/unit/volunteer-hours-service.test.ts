@@ -11,12 +11,12 @@ import {
 import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
 import type { InsightsInvalidator } from "../../src/services/host/host-analytics-cache.js"
 import type { NotificationService } from "../../src/services/notification-service.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 
 const HOST = "11111111-1111-1111-1111-111111111111"
@@ -986,7 +986,7 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
     const mailer = new FakeMailer()
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores,
       cache,
       mailer,
@@ -996,9 +996,9 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
     })
     const repo = new InMemoryVolunteerHoursRepository()
     repo.seedJurisdiction(GEOID_A, "San Francisco")
-    const built = await buildServer({
+    const built = await makeServer({
       env,
-      container: buildContainer(env),
+      container: makeContainer(env),
       authServices,
       volunteerOverrides: { repo },
     })

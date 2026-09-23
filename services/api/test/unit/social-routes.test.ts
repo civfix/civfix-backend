@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemorySocialRepository, makeCleanupRecord } from "../helpers/social.js"
 import type { SocialServiceOverrides } from "../../src/routes/social.routes.js"
@@ -37,7 +37,7 @@ async function makeHarness(seed?: (repo: InMemorySocialRepository) => void): Pro
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
   const verifier = new StubJwksVerifier()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -51,7 +51,7 @@ async function makeHarness(seed?: (repo: InMemorySocialRepository) => void): Pro
   const notifier = new SpyNotifier()
   const socialOverrides: SocialServiceOverrides = { repo, notifier }
 
-  const app = await buildServer({ env, authServices, socialOverrides })
+  const app = await makeServer({ env, authServices, socialOverrides })
 
   const { token, userId } = await signIn(app, mailer, "viewer@example.com")
   repo.seedUser({ id: userId, displayName: "Viewer", handle: "viewer" })

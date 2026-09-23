@@ -2,11 +2,11 @@ import Fastify, { type FastifyInstance } from "fastify"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { makeErrorHandler, makeNotFoundHandler } from "../../src/errors/http-mapper.js"
 import { registerUnsubscribeRoutes } from "../../src/routes/host/unsubscribe.routes.js"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import {
   mintUnsubscribeToken,
   unsubscribeExpiryFrom,
@@ -34,7 +34,7 @@ afterEach(async () => {
 describe("5xx copy written for the people who see it survives production masking", () => {
   it("tells a home-turf coach the form is temporarily unavailable", async () => {
     const env = loadEnv({ NODE_ENV: "test", HOME_TURF_NOTIFY_TO: "home-turf@civfix.test" })
-    app = await buildServer({ env, container: buildContainer(env) })
+    app = await makeServer({ env, container: makeContainer(env) })
 
     const res = await app.inject({
       method: "POST",

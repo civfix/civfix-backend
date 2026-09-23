@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 
@@ -23,10 +23,10 @@ async function boot(): Promise<FakeSqlControl> {
     { match: /INSERT INTO audit_log/, rows: [{ id: "audit-1" }] },
   ])
   const container = {
-    ...buildContainer(env),
+    ...makeContainer(env),
     getDb: () => ({ sql: db.sql }),
   } as unknown as Container
-  app = await buildServer({ env, container })
+  app = await makeServer({ env, container })
   return db
 }
 

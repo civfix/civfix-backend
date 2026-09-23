@@ -8,7 +8,7 @@
  *
  * SEAM: posts.routes.ts reads `container.getPostService()` and has no `app.*Overrides` hook, so the
  * container getter IS the injection point: the harness swaps that one method on the container it passes
- * to buildServer. `sql` is a throwing stub: `resolveMentionTargets` short-circuits on an empty
+ * to makeServer. `sql` is a throwing stub: `resolveMentionTargets` short-circuits on an empty
  * `mentionedUserIds`, so every path here provably needs no database.
  */
 
@@ -17,12 +17,12 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { PersonDTO, PostDTO } from "@civfix/shared"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { Sql } from "../../src/db/client.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
@@ -450,7 +450,7 @@ async function makeHarness(): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test" })
   const stores = makeInMemoryStores()
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache: new InMemoryCacheClient(() => Date.now()),
     mailer,
@@ -468,11 +468,11 @@ async function makeHarness(): Promise<Harness> {
       Promise.resolve(blocked.has(`${a}:${b}`) || blocked.has(`${b}:${a}`)),
   })
 
-  const container = buildContainer(env)
+  const container = makeContainer(env)
   // The only seam posts.routes.ts offers (see the file header).
   Object.assign(container, { getPostService: () => service } satisfies Partial<Container>)
 
-  const app = await buildServer({ env, container, authServices })
+  const app = await makeServer({ env, container, authServices })
 
   /** Run the OTP request/verify pair for `email` on the given transport. */
   async function verify(email: string, name: string, client: "mobile" | "web") {

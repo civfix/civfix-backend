@@ -1,12 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores, type InMemoryUserStore } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 
@@ -23,7 +23,7 @@ async function harness(): Promise<{ app: FastifyInstance; mailer: FakeMailer }> 
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -31,7 +31,7 @@ async function harness(): Promise<{ app: FastifyInstance; mailer: FakeMailer }> 
     verifier: new StubJwksVerifier(),
     now: () => Date.now(),
   })
-  const app = await buildServer({ env, authServices })
+  const app = await makeServer({ env, authServices })
   current = app
   return { app, mailer }
 }
@@ -47,7 +47,7 @@ async function cleanupHarness(): Promise<{
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -62,10 +62,10 @@ async function cleanupHarness(): Promise<{
   }
   const fake = makeFakeSql([{ match: /INSERT INTO audit_log/i, rows: [{ id: "audit-1" }] }])
   const container = {
-    ...buildContainer(env),
+    ...makeContainer(env),
     getDb: () => ({ sql: fake.sql }),
   } as unknown as Container
-  const app = await buildServer({ env, container, authServices: services })
+  const app = await makeServer({ env, container, authServices: services })
   current = app
   return {
     app,

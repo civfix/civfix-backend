@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import type { ClaimService } from "../../src/services/claim-service.js"
 
@@ -25,7 +25,7 @@ async function serverWithNudges(): Promise<{ app: FastifyInstance; nudged: strin
     },
     claimReport: () => Promise.reject(new Error("unused")),
   }
-  app = await buildServer({
+  app = await makeServer({
     env: loadEnv({ NODE_ENV: "test", WEB_ORIGINS: WEB_ORIGIN }),
     claimOverride: { service },
   })

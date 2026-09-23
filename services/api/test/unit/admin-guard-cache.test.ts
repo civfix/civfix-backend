@@ -1,12 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient, type CacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
 import type { UserRecord, UserStore } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { OPERATOR_ALLOWLIST_TTL_SECONDS } from "../../src/auth/admin-guard.js"
 import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
 
@@ -142,7 +142,7 @@ async function makeHarness(): Promise<Harness> {
   const inner = makeInMemoryStores()
   const users = new SpyUserStore(inner.users)
   const cache = new SpyCache(new InMemoryCacheClient(() => clock.ms))
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores: { ...inner, users },
     cache,
     mailer: new FakeMailer(),
@@ -150,7 +150,7 @@ async function makeHarness(): Promise<Harness> {
     now: () => clock.ms,
   })
   const env = loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: ALLOWED })
-  const app = await buildServer({
+  const app = await makeServer({
     env,
     authServices: services,
     moderationOverrides: { repo: new InMemoryModerationRepository() },

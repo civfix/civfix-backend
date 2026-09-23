@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest"
-import { buildContainer } from "../../src/di.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 
 describe("DI container after close()", () => {
   it("refuses to reopen a database pool or hand out repositories bound to the closed one", async () => {
-    const container = buildContainer(
+    const container = makeContainer(
       loadEnv({ NODE_ENV: "test", DATABASE_URL: "postgres://u:p@localhost:5432/civfix" }),
     )
     container.getVolunteerHoursRepo()
@@ -20,7 +20,7 @@ describe("DI container after close()", () => {
   })
 
   it("refuses to reopen Redis after close()", async () => {
-    const container = buildContainer(
+    const container = makeContainer(
       loadEnv({ NODE_ENV: "test", REDIS_URL: "redis://localhost:6379" }),
     )
 
@@ -31,7 +31,7 @@ describe("DI container after close()", () => {
   })
 
   it("lets a job still in flight during the graceful jobs stop reach the database", async () => {
-    const container = buildContainer(
+    const container = makeContainer(
       loadEnv({ NODE_ENV: "test", DATABASE_URL: "postgres://u:p@localhost:5432/civfix" }),
     )
     const poolBeforeStop = container.getDb()
@@ -53,7 +53,7 @@ describe("DI container after close()", () => {
   })
 
   it("closes a pool a draining job opened, instead of leaking it", async () => {
-    const container = buildContainer(
+    const container = makeContainer(
       loadEnv({ NODE_ENV: "test", DATABASE_URL: "postgres://u:p@localhost:5432/civfix" }),
     )
     Object.assign(container.jobs, {
@@ -69,7 +69,7 @@ describe("DI container after close()", () => {
   })
 
   it("tolerates a second close()", async () => {
-    const container = buildContainer(loadEnv({ NODE_ENV: "test" }))
+    const container = makeContainer(loadEnv({ NODE_ENV: "test" }))
     await container.close()
     await expect(container.close()).resolves.toBeUndefined()
   })

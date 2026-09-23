@@ -13,7 +13,7 @@
  *     - @mention of a group MEMBER resolves + records the chat_message_mentions row; a non-member
  *       handle resolves to nothing (no row): the chat-mention-resolver group scope end-to-end.
  *
- *   HTTP (buildServer + chatOverrides on real repos, FakeChatService watcher for broadcast frames):
+ *   HTTP (makeServer + chatOverrides on real repos, FakeChatService watcher for broadcast frames):
  *     - PATCH /messages roomKind:"group" edits the sender's message (200 + message_update broadcast);
  *       a NON-member 403s (the chat-edit-service group lane);
  *     - POST /messages/reactions toggles in a group room (200, refreshed summary, legacy
@@ -29,12 +29,12 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository, MockConnection } from "../helpers/chat.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
@@ -410,7 +410,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
 
     beforeAll(async () => {
       const env = loadEnv({ NODE_ENV: "test" })
-      authServices = buildAuthServices({
+      authServices = makeAuthServices({
         stores: makeInMemoryStores(),
         cache: new InMemoryCacheClient(() => Date.now()),
         mailer: new FakeMailer(),
@@ -428,8 +428,8 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
         reportChat: makeReportChatRepository(h.sql),
         groups: makeChatGroupRepository(h.sql),
       }
-      container = buildContainer(env)
-      app = await buildServer({ env, container, authServices, chatOverrides: overrides })
+      container = makeContainer(env)
+      app = await makeServer({ env, container, authServices, chatOverrides: overrides })
     })
 
     afterAll(async () => {

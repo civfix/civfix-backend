@@ -3,7 +3,7 @@
  * live PostGIS container (via withPg).
  *
  *   A poll is a chat_messages row (kind='poll', body=question) plus the chat_polls trio. The three REST
- *   routes ride the unified /messages plugin (buildServer + chatOverrides on real repos; the container's
+ *   routes ride the unified /messages plugin (makeServer + chatOverrides on real repos; the container's
  *   FakeChatService captures broadcasts via joinRoom'd MockConnections):
  *
  *   CREATE (POST /messages/poll):
@@ -32,12 +32,12 @@ import { WsServerMessageSchema } from "@civfix/shared"
 import { FakeMailer, FakePushSender } from "@civfix/shared/fakes"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository, MockConnection } from "../helpers/chat.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
@@ -66,7 +66,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
   beforeAll(async () => {
     h = pg as PgHarness
     const env = loadEnv({ NODE_ENV: "test" })
-    authServices = buildAuthServices({
+    authServices = makeAuthServices({
       stores: makeInMemoryStores(),
       cache: new InMemoryCacheClient(() => Date.now()),
       mailer: new FakeMailer(),
@@ -98,8 +98,8 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       chatPolls: makeChatPollRepository(h.sql),
       chatPowers,
     }
-    container = buildContainer(env)
-    app = await buildServer({ env, container, authServices, chatOverrides: overrides })
+    container = makeContainer(env)
+    app = await makeServer({ env, container, authServices, chatOverrides: overrides })
   })
 
   afterAll(async () => {

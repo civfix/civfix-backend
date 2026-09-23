@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeJobs, FakeMailer, FakeStorage } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { WriteAuditInput } from "../../src/services/admin/audit.js"
 import { InMemoryHomeRepository } from "../../src/services/admin/home-repository.memory.js"
@@ -192,7 +192,7 @@ function makeFakes(): Fakes {
 async function makeHarness(): Promise<Harness> {
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores,
     cache,
     mailer: new FakeMailer(),
@@ -201,7 +201,7 @@ async function makeHarness(): Promise<Harness> {
     now: () => Date.now(),
   })
   const env = loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: OPERATOR })
-  const app = await buildServer({ env, authServices: services })
+  const app = await makeServer({ env, authServices: services })
   const fakes = makeFakes()
   const mailer = new FakeMailer()
   const outboundMail = makeOutboundMailService({

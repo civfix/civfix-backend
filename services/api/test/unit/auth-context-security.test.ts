@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { signAnonToken } from "../../src/abuse/anon-token.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
@@ -19,7 +19,7 @@ async function uploadWithCookie(cookie: string | null): Promise<string[]> {
   const env = loadEnv({ NODE_ENV: "test" })
   const subjects: string[] = []
   const container = {
-    ...buildContainer(env),
+    ...makeContainer(env),
     env: { ...env, REDIS_URL: "redis://cache:6379" },
     getByteMeter: () => ({
       add: (subject: string, bytes: number) => {
@@ -27,8 +27,8 @@ async function uploadWithCookie(cookie: string | null): Promise<string[]> {
         return Promise.resolve(bytes)
       },
     }),
-  } as unknown as ReturnType<typeof buildContainer>
-  app = await buildServer({ env, container, mediaRepo: new InMemoryMediaRepository() })
+  } as unknown as ReturnType<typeof makeContainer>
+  app = await makeServer({ env, container, mediaRepo: new InMemoryMediaRepository() })
   const res = await app.inject({
     method: "POST",
     url: "/v1/media/upload",

@@ -2,11 +2,11 @@ import { describe, it, expect, afterEach, vi } from "vitest"
 import { readFileSync } from "node:fs"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import {
@@ -73,7 +73,7 @@ async function makeHarness(participates = true): Promise<Harness> {
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -103,7 +103,7 @@ async function makeHarness(participates = true): Promise<Harness> {
     participates: gate,
   }
 
-  const app = await buildServer({ env, authServices, chatOverrides, conversationRoutesOverrides })
+  const app = await makeServer({ env, authServices, chatOverrides, conversationRoutesOverrides })
   current = app
 
   const email = "reader@example.com"

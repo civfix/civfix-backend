@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores, type AccountStatus } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { WriteAuditInput } from "../../src/services/admin/audit.js"
 
@@ -28,7 +28,7 @@ afterEach(async () => {
 
 async function harness(opts: { accessConfigured?: boolean } = {}) {
   const stores = makeInMemoryStores()
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores,
     cache: new InMemoryCacheClient(() => Date.now()),
     mailer: new FakeMailer(),
@@ -37,7 +37,7 @@ async function harness(opts: { accessConfigured?: boolean } = {}) {
     now: () => Date.now(),
   })
   const env = loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: ALLOWED })
-  app = await buildServer({ env, authServices: services })
+  app = await makeServer({ env, authServices: services })
   const audits: WriteAuditInput[] = []
   app.adminAuthOverrides = {
     auditSink: (input) => {

@@ -18,12 +18,12 @@ import { randomUUID } from "node:crypto"
 import { CERTIFICATE_CODE_RE, formatCertificateCode } from "@civfix/shared"
 import { FakeMailer, FakeStorage } from "@civfix/shared/fakes"
 import type { StorageHead, StoragePutMeta } from "@civfix/shared/interfaces"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
 import { InMemoryCertificateRepository } from "../../src/services/certificate-repository.memory.js"
@@ -101,7 +101,7 @@ async function makeHarness(): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test" })
   const stores = makeInMemoryStores()
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache: new InMemoryCacheClient(() => Date.now()),
     mailer,
@@ -116,8 +116,8 @@ async function makeHarness(): Promise<Harness> {
   const objects = new FakeStorage()
   const storage = new RecordingStorage(objects)
 
-  const container = buildContainer(env)
-  const app = await buildServer({
+  const container = makeContainer(env)
+  const app = await makeServer({
     env,
     container,
     authServices,

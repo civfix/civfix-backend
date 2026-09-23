@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import type { FakeMailer, FakeAbuseChecks } from "@civfix/shared/fakes"
 import type { OutboundEmail } from "@civfix/shared/interfaces"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import {
@@ -17,7 +17,7 @@ import {
 interface Harness {
   app: FastifyInstance
   mailer: FakeMailer
-  container: ReturnType<typeof buildContainer>
+  container: ReturnType<typeof makeContainer>
 }
 
 let current: Harness | undefined
@@ -33,8 +33,8 @@ const NOTIFY_TO = "home-turf@civfix.test"
 
 async function makeHarness(over: Record<string, string> = {}): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test", HOME_TURF_NOTIFY_TO: NOTIFY_TO, ...over })
-  const container = buildContainer(env)
-  const app = await buildServer({
+  const container = makeContainer(env)
+  const app = await makeServer({
     env,
     container,
     homeTurfOverrides: { counters: new InMemoryCounterStore(() => 0) },
@@ -376,8 +376,8 @@ describe("claimHomeTurfConfirmation (M8)", () => {
 describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
   it("refuses to send when no counter store is available (empty REDIS_URL, no override)", async () => {
     const env = loadEnv({ NODE_ENV: "test", HOME_TURF_NOTIFY_TO: NOTIFY_TO })
-    const container = buildContainer(env)
-    const app = await buildServer({ env, container })
+    const container = makeContainer(env)
+    const app = await makeServer({ env, container })
     current = { app, mailer: container.mailer as FakeMailer, container }
 
     const res = await app.inject({
@@ -394,7 +394,7 @@ describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
     const env = loadEnv({ NODE_ENV: "test", HOME_TURF_NOTIFY_TO: NOTIFY_TO })
     const counted: string[] = []
     const container = {
-      ...buildContainer(env),
+      ...makeContainer(env),
       env: { ...env, REDIS_URL: "redis://cache:6379" },
       getCounterStore: () => ({
         incr: (key: string) => {
@@ -402,8 +402,8 @@ describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
           return Promise.resolve(1)
         },
       }),
-    } as unknown as ReturnType<typeof buildContainer>
-    const app = await buildServer({ env, container })
+    } as unknown as ReturnType<typeof makeContainer>
+    const app = await makeServer({ env, container })
     current = { app, mailer: container.mailer as FakeMailer, container }
 
     const res = await app.inject({

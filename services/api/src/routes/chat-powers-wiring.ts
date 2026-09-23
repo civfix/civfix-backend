@@ -70,12 +70,12 @@ const resolvers = new WeakMap<FastifyInstance, ResolveChatPowers>()
 export function wireChatPowers(app: FastifyInstance, container: Container): ResolveChatPowers {
   const cached = resolvers.get(app)
   if (cached) return cached
-  const resolver = buildChatPowers(app, container)
+  const resolver = makeChatPowers(app, container)
   resolvers.set(app, resolver)
   return resolver
 }
 
-function buildChatPowers(app: FastifyInstance, container: Container): ResolveChatPowers {
+function makeChatPowers(app: FastifyInstance, container: Container): ResolveChatPowers {
   const overrides = app.chatOverrides
   if (overrides?.chatPowers) return overrides.chatPowers
 

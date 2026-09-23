@@ -13,11 +13,11 @@ import {
 } from "../helpers/chat.js"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import {
   InMemoryBlocksRepository,
@@ -346,7 +346,7 @@ describe("PATCH /dm/:threadId/messages/:messageId over HTTP (CVX-002b)", () => {
   }> {
     const env = loadEnv({ NODE_ENV: "test" })
     const mailer = new FakeMailer()
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores: makeInMemoryStores(),
       cache: new InMemoryCacheClient(() => Date.now()),
       mailer,
@@ -364,7 +364,7 @@ describe("PATCH /dm/:threadId/messages/:messageId over HTTP (CVX-002b)", () => {
       chatRepo: new InMemoryChatRepository(),
       blocksRepo: blocks,
     }
-    app = await buildServer({ env, authServices, chatOverrides })
+    app = await makeServer({ env, authServices, chatOverrides })
 
     await app.inject({
       method: "POST",

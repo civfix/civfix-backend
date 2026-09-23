@@ -41,7 +41,7 @@ function enabledProvidersFromConfig(config: OAuthConfig): OAuthProvider[] {
   return providers
 }
 
-export interface BuildAuthServicesOptions {
+export interface MakeAuthServicesOptions {
   stores: AuthStores
   cache: CacheClient
   mailer: Mailer
@@ -54,7 +54,7 @@ export interface BuildAuthServicesOptions {
   audit?: OtpAuditSink
 }
 
-export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices {
+export function makeAuthServices(opts: MakeAuthServicesOptions): AuthServices {
   const now = opts.now
   const sessions = new SessionService({
     store: opts.stores.sessions,
@@ -91,7 +91,7 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
   }
 }
 
-export function buildAuthServicesFromContainer(
+export function makeAuthServicesFromContainer(
   container: Container,
   opts: { logger?: OtpLogger & SessionLogger } = {},
 ): AuthServices {
@@ -103,7 +103,7 @@ export function buildAuthServicesFromContainer(
   })
   const cache = new RedisCacheClient(container.getRedis())
   const reviewerConfig = reviewerOtpConfigFromEnv(container.env)
-  return buildAuthServices({
+  return makeAuthServices({
     stores,
     cache,
     mailer: container.mailer,

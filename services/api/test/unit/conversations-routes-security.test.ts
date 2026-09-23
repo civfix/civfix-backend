@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { ConversationRoutesOverrides } from "../../src/routes/conversations.routes.js"
 
@@ -30,7 +30,7 @@ afterEach(async () => {
 async function harnessWithoutGate(): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test" })
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores: makeInMemoryStores(),
     cache: new InMemoryCacheClient(() => Date.now()),
     mailer,
@@ -51,7 +51,7 @@ async function harnessWithoutGate(): Promise<Harness> {
     markRoomRead,
   } as unknown as ConversationRoutesOverrides
 
-  const app = await buildServer({
+  const app = await makeServer({
     env,
     authServices,
     conversationRoutesOverrides: overridesMissingGate,

@@ -1,18 +1,18 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { ConversationRoutesOverrides } from "../../src/routes/conversations.routes.js"
 import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 
 /**
  * Route-level tests for PUT /conversations/mute, run with NO database: a fake
- * ConversationMutesRepository is injected via buildServer(opts.conversationRoutesOverrides), and a full
+ * ConversationMutesRepository is injected via makeServer(opts.conversationRoutesOverrides), and a full
  * in-memory auth bundle mints a real bearer session. Bearer transport is CSRF-exempt (see auth/csrf.ts),
  * so this state-changing PUT needs only the Authorization header.
  */
@@ -47,7 +47,7 @@ async function makeHarness(participates?: Participates): Promise<Harness> {
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -62,7 +62,7 @@ async function makeHarness(participates?: Participates): Promise<Harness> {
     participates: participates ?? (() => Promise.resolve(true)),
   }
 
-  const app = await buildServer({ env, authServices, conversationRoutesOverrides })
+  const app = await makeServer({ env, authServices, conversationRoutesOverrides })
 
   const email = "muter@example.com"
   await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })

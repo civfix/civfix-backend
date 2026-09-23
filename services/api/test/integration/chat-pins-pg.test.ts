@@ -28,12 +28,12 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository, MockConnection } from "../helpers/chat.js"
 import { roomKeyFor } from "../../src/ws/gateway.js"
@@ -71,7 +71,7 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       NODE_ENV: "test",
       ADMIN_EMAILS: [PIN_OPERATOR_EMAIL, DELETE_OPERATOR_EMAIL].join(","),
     })
-    authServices = buildAuthServices({
+    authServices = makeAuthServices({
       stores: makeInMemoryStores(),
       cache: new InMemoryCacheClient(() => Date.now()),
       mailer: new FakeMailer(),
@@ -100,8 +100,8 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         groupRoleOf: (groupId, userId) => makeChatGroupRepository(h.sql).roleOf(groupId, userId),
       }),
     }
-    container = buildContainer(env)
-    app = await buildServer({
+    container = makeContainer(env)
+    app = await makeServer({
       env,
       container,
       authServices,

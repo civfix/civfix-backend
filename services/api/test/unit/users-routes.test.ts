@@ -2,11 +2,11 @@ import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { PersonDTO } from "@civfix/shared"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import {
   InMemoryBlocksRepository,
@@ -49,7 +49,7 @@ async function makeHarness(): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test" })
   const stores = makeInMemoryStores()
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache: new InMemoryCacheClient(() => Date.now()),
     mailer,
@@ -67,7 +67,7 @@ async function makeHarness(): Promise<Harness> {
     chatRepo: new InMemoryChatRepository(),
     blocksRepo: blocks,
   }
-  const app = await buildServer({ env, authServices, chatOverrides })
+  const app = await makeServer({ env, authServices, chatOverrides })
 
   async function verify(email: string, name: string, client: "mobile" | "web") {
     const requested = await app.inject({

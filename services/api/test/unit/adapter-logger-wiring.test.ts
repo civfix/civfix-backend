@@ -28,7 +28,7 @@ vi.mock("nodemailer", () => ({
 
 const { PgBossJobs } = await import("../../src/adapters/jobs.pgboss.js")
 const { OciMailer } = await import("../../src/adapters/mailer.oci.js")
-const { buildContainer } = await import("../../src/di.js")
+const { makeContainer } = await import("../../src/di.js")
 const { loadEnv } = await import("../../src/env.js")
 
 function recordingLogger() {
@@ -82,7 +82,7 @@ describe("adapter logging goes through the injected logger", () => {
 
   it("wires the server logger into abuse checks and the push sender built by the container", async () => {
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {})
-    const container = buildContainer(
+    const container = makeContainer(
       loadEnv({
         NODE_ENV: "test",
         USE_FAKE_ABUSE_NSFW: "0",

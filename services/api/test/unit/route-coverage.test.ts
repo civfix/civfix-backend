@@ -3,12 +3,12 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance, InjectOptions } from "fastify"
 import { FakeAbuseChecks, FakeMailer } from "@civfix/shared/fakes"
 import { endpoints, versionedPath, type EndpointDef } from "@civfix/shared/client"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { makeAnonService } from "../../src/services/anon-service.js"
@@ -52,7 +52,7 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -128,9 +128,9 @@ async function buildFullFakeServer(): Promise<FastifyInstance> {
   hostRepo.seedEvent({ cleanupId: PARAM_VALUE })
   hostRepo.seedTicketType({ cleanupId: PARAM_VALUE, capacity: 10, maxPartySize: 4 })
 
-  const container = buildContainer(env)
+  const container = makeContainer(env)
 
-  return buildServer({
+  return makeServer({
     env,
     container,
     authServices,

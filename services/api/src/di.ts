@@ -166,7 +166,7 @@ function lazy<T>(create: () => T): Lazy<T> {
   }
 }
 
-// Adapters are built before buildServer hands over its logger, so they get a forwarder that resolves
+// Adapters are built before makeServer hands over its logger, so they get a forwarder that resolves
 // the server logger at call time instead of capturing a console fallback at construction.
 function forwardingLogger(resolve: () => NotificationLogger | undefined): AdapterLogger {
   const forward = (level: "warn" | "error", obj: unknown, msg: string | undefined): void => {
@@ -369,7 +369,7 @@ async function closeIfClosable(seam: unknown): Promise<void> {
   if (typeof closable.close === "function") await closable.close()
 }
 
-export function buildContainer(env: Env): Container {
+export function makeContainer(env: Env): Container {
   let serverLogger: NotificationLogger | undefined
   const currentLogger = (): NotificationLogger | undefined => serverLogger
   const adapterLogger = forwardingLogger(currentLogger)

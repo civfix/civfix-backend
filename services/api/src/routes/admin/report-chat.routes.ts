@@ -73,13 +73,13 @@ export async function registerAdminReportChatRoutes(
         historySource: historySourceFrom(() => overrides.chatRepo),
         send: overrides.send,
       }),
-    () => (containerService ??= buildContainerService()),
+    () => (containerService ??= makeContainerService()),
   )
 
   let containerService: AdminReportChatService | undefined
   let chatRepo: ChatRepository | undefined
 
-  function buildContainerService(): AdminReportChatService {
+  function makeContainerService(): AdminReportChatService {
     const sql = container.getDb().sql
     const getChatRepo = (): ChatRepository =>
       (chatRepo ??= makeDrizzleChatRepository(sql, makePrivateMediaPresigner(container.storage)))
