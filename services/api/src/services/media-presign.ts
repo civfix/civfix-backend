@@ -53,5 +53,3 @@ export function makePacketMediaPresigner(storage: PresignStorage): PresignPacket
 
 // Bounds concurrent SigV4 signings / R2 ops per page.
 export const PRESIGN_CONCURRENCY = 8
-
-export { mapWithLimit } from "../lib/concurrency.js"
