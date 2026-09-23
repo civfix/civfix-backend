@@ -363,7 +363,7 @@ export class InMemoryMailRepository implements MailRepository {
     const latest = messages.length > 0 ? (messages[messages.length - 1] ?? null) : null
     const dto: MailThreadDTO = {
       ...toThreadListItem(thread, latest),
-      messages: messages.map((m) => toMessageDTO({ ...m, delivery: this.deliveryOf(m) })),
+      messages: messages.map((m) => toMessageDTO({ ...m, delivery: this.deliveryOf(m) }, thread)),
     }
     return Promise.resolve(dto)
   }
