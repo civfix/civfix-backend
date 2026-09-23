@@ -1,6 +1,7 @@
 
 import type { Queryable, Sql } from "../db/client.js"
 import { publicAuthorIdentity } from "./public-author.js"
+import { officialPersonFlag } from "../auth/official-account.js"
 import type {
   ChatMessageDTO,
   ChatMessageKind,
@@ -184,7 +185,7 @@ function buildMessageDTO(
       followers: 0,
       following: 0,
       isFollowing: false,
-      ...(author.deleted ? { deleted: true } : {}),
+      ...(author.deleted ? { deleted: true } : officialPersonFlag(r.sender_id)),
     },
     ...(r.body !== null ? { body: r.body } : {}),
     kind: r.kind,
