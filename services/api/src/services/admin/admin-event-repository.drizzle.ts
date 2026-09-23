@@ -1,5 +1,5 @@
 import type { Sql } from "../../db/client.js"
-import { decodeCursor, clampLimit, paginate } from "./pagination.js"
+import { decodeCursor, clampLimit, keysetPredicate, paginateKeyset } from "./pagination.js"
 import { writeAudit } from "./audit.js"
 import { adminEventStatusExpr } from "../cleanup-sql.js"
 import {
@@ -9,6 +9,7 @@ import {
   toRecord,
   type EventRowSelect,
 } from "./admin-event-sql.js"
+import { ADMIN_EVENT_MESSAGE_CAP, eventOutcomeNote } from "./admin-event-helpers.js"
 import { andAll, type SqlFragment } from "./sql-fragments.js"
 import { publicReportFilter } from "../report-sql.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
@@ -21,8 +22,6 @@ import type {
 } from "./admin-event-service.js"
 import type { LinkedReportView } from "../cleanup-service.js"
 import type { AdminEventCounts, ReportCategory, ReportStatus } from "@civfix/shared"
-
-const MESSAGE_CAP = 100
 
 const LINK_REPORTS_MAX = 100
 
@@ -51,14 +50,14 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
         )
       }
       if (anchor !== null) {
-        conds.push(sql`AND (c.scheduled_at, c.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
+        conds.push(sql`AND ${keysetPredicate(sql, sql`c.scheduled_at`, sql`c.id`, anchor)}`)
       }
       const extraWhere = andAll(sql, conds)
       const orderLimit = sql`ORDER BY c.scheduled_at DESC, c.id DESC LIMIT ${limit + 1}`
 
       const rows = (await eventSelect(sql, extraWhere, orderLimit)) as unknown as EventRowSelect[]
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({
-        at: r.scheduled_at,
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
         id: r.id,
       }))
       return { records: items.map(toRecord), nextCursor }
@@ -127,10 +126,10 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
         FROM chat_messages m
         LEFT JOIN users u ON u.id = m.sender_id
         WHERE m.cleanup_id = ${id} AND m.deleted_at IS NULL
-        ORDER BY m.created_at ASC
-        LIMIT ${MESSAGE_CAP}
+        ORDER BY m.created_at DESC, m.id DESC
+        LIMIT ${ADMIN_EVENT_MESSAGE_CAP}
       `
-      return rows.map((r) => ({
+      return rows.reverse().map((r) => ({
         who: r.who ?? "system",
         text: r.body ?? "",
         createdAt: r.created_at,
@@ -143,6 +142,10 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           UPDATE cleanups SET bags = ${input.bags} WHERE id = ${id} RETURNING id
         `
         if (updated.length === 0) return false
+        await tx`
+          INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+          VALUES (${id}, 'outcome', ${eventOutcomeNote(input.bags)}, ${input.actorId})
+        `
         await writeAudit(tx, {
           actorId: input.actorId,
           action: "event.outcome_logged",
@@ -158,7 +161,9 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       input: { reason: string | null; actorId: string | null },
     ): Promise<boolean | null> {
       return sql.begin(async (tx) => {
-        const exists = await tx<{ id: string }[]>`SELECT id FROM cleanups WHERE id = ${id} LIMIT 1`
+        const exists = await tx<{ id: string }[]>`
+          SELECT id FROM cleanups WHERE id = ${id} FOR UPDATE
+        `
         if (exists.length === 0) return null
 
         const latest = await tx<{ kind: string }[]>`

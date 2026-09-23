@@ -234,6 +234,7 @@ export class InMemoryModerationRepository implements ModerationRepository {
     }
     if (subjectType === "user" || subjectType === "profile") {
       if (this.deletedUserIds.has(subjectId)) return false
+      if (this.accountStatus.get(subjectId) !== "suspended") return false
       this.accountStatus.set(subjectId, "active")
       return true
     }

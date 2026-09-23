@@ -1,4 +1,5 @@
-import type { Sql } from "../../db/client.js"
+import type { RoomKind } from "@civfix/shared"
+import type { Queryable, Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
 
 export interface RemoveReportMessageInput {
@@ -13,6 +14,28 @@ export interface AdminReportChatRepository {
     messageId: string,
     input: RemoveReportMessageInput,
   ): Promise<boolean>
+}
+
+/** The chat room a chat or DM message lives in, or null when the id matches no message. */
+export async function findMessageRoom(
+  sql: Queryable,
+  messageId: string,
+): Promise<{ kind: RoomKind; id: string } | null> {
+  const rows = await sql<{ room_kind: RoomKind; room_id: string }[]>`
+    SELECT 'dm'::text AS room_kind, thread_id::text AS room_id
+      FROM dm_messages WHERE id = ${messageId}
+    UNION ALL
+    SELECT CASE
+             WHEN report_id IS NOT NULL THEN 'report'
+             WHEN group_id IS NOT NULL THEN 'group'
+             ELSE 'cleanup'
+           END AS room_kind,
+           COALESCE(report_id, group_id, cleanup_id)::text AS room_id
+      FROM chat_messages WHERE id = ${messageId}
+    LIMIT 1
+  `
+  const row = rows[0]
+  return row === undefined ? null : { kind: row.room_kind, id: row.room_id }
 }
 
 export function makeDrizzleAdminReportChatRepository(sql: Sql): AdminReportChatRepository {

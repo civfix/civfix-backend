@@ -13,6 +13,7 @@ import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
 import {
   idParam,
+  makeContainerMessageUpdateAnnouncer,
   overridableService,
   parse,
   parseBodyWithId,
@@ -72,6 +73,7 @@ export async function registerAdminModerationRoutes(
           applyStatus: (userId, status) =>
             app.authServices.sessions.applyAccountStatus(userId, status),
         },
+        announceMessageUpdate: makeContainerMessageUpdateAnnouncer(container, app.log),
       })
     },
   )

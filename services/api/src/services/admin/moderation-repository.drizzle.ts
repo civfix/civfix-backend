@@ -1,7 +1,13 @@
 import type { ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import {
+  clampLimit,
+  decodeCursor,
+  encodeKeysetCursor,
+  keysetInstant,
+  keysetPredicate,
+} from "./pagination.js"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
 import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import { tombstonePostInTx } from "../post-repository.drizzle.js"
@@ -295,11 +301,11 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             )}`
           : sql``
       const keyset = anchor
-        ? sql`AND (created_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
+        ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, anchor)}`
         : sql``
 
       const rows = (await sql`
-        SELECT ${itemColumns(sql)}
+        SELECT ${itemColumns(sql)}, ${keysetInstant(sql, sql`created_at`)} AS cursor_at
         FROM moderation_items
         WHERE status = 'open'
         ${facet}
@@ -307,15 +313,14 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         ${keyset}
         ORDER BY created_at DESC, id DESC
         LIMIT ${limit + 1}
-      `) as unknown as ModerationItemRow[]
+      `) as unknown as (ModerationItemRow & { cursor_at: string })[]
 
       const hasMore = rows.length > limit
       const page = hasMore ? rows.slice(0, limit) : rows
       await attachDestinationRefs(sql, page)
       const records = page.map((r) => toRecord(r, []))
       const last = page[page.length - 1]
-      const nextCursor =
-        hasMore && last ? encodeCursor({ createdAt: last.created_at, id: last.id }) : null
+      const nextCursor = hasMore && last ? encodeKeysetCursor(last.cursor_at, last.id) : null
       return { records, nextCursor }
     },
 
@@ -387,7 +392,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             VALUES (${resolved.subject_id}, 'rejected', ${input.reason ?? "Removed in moderation"}, ${input.actorId})
           `
         }
-        if (removed) {
+        if (removed && !isOwnerTakedown(resolved.meta)) {
           const authorId = await resolveSubjectAuthor(
             tx,
             resolved.subject_type,
@@ -493,7 +498,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             LIMIT 1
           `
           if (existing[0]) {
-            await escalateOpenItem(tx, existing[0].id, input)
+            await escalateOpenItem(tx, existing[0].id, input, await isOwnerRequest(tx, input))
             return null
           }
           return insertModerationItem(tx, input, { dedupeOpen: true })
@@ -731,14 +736,14 @@ async function restoreSubject(
       return restoreMessage(tx, subjectId)
     case "profile":
     case "user": {
+      // Only the 'suspended' a moderation removal imposes is lifted; an operator's separate ban survives.
       const rows = await tx<{ user_id: string }[]>`
-        INSERT INTO user_moderation (user_id, account_status, flagged, updated_at)
-        SELECT u.id, 'active', false, now()
+        UPDATE user_moderation um
+        SET account_status = 'active', flagged = false, updated_at = now()
         FROM users u
-        WHERE u.id = ${subjectId} AND u.deleted_at IS NULL
-        ON CONFLICT (user_id)
-        DO UPDATE SET account_status = 'active', flagged = false, updated_at = now()
-        RETURNING user_id`
+        WHERE um.user_id = ${subjectId} AND u.id = um.user_id AND u.deleted_at IS NULL
+          AND um.account_status = 'suspended'
+        RETURNING um.user_id`
       return rows.length > 0
     }
     default:
@@ -816,8 +821,10 @@ async function tombstoneSubject(
     case "user": {
       assertTargetIsNotOfficialAccount(subjectId, "remove")
       const target = await tx<{ role: string }[]>`
-        SELECT role FROM users WHERE id = ${subjectId}`
-      assertTargetIsNotOperatorRole(target[0]?.role, "remove")
+        SELECT role FROM users WHERE id = ${subjectId} AND deleted_at IS NULL FOR UPDATE`
+      const row = target[0]
+      if (row === undefined) return false
+      assertTargetIsNotOperatorRole(row.role, "remove")
       const rows = await tx<{ user_id: string }[]>`
         INSERT INTO user_moderation (user_id, account_status, flagged, updated_at)
         VALUES (${subjectId}, 'suspended', true, now())
@@ -830,15 +837,40 @@ async function tombstoneSubject(
   }
 }
 
+/**
+ * Marks an item whose report the author asked to take down. Removing it honors the author's own request,
+ * so it must not count as a strike against them, and the marker has to survive folding into an item a
+ * third party opened first.
+ */
+const OWNER_TAKEDOWN_META = { ownerTakedown: true } as const
+
+function isOwnerTakedown(meta: unknown): boolean {
+  return (
+    typeof meta === "object" &&
+    meta !== null &&
+    (meta as Record<string, unknown>).ownerTakedown === true
+  )
+}
+
+async function isOwnerRequest(tx: Queryable, input: CreateModerationItemInput): Promise<boolean> {
+  if (input.subjectType !== "report" || input.reporterUserId == null) return false
+  const authorId = await resolveSubjectAuthor(tx, "report", input.subjectId)
+  return authorId !== null && authorId === input.reporterUserId
+}
+
 async function escalateOpenItem(
   tx: Queryable,
   itemId: string,
   input: CreateModerationItemInput,
+  ownerRequest: boolean,
 ): Promise<void> {
+  const ownerFlag = ownerRequest ? (input.flag ?? null) : null
+  const ownerMeta = (ownerRequest ? OWNER_TAKEDOWN_META : {}) as Parameters<typeof tx.json>[0]
   await tx`
     UPDATE moderation_items
     SET priority = 'high',
-        meta = CASE
+        flag = COALESCE(${ownerFlag}::text, flag),
+        meta = (CASE
           WHEN ${input.reporterUserId ?? null}::text IS NULL THEN meta
           WHEN meta->'reporters' @> to_jsonb(ARRAY[${input.reporterUserId ?? ""}::text]) THEN meta
           ELSE jsonb_set(
@@ -846,7 +878,7 @@ async function escalateOpenItem(
             '{reporters}',
             COALESCE(meta->'reporters', '[]'::jsonb) || to_jsonb(${input.reporterUserId ?? ""}::text)
           )
-        END
+        END) || ${tx.json(ownerMeta)}
     WHERE id = ${itemId} AND status = 'open'
   `
 }
@@ -885,6 +917,7 @@ export async function insertModerationItem(
     if (authorId != null) userSnapshot = await buildUserSnapshot(tx, authorId)
   }
   if (userSnapshot != null) meta.user = userSnapshot
+  if (await isOwnerRequest(tx, input)) Object.assign(meta, OWNER_TAKEDOWN_META)
 
   const onConflict: SqlFragment = opts.dedupeOpen ? tx`ON CONFLICT DO NOTHING` : tx``
   const rows = await tx<{ id: string }[]>`

@@ -9,7 +9,14 @@ import type { FastifyInstance } from "fastify"
 import { perIdentity } from "../../plugins/rate-limit.js"
 import type { Container } from "../../di.js"
 import { route } from "../../versioning/route.js"
-import { idParam, overridableService, parse, sendOk, twoIdParams } from "./_route-utils.js"
+import {
+  idParam,
+  makeContainerMessageUpdateAnnouncer,
+  overridableService,
+  parse,
+  sendOk,
+  twoIdParams,
+} from "./_route-utils.js"
 import { requireOperator } from "../../auth/admin-guard.js"
 import {
   makeAdminReportChatService,
@@ -86,6 +93,7 @@ export async function registerAdminReportChatRoutes(
         mentions: chatMentionDeps(app, container),
         logger: app.log,
       }),
+      announceMessageUpdate: makeContainerMessageUpdateAnnouncer(container, app.log),
     })
   }
 

@@ -1,7 +1,14 @@
 import type { Queryable, Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
-import { clampLimit, decodeCursor } from "./pagination.js"
-import { paginate } from "../../db/cursor-helpers.js"
+import { assertTargetIsNotOperatorRole } from "../../auth/operator-target.js"
+import {
+  clampLimit,
+  decodeCursor,
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  type KeysetAnchor,
+} from "./pagination.js"
 import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import type {
   AdminUserOrganizationRecord,
@@ -60,6 +67,7 @@ interface UserRowSelect {
   city: string | null
   role: Role
   created_at: Date | null
+  cursor_at: string | null
   last_active_at: Date | null
   account_status: UserStatus
   reports: string
@@ -127,6 +135,7 @@ function userSelect(
       u.role,
       u.avatar_url,
       u.created_at,
+      ${keysetInstant(sql, sql`u.created_at`)} AS cursor_at,
       u.deleted_at,
       (SELECT MAX(s.last_seen_at) FROM sessions s WHERE s.user_id = u.id) AS last_active_at,
       COALESCE(um.account_status, 'active') AS account_status,
@@ -166,7 +175,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         conds.push(searchUsersFragment(sql, args.q, cityUserIds))
       }
       if (anchor !== null) {
-        conds.push(sql`AND (u.created_at, u.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
+        conds.push(sql`AND ${keysetPredicate(sql, sql`u.created_at`, sql`u.id`, anchor)}`)
       }
       const extraWhere = andAll(sql, conds)
       const orderLimit = sql`ORDER BY u.created_at DESC, u.id DESC LIMIT ${limit + 1}`
@@ -177,8 +186,8 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         orderLimit,
         false,
       )) as unknown as UserRowSelect[]
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({
-        createdAt: r.created_at ?? EPOCH,
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at ?? EPOCH.toISOString(),
         id: r.id,
       }))
       return { records: items.map(toRecord), nextCursor }
@@ -276,7 +285,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       const anchor = decodeKeyset(cursor)
       const cursorFilter =
         anchor !== null
-          ? sql`AND (r.created_at, r.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`r.created_at`, sql`r.id`, anchor)}`
           : sql``
       const rows = await sql<
         {
@@ -286,9 +295,11 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           place: string | null
           status: AdminReportStatus
           created_at: Date
+          cursor_at: string
         }[]
       >`
-        SELECT r.id, r.category, r.title, j.name AS place, r.status, r.created_at
+        SELECT r.id, r.category, r.title, j.name AS place, r.status, r.created_at,
+               ${keysetInstant(sql, sql`r.created_at`)} AS cursor_at
         FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
         WHERE r.reporter_user_id = ${id} AND r.deleted_at IS NULL
@@ -296,8 +307,12 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         ORDER BY r.created_at DESC, r.id DESC
         LIMIT ${lim + 1}
       `
-      const { items, nextCursor } = paginate(
-        rows.map((r) => ({
+      const { items, nextCursor } = paginateKeyset(rows, lim, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
+      return {
+        records: items.map((r) => ({
           id: r.id,
           category: r.category,
           title: r.title ?? "Untitled report",
@@ -305,10 +320,8 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           status: r.status,
           createdAt: r.created_at,
         })),
-        lim,
-        (r) => ({ createdAt: r.createdAt, id: r.id }),
-      )
-      return { records: items, nextCursor }
+        nextCursor,
+      }
     },
 
     async listUserEvents(
@@ -320,7 +333,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       const anchor = decodeKeyset(cursor)
       const cursorFilter =
         anchor !== null
-          ? sql`AND (cm.joined_at, c.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`cm.joined_at`, sql`c.id`, anchor)}`
           : sql``
       const rows = await sql<
         {
@@ -330,6 +343,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           role: CleanupMemberRole
           attendees: string
           when_at: Date
+          cursor_at: string
         }[]
       >`
         SELECT
@@ -338,7 +352,8 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           c.address AS place,
           cm.role,
           (SELECT COUNT(*) FROM cleanup_members x WHERE x.cleanup_id = c.id)::text AS attendees,
-          cm.joined_at AS when_at
+          cm.joined_at AS when_at,
+          ${keysetInstant(sql, sql`cm.joined_at`)} AS cursor_at
         FROM cleanup_members cm
         JOIN cleanups c ON c.id = cm.cleanup_id
         WHERE cm.user_id = ${id}
@@ -346,8 +361,12 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         ORDER BY cm.joined_at DESC, c.id DESC
         LIMIT ${lim + 1}
       `
-      const { items, nextCursor } = paginate(
-        rows.map((r) => ({
+      const { items, nextCursor } = paginateKeyset(rows, lim, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
+      return {
+        records: items.map((r) => ({
           id: r.id,
           title: r.title ?? "Cleanup",
           place: r.place ?? "",
@@ -355,10 +374,8 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           attendees: Number(r.attendees ?? "0"),
           whenAt: r.when_at,
         })),
-        lim,
-        (r) => ({ createdAt: r.whenAt, id: r.id }),
-      )
-      return { records: items, nextCursor }
+        nextCursor,
+      }
     },
 
     async listUserMessages(
@@ -369,9 +386,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       const lim = clampLimit(limit)
       const anchor = decodeKeyset(cursor)
       const branchCursor = (createdAt: SqlFragment, id2: SqlFragment): SqlFragment =>
-        anchor !== null
-          ? sql`AND (${createdAt}, ${id2}) < (${anchor.createdAt}, ${anchor.id}::uuid)`
-          : sql``
+        anchor !== null ? sql`AND ${keysetPredicate(sql, createdAt, id2, anchor)}` : sql``
       const probe = lim + 1
       const rows = await sql<
         {
@@ -379,12 +394,14 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           body: string | null
           thread: string | null
           created_at: Date
+          cursor_at: string
           deleted_at: Date | null
           source: "chat" | "group" | "dm" | "report"
           source_id: string | null
         }[]
       >`
-        SELECT m.id, m.body, m.thread, m.created_at, m.deleted_at, m.source, m.source_id
+        SELECT m.id, m.body, m.thread, m.created_at, ${keysetInstant(sql, sql`m.created_at`)} AS cursor_at,
+               m.deleted_at, m.source, m.source_id
         FROM (
           -- Event chat: the navigable origin is the cleanup/event the message belongs to.
           (SELECT cm.id, cm.body, c.title AS thread, cm.created_at, cm.deleted_at, 'chat' AS source,
@@ -431,8 +448,12 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         ORDER BY m.created_at DESC, m.id DESC
         LIMIT ${probe}
       `
-      const { items, nextCursor } = paginate(
-        rows.map((r) => ({
+      const { items, nextCursor } = paginateKeyset(rows, lim, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
+      return {
+        records: items.map((r) => ({
           id: r.id,
           text: r.body ?? "",
           thread: r.thread ?? threadFallback(r.source),
@@ -441,10 +462,8 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           source: r.source,
           sourceId: r.source_id,
         })),
-        lim,
-        (r) => ({ createdAt: r.createdAt, id: r.id }),
-      )
-      return { records: items, nextCursor }
+        nextCursor,
+      }
     },
 
     async toggleFlag(
@@ -453,7 +472,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     ): Promise<boolean | null> {
       return sql.begin(async (tx) => {
         const exists = await tx<{ id: string }[]>`
-          SELECT id FROM users WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
+          SELECT id FROM users WHERE id = ${id} AND deleted_at IS NULL FOR UPDATE
         `
         if (exists.length === 0) return null
 
@@ -494,10 +513,14 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       input: { status: UserStatus; reason: string | null; actorId: string | null },
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
-        const exists = await tx<{ id: string }[]>`
-          SELECT id FROM users WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
+        // The service's operator check ran in an earlier query; re-check on the locked row so a target
+        // promoted in between cannot be banned or suspended from the console.
+        const target = await tx<{ id: string; role: Role }[]>`
+          SELECT id, role FROM users WHERE id = ${id} AND deleted_at IS NULL FOR UPDATE
         `
-        if (exists.length === 0) return false
+        const row = target[0]
+        if (row === undefined) return false
+        assertTargetIsNotOperatorRole(row.role, "ban or change the status of")
         await tx`
           INSERT INTO user_moderation (user_id, account_status, updated_at)
           VALUES (${id}, ${input.status}, now())
@@ -517,10 +540,11 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     async applyRole(id: string, input: { role: Role; actorId: string | null }): Promise<boolean> {
       return sql.begin(async (tx) => {
         const existing = await tx<{ role: Role }[]>`
-          SELECT role FROM users WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
+          SELECT role FROM users WHERE id = ${id} AND deleted_at IS NULL FOR UPDATE
         `
         const priorRole = existing[0]?.role
         if (priorRole === undefined) return false
+        assertTargetIsNotOperatorRole(priorRole, "change the role of")
         await tx`UPDATE users SET role = ${input.role} WHERE id = ${id}`
         await writeAudit(tx, {
           actorId: input.actorId,
@@ -610,7 +634,8 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
   }
 }
 
-const decodeKeyset = (cursor: string | null | undefined) => decodeCursor(cursor, true)
+const decodeKeyset = (cursor: string | null | undefined): KeysetAnchor | null =>
+  decodeCursor(cursor, true)
 
 function threadFallback(source: "chat" | "group" | "dm" | "report"): string {
   switch (source) {

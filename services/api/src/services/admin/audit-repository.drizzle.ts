@@ -1,5 +1,11 @@
 import type { Sql } from "../../db/client.js"
-import { clampLimit, decodeCursor, paginate } from "./pagination.js"
+import {
+  clampLimit,
+  decodeCursor,
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+} from "./pagination.js"
 import { isUuid } from "../../db/cursor-helpers.js"
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
 import { likeContains } from "./like.js"
@@ -12,6 +18,7 @@ interface AuditRowSelect {
   target: string | null
   meta: Record<string, unknown> | null
   created_at: Date
+  cursor_at: string | null
 }
 
 function toRecord(r: AuditRowSelect): AuditRecord {
@@ -35,7 +42,7 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
       const anchor = decodeCursor(args.cursor, true)
       const cursorFilter =
         anchor !== null
-          ? sql`AND (a.created_at, a.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`a.created_at`, sql`a.id`, anchor)}`
           : sql``
       const actorFilter =
         args.actor !== null
@@ -55,7 +62,8 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
           : sql``
 
       const rows = await sql<AuditRowSelect[]>`
-        SELECT a.id, a.actor_id, u.display_name AS actor_name, a.action, a.target, a.meta, a.created_at
+        SELECT a.id, a.actor_id, u.display_name AS actor_name, a.action, a.target, a.meta, a.created_at,
+               ${keysetInstant(sql, sql`a.created_at`)} AS cursor_at
         FROM audit_log a
         LEFT JOIN users u ON u.id = a.actor_id
         WHERE true
@@ -66,8 +74,8 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
         ORDER BY a.created_at DESC, a.id DESC
         LIMIT ${limit + 1}
       `
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({
-        createdAt: r.created_at,
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
         id: r.id,
       }))
       return { records: items.map(toRecord), nextCursor }

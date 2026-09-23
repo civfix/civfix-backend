@@ -1,5 +1,12 @@
+import type { FastifyBaseLogger } from "fastify"
 import type { Queryable, Sql } from "../../db/client.js"
-import { decodeCursor, clampLimit, paginate } from "./pagination.js"
+import {
+  decodeCursor,
+  clampLimit,
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+} from "./pagination.js"
 import { isUuid } from "../../db/cursor-helpers.js"
 import { writeAudit } from "./audit.js"
 import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
@@ -74,6 +81,7 @@ interface ReportRowSelect {
   preview_key: string | null
   preview_thumb_key: string | null
   created_at: Date
+  cursor_at: string | null
   reference_code: string | null
   verification_verdict: "approved" | "rejected" | null
   verified_at: Date | null
@@ -157,6 +165,7 @@ function reportSelect(
       pm.served_key AS preview_key,
       pm.thumb_key AS preview_thumb_key,
       r.created_at,
+      ${keysetInstant(sql, sql`r.created_at`)} AS cursor_at,
       r.reference_code,
       r.verification_verdict,
       r.verified_at,
@@ -181,7 +190,10 @@ function reportSelect(
   `
 }
 
-export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepository {
+export function makeDrizzleAdminReportRepository(
+  sql: Sql,
+  opts: { logger?: Pick<FastifyBaseLogger, "warn"> } = {},
+): AdminReportRepository {
   return {
     async listReports(
       args: ListReportsArgs,
@@ -197,13 +209,16 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
       if (args.needsVerificationOnly) conds.push(sql`AND r.verification_verdict IS NULL`)
       if (args.q !== null) conds.push(searchReportsFragment(sql, args.q))
       if (anchor !== null) {
-        conds.push(sql`AND (r.created_at, r.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`)
+        conds.push(sql`AND ${keysetPredicate(sql, sql`r.created_at`, sql`r.id`, anchor)}`)
       }
       const extraWhere = andAll(sql, conds)
       const orderLimit = sql`ORDER BY r.created_at DESC, r.id DESC LIMIT ${limit + 1}`
 
       const rows = (await reportSelect(sql, extraWhere, orderLimit)) as unknown as ReportRowSelect[]
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       return { records: items.map(toRecord), nextCursor }
     },
 
@@ -505,7 +520,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
     ): Promise<boolean | null> {
       return sql.begin(async (tx) => {
         const exists = await tx<{ status: AdminReportStatus }[]>`
-          SELECT status FROM reports WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
+          SELECT status FROM reports WHERE id = ${id} AND deleted_at IS NULL FOR UPDATE
         `
         const report = exists[0]
         if (!report) return null
@@ -595,19 +610,23 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
 
     async setReportVerdict(
       id: string,
-      input: { verdict: "approved" | "rejected"; actorId: string | null },
+      input: { verdict: "approved" | "rejected"; actorId: string | null; note: string },
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
-        const updated = await tx<{ reporter_user_id: string | null }[]>`
+        const updated = await tx<{ reporter_user_id: string | null; status: AdminReportStatus }[]>`
           UPDATE reports
           SET verification_verdict = ${input.verdict},
               verified_by = ${input.actorId},
               verified_at = now()
           WHERE id = ${id} AND deleted_at IS NULL
-          RETURNING reporter_user_id
+          RETURNING reporter_user_id, status
         `
         const row = updated[0]
         if (!row) return false
+        await tx`
+          INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
+          VALUES (${id}, ${row.status}, ${input.note}, 'status', ${input.actorId})
+        `
         await writeAudit(tx, {
           actorId: input.actorId,
           action: "report.verdict_set",
@@ -648,8 +667,12 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         await reserved`SELECT pg_advisory_lock(${ROUTE_LOCK_NAMESPACE}, hashtext(${id}))`
         return await fn()
       } finally {
+        // A failed unlock almost always means the session is gone, which releases the lock server-side.
+        // It must not mask fn()'s own outcome, but it is logged so a stuck route lock is traceable.
         await reserved`SELECT pg_advisory_unlock(${ROUTE_LOCK_NAMESPACE}, hashtext(${id}))`.catch(
-          () => {},
+          (err: unknown) => {
+            opts.logger?.warn({ err, reportId: id }, "report route advisory unlock failed")
+          },
         )
         reserved.release()
       }

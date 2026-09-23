@@ -3,7 +3,10 @@ import {
   type ChatHistoryResponse,
   type ChatMessageDTO,
   type ReportChatHistoryRequest,
+  type RoomKind,
 } from "@civfix/shared"
+import type { FastifyBaseLogger } from "fastify"
+import { neutralizeChatViewerFields } from "../chat-viewer-fields.js"
 import { chatHistoryPayload, type ChatHistorySource } from "../../routes/chat-route-helpers.js"
 import { sendReportChatMessage, type ReportChatSendDeps } from "../report-chat-send.js"
 import type { AdminReportChatRepository } from "./admin-report-chat-repository.drizzle.js"
@@ -12,10 +15,42 @@ import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
 export const ADMIN_REPORT_CHAT_HISTORY_DEFAULT = 30
 export const ADMIN_REPORT_CHAT_HISTORY_MAX = 50
 
+/**
+ * Tells connected clients that an operator changed a chat or DM message (removed it, or restored it on an
+ * appeal), the way a member's own delete does. Called only after the change committed; never throws.
+ */
+export type MessageUpdateAnnouncer = (messageId: string) => Promise<void>
+
+export interface MessageUpdateAnnouncerDeps {
+  findRoom(messageId: string): Promise<{ kind: RoomKind; id: string } | null>
+  loadMessage(kind: RoomKind, roomId: string, messageId: string): Promise<ChatMessageDTO | null>
+  broadcast(kind: RoomKind, roomId: string, message: ChatMessageDTO): void
+  logger?: Pick<FastifyBaseLogger, "warn">
+}
+
+export function makeMessageUpdateAnnouncer(
+  deps: MessageUpdateAnnouncerDeps,
+): MessageUpdateAnnouncer {
+  return async (messageId) => {
+    try {
+      const room = await deps.findRoom(messageId)
+      if (room === null) return
+      const message = await deps.loadMessage(room.kind, room.id, messageId)
+      if (message === null) return
+      deps.broadcast(room.kind, room.id, neutralizeChatViewerFields(message))
+    } catch (err) {
+      // The operator's change is already committed; a failed live update only delays what clients see
+      // until their next history fetch, so it must not turn the request into an error.
+      deps.logger?.warn({ err, messageId }, "admin message update broadcast failed")
+    }
+  }
+}
+
 export interface AdminReportChatServiceDeps {
   repo: AdminReportChatRepository
   historySource: (reportId: string, viewerUserId: string | null) => ChatHistorySource
   send: ReportChatSendDeps
+  announceMessageUpdate?: MessageUpdateAnnouncer
 }
 
 export interface AdminReportChatService {
@@ -69,6 +104,7 @@ export function makeAdminReportChatService(
       await assertReportExists(reportId)
       const removed = await deps.repo.removeMessage(reportId, messageId, input)
       if (!removed) throw AppError.notFound("Message not found")
+      await deps.announceMessageUpdate?.(messageId)
     },
   }
 }

@@ -47,6 +47,8 @@ const ZERO_ANALYTICS_MINI: AnalyticsMini = {
   pinsByWeek: new Array<number>(PINS_BY_WEEK_WEEKS).fill(0),
 }
 
+// One failing section must not blank the whole operator home page; the failure reaches the log through
+// onError.
 export async function safeSection<T>(
   produce: () => Promise<T>,
   fallback: T,

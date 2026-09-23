@@ -9,6 +9,7 @@ import { toEventStatus } from "./event-status.js"
 import type { AdminEventRecord, AdminOrganizerRecord } from "./admin-event-service.js"
 import type { EventKind } from "@civfix/shared"
 import { adminEventStatusExpr } from "../cleanup-sql.js"
+import { keysetInstant } from "./pagination.js"
 
 // The "is flagged" boolean: the most recent cleanup_timeline flag/unflag row is a 'flag'. The ONE
 // definition — eventSelect + countByBucket both build their flagged column/filter from this so they can't
@@ -53,6 +54,7 @@ export interface EventRowSelect {
   lat: number
   lng: number
   scheduled_at: Date
+  cursor_at: string | null
   organizer_id: string | null
   organizer_name: string | null
   organizer_handle: string | null
@@ -118,6 +120,7 @@ export function eventSelect(
       ST_Y(c.geom) AS lat,
       ST_X(c.geom) AS lng,
       c.scheduled_at,
+      ${keysetInstant(sql, sql`c.scheduled_at`)} AS cursor_at,
       ${personSelect(sql, "u", "organizer")}
     FROM cleanups c
     LEFT JOIN users u ON u.id = c.organizer_user_id

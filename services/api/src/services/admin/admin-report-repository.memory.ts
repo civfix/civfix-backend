@@ -390,12 +390,19 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
 
   async setReportVerdict(
     id: string,
-    input: { verdict: "approved" | "rejected"; actorId: string | null },
+    input: { verdict: "approved" | "rejected"; actorId: string | null; note: string },
   ): Promise<boolean> {
     const seeded = this.reports.get(id)
     if (!seeded || seeded.deletedAt !== null) return false
     seeded.record.verificationVerdict = input.verdict
     seeded.record.verifiedAt = this.nextDate()
+    this.appendTimeline(id, {
+      status: seeded.record.status,
+      note: input.note,
+      kind: "status",
+      who: "operator",
+      createdAt: this.nextDate(),
+    })
     this.audits.push({
       action: "report.verdict_set",
       target: `report:${id}`,

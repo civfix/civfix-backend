@@ -22,6 +22,7 @@ import type {
 } from "@civfix/shared"
 import { toRelAbs } from "./admin-format.js"
 import { applyRoleChange } from "./role-change.js"
+import type { MessageUpdateAnnouncer } from "./admin-report-chat-service.js"
 import {
   assertTargetIsNotOfficialAccount,
   assertTargetIsNotOperatorRole,
@@ -165,6 +166,7 @@ export interface AdminUserServiceDeps {
   repo: AdminUserRepository
   sessions: SessionControl
   now?: () => Date
+  announceMessageUpdate?: MessageUpdateAnnouncer
 }
 
 export const USER_SUBLIST_DEFAULT_LIMIT = 20
@@ -382,6 +384,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
     ): Promise<void> {
       const ok = await deps.repo.removeUserMessage(userId, messageId, input)
       if (!ok) throw AppError.notFound("Message not found")
+      await deps.announceMessageUpdate?.(messageId)
     },
   }
 }

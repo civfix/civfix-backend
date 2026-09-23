@@ -21,8 +21,9 @@
  *
  * KEYSET: (ts, id) with `id` compared AS TEXT in both the branch predicate and the outer ORDER BY. Every
  * source's pk is a uuid, so text order and uuid order coincide, and one text tuple gives the four sources a
- * single TOTAL order — without the id term two rows sharing a millisecond across sources could repeat or
- * skip across a page boundary.
+ * single TOTAL order. The id term only breaks ties between rows with an exactly equal ts; the cursor carries
+ * the ts at microsecond precision (every branch projects `cursor_at`), because a millisecond anchor would
+ * re-include the previous page's last row on `oldest` and skip same-millisecond rows on `newest`.
  *
  * FILTERING: `filter` is an ActivityKind, which is a SERVICE-side classification. Rather than re-typing the
  * action prefixes in SQL, the branch set comes from `sourcesForKind` and the audit predicate is BUILT from
@@ -33,8 +34,15 @@
  */
 
 import type { Sql } from "../../db/client.js"
-import { clampLimit, decodeCursor, paginate } from "./pagination.js"
+import {
+  clampLimit,
+  decodeCursor,
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+} from "./pagination.js"
 import { AUDIT_READ_ACTIONS } from "./audit.js"
+import { likePrefix } from "./like.js"
 import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import {
   AUDIT_ACTION_RULES,
@@ -54,6 +62,7 @@ interface ActivityRowSelect {
   source: ActivitySource
   id: string
   ts: Date
+  cursor_at: string
   who: string | null
   where_label: string | null
   action: string | null
@@ -93,12 +102,12 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
 
   /** `(action LIKE 'p.%' OR action = 'x' OR ...)` over a rule list. */
   function anyRule(rules: readonly AuditActionRule[]): SqlFragment {
-    // Prefixes are compile-time literals from AUDIT_ACTION_RULES, never user input, but they still ride as
-    // bound parameters — LIKE's own metacharacters are not special in these dotted namespaces.
+    // The prefixes contain `_` (gov_claim.), a LIKE wildcard, so they are escaped to match literally, as
+    // the service classifier's startsWith does.
     const branches = rules.map((rule) =>
       rule.exact !== undefined
         ? sql`a.action = ${rule.exact}`
-        : sql`a.action LIKE ${`${rule.prefix}%`}`,
+        : sql`a.action LIKE ${likePrefix(rule.prefix)} ESCAPE '\\'`,
     )
     const first = branches[0]
     if (first === undefined) return sql`(false)`
@@ -130,9 +139,10 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
         const keyset =
           anchor === null
             ? sql``
-            : desc
-              ? sql`AND (${tsCol}, ${idText}) < (${anchor.createdAt}, ${anchor.id}::text)`
-              : sql`AND (${tsCol}, ${idText}) > (${anchor.createdAt}, ${anchor.id}::text)`
+            : sql`AND ${keysetPredicate(sql, tsCol, idText, anchor, {
+                direction: desc ? "desc" : "asc",
+                idType: "text",
+              })}`
         const order = desc
           ? sql`ORDER BY ${tsCol} DESC, ${idText} DESC`
           : sql`ORDER BY ${tsCol} ASC, ${idText} ASC`
@@ -147,6 +157,7 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
       if (wants("audit")) {
         branches.push(sql`(
           SELECT 'audit'::text AS source, a.id::text AS id, a.created_at AS ts,
+                 ${keysetInstant(sql, sql`a.created_at`)} AS cursor_at,
                  u.display_name AS who, a.target AS where_label,
                  a.action AS action, NULL::text AS event_type, a.target AS subject
           FROM audit_log a
@@ -164,6 +175,7 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
       if (wants("report")) {
         branches.push(sql`(
           SELECT 'report'::text AS source, r.id::text AS id, r.created_at AS ts,
+                 ${keysetInstant(sql, sql`r.created_at`)} AS cursor_at,
                  ru.display_name AS who, j.name AS where_label,
                  NULL::text AS action, NULL::text AS event_type, r.category AS subject
           FROM reports r
@@ -180,6 +192,7 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
       if (wants("cleanup")) {
         branches.push(sql`(
           SELECT 'cleanup'::text AS source, c.id::text AS id, c.created_at AS ts,
+                 ${keysetInstant(sql, sql`c.created_at`)} AS cursor_at,
                  cu.display_name AS who, c.address AS where_label,
                  NULL::text AS action, NULL::text AS event_type, c.title AS subject
           FROM cleanups c
@@ -195,6 +208,7 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
       if (wants("mail_event")) {
         branches.push(sql`(
           SELECT 'mail_event'::text AS source, e.id::text AS id, e.created_at AS ts,
+                 ${keysetInstant(sql, sql`e.created_at`)} AS cursor_at,
                  t.org AS who, COALESCE(t.org, t.jurisdiction_geoid) AS where_label,
                  NULL::text AS action, e.type AS event_type, t.subject AS subject
           FROM mail_events e
@@ -224,7 +238,10 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
         ${outerOrder}
         LIMIT ${limit + 1}
       `
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.ts, id: r.id }))
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       return { records: items.map(toRecord), nextCursor }
     },
   }

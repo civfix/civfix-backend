@@ -1,4 +1,5 @@
 import { AppError, ErrorCode } from "@civfix/shared"
+import { mailFailureKind } from "../adapters/mail-failure.js"
 import type { Env } from "../env.js"
 import type { Container } from "../di.js"
 import { makeDataExportService, type DataExportService } from "./data-export-service.js"
@@ -45,6 +46,12 @@ export async function runDataExport(
     if (result.email === null) {
       logger?.info({ userId }, "data.export skip: no delivery channel")
     }
+    if (result.undeliverable !== undefined) {
+      logger?.warn(
+        { userId, reason: result.undeliverable },
+        "data.export undeliverable (recorded for an operator)",
+      )
+    }
   } catch (err) {
     if (isTransientInfraError(err)) {
       logger?.warn({ err, userId }, "data.export transient failure (retrying)")
@@ -64,6 +71,9 @@ function makeContainerDataExportService(container: Container): DataExportService
 }
 
 function isTransientInfraError(err: unknown): boolean {
+  // A sender or credential rejection is a platform config fault, not something wrong with this export;
+  // completing on it would silently discard every export requested while the fault lasts.
+  if (mailFailureKind(err) === "auth") return true
   if (err instanceof AppError) {
     return err.code === ErrorCode.INTERNAL || err.code === ErrorCode.RATE_LIMITED
   }
