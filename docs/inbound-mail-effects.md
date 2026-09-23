@@ -30,7 +30,7 @@ authentication to `pass`, `fail` or `unknown`. The email Worker applies no filte
   suffix (`org`, `co.uk`) has no organizational domain and is `fail`. `isJurisdictionSender` compares
   the From domain with the thread's contact the same way.
 - A message with more than one `From` header or address has no parsed From. It never threads and goes
-  to the Inbox.
+  to the Inbox, whose row shows every claimed sender joined with commas, for display only.
 
 `processInboundObject` (`services/api/src/services/admin/inbound-processor.ts`) then routes:
 

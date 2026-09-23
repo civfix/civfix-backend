@@ -1045,6 +1045,7 @@ describe("processInboundObject: message authentication gate (M7)", () => {
 
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("inbox")
     expect(c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")).toHaveLength(0)
+    expect(c.inboundRepo.rows[0]?.fromAddr).toBe("x@attacker.example, clerk@lacity.gov")
   })
 
   it("a sender-supplied X-Civfix-Auth-Verdict header cannot forge the stored verdict", async () => {

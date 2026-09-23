@@ -66,6 +66,9 @@ export class CfInboundMail implements InboundMail {
     })
 
     const fromValue = singleFromMailbox(parsed.headerLines, parsed.from)
+    const headers = flattenHeaders(parsed.headers)
+    const fromLines = parsed.headerLines.filter((line) => line.key === "from")
+    if (fromLines.length > 1) headers["from"] = fromLines.map(headerLineValue).join(", ")
     return {
       from: fromValue ? toAddress(fromValue) : null,
       to: toAddresses(parsed.to),
@@ -74,7 +77,7 @@ export class CfInboundMail implements InboundMail {
       html: typeof parsed.html === "string" ? parsed.html : null,
       messageId: parsed.messageId ?? null,
       inReplyTo: parsed.inReplyTo ?? null,
-      headers: flattenHeaders(parsed.headers),
+      headers,
       attachments: (parsed.attachments ?? []).map(toAttachment),
     }
   }
@@ -204,6 +207,10 @@ function singleFromMailbox(
   if (headerLines.filter((line) => line.key === "from").length !== 1) return null
   const mailboxes = (from?.value ?? []).flatMap((entry) => entry.group ?? [entry])
   return mailboxes.length === 1 ? (mailboxes[0] ?? null) : null
+}
+
+function headerLineValue(header: HeaderLines[number]): string {
+  return header.line.slice(header.line.indexOf(":") + 1).replace(/\s+/g, " ").trim()
 }
 
 function toAddress(value: EmailAddress): ParsedMailAddress {

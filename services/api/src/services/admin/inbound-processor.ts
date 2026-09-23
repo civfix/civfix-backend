@@ -261,9 +261,10 @@ async function routeInbox(
       .map((a) => a.address)
       .filter((a) => a.length > 0)
       .join(", ") || null
+  const claimedFrom = mail.headers["from"]?.slice(0, INBOUND_HEADER_VALUE_MAX_CHARS) || null
   const { id, inserted } = await inboundRepo.insertIdempotent({
     messageId,
-    fromAddr: mail.from?.address ?? null,
+    fromAddr: mail.from?.address ?? claimedFrom,
     toAddr,
     recipient,
     subject: mail.subject ?? null,
