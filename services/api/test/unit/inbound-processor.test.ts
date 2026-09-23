@@ -759,6 +759,37 @@ describe("processInboundObject: EVENT reply -> cleanup_timeline (D13/D19)", () =
   })
 })
 
+describe("processInboundObject: self-originated mail (loop guard)", () => {
+  it("drops our own outbound mail looping back instead of threading or inboxing it", async () => {
+    const c = ctx()
+    Object.assign(c.container, {
+      env: { MAIL_FROM_OUTREACH: "outreach@civfix.org", MAIL_REPLY_DOMAIN: "civfix.org" },
+    })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "loop", status: "sent" })
+    c.mailRepo.seedMessage({ threadId: thread.id, direction: "out", messageId: "<out-1@civfix.org>" })
+    const copies = [
+      rfc822({
+        from: "outreach@civfix.org",
+        to: "contact@civfix.org",
+        messageId: "<out-2@civfix.org>",
+        inReplyTo: "<out-1@civfix.org>",
+      }),
+      rfc822({ from: `report-${TOKEN}@civfix.org`, to: `report-${TOKEN}@civfix.org` }),
+    ]
+    for (const [i, eml] of copies.entries()) {
+      const key = `${INBOUND_PENDING_PREFIX}loop-${i}.eml`
+      await put(c, key, eml)
+      expect(await processInboundObject(c.container, key, c.deps)).toEqual({
+        outcome: "skipped",
+        reason: "self-originated",
+      })
+      expect(c.storage.get(key)).toBeNull()
+    }
+    expect(c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")).toHaveLength(0)
+    expect(c.inboundRepo.rows).toHaveLength(0)
+  })
+})
+
 describe("processInboundObject: In-Reply-To fallback (#40)", () => {
   it("correlates a NO-token reply to its thread via In-Reply-To matching an OUT message_id", async () => {
     const c = ctx()

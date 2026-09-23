@@ -35,7 +35,10 @@ authentication to `pass`, `fail` or `unknown`. The email Worker applies no filte
 - A message with more than one `From` header or address has no parsed From. It never threads and goes
   to the Inbox.
 
-`processInboundObject` (`services/api/src/services/admin/inbound-processor.ts`) then routes:
+`processInboundObject` (`services/api/src/services/admin/inbound-processor.ts`) first drops our own
+outbound mail looping back (a Message-ID of the `<out-…@MAIL_FROM_OUTREACH domain>` shape, or a From that
+is one of our reply addresses) with a warning. It reads a thread token from the To addresses, then Cc,
+matched case-insensitively on `MAIL_REPLY_DOMAIN`. It then routes:
 
 | Verdict | Addressed to a thread token | Matches a thread only by In-Reply-To/References | No thread |
 |---|---|---|---|
