@@ -12,6 +12,8 @@ interface RosterRow {
   id: string
   registered_at: Date
   checked_in_at: Date | null
+  cursor_at: string
+  checked_in_cursor_at: string
 }
 
 const CHECKED_IN = row("aaaaaaaa-0000-4000-8000-000000000009", "2026-09-01T09:00:00.000Z", {
@@ -22,16 +24,32 @@ const MIDDLE = row("aaaaaaaa-0000-4000-8000-000000000003", "2026-09-01T11:00:00.
 const EARLIEST = row("aaaaaaaa-0000-4000-8000-000000000002", "2026-09-01T10:00:00.000Z")
 const ROSTER = [CHECKED_IN, LATEST, MIDDLE, EARLIEST]
 
+/** The instant as Postgres renders it for a cursor: microsecond text in UTC. */
+function microText(at: Date): string {
+  return at.toISOString().replace("Z", "000Z")
+}
+
+const ISO_INSTANT = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z$/
+
+function micros(text: string): number {
+  const match = ISO_INSTANT.exec(text)
+  if (match === null) throw new Error(`not an instant: ${text}`)
+  return Date.parse(`${match[1]}Z`) * 1000 + Number((match[2] ?? "").padEnd(6, "0"))
+}
+
 function row(id: string, registeredAt: string, opts: { checkedInAt?: string } = {}): RosterRow {
+  const checkedInAt = opts.checkedInAt === undefined ? null : new Date(opts.checkedInAt)
   return {
     id,
     registered_at: new Date(registeredAt),
-    checked_in_at: opts.checkedInAt === undefined ? null : new Date(opts.checkedInAt),
+    checked_in_at: checkedInAt,
+    cursor_at: microText(new Date(registeredAt)),
+    checked_in_cursor_at: microText(checkedInAt ?? EPOCH),
   }
 }
 
 function orderKey(r: RosterRow): [number, number, string] {
-  return [(r.checked_in_at ?? EPOCH).getTime(), r.registered_at.getTime(), r.id]
+  return [micros(r.checked_in_cursor_at), micros(r.cursor_at), r.id]
 }
 
 function tupleBefore(left: (number | string)[], right: (number | string)[]): boolean {
@@ -43,7 +61,9 @@ function tupleBefore(left: (number | string)[], right: (number | string)[]): boo
 }
 
 function asKeyPart(value: unknown): number | string {
-  return value instanceof Date ? value.getTime() : String(value)
+  if (value instanceof Date) return value.getTime() * 1000
+  const text = String(value)
+  return ISO_INSTANT.test(text) ? micros(text) : text
 }
 
 /**
@@ -53,7 +73,7 @@ function asKeyPart(value: unknown): number | string {
  */
 function servedRoster(sqlText: string, values: unknown[]): RosterRow[] {
   const limit = values[values.length - 1] as number
-  const anchor = values.slice(2, -1).map(asKeyPart)
+  const anchor = values.slice(values.indexOf(EVENT) + 1, -1).map(asKeyPart)
   const ordered = [...ROSTER].sort((a, b) => (tupleBefore(orderKey(a), orderKey(b)) ? 1 : -1))
   let visible = ordered
   if (/'epoch'::timestamptz\), r\.registered_at, r\.id\) < \(/.test(sqlText)) {

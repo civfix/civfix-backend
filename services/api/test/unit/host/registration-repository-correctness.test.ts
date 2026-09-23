@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
-import { makeDrizzleHostRegistrationRepository } from "../../../src/services/host/registration-repository.drizzle.js"
+import {
+  makeDrizzleHostRegistrationRepository,
+  REGISTER_IDEMPOTENCY_SCOPE,
+} from "../../../src/services/host/registration-repository.drizzle.js"
+import { deterministicUuid } from "../../../src/services/deterministic-uuid.js"
 import type {
   RegisterTxArgs,
   SeatDraft,
@@ -431,5 +435,92 @@ describe("a walk-up checked in on arrival is registered and checked in atomicall
     expect(checkIns[0]?.index).toBeGreaterThanOrEqual(began)
     expect(checkIns[0]?.index).toBeLessThan(ended)
     expect(checkIns[0]?.values).toEqual(expect.arrayContaining([REGISTRATION, HOST, "walkup"]))
+  })
+})
+
+describe("a same-key twin serializes on its idempotency key", () => {
+  const KEY_LOCK = /pg_advisory_xact_lock\(hashtext\(/
+  const SNAPSHOT = /SELECT response_snapshot FROM idempotency_keys/
+
+  function lockedKeyOf(args: RegisterTxArgs): string {
+    return deterministicUuid([REGISTER_IDEMPOTENCY_SCOPE, `user:${USER}`, args.idempotencyKey])
+  }
+
+  it("takes the key lock before any other statement, so a twin reads the winner's snapshot", async () => {
+    const args = registerArgs()
+    const fake = makeFakeSql([
+      { match: EVENT_LOCK, rows: [eventRow()] },
+      { match: REGISTRATION_INSERT, rows: [{ id: REGISTRATION }] },
+      { match: REGISTRATION_RELOAD, rows: [registrationRow()] },
+    ])
+
+    await repoOver(fake).registerTx(args)
+
+    const first = fake.statements[0]
+    expect(first?.sql).toMatch(KEY_LOCK)
+    expect(first?.values).toContain(lockedKeyOf(args))
+    const snapshotAt = fake.statements.findIndex((s) => SNAPSHOT.test(s.sql))
+    expect(snapshotAt).toBeGreaterThan(0)
+    expect(fake.statements.filter((s) => KEY_LOCK.test(s.sql))).toHaveLength(1)
+  })
+
+  it("replays the winner's registration instead of answering full once the lock is granted", async () => {
+    const fake = makeFakeSql([
+      { match: EVENT_LOCK, rows: [eventRow({ capacity: 1 })] },
+      { match: SNAPSHOT, rows: [{ response_snapshot: { registrationId: REGISTRATION } }] },
+      { match: /COALESCE\(sum\(party_size\), 0\)/, rows: [{ held: 1 }] },
+      { match: REGISTRATION_RELOAD, rows: [registrationRow()] },
+    ])
+
+    const outcome = await repoOver(fake).registerTx(registerArgs())
+
+    expect(outcome.kind).toBe("replayed")
+    const keyLockAt = fake.statements.findIndex((s) => KEY_LOCK.test(s.sql))
+    const snapshotAt = fake.statements.findIndex((s) => SNAPSHOT.test(s.sql))
+    expect(keyLockAt).toBe(0)
+    expect(snapshotAt).toBeGreaterThan(keyLockAt)
+  })
+})
+
+describe("registering with a slot takes ticket type, then slot, then member rows", () => {
+  it("locks the slot after the seat reserve and before the member and registration inserts", async () => {
+    const fake = makeFakeSql([
+      { match: EVENT_LOCK, rows: [eventRow()] },
+      {
+        match: /FROM cleanup_ticket_types\s+WHERE cleanup_id = \?\s+ORDER BY sort_order, id/,
+        rows: [
+          {
+            id: TYPE,
+            capacity: 5,
+            reserved_seats: 0,
+            sales_opens_at: null,
+            sales_closes_at: null,
+            visibility: "public",
+            access_code_hash: null,
+            max_party_size: 4,
+          },
+        ],
+      },
+      { match: /SET reserved_seats = reserved_seats \+/, rows: [{ id: TYPE }] },
+      { match: /FROM cleanup_slots\s+WHERE id = \?/, rows: [{ capacity: 3 }] },
+      { match: /count\(\*\)::int AS n FROM cleanup_slot_claims/, rows: [{ n: 0 }] },
+      { match: REGISTRATION_INSERT, rows: [{ id: REGISTRATION }] },
+      { match: REGISTRATION_RELOAD, rows: [registrationRow({ slot_id: SLOT })] },
+    ])
+
+    const outcome = await repoOver(fake).registerTx(
+      registerArgs({ ticketTypeId: TYPE, slotId: SLOT }),
+    )
+
+    expect(outcome.kind).toBe("registered")
+    const at = (match: RegExp): number => fake.statements.findIndex((s) => match.test(s.sql))
+    const reserve = at(/SET reserved_seats = reserved_seats \+/)
+    const slotLock = at(/FROM cleanup_slots\s+WHERE id = \?/)
+    const memberInsert = at(/INSERT INTO cleanup_members/)
+    const registrationInsert = at(REGISTRATION_INSERT)
+    expect(reserve).toBeGreaterThanOrEqual(0)
+    expect(slotLock).toBeGreaterThan(reserve)
+    expect(memberInsert).toBeGreaterThan(slotLock)
+    expect(registrationInsert).toBeGreaterThan(slotLock)
   })
 })

@@ -8,7 +8,12 @@ import {
   type EventVisibility,
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
-import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { writeHostAudit } from "./host-audit.js"
@@ -548,12 +553,15 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
     async listInvitesForUser(
       args: ListInvitesForUserArgs,
     ): Promise<{ items: PendingInviteForUserRecord[]; nextCursor: string | null }> {
-      const cursor = parseTimeCursor(args.cursor)
+      const cursor = parseKeysetCursor(args.cursor)
       const cursorFilter =
-        cursor !== null ? sql`AND (i.created_at, i.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
-      const rows = await sql<PendingInviteForUserRowSelect[]>`
+        cursor !== null
+          ? sql`AND ${keysetPredicate(sql, sql`i.created_at`, sql`i.id`, cursor)}`
+          : sql``
+      const rows = await sql<(PendingInviteForUserRowSelect & { cursor_at: string })[]>`
         SELECT
           i.id,
+          ${keysetInstant(sql, sql`i.created_at`)} AS cursor_at,
           i.role,
           i.created_at,
           i.expires_at,
@@ -581,9 +589,11 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         ORDER BY i.created_at DESC, i.id DESC
         LIMIT ${args.limit + 1}
       `
-      return pageWith(rows.map(toPendingInviteForUser), args.limit, (last) =>
-        encodeTimeCursor({ at: last.createdAt, id: last.id }),
-      )
+      const page = paginateKeyset(rows, args.limit, (last) => ({
+        atText: last.cursor_at,
+        id: last.id,
+      }))
+      return { items: page.items.map(toPendingInviteForUser), nextCursor: page.nextCursor }
     },
 
     async acceptInviteByIdTx(args: {

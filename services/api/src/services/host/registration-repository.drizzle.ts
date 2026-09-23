@@ -3,11 +3,14 @@ import type { CheckinMethod, EventVisibility, RegistrationRosterSort } from "@ci
 import type { Queryable, Sql, TransactionSql } from "../../db/client.js"
 import { constantTimeStringEqual } from "../../auth/crypto.js"
 import {
+  encodeKeysetCursor,
   encodeNameCursor,
-  encodeTimeCursor,
+  keysetInstant,
+  keysetPredicate,
   pageWith,
+  paginateKeyset,
+  parseKeysetCursor,
   parseNameCursor,
-  parseTimeCursor,
 } from "../../db/cursor-helpers.js"
 import { DEFAULT_EVENT_DURATION_MS, eventWindowOfRow, hasEventEnded } from "../cleanup-rules.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
@@ -113,35 +116,42 @@ const ROSTER_SORTS = Object.freeze({
     tag`${rosterCheckedInKey(tag)} DESC, r.registered_at DESC, r.id DESC`,
 }) satisfies Readonly<Record<RegistrationRosterSort, (tag: Sql) => unknown>>
 
+/**
+ * Both instants are the microsecond text Postgres rendered (or a legacy cursor spelled), bound back as
+ * text: a Date anchor drops the microseconds and skips every row sharing the anchor's millisecond.
+ */
 interface CheckedInRosterCursor {
-  checkedInAt: Date
-  registeredAt: Date | null
+  checkedInAtText: string
+  registeredAtText: string | null
   id: string
 }
 
+type RosterRowSelect = RegistrationRowSelect & { cursor_at: string; checked_in_cursor_at: string }
+
 // Carries every ORDER BY key: everyone not yet checked in shares the epoch sort key, so a cursor
 // without registered_at cannot say where inside that tie the previous page stopped.
-function encodeCheckedInRosterCursor(row: {
-  checked_in_at: Date | null
-  registered_at: Date
-  id: string
-}): string {
-  const checkedInAt = (row.checked_in_at ?? new Date(0)).toISOString()
-  return `${checkedInAt}|${encodeTimeCursor({ at: row.registered_at, id: row.id })}`
+function encodeCheckedInRosterCursor(row: RosterRowSelect): string {
+  return `${row.checked_in_cursor_at}|${encodeKeysetCursor(row.cursor_at, row.id)}`
 }
 
 function parseCheckedInRosterCursor(cursor: string): CheckedInRosterCursor | null {
   const parts = cursor.split("|")
   if (parts.length <= 2) {
-    const legacy = parseTimeCursor(cursor, { direction: "desc" })
-    return legacy === null ? null : { checkedInAt: legacy.at, registeredAt: null, id: legacy.id }
+    const legacy = parseKeysetCursor(cursor, { direction: "desc" })
+    return legacy === null
+      ? null
+      : { checkedInAtText: legacy.atText, registeredAtText: null, id: legacy.id }
   }
   if (parts.length !== 3) return null
   const [checkedInText, registeredText, id] = parts
-  const checkedIn = parseTimeCursor(`${checkedInText}|${id}`)
-  const registered = parseTimeCursor(`${registeredText}|${id}`)
+  const checkedIn = parseKeysetCursor(`${checkedInText}|${id}`)
+  const registered = parseKeysetCursor(`${registeredText}|${id}`)
   if (checkedIn === null || registered === null) return null
-  return { checkedInAt: checkedIn.at, registeredAt: registered.at, id: registered.id }
+  return {
+    checkedInAtText: checkedIn.atText,
+    registeredAtText: registered.atText,
+    id: registered.id,
+  }
 }
 
 async function isBannedIn(tag: Queryable, cleanupId: string, userId: string): Promise<boolean> {
@@ -751,11 +761,13 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       args.status === null || args.status === "waiting" || args.status === "offered"
         ? tag`AND ${waitlistEntryNotBanned(tag)}`
         : tag``
-    const cursor = parseTimeCursor(args.cursor, { direction: "asc" })
+    const cursor = parseKeysetCursor(args.cursor, { direction: "asc" })
     const cursorFilter =
-      cursor === null ? tag`` : tag`AND (w.created_at, w.id) > (${cursor.at}, ${cursor.id}::uuid)`
-    const rows = await tag<WaitlistRowSelect[]>`
-      SELECT ${waitlistColumns(tag)}
+      cursor === null
+        ? tag``
+        : tag`AND ${keysetPredicate(tag, tag`w.created_at`, tag`w.id`, cursor, { direction: "asc" })}`
+    const rows = await tag<(WaitlistRowSelect & { cursor_at: string })[]>`
+      SELECT ${waitlistColumns(tag)}, ${keysetInstant(tag, tag`w.created_at`)} AS cursor_at
         FROM cleanup_waitlist w
         ${waitlistJoins(tag)}
        WHERE w.cleanup_id = ${args.cleanupId}
@@ -766,9 +778,10 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
        ORDER BY w.created_at ASC, w.id ASC
        LIMIT ${args.limit + 1}
     `
-    const { items, nextCursor } = pageWith(rows, args.limit, (last) =>
-      encodeTimeCursor({ at: last.created_at, id: last.id }),
-    )
+    const { items, nextCursor } = paginateKeyset(rows, args.limit, (last) => ({
+      atText: last.cursor_at,
+      id: last.id,
+    }))
     return { rows: items.map(toWaitlistRecord), nextCursor }
   }
 
@@ -861,6 +874,13 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
 
   async function registerIn(tx: TransactionSql, args: RegisterTxArgs): Promise<RegisterTxOutcome> {
     const partySize = args.seats.length
+    // A same-key twin (a double tap) waits here until the first attempt commits, then reads its
+    // snapshot and replays; without it the twin could queue on a seat lock and answer "full" to the
+    // user who holds the seat. Only twins share this lock, and it precedes every lock taken below, so
+    // it adds no lock-order edge.
+    await tx`
+      SELECT pg_advisory_xact_lock(hashtext('register_idempotency:' || ${registerIdempotencyKey(args)}))
+    `
     const locked = await tx<
       {
         status: EventRegistrationContext["status"]
@@ -974,14 +994,6 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       }
     }
 
-    if (args.subject.kind === "user") {
-      await tx`
-        INSERT INTO cleanup_members (cleanup_id, user_id, role)
-        VALUES (${args.cleanupId}, ${args.subject.userId}, 'member')
-        ON CONFLICT (cleanup_id, user_id) DO NOTHING
-      `
-    }
-
     if (ticketType !== null && args.waitlistId === null) {
       const reserved = await tx<{ id: string }[]>`
         UPDATE cleanup_ticket_types
@@ -997,6 +1009,24 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       if (reserved.length === 0) {
         throw new RegistrationRefusal({ kind: "full" })
       }
+    }
+
+    // Ticket type, then slot, then member and registration rows: the standalone slot claim takes the
+    // slot before its member and registration writes, so the reverse order here could deadlock.
+    if (args.slotId !== null && args.subject.kind === "user") {
+      await claimSlotIn(tx, {
+        cleanupId: args.cleanupId,
+        userId: args.subject.userId,
+        slotId: args.slotId,
+      })
+    }
+
+    if (args.subject.kind === "user") {
+      await tx`
+        INSERT INTO cleanup_members (cleanup_id, user_id, role)
+        VALUES (${args.cleanupId}, ${args.subject.userId}, 'member')
+        ON CONFLICT (cleanup_id, user_id) DO NOTHING
+      `
     }
 
     const insertedRegistration = await tx<{ id: string }[]>`
@@ -1086,14 +1116,6 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
           ${args.now}
         )
       `
-    }
-
-    if (args.slotId !== null && args.subject.kind === "user") {
-      await claimSlotIn(tx, {
-        cleanupId: args.cleanupId,
-        userId: args.subject.userId,
-        slotId: args.slotId,
-      })
     }
 
     if (args.waitlistId !== null) {
@@ -1695,24 +1717,23 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
         if (query.sort === "checked_in_at_desc") {
           const cursor = parseCheckedInRosterCursor(query.cursor)
           if (cursor === null) return sql``
-          if (cursor.registeredAt === null) {
+          if (cursor.registeredAtText === null) {
             // A cursor minted before it carried registered_at cannot place itself inside a tie, so it
             // resumes at the start of that tie: a row may repeat once, none is skipped.
-            return sql`AND ${rosterCheckedInKey(sql)} <= ${cursor.checkedInAt}`
+            return sql`AND ${rosterCheckedInKey(sql)} <= ${cursor.checkedInAtText}::timestamptz`
           }
-          return sql`AND (${rosterCheckedInKey(sql)}, r.registered_at, r.id) < (${cursor.checkedInAt}, ${cursor.registeredAt}, ${cursor.id}::uuid)`
+          return sql`AND (${rosterCheckedInKey(sql)}, r.registered_at, r.id) < (${cursor.checkedInAtText}::timestamptz, ${cursor.registeredAtText}::timestamptz, ${cursor.id}::uuid)`
         }
         const direction = query.sort === "registered_at_asc" ? "asc" : "desc"
-        const cursor = parseTimeCursor(query.cursor, { direction })
+        const cursor = parseKeysetCursor(query.cursor, { direction })
         if (cursor === null) return sql``
-        if (query.sort === "registered_at_asc") {
-          return sql`AND (r.registered_at, r.id) > (${cursor.at}, ${cursor.id}::uuid)`
-        }
-        return sql`AND (r.registered_at, r.id) < (${cursor.at}, ${cursor.id}::uuid)`
+        return sql`AND ${keysetPredicate(sql, sql`r.registered_at`, sql`r.id`, cursor, { direction })}`
       })()
 
-      const rows = await sql<RegistrationRowSelect[]>`
-        SELECT ${registrationColumns(sql)}
+      const rows = await sql<RosterRowSelect[]>`
+        SELECT ${registrationColumns(sql)},
+               ${keysetInstant(sql, sql`r.registered_at`)} AS cursor_at,
+               ${keysetInstant(sql, rosterCheckedInKey(sql))} AS checked_in_cursor_at
           FROM cleanup_registrations r
           ${registrationJoins(sql)}
          WHERE r.cleanup_id = ${query.cleanupId}
@@ -1733,7 +1754,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
           })
         }
         if (query.sort === "checked_in_at_desc") return encodeCheckedInRosterCursor(last)
-        return encodeTimeCursor({ at: last.registered_at, id: last.id })
+        return encodeKeysetCursor(last.cursor_at, last.id)
       })
 
       const page: RosterPage = { rows: await hydrate(sql, items), nextCursor }

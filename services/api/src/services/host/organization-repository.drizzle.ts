@@ -9,7 +9,16 @@ import type {
 import { AppError, MAX_ORG_INVITES_PER_ORG } from "@civfix/shared"
 import type postgres from "postgres"
 import type { Queryable, Sql } from "../../db/client.js"
-import { encodeTimeCursor, isUuid, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
+import {
+  encodeTimeCursor,
+  isUuid,
+  keysetInstant,
+  keysetPredicate,
+  pageWith,
+  paginateKeyset,
+  parseKeysetCursor,
+  parseTimeCursor,
+} from "../../db/cursor-helpers.js"
 import { likeContains } from "../admin/like.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
 import { mediaBoundElsewhere, uploadedByClaimant } from "../media-bindings.js"
@@ -359,6 +368,13 @@ async function countAdminSeats(tx: Queryable, organizationId: string): Promise<n
 }
 
 export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationRepository {
+  function memberCursorFilter(raw: string | null) {
+    const cursor = parseKeysetCursor(raw, { direction: "asc" })
+    return cursor === null
+      ? sql``
+      : sql`AND ${keysetPredicate(sql, sql`m.joined_at`, sql`m.user_id`, cursor, { direction: "asc" })}`
+  }
+
   async function readById(
     tag: Queryable,
     id: string,
@@ -575,11 +591,6 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       cursor: string | null
       limit: number
     }): Promise<{ items: OrganizationMemberRecord[]; nextCursor: string | null }> {
-      const cursor = parseTimeCursor(args.cursor)
-      const cursorFilter =
-        cursor !== null
-          ? sql`AND (m.joined_at, m.user_id) > (${cursor.at}, ${cursor.id}::uuid)`
-          : sql``
       const rows = await sql<
         {
           user_id: string
@@ -589,18 +600,24 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           avatar_url: string | null
           role: OrganizationMemberRole
           joined_at: Date
+          cursor_at: string
         }[]
       >`
-        SELECT m.user_id, u.display_name, u.handle, u.bio, u.avatar_url, m.role, m.joined_at
+        SELECT m.user_id, u.display_name, u.handle, u.bio, u.avatar_url, m.role, m.joined_at,
+               ${keysetInstant(sql, sql`m.joined_at`)} AS cursor_at
         FROM organization_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.organization_id = ${args.organizationId}
-          ${cursorFilter}
+          ${memberCursorFilter(args.cursor)}
         ORDER BY m.joined_at ASC, m.user_id ASC
         LIMIT ${args.limit + 1}
       `
-      return pageWith(
-        rows.map((r) => ({
+      const page = paginateKeyset(rows, args.limit, (last) => ({
+        atText: last.cursor_at,
+        id: last.user_id,
+      }))
+      return {
+        items: page.items.map((r) => ({
           person: {
             id: r.user_id,
             displayName: r.display_name,
@@ -611,9 +628,8 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           role: r.role,
           joinedAt: r.joined_at,
         })),
-        args.limit,
-        (last) => encodeTimeCursor({ at: last.joinedAt, id: last.person.id }),
-      )
+        nextCursor: page.nextCursor,
+      }
     },
 
     async findMember(
@@ -1013,7 +1029,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       nextCursor: string | null
       counts: AdminOrganizationCounts | null
     }> {
-      const cursor = parseTimeCursor(query.cursor)
+      const cursor = parseKeysetCursor(query.cursor)
       const q = query.q?.trim() ?? ""
       const qFilter =
         q.length > 0
@@ -1031,9 +1047,12 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             ? sql`AND o.suspended_at IS NOT NULL`
             : sql`AND o.suspended_at IS NULL`
       const cursorFilter =
-        cursor !== null ? sql`AND (o.created_at, o.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
-      const rows = await sql<AdminOrganizationRowSelect[]>`
-        SELECT ${adminOrganizationColumns(sql)}
+        cursor !== null
+          ? sql`AND ${keysetPredicate(sql, sql`o.created_at`, sql`o.id`, cursor)}`
+          : sql``
+      const rows = await sql<(AdminOrganizationRowSelect & { cursor_at: string })[]>`
+        SELECT ${adminOrganizationColumns(sql)},
+               ${keysetInstant(sql, sql`o.created_at`)} AS cursor_at
         FROM organizations o
         ${adminOrganizationJoins(sql)}
         WHERE o.deleted_at IS NULL
@@ -1045,9 +1064,14 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         ORDER BY o.created_at DESC, o.id DESC
         LIMIT ${query.limit + 1}
       `
-      const page = pageWith(rows.map(toAdminOrganizationRecord), query.limit, (last) =>
-        encodeTimeCursor({ at: last.createdAt, id: last.id }),
-      )
+      const keyed = paginateKeyset(rows, query.limit, (last) => ({
+        atText: last.cursor_at,
+        id: last.id,
+      }))
+      const page = {
+        items: keyed.items.map(toAdminOrganizationRecord),
+        nextCursor: keyed.nextCursor,
+      }
       // Facet counts span the SEARCHED set but ignore the facets, and only on page one (the shared
       // admin-list policy: the console reads the chip numbers off the first page).
       let counts: AdminOrganizationCounts | null = null
@@ -1104,11 +1128,6 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       cursor: string | null
       limit: number
     }): Promise<{ items: AdminOrgMemberRecord[]; nextCursor: string | null }> {
-      const cursor = parseTimeCursor(args.cursor)
-      const cursorFilter =
-        cursor !== null
-          ? sql`AND (m.joined_at, m.user_id) > (${cursor.at}, ${cursor.id}::uuid)`
-          : sql``
       const rows = await sql<
         {
           user_id: string
@@ -1117,25 +1136,30 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           created_at: Date
           role: OrganizationMemberRole
           joined_at: Date
+          cursor_at: string
         }[]
       >`
-        SELECT m.user_id, u.display_name, u.handle, u.created_at, m.role, m.joined_at
+        SELECT m.user_id, u.display_name, u.handle, u.created_at, m.role, m.joined_at,
+               ${keysetInstant(sql, sql`m.joined_at`)} AS cursor_at
         FROM organization_members m
         JOIN users u ON u.id = m.user_id
         WHERE m.organization_id = ${args.organizationId}
-          ${cursorFilter}
+          ${memberCursorFilter(args.cursor)}
         ORDER BY m.joined_at ASC, m.user_id ASC
         LIMIT ${args.limit + 1}
       `
-      return pageWith(
-        rows.map((r) => ({
+      const page = paginateKeyset(rows, args.limit, (last) => ({
+        atText: last.cursor_at,
+        id: last.user_id,
+      }))
+      return {
+        items: page.items.map((r) => ({
           user: { id: r.user_id, name: r.display_name, handle: r.handle, joined: r.created_at },
           role: r.role,
           joinedAt: r.joined_at,
         })),
-        args.limit,
-        (last) => encodeTimeCursor({ at: last.joinedAt, id: last.user.id }),
-      )
+        nextCursor: page.nextCursor,
+      }
     },
 
     async adminAddMemberTx(args: AdminAddMemberArgs): Promise<AdminAddMemberOutcome> {

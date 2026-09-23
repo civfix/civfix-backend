@@ -230,6 +230,35 @@ describe.skipIf(!pg)("registration capacity (integration)", () => {
     expect(await reservedSeats(ticketTypeId)).toBe(1)
   })
 
+  it("replays a same-key twin that raced for the last seat instead of answering full", async () => {
+    const organizer = await newUser("Organizer")
+    const cleanupId = await newCleanup(organizer)
+    const ticketTypeId = await newTicketType(cleanupId, { capacity: 1, maxPartySize: 1 })
+    const userId = await newUser("Double tap")
+    const now = new Date()
+    const args = {
+      cleanupId,
+      subject: { kind: "user" as const, userId },
+      ticketTypeId,
+      accessCodeHash: null,
+      answers: [],
+      consent: null,
+      slotId: null,
+      source: "self" as const,
+      idempotencyKey: "double-tap-key",
+      waitlistId: null,
+      now,
+    }
+
+    const outcomes = await Promise.all([
+      repo.registerTx({ ...args, seats: seats(1) }),
+      repo.registerTx({ ...args, seats: seats(1) }),
+    ])
+
+    expect(outcomes.map((o) => o.kind).sort()).toEqual(["registered", "replayed"])
+    expect(await reservedSeats(ticketTypeId)).toBe(1)
+  })
+
   it("releases exactly the seats a cancel held, in one statement", async () => {
     const organizer = await newUser("Organizer")
     const cleanupId = await newCleanup(organizer)
