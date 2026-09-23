@@ -1,5 +1,5 @@
 import { formatCertificateCode } from "@civfix/shared"
-import { FONT, fontBuffer, fontFor } from "./certificate-fonts.js"
+import { FONT, fontBuffer, fontFor, type FontFile } from "./certificate-fonts.js"
 import {
   DEFAULT_PAGE_PLAN_OPTIONS,
   issuerNeedsNewPage,
@@ -113,6 +113,7 @@ interface Column {
 
 interface PdfContext {
   doc: Doc
+  fonts: LoadedFonts
   registeredFonts: Set<string>
   qrcode: QrCodeFactory
   t: CertificateTranslator
@@ -129,15 +130,32 @@ interface PdfContext {
   tableContinues: boolean
 }
 
-function useFont(ctx: PdfContext, file: string, size: number): Doc {
+type LoadedFonts = ReadonlyMap<FontFile, PromiseSettledResult<Buffer>>
+
+// Every face is read before drawing starts, but a failed read is only thrown where the face is first
+// used, so a missing CJK face still fails only the documents that need it.
+async function loadFonts(): Promise<LoadedFonts> {
+  const files = Object.values(FONT)
+  const results = await Promise.allSettled(files.map((file) => fontBuffer(file)))
+  return new Map(results.map((result, index) => [files[index]!, result]))
+}
+
+function loadedFont(ctx: PdfContext, file: FontFile): Buffer {
+  const read = ctx.fonts.get(file)
+  if (read === undefined) throw new Error(`certificate font ${file} was not loaded`)
+  if (read.status === "rejected") throw read.reason
+  return read.value
+}
+
+function useFont(ctx: PdfContext, file: FontFile, size: number): Doc {
   if (!ctx.registeredFonts.has(file)) {
-    ctx.doc.registerFont(file, fontBuffer(file))
+    ctx.doc.registerFont(file, loadedFont(ctx, file))
     ctx.registeredFonts.add(file)
   }
   return ctx.doc.font(file).fontSize(size)
 }
 
-function displayFont(text: string): string {
+function displayFont(text: string): FontFile {
   return fontFor(text, "bold") === FONT.cjk ? FONT.cjk : FONT.display
 }
 
@@ -147,7 +165,7 @@ function toDate(value: Date | string): Date {
 
 function line(
   ctx: PdfContext,
-  file: string,
+  file: FontFile,
   size: number,
   color: string,
   text: string,
@@ -631,6 +649,7 @@ function collectBytes(doc: Doc): Promise<Uint8Array> {
 export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise<Uint8Array> {
   const PDFDocument = (await import("pdfkit")).default
   const qrcode = (await import("qrcode-generator")).default
+  const fonts = await loadFonts()
 
   const { model } = input
   const t = input.t ?? certificateTranslator(model.locale)
@@ -663,6 +682,7 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
 
   const ctx: PdfContext = {
     doc,
+    fonts,
     registeredFonts: new Set<string>(),
     qrcode,
     t,

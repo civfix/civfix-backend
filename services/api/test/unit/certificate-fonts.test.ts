@@ -63,9 +63,9 @@ describe("certificate fonts", () => {
     }
   })
 
-  it("reads and memoizes font buffers", () => {
-    const first = fontBuffer(FONT.body)
+  it("reads and memoizes font buffers", async () => {
+    const first = await fontBuffer(FONT.body)
     expect(first.length).toBeGreaterThan(1024)
-    expect(fontBuffer(FONT.body)).toBe(first)
+    expect(await fontBuffer(FONT.body)).toBe(first)
   })
 })
