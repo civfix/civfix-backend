@@ -166,6 +166,8 @@ const defaultFetch: FetchLike = async (url: string) => {
     const body = await res.json()
     return { ok: true, json: () => Promise.resolve(body) }
   } catch {
+    // Timeout, DNS failure and an unparseable body all mean "provider unreachable", which fetchKeys
+    // answers with a retryable 503 rather than a 401 that would tell the client to sign in again.
     return { ok: false, json: () => Promise.resolve(null) }
   } finally {
     clearTimeout(timer)

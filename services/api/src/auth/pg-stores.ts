@@ -212,7 +212,15 @@ export class PgUserStore implements UserStore {
     return r ? toUserRecord(r) : null
   }
 
-  async updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
+  updateProfile(id: string, input: UpdateProfileInput): Promise<UserRecord> {
+    return this.writeProfile(id, input, true)
+  }
+
+  private async writeProfile(
+    id: string,
+    input: UpdateProfileInput,
+    retryOnLostRename: boolean,
+  ): Promise<UserRecord> {
     const current = await this.findById(id)
     if (!current) throw AppError.notFound("User not found.")
 
@@ -258,19 +266,30 @@ export class PgUserStore implements UserStore {
       }
       set.socialLinks = Object.keys(clean).length > 0 ? clean : null
     }
+    // The cooldown was decided on the handle read above; pinning the write to that handle means a
+    // concurrent rename that landed first makes this one miss, and the retry re-decides on fresh state.
+    const renameGuard =
+      set.handle === undefined
+        ? undefined
+        : current.handle === null
+          ? isNull(users.handle)
+          : eq(users.handle, current.handle)
     let updated: (typeof users.$inferSelect)[]
     try {
       updated = await this.db
         .update(users)
         .set(set)
-        .where(and(eq(users.id, id), isNull(users.deletedAt)))
+        .where(and(eq(users.id, id), isNull(users.deletedAt), renameGuard))
         .returning()
     } catch (err) {
       if (isUniqueViolation(err)) throw AppError.conflict("That username is taken.")
       throw err
     }
     const r = updated[0]
-    if (!r) throw AppError.notFound("User not found.")
+    if (!r) {
+      if (renameGuard !== undefined && retryOnLostRename) return this.writeProfile(id, input, false)
+      throw AppError.notFound("User not found.")
+    }
     return toUserRecord(r)
   }
 
