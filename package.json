@@ -46,10 +46,15 @@
     "lint": "turbo run lint",
     "test": "turbo run test --continue",
     "check:sql": "node scripts/check-dynamic-sql.mjs",
+    "format:check": "prettier --check .",
+    "knip": "knip",
+    "dup:check": "jscpd",
     "dev": "turbo run dev",
     "clean": "turbo run clean"
   },
   "devDependencies": {
+    "jscpd": "^5.3.2",
+    "knip": "^5.88.1",
     "prettier": "^3.4.2",
     "turbo": "^2.3.3",
     "typescript": "^5.6.3"

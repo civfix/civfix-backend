@@ -34,7 +34,7 @@ civfix-backend/
     caddy/                      reverse-proxy Caddyfile
     secrets/                    SOPS + age docs and .sops.yaml
     tiles/                      note: map uses OpenStreetMap (CARTO Voyager) raster; no self-hosted tiles
-  .github/workflows/ci.yml      lint / typecheck / build / test + integration services
+  .github/workflows/ci.yml      lint / format / typecheck / static checks / build / test
   tsconfig.base.json            strict base TS config
   turbo.json                    turborepo task graph
   pnpm-workspace.yaml
@@ -84,8 +84,21 @@ pnpm build        # build @civfix/shared, then api + media-worker
 pnpm typecheck    # tsc --noEmit across all packages
 pnpm lint         # eslint across all packages
 pnpm test         # vitest unit tests
+pnpm format:check # prettier --check (Markdown is excluded, see .prettierignore)
+pnpm check:sql    # dynamic-SQL guard: unsafe/raw allowlist, Drizzle $client, parameter IS NULL tests
+pnpm knip         # unused files, exports and dependencies (knip.jsonc)
+pnpm dup:check    # copy-paste duplication over the service sources (.jscpd.json threshold)
 pnpm dev          # run services in watch mode (persistent)
 pnpm clean        # remove build artifacts
+```
+
+CI runs every command above except `dev` and `clean`. The Cloudflare email worker in
+`infra/email-worker` is not a workspace package and keeps its own lockfile, so it installs and tests
+in isolation:
+
+```
+pnpm --dir infra/email-worker install --frozen-lockfile --ignore-workspace
+pnpm --dir infra/email-worker test
 ```
 
 ## Running the API in dev (offline, no credentials)

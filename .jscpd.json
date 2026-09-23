@@ -1,0 +1,14 @@
+{
+  "path": ["services/api/src", "services/media-worker/src", "packages"],
+  "format": ["typescript"],
+  "ignore": [
+    "**/*.test.ts",
+    "**/*.generated.ts",
+    "**/drizzle/**",
+    "**/node_modules/**",
+    "**/dist/**"
+  ],
+  "minTokens": 70,
+  "reporters": ["console"],
+  "threshold": 0.5
+}

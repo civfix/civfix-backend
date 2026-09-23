@@ -47,8 +47,28 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Format check
+        run: pnpm format:check
+
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Dynamic-SQL guard
+        run: pnpm check:sql
+
+      # The email worker is not a workspace package: it deploys with wrangler from its own lockfile, so
+      # it installs in isolation. knip below analyzes it too, so this install comes first.
+      - name: Email worker install
+        run: pnpm --dir infra/email-worker install --frozen-lockfile --ignore-workspace
+
+      - name: Email worker test
+        run: pnpm --dir infra/email-worker test
+
+      - name: Unused files, exports and dependencies (knip)
+        run: pnpm knip
+
+      - name: Duplication (jscpd)
+        run: pnpm dup:check
 
       - name: Build
         run: pnpm build

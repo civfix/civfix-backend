@@ -49,5 +49,8 @@ a pull request that adds one.
 - Validate every input at the boundary, check authorization on every path,
   keep secrets out of code and logs, minimize personal data.
 - No N+1 queries, index new query paths, bound every result set.
-- Add or update tests with the change. Typecheck, lint and tests pass in the
-  repository before the PR opens.
+- Add or update tests with the change. Before the PR opens, these pass from
+  the repository root: `pnpm lint`, `pnpm typecheck`, `pnpm format:check`,
+  `pnpm check:sql`, `pnpm knip`, `pnpm dup:check` and `pnpm test`, plus the
+  email worker's own tests (`pnpm --dir infra/email-worker test`) when it
+  changes. CI runs the same checks.
