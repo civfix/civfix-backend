@@ -8,6 +8,7 @@ import {
   PREVIEW_SOURCE_CHARS,
   toPreview,
 } from "./mail-preview.js"
+import { normalizeAuthVerdict } from "./mail-mappers.js"
 import type {
   InboundEmailDTO,
   InboundEmailListItemDTO,
@@ -45,7 +46,9 @@ export function localPartOf(recipient: string | null): string {
   return at > 0 ? recipient.slice(0, at) : recipient
 }
 
-interface InboundListRowSelect {
+export const INBOUND_AUTH_VERDICT_HEADER = "x-civfix-auth-verdict"
+
+export interface InboundListRowSelect {
   id: string
   from_addr: string | null
   recipient: string | null
@@ -55,9 +58,13 @@ interface InboundListRowSelect {
   has_attachments: boolean
   status: InboundEmailStatus
   received_at: Date
+  auth_verdict: string | null
 }
 
-interface InboundRowSelect extends Omit<InboundListRowSelect, "preview_text" | "preview_html"> {
+interface InboundRowSelect extends Omit<
+  InboundListRowSelect,
+  "preview_text" | "preview_html" | "auth_verdict"
+> {
   message_id: string
   to_addr: string | null
   body_text: string | null
@@ -66,7 +73,7 @@ interface InboundRowSelect extends Omit<InboundListRowSelect, "preview_text" | "
   attachments: MailAttachment[] | null
 }
 
-function toListItem(r: InboundListRowSelect): InboundEmailListItemDTO {
+export function toListItem(r: InboundListRowSelect): InboundEmailListItemDTO {
   return {
     id: r.id,
     from: r.from_addr ?? "",
@@ -78,12 +85,18 @@ function toListItem(r: InboundListRowSelect): InboundEmailListItemDTO {
     status: r.status,
     unread: r.status === "unread",
     hasAttachments: r.has_attachments,
+    authVerdict: normalizeAuthVerdict(r.auth_verdict),
   }
 }
 
 function toDTO(r: InboundRowSelect): InboundEmailDTO {
   return {
-    ...toListItem({ ...r, preview_text: r.body_text, preview_html: r.body_html }),
+    ...toListItem({
+      ...r,
+      preview_text: r.body_text,
+      preview_html: r.body_html,
+      auth_verdict: r.headers?.[INBOUND_AUTH_VERDICT_HEADER] ?? null,
+    }),
     bodyText: r.body_text ?? "",
     bodyHtml: r.body_html,
     messageId: r.message_id,
@@ -152,7 +165,8 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
         SELECT id, from_addr, recipient, subject,
                left(body_text, ${PREVIEW_SOURCE_CHARS}) AS preview_text,
                left(body_html, ${HTML_PREVIEW_SOURCE_CHARS}) AS preview_html,
-               has_attachments, status, received_at
+               has_attachments, status, received_at,
+               headers->>${INBOUND_AUTH_VERDICT_HEADER}::text AS auth_verdict
         FROM inbound_emails
         WHERE true
           ${statusFilter}

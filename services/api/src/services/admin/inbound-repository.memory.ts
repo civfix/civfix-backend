@@ -2,11 +2,13 @@
 import { randomUUID } from "node:crypto"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import {
+  INBOUND_AUTH_VERDICT_HEADER,
   localPartOf,
   type InboundEmailInsert,
   type InboundRepository,
 } from "./inbound-repository.drizzle.js"
 import { toPreview } from "./mail-preview.js"
+import { normalizeAuthVerdict } from "./mail-mappers.js"
 import type {
   InboundEmailDTO,
   InboundEmailListItemDTO,
@@ -123,6 +125,7 @@ function toListItem(r: StoredInbound): InboundEmailListItemDTO {
     status: r.status,
     unread: r.status === "unread",
     hasAttachments: r.attachments.length > 0,
+    authVerdict: normalizeAuthVerdict(r.headers[INBOUND_AUTH_VERDICT_HEADER]),
   }
 }
 
