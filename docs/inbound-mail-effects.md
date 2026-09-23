@@ -1,7 +1,7 @@
 # Mail effects and the outbound send triad
 
 **Audience:** internal (engineering). Not served publicly.
-**Last updated:** 2026-09-22 (sender authentication policy; unauthenticated token replies file as unaffiliated).
+**Last updated:** 2026-09-23 (an attempt with no outcome yet counts as in flight; bounce bookkeeping and its completion marker).
 
 An inbound message that correlates to a mail thread can drive **public** effects: a report status
 transition, a public `report_timeline` row, a report-chat system message, and a push to the reporter.
@@ -175,6 +175,34 @@ The exposure is bounded and one-sided:
 If `report_timeline` later gains a `meta` jsonb for another reason, the fix is to stamp the mail message
 id into the row and make the timeline/chat/notify steps no-op when that marker is already present.
 
+## Bounces: bookkeeping and its completion marker
+
+A delivery status notification (`detectBounce` in `services/api/src/services/admin/inbound-bounce.ts`:
+a `mailer-daemon@` or `postmaster@` sender, a `report-type=delivery-status` content type, or an
+`X-Failed-Recipients` header) is stored in the Inbox and then runs `handleBounce`. It acts only when the
+DSN names both a failed recipient and an original Message-ID, the sender passes
+`isPlausibleBounceSender`, and the Message-ID maps to a thread that actually sent to that recipient. It
+then, in order:
+
+1. sets the thread status to `bounced`;
+2. stamps `bounced_at` on the jurisdiction's `jurisdiction_contacts` rows for that address and enqueues
+   `jurisdiction.discovery` for the geoid (when a geoid is known, from the thread or the contact);
+3. writes the `bounced` mail event, with meta `{ failedRecipient, originalMessageId }`.
+
+The `bounced` event is written **last** because it is the completion marker. When a step throws, the
+object stays in `inbound/pending/` and the next sweep replays it; a replay runs `handleBounce` again,
+which first asks `hasBounceEvent` (same thread, `type = 'bounced'`, same `originalMessageId`, same
+`failedRecipient` ignoring case). With no marker it repeats the steps, all of which are safe to repeat.
+With the marker it does nothing, so a duplicate delivery of a finished DSN cannot force a thread back to
+`bounced` after an operator has changed its status.
+
+A legacy `contact_emails` address has no `bounced_at` column, so the event's `failedRecipient` is what
+marks it unusable: `legacyContactEmailUsable` skips an address with a `bounced` event on that
+jurisdiction's threads newer than `contact_updated_at`, or with a bounced per-category row for the same
+address. Discovery, the jurisdiction health probe behind `resolveForPoint` and the outreach digest all
+apply it, and all ignore a per-category contact whose `bounced_at` is set. Saving the contact again moves
+`contact_updated_at` past the old event, which makes a corrected address usable again.
+
 
 ---
 
@@ -188,7 +216,7 @@ service and the admin report repository import.
 |---|---|
 | **Send deadline** (`outboundSendDeadlineMs`) | Total wall clock for one delivery: a phase budget (`OCI_EMAIL_SMTP_TIMEOUT_MS × 3`, covering connect + greeting + socket, all of which are INACTIVITY timeouts and so bound nothing on a trickling relay) plus the payload's time at a floor throughput (`OUTBOUND_SEND_MIN_THROUGHPUT_BPS`, default 256 KiB/s). Clamped to `2^31 - 1` so it can never overflow `setTimeout`, which Node silently clamps to 1 ms. |
 | **In-flight window** (`ROUTE_DEADLINE_INFLIGHT_SECONDS`, 900 s) | How long a `failed` event whose meta says `reason: "deadline"` counts as *still in flight* rather than as a delivery failure. |
-| **Stale claim** (`ROUTE_CLAIM_STALE_SECONDS`, 900 s) | How long an outbound row with NO event at all counts as in flight before it is treated as a crashed claim and becomes re-routable. |
+| **Stale claim** (`ROUTE_CLAIM_STALE_SECONDS`, 900 s) | How long an outbound row with no `sent` and no `failed` event counts as in flight (reply, resend and re-route are refused) before it is treated as a crashed claim and becomes re-routable. |
 
 ## Why the deadline is not an abort
 
@@ -213,7 +241,18 @@ non-delivery**:
 `mail_events.message_id`), never thread-wide. Thread-wide, any earlier reason-less `failed` (attempt 1
 connect timeout, say) satisfied the predicate and killed the in-flight guard for every later attempt.
 The verdict is: a hard `failed` on the newest attempt → failed; a `deadline` failure inside the window →
-in flight; any other `failed` → failed; no event and older than the stale window → crashed claim.
+in flight; any other `failed` → failed; no event and younger than the stale window → in flight; no event
+and older than the stale window → crashed claim.
+
+`sendInFlightExpr` (`services/api/src/services/admin/outbound-send-sql.ts`) is the in-flight half of that
+verdict, read from the same newest attempt: no `sent` event, and either a `deadline` failure inside the
+window or no `failed` event at all while the outbound row is younger than the stale window. The outbound
+row is inserted before transmission starts, so an attempt with no outcome yet is a send still on the
+wire, or one whose process died mid-send; the two cannot be told apart until the stale window passes.
+Until then reply and resend (`MailService`, through `hasSendInFlight`) and re-route (`assertRoutable`,
+through the report's `send_in_flight`) answer 409 `SEND_IN_FLIGHT_CONFLICT`. Once a `sent` or `failed`
+event lands, or the row passes the stale window, the guard lifts and `sendFailedExpr` decides whether the
+attempt reads as failed.
 
 ## Why misconfiguration fails closed
 
