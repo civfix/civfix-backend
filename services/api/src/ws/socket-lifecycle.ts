@@ -19,9 +19,13 @@ import {
   WS_BUFFER_DROP_THRESHOLD,
   WS_BUFFER_TERMINATE_TICKS,
   WS_CLOSE_POLICY_VIOLATION,
+  WS_FRAME_RATE_LIMITED_MESSAGE,
+  WS_FRAME_BACKLOG_REASON,
   WS_HANDSHAKE_BUFFER_BYTES,
   WS_HANDSHAKE_FRAME_BUFFER,
   WS_HEARTBEAT_MS,
+  WS_MAX_QUEUED_BYTES,
+  WS_MAX_QUEUED_FRAMES,
   WS_REAUTH_INTERVAL_MS,
   WS_REAUTH_JITTER_MS,
   WS_SESSION_ENDED_MESSAGE,
@@ -403,8 +407,47 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
       }
       dropPending()
       let frameChain: Promise<void> = Promise.resolve()
+      let queuedFrames = 0
+      let queuedBytes = 0
+      let backlogClosed = false
+      const closeForBacklog = (): void => {
+        backlogClosed = true
+        request.log.warn(
+          { userId, queuedFrames, queuedBytes },
+          "ws: closing socket, inbound frame backlog over cap",
+        )
+        try {
+          session.conn.send(
+            serverFrame({
+              type: "error",
+              code: "RATE_LIMITED",
+              message: WS_FRAME_RATE_LIMITED_MESSAGE,
+            }),
+          )
+        } catch (err) {
+          request.log.debug({ err }, "ws: backlog-reject send failed (socket already closing)")
+        }
+        socket.close(WS_CLOSE_POLICY_VIOLATION, WS_FRAME_BACKLOG_REASON)
+      }
+      // The per-frame token bucket only runs when a frame is dequeued, so while one handler awaits
+      // a slow store every later frame would otherwise sit in memory unbounded.
       onFrame = (raw: string): void => {
-        frameChain = frameChain.then(() => runFrame(raw))
+        if (backlogClosed || session.closed) return
+        const bytes = Buffer.byteLength(raw, "utf8")
+        if (queuedFrames >= WS_MAX_QUEUED_FRAMES || queuedBytes + bytes > WS_MAX_QUEUED_BYTES) {
+          closeForBacklog()
+          return
+        }
+        queuedFrames += 1
+        queuedBytes += bytes
+        frameChain = frameChain.then(async () => {
+          try {
+            await runFrame(raw)
+          } finally {
+            queuedFrames -= 1
+            queuedBytes -= bytes
+          }
+        })
       }
     })()
   })

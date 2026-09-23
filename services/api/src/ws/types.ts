@@ -33,6 +33,15 @@ export const WS_HANDSHAKE_FRAME_BUFFER = 32
 
 export const WS_HANDSHAKE_BUFFER_BYTES = 64 * 1024
 
+// Counts the frame in flight, so a client may pipeline this many frames behind one slow handler.
+export const WS_MAX_QUEUED_FRAMES = 32
+
+export const WS_MAX_QUEUED_BYTES = 256 * 1024
+
+export const WS_FRAME_RATE_LIMITED_MESSAGE = "You're sending frames too fast. Please slow down."
+
+export const WS_FRAME_BACKLOG_REASON = "too many queued frames"
+
 export type IsMemberFn = (cleanupId: string, userId: string) => Promise<boolean>
 
 export type MarkReadFn = (cleanupId: string, userId: string, upToId: string) => Promise<void>

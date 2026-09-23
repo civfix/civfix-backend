@@ -196,18 +196,14 @@ describe("resolveWsUser (dual handshake auth)", () => {
 
   it("H5: accepts ?token ONLY under the WS_ALLOW_QUERY_TOKEN break-glass flag", async () => {
     const { sessions, token } = await withSession()
-    const prev = process.env.WS_ALLOW_QUERY_TOKEN
-    process.env.WS_ALLOW_QUERY_TOKEN = "1"
-    try {
-      expect(await resolveWsUser(fakeReq({ query: { token } }), sessions)).toEqual({
-        userId: ME,
-        sessionHash: await sha256Hex(token),
-        accountStatus: "active",
-      })
-    } finally {
-      if (prev === undefined) delete process.env.WS_ALLOW_QUERY_TOKEN
-      else process.env.WS_ALLOW_QUERY_TOKEN = prev
-    }
+    const server = {
+      container: { env: { WS_ALLOW_QUERY_TOKEN: true } },
+    } as unknown as FastifyRequest["server"]
+    expect(await resolveWsUser(fakeReq({ query: { token }, server }), sessions)).toEqual({
+      userId: ME,
+      sessionHash: await sha256Hex(token),
+      accountStatus: "active",
+    })
   })
 
   it("H2: a ?ticket bound to a live session retains that session's hash for the live re-check", async () => {

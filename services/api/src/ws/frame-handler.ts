@@ -19,6 +19,7 @@ import {
   TYPING_MIN_INTERVAL_MS,
   TYPING_THROTTLE_MAX_ROOMS,
   WS_FRAME_LIMIT,
+  WS_FRAME_RATE_LIMITED_MESSAGE,
   WS_MAX_JOINED_ROOMS,
   WS_SESSION_ENDED_MESSAGE,
 } from "./types.js"
@@ -586,7 +587,7 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
   if (session.closed) return
   const limiter = (session.frameLimiter ??= makeTokenBucketLimiter(WS_FRAME_LIMIT))
   if (!limiter.tryConsume(session.conn.id)) {
-    sendError(session.conn, "RATE_LIMITED", "You're sending frames too fast. Please slow down.")
+    sendError(session.conn, "RATE_LIMITED", WS_FRAME_RATE_LIMITED_MESSAGE)
     return
   }
   let parsedJson: unknown
