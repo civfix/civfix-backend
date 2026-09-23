@@ -6,15 +6,16 @@
  * single source, against an orphan sweep that reclaims a bounded batch per hour. This meters the
  * declared byte size instead, so the budget is denominated in the resource actually consumed.
  *
- * Semantics mirror abuse/counter-store.ts exactly, with INCRBY in place of INCR: the key is created at
- * `bytes` and the TTL is applied ONLY on creation, so the window is anchored to the caller's first
- * upload of the day and cannot be extended by continuing to spend.
+ * Semantics mirror abuse/counter-store.ts exactly, with INCRBY in place of INCR: the TTL is applied only
+ * while the key has none, so the window is anchored to the caller's first upload of the day and cannot
+ * be extended by continuing to spend, while a key that lost its expiry still gets one.
  *
  * FAIL CLOSED: `charge` never swallows a store error. A meter that cannot be read must not silently
  * become "unlimited" — that is exactly the failure mode H4 flagged in the rate limiter.
  */
 
 import type { RedisClient } from "../adapters/redis.js"
+import { attachAtomicIncrBy } from "../adapters/redis-incr.js"
 
 /** Per-subject daily budget. Generous for a real reporter (a handful of photos and a short video). */
 export const MEDIA_UPLOAD_BYTES_PER_DAY = 512 * 1024 * 1024
@@ -30,37 +31,15 @@ export interface ByteMeter {
   add(subject: string, bytes: number): Promise<number>
 }
 
-/**
- * Lua kept as a STATIC literal (never composed from input), matching adapters/redis-incr.ts: INCRBY +
- * PEXPIRE-on-create in ONE round-trip so a crash between the two cannot strand a TTL-less key and
- * lock a subject out of uploading forever.
- */
-const INCRBY_EXPIRE_LUA =
-  "local n = redis.call('INCRBY', KEYS[1], ARGV[1]); if n == tonumber(ARGV[1]) then redis.call('PEXPIRE', KEYS[1], ARGV[2]) end; return n"
-
-const COMMAND_NAME = "civfixIncrByExpire"
-
-type WithIncrBy = RedisClient & {
-  [COMMAND_NAME]?: (key: string, by: number, ttlMs: number) => Promise<unknown>
-}
-
 export class RedisByteMeter implements ByteMeter {
-  private readonly client: WithIncrBy
+  private readonly incrBy: ReturnType<typeof attachAtomicIncrBy>
 
   constructor(redis: RedisClient) {
-    this.client = redis as WithIncrBy
-    if (typeof this.client[COMMAND_NAME] !== "function") {
-      redis.defineCommand(COMMAND_NAME, { numberOfKeys: 1, lua: INCRBY_EXPIRE_LUA })
-    }
+    this.incrBy = attachAtomicIncrBy(redis)
   }
 
-  async add(subject: string, bytes: number): Promise<number> {
-    const result = await this.client[COMMAND_NAME]!(
-      MEDIA_UPLOAD_BYTE_PREFIX + subject,
-      Math.max(0, Math.floor(bytes)),
-      MEDIA_UPLOAD_BYTE_WINDOW_SECONDS * 1000,
-    )
-    return Number(result)
+  add(subject: string, bytes: number): Promise<number> {
+    return this.incrBy(MEDIA_UPLOAD_BYTE_PREFIX + subject, bytes, MEDIA_UPLOAD_BYTE_WINDOW_SECONDS)
   }
 }
 
