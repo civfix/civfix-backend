@@ -14,6 +14,7 @@ import {
   JurisdictionLookupUnavailableError,
   type JurisdictionLookup,
 } from "../../src/adapters/jurisdiction-lookup.census.js"
+import { makeFakeSql as makeRecordingSql } from "../helpers/fake-sql.js"
 
 const NOW = new Date("2026-05-31T00:00:00.000Z")
 
@@ -275,6 +276,50 @@ describe("makeJurisdictionService.resolveForPoint", () => {
     })
     const dto = await service.resolveForPoint(34.1, -118.35)
     expect(dto?.routable).toBe(false)
+  })
+})
+
+describe("resolveForPoint health probe ignores bounced contacts", () => {
+  it("counts neither a bounced per-category contact nor a bounced legacy address as routable", async () => {
+    const recording = makeRecordingSql([
+      {
+        match: /has_routing_contact/,
+        rows: [
+          {
+            geoid: "0644000",
+            contact_emails: [],
+            contact_updated_at: NOW,
+            population: 3_900_000,
+            has_routing_contact: false,
+          },
+        ],
+      },
+    ])
+    const resolved: ResolvedRow = { geoid: "0644000", name: "Los Angeles", layer: "place" }
+    const sql = Object.assign(recording.sql, {
+      unsafe: () => Promise.resolve([resolved]),
+    }) as unknown as Sql
+    const jobs = new FakeJobs()
+    const service = makeJurisdictionService({
+      sql,
+      geocoder: new FakeGeocoder(),
+      jobs,
+      now: () => NOW,
+    })
+
+    const dto = await service.resolveForPoint(34.1, -118.35)
+
+    const probe = recording.statements.find((s) => /has_routing_contact/.test(s.sql))?.sql ?? ""
+    const flat = probe.replace(/\s+/g, " ")
+    expect(flat).toMatch(
+      /FROM jurisdiction_contacts jc WHERE jc\.geoid = j\.geoid AND jc\.email IS NOT NULL AND jc\.email <> '' AND jc\.bounced_at IS NULL/,
+    )
+    expect(flat).toMatch(/FROM unnest\(j\.contact_emails\) AS e WHERE NOT EXISTS/)
+    expect(flat).toMatch(
+      /me\.type = 'bounced' AND lower\(me\.meta->>'failedRecipient'\) = lower\(e\)/,
+    )
+    expect(dto?.routable).toBe(false)
+    expect(jobs.jobsFor(JURISDICTION_DISCOVERY_JOB)).toHaveLength(1)
   })
 })
 
