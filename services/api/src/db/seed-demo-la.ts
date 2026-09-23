@@ -34,8 +34,9 @@
  *   Optional: --users N (default 250), --seed N (PRNG seed, default 20260902).
  *
  * Reads DATABASE_URL directly (not loadEnv) so it can run from a minimal shell; sslmode on the URL is
- * honored by makeDb exactly as the API does. A seed (not --purge) also needs TICKET_TOKEN_SECRET, the
- * API's own, because members of upcoming events get the free registration + seat a live sign-up mints.
+ * honored by makeDb exactly as the API does. A seed (not --purge) also needs TICKET_TOKEN_SECRET,
+ * resolved as the API resolves it (development fallback included), because members of upcoming events
+ * get the free registration + seat a live sign-up mints.
  */
 
 import { randomUUID } from "node:crypto"
@@ -51,7 +52,7 @@ import { reportH3Cell } from "../services/report-clustering.js"
 import { runIfMain } from "./cli.js"
 import { DEMO_EMAIL_DOMAIN } from "./seed-demo-domain.js"
 import { DEFAULT_EVENT_DURATION_MS, DEFAULT_EVENT_SLOT_TITLE } from "../services/cleanup-rules.js"
-import { demoTicketTokenHasher, mintDemoSignupSeats } from "./demo-join-event.js"
+import { demoTicketTokenHasher, mintDemoSignupSeats } from "./demo-signup-seats.js"
 import { touchUserActivity } from "./sql/user-activity.js"
 
 // Seeded addresses are typed by hand, the provenance the live create paths record for that case.

@@ -12,8 +12,9 @@
  * SAFETY: same stance as seed-demo-la — the default run is a REHEARSAL (everything runs in one
  * transaction, prints what it would do, then rolls back). Pass --yes to commit.
  *
- * The seat token hash is keyed by TICKET_TOKEN_SECRET, which must be the API's own secret or the demo
- * seats will not scan at check-in; the api container already carries it.
+ * The seat token hash is keyed by TICKET_TOKEN_SECRET, resolved exactly as the API resolves it (the
+ * development fallback included), or the demo seats will not scan at check-in; the api container
+ * already carries it.
  *
  * Usage (inside the api container, or anywhere with DATABASE_URL and TICKET_TOKEN_SECRET):
  *   node dist/db/demo-join-event.js --event 1695-000006            # rehearse
@@ -22,46 +23,11 @@
  *   uuid. Optional: --count N (default 15), --seed N (PRNG seed, default 20260902).
  */
 
-import { randomUUID } from "node:crypto"
-import { makeDb, type Queryable, type TransactionSql } from "./client.js"
+import { makeDb, type TransactionSql } from "./client.js"
 import { runIfMain } from "./cli.js"
 import { DEMO_EMAIL_DOMAIN } from "./seed-demo-domain.js"
+import { demoTicketTokenHasher, mintDemoSignupSeats } from "./demo-signup-seats.js"
 import { deriveCleanupStatus, eventWindowOf } from "../services/cleanup-rules.js"
-import { ensureSignupRegistrationIn } from "../services/cleanup-repository.drizzle.js"
-import { makeTicketTokenSigner } from "../services/host/ticket-token.js"
-
-export function demoTicketTokenHasher(): (seatId: string) => string {
-  const secret = (process.env.TICKET_TOKEN_SECRET ?? "").trim()
-  if (secret === "") {
-    throw new Error("TICKET_TOKEN_SECRET is required (the API's secret, so demo seats scan)")
-  }
-  const signer = makeTicketTokenSigner(secret)
-  return (seatId) => signer.hashFor(seatId)
-}
-
-/** Mint the live join path's free registration + seat for each member; a no-op on ticketed events. */
-export async function mintDemoSignupSeats(
-  tx: Queryable,
-  args: {
-    cleanupId: string
-    members: readonly { user_id: string; joined_at: Date }[]
-    hashFor: (seatId: string) => string
-  },
-): Promise<number> {
-  let minted = 0
-  for (const member of args.members) {
-    const seatId = randomUUID()
-    const registrationId = await ensureSignupRegistrationIn(tx, {
-      cleanupId: args.cleanupId,
-      userId: member.user_id,
-      seatId,
-      tokenHash: args.hashFor(seatId),
-      now: member.joined_at,
-    })
-    if (registrationId !== null) minted += 1
-  }
-  return minted
-}
 
 // --- deterministic PRNG (mulberry32), same generator seed-demo-la uses ---------------------------
 
