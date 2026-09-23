@@ -313,6 +313,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     id: string,
     patch: UpdateOrganizationPatch,
     now: Date,
+    _actorId: string,
     audit?: UpdateOrganizationAudit,
   ): Promise<UpdateOrganizationOutcome> {
     const org = this.organizations.get(id)

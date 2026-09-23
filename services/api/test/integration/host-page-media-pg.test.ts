@@ -5,6 +5,7 @@ import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleHostRegistrationRepository } from "../../src/services/host/registration-repository.drizzle.js"
 import type { EventPageBlock } from "@civfix/shared"
 import type { HostRegistrationRepository } from "../../src/services/host/registration-repository.types.js"
+import { userUploader } from "../../src/services/media-uploader.js"
 
 const pg = await withPg()
 const FUTURE = new Date(Date.now() + 7 * 86_400_000)
@@ -39,15 +40,19 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
     })
   }
 
-  async function freshUpload(ageSeconds = 0): Promise<{ id: string; r2Key: string }> {
+  async function freshUpload(
+    over: { ageSeconds?: number; uploader?: string } = {},
+  ): Promise<{ id: string; servedKey: string }> {
     const id = randomUUID()
-    const r2Key = `uploads/2026/09/${id}`
+    const servedKey = `served/2026/09/${id}`
     await h.sql`
-      INSERT INTO media_assets (id, upload_id, kind, r2_key, status, byte_size, created_at)
-      VALUES (${id}, ${randomUUID()}, 'image', ${r2Key}, 'ready', 10,
-              now() - make_interval(secs => ${ageSeconds}))
+      INSERT INTO media_assets (
+        id, upload_id, kind, r2_key, served_key, status, byte_size, uploader, created_at
+      )
+      VALUES (${id}, ${randomUUID()}, 'image', ${`uploads/2026/09/${id}`}, ${servedKey}, 'ready', 10,
+              ${over.uploader ?? null}, now() - make_interval(secs => ${over.ageSeconds ?? 0}))
     `
-    return { id, r2Key }
+    return { id, servedKey }
   }
 
   function sponsorsBlock(mediaId: string): EventPageBlock {
@@ -65,6 +70,7 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
 
     const outcome = await repo.savePage({
       cleanupId,
+      actorUserId: organizer,
       slug: undefined,
       themeAccent: undefined,
       blocks: [sponsorsBlock(logo.id)],
@@ -81,16 +87,17 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
     expect(bound.map((row) => row.media_id)).toEqual([logo.id])
 
     const keys = await repo.mediaKeysFor(cleanupId, [logo.id])
-    expect(keys.get(logo.id)).toBe(logo.r2Key)
+    expect(keys.get(logo.id)).toBe(logo.servedKey)
   })
 
   it("refuses a stale upload nothing on this event ever referenced", async () => {
     const organizer = await newUser("Organizer")
     const cleanupId = await newCleanup(organizer)
-    const stale = await freshUpload(24 * 60 * 60)
+    const stale = await freshUpload({ ageSeconds: 24 * 60 * 60 })
 
     const outcome = await repo.savePage({
       cleanupId,
+      actorUserId: organizer,
       slug: undefined,
       themeAccent: undefined,
       blocks: [sponsorsBlock(stale.id)],
@@ -110,6 +117,7 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
 
     await repo.savePage({
       cleanupId,
+      actorUserId: organizer,
       slug: undefined,
       themeAccent: undefined,
       blocks: [sponsorsBlock(first.id)],
@@ -120,6 +128,7 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
     })
     await repo.savePage({
       cleanupId,
+      actorUserId: organizer,
       slug: undefined,
       themeAccent: undefined,
       blocks: [sponsorsBlock(second.id)],
@@ -143,6 +152,7 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
 
     await repo.savePage({
       cleanupId,
+      actorUserId: organizer,
       slug: undefined,
       themeAccent: undefined,
       blocks: [sponsorsBlock(firstCover.id)],
@@ -153,6 +163,7 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
     })
     await repo.savePage({
       cleanupId,
+      actorUserId: organizer,
       slug: undefined,
       themeAccent: undefined,
       blocks: [sponsorsBlock(firstCover.id)],
@@ -163,7 +174,63 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
     })
 
     const keys = await repo.mediaKeysFor(cleanupId, [firstCover.id])
-    expect(keys.get(firstCover.id)).toBe(firstCover.r2Key)
+    expect(keys.get(firstCover.id)).toBe(firstCover.servedKey)
+  })
+
+  it("refuses another account's fresh upload as a block image or the cover", async () => {
+    const organizer = await newUser("Organizer")
+    const cleanupId = await newCleanup(organizer)
+    const foreign = await freshUpload({ uploader: userUploader(await newUser("Uploader")) })
+
+    const asBlock = await repo.savePage({
+      cleanupId,
+      actorUserId: organizer,
+      slug: undefined,
+      themeAccent: undefined,
+      blocks: [sponsorsBlock(foreign.id)],
+      blockMediaIds: [foreign.id],
+      seo: undefined,
+      coverMediaId: undefined,
+      now: new Date(),
+    })
+    expect(asBlock.kind).toBe("block_media_not_found")
+
+    const asCover = await repo.savePage({
+      cleanupId,
+      actorUserId: organizer,
+      slug: undefined,
+      themeAccent: undefined,
+      blocks: [],
+      blockMediaIds: [],
+      seo: undefined,
+      coverMediaId: foreign.id,
+      now: new Date(),
+    })
+    expect(asCover.kind).toBe("cover_not_found")
+
+    const [row] = await h.sql<{ purpose: string }[]>`
+      SELECT purpose FROM media_assets WHERE id = ${foreign.id}
+    `
+    expect(row!.purpose).toBe("report")
+  })
+
+  it("claims the saving host's own attributed upload", async () => {
+    const organizer = await newUser("Organizer")
+    const cleanupId = await newCleanup(organizer)
+    const own = await freshUpload({ uploader: userUploader(organizer) })
+
+    const outcome = await repo.savePage({
+      cleanupId,
+      actorUserId: organizer,
+      slug: undefined,
+      themeAccent: undefined,
+      blocks: [sponsorsBlock(own.id)],
+      blockMediaIds: [own.id],
+      seo: undefined,
+      coverMediaId: own.id,
+      now: new Date(),
+    })
+    expect(outcome.kind).toBe("saved")
   })
 
   it("never presigns another event's media, even for a ready event_cover", async () => {
@@ -184,6 +251,7 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
 
     const outcome = await repo.savePage({
       cleanupId: otherEvent,
+      actorUserId: stranger,
       slug: undefined,
       themeAccent: undefined,
       blocks: [sponsorsBlock(cover.id)],

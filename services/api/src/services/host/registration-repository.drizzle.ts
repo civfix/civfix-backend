@@ -11,9 +11,9 @@ import {
 } from "../../db/cursor-helpers.js"
 import { eventWindowOfRow, hasEventEnded } from "../cleanup-rules.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
-import { mediaBoundElsewhere, mediaBoundToCleanup } from "../media-bindings.js"
+import { mediaBoundElsewhere, mediaBoundToCleanup, uploadedByClaimant } from "../media-bindings.js"
+import { userUploader } from "../media-uploader.js"
 import { likeContains } from "../admin/like.js"
-import { MEDIA_CLAIM_WINDOW_SEC } from "./event-media.js"
 import { isEventPubliclyVisible } from "./authz.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
 import { deterministicUuid } from "../deterministic-uuid.js"
@@ -265,6 +265,7 @@ async function claimPageMediaInTx(
   cleanupId: string,
   mediaIds: readonly string[],
   asCover: "event_cover" | null,
+  claimantUserId: string,
 ): Promise<string[]> {
   const wanted = [...new Set(mediaIds)]
   if (wanted.length === 0) return []
@@ -288,7 +289,7 @@ async function claimPageMediaInTx(
       AND NOT (${mediaBoundElsewhere(tx, cleanupId)})
       AND (
         (${mediaBoundToCleanup(tx, cleanupId)})
-        OR media_assets.created_at > now() - make_interval(secs => ${MEDIA_CLAIM_WINDOW_SEC})
+        OR (${uploadedByClaimant(tx, [userUploader(claimantUserId)])})
       )
     RETURNING media_assets.id
   `
@@ -2484,7 +2485,13 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
 
           const blockIds = [...new Set(args.blockMediaIds)]
           if (blockIds.length > 0) {
-            const claimed = await claimPageMediaInTx(tx, args.cleanupId, blockIds, null)
+            const claimed = await claimPageMediaInTx(
+              tx,
+              args.cleanupId,
+              blockIds,
+              null,
+              args.actorUserId,
+            )
             if (claimed.length !== blockIds.length) {
               return { kind: "block_media_not_found" as const }
             }
@@ -2497,6 +2504,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
                 args.cleanupId,
                 [args.coverMediaId],
                 "event_cover",
+                args.actorUserId,
               )
               if (claimed.length !== 1) return { kind: "cover_not_found" as const }
             }

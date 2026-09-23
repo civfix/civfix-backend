@@ -12,8 +12,8 @@ import type { Queryable, Sql } from "../../db/client.js"
 import { encodeTimeCursor, isUuid, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
 import { likeContains } from "../admin/like.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
-import { MEDIA_CLAIM_WINDOW_SEC } from "./event-media.js"
-import { mediaBoundElsewhere } from "../media-bindings.js"
+import { mediaBoundElsewhere, uploadedByClaimant } from "../media-bindings.js"
+import { userUploader } from "../media-uploader.js"
 import { writeHostAudit } from "./host-audit.js"
 import type {
   AcceptOrganizationInviteOutcome,
@@ -285,6 +285,7 @@ async function claimOrgLogoInTx(
   tx: Queryable,
   organizationId: string,
   logoMediaId: string | null,
+  claimantUserId: string,
 ): Promise<void> {
   if (logoMediaId === null) return
   const claimed = await tx<{ id: string }[]>`
@@ -310,7 +311,7 @@ async function claimOrgLogoInTx(
           SELECT 1 FROM organizations cur
           WHERE cur.id = ${organizationId} AND cur.logo_media_id = media_assets.id
         )
-        OR media_assets.created_at > now() - make_interval(secs => ${MEDIA_CLAIM_WINDOW_SEC})
+        OR (${uploadedByClaimant(tx, [userUploader(claimantUserId)])})
       )
     RETURNING id
   `
@@ -330,6 +331,7 @@ export function documentMediaIdsOf(documents: { mediaId?: string }[] | null | un
 async function claimVerificationDocumentsInTx(
   tx: Queryable,
   mediaIds: readonly string[],
+  claimantUserId: string,
 ): Promise<void> {
   if (mediaIds.length === 0) return
   const claimed = await tx<{ id: string }[]>`
@@ -338,7 +340,7 @@ async function claimVerificationDocumentsInTx(
     WHERE id = ANY(${[...mediaIds]}::uuid[])
       AND report_id IS NULL AND post_id IS NULL AND chat_message_id IS NULL
       AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
-      AND created_at > now() - make_interval(secs => ${MEDIA_CLAIM_WINDOW_SEC})
+      AND ${uploadedByClaimant(tx, [userUploader(claimantUserId)])}
       AND NOT (${mediaBoundElsewhere(tx, null)})
     RETURNING id
   `
@@ -424,7 +426,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             INSERT INTO organization_members (organization_id, user_id, role, joined_at)
             VALUES (${args.organizationId}, ${ownerUserId}, 'owner', ${args.now})
           `
-          await claimOrgLogoInTx(tx, args.organizationId, args.logoMediaId)
+          await claimOrgLogoInTx(tx, args.organizationId, args.logoMediaId, args.createdBy)
           if (args.operatorReason !== undefined) {
             await writeHostAudit(tx, {
               actorId: args.createdBy,
@@ -515,6 +517,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       id: string,
       patch: UpdateOrganizationPatch,
       now: Date,
+      actorId: string,
       audit?: UpdateOrganizationAudit,
     ): Promise<UpdateOrganizationOutcome> {
       const sets: postgres.Fragment[] = [sql`updated_at = ${now}`]
@@ -538,7 +541,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             RETURNING id
           `
           if (updated.length === 0) return "not_found"
-          await claimOrgLogoInTx(tx, id, patch.logoMediaId ?? null)
+          await claimOrgLogoInTx(tx, id, patch.logoMediaId ?? null, actorId)
           if (audit !== undefined) {
             await writeHostAudit(tx, {
               actorId: audit.actorId,
@@ -895,7 +898,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
                 )
                 RETURNING status, kind, submitted_at, reviewed_at, rejection_reason
               `
-        await claimVerificationDocumentsInTx(tx, fresh)
+        await claimVerificationDocumentsInTx(tx, fresh, args.submittedBy)
         const dropped = carried.filter((mediaId) => !effective.includes(mediaId))
         if (dropped.length > 0) {
           await tx`

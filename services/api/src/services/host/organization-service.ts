@@ -753,6 +753,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
           ...(patch.socialLinks !== undefined ? { socialLinks: patch.socialLinks } : {}),
         },
         now(),
+        actorId,
       )
       if (updated === "not_found") notFoundOrganization()
       if (updated === "slug_taken")
@@ -1150,7 +1151,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         changed.push("socialLinks")
       }
       if (changed.length === 0) return adminOrgDTO(id)
-      const outcome = await deps.repo.updateOrganizationTx(id, patch, now(), {
+      const outcome = await deps.repo.updateOrganizationTx(id, patch, now(), operatorId, {
         actorId: operatorId,
         reason: input.reason,
         changed,

@@ -334,6 +334,7 @@ export interface OrganizationRepository {
     id: string,
     patch: UpdateOrganizationPatch,
     now: Date,
+    actorId: string,
     audit?: UpdateOrganizationAudit,
   ): Promise<UpdateOrganizationOutcome>
   roleOf(organizationId: string, userId: string): Promise<OrganizationMemberRole | null>

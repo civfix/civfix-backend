@@ -283,7 +283,7 @@ export interface SignupSeat {
 
 export interface CleanupRepository {
   createCleanupTx(args: CreateCleanupTxArgs): Promise<CreateCleanupOutcome>
-  updateCleanup(id: string, patch: UpdateCleanupPatch): Promise<boolean>
+  updateCleanup(id: string, patch: UpdateCleanupPatch, actorUserId: string): Promise<boolean>
   linkReports(cleanupId: string, reportIds: string[], actorId: string | null): Promise<string[]>
   unlinkReport(cleanupId: string, reportId: string, actorId: string | null): Promise<boolean>
   reconcileLinkedReports(
