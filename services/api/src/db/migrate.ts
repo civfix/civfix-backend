@@ -69,7 +69,11 @@ async function appliedSet(sql: Sql): Promise<Set<string>> {
  */
 export async function applyMigrations(sql: Sql, dir: string = MIGRATIONS_DIR): Promise<string[]> {
   const reserved = await sql.reserve()
+  let sessionClean = true
+  let backendPid: number | null = null
   try {
+    const pidRows = await reserved<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`
+    backendPid = pidRows[0]?.pid ?? null
     await reserved`SELECT pg_advisory_lock(${MIGRATE_ADVISORY_LOCK_KEY})`
     await ensureBookkeeping(reserved)
     const already = await appliedSet(reserved)
@@ -90,16 +94,39 @@ export async function applyMigrations(sql: Sql, dir: string = MIGRATIONS_DIR): P
         await reserved`INSERT INTO _civfix_migrations (name) VALUES (${name})`
         await reserved.unsafe("commit")
       } catch (err) {
-        await reserved.unsafe("rollback").catch(() => {})
+        await reserved.unsafe("rollback").catch((rollbackErr: unknown) => {
+          sessionClean = false
+          console.error(`migrate: rollback after ${name} failed`, rollbackErr)
+        })
         throw err
       }
       applied.push(name)
     }
     return applied
   } finally {
-    await reserved`SELECT pg_advisory_unlock(${MIGRATE_ADVISORY_LOCK_KEY})`.catch(() => {})
-    reserved.release()
+    await reserved`SELECT pg_advisory_unlock(${MIGRATE_ADVISORY_LOCK_KEY})`.catch(
+      (unlockErr: unknown) => {
+        sessionClean = false
+        console.error("migrate: releasing the migration advisory lock failed", unlockErr)
+      },
+    )
+    if (sessionClean) {
+      reserved.release()
+    } else {
+      await discardSession(sql, backendPid)
+    }
   }
+}
+
+// postgres.js cannot close a single reserved connection, and releasing it would park a session that
+// may be mid-transaction and may still hold the session-level migration lock in the pool, where the
+// next applyMigrations would wait on that lock forever. Ending the backend from another pooled
+// connection frees the lock server-side; the reserved slot is deliberately never returned.
+async function discardSession(sql: Sql, backendPid: number | null): Promise<void> {
+  if (backendPid === null) return
+  await sql`SELECT pg_terminate_backend(${backendPid})`.catch((terminateErr: unknown) => {
+    console.error(`migrate: terminating backend ${backendPid} failed`, terminateErr)
+  })
 }
 
 async function main(): Promise<void> {

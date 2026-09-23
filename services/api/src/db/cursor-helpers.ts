@@ -15,6 +15,10 @@ export const MAX_UUID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 export const CURSOR_ISO_RE =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/
 
+// Postgres to_char pattern for a timestamptz rendered in UTC at full microsecond precision. A keyset
+// cursor built from the millisecond Date that postgres.js returns sits below the row it came from.
+export const TIME_CURSOR_SQL_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+
 export const CURSOR_MIN_MS = Date.UTC(1970, 0, 1)
 export const CURSOR_MAX_MS = Date.UTC(2100, 0, 1)
 

@@ -33,6 +33,7 @@ export function sslOptionForUrl(databaseUrl: string): DbSslOption {
   try {
     mode = new URL(databaseUrl).searchParams.get("sslmode")
   } catch {
+    // An unparseable URL cannot connect at all, and loadEnv has already vetted production's sslmode.
     mode = null
   }
   switch (mode?.trim().toLowerCase()) {

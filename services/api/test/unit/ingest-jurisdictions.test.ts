@@ -126,3 +126,17 @@ describe("normalizeFeatures geoid prefix", () => {
     expect(rows[0]?.layer).toBe("federal")
   })
 })
+
+describe("normalizeFeatures layer validation", () => {
+  it("ignores a layer property that only names an Object.prototype member", () => {
+    for (const layer of ["constructor", "__proto__"]) {
+      const { rows } = normalizeFeatures(
+        fc([
+          { type: "Feature", properties: { geoid: "1", name: "P", layer }, geometry: validPolygon },
+        ]),
+        "federal",
+      )
+      expect(rows[0]?.layer).toBe("federal")
+    }
+  })
+})

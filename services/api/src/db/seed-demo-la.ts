@@ -16,8 +16,10 @@
  *   - Volunteer hours follow the logEventHours shape: an 'event'-source volunteer_hours row per
  *     credited attendee, the user_jurisdiction_hours rollup upsert, and one volunteer_hours_audit row.
  *
- * CLOSED WORLD: all follows / likes / replies / memberships stay inside the seeded cohort, so no real
- * user's counters are ever touched and --purge removes everything without fixups.
+ * CLOSED WORLD: all follows / likes / replies / memberships the seeder writes stay inside the seeded
+ * cohort. Real users can still interact with demo content once it is live, so --purge recomputes the
+ * counters of every real user and post a demo account touched, and refuses (naming the rows) when real
+ * replies, reposts or volunteer hours depend on demo content.
  *
  * SAFETY: the default run is a REHEARSAL — the entire seed executes in one transaction, the
  * verification queries run, and then everything rolls back. Pass --yes to commit. Seeded accounts use
@@ -32,7 +34,8 @@
  *   Optional: --users N (default 250), --seed N (PRNG seed, default 20260902).
  *
  * Reads DATABASE_URL directly (not loadEnv) so it can run from a minimal shell; sslmode on the URL is
- * honored by makeDb exactly as the API does.
+ * honored by makeDb exactly as the API does. A seed (not --purge) also needs TICKET_TOKEN_SECRET, the
+ * API's own, because members of upcoming events get the free registration + seat a live sign-up mints.
  */
 
 import { randomUUID } from "node:crypto"
@@ -48,6 +51,12 @@ import { reportH3Cell } from "../services/report-clustering.js"
 import { runIfMain } from "./cli.js"
 import { DEMO_EMAIL_DOMAIN } from "./seed-demo-domain.js"
 import { DEFAULT_EVENT_DURATION_MS, DEFAULT_EVENT_SLOT_TITLE } from "../services/cleanup-rules.js"
+import { demoTicketTokenHasher, mintDemoSignupSeats } from "./demo-join-event.js"
+import { touchUserActivity } from "./sql/user-activity.js"
+
+// Seeded addresses are typed by hand, the provenance the live create paths record for that case.
+const SEEDED_REPORT_ADDR_SOURCE = "user"
+const SEEDED_EVENT_ADDRESS_SOURCE = "manual"
 
 // ---------------------------------------------------------------------------------------------------
 // Deterministic PRNG (mulberry32) + sampling helpers. Seeded so a rehearsal and the committed run (or
@@ -122,13 +131,39 @@ function sampleWeighted<T>(
   return out
 }
 
-// ---------------------------------------------------------------------------------------------------
-// Time helpers. Timestamps get an LA-plausible time-of-day (evenings and weekends heavier), stored as
-// UTC (LA is UTC-7 during the seeded window, which is entirely inside PDT).
-// ---------------------------------------------------------------------------------------------------
+// Timestamps get an LA-plausible time-of-day (evenings and weekends heavier), stored as UTC. The
+// seeded window spans both PST and PDT, so the offset is resolved per date.
 
 const DAY = 24 * 60 * 60 * 1000
-const LA_UTC_OFFSET_HOURS = 7
+const HOUR = 60 * 60 * 1000
+const LA_TIME_ZONE = "America/Los_Angeles"
+const LA_STANDARD_OFFSET_HOURS = -8
+
+const LA_OFFSET_FORMAT = new Intl.DateTimeFormat("en-US", {
+  timeZone: LA_TIME_ZONE,
+  timeZoneName: "shortOffset",
+})
+
+function laOffsetHoursAt(at: Date): number {
+  const name = LA_OFFSET_FORMAT.formatToParts(at).find((p) => p.type === "timeZoneName")?.value
+  const m = /^GMT([+-]\d{1,2})$/.exec(name ?? "")
+  return m ? Number(m[1]) : LA_STANDARD_OFFSET_HOURS
+}
+
+/** The UTC instant of hour:minute:second LA wall-clock time on the UTC calendar day of `dayMs`. */
+export function laLocalToUtc(dayMs: number, hour: number, minute: number, second: number): Date {
+  const d = new Date(dayMs)
+  const wallAsUtc = Date.UTC(
+    d.getUTCFullYear(),
+    d.getUTCMonth(),
+    d.getUTCDate(),
+    hour,
+    minute,
+    second,
+  )
+  const offset = laOffsetHoursAt(new Date(wallAsUtc - LA_STANDARD_OFFSET_HOURS * HOUR))
+  return new Date(wallAsUtc - offset * HOUR)
+}
 
 /** Weighted local hour: mornings light, lunchtime medium, evenings heavy, small overnight tail. */
 function localHour(): number {
@@ -158,14 +193,10 @@ function localHour(): number {
 
 /** A timestamp on the given local calendar day with a realistic local time, converted to UTC. */
 function atLocalTime(dayMs: number): Date {
-  const d = new Date(dayMs)
-  d.setUTCHours(0, 0, 0, 0)
-  const ms =
-    d.getTime() +
-    (localHour() + LA_UTC_OFFSET_HOURS) * 3600_000 +
-    rint(0, 59) * 60_000 +
-    rint(0, 59) * 1000
-  return new Date(ms)
+  const hour = localHour()
+  const minute = rint(0, 59)
+  const second = rint(0, 59)
+  return laLocalToUtc(dayMs, hour, minute, second)
 }
 
 /** Random realistic timestamp in [start, end], weekend-boosted. */
@@ -1558,8 +1589,7 @@ function nextSaturdayish(base: Date, minDays: number, latest?: Date): Date {
     }
   }
   if (latest && d.getTime() >= latest.getTime()) d = new Date(latest.getTime() - DAY)
-  d.setUTCHours(9 + LA_UTC_OFFSET_HOURS, pick([0, 0, 30]), 0, 0)
-  return d
+  return laLocalToUtc(d.getTime(), 9, pick([0, 0, 30]), 0)
 }
 
 function makeReports(users: SeedUser[], count: number, now: Date): SeedReport[] {
@@ -2125,9 +2155,11 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out
 }
 
-async function writeAll(
+export async function writeAll(
   tx: TransactionSql,
   data: {
+    now: Date
+    hashFor: (seatId: string) => string
     users: SeedUser[]
     follows: SeedFollow[]
     events: SeedEvent[]
@@ -2138,7 +2170,7 @@ async function writeAll(
     hours: SeedHours[]
   },
 ): Promise<void> {
-  const { users, follows, events, reports, posts, likes, saves, hours } = data
+  const { now, users, follows, events, reports, posts, likes, saves, hours } = data
   const resolver = tx as unknown as Sql
 
   // Users + prefs.
@@ -2199,16 +2231,23 @@ async function writeAll(
     await tx`
       INSERT INTO cleanups (
         id, organizer_user_id, type, event_kind, title, description, geom, scheduled_at, ends_at,
-        status, bring, address, capacity, bags, jurisdiction_geoid, reference_code, created_at
+        status, bring, address, address_source, capacity, bags, jurisdiction_geoid, reference_code,
+        created_at
       ) VALUES (
         ${ev.id}, ${ev.organizer.id}, 'site', 'cleanup', ${ev.title}, ${ev.description},
         ST_SetSRID(ST_MakePoint(${ev.lng}, ${ev.lat}), 4326),
         ${ev.scheduledAt}, ${ev.endsAt},
         ${ev.status === "cancelled" ? "cancelled" : "upcoming"},
-        ${ev.bring}, ${ev.address}, ${ev.capacity}, ${ev.bags},
+        ${ev.bring}, ${ev.address}, ${SEEDED_EVENT_ADDRESS_SOURCE}, ${ev.capacity}, ${ev.bags},
         ${jur?.geoid ?? null}, ${referenceCode}, ${ev.createdAt}
       )
     `
+    await touchUserActivity(tx, {
+      userId: ev.organizer.id,
+      lng: ev.lng,
+      lat: ev.lat,
+      at: ev.createdAt,
+    })
     // Stamp resolved geoid onto pending hours rows for this event.
     for (const h of hours) if (h.cleanupId === ev.id) h.jurisdictionGeoid = jur?.geoid ?? null
   }
@@ -2234,6 +2273,15 @@ async function writeAll(
         })),
       )}`
     }
+    // Same scope as the signup-seat backfill: a seat matters only while the event can still be
+    // checked into, so events that ended or were cancelled keep membership alone.
+    if (ev.status !== "cancelled" && ev.endsAt.getTime() > now.getTime()) {
+      await mintDemoSignupSeats(tx, {
+        cleanupId: ev.id,
+        members: ev.members.map((m) => ({ user_id: m.user.id, joined_at: m.joinedAt })),
+        hashFor: data.hashFor,
+      })
+    }
     if (ev.claims.length > 0) {
       await tx`INSERT INTO cleanup_slot_claims ${tx(
         ev.claims.map((c) => ({
@@ -2254,15 +2302,18 @@ async function writeAll(
     await tx`
       INSERT INTO reports (
         id, reporter_user_id, idempotency_key, geom, geom_source, jurisdiction_geoid, category, type,
-        title, description, addr, status, visibility, h3_cell, reference_code, created_at, published_at
+        title, description, addr, addr_source, status, visibility, h3_cell, reference_code,
+        created_at, published_at
       ) VALUES (
         ${r.id}, ${r.reporter.id}, ${randomUUID()},
         ST_SetSRID(ST_MakePoint(${r.lng}, ${r.lat}), 4326),
         ${r.geomSource}, ${jur?.geoid ?? null}, ${REPORT_TYPE_TO_CATEGORY[r.type]}, ${r.type},
-        ${r.title}, ${r.description}, ${r.addr}, ${r.status}, 'public',
-        ${reportH3Cell(r.lat, r.lng)}, ${referenceCode}, ${r.createdAt}, ${r.publishedAt}
+        ${r.title}, ${r.description}, ${r.addr}, ${r.addr === null ? null : SEEDED_REPORT_ADDR_SOURCE},
+        ${r.status}, 'public', ${reportH3Cell(r.lat, r.lng)}, ${referenceCode}, ${r.createdAt},
+        ${r.publishedAt}
       )
     `
+    await touchUserActivity(tx, { userId: r.reporter.id, lng: r.lng, lat: r.lat, at: r.createdAt })
   }
   const timelineRows = reports.flatMap((r) =>
     r.timeline.map((t) => ({
@@ -2337,6 +2388,18 @@ async function writeAll(
       )}`
     }
   }
+  const linkedPostIds = posts
+    .filter((p) => p.reportId !== null || p.eventId !== null)
+    .map((p) => p.id)
+  for (const ids of chunk(linkedPostIds, 500)) {
+    await tx`
+      UPDATE posts p SET geom = COALESCE(
+        (SELECT r.geom FROM reports r WHERE r.id = p.report_id),
+        (SELECT c.geom FROM cleanups c WHERE c.id = p.event_id)
+      )
+      WHERE p.id = ANY(${ids}::uuid[])
+    `
+  }
   const mentionRows = posts.flatMap((p) =>
     p.mentions.map((m) => ({ post_id: p.id, mentioned_user_id: m })),
   )
@@ -2404,10 +2467,31 @@ async function writeAll(
 // SQL verification (inside the same transaction; throws -> rollback)
 // ---------------------------------------------------------------------------------------------------
 
-async function verify(tx: TransactionSql): Promise<string[]> {
+async function verify(tx: TransactionSql, now: Date): Promise<string[]> {
   const lines: string[] = []
   const fail: string[] = []
+  const demoEmail = "%@" + DEMO_EMAIL_DOMAIN
   const checks: { label: string; rows: Promise<{ n: number | string }[]> }[] = [
+    {
+      label: "demo members of open events hold a registration",
+      rows: tx`
+        SELECT count(*)::int AS n FROM cleanup_members m
+        JOIN cleanups c ON c.id = m.cleanup_id
+        JOIN users u ON u.id = m.user_id
+        WHERE u.email LIKE ${demoEmail} AND c.status <> 'cancelled' AND c.ends_at > ${now}
+          AND NOT EXISTS (SELECT 1 FROM cleanup_ticket_types t WHERE t.cleanup_id = c.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM cleanup_registrations r
+            WHERE r.cleanup_id = c.id AND r.user_id = m.user_id AND r.status = 'registered'
+          )`,
+    },
+    {
+      label: "demo posts linked to a report or event carry its point",
+      rows: tx`
+        SELECT count(*)::int AS n FROM posts p JOIN users u ON u.id = p.author_id
+        WHERE u.email LIKE ${demoEmail} AND p.geom IS NULL
+          AND (p.report_id IS NOT NULL OR p.event_id IS NOT NULL)`,
+    },
     {
       label: "posts.like_count matches post_likes",
       rows: tx`SELECT count(*)::int AS n FROM posts p WHERE p.like_count <> (SELECT count(*) FROM post_likes l WHERE l.post_id = p.id)`,
@@ -2471,12 +2555,96 @@ async function verify(tx: TransactionSql): Promise<string[]> {
 // Purge
 // ---------------------------------------------------------------------------------------------------
 
-async function purge(tx: TransactionSql): Promise<Record<string, number>> {
+const PURGE_BLOCKER_SAMPLE = 20
+
+// Real replies/reposts point at demo posts through ON DELETE RESTRICT, and real volunteer hours point
+// at demo events and reports with no ON DELETE: purging would fail on the FK anyway, so name the rows
+// the operator has to decide about instead. Real content is never rewritten here.
+async function assertNothingRealDependsOnDemo(tx: TransactionSql): Promise<void> {
+  const demo = tx`SELECT id FROM users WHERE email LIKE ${"%@" + DEMO_EMAIL_DOMAIN}`
+  const blockers = await tx<{ kind: string; id: string }[]>`
+    WITH demo_posts AS (SELECT id FROM posts WHERE author_id IN (${demo}))
+    SELECT 'post' AS kind, p.id::text AS id
+    FROM posts p
+    WHERE p.author_id NOT IN (${demo})
+      AND (
+        p.reply_to_id IN (SELECT id FROM demo_posts)
+        OR p.thread_root_id IN (SELECT id FROM demo_posts)
+        OR p.repost_of_id IN (SELECT id FROM demo_posts)
+      )
+    UNION ALL
+    SELECT 'volunteer_hours' AS kind, vh.id::text AS id
+    FROM volunteer_hours vh
+    WHERE vh.user_id NOT IN (${demo})
+      AND (
+        vh.cleanup_id IN (SELECT id FROM cleanups WHERE organizer_user_id IN (${demo}))
+        OR vh.report_id IN (SELECT id FROM reports WHERE reporter_user_id IN (${demo}))
+      )
+    LIMIT ${PURGE_BLOCKER_SAMPLE}
+  `
+  if (blockers.length === 0) return
+  const listed = blockers.map((b) => `${b.kind} ${b.id}`).join(", ")
+  throw new Error(
+    `purge refused: real users' content depends on demo content (first ${blockers.length}): ${listed}`,
+  )
+}
+
+// Follows, likes, saves, replies and reposts by demo accounts on real accounts and posts vanish with
+// the demo rows, so those real counters are recomputed from the remaining rows, with the same
+// definitions verify() asserts.
+async function recomputeRealCounters(
+  tx: TransactionSql,
+  users: readonly string[],
+  posts: readonly string[],
+): Promise<void> {
+  if (users.length > 0) {
+    await tx`
+      UPDATE users u SET follower_count = (SELECT count(*) FROM follows_people f WHERE f.followee_id = u.id),
+        following_count = (SELECT count(*) FROM follows_people f WHERE f.follower_id = u.id)
+      WHERE u.id = ANY(${users as string[]}::uuid[])
+    `
+  }
+  if (posts.length > 0) {
+    await tx`
+      UPDATE posts p SET like_count = (SELECT count(*) FROM post_likes l WHERE l.post_id = p.id),
+        save_count = (SELECT count(*) FROM post_saves s WHERE s.post_id = p.id),
+        reply_count = (SELECT count(*) FROM posts c WHERE c.reply_to_id = p.id AND c.deleted_at IS NULL),
+        repost_count = (SELECT count(*) FROM posts c WHERE c.repost_of_id = p.id AND c.kind = 'repost' AND c.deleted_at IS NULL)
+      WHERE p.id = ANY(${posts as string[]}::uuid[])
+    `
+  }
+}
+
+export async function purgeDemo(tx: TransactionSql): Promise<Record<string, number>> {
   const counts: Record<string, number> = {}
   const del = async (label: string, q: PromiseLike<readonly unknown[]>) => {
     counts[label] = (await q).length
   }
   const demo = tx`SELECT id FROM users WHERE email LIKE ${"%@" + DEMO_EMAIL_DOMAIN}`
+  await assertNothingRealDependsOnDemo(tx)
+  const touchedUsers = await tx<{ id: string }[]>`
+    SELECT DISTINCT x.id
+    FROM (
+      SELECT f.follower_id AS id FROM follows_people f WHERE f.followee_id IN (${demo})
+      UNION
+      SELECT f.followee_id AS id FROM follows_people f WHERE f.follower_id IN (${demo})
+    ) x
+    WHERE x.id NOT IN (${demo})
+  `
+  const touchedPosts = await tx<{ id: string }[]>`
+    SELECT DISTINCT x.id
+    FROM (
+      SELECT l.post_id AS id FROM post_likes l WHERE l.user_id IN (${demo})
+      UNION
+      SELECT s.post_id AS id FROM post_saves s WHERE s.user_id IN (${demo})
+      UNION
+      SELECT p.reply_to_id AS id FROM posts p WHERE p.author_id IN (${demo}) AND p.reply_to_id IS NOT NULL
+      UNION
+      SELECT p.repost_of_id AS id FROM posts p WHERE p.author_id IN (${demo}) AND p.repost_of_id IS NOT NULL
+    ) x
+    JOIN posts target ON target.id = x.id
+    WHERE target.author_id NOT IN (${demo})
+  `
   await del(
     "volunteer_hours_audit",
     tx`DELETE FROM volunteer_hours_audit WHERE user_id IN (${demo}) RETURNING 1 AS one`,
@@ -2518,6 +2686,13 @@ async function purge(tx: TransactionSql): Promise<Record<string, number>> {
     "users",
     tx`DELETE FROM users WHERE email LIKE ${"%@" + DEMO_EMAIL_DOMAIN} RETURNING 1 AS one`,
   )
+  await recomputeRealCounters(
+    tx,
+    touchedUsers.map((u) => u.id),
+    touchedPosts.map((p) => p.id),
+  )
+  counts["real_users_recounted"] = touchedUsers.length
+  counts["real_posts_recounted"] = touchedPosts.length
   return counts
 }
 
@@ -2555,7 +2730,7 @@ export async function main(): Promise<void> {
     if (purgeMode) {
       const result = await handle.sql
         .begin(async (tx) => {
-          const counts = await purge(tx)
+          const counts = await purgeDemo(tx)
           if (!commit) throw ROLLBACK
           return counts
         })
@@ -2571,6 +2746,7 @@ export async function main(): Promise<void> {
       return
     }
 
+    const hashFor = demoTicketTokenHasher()
     const now = new Date()
     const start = new Date(now.getTime() - 185 * DAY)
 
@@ -2610,9 +2786,20 @@ export async function main(): Promise<void> {
           )
         }
         console.log("writing...")
-        await writeAll(tx, { users, follows, events, reports, posts, likes, saves, hours })
+        await writeAll(tx, {
+          now,
+          hashFor,
+          users,
+          follows,
+          events,
+          reports,
+          posts,
+          likes,
+          saves,
+          hours,
+        })
         console.log("verifying...")
-        const lines = await verify(tx)
+        const lines = await verify(tx, now)
         if (!commit) throw ROLLBACK
         return lines
       })

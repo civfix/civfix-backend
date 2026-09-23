@@ -48,6 +48,10 @@ export const LAYER_RANK: Record<IngestRow["layer"], number> = {
   state: 2,
 }
 
+export function isIngestLayer(value: string): value is IngestRow["layer"] {
+  return Object.hasOwn(LAYER_RANK, value)
+}
+
 const UPSERT_BATCH_SIZE = 1000
 
 export function normalizeFeature(
@@ -69,10 +73,8 @@ export function normalizeFeature(
   const prefixedGeoid = geoid !== null && geoidPrefix ? geoidPrefix + geoid : geoid
   const name = pickString(f.properties, ["name", "NAME", "UNIT_NAME", "unit_name", "Unit_Name"])
   const rawLayer = pickString(f.properties, ["layer", "LAYER", "owner_type", "Own_Type"])
-  const layer =
-    rawLayer && rawLayer.toLowerCase() in LAYER_RANK
-      ? (rawLayer.toLowerCase() as IngestRow["layer"])
-      : defaultLayer
+  const loweredLayer = rawLayer?.toLowerCase() ?? null
+  const layer = loweredLayer !== null && isIngestLayer(loweredLayer) ? loweredLayer : defaultLayer
   if (!isPolygon || prefixedGeoid === null || name === null) return null
   return {
     geoid: prefixedGeoid,
