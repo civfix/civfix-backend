@@ -1,9 +1,14 @@
 import type { RedisClient } from "../adapters/redis.js"
-import { attachAtomicIncr, attachAtomicIncrBy } from "../adapters/redis-incr.js"
+import { attachAtomicDecrBy, attachAtomicIncr, attachAtomicIncrBy } from "../adapters/redis-incr.js"
 
 export interface CounterStore {
   incr(key: string, ttlSeconds: number): Promise<number>
   incrBy(key: string, by: number, ttlSeconds: number): Promise<number>
+  /**
+   * Gives back a charge a refused action took. It never goes below zero and never creates or extends
+   * a key: a give-back that lands after the window ended must not open a new one.
+   */
+  decrBy(key: string, by: number): Promise<number>
 }
 
 export type Clock = () => number
@@ -46,6 +51,13 @@ export class InMemoryCounterStore implements CounterStore {
     return Promise.resolve(existing.count)
   }
 
+  decrBy(key: string, by: number): Promise<number> {
+    const existing = this.live(key)
+    if (!existing) return Promise.resolve(0)
+    existing.count = Math.max(0, existing.count - Math.max(0, Math.floor(by)))
+    return Promise.resolve(existing.count)
+  }
+
   peek(key: string): number {
     return this.live(key)?.count ?? 0
   }
@@ -54,10 +66,12 @@ export class InMemoryCounterStore implements CounterStore {
 export class RedisCounterStore implements CounterStore {
   private readonly atomicIncr: (key: string, ttlSeconds: number) => Promise<number>
   private readonly atomicIncrBy: (key: string, by: number, ttlSeconds: number) => Promise<number>
+  private readonly atomicDecrBy: (key: string, by: number) => Promise<number>
 
   constructor(redis: RedisClient) {
     this.atomicIncr = attachAtomicIncr(redis)
     this.atomicIncrBy = attachAtomicIncrBy(redis)
+    this.atomicDecrBy = attachAtomicDecrBy(redis)
   }
 
   incr(key: string, ttlSeconds: number): Promise<number> {
@@ -66,5 +80,9 @@ export class RedisCounterStore implements CounterStore {
 
   incrBy(key: string, by: number, ttlSeconds: number): Promise<number> {
     return this.atomicIncrBy(key, by, ttlSeconds)
+  }
+
+  decrBy(key: string, by: number): Promise<number> {
+    return this.atomicDecrBy(key, by)
   }
 }

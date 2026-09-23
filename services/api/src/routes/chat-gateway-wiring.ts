@@ -511,6 +511,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     {
       incr: (key, ttlSeconds) => container.getCounterStore().incr(key, ttlSeconds),
       incrBy: (key, by, ttlSeconds) => container.getCounterStore().incrBy(key, by, ttlSeconds),
+      decrBy: (key, by) => container.getCounterStore().decrBy(key, by),
     },
     app.log,
   )

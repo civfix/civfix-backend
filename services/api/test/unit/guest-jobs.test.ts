@@ -114,6 +114,7 @@ describe("guest update fan-out", () => {
       counters: {
         incr: () => Promise.reject(new Error("redis down")),
         incrBy: () => Promise.reject(new Error("redis down")),
+        decrBy: () => Promise.reject(new Error("redis down")),
       },
       perEventPerHour: 3,
       enqueuePlan: () => Promise.resolve(),

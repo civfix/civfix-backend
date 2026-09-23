@@ -296,6 +296,7 @@ export function buildContainer(env: Env): Container {
       (redisCounters ??= new RedisCounterStore(getRedis())).incr(key, ttlSeconds),
     incrBy: (key, by, ttlSeconds) =>
       (redisCounters ??= new RedisCounterStore(getRedis())).incrBy(key, by, ttlSeconds),
+    decrBy: (key, by) => (redisCounters ??= new RedisCounterStore(getRedis())).decrBy(key, by),
   }
   function getCounterStore(): CounterStore {
     return lazyCounters

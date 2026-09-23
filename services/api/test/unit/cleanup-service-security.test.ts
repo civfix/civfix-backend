@@ -58,7 +58,11 @@ function harness() {
   const creator = makeCleanupService({
     tickets: TEST_TICKET_SIGNER,
     repo,
-    counters: { incr: () => Promise.resolve(1), incrBy: () => Promise.resolve(1) },
+    counters: {
+      incr: () => Promise.resolve(1),
+      incrBy: () => Promise.resolve(1),
+      decrBy: () => Promise.resolve(0),
+    },
   })
 
   async function eventHostedBy(hostId: string): Promise<string> {
