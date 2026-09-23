@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const clientConfigs: Record<string, unknown>[] = []
-const sendOptions: ({ abortSignal?: AbortSignal } | undefined)[] = []
+const sendOptions: ({ abortSignal?: AbortSignal; requestTimeout?: number } | undefined)[] = []
 
 vi.mock("@aws-sdk/client-s3", () => {
   class S3Client {
     constructor(config: Record<string, unknown>) {
       clientConfigs.push(config)
     }
-    send(_command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown> {
+    send(
+      _command: unknown,
+      options?: { abortSignal?: AbortSignal; requestTimeout?: number },
+    ): Promise<unknown> {
       sendOptions.push(options)
       return Promise.resolve({})
     }
@@ -26,7 +29,8 @@ vi.mock("@aws-sdk/client-s3", () => {
   }
 })
 
-const { R2Storage } = await import("../../src/adapters/storage.r2.js")
+const { R2Storage, R2_RESPONSE_TIMEOUT_MS, R2_TRANSFER_OPERATION_TIMEOUT_MS } =
+  await import("../../src/adapters/storage.r2.js")
 
 const ENV_KEYS = ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"] as const
 const saved: Record<string, string | undefined> = {}
@@ -108,5 +112,18 @@ describe("R2 client timeouts", () => {
       expect(options?.abortSignal).toBeInstanceOf(AbortSignal)
       expect(options?.abortSignal?.aborted).toBe(false)
     }
+  })
+
+  it("gives object transfers the transfer budget for the upload itself, not the response wait", async () => {
+    const r2 = storage()
+    await r2.put("uploads/a", new Uint8Array([1]))
+    await r2.getObject("uploads/a")
+    await r2.head("uploads/a")
+
+    const [putOptions, getOptions, headOptions] = sendOptions
+    expect(putOptions?.requestTimeout).toBe(R2_TRANSFER_OPERATION_TIMEOUT_MS)
+    expect(getOptions?.requestTimeout).toBe(R2_TRANSFER_OPERATION_TIMEOUT_MS)
+    expect(headOptions?.requestTimeout).toBeUndefined()
+    expect((await resolvedHandlerConfig())?.requestTimeout).toBe(R2_RESPONSE_TIMEOUT_MS)
   })
 })

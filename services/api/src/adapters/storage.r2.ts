@@ -208,8 +208,13 @@ function metadataDeadline(): { abortSignal: AbortSignal } {
   return { abortSignal: AbortSignal.timeout(R2_METADATA_OPERATION_TIMEOUT_MS) }
 }
 
-function transferDeadline(): { abortSignal: AbortSignal } {
-  return { abortSignal: AbortSignal.timeout(R2_TRANSFER_OPERATION_TIMEOUT_MS) }
+// The handler's requestTimeout runs from before the body is written until the response arrives, so
+// the default response wait would cap a large upload at R2_RESPONSE_TIMEOUT_MS per attempt.
+function transferDeadline(): { abortSignal: AbortSignal; requestTimeout: number } {
+  return {
+    abortSignal: AbortSignal.timeout(R2_TRANSFER_OPERATION_TIMEOUT_MS),
+    requestTimeout: R2_TRANSFER_OPERATION_TIMEOUT_MS,
+  }
 }
 
 async function boundedRequestHandler(host: string): Promise<S3ClientConfig["requestHandler"]> {
