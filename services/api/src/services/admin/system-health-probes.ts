@@ -1,10 +1,8 @@
 import type { Sql } from "../../db/client.js"
 import type { ProbeResult, SystemHealthProbes } from "./system-health-service.js"
-import { MEDIA_WORKER_BACKLOG_WARN } from "./system-health-service.js"
+import { MEDIA_WORKER_BACKLOG_WARN, PG_UNDEFINED_TABLE } from "./system-health-service.js"
 
-export const PROBE_TIMEOUT_MS = 2000
-
-const PG_UNDEFINED_TABLE = "42P01"
+const PROBE_TIMEOUT_MS = 2000
 
 /**
  * Only the media worker's pg-boss queues, so another queue's backlog (outreach digest, inbound sweep)
@@ -12,30 +10,31 @@ const PG_UNDEFINED_TABLE = "42P01"
  */
 const MEDIA_QUEUE_LIKE = "media.%"
 
+// The timer is unref'd so a hung probe never holds the process open on shutdown.
+function timeoutAfter<T>(ms: number, onTimeout?: () => void): Promise<T> {
+  return new Promise<T>((_resolve, reject) => {
+    const t = setTimeout(() => {
+      onTimeout?.()
+      reject(new Error(`probe timed out after ${ms}ms`))
+    }, ms)
+    if (typeof t === "object" && t && "unref" in t) (t as { unref: () => void }).unref()
+  })
+}
+
 function withTimeout<T>(run: () => Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    run(),
-    new Promise<T>((_resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(`probe timed out after ${ms}ms`)), ms)
-      if (typeof t === "object" && t && "unref" in t) (t as { unref: () => void }).unref()
-    }),
-  ])
+  return Promise.race([run(), timeoutAfter<T>(ms)])
 }
 
 function withQueryTimeout<T>(
   query: PromiseLike<T> & { cancel: () => void },
   ms: number,
 ): Promise<T> {
-  return Promise.race([
-    query,
-    new Promise<T>((_resolve, reject) => {
-      const t = setTimeout(() => {
-        query.cancel()
-        reject(new Error(`probe timed out after ${ms}ms`))
-      }, ms)
-      if (typeof t === "object" && t && "unref" in t) (t as { unref: () => void }).unref()
-    }),
-  ])
+  return Promise.race([query, timeoutAfter<T>(ms, () => query.cancel())])
+}
+
+function countOf(rows: readonly { n: string }[]): number {
+  const n = Number.parseInt(rows[0]?.n ?? "0", 10)
+  return Number.isNaN(n) ? 0 : n
 }
 
 function isUndefinedTable(err: unknown): boolean {
@@ -77,8 +76,7 @@ export function makeSystemHealthProbes(deps: SystemProbeDeps): SystemHealthProbe
         `,
         PROBE_TIMEOUT_MS,
       )
-      const n = Number.parseInt(rows[0]?.n ?? "0", 10)
-      return { val: `${Number.isNaN(n) ? 0 : n} events 7d`, status: "ok" }
+      return { val: `${countOf(rows)} events 7d`, status: "ok" }
     }
 
     probes.mediaWorker = async (): Promise<ProbeResult> => {
@@ -93,11 +91,10 @@ export function makeSystemHealthProbes(deps: SystemProbeDeps): SystemHealthProbe
           `,
           PROBE_TIMEOUT_MS,
         )
-        const depth = Number.parseInt(rows[0]?.n ?? "0", 10)
-        const value = Number.isNaN(depth) ? 0 : depth
+        const depth = countOf(rows)
         return {
-          val: `depth ${value}`,
-          status: value > MEDIA_WORKER_BACKLOG_WARN ? "warn" : "ok",
+          val: `depth ${depth}`,
+          status: depth > MEDIA_WORKER_BACKLOG_WARN ? "warn" : "ok",
         }
       } catch (err) {
         if (isUndefinedTable(err)) {

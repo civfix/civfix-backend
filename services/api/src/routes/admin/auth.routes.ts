@@ -33,6 +33,8 @@ import { route } from "../../versioning/route.js"
 const ADMIN_AUTH_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
 const UNNAMED_OPERATOR_DISPLAY_NAME = "Operator"
 const UNAUTHORIZED_OPERATOR_MESSAGE = "This account is not authorized for the operator dashboard."
+const CF_ACCESS_JWT_HEADER = "cf-access-jwt-assertion"
+const LOGIN_VIA_CF_ACCESS = "cf-access"
 
 export interface AdminAuthOverrides {
   auditSink(input: WriteAuditInput): Promise<void>
@@ -68,7 +70,7 @@ export async function registerAdminAuthRoutes(
       actorId: user.id,
       action: "operator.login_denied",
       target: `user:${user.id}`,
-      meta: { email: user.email, ...detail, via: "cf-access" },
+      meta: { email: user.email, ...detail, via: LOGIN_VIA_CF_ACCESS },
     }).catch((err: unknown) => {
       request.log.warn({ err }, "operator.login_denied audit write failed")
     })
@@ -107,7 +109,7 @@ export async function registerAdminAuthRoutes(
       actorId: operator.id,
       action: "operator.login",
       target: `user:${operator.id}`,
-      meta: { email: operator.email, via: "cf-access" },
+      meta: { email: operator.email, via: LOGIN_VIA_CF_ACCESS },
     })
     return operator
   }
@@ -174,7 +176,7 @@ async function verifyHeader(
   verify: VerifyAccessJwt,
   request: FastifyRequest,
 ): Promise<AccessIdentity> {
-  const token = request.headers["cf-access-jwt-assertion"]
+  const token = request.headers[CF_ACCESS_JWT_HEADER]
   if (typeof token !== "string" || token.length === 0) throw AppError.unauthorized()
   try {
     return await verify(token)

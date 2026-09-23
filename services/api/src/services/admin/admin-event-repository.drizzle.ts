@@ -9,7 +9,12 @@ import {
   toRecord,
   type EventRowSelect,
 } from "./admin-event-sql.js"
-import { ADMIN_EVENT_MESSAGE_CAP, eventOutcomeNote } from "./admin-event-helpers.js"
+import {
+  ADMIN_EVENT_MESSAGE_CAP,
+  EVENT_NOTE_FLAGGED,
+  EVENT_NOTE_UNFLAGGED,
+  eventOutcomeNote,
+} from "./admin-event-helpers.js"
 import { andAll, type SqlFragment } from "./sql-fragments.js"
 import { publicReportFilter } from "../report-sql.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
@@ -24,6 +29,8 @@ import type { LinkedReportView } from "../cleanup-service.js"
 import type { AdminEventCounts, ReportCategory, ReportStatus } from "@civfix/shared"
 
 const LINK_REPORTS_MAX = 100
+
+const SYSTEM_ACTOR_NAME = "system"
 
 export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository {
   return {
@@ -115,7 +122,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       return rows.map((r) => ({
         kind: r.kind,
         note: r.note,
-        who: r.who ?? "system",
+        who: r.who ?? SYSTEM_ACTOR_NAME,
         createdAt: r.created_at,
       }))
     },
@@ -130,7 +137,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
         LIMIT ${ADMIN_EVENT_MESSAGE_CAP}
       `
       return rows.reverse().map((r) => ({
-        who: r.who ?? "system",
+        who: r.who ?? SYSTEM_ACTOR_NAME,
         text: r.body ?? "",
         createdAt: r.created_at,
       }))
@@ -178,7 +185,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (
             ${id}, ${nowFlagged ? "flag" : "unflag"},
-            ${nowFlagged ? "Flagged for review" : "Flag cleared"},
+            ${nowFlagged ? EVENT_NOTE_FLAGGED : EVENT_NOTE_UNFLAGGED},
             ${input.actorId}
           )
         `

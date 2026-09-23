@@ -27,11 +27,20 @@ declare module "fastify" {
   }
 }
 
-export const ADMIN_BROADCAST_DEFAULT_LIMIT = 50
+const ADMIN_BROADCAST_DEFAULT_LIMIT = 50
 
-export const ADMIN_HOST_DEFAULT_LIMIT = 50
+const ADMIN_HOST_DEFAULT_LIMIT = 50
 
-export const ADMIN_HOST_DEFAULT_WINDOW_DAYS = 30
+const ADMIN_HOST_DEFAULT_WINDOW_DAYS = 30
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+// Enough of the digest to tell subjects apart in the console without echoing the subject text itself.
+const SUBJECT_HASH_HEX_LENGTH = 16
+
+function hashSubject(subject: string): string {
+  return createHash("sha256").update(subject).digest("hex").slice(0, SUBJECT_HASH_HEX_LENGTH)
+}
 
 function mergeParams(request: FastifyRequest): Record<string, unknown> {
   const params = (request.params ?? {}) as Record<string, unknown>
@@ -69,10 +78,7 @@ export async function registerAdminBroadcastRoutes(
         eventTitle: row.eventTitle,
         kind: row.kind,
         status: row.status,
-        subjectHash:
-          row.subject === null
-            ? null
-            : createHash("sha256").update(row.subject).digest("hex").slice(0, 16),
+        subjectHash: row.subject === null ? null : hashSubject(row.subject),
         createdBy:
           row.createdBy === null
             ? null
@@ -103,7 +109,7 @@ export async function registerAdminBroadcastRoutes(
     const rows = await broadcastRepo().listAdminHosts({
       ...(query.q !== undefined ? { q: query.q } : {}),
       ...(query.suspended !== undefined ? { suspended: query.suspended } : {}),
-      windowStart: new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000),
+      windowStart: new Date(Date.now() - windowDays * DAY_MS),
       cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
       limit: limit + 1,
     })

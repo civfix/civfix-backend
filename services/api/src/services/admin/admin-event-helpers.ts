@@ -2,6 +2,13 @@
 
 import type { EventStatus, EventTimelineItem } from "@civfix/shared"
 
+export const EVENT_NOTE_FLAGGED = "Flagged for review"
+
+export const EVENT_NOTE_UNFLAGGED = "Flag cleared"
+
+/** The note an operator broadcast writes; the Drizzle repo spells it inline in its INSERT. */
+export const EVENT_NOTE_MESSAGE_POSTED = "Posted an update to attendees"
+
 export function resolveEventFilter(filter: string | undefined): {
   status: EventStatus | null
   flaggedOnly: boolean
@@ -60,9 +67,9 @@ export function timelineDefaultNote(kind: string): string {
     case "cancel":
       return "Event cancelled"
     case "flag":
-      return "Flagged for review"
+      return EVENT_NOTE_FLAGGED
     case "unflag":
-      return "Flag cleared"
+      return EVENT_NOTE_UNFLAGGED
     case "report_linked":
       return "Linked a report"
     case "report_unlinked":

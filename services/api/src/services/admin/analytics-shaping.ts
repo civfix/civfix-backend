@@ -37,6 +37,11 @@ const MONTH_ABBR = [
   "Dec",
 ] as const
 
+const DAY_MS = 24 * 60 * 60 * 1000
+const WEEK_MS = 7 * DAY_MS
+
+const ROUTE_TIME_PENDING_DELTA = "Phase 3"
+
 export function round1(n: number): number {
   return Math.round(n * 10) / 10
 }
@@ -92,7 +97,7 @@ export function buildKpis(agg: KpiAggregates): AnalyticsKpi[] {
       // its KPI strip, but the value is part of the contract.
       label: "Avg. route time",
       num: 0,
-      delta: "Phase 3",
+      delta: ROUTE_TIME_PENDING_DELTA,
       dir: "flat",
     },
     {
@@ -233,9 +238,6 @@ export function buildRetention(rows: RetentionRow[], periods: number): Analytics
   const periodLabels = Array.from({ length: periods }, (_v, i) => `M${i}`)
   return { cohorts, periodLabels }
 }
-
-const DAY_MS = 24 * 60 * 60 * 1000
-const WEEK_MS = 7 * DAY_MS
 
 /** UTC start-of-week anchored to Monday (matches date_trunc('week', ...) in Postgres, which is Monday). */
 export function startOfWeekUtc(d: Date): Date {

@@ -10,6 +10,9 @@ import { isUuid } from "../../db/cursor-helpers.js"
 import { pageInMemoryById } from "./pagination.js"
 import {
   ADMIN_EVENT_MESSAGE_CAP,
+  EVENT_NOTE_FLAGGED,
+  EVENT_NOTE_MESSAGE_POSTED,
+  EVENT_NOTE_UNFLAGGED,
   eventOutcomeNote,
   flaggedFromTimeline,
 } from "./admin-event-helpers.js"
@@ -29,6 +32,13 @@ import type {
 import type { LinkedReportView } from "../cleanup-service.js"
 import type { AdminEventCounts, EventKind, EventStatus, ReportCategory } from "@civfix/shared"
 
+const HOUR_MS = 3_600_000
+
+const IN_PROGRESS_SEED_OFFSET_MS = -HOUR_MS
+const UPCOMING_SEED_OFFSET_MS = 7 * 24 * HOUR_MS
+
+const SEEDED_ACTOR_NAME = "operator"
+
 function seededWindow(
   status: string,
   scheduledAt: Date | undefined,
@@ -42,9 +52,11 @@ function seededWindow(
 }
 
 function defaultStartOffsetMs(status: string): number {
-  if (status === "in_progress" || status === "active") return -3_600_000
-  if (status === "completed" || status === "done") return -DEFAULT_EVENT_DURATION_MS - 3_600_000
-  return 7 * 86_400_000
+  if (status === "in_progress" || status === "active") return IN_PROGRESS_SEED_OFFSET_MS
+  if (status === "completed" || status === "done") {
+    return IN_PROGRESS_SEED_OFFSET_MS - DEFAULT_EVENT_DURATION_MS
+  }
+  return UPCOMING_SEED_OFFSET_MS
 }
 
 export interface RecordedMemberNotification {
@@ -299,7 +311,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     this.appendTimeline(id, {
       kind: "outcome",
       note: eventOutcomeNote(input.bags),
-      who: "operator",
+      who: SEEDED_ACTOR_NAME,
       createdAt: this.nextDate(),
     })
     this.audits.push({
@@ -320,8 +332,8 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     seeded.record.flagged = next
     this.appendTimeline(id, {
       kind: next ? "flag" : "unflag",
-      note: next ? "Flagged for review" : "Flag cleared",
-      who: "operator",
+      note: next ? EVENT_NOTE_FLAGGED : EVENT_NOTE_UNFLAGGED,
+      who: SEEDED_ACTOR_NAME,
       createdAt: this.nextDate(),
     })
     this.audits.push({
@@ -343,7 +355,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     this.appendTimeline(id, {
       kind: "cancel",
       note: input.note,
-      who: "operator",
+      who: SEEDED_ACTOR_NAME,
       createdAt: this.nextDate(),
     })
     this.audits.push({
@@ -365,8 +377,8 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     this.messages.set(id, list)
     this.appendTimeline(id, {
       kind: "message",
-      note: "Posted an update to attendees",
-      who: "operator",
+      note: EVENT_NOTE_MESSAGE_POSTED,
+      who: SEEDED_ACTOR_NAME,
       createdAt: this.nextDate(),
     })
     // Mirrors the Drizzle repo's set-based in-transaction fan-out.
@@ -414,7 +426,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
   async linkReports(
     id: string,
     reportIds: string[],
-    actorId: string | null,
+    _actorId: string | null,
   ): Promise<{ linked: string[] } | null> {
     if (!this.events.has(id)) return null
     const linked: string[] = []
@@ -426,7 +438,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
       this.appendTimeline(id, {
         kind: "report_linked",
         note: `Linked report ${reportId}`,
-        who: "operator",
+        who: SEEDED_ACTOR_NAME,
         createdAt: this.nextDate(),
       })
       linked.push(reportId)
@@ -436,14 +448,13 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
       target: `cleanup:${id}`,
       meta: { reportIds: linked },
     })
-    void actorId
     return { linked }
   }
 
   async unlinkReport(
     id: string,
     reportId: string,
-    actorId: string | null,
+    _actorId: string | null,
   ): Promise<boolean | null> {
     if (!this.events.has(id)) return null
     const idx = this.links.findIndex((l) => l.cleanupId === id && l.reportId === reportId)
@@ -452,7 +463,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     this.appendTimeline(id, {
       kind: "report_unlinked",
       note: `Unlinked report ${reportId}`,
-      who: "operator",
+      who: SEEDED_ACTOR_NAME,
       createdAt: this.nextDate(),
     })
     this.audits.push({
@@ -460,7 +471,6 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
       target: `cleanup:${id}`,
       meta: { reportId },
     })
-    void actorId
     return true
   }
 
