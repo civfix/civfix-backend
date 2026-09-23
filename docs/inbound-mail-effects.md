@@ -118,7 +118,8 @@ A line is a cut point when it is:
   wraps a long attribution. The join stops only at a line where another attribution begins, so a reply
   line starting with `On`, `El`, `Am` or `Le` right above one is kept, while a wrapped sender name that
   starts with one of those words still joins;
-- an Outlook separator — `-----Original Message-----`, tolerant of the dash count;
+- a separator line — Outlook's `-----Original Message-----` or Gmail's
+  `---------- Forwarded message ---------`, tolerant of the dash count;
 - an unquoted Outlook header block — `/^From:\s.+$/` followed within two lines by `Sent:`, `Date:` or
   `To:`;
 - any line holding one of our own mail identifiers: a thread reply address (`report-`, `reply-` or
