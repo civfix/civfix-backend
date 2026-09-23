@@ -1754,15 +1754,20 @@ async function insertSlotsInTx(
   slots: DesiredSlot[],
 ): Promise<void> {
   if (slots.length === 0) return
-  for (const slot of slots) {
-    await tx`
-      INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, starts_at, ends_at, sort_order)
-      VALUES (
-        ${cleanupId}, ${slot.title}, ${slot.description}, ${slot.capacity},
-        ${slot.startsAt}, ${slot.endsAt}, ${slot.sortOrder}
-      )
-    `
-  }
+  // Timestamps travel as ISO strings: postgres.js types an array by its first element, so a leading Date
+  // would declare the whole array a scalar timestamptz and the ::timestamptz[] cast would fail.
+  await tx`
+    INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, starts_at, ends_at, sort_order)
+    SELECT ${cleanupId}, s.title, s.description, s.capacity, s.starts_at, s.ends_at, s.sort_order
+      FROM unnest(
+        ${slots.map((s) => s.title)}::text[],
+        ${slots.map((s) => s.description)}::text[],
+        ${slots.map((s) => s.capacity)}::int[],
+        ${slots.map((s) => s.startsAt?.toISOString() ?? null)}::timestamptz[],
+        ${slots.map((s) => s.endsAt?.toISOString() ?? null)}::timestamptz[],
+        ${slots.map((s) => s.sortOrder)}::int[]
+      ) AS s(title, description, capacity, starts_at, ends_at, sort_order)
+  `
 }
 
 async function loadSlots(
