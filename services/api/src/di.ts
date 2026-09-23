@@ -502,7 +502,6 @@ export function buildContainer(env: Env): Container {
     : new PgBossJobs({ connectionString: env.DATABASE_URL, logger: adapterLogger })
 
   async function close(): Promise<void> {
-    closed = true
     const maybePgBoss = jobs as { stop?: () => Promise<void> }
     if (typeof maybePgBoss.stop === "function") {
       await maybePgBoss.stop()
@@ -519,6 +518,9 @@ export function buildContainer(env: Env): Container {
       const maybePush = pushSender as { close?: () => Promise<void> }
       if (typeof maybePush.close === "function") await maybePush.close()
     }
+    // Only now: a graceful jobs stop waits for running handlers, which still need the pools, and
+    // whatever they opened is torn down below.
+    closed = true
     if (sharedPubSub) {
       await sharedPubSub.close()
       sharedPubSub = undefined

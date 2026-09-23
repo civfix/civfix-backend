@@ -30,6 +30,44 @@ describe("DI container after close()", () => {
     expect(container.redis).toBeUndefined()
   })
 
+  it("lets a job still in flight during the graceful jobs stop reach the database", async () => {
+    const container = buildContainer(
+      loadEnv({ NODE_ENV: "test", DATABASE_URL: "postgres://u:p@localhost:5432/civfix" }),
+    )
+    const poolBeforeStop = container.getDb()
+    let jobResult: unknown
+    const runningJob = (async () => {
+      await Promise.resolve()
+      jobResult = {
+        db: container.getDb(),
+        repo: container.getVolunteerHoursRepo(),
+      }
+    })()
+    Object.assign(container.jobs, { stop: () => runningJob })
+
+    await container.close()
+
+    expect(jobResult).toEqual({ db: poolBeforeStop, repo: expect.anything() })
+    expect(container.dbHandle).toBeUndefined()
+    expect(() => container.getDb()).toThrow(/closed/)
+  })
+
+  it("closes a pool a draining job opened, instead of leaking it", async () => {
+    const container = buildContainer(
+      loadEnv({ NODE_ENV: "test", DATABASE_URL: "postgres://u:p@localhost:5432/civfix" }),
+    )
+    Object.assign(container.jobs, {
+      stop: async () => {
+        container.getDb()
+      },
+    })
+
+    await container.close()
+
+    expect(container.dbHandle).toBeUndefined()
+    expect(() => container.getDb()).toThrow(/closed/)
+  })
+
   it("tolerates a second close()", async () => {
     const container = buildContainer(loadEnv({ NODE_ENV: "test" }))
     await container.close()
