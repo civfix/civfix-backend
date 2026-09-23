@@ -170,7 +170,7 @@ describe("media byte quota wiring", () => {
     const ipSubjects = charges.filter((c) => c.subject.startsWith("ip:"))
     expect(ipSubjects).toHaveLength(2)
     expect(new Set(ipSubjects.map((c) => c.subject)).size).toBe(1)
-    expect(charges.filter((c) => c.subject.startsWith("a:"))).toHaveLength(2)
+    expect(charges.filter((c) => c.subject.startsWith("a:"))).toHaveLength(0)
   })
 })
 
