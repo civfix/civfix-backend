@@ -10,6 +10,7 @@ import {
 } from "./chat-reply-hydration.js"
 import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
 import { publicAuthorIdentity } from "./public-author.js"
+import { officialPersonFlag } from "../auth/official-account.js"
 import { aroundLimits } from "./chat-history-window.js"
 import { toTombstoneDTO } from "./chat-tombstone.js"
 import type { ConversationHidesRepository } from "./conversation-hides-repository.drizzle.js"
@@ -155,6 +156,7 @@ export class InMemoryDmRepository implements DmRepository {
         followers: 0,
         following: 0,
         isFollowing: false,
+        ...officialPersonFlag(sender.id),
       },
       body: input.body,
       kind: input.kind ?? "text",
@@ -512,6 +514,7 @@ export class InMemoryBlocksRepository implements BlocksRepository {
         followers: 0,
         following: 0,
         isFollowing: false,
+        ...officialPersonFlag(u.id),
       }
     })
     return Promise.resolve({ blocked, nextCursor: null })

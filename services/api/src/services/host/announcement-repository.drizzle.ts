@@ -3,6 +3,7 @@ import type { Sql } from "../../db/client.js"
 import { PRESIGN_CONCURRENCY, mapWithLimit } from "../media-presign.js"
 import { presentIds } from "../present-ids.js"
 import { publicAuthorIdentity } from "../public-author.js"
+import { officialPersonFlag } from "../../auth/official-account.js"
 import { servedKeyExpr } from "../media-served-key.js"
 
 export type AnnouncementImagePresigner = (r2Key: string) => Promise<string>
@@ -70,7 +71,7 @@ export function makeDrizzleAnnouncementIdentityRepository(
           followers: 0,
           following: 0,
           isFollowing: false,
-          ...(identity.deleted ? { deleted: true } : {}),
+          ...(identity.deleted ? { deleted: true } : officialPersonFlag(row.id)),
         }
         return person
       })

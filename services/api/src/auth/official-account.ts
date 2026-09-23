@@ -8,6 +8,10 @@ export function isOfficialAccount(userId: string | null | undefined): boolean {
   return typeof userId === "string" && userId.toLowerCase() === CIVFIX_OFFICIAL_USER_ID
 }
 
+export function officialPersonFlag(userId: string): { official?: true } {
+  return isOfficialAccount(userId) ? { official: true } : {}
+}
+
 const NAME_LOOKALIKES: Readonly<Record<string, string>> = {
   "1": "i",
   "!": "i",

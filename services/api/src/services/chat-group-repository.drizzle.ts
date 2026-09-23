@@ -5,6 +5,7 @@ import type { ChatGroupKind, ChatGroupVisibility } from "../db/schema/chat-group
 import type { GROUP_MEMBER_ROLE_VALUES } from "../db/schema/types.js"
 import type { PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
+import { officialPersonFlag } from "../auth/official-account.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { resolveAvatarMediaOrThrow } from "./avatar-media.js"
 import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
@@ -138,6 +139,7 @@ export function toMemberView(r: MemberRowSelect): GroupMemberView {
     following: 0,
     isFollowing: r.is_following,
     ...(author.deleted ? { deleted: true } : {}),
+    ...(author.deleted || hidden !== null ? {} : officialPersonFlag(r.user_id)),
   }
   return { user, role: r.role, joinedAt: r.joined_at }
 }
