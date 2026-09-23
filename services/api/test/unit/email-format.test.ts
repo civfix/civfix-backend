@@ -335,6 +335,19 @@ describe("buildReportPacket", () => {
     expect(custom.html).not.toContain("<b>plain</b>")
   })
 
+  it("keeps single line breaks inside a template paragraph that also carries a link", () => {
+    const packet = buildReportPacket(
+      reportRecord(),
+      null,
+      ["https://cdn.example.org/a.jpg", "https://cdn.example.org/b.jpg"],
+      null,
+      NO_TEMPLATES,
+    )
+    expect(packet.html).toContain("Location: 100 Main St<br>Coordinates: 39.5, -98.35<br>View the exact location")
+    expect(packet.html).toContain('a.jpg</a><br><a class="cv-link" href="https://cdn.example.org/b.jpg"')
+    expect(packet.text).toContain("Location: 100 Main St\nCoordinates: 39.5, -98.35\n")
+  })
+
   it("renders the operator-facing status LABEL, not the raw enum value", () => {
     const packet = buildReportPacket(reportRecord({ status: "in_progress" }), null, [], null, {
       subject: null,
