@@ -127,8 +127,8 @@ function decodeEnvelope(payload: string): { frame: string; excludeConnId: string
     if (parsed.type === "message" && parsed.message !== undefined) {
       return { frame: JSON.stringify({ type: "message", message: parsed.message }), excludeConnId }
     }
-  } catch (ignored) {
-    void ignored
+  } catch {
+    // Not a JSON envelope: the payload is already a bare frame and is forwarded as-is.
   }
   return { frame: payload, excludeConnId: undefined }
 }

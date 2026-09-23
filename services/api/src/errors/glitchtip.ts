@@ -82,8 +82,12 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_PATTERNS.some((p) => k.includes(p))
 }
 
+const MAX_REDACT_DEPTH = 8
+
 function deepRedact(value: unknown, depth = 0): unknown {
-  if (depth > 8 || value === null || value === undefined) return value
+  if (value === null || value === undefined) return value
+  // Past the cap the keys are no longer inspected, so the whole subtree is withheld rather than sent raw.
+  if (depth > MAX_REDACT_DEPTH) return typeof value === "object" ? REDACTED : value
   if (Array.isArray(value)) return value.map((v) => deepRedact(v, depth + 1))
   if (typeof value === "object") {
     const out: Record<string, unknown> = {}

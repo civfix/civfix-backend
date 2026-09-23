@@ -14,6 +14,23 @@ export function parseBool(raw: string | undefined, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase())
 }
 
+const STRICT_TRUE = new Set(["1", "true", "yes", "on"])
+const STRICT_FALSE = new Set(["0", "false", "no", "off"])
+
+export function parseStrictBool(raw: string): boolean | undefined {
+  const value = raw.trim().toLowerCase()
+  if (STRICT_TRUE.has(value)) return true
+  if (STRICT_FALSE.has(value)) return false
+  return undefined
+}
+
+export interface EnvIssueSink {
+  key: string
+  errors: string[]
+}
+
+const INTEGER_PATTERN = /^-?\d+$/
+
 export function parseCsv(raw: string | undefined): string[] {
   if (!raw) return []
   return raw
@@ -30,15 +47,25 @@ export function parseCsvLower(raw: string | undefined): string[] {
   return [...seen]
 }
 
-export function parseIntOr(raw: string | undefined, fallback: number): number {
+export function parseIntOr(raw: string | undefined, fallback: number, sink?: EnvIssueSink): number {
   if (raw === undefined || raw.trim() === "") return fallback
-  const n = Number.parseInt(raw.trim(), 10)
-  return Number.isFinite(n) ? n : fallback
+  const value = raw.trim()
+  if (!INTEGER_PATTERN.test(value)) {
+    sink?.errors.push(`${sink.key}: must be an integer`)
+    return fallback
+  }
+  return Number.parseInt(value, 10)
 }
 
-export function parsePositiveIntOr(raw: string | undefined, fallback: number): number {
-  const n = parseIntOr(raw, fallback)
-  return n >= 1 ? n : fallback
+export function parsePositiveIntOr(
+  raw: string | undefined,
+  fallback: number,
+  sink?: EnvIssueSink,
+): number {
+  const n = parseIntOr(raw, fallback, sink)
+  if (n >= 1) return n
+  sink?.errors.push(`${sink.key}: must be a positive integer`)
+  return fallback
 }
 
 export const SHUTDOWN_DRAIN_MS_MAX = 10_000

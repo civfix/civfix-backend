@@ -167,7 +167,7 @@ export const en = {
   "email.otp.subject": "Your civfix sign-in code",
   "email.otp.body_line1": "Your civfix sign-in code is {{code}}.",
   "email.otp.body_expiry":
-    "It expires in 5 minutes. If you did not request it, you can ignore this email.",
+    "It expires in {{minutes}} minutes. If you did not request it, you can ignore this email.",
   // HTML-variant intro (the code itself is rendered in a styled block by the template).
   "email.otp.html_intro": "Your civfix sign-in code is:",
 

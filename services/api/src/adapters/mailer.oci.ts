@@ -16,6 +16,7 @@ import {
 import { renderEmailBody } from "./email-layout.js"
 import { renderMessage } from "../i18n/renderMessage.js"
 import { resolveLocale, type Locale } from "../i18n/locales.js"
+import { OTP_TTL_SECONDS } from "../auth/otp.js"
 
 const CRLF_RE = /[\r\n\0]/
 const CRLF_GLOBAL_RE = /[\r\n\0]/g
@@ -46,6 +47,17 @@ export interface OciMailerConfig {
   fromNoReply: string
   fromOutreach: string
   timeoutMs?: number
+  logger?: OciMailerLogger
+}
+
+export interface OciMailerLogger {
+  warn(obj: unknown, msg?: string): void
+}
+
+// Only for callers that construct the mailer without a logger; the API container always injects its
+// pino logger, whose serializers redact the SMTP response an error carries.
+const consoleLogger: OciMailerLogger = {
+  warn: (obj, msg) => console.warn(msg ?? "", obj),
 }
 
 export const OCI_MAILER_DEFAULT_TIMEOUT_MS = 15_000
@@ -142,8 +154,9 @@ export class OciMailer implements Mailer {
         socketTimeout: timeout,
       })
       this.transporter = transporter
+      const logger = this.config.logger ?? consoleLogger
       transporter.verify().catch((err: unknown) => {
-        console.warn(
+        logger.warn(
           { err },
           "OCI mailer SMTP verify failed (continuing; send will surface the error)",
         )
@@ -202,7 +215,12 @@ export function renderOtp(passcode: string, locale: Locale): Rendered {
     blocks: [
       paragraph(renderMessage(locale, "email.otp.html_intro")),
       code(passcode),
-      paragraph(renderMessage(locale, "email.otp.body_expiry"), { muted: true }),
+      paragraph(
+        renderMessage(locale, "email.otp.body_expiry", {
+          minutes: String(Math.floor(OTP_TTL_SECONDS / 60)),
+        }),
+        { muted: true },
+      ),
     ],
   })
   return { subject, text, html }

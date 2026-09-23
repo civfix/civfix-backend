@@ -22,6 +22,8 @@ const realSleep = (ms: number): Promise<void> =>
     if (typeof timer.unref === "function") timer.unref()
   })
 
+// Every Redis failure fails open: dedupe only suppresses retried duplicates, so an outage must not
+// block chat sends, and the shared client's error handler already logs the outage itself.
 const OPEN: SendReservation = { state: "open" }
 
 export class RedisSendDedupeStore implements SendDedupeStore {

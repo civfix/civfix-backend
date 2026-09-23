@@ -45,7 +45,7 @@ describe("isFcmPruneCode", () => {
   it("prunes only the dead-token codes", () => {
     expect(isFcmPruneCode("messaging/registration-token-not-registered")).toBe(true)
     expect(isFcmPruneCode("messaging/invalid-registration-token")).toBe(true)
-    expect(isFcmPruneCode("messaging/invalid-argument")).toBe(true)
+    expect(isFcmPruneCode("messaging/invalid-argument")).toBe(false)
   })
 
   it("warns (does not prune) on transient/quota codes and unknown values", () => {

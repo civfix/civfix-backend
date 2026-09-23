@@ -3,9 +3,20 @@ import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces
 import { REGISTRATION_QUEUE_NAMES } from "../services/host/registration-queues.js"
 import { COMMS_QUEUE_NAMES } from "../services/host/broadcast-queues.js"
 
+export interface PgBossJobsLogger {
+  error(obj: unknown, msg?: string): void
+}
+
+// Only for callers that construct the adapter without a logger; the API container always injects
+// its pino logger so redaction applies.
+const consoleLogger: PgBossJobsLogger = {
+  error: (obj, msg) => console.error(msg ?? "", obj),
+}
+
 export interface PgBossJobsConfig {
   connectionString: string
   schema?: string
+  logger?: PgBossJobsLogger
 }
 
 export const API_QUEUE_NAMES = [
@@ -47,7 +58,8 @@ export class PgBossJobs implements Jobs {
       connectionString: this.config.connectionString,
       ...(this.config.schema !== undefined ? { schema: this.config.schema } : {}),
     })
-    boss.on("error", (err: Error) => console.error("pg-boss error:", err))
+    const logger = this.config.logger ?? consoleLogger
+    boss.on("error", (err: Error) => logger.error({ err }, "pg-boss error"))
     await boss.start()
     for (const name of API_QUEUE_NAMES) {
       await boss.createQueue(name, { name, policy: "short" })

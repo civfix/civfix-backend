@@ -43,6 +43,13 @@ function storage() {
   })
 }
 
+async function proxyOf(config: Record<string, unknown>): Promise<URL | undefined> {
+  const handler = config.requestHandler as {
+    configProvider?: Promise<{ httpsAgent?: { proxy?: URL } }>
+  }
+  return (await handler.configProvider)?.httpsAgent?.proxy
+}
+
 beforeEach(() => {
   clientConfigs.length = 0
   for (const key of ENV_KEYS) {
@@ -59,11 +66,11 @@ afterEach(() => {
 })
 
 describe("R2 client egress", () => {
-  it("builds no requestHandler when HTTPS_PROXY is unset (the API container)", async () => {
+  it("builds a direct requestHandler when HTTPS_PROXY is unset (the API container)", async () => {
     await storage().presignGet("uploads/a", 60, { forceSigned: true })
 
     expect(clientConfigs).toHaveLength(1)
-    expect(clientConfigs[0]!.requestHandler).toBeUndefined()
+    expect(await proxyOf(clientConfigs[0]!)).toBeUndefined()
   })
 
   it("builds a proxy-bearing requestHandler when HTTPS_PROXY is set (the worker)", async () => {
@@ -87,7 +94,7 @@ describe("R2 client egress", () => {
 
     await storage().presignGet("uploads/a", 60, { forceSigned: true })
 
-    expect(clientConfigs[0]!.requestHandler).toBeUndefined()
+    expect(await proxyOf(clientConfigs[0]!)).toBeUndefined()
   })
 })
 

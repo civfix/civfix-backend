@@ -43,55 +43,104 @@ export class TwilioSmsSender implements SmsSender {
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), SMS_SEND_TIMEOUT_MS)
-    let response: Response
     try {
-      response = await doFetch(url, {
-        method: "POST",
-        redirect: "error",
-        headers: {
-          authorization: `Basic ${credentials}`,
-          "content-type": "application/x-www-form-urlencoded",
-          accept: "application/json",
-        },
-        body: form.toString(),
-        signal: controller.signal,
-      })
-    } catch (err) {
-      throw smsFailure(
-        "temporary",
-        "Text message not sent: the SMS provider did not respond in time.",
-        err,
-      )
+      let response: Response
+      try {
+        response = await doFetch(url, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            authorization: `Basic ${credentials}`,
+            "content-type": "application/x-www-form-urlencoded",
+            accept: "application/json",
+          },
+          body: form.toString(),
+          signal: controller.signal,
+        })
+      } catch (err) {
+        throw smsFailure(
+          "temporary",
+          "Text message not sent: the SMS provider did not respond in time.",
+          err,
+        )
+      }
+
+      const read = await readJsonPayload(response, controller.signal)
+      if (!response.ok) {
+        throw classifyTwilioError(response.status, read.payload)
+      }
+      if (read.interrupted) {
+        // A 2xx status means Twilio may already have queued the text, so retrying could send it twice.
+        throw smsFailure(
+          "permanent",
+          "Text message status unknown: the SMS provider accepted it but its reply was cut off.",
+          read.error,
+        )
+      }
+      const sid = typeof read.payload.sid === "string" ? read.payload.sid : ""
+      if (sid === "") {
+        throw smsFailure(
+          "temporary",
+          "Text message not sent: the SMS provider returned no message id.",
+        )
+      }
+      return { id: sid }
     } finally {
       clearTimeout(timer)
     }
-
-    const payload = await readJsonPayload(response)
-    if (!response.ok) {
-      throw classifyTwilioError(response.status, payload)
-    }
-    const sid = typeof payload.sid === "string" ? payload.sid : ""
-    if (sid === "") {
-      throw smsFailure(
-        "temporary",
-        "Text message not sent: the SMS provider returned no message id.",
-      )
-    }
-    return { id: sid }
   }
 }
 
-async function readJsonPayload(response: Response): Promise<TwilioMessageResponse> {
+interface PayloadRead {
+  payload: TwilioMessageResponse
+  interrupted: boolean
+  error?: unknown
+}
+
+async function readJsonPayload(response: Response, signal: AbortSignal): Promise<PayloadRead> {
   const declared = Number(response.headers?.get?.("content-length") ?? "")
   if (Number.isFinite(declared) && declared > MAX_ERROR_BODY_BYTES) {
     await response.body?.cancel().catch(() => {})
-    return {}
+    return { payload: {}, interrupted: false }
   }
+  const body = response.body
+  if (body === null) return { payload: {}, interrupted: false }
+
+  const reader = body.getReader()
+  const cancelOnAbort = () => {
+    void reader.cancel().catch(() => {})
+  }
+  signal.addEventListener("abort", cancelOnAbort, { once: true })
+  const chunks: Uint8Array[] = []
+  let total = 0
   try {
-    const parsed: unknown = await response.json()
-    return typeof parsed === "object" && parsed !== null ? (parsed as TwilioMessageResponse) : {}
+    if (signal.aborted) cancelOnAbort()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > MAX_ERROR_BODY_BYTES) {
+        await reader.cancel().catch(() => {})
+        return { payload: {}, interrupted: false }
+      }
+      chunks.push(value)
+    }
+  } catch (error) {
+    return { payload: {}, interrupted: true, error }
+  } finally {
+    signal.removeEventListener("abort", cancelOnAbort)
+    reader.releaseLock()
+  }
+  if (signal.aborted) return { payload: {}, interrupted: true, error: signal.reason }
+
+  try {
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+    const payload =
+      typeof parsed === "object" && parsed !== null ? (parsed as TwilioMessageResponse) : {}
+    return { payload, interrupted: false }
   } catch {
-    return {}
+    // A gateway's HTML error page still classifies by HTTP status alone.
+    return { payload: {}, interrupted: false }
   }
 }
 

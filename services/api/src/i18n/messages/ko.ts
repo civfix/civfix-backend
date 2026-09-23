@@ -75,7 +75,8 @@ export const ko: Partial<Record<MessageKey, string>> = {
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "civfix 로그인 코드",
   "email.otp.body_line1": "civfix 로그인 코드는 {{code}}입니다.",
-  "email.otp.body_expiry": "코드는 5분 후 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하세요.",
+  "email.otp.body_expiry":
+    "코드는 {{minutes}}분 후 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하세요.",
   "email.otp.html_intro": "civfix 로그인 코드:",
 
   "email.report_update.subject": "civfix 제보가 {{status}} 처리되었어요",
