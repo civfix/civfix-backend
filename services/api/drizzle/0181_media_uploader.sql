@@ -1,0 +1,21 @@
+-- =============================================================================
+-- 0181_media_uploader.sql
+-- -----------------------------------------------------------------------------
+-- Records who created each upload, so a claim by uploadId can require the
+-- caller to be that uploader. The uploadId is readable from every served URL,
+-- so knowing it proves nothing.
+--
+-- Values: 'u:<user id>', 'a:<anon token id>', or 'anon' for a caller with no
+-- session. NULL marks a row written before this column existed; the claim paths
+-- accept those only inside the claim window, so they age out on their own.
+--
+-- media_assets is a hot table. A nullable column with no default is a catalog
+-- change only: no rewrite, no backfill, and the lock is held for milliseconds.
+-- No index: every claim finds its row through the unique upload_id first.
+--
+-- Erasure keeps the value, like reports.reporter_user_id: it names a users row
+-- that survives as an anonymized tombstone, and nulling it would turn an erased
+-- user's uploads back into rows any caller may claim inside the window.
+-- =============================================================================
+
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS uploader text;

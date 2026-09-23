@@ -14,6 +14,7 @@ import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup } from "../media-bindings.js"
 import { likeContains } from "../admin/like.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./event-media.js"
+import { publicServedKeyExpr } from "../media-served-key.js"
 import { deterministicUuid } from "../deterministic-uuid.js"
 import {
   isCheckViolationOn,
@@ -602,7 +603,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
              p.blocks,
              p.seo,
              c.cover_media_id,
-             m.r2_key AS cover_key,
+             ${publicServedKeyExpr(tag, "m")} AS cover_key,
              c.visibility,
              p.published_at,
              p.updated_at,
@@ -2352,7 +2353,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
                p.blocks,
                p.seo,
                c.cover_media_id,
-               m.r2_key AS cover_key,
+               ${publicServedKeyExpr(sql, "m")} AS cover_key,
                c.visibility,
                p.published_at,
                p.updated_at,
@@ -2375,13 +2376,15 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     ): Promise<Map<string, string>> {
       const out = new Map<string, string>()
       if (mediaIds.length === 0) return out
-      const rows = await sql<{ id: string; r2_key: string }[]>`
-        SELECT media_assets.id, media_assets.r2_key FROM media_assets
+      const rows = await sql<{ id: string; served_key: string }[]>`
+        SELECT media_assets.id, ${publicServedKeyExpr(sql, "media_assets")} AS served_key
+          FROM media_assets
          WHERE media_assets.id = ANY(${[...new Set(mediaIds)]}::uuid[])
            AND media_assets.status = 'ready'
+           AND media_assets.served_key IS NOT NULL
            AND (${mediaBoundToCleanup(sql, cleanupId)})
       `
-      for (const row of rows) out.set(row.id, row.r2_key)
+      for (const row of rows) out.set(row.id, row.served_key)
       return out
     },
 
@@ -2504,7 +2507,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
                p.blocks,
                p.seo,
                c.cover_media_id,
-               m.r2_key AS cover_key,
+               ${publicServedKeyExpr(sql, "m")} AS cover_key,
                c.visibility,
                p.published_at,
                p.updated_at,
@@ -2512,7 +2515,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
                p.flag_reason,
                COALESCE(p.view_count, 0) AS view_count,
                c.donation_url,
-               lm.r2_key AS logo_key
+               ${publicServedKeyExpr(sql, "lm")} AS logo_key
           FROM cleanups c
           LEFT JOIN cleanup_pages p ON p.cleanup_id = c.id
           LEFT JOIN media_assets m ON m.id = c.cover_media_id AND m.status = 'ready'

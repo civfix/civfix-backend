@@ -35,6 +35,7 @@ export function makeDrizzleMediaRepository(db: Db): MediaRepository {
         r2Key: row.r2Key,
         status: row.status,
         byteSize: row.byteSize,
+        uploader: row.uploader,
       })
     },
 

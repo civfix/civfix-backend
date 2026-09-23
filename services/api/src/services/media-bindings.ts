@@ -1,4 +1,5 @@
 import type { Queryable } from "../db/client.js"
+import { MEDIA_CLAIM_WINDOW_SEC } from "./host/event-media.js"
 
 export const MEDIA_BINDING_RELATIONS = [
   "users.avatar_media_id",
@@ -34,16 +35,36 @@ export function mediaBoundElsewhere(tag: Queryable, exceptCleanupId: string | nu
 
 // Only report-purpose rows can be attached by uploadId, and the purpose check alone is not enough:
 // avatars keep purpose 'report' while users.avatar_media_id and chat_groups.avatar_media_id bind them.
-// The uploadId is readable from every served URL, so it is no proof of ownership.
-export function claimableAsReportMedia(tag: Queryable) {
-  return tag`purpose = 'report' AND NOT (${mediaBoundElsewhere(tag, null)})`
+export function claimableAsReportMedia(tag: Queryable, uploaders: readonly string[]) {
+  return tag`purpose = 'report' AND NOT (${mediaBoundElsewhere(tag, null)}) AND (${uploadedByClaimant(tag, uploaders)})`
 }
 
 // createUpload stores every upload with the default purpose 'report' and only a binding re-purposes it,
 // so an author's fresh post or chat upload sits in exactly the pool a report may claim. An UPDATE's
 // WHERE reads the row before its SET, so the post path's purpose = 'post' cannot satisfy this check.
-export function claimableAsAttachment(tag: Queryable) {
-  return claimableAsReportMedia(tag)
+export function claimableAsAttachment(tag: Queryable, uploaders: readonly string[]) {
+  return claimableAsReportMedia(tag, uploaders)
+}
+
+// The uploadId is readable from every served URL, so it proves nothing: only the account or anon session
+// that created the upload may bind it. A NULL uploader predates attribution; the window every claim
+// shares with the event and logo claims is what ages those rows out.
+export function uploadedByClaimant(tag: Queryable, uploaders: readonly string[]) {
+  return tag`media_assets.created_at > now() - make_interval(secs => ${MEDIA_CLAIM_WINDOW_SEC})
+    AND (media_assets.uploader IN ${tag([...uploaders])} OR media_assets.uploader IS NULL)`
+}
+
+// A claim's bound-elsewhere test reads users and chat_groups under its statement snapshot, and waiting on
+// a row lock does not refresh that snapshot. Taking the lock in an earlier statement means the claim
+// runs after any avatar bind holding it has committed, and sees that bind. Ordered by id so two claims
+// over overlapping uploads lock in the same order.
+export async function lockUploadsForClaim(tx: Queryable, uploadIds: readonly string[]) {
+  await tx`
+    SELECT id FROM media_assets
+    WHERE upload_id IN ${tx([...uploadIds])}
+    ORDER BY id
+    FOR UPDATE
+  `
 }
 
 export function eventsBindingMedia(tag: Queryable, mediaId: string) {

@@ -54,6 +54,7 @@ function postRepo(fake: FakeSqlControl) {
 }
 
 const POST_CLAIM = /UPDATE media_assets\s+SET post_id/
+const CHAT_CLAIM = /UPDATE media_assets\s+SET "?chat_message_id/
 
 describe("post create: media claim predicate", () => {
   it("claims only unbound report-purpose uploads, checked before the row is re-purposed", async () => {
@@ -82,11 +83,17 @@ describe("post create: media claim predicate", () => {
 
 describe("chat message attach: media claim predicate", () => {
   it("claims only unbound report-purpose uploads and keeps the same-message re-claim", async () => {
-    const fake = makeFakeSql([])
+    const fake = makeFakeSql([{ match: CHAT_CLAIM, rows: [{ upload_id: UPLOAD_ID }] }])
 
-    await attachChatMedia(fake.sql as unknown as Queryable, MESSAGE_ID, [UPLOAD_ID], new Date())
+    await attachChatMedia(
+      fake.sql as unknown as Queryable,
+      MESSAGE_ID,
+      [UPLOAD_ID],
+      new Date(),
+      AUTHOR,
+    )
 
-    const where = claimWhereClause(fake, /UPDATE media_assets\s+SET "?chat_message_id/)
+    const where = claimWhereClause(fake, CHAT_CLAIM)
     expect(where).toContain("purpose = 'report'")
     expect(where).toContain(`NOT (${await renderBoundElsewhere()})`)
     expect(where).toMatch(/\("?chat_message_id"? IS NULL OR "?chat_message_id"? = \?\)/)

@@ -23,7 +23,12 @@ import {
 } from "@civfix/shared"
 import type { Jobs } from "@civfix/shared/interfaces"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
-import { resolveAvatarMediaOrThrow } from "../services/avatar-media.js"
+import {
+  avatarClaimQuery,
+  avatarMediaRefOrThrow,
+  type AvatarMediaRow,
+} from "../services/avatar-media.js"
+import { userUploader } from "../services/media-uploader.js"
 import { enqueueWaitlistPromotion } from "../services/host/waitlist-promotion.js"
 import type { NotificationService } from "../services/notification-service.js"
 import {
@@ -238,15 +243,6 @@ export class PgUserStore implements UserStore {
     if (input.donationUrl !== undefined) {
       set.donationUrl = input.donationUrl === "" ? null : input.donationUrl
     }
-    if (input.avatarUploadId !== undefined) {
-      const media = await resolveAvatarMediaOrThrow(this.db.$client, input.avatarUploadId, {
-        userId: id,
-      })
-      set.avatarMediaId = media.id
-      if (input.presignAvatar && media.servedKey !== null) {
-        set.avatarUrl = await input.presignAvatar(media.servedKey)
-      }
-    }
     if (input.socialLinks !== undefined) {
       const links = input.socialLinks
       const clean: SocialLinks = {}
@@ -258,13 +254,27 @@ export class PgUserStore implements UserStore {
       }
       set.socialLinks = Object.keys(clean).length > 0 ? clean : null
     }
+    const avatarUploadId = input.avatarUploadId
     let updated: (typeof users.$inferSelect)[]
     try {
-      updated = await this.db
-        .update(users)
-        .set(set)
-        .where(and(eq(users.id, id), isNull(users.deletedAt)))
-        .returning()
+      updated = await this.db.transaction(async (tx) => {
+        if (avatarUploadId !== undefined) {
+          const media = avatarMediaRefOrThrow(
+            await tx.execute<AvatarMediaRow>(
+              avatarClaimQuery(sql, avatarUploadId, { uploader: userUploader(id), userId: id }),
+            ),
+          )
+          set.avatarMediaId = media.id
+          if (input.presignAvatar && media.servedKey !== null) {
+            set.avatarUrl = await input.presignAvatar(media.servedKey)
+          }
+        }
+        return tx
+          .update(users)
+          .set(set)
+          .where(and(eq(users.id, id), isNull(users.deletedAt)))
+          .returning()
+      })
     } catch (err) {
       if (isUniqueViolation(err)) throw AppError.conflict("That username is taken.")
       throw err

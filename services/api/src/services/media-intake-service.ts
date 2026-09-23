@@ -15,6 +15,7 @@ import type { MEDIA_PURPOSE_VALUES } from "../db/schema/types-host.js"
 type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
 import { readEtag } from "./media-etag.js"
+import { uploaderOf } from "./media-uploader.js"
 import { makeMediaPresigner, makePrivateMediaPresigner } from "./media-presign.js"
 import {
   makeUnboundOnlyMediaViewAuthorizer,
@@ -84,6 +85,7 @@ export interface NewMediaAsset {
   r2Key: string
   status: MediaStatus
   byteSize: number
+  uploader: string
 }
 
 export interface MediaRepository {
@@ -195,6 +197,7 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         r2Key,
         status: "validating",
         byteSize: input.byteSize,
+        uploader: uploaderOf(owner),
       })
 
       const presigned = await deps.storage.presignPut(r2Key, {

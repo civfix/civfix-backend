@@ -1,8 +1,10 @@
+import { AppError } from "@civfix/shared"
 import type { Queryable } from "../db/client.js"
 import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/shared"
-import { claimableAsAttachment } from "./media-bindings.js"
+import { claimableAsAttachment, lockUploadsForClaim } from "./media-bindings.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
-import { servableMediaFilter, servedKeyExpr } from "./media-served-key.js"
+import { uploaderServableFilter, uploaderServedKeyExpr } from "./media-served-key.js"
+import { userUploader } from "./media-uploader.js"
 
 export type MessageMediaColumn = "chat_message_id"
 
@@ -16,6 +18,7 @@ export interface MessageAttachmentRepo {
     messageId: string,
     uploadIds: string[],
     messageCreatedAt: Date,
+    senderId: string,
   ): Promise<void>
 }
 
@@ -34,21 +37,28 @@ interface MediaRow {
 export function makeAttachmentRepo(column: MessageMediaColumn): MessageAttachmentRepo {
   const otherCols = ALL_COLUMNS.filter((c) => c !== column)
   return {
-    async attach(tx, messageId, uploadIds, messageCreatedAt) {
+    async attach(tx, messageId, uploadIds, messageCreatedAt, senderId) {
       if (uploadIds.length === 0) return
       const nullGuards = [...otherCols, ...CLAIM_GUARD_COLUMNS].reduce(
         (acc, c) => tx`${acc} AND ${tx(c)} IS NULL`,
         tx``,
       )
-      await tx`
+      await lockUploadsForClaim(tx, uploadIds)
+      const claimed = await tx<{ upload_id: string }[]>`
         UPDATE media_assets
         SET ${tx(column)} = ${messageId}, chat_message_created_at = ${messageCreatedAt}
         WHERE upload_id IN ${tx(uploadIds)}
           AND (${tx(column)} IS NULL OR ${tx(column)} = ${messageId})
           ${nullGuards}
-          AND ${claimableAsAttachment(tx)}
+          AND ${claimableAsAttachment(tx, [userUploader(senderId)])}
           AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
+        RETURNING upload_id
       `
+      if (claimed.length !== new Set(uploadIds).size) {
+        throw AppError.validation({
+          mediaUploadIds: "One or more media uploads are unavailable.",
+        })
+      }
     },
   }
 }
@@ -58,16 +68,18 @@ export async function loadServableAttachmentsFor(
   column: MessageMediaColumn,
   messageIds: string[],
   presign: PresignMedia,
+  viewerUserId: string | null,
 ): Promise<Map<string, MediaDTO[]>> {
   const byMessage = new Map<string, MediaDTO[]>()
   if (messageIds.length === 0) return byMessage
+  const viewer = viewerUserId !== null ? userUploader(viewerUserId) : null
   const rows = await tag<MediaRow[]>`
     SELECT id, ${tag(column)} AS message_id, kind, codec,
-           ${servedKeyExpr(tag, "media_assets")} AS r2_key,
+           ${uploaderServedKeyExpr(tag, "media_assets", viewer)} AS r2_key,
            thumb_key, status, width, height
     FROM media_assets
     WHERE ${tag(column)} IN ${tag(messageIds)}
-      AND ${servableMediaFilter(tag, "media_assets")}
+      AND ${uploaderServableFilter(tag, "media_assets", viewer)}
     ORDER BY created_at ASC
   `
   const projected = await mapWithLimit(rows, PRESIGN_CONCURRENCY, async (r) => {

@@ -8,6 +8,7 @@ import {
 import { sha256Hex } from "../../src/auth/crypto.js"
 import type { Queryable, Sql } from "../../src/db/client.js"
 import { mediaBoundElsewhere } from "../../src/services/media-bindings.js"
+import { anonUploader } from "../../src/services/media-uploader.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 
 const REPORT_ID = "44444444-4444-4444-8444-444444444444"
@@ -40,6 +41,7 @@ function createArgs(): CreateAnonReportTxArgs {
     addrPrecision: null,
     h3Cell: "8a2830828767fff",
     mediaUploadIds: [],
+    mediaUploaders: [anonUploader(ANON_ID)],
     claimCodeHash: "hash-of-original",
     reportCap: 5,
     responseSnapshot: { reportId: REPORT_ID, status: "held", claimCode: ORIGINAL_CODE },

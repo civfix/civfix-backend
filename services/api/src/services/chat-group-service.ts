@@ -90,9 +90,12 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     }
   }
 
-  async function resolveAvatar(uploadId: string | undefined): Promise<string | null> {
+  async function resolveAvatar(
+    uploadId: string | undefined,
+    uploaderUserId: string,
+  ): Promise<string | null> {
     if (uploadId === undefined) return null
-    return groups.findMediaIdByUploadId(uploadId)
+    return groups.findMediaIdByUploadId(uploadId, { uploaderUserId })
   }
 
   async function filterInvitees(actorId: string, memberIds: string[]): Promise<string[]> {
@@ -171,7 +174,7 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
       assertNoSlur(req.name, "name")
       assertNoSlur(req.description ?? null, "description")
       const [avatarMediaId, actorFiltered] = await Promise.all([
-        resolveAvatar(req.avatarUploadId),
+        resolveAvatar(req.avatarUploadId, ownerId),
         filterInvitees(ownerId, req.memberIds),
       ])
       const memberIds = await filterPairwise(actorFiltered)
@@ -219,7 +222,12 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
           ? { description: req.description === "" ? null : req.description }
           : {}),
         ...(req.avatarUploadId !== undefined
-          ? { avatarMediaId: await groups.findMediaIdByUploadId(req.avatarUploadId, req.id) }
+          ? {
+              avatarMediaId: await groups.findMediaIdByUploadId(req.avatarUploadId, {
+                uploaderUserId: userId,
+                groupId: req.id,
+              }),
+            }
           : {}),
         ...(req.visibility !== undefined ? { visibility: req.visibility } : {}),
       })

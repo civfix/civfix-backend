@@ -6,6 +6,7 @@ import type { PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { resolveAvatarMediaOrThrow } from "./avatar-media.js"
+import { userUploader } from "./media-uploader.js"
 import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
 import { isUuid } from "../db/cursor-helpers.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
@@ -62,6 +63,11 @@ export interface UpdateChatGroupPatch {
   visibility?: ChatGroupVisibility
 }
 
+export interface GroupAvatarClaimant {
+  uploaderUserId: string
+  groupId?: string | undefined
+}
+
 export interface ChatGroupRepository {
   create(input: CreateChatGroupInput, memberIds: string[]): Promise<string>
   findById(id: string): Promise<ChatGroupView | null>
@@ -84,7 +90,7 @@ export interface ChatGroupRepository {
     cursor: string | null,
     limit: number,
   ): Promise<{ members: GroupMemberView[]; nextCursor: string | null }>
-  findMediaIdByUploadId(uploadId: string, groupId?: string): Promise<string>
+  findMediaIdByUploadId(uploadId: string, claimant: GroupAvatarClaimant): Promise<string>
   invitableIdsOf(actorId: string, candidateIds: string[]): Promise<string[]>
   blockedPairsAmong(userIds: string[]): Promise<Set<string>>
   listMemberIds(groupId: string, limit?: number): Promise<string[]>
@@ -400,8 +406,11 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       }
     },
 
-    async findMediaIdByUploadId(uploadId: string, groupId?: string): Promise<string> {
-      const media = await resolveAvatarMediaOrThrow(sql, uploadId, { groupId })
+    async findMediaIdByUploadId(uploadId: string, claimant: GroupAvatarClaimant): Promise<string> {
+      const media = await resolveAvatarMediaOrThrow(sql, uploadId, {
+        uploader: userUploader(claimant.uploaderUserId),
+        groupId: claimant.groupId,
+      })
       return media.id
     },
 

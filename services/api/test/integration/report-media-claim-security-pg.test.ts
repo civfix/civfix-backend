@@ -7,6 +7,8 @@ import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
 import { makeReportService, type ReportService } from "../../src/services/report-service.js"
 import { PROBE_INSIDE_CITY } from "../../src/db/seed-fixtures.js"
+import { MEDIA_CLAIM_WINDOW_SEC } from "../../src/services/host/event-media.js"
+import { userUploader } from "../../src/services/media-uploader.js"
 
 const pg = await withPg()
 
@@ -112,8 +114,38 @@ describe.skipIf(!pg)("report media claim (integration: only unbound report media
     await expectUnclaimable(media, "verification")
   })
 
+  it("refuses another user's replaced avatar once nothing binds it any more", async () => {
+    const victim = await newUser("avatar replacer")
+    const replaced = await seedMediaAsset(h.sql, { uploader: userUploader(victim) })
+    const current = await seedMediaAsset(h.sql, { uploader: userUploader(victim) })
+    await h.sql`UPDATE users SET avatar_media_id = ${replaced.id} WHERE id = ${victim}`
+    await h.sql`UPDATE users SET avatar_media_id = ${current.id} WHERE id = ${victim}`
+
+    await expectUnclaimable(replaced, "report")
+  })
+
+  it("refuses an erased user's upload after erasure unbinds their avatar", async () => {
+    const erased = await newUser("erased user")
+    const media = await seedMediaAsset(h.sql, { uploader: userUploader(erased) })
+    await h.sql`UPDATE users SET avatar_media_id = ${media.id} WHERE id = ${erased}`
+    await h.sql`
+      UPDATE users SET deleted_at = now(), avatar_media_id = NULL, avatar_url = NULL
+      WHERE id = ${erased}
+    `
+
+    await expectUnclaimable(media, "report")
+  })
+
+  it("refuses an unattributed upload older than the claim window", async () => {
+    const media = await seedMediaAsset(h.sql, {
+      createdAt: new Date(Date.now() - (MEDIA_CLAIM_WINDOW_SEC + 60) * 1000),
+    })
+
+    await expectUnclaimable(media, "report")
+  })
+
   it("still claims the reporter's own unbound report upload", async () => {
-    const media = await seedMediaAsset(h.sql)
+    const media = await seedMediaAsset(h.sql, { uploader: userUploader(attackerId) })
 
     const dto = await service.createReport(createReq([media.uploadId]), { userId: attackerId })
 

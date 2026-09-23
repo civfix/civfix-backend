@@ -15,7 +15,8 @@ import type { POST_KIND_VALUES, REPORT_VISIBILITY_VALUES } from "../db/schema/ty
 import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
 import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
-import { claimableAsAttachment } from "./media-bindings.js"
+import { claimableAsAttachment, lockUploadsForClaim } from "./media-bindings.js"
+import { userUploader } from "./media-uploader.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
@@ -1074,12 +1075,13 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         const postId = inserted[0]!.id
 
         if (args.mediaUploadIds.length > 0) {
+          await lockUploadsForClaim(tx, args.mediaUploadIds)
           const claimed = await tx<{ upload_id: string }[]>`
             UPDATE media_assets
             SET post_id = ${postId}, purpose = 'post'
             WHERE upload_id IN ${tx(args.mediaUploadIds)}
               AND post_id IS NULL AND chat_message_id IS NULL AND report_id IS NULL
-              AND ${claimableAsAttachment(tx)}
+              AND ${claimableAsAttachment(tx, [userUploader(args.authorId)])}
               AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
             RETURNING upload_id
           `
