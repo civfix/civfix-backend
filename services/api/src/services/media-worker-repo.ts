@@ -61,6 +61,7 @@ export interface StuckMediaRow {
   thumbKey: string | null
   kind: MediaKind
   checkCount: number
+  uploadEtag: string | null
 }
 
 export interface LeakedObjectRow {
@@ -265,6 +266,7 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
             thumbKey: mediaAssets.thumbKey,
             kind: mediaAssets.kind,
             checkCount: mediaAssets.stuckCheckCount,
+            uploadEtag: mediaAssets.uploadEtag,
           })
       })
     },

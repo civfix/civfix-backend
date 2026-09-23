@@ -90,7 +90,7 @@ export interface MediaRepository {
   insert(row: NewMediaAsset): Promise<void>
   findByUploadId(uploadId: string): Promise<MediaAssetView | null>
   findById(id: string): Promise<MediaAssetView | null>
-  markFinalized(uploadId: string): Promise<MediaAssetView | null>
+  markFinalized(uploadId: string, uploadEtag: string | null): Promise<MediaAssetView | null>
 }
 
 export interface MediaIntakeDeps {
@@ -235,7 +235,8 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         throw AppError.mediaRejected("Uploaded object size does not match the declared byteSize")
       }
 
-      const claimed = await deps.repo.markFinalized(input.uploadId)
+      const uploadEtag = readEtag(head)
+      const claimed = await deps.repo.markFinalized(input.uploadId, uploadEtag)
       if (claimed === null) {
         return { mediaId: asset.id, status: "validating" }
       }
@@ -249,7 +250,7 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
             uploadId: input.uploadId,
             r2Key: asset.r2Key,
             kind: asset.kind,
-            uploadEtag: readEtag(head),
+            uploadEtag,
           } satisfies MediaChecksJob,
           { singletonKey: input.uploadId },
         )

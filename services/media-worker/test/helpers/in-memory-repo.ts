@@ -17,6 +17,7 @@ export interface StoredWorkerMedia extends MediaWorkerAsset {
   finalizedAt: Date | null
   stuckCheckedAt: Date | null
   stuckCheckCount: number
+  uploadEtag: string | null
 }
 
 export interface RecordedFlag {
@@ -64,6 +65,7 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
       finalizedAt: row.finalizedAt ?? null,
       stuckCheckedAt: row.stuckCheckedAt ?? null,
       stuckCheckCount: row.stuckCheckCount ?? 0,
+      uploadEtag: row.uploadEtag ?? null,
     }
     this.byId.set(stored.id, stored)
     return stored
@@ -198,6 +200,7 @@ export class InMemoryWorkerRepo implements MediaWorkerRepo {
           thumbKey: row.thumbKey,
           kind: row.kind,
           checkCount: row.stuckCheckCount,
+          uploadEtag: row.uploadEtag,
         }
       }),
     )

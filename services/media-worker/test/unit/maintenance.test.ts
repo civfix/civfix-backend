@@ -488,6 +488,7 @@ describe("media.stuck.sweep", () => {
       uploadId: "u1",
       r2Key: "uploads/s1",
       kind: "image",
+      uploadEtag: null,
     })
     expect(enqueued[0]!.opts).toEqual({ singletonKey: "u1" })
   })

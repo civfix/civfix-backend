@@ -31,8 +31,9 @@ serving an object the uploader can still overwrite with unchecked bytes after
 the asset is already published on a report.
 
 The worker also binds the row to the exact object version it inspected: the API
-records the upload's ETag at finalize and passes it in the job payload, the
-worker compares it to what it downloaded, and it re-HEADs the upload key
+records the upload's ETag at finalize (on the row as `media_assets.upload_etag`,
+migration 0184, so a stuck-sweep requeue carries it too) and passes it in the job
+payload, the worker compares it to what it downloaded, and it re-HEADs the upload key
 immediately before publishing. A mismatch (or a vanished object) is a
 `rejected` outcome — never a throw, per the pipeline's never-throw invariant.
 

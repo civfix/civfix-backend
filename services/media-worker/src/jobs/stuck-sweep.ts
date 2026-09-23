@@ -1,5 +1,10 @@
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
-import { MEDIA_CHECKS_JOB, type MediaWorkerRepo, type StuckMediaRow } from "@civfix/api/media-repo"
+import {
+  MEDIA_CHECKS_JOB,
+  type MediaChecksJob,
+  type MediaWorkerRepo,
+  type StuckMediaRow,
+} from "@civfix/api/media-repo"
 import type { WorkerLimits } from "../config.js"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 import { deleteRejectedObjects } from "./reject-cleanup.js"
@@ -78,7 +83,13 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     try {
       await deps.jobs.enqueue(
         MEDIA_CHECKS_JOB,
-        { mediaId: row.id, uploadId: row.uploadId, r2Key: row.r2Key, kind: row.kind },
+        {
+          mediaId: row.id,
+          uploadId: row.uploadId,
+          r2Key: row.r2Key,
+          kind: row.kind,
+          uploadEtag: row.uploadEtag,
+        } satisfies MediaChecksJob,
         { singletonKey: row.uploadId },
       )
       requeued++

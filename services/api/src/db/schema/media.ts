@@ -41,6 +41,7 @@ export const mediaAssets = pgTable(
     byteSize: bigint("byte_size", { mode: "number" }),
     phash: text("phash"),
     finalizedAt: timestamp("finalized_at", { withTimezone: true }),
+    uploadEtag: text("upload_etag"),
     stuckCheckedAt: timestamp("stuck_checked_at", { withTimezone: true }),
     stuckCheckCount: integer("stuck_check_count").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
