@@ -11,7 +11,7 @@ import type {
 type OrganizationInviteRole = (typeof ORGANIZATION_INVITE_ROLE_VALUES)[number]
 type OrganizationInviteStatus = (typeof ORGANIZATION_INVITE_STATUS_VALUES)[number]
 
-/** Mirror of drizzle/0162_org_suspension_and_invites.sql (the SQL is canonical). */
+/** Mirror of drizzle/0162_org_suspension_and_invites.sql, 0165 and 0182 (the SQL is canonical). */
 export const organizationInvites = pgTable(
   "organization_invites",
   {
@@ -50,6 +50,9 @@ export const organizationInvites = pgTable(
       .where(sql`${t.status} = 'pending' and ${t.email} is not null`),
     index("organization_invites_expiry_idx")
       .on(t.expiresAt)
+      .where(sql`${t.status} = 'pending'`),
+    index("organization_invites_inviter_pending_idx")
+      .on(t.invitedBy)
       .where(sql`${t.status} = 'pending'`),
   ],
 )
