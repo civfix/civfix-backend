@@ -1,6 +1,6 @@
 import type { PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { fetchJsonWithTimeout, type FetchJsonResult } from "./http-fetch.js"
-
+import { mapWithLimit } from "../services/media-presign.js"
 
 export interface ExpoPushConfig {
   accessToken?: string
@@ -14,6 +14,7 @@ export interface ExpoPushConfig {
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send"
 const EXPO_CHUNK = 100
 const EXPO_TIMEOUT_MS = 4000
+const EXPO_SPLIT_CONCURRENCY = 8
 /** Expo asks senders to back off and retry a 429 / 5xx rather than dropping the batch. */
 const EXPO_RETRY_DELAY_MS = 250
 
@@ -77,8 +78,9 @@ export function makeExpoDispatcher(config: ExpoPushConfig, logger: PushLogger): 
     }
     const hasData = Object.keys(data).length > 0
 
-    for (let i = 0; i < tokens.length; i += EXPO_CHUNK) {
-      const chunk = tokens.slice(i, i + EXPO_CHUNK)
+    const sendChunk = async (
+      chunk: string[],
+    ): Promise<FetchJsonResult<{ data?: ExpoTicket[] }>> => {
       const messages = chunk.map((to) => ({
         to,
         title: payload.title,
@@ -102,24 +104,35 @@ export function makeExpoDispatcher(config: ExpoPushConfig, logger: PushLogger): 
         })
 
       let result = await send()
-      // ONE bounded retry with jitter for the statuses Expo documents as retryable: without it a single
-      // 429 or 502 silently dropped a whole 100-token chunk with nothing but a log line.
       if (!result.ok && result.kind === "http" && isRetryableStatus(result.status)) {
         await sleep(retryDelayMs + Math.floor(Math.random() * retryDelayMs))
         result = await send()
       }
+      return result
+    }
 
-      if (!result.ok) {
-        if (result.kind === "http") {
-          logger.error({ status: result.status, count: chunk.length }, "push(expo): HTTP error")
-        } else {
-          logger.error({ err: result.error }, "push(expo): send threw")
+    const deliverChunk = async (chunk: string[]): Promise<void> => {
+      const result = await sendChunk(chunk)
+      if (result.ok) {
+        for (const token of collectExpoInvalidTokens(result.json.data ?? [], chunk, logger)) {
+          invalidTokens.push(token)
         }
-        continue
+        return
       }
-      for (const token of collectExpoInvalidTokens(result.json.data ?? [], chunk, logger)) {
-        invalidTokens.push(token)
+      if (result.kind === "http" && result.status === 400 && chunk.length > 1) {
+        logger.warn({ count: chunk.length }, "push(expo): batch rejected; resending per token")
+        await mapWithLimit(chunk, EXPO_SPLIT_CONCURRENCY, (token) => deliverChunk([token]))
+        return
       }
+      if (result.kind === "http") {
+        logger.error({ status: result.status, count: chunk.length }, "push(expo): HTTP error")
+      } else {
+        logger.error({ err: result.error }, "push(expo): send threw")
+      }
+    }
+
+    for (let i = 0; i < tokens.length; i += EXPO_CHUNK) {
+      await deliverChunk(tokens.slice(i, i + EXPO_CHUNK))
     }
     return { invalidTokens }
   }
