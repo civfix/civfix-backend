@@ -14,6 +14,7 @@ import type {
   WaitlistStatus,
 } from "@civfix/shared"
 import type { Queryable } from "../../db/client.js"
+import { publicServedKeyExpr } from "../media-served-key.js"
 import type {
   AnswerRecord,
   PageRecord,
@@ -27,18 +28,18 @@ import type {
 
 export const PG_UNIQUE_VIOLATION = "23505"
 
-export const PG_CHECK_VIOLATION = "23514"
+const PG_CHECK_VIOLATION = "23514"
 
-export const RESERVED_SEATS_BACKSTOP_CONSTRAINT = "cleanup_ticket_types_reserved_bounds"
+const RESERVED_SEATS_BACKSTOP_CONSTRAINT = "cleanup_ticket_types_reserved_bounds"
 
-export const ANSWER_PREVIEW_MAX = 120
+const ANSWER_PREVIEW_MAX = 120
 
-export interface PgErrorShape {
+interface PgErrorShape {
   code?: unknown
   constraint_name?: unknown
 }
 
-export function pgErrorConstraint(err: unknown): { code: string; constraint: string } | null {
+function pgErrorConstraint(err: unknown): { code: string; constraint: string } | null {
   if (typeof err !== "object" || err === null) return null
   const e = err as PgErrorShape
   if (typeof e.code !== "string") return null
@@ -244,7 +245,17 @@ export interface RegistrationRowSelect {
   person_deleted_at: Date | null
 }
 
-function toIdentity(r: RegistrationRowSelect): RegistrantIdentity | null {
+type RegistrantColumns = Pick<
+  RegistrationRowSelect,
+  | "user_id"
+  | "person_display_name"
+  | "person_handle"
+  | "person_bio"
+  | "person_avatar_url"
+  | "person_deleted_at"
+>
+
+function toIdentity(r: RegistrantColumns): RegistrantIdentity | null {
   if (r.user_id === null) return null
   return {
     userId: r.user_id,
@@ -379,17 +390,7 @@ export function toWaitlistRecord(r: WaitlistRowSelect): WaitlistRecord {
     userId: r.user_id,
     guestId: r.guest_id,
     guestName: r.guest_name,
-    identity:
-      r.user_id === null
-        ? null
-        : {
-            userId: r.user_id,
-            displayName: r.person_display_name,
-            handle: r.person_handle,
-            bio: r.person_bio,
-            avatarUrl: r.person_avatar_url,
-            deletedAt: r.person_deleted_at,
-          },
+    identity: toIdentity(r),
     partySize: r.party_size,
     status: r.status,
     position: r.position,
@@ -463,7 +464,32 @@ export interface PageRowSelect {
   view_count: string | number
 }
 
-export const DEFAULT_PAGE_SEO: EventPageSeo = { noindex: false }
+export function pageColumns(tag: Queryable) {
+  return tag`
+    c.id AS cleanup_id,
+    c.page_slug AS slug,
+    COALESCE(p.status, 'draft') AS status,
+    COALESCE(p.theme_accent, 'bloom') AS theme_accent,
+    p.blocks,
+    p.seo,
+    c.cover_media_id,
+    ${publicServedKeyExpr(tag, "m")} AS cover_key,
+    c.visibility,
+    p.published_at,
+    p.updated_at,
+    p.flagged_at,
+    p.flag_reason,
+    COALESCE(p.view_count, 0) AS view_count`
+}
+
+export function pageJoins(tag: Queryable) {
+  return tag`
+    LEFT JOIN cleanup_pages p ON p.cleanup_id = c.id
+    LEFT JOIN media_assets m ON m.id = c.cover_media_id AND m.status = 'ready'
+  `
+}
+
+const DEFAULT_PAGE_SEO: EventPageSeo = { noindex: false }
 
 export function toPageRecord(r: PageRowSelect): PageRecord {
   return {

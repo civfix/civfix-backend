@@ -37,7 +37,7 @@ import {
   type HostRouteContext,
 } from "./_host-routes.js"
 
-export const WalkupBodySchema = trimTextFields(CreateWalkupRegistrationRequestSchema, "name")
+const WalkupBodySchema = trimTextFields(CreateWalkupRegistrationRequestSchema, "name")
 
 function projectionFor(standing: HostStanding): RegistrationProjection {
   return {

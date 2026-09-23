@@ -29,11 +29,11 @@ import type {
 
 export const WAITLIST_CLAIM_WINDOW_MS = 24 * 60 * 60 * 1000
 
-export const WAITLIST_EXPIRE_BATCH = 500
+const WAITLIST_EXPIRE_BATCH = 500
 
-export const WAITLIST_PROMOTE_MAX_PER_RUN = 50
+const WAITLIST_PROMOTE_MAX_PER_RUN = 50
 
-export const WAITLIST_DEFAULT_LIMIT = 25
+const WAITLIST_DEFAULT_LIMIT = 25
 
 export interface WaitlistServiceDeps {
   repo: HostRegistrationRepository

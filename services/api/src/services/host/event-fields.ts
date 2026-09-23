@@ -9,7 +9,9 @@ import { MAX_EVENT_DURATION_MS, MIN_EVENT_DURATION_MS } from "../cleanup-rules.j
 
 export const DEFAULT_EVENT_TIME_ZONE = "America/Los_Angeles"
 
-export const EVENT_REMINDER_OFFSET_CHOICES: readonly number[] = [60, 180, 1440, 2880, 10080]
+const MINUTES_PER_HOUR = 60
+
+const EVENT_REMINDER_OFFSET_CHOICES: readonly number[] = [60, 180, 1440, 2880, 10080]
 
 const FALLBACK_TIMEZONES: readonly string[] = [
   "UTC",
@@ -91,7 +93,7 @@ export function assertEventWindow(input: {
     }
     if (durationMs > MAX_EVENT_DURATION_MS) {
       throw AppError.validation({
-        endsAt: `an event can run for at most ${MAX_EVENT_DURATION_MINUTES / 60} hours`,
+        endsAt: `an event can run for at most ${MAX_EVENT_DURATION_MINUTES / MINUTES_PER_HOUR} hours`,
       })
     }
   }

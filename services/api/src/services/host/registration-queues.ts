@@ -9,5 +9,3 @@ export const REGISTRATION_QUEUE_NAMES = [
   WAITLIST_EXPIRE_SWEEP_JOB,
   CHECKIN_NOSHOW_SWEEP_JOB,
 ] as const
-
-export type RegistrationQueueName = (typeof REGISTRATION_QUEUE_NAMES)[number]

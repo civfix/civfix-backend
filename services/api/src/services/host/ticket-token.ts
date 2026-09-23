@@ -3,9 +3,17 @@ import { constantTimeStringEqual } from "../../auth/crypto.js"
 
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 
-export const TICKET_TOKEN_BYTES = 16
+const BITS_PER_BYTE = 8
+
+const BASE32_BITS = 5
+
+const BASE32_MASK = BASE32_ALPHABET.length - 1
+
+const TICKET_TOKEN_BYTES = 16
 
 export const TICKET_TOKEN_LENGTH = 26
+
+const TOKEN_SEPARATORS = /[\s-]+/gu
 
 export interface TicketTokenSigner {
   tokenFor(seatId: string): string
@@ -19,19 +27,19 @@ function base32(bytes: Buffer): string {
   let buffer = 0
   let bits = 0
   for (const byte of bytes) {
-    buffer = (buffer << 8) | byte
-    bits += 8
-    while (bits >= 5) {
-      bits -= 5
-      out += BASE32_ALPHABET[(buffer >> bits) & 31]
+    buffer = (buffer << BITS_PER_BYTE) | byte
+    bits += BITS_PER_BYTE
+    while (bits >= BASE32_BITS) {
+      bits -= BASE32_BITS
+      out += BASE32_ALPHABET[(buffer >> bits) & BASE32_MASK]
     }
   }
-  if (bits > 0) out += BASE32_ALPHABET[(buffer << (5 - bits)) & 31]
+  if (bits > 0) out += BASE32_ALPHABET[(buffer << (BASE32_BITS - bits)) & BASE32_MASK]
   return out
 }
 
 export function normalizeTicketToken(raw: string): string {
-  return raw.replace(/[\s-]+/gu, "").toUpperCase()
+  return raw.replace(TOKEN_SEPARATORS, "").toUpperCase()
 }
 
 export function makeTicketTokenSigner(secret: string): TicketTokenSigner {
