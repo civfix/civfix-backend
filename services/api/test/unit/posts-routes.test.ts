@@ -958,6 +958,30 @@ describe("GET /posts/:id signed out (auth: optional)", () => {
     expect(res.statusCode).toBe(404)
     expect(res.json().code).toBe("NOT_FOUND")
   })
+
+  it("404s a repost or quote of a hidden or deleted original signed out with the exact body an unknown id gets", async () => {
+    const h = await makeHarness()
+    const sharer = await h.signIn("guest-repost-sharer@example.com", "GuestRepostSharer")
+    const unknown = await h.app.inject({ method: "GET", url: `/v1/posts/${UNKNOWN_ID}` })
+    const { requestId: _unknownRequestId, ...unknownBody } = unknown.json()
+
+    const originals = [
+      h.repo.seed({ authorId: UNKNOWN_ID, visibility: "hidden" }),
+      h.repo.seed({ authorId: UNKNOWN_ID, deletedAt: new Date() }),
+    ]
+    for (const original of originals) {
+      const shares = [
+        h.repo.seed({ authorId: sharer.userId, kind: "repost", repostOfId: original, body: null }),
+        h.repo.seed({ authorId: sharer.userId, kind: "quote", repostOfId: original, body: "look" }),
+      ]
+      for (const share of shares) {
+        const res = await h.app.inject({ method: "GET", url: `/v1/posts/${share}` })
+        expect(res.statusCode).toBe(404)
+        const { requestId: _requestId, ...body } = res.json()
+        expect(body).toEqual(unknownBody)
+      }
+    }
+  })
 })
 
 describe("interaction toggles (like / save / repost)", () => {
