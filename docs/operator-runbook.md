@@ -4,7 +4,8 @@ Per-migration operational notes, from `0052` on, plus the operator procedures th
 deploy applies every migration automatically (§1); this file records what each one needs around it: a
 backfill to run, a constraint to validate out of band, an ordering with the images, a recovery step.
 `test/unit/docs-parity.test.ts` fails when a migration has no row here or when the file count below goes
-stale, so a new migration lands together with its note.
+stale, so a new migration lands together with its note. Finding IDs such as M17 or H9 in the tables are those
+of the retired 2026-07-24 security review (git history); its open items live in `docs/security-backlog.md`.
 
 ## 1. Migrations, in this order, applied BEFORE the new images run
 

@@ -136,8 +136,10 @@ an operator path in the API today.** No route or service sets `volunteer_hours.v
 writers are migration `0065_void_report_volunteer_hours.sql` and the in-memory test repository), so
 voiding is a hand-run SQL `UPDATE`. `POST /v1/me/volunteer-hours/certificates/:code/revoke` revokes only
 the caller's own certificate (`WHERE user_id = ${userId}` in `certificate-repository.drizzle.ts`, reason
-`holder`), and there is no admin revoke or void route, so revoking a certificate the holder will not
-revoke is also a hand-run `UPDATE service_hours_certificates`.
+`holder`). There is deliberately no admin HTTP route for either; revoking a certificate the holder will
+not revoke is the operator CLI `pnpm --filter @civfix/api db:certificate:revoke <code> --reason issued_in_error`
+(run `--dry-run` first), which records an operator reason and deletes the stored PDF. Never hand-edit the
+certificate row. The procedure is in `docs/operator-runbook.md` §1b.
 
 ## Configuration
 
