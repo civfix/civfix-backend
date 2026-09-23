@@ -28,7 +28,7 @@ function repoStub(overrides: Partial<MetricsRepository> = {}): MetricsRepository
     greatest,
     resolveSlug: () => Promise.resolve({ cleanupId: EVENT, timezone: null }),
     eventTimezone: () => Promise.resolve(null),
-    listRollupEvents: () => Promise.resolve([EVENT]),
+    listRollupEvents: () => Promise.resolve([{ id: EVENT, timezone: null }]),
     recomputeFromSource: (cleanupId, timezone) => {
       recomputed.push({ cleanupId, timezone })
       return Promise.resolve([])
@@ -49,7 +49,12 @@ describe("metrics rollup covers every active event", () => {
     const ids = Array.from({ length: 1201 }, (_, i) => eventId(i + 1))
     const repo = repoStub({
       listRollupEvents: (_since, after, limit) =>
-        Promise.resolve(ids.filter((id) => after === null || id > after).slice(0, limit)),
+        Promise.resolve(
+          ids
+            .filter((id) => after === null || id > after)
+            .slice(0, limit)
+            .map((id) => ({ id, timezone: "UTC" })),
+        ),
       eventTimezone: () => Promise.resolve("UTC"),
     })
     const service = makeMetricsService({
@@ -62,6 +67,41 @@ describe("metrics rollup covers every active event", () => {
     const result = await service.rollup()
     expect(result.events).toBe(1201)
     expect(new Set(repo.recomputed.map((r) => r.cleanupId)).size).toBe(1201)
+  })
+
+  it("recomputes each event in the timezone its page row carries, with no per-event lookup", async () => {
+    let lookups = 0
+    const repo = repoStub({
+      listRollupEvents: () =>
+        Promise.resolve([
+          { id: eventId(1), timezone: "Asia/Tokyo" },
+          { id: eventId(2), timezone: null },
+        ]),
+      eventTimezone: () => {
+        lookups += 1
+        return Promise.resolve("UTC")
+      },
+    })
+    const service = makeMetricsService({
+      repo,
+      cache: new InMemoryCacheClient(),
+      selfHosts: [],
+      lookbackDays: 3,
+    })
+    expect(await service.rollup()).toEqual({ events: 2, rows: 0 })
+    expect(repo.recomputed).toEqual([
+      { cleanupId: eventId(1), timezone: "Asia/Tokyo" },
+      { cleanupId: eventId(2), timezone: DEFAULT_EVENT_TIME_ZONE },
+    ])
+    expect(lookups).toBe(0)
+  })
+
+  it("reads the timezone in the rollup page statement", async () => {
+    const fake = makeFakeSql()
+    const repo = makeDrizzleMetricsRepository(fake.sql as unknown as Sql)
+    await repo.listRollupEvents(new Date("2026-02-01T00:00:00Z"), null, 500)
+    expect(fake.statements).toHaveLength(1)
+    expect(fake.statements[0]!.sql).toMatch(/SELECT c\.id, c\.timezone\s+FROM cleanups c/)
   })
 
   it("keysets the SQL page by id so the next page starts after the last one", async () => {

@@ -13,10 +13,15 @@ export interface MetricRow {
   value: number
 }
 
+export interface RollupEvent {
+  id: string
+  timezone: string | null
+}
+
 export interface MetricsRepository {
   resolveSlug(slug: string): Promise<{ cleanupId: string; timezone: string | null } | null>
   eventTimezone(cleanupId: string): Promise<string | null>
-  listRollupEvents(since: Date, after: string | null, limit: number): Promise<string[]>
+  listRollupEvents(since: Date, after: string | null, limit: number): Promise<RollupEvent[]>
   recomputeFromSource(cleanupId: string, timezone: string, since: Date): Promise<MetricUpsert[]>
   upsertExact(rows: readonly MetricUpsert[]): Promise<void>
   upsertGreatest(rows: readonly MetricUpsert[]): Promise<void>

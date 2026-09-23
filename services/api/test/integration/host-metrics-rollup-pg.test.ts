@@ -53,9 +53,19 @@ describe.skipIf(!pg)("event metrics rollup windows (integration)", () => {
   it("pages the active events after a keyset id", async () => {
     const since = new Date("2026-01-01T00:00:00Z")
     const first = await metrics.listRollupEvents(since, null, 1000)
-    expect(first).toContain(cleanupId)
+    expect(first.map((event) => event.id)).toContain(cleanupId)
     const after = await metrics.listRollupEvents(since, cleanupId, 1000)
-    expect(after).not.toContain(cleanupId)
-    expect(after.every((id) => id > cleanupId)).toBe(true)
+    expect(after.map((event) => event.id)).not.toContain(cleanupId)
+    expect(after.every((event) => event.id > cleanupId)).toBe(true)
+  })
+
+  it("carries each event's stored timezone on the rollup page", async () => {
+    const since = new Date("2026-01-01T00:00:00Z")
+    await h.sql`UPDATE cleanups SET timezone = ${ZONE} WHERE id = ${cleanupId}`
+    const page = await metrics.listRollupEvents(since, null, 1000)
+    expect(page.find((event) => event.id === cleanupId)?.timezone).toBe(ZONE)
+    expect(page.find((event) => event.id === cleanupId)?.timezone).toBe(
+      await metrics.eventTimezone(cleanupId),
+    )
   })
 })

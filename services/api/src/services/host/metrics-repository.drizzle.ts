@@ -31,8 +31,8 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
 
     async listRollupEvents(since: Date, after: string | null, limit: number) {
       const afterFilter = after === null ? sql`` : sql`AND c.id > ${after}`
-      const rows = await sql<{ id: string }[]>`
-        SELECT c.id
+      const rows = await sql<{ id: string; timezone: string | null }[]>`
+        SELECT c.id, c.timezone
           FROM cleanups c
          WHERE (c.updated_at >= ${since}
             OR EXISTS (
@@ -44,7 +44,7 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
            ${afterFilter}
          ORDER BY c.id
          LIMIT ${limit}`
-      return rows.map((r) => r.id)
+      return rows.map((r) => ({ id: r.id, timezone: r.timezone }))
     },
 
     /**
