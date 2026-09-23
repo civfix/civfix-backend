@@ -20,7 +20,7 @@
  * filter out a row it also labels.
  */
 
-import type { Sql } from "../../db/client.js"
+import type { Sql, SqlFragment } from "../../db/client.js"
 import {
   clampLimit,
   decodeCursor,
@@ -31,7 +31,7 @@ import {
 } from "./pagination.js"
 import { AUDIT_READ_ACTIONS } from "./audit.js"
 import { likePrefix } from "./like.js"
-import { anyOf, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { anyOf, ilikeAnyOf } from "./sql-fragments.js"
 import {
   AUDIT_ACTION_RULES,
   AUDIT_FALLBACK_KIND,

@@ -1,4 +1,4 @@
-import type { Sql } from "../../db/client.js"
+import type { Sql, SqlFragment } from "../../db/client.js"
 import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination.js"
 import { writeAudit } from "./audit.js"
 import {
@@ -29,9 +29,9 @@ import type {
 } from "./jurisdiction-contacts-types.js"
 import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
-import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { ilikeAnyOf } from "./sql-fragments.js"
+import { PG_UNIQUE_VIOLATION } from "../../db/pg-errors.js"
 
-const PG_UNIQUE_VIOLATION = "23505"
 const JURISDICTION_HANDLE_CONSTRAINT = "jurisdictions_handle_lower_key"
 
 const HANDLE_TAKEN_BY_JURISDICTION = "That @handle is already used by another jurisdiction."

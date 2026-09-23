@@ -1,4 +1,4 @@
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import {
   clampLimit,
   decodeCursor,
@@ -9,7 +9,6 @@ import {
 import { isUuid } from "../../db/cursor-helpers.js"
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
 import { likeContains } from "./like.js"
-import type { SqlFragment } from "./sql-fragments.js"
 
 interface AuditRowSelect {
   id: string

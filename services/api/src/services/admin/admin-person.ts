@@ -8,9 +8,8 @@
  * corruption (`id: ""`, "Unknown"). Those strings are on the wire, so they stay caller-supplied.
  */
 
-import type { Queryable } from "../../db/client.js"
+import type { Queryable, SqlFragment } from "../../db/client.js"
 import { toRelAbs } from "./admin-format.js"
-import type { SqlFragment } from "./sql-fragments.js"
 
 // Null at the call site means "no joined user" (an anonymous report), never "a user with empty fields".
 export interface AdminPersonRecord {

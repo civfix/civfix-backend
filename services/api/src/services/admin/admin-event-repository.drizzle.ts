@@ -1,4 +1,4 @@
-import type { Sql } from "../../db/client.js"
+import type { Sql, SqlFragment } from "../../db/client.js"
 import { decodeCursor, clampLimit, keysetPredicate, paginateKeyset } from "./pagination.js"
 import { writeAudit } from "./audit.js"
 import { adminEventStatusExpr } from "../cleanup-sql.js"
@@ -15,7 +15,7 @@ import {
   EVENT_NOTE_UNFLAGGED,
   eventOutcomeNote,
 } from "./admin-event-helpers.js"
-import { andAll, type SqlFragment } from "./sql-fragments.js"
+import { andAll } from "./sql-fragments.js"
 import { publicReportFilter } from "../report-sql.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
 import type {

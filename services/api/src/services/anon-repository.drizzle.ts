@@ -42,8 +42,7 @@ import { AppError } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
 import { insertModerationItem } from "./admin/moderation-repository.drizzle.js"
 import { claimableAsReportMedia, lockUploadsForClaim } from "./media-bindings.js"
-
-const PG_UNIQUE_VIOLATION = "23505"
+import { isUniqueViolation } from "../db/pg-errors.js"
 
 const HELD_REVIEW_NOTE = "Awaiting automated review"
 
@@ -58,14 +57,6 @@ const MEDIA_UNAVAILABLE_MESSAGE = "One or more media uploads are unavailable."
 const KEY_RACE_MESSAGE = "Report submit is still settling; retry"
 
 const REPLAY_UNCLAIMABLE_MESSAGE = "This report was already submitted and can no longer be claimed."
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
-  )
-}
 
 interface AnonTokenRowSelect {
   id: string

@@ -1,9 +1,8 @@
 // The counts are cast to text in SQL on purpose: postgres.js surfaces int8 without a lossless numeric
 // parser, so every count in this codebase crosses the wire as text and is parsed back here.
 
-import type { Queryable } from "../../db/client.js"
+import type { Queryable, SqlFragment } from "../../db/client.js"
 import { ReportCategorySchema, type ReportCategory } from "@civfix/shared"
-import type { SqlFragment } from "./sql-fragments.js"
 
 /**
  * Derived from the shared zod enum so a new category cannot be half-added. Iteration order is

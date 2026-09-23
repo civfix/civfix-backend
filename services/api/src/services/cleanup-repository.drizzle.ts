@@ -85,8 +85,7 @@ import type {
 } from "@civfix/shared"
 import type { HostStanding } from "@civfix/shared/host"
 import { touchUserActivity } from "../db/sql/user-activity.js"
-
-const PG_UNIQUE_VIOLATION = "23505"
+import { PG_UNIQUE_VIOLATION } from "../db/pg-errors.js"
 
 export const LINKED_EVENTS_PER_REPORT_CAP = 20
 export const MAX_EVENTS_PER_REPORT = 50

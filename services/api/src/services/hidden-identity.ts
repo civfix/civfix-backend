@@ -1,5 +1,5 @@
 import { avatarGradient } from "@civfix/shared"
-import type { Sql } from "../db/client.js"
+import type { Sql, SqlFragment } from "../db/client.js"
 
 export const HIDDEN_USER_LABEL = "Community member"
 
@@ -13,8 +13,6 @@ export interface HiddenIdentity {
 export function hiddenIdentity(userId: string): HiddenIdentity {
   return { name: HIDDEN_USER_LABEL, avatar: avatarGradient(userId) }
 }
-
-type SqlFragment = ReturnType<Sql>
 
 export function blockedPairExpr(
   sql: Sql,

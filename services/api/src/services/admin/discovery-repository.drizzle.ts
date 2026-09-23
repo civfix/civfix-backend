@@ -1,8 +1,8 @@
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { decodeCursor, clampLimit, paginate } from "./pagination.js"
 import { writeAudit } from "./audit.js"
-import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { andAll, ilikeAnyOf } from "./sql-fragments.js"
 import {
   ADMIN_CATEGORIES,
   categoryCountsFragment,

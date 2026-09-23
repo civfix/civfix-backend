@@ -52,12 +52,11 @@ import {
   type UserRecord,
   type UserStore,
 } from "./stores.js"
+import { isUniqueViolation } from "../db/pg-errors.js"
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0]
 
 const ERASURE_HANDLE_RETRIES = 5
-
-const PG_UNIQUE_VIOLATION = "23505"
 
 const HOST_TRANSFER_TITLE_KEY = "notification.cleanup_role.promoted.title"
 
@@ -971,12 +970,4 @@ function toOtpRecord(r: OtpRowLike): OtpRecord {
 
 function rolesFor(role: Role): Role[] {
   return [role]
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
-  )
 }

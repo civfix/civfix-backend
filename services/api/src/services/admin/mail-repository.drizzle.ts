@@ -1,4 +1,4 @@
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import {
   clampLimit,
   decodeCursor,
@@ -8,7 +8,7 @@ import {
 } from "./pagination.js"
 import { PREVIEW_SOURCE_CHARS } from "./mail-preview.js"
 import { writeAudit } from "./audit.js"
-import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { ilikeAnyOf } from "./sql-fragments.js"
 import {
   mintThreadToken,
   toMessageRecord,

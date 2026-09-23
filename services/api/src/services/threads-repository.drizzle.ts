@@ -1,7 +1,6 @@
 import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { ReportCategory } from "@civfix/shared"
-import type postgres from "postgres"
-import type { Sql } from "../db/client.js"
+import type { Sql, SqlFragment } from "../db/client.js"
 import type { ConversationHideRoomKind } from "../db/schema/conversation_hides.js"
 import { publicReportFilter } from "./report-sql.js"
 import type { TimeCursor } from "../db/cursor-helpers.js"
@@ -14,8 +13,6 @@ import {
   type ThreadAggregate,
   type ThreadsRepository,
 } from "./threads-service.js"
-
-type SqlFragment = postgres.Fragment
 
 function threadsCursorFilter(
   sql: Sql,

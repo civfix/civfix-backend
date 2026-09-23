@@ -1,5 +1,4 @@
-import type postgres from "postgres"
-import type { Queryable } from "../db/client.js"
+import type { Queryable, SqlFragment } from "../db/client.js"
 import { keysetInstant } from "../db/cursor-helpers.js"
 import type {
   AddressPrecision,
@@ -15,8 +14,6 @@ import type {
   ReportRecord,
   ReportTimelineView,
 } from "./report-service.types.js"
-
-type SqlFragment = postgres.Fragment
 
 export async function reportOwnedBy(
   sql: Queryable,

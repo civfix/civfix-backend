@@ -1,5 +1,5 @@
 import type { FastifyBaseLogger } from "fastify"
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import {
   decodeCursor,
   clampLimit,
@@ -14,7 +14,6 @@ import {
   firstUsableLegacyContactExpr,
   ilikeAnyOf,
   usableContactRowExpr,
-  type SqlFragment,
 } from "./sql-fragments.js"
 import { personSelect, toPersonRecord } from "./admin-person.js"
 import { STATUS_BUCKETS, toTimelineKind } from "./admin-report-status.js"

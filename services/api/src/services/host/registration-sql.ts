@@ -25,8 +25,7 @@ import type {
   TicketTypeRecord,
   WaitlistRecord,
 } from "./registration-repository.types.js"
-
-export const PG_UNIQUE_VIOLATION = "23505"
+import { PG_UNIQUE_VIOLATION } from "../../db/pg-errors.js"
 
 const PG_CHECK_VIOLATION = "23514"
 

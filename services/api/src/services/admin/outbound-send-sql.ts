@@ -1,5 +1,4 @@
-import type { Queryable } from "../../db/client.js"
-import type { SqlFragment } from "./sql-fragments.js"
+import type { Queryable, SqlFragment } from "../../db/client.js"
 import {
   ROUTE_CLAIM_STALE_SECONDS,
   ROUTE_DEADLINE_INFLIGHT_SECONDS,

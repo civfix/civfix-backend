@@ -18,19 +18,10 @@ import type {
   UpdateOrganizationOutcome,
   UpdateOrganizationPatch,
 } from "./organization-repository.types.js"
-
-const PG_UNIQUE_VIOLATION = "23505"
+import { isUniqueViolation } from "../../db/pg-errors.js"
 
 /** The citext unique index on organizations.slug (0105). */
 const ORG_SLUG_INDEX = "organizations_slug_uidx"
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
-  )
-}
 
 /**
  * A unique violation is only "slug taken" when it is THAT index. postgres.js surfaces the violated

@@ -1,5 +1,4 @@
-import type postgres from "postgres"
-import type { Queryable, Sql } from "../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../db/client.js"
 import type {
   PeoplePage,
   PersonView,
@@ -40,8 +39,6 @@ export {
   resolveMentionTargets,
   resolveUserIdsToMentions,
 } from "./mention-resolver.drizzle.js"
-
-type SqlFragment = postgres.Fragment
 
 const SUGGEST_NEARBY_METERS = 25_000
 

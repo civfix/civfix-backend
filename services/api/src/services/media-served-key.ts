@@ -1,7 +1,4 @@
-import type postgres from "postgres"
-import type { Queryable } from "../db/client.js"
-
-type SqlFragment = postgres.Fragment
+import type { Queryable, SqlFragment } from "../db/client.js"
 
 export type MediaAlias = "m" | "am" | "ma" | "a" | "lm" | "media_assets"
 

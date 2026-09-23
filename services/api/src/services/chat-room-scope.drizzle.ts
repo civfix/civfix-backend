@@ -9,13 +9,10 @@
 import { AppError } from "@civfix/shared"
 import type { ChatMessageDTO } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
-import type postgres from "postgres"
-import type { Sql } from "../db/client.js"
+import type { Sql, SqlFragment } from "../db/client.js"
 import { isUuid } from "../db/cursor-helpers.js"
 import { aroundLimits, mergeAroundWindow } from "./chat-history-window.js"
 import type { ReplyTable } from "./chat-reply-hydration.js"
-
-type SqlFragment = postgres.Fragment
 
 export type RoomTable = ReplyTable
 

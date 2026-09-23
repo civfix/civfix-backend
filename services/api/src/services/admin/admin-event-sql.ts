@@ -1,8 +1,8 @@
 // Kept apart from the repo so the flagged and search expressions have one definition each.
 
-import type { Queryable } from "../../db/client.js"
+import type { Queryable, SqlFragment } from "../../db/client.js"
 import { isUuid } from "../../db/cursor-helpers.js"
-import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { ilikeAnyOf } from "./sql-fragments.js"
 import { personSelect, toPersonRecord } from "./admin-person.js"
 import { toEventStatus } from "./event-status.js"
 import type { AdminEventRecord, AdminOrganizerRecord } from "./admin-event-service.js"

@@ -7,7 +7,7 @@ import type {
   ReportType,
   ReportVisibility,
 } from "@civfix/shared"
-import type { Queryable, Sql } from "../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../db/client.js"
 import {
   keysetInstant,
   keysetPredicate,
@@ -44,20 +44,9 @@ import {
   type TimelineRowSelect,
 } from "./report-sql.js"
 import { touchUserActivity } from "../db/sql/user-activity.js"
-
-type SqlFragment = postgres.Fragment
-
-const PG_UNIQUE_VIOLATION = "23505"
+import { isUniqueViolation } from "../db/pg-errors.js"
 
 const REPORT_SEARCH_MIN_QUERY_LENGTH = 3
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
-  )
-}
 
 function notOwnerOutcome(row: {
   status: ReportStatus

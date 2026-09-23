@@ -25,8 +25,7 @@ import {
   type CertificateRow,
   type CertificateVerifyRow,
 } from "./certificate-service.js"
-
-const PG_UNIQUE_VIOLATION = "23505"
+import { PG_UNIQUE_VIOLATION } from "../db/pg-errors.js"
 
 /** The partial `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL` index (0064). */
 const FINGERPRINT_INDEX = "service_hours_certificates_live_fp_uidx"
