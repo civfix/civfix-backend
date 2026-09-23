@@ -1,11 +1,46 @@
 # Mail effects and the outbound send triad
 
 **Audience:** internal (engineering). Not served publicly.
-**Last updated:** 2026-09-21 (city replies are published into the report chat).
+**Last updated:** 2026-09-22 (sender authentication policy; unauthenticated token replies file as unaffiliated).
 
 An inbound message that correlates to a mail thread can drive **public** effects: a report status
 transition, a public `report_timeline` row, a report-chat system message, and a push to the reporter.
 This documents how those run exactly once, and the one residual that is knowingly accepted.
+
+## Which messages may drive effects
+
+`readMailAuthVerdict` (`services/api/src/adapters/inbound-mail.cf.ts`) reduces a message's
+authentication to `pass`, `fail` or `unknown`. The email Worker applies no filter; this is the only gate.
+
+- Only the **top-most** `Authentication-Results` header is read, and only when its authserv-id is
+  `mx.cloudflare.net` (`CLOUDFLARE_AUTHSERV_ID`), the stamp Cloudflare Email Routing prepends. Copies
+  below it are sender-supplied and ignored. Any other top-most header, or none, is `unknown`.
+- The stamp repeats values the sender controls (the SMTP HELO and MAIL FROM, echoed in the SPF results
+  and their comments), so it is read fail-closed. It is `fail` when it holds a backslash, a `"` other
+  than a quoted `smtp.remote-ip`, a nested or unbalanced comment, a result that repeats a property, or
+  more than one dmarc result. Comments are dropped, and every result must then be a bare `method=result`
+  followed only by `ptype.property=value` tokens (or be empty or `none`); anything else is `fail`.
+- `dmarc=pass` counts only when its `header.from` equals the parsed From domain. `dmarc=fail`, and any
+  result other than the no-policy ones below, is `fail`. A dmarc result written after an SPF result
+  that carries `smtp.helo` or `smtp.mailfrom` is `fail`: Cloudflare writes DKIM, then DMARC, then SPF.
+- With no DMARC policy (`dmarc=none`, `temperror`, `permerror`, or no dmarc result), a `dkim=pass` whose
+  `header.d` aligns with the From domain passes. Only the DKIM results the stamp opens with count.
+- Aligned means the same organizational domain under the Public Suffix List (`tldts`, private
+  suffixes included), as DMARC relaxed alignment defines it. A From domain that is itself a public
+  suffix (`org`, `co.uk`) has no organizational domain and is `fail`. `isJurisdictionSender` compares
+  the From domain with the thread's contact the same way.
+- A message with more than one `From` header or address has no parsed From. It never threads and goes
+  to the Inbox.
+
+`processInboundObject` (`services/api/src/services/admin/inbound-processor.ts`) then routes:
+
+| Verdict | Addressed to a thread token | Matches a thread only by In-Reply-To/References | No thread |
+|---|---|---|---|
+| `pass` | threaded; effects run when `isJurisdictionSender` holds | threaded; same | Inbox |
+| `fail` / `unknown` | threaded as **unaffiliated**: operator-visible, no public effects | Inbox | Inbox |
+
+The verdict is kept with the message: `meta.authVerdict` on the thread's `delivered` event, and the
+`x-civfix-auth-verdict` header on an Inbox row.
 
 ## Stage 2 publishes the city's reply text (product decision)
 

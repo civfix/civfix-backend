@@ -25,6 +25,7 @@ import {
 } from "../../src/services/admin/inbound-thread-correlation.js"
 import { MESSAGE_BODY_MAX } from "@civfix/shared"
 import type { ReportTimelineEvent } from "../../src/services/report-timeline-event.js"
+import { CfInboundMail } from "../../src/adapters/inbound-mail.cf.js"
 
 
 const TOKEN = "0123456789abcdef01234567"
@@ -898,9 +899,10 @@ describe("parseMessageIdList", () => {
 })
 
 describe("processInboundObject: message authentication gate (M7)", () => {
-  it("routes UNAUTHENTICATED mail (no Authentication-Results) to the Inbox even with a valid thread token", async () => {
+  it("files an UNAUTHENTICATED token-addressed reply on its thread as UNAFFILIATED, with no public effects", async () => {
     const c = ctx()
-    c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-auth", status: "sent" })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-auth", status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
     c.adminReportRepo.seedReport({ id: "report-auth", status: "published", reporter: null })
 
     const key = `${INBOUND_PENDING_PREFIX}forged.eml`
@@ -915,17 +917,22 @@ describe("processInboundObject: message authentication gate (M7)", () => {
       }),
     )
 
-    const r = await processInboundObject(c.container, key, c.deps)
-    expect(r.outcome).toBe("inbox")
-    expect(c.mailRepo.messages).toHaveLength(0)
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    const stored = c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")
+    expect(stored).toHaveLength(1)
+    expect(stored[0]?.unaffiliated).toBe(true)
+    expect(c.mailRepo.events.at(-1)?.meta).toMatchObject({ authVerdict: "unknown", unaffiliated: true })
+    expect(c.inboundRepo.rows).toHaveLength(0)
     expect(c.adminReportRepo.reports.get("report-auth")?.record.status).toBe("published")
+    expect(c.chatEvents).toHaveLength(0)
     expect(c.notifier.sent).toHaveLength(0)
-    expect(c.inboundRepo.rows[0]?.headers?.["x-civfix-auth-verdict"]).toBe("unknown")
   })
 
-  it("routes a DMARC-FAIL message to the Inbox, flagged 'fail'", async () => {
+  it("files a DMARC-FAIL token-addressed reply as unaffiliated even when From matches the contact", async () => {
     const c = ctx()
-    c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-fail", status: "sent" })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-fail", status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    c.adminReportRepo.seedReport({ id: "report-fail", status: "published", reporter: null })
     const key = `${INBOUND_PENDING_PREFIX}dmarcfail.eml`
     await put(
       c,
@@ -934,13 +941,85 @@ describe("processInboundObject: message authentication gate (M7)", () => {
         from: "clerk@lacity.gov",
         to: `reply+${TOKEN}@civfix.org`,
         body: "spoofed",
-        headers: { "Authentication-Results": "mx.cloudflare.net; spf=pass; dmarc=fail" },
+        headers: { "Authentication-Results": "mx.cloudflare.net; spf=pass; dmarc=fail header.from=lacity.gov" },
+      }),
+    )
+
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    expect(c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")?.unaffiliated).toBe(true)
+    expect(c.mailRepo.events.at(-1)?.meta).toMatchObject({ authVerdict: "fail" })
+    expect(c.adminReportRepo.reports.get("report-fail")?.record.status).toBe("published")
+    expect(c.chatEvents).toHaveLength(0)
+  })
+
+  it("keeps an unauthenticated reply that only echoes an In-Reply-To in the Inbox", async () => {
+    const c = ctx()
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-ref", status: "sent" })
+    c.mailRepo.seedMessage({ threadId: thread.id, direction: "out", messageId: "<out-9@civfix.org>" })
+    const key = `${INBOUND_PENDING_PREFIX}refonly.eml`
+    await put(
+      c,
+      key,
+      rfc822({
+        from: "clerk@lacity.gov",
+        to: "outreach@civfix.org",
+        inReplyTo: "<out-9@civfix.org>",
+        authenticated: false,
       }),
     )
 
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("inbox")
-    expect(c.mailRepo.messages).toHaveLength(0)
-    expect(c.inboundRepo.rows[0]?.headers?.["x-civfix-auth-verdict"]).toBe("fail")
+    expect(c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")).toHaveLength(0)
+    expect(c.inboundRepo.rows[0]?.headers?.["x-civfix-auth-verdict"]).toBe("unknown")
+  })
+
+  it("threads a dmarc=none reply with an aligned DKIM pass and publishes it", async () => {
+    const reportId = "report-nodmarc"
+    const c = ctx()
+    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const key = `${INBOUND_PENDING_PREFIX}nodmarc.eml`
+    await put(
+      c,
+      key,
+      rfc822({
+        from: "clerk@lacity.gov",
+        to: `report-${TOKEN}@civfix.org`,
+        body: "Crew scheduled for Tuesday.",
+        headers: {
+          "Authentication-Results":
+            "mx.cloudflare.net; dkim=pass header.d=lacity.gov header.s=sig1; dmarc=none header.from=lacity.gov policy.dmarc=none",
+        },
+      }),
+    )
+
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    expect(c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")?.unaffiliated).toBe(false)
+    expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
+    expect(c.chatEvents.map((e) => e.body)).toEqual(["Crew scheduled for Tuesday."])
+  })
+
+  it("sends a token-addressed message with two From headers to the Inbox", async () => {
+    const c = ctx(new CfInboundMail({ replyDomain: "civfix.org" }))
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-twofrom", status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const key = `${INBOUND_PENDING_PREFIX}twofrom.eml`
+    await put(
+      c,
+      key,
+      rfc822({
+        from: "x@attacker.example",
+        to: `reply+${TOKEN}@civfix.org`,
+        headers: {
+          "Authentication-Results": "mx.cloudflare.net; dmarc=pass header.from=attacker.example",
+          From: "clerk@lacity.gov",
+        },
+      }),
+    )
+
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("inbox")
+    expect(c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")).toHaveLength(0)
   })
 
   it("a sender-supplied X-Civfix-Auth-Verdict header cannot forge the stored verdict", async () => {

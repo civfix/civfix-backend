@@ -1,10 +1,15 @@
 # civfix Email Worker
 
-Cloudflare Email Worker that ingests catch-all `*@civfix.org` mail. It **filters** spam / auth
-failures, writes the raw `.eml` to **R2** (`inbound/pending/<messageId>.eml` — the source of truth),
-and best-effort POSTs an HMAC-signed `{ key }` nudge to the backend webhook. The backend re-fetches
-from R2, parses, routes (reply → mail thread; else → inbox), and reconciles `inbound/pending/` on boot
-+ a cron sweep, so a missed nudge is never a lost message.
+Cloudflare Email Worker that ingests catch-all `*@civfix.org` mail. It writes the raw `.eml` to
+**R2** (`inbound/pending/<messageId>.eml` — the source of truth) and best-effort POSTs an HMAC-signed
+`{ key }` nudge to the backend webhook. The backend re-fetches from R2, parses, routes (reply → mail
+thread; else → inbox), and reconciles `inbound/pending/` on boot + a cron sweep, so a missed nudge is
+never a lost message.
+
+The Worker does **not** judge sender authentication. `message.headers` does not expose the
+`Authentication-Results` header Cloudflare stamps (workerd#6740), so a header check here never fired.
+The backend is the only gate: it reads the top-most `Authentication-Results` in the raw message and
+trusts it only when its authserv-id is `mx.cloudflare.net`.
 
 See `documents/17-inbound-email-worker.md` for the full pipeline + enablement guide.
 
@@ -15,7 +20,7 @@ Standalone — **not** in the backend pnpm/Turbo workspace (own `wrangler` toolc
 ```
 src/index.ts   the email() handler
 wrangler.toml  bindings (R2_BUCKET), vars (BACKEND_WEBHOOK_URL), prod/staging envs
-test/          vitest unit tests (filter, id derivation, HMAC fixture shared with the backend)
+test/          vitest unit tests (id derivation, HMAC fixture shared with the backend)
 .dev.vars      LOCAL secrets (gitignored); copy from .dev.vars.example
 ```
 
@@ -48,14 +53,13 @@ curl -X POST 'http://localhost:8787/cdn-cgi/handler/email' \
 To: support@civfix.org
 Subject: pothole on Main St
 Message-ID: <test-001@example.gov>
-Authentication-Results: mx.cloudflare.com; spf=pass; dkim=pass; dmarc=pass
+Authentication-Results: mx.cloudflare.net; spf=pass; dkim=pass header.d=example.gov; dmarc=pass header.from=example.gov
 Content-Type: text/plain
 
 We received your report.'
 ```
 
 Expect an `inbound/pending/test-001@example.gov.eml` object and a signed POST to your local backend.
-Set `Authentication-Results: ...; dmarc=fail` to exercise the reject path.
 
 ## Deploy + enable Email Routing
 

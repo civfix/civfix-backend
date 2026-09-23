@@ -6,16 +6,10 @@ export interface Env {
 }
 
 const PENDING_PREFIX = "inbound/pending/"
-const REJECT_AUTH = "Rejected: message failed sender authentication (SPF/DKIM/DMARC)."
 const REJECT_STORE = "Temporary failure storing message; please retry."
 
 export default {
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
-    if (shouldReject(message.headers)) {
-      message.setReject(REJECT_AUTH)
-      return
-    }
-
     const rawBytes = await new Response(message.raw).arrayBuffer()
 
     const messageId = await deriveMessageId(message.headers, rawBytes)
@@ -40,16 +34,6 @@ export default {
 
     ctx.waitUntil(nudgeBackend(env, key))
   },
-}
-
-
-export function shouldReject(headers: Headers): boolean {
-  const ar = (headers.get("authentication-results") ?? "").toLowerCase()
-  if (ar.length === 0) return false
-  const dmarcFail = /dmarc=(fail|reject)/.test(ar)
-  const spfFail = /spf=(fail|softfail|temperror|permerror)/.test(ar)
-  const dkimFail = /dkim=(fail|temperror|permerror)/.test(ar)
-  return dmarcFail || (spfFail && dkimFail)
 }
 
 

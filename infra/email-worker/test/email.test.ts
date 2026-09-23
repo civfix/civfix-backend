@@ -1,31 +1,6 @@
 import { createHmac } from "node:crypto"
 import { describe, expect, it } from "vitest"
-import { shouldReject, slugify, deriveMessageId, hmacSha256Hex } from "../src/index"
-
-describe("shouldReject", () => {
-  const h = (ar?: string) => new Headers(ar ? { "authentication-results": ar } : {})
-
-  it("rejects a hard DMARC failure", () => {
-    expect(shouldReject(h("mx.cloudflare.com; dmarc=fail"))).toBe(true)
-    expect(shouldReject(h("mx; dmarc=reject"))).toBe(true)
-  })
-
-  it("rejects when BOTH spf and dkim fail", () => {
-    expect(shouldReject(h("mx; spf=fail; dkim=fail; dmarc=pass"))).toBe(true)
-  })
-
-  it("stores when auth passes", () => {
-    expect(shouldReject(h("mx; spf=pass; dkim=pass; dmarc=pass"))).toBe(false)
-  })
-
-  it("does not reject on a single soft signal", () => {
-    expect(shouldReject(h("mx; spf=fail; dkim=pass; dmarc=pass"))).toBe(false)
-  })
-
-  it("fails open (stores) when no Authentication-Results header is present", () => {
-    expect(shouldReject(h())).toBe(false)
-  })
-})
+import { slugify, deriveMessageId, hmacSha256Hex } from "../src/index"
 
 describe("slugify", () => {
   it("strips angle brackets and unsafe chars", () => {
