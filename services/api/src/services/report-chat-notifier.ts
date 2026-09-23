@@ -6,7 +6,7 @@ import { makeRoomFanoutNotifier, ROOM_FANOUT_SPEC } from "./chat-room-fanout-not
 export { REPORT_CHAT_FANOUT_MEMBER_CAP } from "./chat-room-fanout-notifier.js"
 
 export interface ReportChatNotifierDeps {
-  notificationService: Pick<NotificationService, "createNotifications">
+  notificationService: Pick<NotificationService, "createNotificationsReportingFailures">
   reportChatRepo: { listMemberIds(reportId: string, limit: number): Promise<string[]> }
   isMuted: (userId: string, roomId: string) => Promise<boolean>
   mutedUserIdsFor?: (roomId: string, userIds: string[]) => Promise<Set<string>>

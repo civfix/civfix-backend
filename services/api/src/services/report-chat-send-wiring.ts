@@ -106,7 +106,7 @@ export function makeContainerReportChatSendDeps(
   const notifyMembers = makeReportChatNotifier({
     notificationService,
     reportChatRepo,
-    isMuted: (userId, roomId) => isMutedFor(userId, "report", roomId),
+    isMuted: (userId, roomId) => conversationMutes.isMuted(userId, "report", roomId),
     ...(mutedUserIdsFor ? { mutedUserIdsFor } : {}),
     roomKeyFor,
     isBlockedEitherWay,

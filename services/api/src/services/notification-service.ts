@@ -187,9 +187,9 @@ export interface PostNotifier {
 
 export interface FanOutNotificationResult {
   /**
-   * Recipients whose in-app row was never written. A partial failure still resolves, because the
-   * chat fan-outs treat a rejection as total failure; a caller that tracks delivery per recipient
-   * (the broadcast pipeline) retries exactly these.
+   * Recipients whose in-app row was never written. The call resolves even when every write failed,
+   * so each caller decides what a failure means: the chat fan-out fails its job on a total failure,
+   * and the broadcast pipeline retries exactly these.
    */
   failed: string[]
 }
@@ -209,6 +209,10 @@ export interface NotificationService extends SocialNotifier, PostNotifier {
   ): Promise<FanOutNotificationResult>
   clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
 }
+
+type FallbackLane = "coalesce" | "dedupe"
+
+type FallbackReporter = (lane: FallbackLane, err: unknown) => void
 
 interface ResolvedPrefs {
   byUser: Map<string, NotificationPrefsRecord>
@@ -306,10 +310,25 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     }
   }
 
+  function logFallback(
+    lane: FallbackLane,
+    err: unknown,
+    userId: string,
+    input: CreateNotificationInput,
+  ) {
+    deps.logger?.warn(
+      { err, userId, type: input.type },
+      lane === "coalesce"
+        ? "notification coalesce upsert failed; creating anyway"
+        : "notification dedupe insert failed; creating anyway",
+    )
+  }
+
   async function persistNotification(
     userId: string,
     input: CreateNotificationInput,
     resolvedLocales?: Map<string, string>,
+    onFallback: FallbackReporter = (lane, err) => logFallback(lane, err, userId, input),
   ): Promise<{ record: NotificationRecord; deduped: boolean }> {
     const locale = await localeFor(userId, input, resolvedLocales)
     const vars = varsIn(locale, input)
@@ -334,10 +353,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         })
         return { record, deduped: coalesced }
       } catch (err) {
-        deps.logger?.warn(
-          { err, userId, type: input.type },
-          "notification coalesce upsert failed; creating anyway",
-        )
+        onFallback("coalesce", err)
       }
     }
     if (input.dedupeWindowMs !== undefined) {
@@ -351,10 +367,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
           since: new Date(now().getTime() - input.dedupeWindowMs),
         })
       } catch (err) {
-        deps.logger?.warn(
-          { err, userId, type: input.type },
-          "notification dedupe insert failed; creating anyway",
-        )
+        onFallback("dedupe", err)
       }
     }
     const record = await deps.repo.insertNotification({
@@ -479,19 +492,39 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     if (unique.length === 0) return { failed: [] }
     const locales = await localesForMany(unique, input)
     const failed: string[] = []
+    let firstFailure: unknown
+    const fallbacks = new Map<FallbackLane, { count: number; err: unknown }>()
+    // One line per fan-out, not per recipient: a store outage across a 2000-member room would
+    // otherwise write thousands of warnings for one incident.
+    const tallyFallback: FallbackReporter = (lane, err) => {
+      const seen = fallbacks.get(lane)
+      if (seen) seen.count += 1
+      else fallbacks.set(lane, { count: 1, err })
+    }
     const persisted = await mapWithLimit(unique, BULK_NOTIFY_CONCURRENCY, async (userId) => {
       try {
-        const { record, deduped } = await persistNotification(userId, input, locales)
+        const { record, deduped } = await persistNotification(userId, input, locales, tallyFallback)
         return deduped ? null : { userId, record }
       } catch (err) {
+        if (failed.length === 0) firstFailure = err
         failed.push(userId)
-        deps.logger?.warn(
-          { err, userId, type: input.type },
-          "fan-out notification insert failed; reported to the caller",
-        )
         return null
       }
     })
+    for (const [lane, { count, err }] of fallbacks) {
+      deps.logger?.warn(
+        { err, type: input.type, lane, fallbacks: count, recipients: unique.length },
+        lane === "coalesce"
+          ? "fan-out notification coalesce upsert failed; creating anyway"
+          : "fan-out notification dedupe insert failed; creating anyway",
+      )
+    }
+    if (failed.length > 0) {
+      deps.logger?.warn(
+        { err: firstFailure, type: input.type, failed: failed.length, recipients: unique.length },
+        "fan-out notification insert failed; reported to the caller",
+      )
+    }
     const created = persisted.filter(
       (p): p is { userId: string; record: NotificationRecord } => p !== null,
     )

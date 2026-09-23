@@ -28,8 +28,10 @@ export const ROOM_FANOUT_THROTTLE_MS = 15 * 1000
 const FANOUT_MARKER_SWEEP_THRESHOLD = 5000
 
 export interface RoomFanoutNotifierDeps {
-  notificationService: Pick<NotificationService, "createNotifications">
+  notificationService: Pick<NotificationService, "createNotificationsReportingFailures">
   listMemberIds: (roomId: string, limit: number) => Promise<string[]>
+  // May reject: the fan-out fails open per recipient and logs one line per fan-out, so a wiring
+  // that wraps this in its own fail-open check brings back one warning per member.
   isMuted: (userId: string, roomId: string) => Promise<boolean>
   mutedUserIdsFor?: (roomId: string, userIds: string[]) => Promise<Set<string>>
   presence?: { online(roomKey: string): Promise<string[]> } | undefined
@@ -54,6 +56,32 @@ export const ROOM_FANOUT_SPEC: Record<RoomFanoutKind, RoomFanoutSpec> = {
   group: { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
 }
 
+interface LookupFailures {
+  record(err: unknown): void
+  report(msg: string): void
+}
+
+// A store outage fails every per-recipient lookup of a fan-out, so one line per fan-out carries the
+// count instead of one warning per member.
+function tallyLookupFailures(
+  deps: RoomFanoutNotifierDeps,
+  kind: RoomFanoutKind,
+  candidates: number,
+): LookupFailures {
+  let failed = 0
+  let first: unknown
+  return {
+    record(err) {
+      if (failed === 0) first = err
+      failed += 1
+    },
+    report(msg) {
+      if (failed === 0) return
+      deps.logger?.warn({ err: first, kind, failed, candidates }, msg)
+    },
+  }
+}
+
 async function blockedIds(
   deps: RoomFanoutNotifierDeps,
   kind: RoomFanoutKind,
@@ -69,14 +97,16 @@ async function blockedIds(
       return new Set(candidates)
     }
   }
+  const failures = tallyLookupFailures(deps, kind, candidates.length)
   const verdicts = await mapWithLimit(candidates, FANOUT_CONCURRENCY, async (recipientId) => {
     try {
       return await deps.isBlockedEitherWay(actorId, recipientId)
     } catch (err) {
-      deps.logger?.warn({ err, kind }, "room fan-out block lookup failed; skipping the recipient")
+      failures.record(err)
       return true
     }
   })
+  failures.report("room fan-out block lookup failed; skipping those recipients")
   return new Set(candidates.filter((_, i) => verdicts[i] === true))
 }
 
@@ -95,14 +125,16 @@ async function mutedIds(
       return new Set()
     }
   }
+  const failures = tallyLookupFailures(deps, kind, candidates.length)
   const verdicts = await mapWithLimit(candidates, FANOUT_CONCURRENCY, async (recipientId) => {
     try {
       return await deps.isMuted(recipientId, roomId)
     } catch (err) {
-      deps.logger?.warn({ err, kind }, "room fan-out mute lookup failed; notifying anyway")
+      failures.record(err)
       return false
     }
   })
+  failures.report("room fan-out mute lookup failed; notifying those recipients anyway")
   return new Set(candidates.filter((_, i) => verdicts[i] === true))
 }
 
@@ -195,11 +227,26 @@ export async function runRoomFanout(
   const name = message.from?.name?.trim() ? message.from.name : null
   const preview = textPreview(message)
 
-  await deps.notificationService.createNotifications(recipients, {
-    type: bell.type,
-    ...(name !== null ? { title: name } : { titleKey: spec.titleFallbackKey }),
-    ...(preview !== null ? { body: preview } : { bodyKey: "notification.message.no_preview" }),
-    link: bell.link(roomId),
-    coalesceWindowMs,
-  })
+  const { failed } = await deps.notificationService.createNotificationsReportingFailures(
+    recipients,
+    {
+      type: bell.type,
+      ...(name !== null ? { title: name } : { titleKey: spec.titleFallbackKey }),
+      ...(preview !== null ? { body: preview } : { bodyKey: "notification.message.no_preview" }),
+      link: bell.link(roomId),
+      coalesceWindowMs,
+    },
+  )
+  if (failed.length === 0) return
+  // A total failure fails the chat.room.fanout job so pg-boss retries it. Re-running the whole fan-out
+  // is safe because room bells coalesce into the recipient's unread row inside the coalesce window,
+  // which is far longer than pg-boss's immediate retries. A partial failure completes: the room's next
+  // message bells the missed members again.
+  if (failed.length === recipients.length) {
+    throw new Error(`room fan-out wrote no bell for ${failed.length} recipients`)
+  }
+  deps.logger?.warn(
+    { kind: spec.kind, recipients: recipients.length, failed: failed.length },
+    "room fan-out: some bells were not written",
+  )
 }

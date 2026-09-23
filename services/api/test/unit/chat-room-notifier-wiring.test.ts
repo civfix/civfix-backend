@@ -102,7 +102,7 @@ describe("makeContainerRoomFanoutDeps", () => {
     expect(groupMute!.values).toContain("group")
   })
 
-  it("treats a failed mute lookup as NOT muted so a Redis/DB blip cannot silence the room", async () => {
+  it("hands the fan-out a mute lookup that surfaces a failure, so the fan-out fails open once per fan-out", async () => {
     const h = harness()
     const boom = makeFakeSql()
     const throwing = {
@@ -119,7 +119,7 @@ describe("makeContainerRoomFanoutDeps", () => {
 
     const deps = makeContainerRoomFanoutDeps(throwing)
 
-    await expect(deps.report.isMuted("u1", "r1")).resolves.toBe(false)
+    await expect(deps.report.isMuted("u1", "r1")).rejects.toThrow("db down")
   })
 })
 

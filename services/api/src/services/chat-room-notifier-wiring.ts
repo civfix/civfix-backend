@@ -4,10 +4,7 @@ import { makeReportChatRepository } from "./report-chat-repository.drizzle.js"
 import { makeChatGroupRepository } from "./chat-group-repository.drizzle.js"
 import { makeNotificationService } from "./notification-service.js"
 import { makeDrizzleNotificationRepository } from "./notification-repository.drizzle.js"
-import {
-  makeConversationMutesRepository,
-  makeFailOpenMuteCheck,
-} from "./conversation-mutes-repository.drizzle.js"
+import { makeConversationMutesRepository } from "./conversation-mutes-repository.drizzle.js"
 import { RedisChatPresence } from "../adapters/chat-presence.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import {
@@ -38,7 +35,6 @@ export function makeContainerRoomFanoutDeps(
   })
 
   const conversationMutes = makeConversationMutesRepository(sql)
-  const isMuted = makeFailOpenMuteCheck(conversationMutes, logger)
   const mutedUserIdsForRoom = (
     kind: RoomFanoutKind,
   ): ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined => {
@@ -64,7 +60,7 @@ export function makeContainerRoomFanoutDeps(
 
   const common = (kind: RoomFanoutKind): Omit<RoomFanoutNotifierDeps, "listMemberIds"> => ({
     notificationService,
-    isMuted: (userId, roomId) => isMuted(userId, kind, roomId),
+    isMuted: (userId, roomId) => conversationMutes.isMuted(userId, kind, roomId),
     ...(mutedUserIdsForRoom(kind) ? { mutedUserIdsFor: mutedUserIdsForRoom(kind) } : {}),
     ...(presence !== undefined ? { presence } : {}),
     roomKey: (roomId) => roomKeyFor(kind, roomId),

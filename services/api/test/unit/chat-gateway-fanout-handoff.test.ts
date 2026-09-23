@@ -56,9 +56,9 @@ function probe(): FanoutProbe {
 function notifierDeps(p: FanoutProbe) {
   return {
     notificationService: {
-      createNotifications: (recipients: string[]) => {
+      createNotificationsReportingFailures: (recipients: string[]) => {
         p.notified.push(recipients)
-        return Promise.resolve()
+        return Promise.resolve({ failed: [] })
       },
     },
     isMuted: () => Promise.resolve(false),

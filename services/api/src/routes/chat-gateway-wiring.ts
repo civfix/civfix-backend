@@ -523,7 +523,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           reportChatRepo: {
             listMemberIds: (reportId, limit) => getReportChatRepo().listMemberIds(reportId, limit),
           },
-          isMuted: (userId, roomId) => isMutedFor(userId, "report", roomId),
+          isMuted: (userId, roomId) => conversationMutes.isMuted(userId, "report", roomId),
           ...(reportMutedUserIdsFor ? { mutedUserIdsFor: reportMutedUserIdsFor } : {}),
           presence,
           roomKeyFor,
@@ -541,7 +541,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
           groupRepo: {
             listMemberIds: (groupId, limit) => listGroupMembersShared(groupId, limit),
           },
-          isMuted: (userId, roomId) => isMutedFor(userId, "group", roomId),
+          isMuted: (userId, roomId) => conversationMutes.isMuted(userId, "group", roomId),
           ...(groupMutedUserIdsFor ? { mutedUserIdsFor: groupMutedUserIdsFor } : {}),
           presence,
           roomKeyFor,

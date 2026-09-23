@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { FakePushSender } from "@civfix/shared/fakes"
 import { makeNotificationService } from "../../src/services/notification-service.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
@@ -61,6 +61,38 @@ describe("fan-out notifications report the recipients whose row was never writte
     await expect(
       service.createNotificationsReportingFailures([], { type: "event_broadcast", title: "x" }),
     ).resolves.toEqual({ failed: [] })
+  })
+
+  it("logs a store outage across a fan-out once, with counts, instead of once per recipient", async () => {
+    const recipients = Array.from(
+      { length: 20 },
+      (_, i) => `44444444-4444-4444-4444-${String(i).padStart(12, "0")}`,
+    )
+    const repo = new InMemoryNotificationRepository()
+    repo.insertNotification = () => Promise.reject(new Error("insert failed"))
+    repo.upsertCoalescedNotification = () => Promise.reject(new Error("upsert failed"))
+    const logger = { warn: vi.fn(), error: vi.fn() }
+    const service = makeNotificationService({ repo, pushSender: new FakePushSender(), logger })
+
+    const result = await service.createNotificationsReportingFailures(recipients, {
+      type: "group_chat",
+      title: "Dana",
+      body: "Parking moved",
+      link: "/chat/abc",
+      coalesceWindowMs: 60_000,
+    })
+
+    expect(result.failed).toHaveLength(20)
+    expect(logger.warn).toHaveBeenCalledTimes(2)
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "group_chat", failed: 20, recipients: 20 }),
+      expect.stringMatching(/fan-out notification insert failed/),
+    )
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "group_chat", fallbacks: 20, lane: "coalesce" }),
+      expect.stringMatching(/coalesce upsert failed/),
+    )
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("Parking moved")
   })
 })
 

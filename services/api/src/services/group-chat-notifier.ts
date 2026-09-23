@@ -4,7 +4,7 @@ import type { NotificationService } from "./notification-service.js"
 import { makeRoomFanoutNotifier, ROOM_FANOUT_SPEC } from "./chat-room-fanout-notifier.js"
 
 export interface GroupChatNotifierDeps {
-  notificationService: Pick<NotificationService, "createNotifications">
+  notificationService: Pick<NotificationService, "createNotificationsReportingFailures">
   groupRepo: { listMemberIds(groupId: string, limit: number): Promise<string[]> }
   isMuted: (userId: string, roomId: string) => Promise<boolean>
   mutedUserIdsFor?: (roomId: string, userIds: string[]) => Promise<Set<string>>
