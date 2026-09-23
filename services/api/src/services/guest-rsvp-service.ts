@@ -17,6 +17,7 @@ import {
   type GuestRsvpVerifyResponse,
   type RegisterForEventRequest,
   type RegisterForEventResponse,
+  type TicketTypeVisibility,
 } from "@civfix/shared"
 import { GUEST_RSVP_TURNSTILE_ACTION } from "@civfix/shared/host"
 import type { AbuseChecks, Jobs, Mailer, SmsSender } from "@civfix/shared/interfaces"
@@ -100,12 +101,26 @@ export interface GuestRegistrationFields {
   consent?: RegisterForEventRequest["consent"]
 }
 
+export interface GuestTicketTypeGate {
+  id: string
+  visibility: TicketTypeVisibility
+  salesOpensAt: Date | null
+  salesClosesAt: Date | null
+}
+
+export interface GuestRegistrationGate {
+  registrationOpensAt: Date | null
+  registrationClosesAt: Date | null
+  ticketTypes: GuestTicketTypeGate[]
+}
+
 export interface GuestRegistrationBridge {
   register(
     input: RegisterForEventRequest,
     subject: { kind: "guest"; guestId: string },
   ): Promise<RegisterForEventResponse>
   assertInputValid?(cleanupId: string, fields: GuestRegistrationFields): Promise<void>
+  registrationGate?(cleanupId: string): Promise<GuestRegistrationGate | null>
 }
 
 export interface GuestOtpRecord {
@@ -294,50 +309,148 @@ function eventClosedError(): AppError {
 
 const RETRY_WITH_NEW_CODE = "Check your details, then request a new code to try again."
 
+const RETRY_REQUEST = "Check your details, then try again."
+
+export const GUEST_REGISTRATION_ERROR_FIELD = "registration"
+
+export const GuestRegistrationRefusalReason = {
+  soldOut: "sold_out",
+  registrationClosed: "registration_closed",
+  salesClosed: "sales_closed",
+  eventClosed: "event_closed",
+  partyTooLarge: "party_too_large",
+  ticketTypeUnavailable: "ticket_type_unavailable",
+  accessCodeRequired: "access_code_required",
+  accessCodeInvalid: "access_code_invalid",
+  answersInvalid: "answers_invalid",
+} as const
+
+export type GuestRegistrationRefusalReason =
+  (typeof GuestRegistrationRefusalReason)[keyof typeof GuestRegistrationRefusalReason]
+
 type GuestSeat = Pick<
   GuestRsvpVerifyResponse,
   "registration" | "registrationOutcome" | "ticketTokens"
 > & { refusal: AppError | null }
 
-function registrationRefusalError(response: RegisterForEventResponse): AppError | null {
-  switch (response.outcome) {
+type RegisterOutcome = RegisterForEventResponse["outcome"]
+
+function refusedConflict(message: string, reason: GuestRegistrationRefusalReason): AppError {
+  return new AppError(ErrorCode.CONFLICT, message, {
+    fields: { [GUEST_REGISTRATION_ERROR_FIELD]: reason },
+  })
+}
+
+function refusedInput(
+  fields: Record<string, string>,
+  reason: GuestRegistrationRefusalReason,
+  message: string,
+): AppError {
+  return AppError.validation({ ...fields, [GUEST_REGISTRATION_ERROR_FIELD]: reason }, message)
+}
+
+// The clients map an error code to one generic message, so every refusal also names its reason in
+// `fields`, the way the OTP and SMS refusals do, for the guest to be told what to change.
+function refusalForOutcome(
+  outcome: RegisterOutcome,
+  answerFields: Record<string, string> | undefined,
+  retryMessage: string,
+): AppError | null {
+  switch (outcome) {
     case "registered":
     case "replayed":
     case "already_registered":
       return null
     case "full":
     case "waitlisted":
-      return AppError.conflict("This event has no seats left.")
+      return refusedConflict(
+        "This event has no seats left.",
+        GuestRegistrationRefusalReason.soldOut,
+      )
     case "registration_closed":
-      return AppError.conflict("Registration for this event is closed.")
+      return refusedConflict(
+        "Registration for this event is closed.",
+        GuestRegistrationRefusalReason.registrationClosed,
+      )
     case "sales_closed":
-      return AppError.conflict("Ticket sales for this event are closed.")
+      return refusedConflict(
+        "Ticket sales for this event are closed.",
+        GuestRegistrationRefusalReason.salesClosed,
+      )
     case "closed":
-      return eventClosedError()
+      return refusedConflict("This event is closed.", GuestRegistrationRefusalReason.eventClosed)
     case "party_too_large":
-      return AppError.validation({ partySize: "more people than seats left" }, RETRY_WITH_NEW_CODE)
+      return refusedInput(
+        { partySize: "more people than seats left" },
+        GuestRegistrationRefusalReason.partyTooLarge,
+        retryMessage,
+      )
     case "ticket_type_not_found":
-      return AppError.validation(
+      return refusedInput(
         { ticketTypeId: "that ticket type is not available" },
-        RETRY_WITH_NEW_CODE,
+        GuestRegistrationRefusalReason.ticketTypeUnavailable,
+        retryMessage,
       )
     case "access_code_required":
-      return AppError.validation(
+      return refusedInput(
         { accessCode: "required for this ticket type" },
-        RETRY_WITH_NEW_CODE,
+        GuestRegistrationRefusalReason.accessCodeRequired,
+        retryMessage,
       )
     case "access_code_invalid":
-      return AppError.validation(
+      return refusedInput(
         { accessCode: "that code is not valid for this ticket type" },
-        RETRY_WITH_NEW_CODE,
+        GuestRegistrationRefusalReason.accessCodeInvalid,
+        retryMessage,
       )
     case "answers_invalid":
-      return AppError.validation(response.fields ?? { answers: "invalid" }, RETRY_WITH_NEW_CODE)
+      return refusedInput(
+        answerFields ?? { answers: "invalid" },
+        GuestRegistrationRefusalReason.answersInvalid,
+        retryMessage,
+      )
     // A host ban reads exactly like an unknown event, as it does for every other guest refusal.
     case "banned":
     case "not_found":
       return AppError.notFound("Event not found")
   }
+}
+
+function registrationRefusalError(response: RegisterForEventResponse): AppError | null {
+  return refusalForOutcome(response.outcome, response.fields, RETRY_WITH_NEW_CODE)
+}
+
+function withinWindow(at: Date, opensAt: Date | null, closesAt: Date | null): boolean {
+  if (opensAt !== null && at < opensAt) return false
+  if (closesAt !== null && at >= closesAt) return false
+  return true
+}
+
+/**
+ * The refusal registration is certain to give a new guest, judged from the gates a code request can
+ * see. It mirrors the order of the registration transaction and answers null whenever that
+ * transaction could still accept, so verify stays the authority on everything else.
+ */
+export function foreseeableGuestRefusal(
+  gate: GuestRegistrationGate,
+  fields: GuestRegistrationFields,
+  at: Date,
+): RegisterOutcome | null {
+  if (!withinWindow(at, gate.registrationOpensAt, gate.registrationClosesAt)) {
+    return "registration_closed"
+  }
+  const ticketType =
+    fields.ticketTypeId !== undefined
+      ? gate.ticketTypes.find((t) => t.id === fields.ticketTypeId)
+      : gate.ticketTypes.length === 1
+        ? gate.ticketTypes[0]
+        : undefined
+  if (ticketType === undefined || ticketType.visibility === "hidden") return null
+  if (ticketType.visibility === "access_code" && fields.accessCode === undefined) {
+    return "access_code_required"
+  }
+  if (!withinWindow(at, ticketType.salesOpensAt, ticketType.salesClosesAt)) return "sales_closed"
+  return null
 }
 
 function invalidCodeError(): AppError {
@@ -557,6 +670,32 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     await deps.registrations?.assertInputValid?.(cleanupId, fields)
   }
 
+  // Judged from public event state and the form alone, never from whether this contact already
+  // holds an RSVP: the answer must not tell a caller who is on the guest list.
+  async function refuseForeseeableRegistration(
+    cleanupId: string,
+    fields: GuestRegistrationFields,
+  ): Promise<void> {
+    const bridge = deps.registrations
+    const readGate = bridge?.registrationGate
+    if (bridge === undefined || readGate === undefined) return
+    let outcome: RegisterOutcome | null
+    try {
+      const gate = await readGate.call(bridge, cleanupId)
+      if (gate === null) return
+      outcome = foreseeableGuestRefusal(gate, fields, new Date(now()))
+      if (outcome === null) return
+    } catch (err) {
+      deps.logger?.warn(
+        { err, cleanupId },
+        "guest rsvp: registration gate lookup failed; the verify step decides",
+      )
+      return
+    }
+    const refusal = refusalForOutcome(outcome, undefined, RETRY_REQUEST)
+    if (refusal !== null) throw refusal
+  }
+
   async function notifyGuestsBySms(
     cleanupId: string,
     kind: "cancelled" | "updated",
@@ -684,22 +823,28 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     })
     // Only a row this verify inserted is rolled back: a re-verifying guest already held the RSVP
     // (possibly with a live registration that cancelGuest would also cancel).
-    const rollBack = async (): Promise<void> => {
-      if (!guest.created) return
-      const released = await deps.repo.cancelGuest(guest.id, new Date(now()))
-      await enqueueWaitlistPromotion(deps.jobs, released, deps.logger)
+    const rollBackThenThrow = async (refusal: unknown): Promise<never> => {
+      if (guest.created) {
+        try {
+          const released = await deps.repo.cancelGuest(guest.id, new Date(now()))
+          await enqueueWaitlistPromotion(deps.jobs, released, deps.logger)
+        } catch (err) {
+          // The guest must still hear why they were refused; a 500 would hide it.
+          deps.logger?.error(
+            { err, cleanupId: args.event.id, guestId: guest.id },
+            "guest rsvp: rolling back a refused guest failed; the RSVP row may linger",
+          )
+        }
+      }
+      throw refusal
     }
     let seat: GuestSeat
     try {
       seat = await registerVerifiedGuest(args.event.id, guest.id, args.registration ?? {})
     } catch (err) {
-      await rollBack()
-      throw err
+      return rollBackThenThrow(err)
     }
-    if (seat.refusal !== null && guest.created) {
-      await rollBack()
-      throw seat.refusal
-    }
+    if (seat.refusal !== null && guest.created) return rollBackThenThrow(seat.refusal)
     const going = await deps.repo.goingCount(args.event.id)
     if (args.confirm) {
       await sendConfirmation({ ...args, rawToken }).catch((err: unknown) => {
@@ -835,6 +980,9 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       if (isReviewerContact(input.channel, contact)) {
         return fakeSuccess
       }
+
+      // Refused before any budget is spent or code sent: the guest can fix the form and ask again.
+      await refuseForeseeableRegistration(event.id, registrationFieldsOf(input))
 
       const active = await deps.repo.countActiveGuests(event.id)
       if (active >= MAX_GUESTS_PER_EVENT) {

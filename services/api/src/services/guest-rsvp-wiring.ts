@@ -62,6 +62,28 @@ export function makeContainerGuestRsvpService(
         ...(fields.answers !== undefined ? { answers: fields.answers } : {}),
         ...(fields.consent !== undefined ? { consent: fields.consent } : {}),
       }),
+    registrationGate: async (cleanupId) => {
+      const { repo: registrationRepo } = makeContainerRegistrationServices(
+        container,
+        undefined,
+        logger,
+      )
+      const [event, ticketTypes] = await Promise.all([
+        registrationRepo.eventContext(cleanupId),
+        registrationRepo.listTicketTypes(cleanupId),
+      ])
+      if (event === null) return null
+      return {
+        registrationOpensAt: event.registrationOpensAt,
+        registrationClosesAt: event.registrationClosesAt,
+        ticketTypes: ticketTypes.map((t) => ({
+          id: t.id,
+          visibility: t.visibility,
+          salesOpensAt: t.salesOpensAt,
+          salesClosesAt: t.salesClosesAt,
+        })),
+      }
+    },
   }
   const audit: GuestRsvpServiceDeps["audit"] =
     overrides?.audit ??
