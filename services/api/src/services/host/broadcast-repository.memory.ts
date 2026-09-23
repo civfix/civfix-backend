@@ -679,13 +679,12 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     suspended: boolean,
     audit: WriteAuditInput,
   ): Promise<boolean> {
-    this.audits.push(audit)
-    const existing = this.hosts.get(userId) ?? {
-      suspended: false,
-      emailVerified: true,
-      accountCreatedAt: new Date(0),
-    }
+    // A seeded host stands in for a users row: the Postgres upsert selects from users, so an
+    // unknown id changes nothing and writes no audit row.
+    const existing = this.hosts.get(userId)
+    if (existing === undefined) return Promise.resolve(false)
     this.hosts.set(userId, { ...existing, suspended })
+    this.audits.push(audit)
     return Promise.resolve(true)
   }
 
