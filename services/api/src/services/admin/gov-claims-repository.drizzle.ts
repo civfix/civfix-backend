@@ -14,6 +14,7 @@ import {
 } from "./pagination.js"
 import { ilikeAnyOf } from "./sql-fragments.js"
 import {
+  GOV_CHECKS,
   type GovCheckRecord,
   type GovClaimRecord,
   type GovClaimsRepository,
@@ -36,7 +37,7 @@ interface GovClaimRow {
   created_at: Date
 }
 
-const CHECK_KEYS: readonly string[] = ["linkedin", "directory", "callback"]
+const CHECK_KEYS: readonly string[] = GOV_CHECKS
 
 const CHECK_STATUSES: readonly GovCheckStatus[] = ["verified", "pending"]
 
@@ -58,6 +59,10 @@ function parseChecks(raw: unknown): Partial<Record<GovVerificationCheck, GovChec
     }
   }
   return out
+}
+
+function claimAuditTarget(id: string): string {
+  return `gov_claim:${id}`
 }
 
 function toRecord(row: GovClaimRow): GovClaimRecord {
@@ -162,7 +167,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
         await writeAudit(tx, {
           actorId: input.actorId,
           action: "gov_claim.verified",
-          target: `gov_claim:${id}`,
+          target: claimAuditTarget(id),
           meta: { check: input.check, status: input.status, evidence: input.evidence },
         })
         return toRecord(row)
@@ -186,7 +191,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
         await writeAudit(tx, {
           actorId: input.actorId,
           action: "gov_claim.approved",
-          target: `gov_claim:${id}`,
+          target: claimAuditTarget(id),
           meta: {
             userId: input.userId,
             jurisdictionGeoid: row.jurisdiction_geoid,
@@ -214,7 +219,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
         await writeAudit(tx, {
           actorId: input.actorId,
           action: "gov_claim.rejected",
-          target: `gov_claim:${id}`,
+          target: claimAuditTarget(id),
           meta: { reason: input.reason },
         })
         return toRecord(row)

@@ -187,6 +187,10 @@ function closeAfter(
   return k < slots.length ? (slots[k] ?? -1) : -1
 }
 
+function escapedTail(html: string, from: number): string {
+  return html.slice(from).replace(/</g, "&lt;")
+}
+
 export function sanitizeInboundHtml(html: string | null | undefined): string | null {
   if (html === null || html === undefined) return null
   if (html.length === 0) return null
@@ -209,7 +213,7 @@ export function sanitizeInboundHtml(html: string | null | undefined): string | n
       continue
     }
     if (step.kind === "tail") {
-      out += html.slice(step.lt).replace(/</g, "&lt;")
+      out += escapedTail(html, step.lt)
       break
     }
     if (step.kind === "stray") {
@@ -231,7 +235,7 @@ export function sanitizeInboundHtml(html: string | null | undefined): string | n
 
     const gt = html.indexOf(">", step.lt + 1)
     if (gt === -1) {
-      out += html.slice(step.lt).replace(/</g, "&lt;")
+      out += escapedTail(html, step.lt)
       break
     }
     if (ALLOWED_TAGS.has(step.name)) {
@@ -318,6 +322,8 @@ const NAMED_ENTITIES: Record<string, string> = {
   newline: "\n",
 }
 
+const MAX_CODE_POINT = 0x10ffff
+
 const ENTITY_RE = /&(?:#x([0-9a-f]+);?|#(\d+);?|(amp|quot|apos|lt|gt|nbsp|tab|newline);)/gi
 
 function normalizeUrlAttr(value: string): string {
@@ -339,7 +345,7 @@ function decodeEntities(value: string): string {
 }
 
 function safeFromCodePoint(code: number): string {
-  if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return ""
+  if (!Number.isFinite(code) || code < 0 || code > MAX_CODE_POINT) return ""
   try {
     return String.fromCodePoint(code)
   } catch {

@@ -11,11 +11,11 @@ import {
   inboundEffectDeps,
 } from "./inbound-thread-correlation.js"
 
-export const INBOUND_SWEEP_BATCH = 200
+const INBOUND_SWEEP_BATCH = 200
 const LIST_PAGE = 100
 
-export const INBOUND_EFFECTS_REDRIVE_BATCH = 100
-export const INBOUND_EFFECTS_REDRIVE_MIN_AGE_MS = 60_000
+const INBOUND_EFFECTS_REDRIVE_BATCH = 100
+const INBOUND_EFFECTS_REDRIVE_MIN_AGE_MS = 60_000
 
 export interface InboundSweepResult {
   scanned: number
@@ -28,15 +28,20 @@ export interface InboundSweepResult {
   listError?: string
 }
 
+export interface EffectsRedriveOptions {
+  deps?: InboundProcessorDeps
+  now?: () => Date
+  effectsBatch?: number
+  effectsMinAgeMs?: number
+}
+
+export interface InboundSweepOptions extends EffectsRedriveOptions {
+  batch?: number
+}
+
 export async function runInboundSweep(
   container: Container,
-  opts: {
-    batch?: number
-    deps?: InboundProcessorDeps
-    now?: () => Date
-    effectsBatch?: number
-    effectsMinAgeMs?: number
-  } = {},
+  opts: InboundSweepOptions = {},
 ): Promise<InboundSweepResult> {
   const storage = opts.deps?.storage ?? container.inboundStorage
   const cap = opts.batch ?? INBOUND_SWEEP_BATCH
@@ -89,12 +94,7 @@ export async function runInboundSweep(
 
 async function redriveEffects(
   container: Container,
-  opts: {
-    deps?: InboundProcessorDeps
-    now?: () => Date
-    effectsBatch?: number
-    effectsMinAgeMs?: number
-  },
+  opts: EffectsRedriveOptions,
 ): Promise<{ effectsRedriven: number; effectsErrors: number; effectsError?: string }> {
   const now = (opts.now ?? (() => new Date()))()
   const minAge = opts.effectsMinAgeMs ?? INBOUND_EFFECTS_REDRIVE_MIN_AGE_MS

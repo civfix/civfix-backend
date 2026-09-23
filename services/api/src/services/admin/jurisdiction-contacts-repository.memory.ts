@@ -55,6 +55,8 @@ export interface SeededContactsTask {
 
 const NON_WAITING = new Set(["rejected", "resolved", "acknowledged", "in_progress"])
 
+const HANDLE_TAKEN_BY_JURISDICTION = "That @handle is already used by another jurisdiction."
+
 export interface RecordedContactsAudit {
   actorId: string | null
   action: string
@@ -175,14 +177,7 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     if (!j) return { taskResolved: false }
 
     applyContacts(j, input)
-    if (input.forwardSubjectTemplate !== undefined) {
-      const template = input.forwardSubjectTemplate
-      j.forwardSubjectTemplate = template === null || template === "" ? null : template
-    }
-    if (input.forwardBodyTemplate !== undefined) {
-      const template = input.forwardBodyTemplate
-      j.forwardBodyTemplate = template === null || template === "" ? null : template
-    }
+    applyForwardTemplates(j, input)
     j.contactUpdatedAt = this.now
 
     let taskResolved = false
@@ -240,20 +235,13 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
             other.handle !== null &&
             other.handle.toLowerCase() === handle.toLowerCase()
           ) {
-            throw AppError.conflict("That @handle is already used by another jurisdiction.")
+            throw AppError.conflict(HANDLE_TAKEN_BY_JURISDICTION)
           }
         }
         j.handle = handle
       }
     }
-    if (input.forwardSubjectTemplate !== undefined) {
-      const t = input.forwardSubjectTemplate
-      j.forwardSubjectTemplate = t === null || t === "" ? null : t
-    }
-    if (input.forwardBodyTemplate !== undefined) {
-      const t = input.forwardBodyTemplate
-      j.forwardBodyTemplate = t === null || t === "" ? null : t
-    }
+    applyForwardTemplates(j, input)
     if (touchedContact) j.contactUpdatedAt = this.now
     this.audits.push({
       actorId: audit.actorId,
@@ -278,43 +266,17 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
   async listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult> {
     const all = [...this.jurisdictions.values()].map((j) => toRecord(j, this.reports))
 
+    const needle = args.q?.toLowerCase() ?? null
     const matched =
-      args.q !== null
-        ? (() => {
-            const needle = args.q.toLowerCase()
-            return all.filter(
-              (r) =>
-                r.name.toLowerCase().includes(needle) || r.geoid.toLowerCase().includes(needle),
-            )
-          })()
+      needle !== null
+        ? all.filter(
+            (r) => r.name.toLowerCase().includes(needle) || r.geoid.toLowerCase().includes(needle),
+          )
         : all
     const searched = args.layer !== null ? matched.filter((r) => r.layer === args.layer) : matched
 
-    const records =
-      args.filter === "all"
-        ? searched.slice()
-        : args.filter === "routed"
-          ? searched.filter((r) => directoryMethod(r) !== "none")
-          : args.filter === "needs_mapping"
-            ? searched.filter((r) => directoryMethod(r) === "none" && r.reportsWaiting > 0)
-            : searched.filter((r) => directoryMethod(r) === args.filter)
-
-    const byGeoid = (a: JurisdictionDirectoryRecord, b: JurisdictionDirectoryRecord) =>
-      a.geoid < b.geoid ? -1 : a.geoid > b.geoid ? 1 : 0
-    records.sort((a, b) => {
-      if (args.sort === "name") return a.name < b.name ? -1 : a.name > b.name ? 1 : byGeoid(a, b)
-      if (args.sort === "oldest") {
-        const at = a.oldestReportAt?.getTime() ?? null
-        const bt = b.oldestReportAt?.getTime() ?? null
-        if (at === null && bt === null) return byGeoid(a, b)
-        if (at === null) return 1
-        if (bt === null) return -1
-        return at - bt || byGeoid(a, b)
-      }
-      const av = args.sort === "reports" ? a.reportsWaiting : (a.population ?? 0)
-      const bv = args.sort === "reports" ? b.reportsWaiting : (b.population ?? 0)
-      return bv - av || byGeoid(a, b)
-    })
+    const records = filterByMethod(searched, args.filter)
+    records.sort(directoryComparator(args.sort))
 
     const limit = clampLimit(args.limit)
     const offset = decodeOffsetCursor(args.cursor)
@@ -362,6 +324,57 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
       }
     }
     return { total, perCategoryCounts }
+  }
+}
+
+function blankToNull(template: string | null): string | null {
+  return template === null || template === "" ? null : template
+}
+
+function applyForwardTemplates(
+  j: SeededJurisdiction,
+  input: { forwardSubjectTemplate?: string | null; forwardBodyTemplate?: string | null },
+): void {
+  if (input.forwardSubjectTemplate !== undefined) {
+    j.forwardSubjectTemplate = blankToNull(input.forwardSubjectTemplate)
+  }
+  if (input.forwardBodyTemplate !== undefined) {
+    j.forwardBodyTemplate = blankToNull(input.forwardBodyTemplate)
+  }
+}
+
+function filterByMethod(
+  searched: JurisdictionDirectoryRecord[],
+  filter: ListDirectoryArgs["filter"],
+): JurisdictionDirectoryRecord[] {
+  if (filter === "all") return searched.slice()
+  if (filter === "routed") return searched.filter((r) => directoryMethod(r) !== "none")
+  if (filter === "needs_mapping") {
+    return searched.filter((r) => directoryMethod(r) === "none" && r.reportsWaiting > 0)
+  }
+  return searched.filter((r) => directoryMethod(r) === filter)
+}
+
+function byGeoid(a: JurisdictionDirectoryRecord, b: JurisdictionDirectoryRecord): number {
+  return a.geoid < b.geoid ? -1 : a.geoid > b.geoid ? 1 : 0
+}
+
+function directoryComparator(
+  sort: ListDirectoryArgs["sort"],
+): (a: JurisdictionDirectoryRecord, b: JurisdictionDirectoryRecord) => number {
+  return (a, b) => {
+    if (sort === "name") return a.name < b.name ? -1 : a.name > b.name ? 1 : byGeoid(a, b)
+    if (sort === "oldest") {
+      const at = a.oldestReportAt?.getTime() ?? null
+      const bt = b.oldestReportAt?.getTime() ?? null
+      if (at === null && bt === null) return byGeoid(a, b)
+      if (at === null) return 1
+      if (bt === null) return -1
+      return at - bt || byGeoid(a, b)
+    }
+    const av = sort === "reports" ? a.reportsWaiting : (a.population ?? 0)
+    const bv = sort === "reports" ? b.reportsWaiting : (b.population ?? 0)
+    return bv - av || byGeoid(a, b)
   }
 }
 

@@ -21,6 +21,16 @@ function ourMailDomains(container: Container): string[] {
 
 const DSN_SCAN_PREFIX_BYTES = 64 * 1024
 
+const DAEMON_LOCAL_PARTS: readonly string[] = ["mailer-daemon", "postmaster"]
+const DAEMON_SENDER_RE = new RegExp(`(${DAEMON_LOCAL_PARTS.join("|")})@`, "i")
+const DSN_CONTENT_TYPE_RE = /report-type["']?\s*[=:]\s*["']?delivery-status/i
+const FINAL_RECIPIENT_LINE_RE = /^final-recipient:\s*(?:rfc822;)?\s*(.+)$/im
+const TO_LINE_RE = /^to:\s*(.+)$/im
+const ORIGINAL_MESSAGE_ID_LINE_RE = /^original-message-id:\s*(.+)$/im
+const MESSAGE_ID_LINE_RE = /^message-id:\s*(.+)$/im
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/
+const BRACKET_ID_RE = /<[^>]+>/
+
 export interface BounceDetection {
   isBounce: boolean
   failedRecipient: string | null
@@ -32,8 +42,8 @@ export function detectBounce(mail: ParsedMail): BounceDetection {
   const contentType = mail.headers["content-type"] ?? ""
   const failedHeader = mail.headers["x-failed-recipients"] ?? ""
   const isBounce =
-    /(mailer-daemon|postmaster)@/i.test(fromAddr) ||
-    /report-type["']?\s*[=:]\s*["']?delivery-status/i.test(contentType) ||
+    DAEMON_SENDER_RE.test(fromAddr) ||
+    DSN_CONTENT_TYPE_RE.test(contentType) ||
     failedHeader.length > 0
   if (!isBounce) {
     return { isBounce: false, failedRecipient: null, originalMessageId: null }
@@ -41,17 +51,15 @@ export function detectBounce(mail: ParsedMail): BounceDetection {
   const body = (mail.text ?? mail.html ?? "").slice(0, DSN_SCAN_PREFIX_BYTES)
   const failedRecipient =
     extractEmail(failedHeader) ??
-    extractEmail(matchLine(body, /^final-recipient:\s*(?:rfc822;)?\s*(.+)$/im)) ??
-    extractEmail(matchLine(body, /^to:\s*(.+)$/im))
+    extractEmail(matchLine(body, FINAL_RECIPIENT_LINE_RE)) ??
+    extractEmail(matchLine(body, TO_LINE_RE))
   const originalMessageId =
-    matchBracketId(matchLine(body, /^original-message-id:\s*(.+)$/im)) ??
-    matchBracketId(matchLine(body, /^message-id:\s*(.+)$/im))
+    matchBracketId(matchLine(body, ORIGINAL_MESSAGE_ID_LINE_RE)) ??
+    matchBracketId(matchLine(body, MESSAGE_ID_LINE_RE))
   return { isBounce: true, failedRecipient, originalMessageId }
 }
 
-export const DAEMON_LOCAL_PARTS: readonly string[] = ["mailer-daemon", "postmaster"]
-
-export const PROVIDER_DAEMON_DOMAINS: readonly string[] = [
+const PROVIDER_DAEMON_DOMAINS: readonly string[] = [
   "googlemail.com",
   "google.com",
   "outlook.com",
@@ -127,7 +135,7 @@ export const CONSUMER_MAIL_DOMAINS: ReadonlySet<string> = new Set([
   "t-online.de",
 ])
 
-export function isPlausibleBounceSender(input: {
+function isPlausibleBounceSender(input: {
   fromAddr: string | null
   failedRecipient: string
   ourMailDomains: readonly string[]
@@ -246,19 +254,21 @@ export async function geoidForContact(sql: Sql, email: string): Promise<string |
   return rows[0]?.geoid ?? null
 }
 
-export function extractEmail(value: string | null): string | null {
+function extractEmail(value: string | null): string | null {
   if (value === null) return null
-  const m = value.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/)
+  const m = value.match(EMAIL_RE)
   return m ? m[0] : null
 }
 
-export function matchLine(body: string, re: RegExp): string | null {
+function matchLine(body: string, re: RegExp): string | null {
   const m = body.match(re)
   return m && m[1] ? m[1].trim() : null
 }
 
-export function matchBracketId(value: string | null): string | null {
+function matchBracketId(value: string | null): string | null {
   if (value === null) return null
-  const m = value.match(/<[^>]+>/)
-  return m ? m[0] : value.trim().length > 0 ? value.trim() : null
+  const m = value.match(BRACKET_ID_RE)
+  if (m) return m[0]
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
 }

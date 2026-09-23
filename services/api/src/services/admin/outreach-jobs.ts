@@ -13,8 +13,6 @@ import {
   type OutreachService,
 } from "./outreach-service.js"
 
-export { OUTREACH_DIGEST_JOB }
-
 export async function registerOutreachJobs(
   container: Container,
   logger?: OutboundMailLogger,

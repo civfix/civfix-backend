@@ -20,6 +20,8 @@ import {
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 
+const MAIL_THREAD_NOT_FOUND = "Mail thread not found"
+
 export interface MailServiceDeps {
   repo: MailRepository
   outboundMail: OutboundMailService
@@ -73,7 +75,7 @@ export function makeMailService(deps: MailServiceDeps): MailService {
 
   async function requireThreadDTO(id: string): Promise<MailThreadDTO> {
     const dto = await repo.getThread(id)
-    if (!dto) throw AppError.notFound("Mail thread not found")
+    if (!dto) throw AppError.notFound(MAIL_THREAD_NOT_FOUND)
     return dto
   }
 
@@ -89,7 +91,7 @@ export function makeMailService(deps: MailServiceDeps): MailService {
     noRecipientMsg: string,
   ): Promise<string> {
     const record = await repo.getThreadRecord(id)
-    if (!record) throw AppError.notFound("Mail thread not found")
+    if (!record) throw AppError.notFound(MAIL_THREAD_NOT_FOUND)
     const toAddr = await repo.getLastOutboundRecipient(id)
     if (toAddr === null) throw AppError.validation({ [noRecipientField]: noRecipientMsg })
     return toAddr
@@ -108,11 +110,7 @@ export function makeMailService(deps: MailServiceDeps): MailService {
       return repo.listThreads(input)
     },
 
-    async getThread(id: string): Promise<MailThreadDTO> {
-      const dto = await repo.getThread(id)
-      if (!dto) throw AppError.notFound("Mail thread not found")
-      return dto
-    },
+    getThread: requireThreadDTO,
 
     async compose(input: ComposeRequest, actorId: string): Promise<MailThreadDTO> {
       const thread = await outboundMail.compose({
@@ -143,7 +141,7 @@ export function makeMailService(deps: MailServiceDeps): MailService {
 
     async markRead(id: string): Promise<void> {
       const ok = await repo.markThreadRead(id)
-      if (!ok) throw AppError.notFound("Mail thread not found")
+      if (!ok) throw AppError.notFound(MAIL_THREAD_NOT_FOUND)
     },
 
     async setStatus(id: string, status: MailStatus, actorId: string): Promise<void> {
@@ -153,12 +151,12 @@ export function makeMailService(deps: MailServiceDeps): MailService {
         target: `mail:${id}`,
         meta: { status },
       })
-      if (!ok) throw AppError.notFound("Mail thread not found")
+      if (!ok) throw AppError.notFound(MAIL_THREAD_NOT_FOUND)
     },
 
     async resend(id: string, actorId: string): Promise<MailThreadDTO> {
       const thread = await repo.getThreadRecord(id)
-      if (!thread) throw AppError.notFound("Mail thread not found")
+      if (!thread) throw AppError.notFound(MAIL_THREAD_NOT_FOUND)
       await assertNoSendInFlight(id)
       const lastId = await repo.latestOutboundMessageId(id)
       const last = lastId === null ? null : await repo.getOutboundMessageForResend(lastId)

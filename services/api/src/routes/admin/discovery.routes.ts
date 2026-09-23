@@ -29,6 +29,9 @@ import {
 } from "../../services/admin/discovery-service.js"
 import { makeDrizzleDiscoveryRepository } from "../../services/admin/discovery-repository.drizzle.js"
 
+const FALLBACK_OPERATOR_LABEL = "operator"
+const ACTOR_ID_LABEL_CHARS = 8
+
 /** Test-only: an in-memory repo so the whole HTTP flow runs offline. */
 export interface DiscoveryRouteOverrides {
   repo: DiscoveryRepository
@@ -103,9 +106,9 @@ export async function registerAdminDiscoveryRoutes(
 async function operatorLabel(app: FastifyInstance, actorId: string): Promise<string> {
   try {
     const user = await app.authServices.users.findById(actorId)
-    if (!user) return "operator"
-    return user.handle ?? user.displayName ?? user.email ?? actorId.slice(0, 8)
+    if (!user) return FALLBACK_OPERATOR_LABEL
+    return user.handle ?? user.displayName ?? user.email ?? actorId.slice(0, ACTOR_ID_LABEL_CHARS)
   } catch {
-    return "operator"
+    return FALLBACK_OPERATOR_LABEL
   }
 }

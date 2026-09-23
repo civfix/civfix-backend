@@ -1,6 +1,10 @@
 import type { Sql } from "../../db/client.js"
 
-export const INBOUND_EMAIL_RETENTION_MS = 180 * 24 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+
+const INBOUND_EMAIL_RETENTION_DAYS = 180
+
+export const INBOUND_EMAIL_RETENTION_MS = INBOUND_EMAIL_RETENTION_DAYS * DAY_MS
 
 export const INBOUND_EMAIL_RETENTION_BATCH = 200
 

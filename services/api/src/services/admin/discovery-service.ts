@@ -11,6 +11,7 @@
 
 import { AppError, REPORT_CATEGORY_LABELS, relativeAgo } from "@civfix/shared"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
+import { ADMIN_DEFAULT_LIMIT } from "./pagination.js"
 import type {
   DiscoveryContact,
   DiscoveryListQuery,
@@ -33,6 +34,14 @@ const DISCOVERY_CATEGORIES = ADMIN_CATEGORIES
 
 /** A task breaches when its oldest waiting report is older than this. */
 export const DISCOVERY_SLA_HOURS = 24
+
+const HOUR_MS = 60 * 60 * 1000
+
+const DISCOVERY_TASK_NOT_FOUND = "Discovery task not found"
+
+const SUGGESTION_NOTE_AUTHOR = "Reporter"
+
+const NO_WAITING_REPORT_LABEL = "-"
 
 export interface DiscoveryTaskRecord {
   id: string
@@ -186,7 +195,7 @@ export function computeContactState(record: DiscoveryTaskRecord): {
 export function isOverSla(oldestWaitingAt: Date | null, now: Date): boolean {
   if (oldestWaitingAt === null) return false
   const ageMs = now.getTime() - oldestWaitingAt.getTime()
-  return ageMs > DISCOVERY_SLA_HOURS * 60 * 60 * 1000
+  return ageMs > DISCOVERY_SLA_HOURS * HOUR_MS
 }
 
 /**
@@ -199,13 +208,13 @@ export function derivePriority(record: DiscoveryTaskRecord, now: Date): Priority
   return "low"
 }
 
-export function suggestionToNote(s: DiscoveryContactSuggestionRecord): DiscoveryNoteRecord {
+function suggestionToNote(s: DiscoveryContactSuggestionRecord): DiscoveryNoteRecord {
   const contact = [s.email, s.formUrl]
     .filter((v): v is string => !!v && v.trim() !== "")
     .join(" / ")
   const head = `Suggested contact: ${contact || "(none provided)"}`
   return {
-    who: "Reporter",
+    who: SUGGESTION_NOTE_AUTHOR,
     text: s.note && s.note.trim() !== "" ? `${head} (note: ${s.note.trim()})` : head,
     createdAt: s.createdAt,
   }
@@ -255,8 +264,14 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
       pop: record.population ?? 0,
       reports: record.total,
       perCategoryCounts: fullPerCategoryCounts(record.perCategory),
-      lastReport: record.newestWaitingAt !== null ? relativeAgo(record.newestWaitingAt, ref) : "-",
-      age: record.oldestWaitingAt !== null ? relativeAgo(record.oldestWaitingAt, ref) : "-",
+      lastReport:
+        record.newestWaitingAt !== null
+          ? relativeAgo(record.newestWaitingAt, ref)
+          : NO_WAITING_REPORT_LABEL,
+      age:
+        record.oldestWaitingAt !== null
+          ? relativeAgo(record.oldestWaitingAt, ref)
+          : NO_WAITING_REPORT_LABEL,
       overSla: isOverSla(record.oldestWaitingAt, ref),
       priority: derivePriority(record, ref),
       contactState: computeContactState(record),
@@ -272,7 +287,7 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
         filter: query.filter ?? "all",
         sort: query.sort ?? "pop",
         cursor: query.cursor ?? null,
-        limit: query.limit ?? 25,
+        limit: query.limit ?? ADMIN_DEFAULT_LIMIT,
       }
       const { records, nextCursor } = await deps.repo.listTasks(args)
       // Only the detail renders notes, so list rows carry an empty notes[] rather than a note read
@@ -284,7 +299,7 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
     async getTask(id: string): Promise<DiscoveryTaskDetailDTO> {
       const ref = now()
       const [detail, notes] = await Promise.all([deps.repo.getDetail(id), deps.repo.listNotes(id)])
-      if (!detail) throw AppError.notFound("Discovery task not found")
+      if (!detail) throw AppError.notFound(DISCOVERY_TASK_NOT_FOUND)
 
       const suggestions = await deps.repo.listContactSuggestions(detail.task.geoid)
       const merged = [...notes, ...suggestions.map(suggestionToNote)].sort(
@@ -319,14 +334,14 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
     ): Promise<DiscoveryNote> {
       const ref = now()
       const task = await deps.repo.getTask(id)
-      if (!task) throw AppError.notFound("Discovery task not found")
+      if (!task) throw AppError.notFound(DISCOVERY_TASK_NOT_FOUND)
       const note = await deps.repo.addNote(id, input)
       return toNoteDTO(note, ref)
     },
 
     async flag(id: string, input: { reason: string | null; actorId: string }): Promise<void> {
       const ok = await deps.repo.flagTask(id, input)
-      if (!ok) throw AppError.notFound("Discovery task not found")
+      if (!ok) throw AppError.notFound(DISCOVERY_TASK_NOT_FOUND)
     },
 
     async saveDraft(
@@ -339,7 +354,7 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
       },
     ): Promise<void> {
       const ok = await deps.repo.saveDraft(id, input)
-      if (!ok) throw AppError.notFound("Discovery task not found")
+      if (!ok) throw AppError.notFound(DISCOVERY_TASK_NOT_FOUND)
     },
   }
 }

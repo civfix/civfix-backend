@@ -16,7 +16,7 @@ export const CF_WEBHOOK_TIMESTAMP_HEADER = "x-cf-timestamp"
 
 export const WEBHOOK_MAX_CLOCK_SKEW_SEC = 5 * 60
 
-export const ACCEPT_LEGACY_UNTIMESTAMPED_SIGNATURE = true
+const ACCEPT_LEGACY_UNTIMESTAMPED_SIGNATURE = true
 
 const LEGACY_WARN_INTERVAL_SEC = 300
 let lastLegacyWarnAtSec = 0
@@ -28,6 +28,9 @@ let rejectsSinceWarn = 0
 export const INBOUND_WEBHOOK_RATE_LIMIT = perHost({ max: 60, timeWindow: "1 minute" })
 
 const INBOUND_WEBHOOK_BODY_LIMIT = 4096
+
+const SIGNATURE_HMAC_ALGORITHM = "sha256"
+const INVALID_SIGNATURE_MESSAGE = "Invalid inbound mail webhook signature."
 
 export type InboundMailWebhookOverrides = InboundProcessorDeps
 
@@ -110,7 +113,7 @@ export function assertSignature(
   const header = request.headers[CF_WEBHOOK_SIGNATURE_HEADER]
   const presented = Array.isArray(header) ? header[0] : header
   if (!presented) {
-    throw rejected(request, nowSec, "no-signature", "Invalid inbound mail webhook signature.")
+    throw rejected(request, nowSec, "no-signature", INVALID_SIGNATURE_MESSAGE)
   }
 
   const tsHeader = request.headers[CF_WEBHOOK_TIMESTAMP_HEADER]
@@ -121,12 +124,12 @@ export function assertSignature(
     if (!Number.isFinite(ts) || Math.abs(nowSec - ts) > WEBHOOK_MAX_CLOCK_SKEW_SEC) {
       throw rejected(request, nowSec, "expired", "Inbound mail webhook signature expired.")
     }
-    const expected = createHmac("sha256", expectedSecret)
+    const expected = createHmac(SIGNATURE_HMAC_ALGORITHM, expectedSecret)
       .update(`${rawTs}.`)
       .update(rawBuf)
       .digest("hex")
     if (!constantTimeStringEqual(presented, expected)) {
-      throw rejected(request, nowSec, "mismatch", "Invalid inbound mail webhook signature.")
+      throw rejected(request, nowSec, "mismatch", INVALID_SIGNATURE_MESSAGE)
     }
     return
   }
@@ -139,14 +142,15 @@ export function assertSignature(
       "Inbound mail webhook signature is missing its timestamp.",
     )
   }
-  const nowSecForWarn = nowSec
-  if (nowSecForWarn - lastLegacyWarnAtSec >= LEGACY_WARN_INTERVAL_SEC) {
-    lastLegacyWarnAtSec = nowSecForWarn
+  if (nowSec - lastLegacyWarnAtSec >= LEGACY_WARN_INTERVAL_SEC) {
+    lastLegacyWarnAtSec = nowSec
     request.log.warn("inbound-mail webhook: legacy untimestamped signature accepted (replayable)")
   }
-  const legacyExpected = createHmac("sha256", expectedSecret).update(rawBuf).digest("hex")
+  const legacyExpected = createHmac(SIGNATURE_HMAC_ALGORITHM, expectedSecret)
+    .update(rawBuf)
+    .digest("hex")
   if (!constantTimeStringEqual(presented, legacyExpected)) {
-    throw rejected(request, nowSec, "mismatch", "Invalid inbound mail webhook signature.")
+    throw rejected(request, nowSec, "mismatch", INVALID_SIGNATURE_MESSAGE)
   }
 }
 

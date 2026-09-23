@@ -23,13 +23,15 @@ export interface OutreachRepository {
   claimOutreachWindow?(geoid: string, window: { at: Date; windowStart: Date }): Promise<boolean>
 }
 
-export const OUTREACH_SWEEP_BATCH_SIZE = 200
+const OUTREACH_SWEEP_BATCH_SIZE = 200
+
+const DAY_MS = 24 * 60 * 60 * 1000
 
 export const OUTREACH_CATEGORIES: readonly ReportCategory[] = ADMIN_CATEGORIES
 
 export function isThrottled(lastOutreachAt: Date | null, now: Date, throttleDays: number): boolean {
   if (lastOutreachAt === null) return false
-  const windowMs = throttleDays * 24 * 60 * 60 * 1000
+  const windowMs = throttleDays * DAY_MS
   return now.getTime() - lastOutreachAt.getTime() < windowMs
 }
 
@@ -124,7 +126,7 @@ export function makeOutreachService(deps: OutreachServiceDeps): OutreachService 
     const at = now()
     const claim = deps.outreachRepo.claimOutreachWindow
     if (claim) {
-      const windowStart = new Date(at.getTime() - deps.throttleDays * 24 * 60 * 60 * 1000)
+      const windowStart = new Date(at.getTime() - deps.throttleDays * DAY_MS)
       const won = await claim(geoid, { at, windowStart })
       if (!won) {
         return { geoid, sent: false, skipped: "throttled", reportCount: 0 }

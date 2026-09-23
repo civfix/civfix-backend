@@ -26,6 +26,8 @@ import {
 /** Defends against a crafted mail with thousands of parts. */
 const MAX_INBOX_ATTACHMENTS = 50
 
+const INBOUND_EMAIL_NOT_FOUND = "Inbound email not found."
+
 /** Test-only: an in-memory repo and a fake Storage so the HTTP flow runs offline with no DB and no R2. */
 export interface AdminInboxRouteOverrides {
   repo: InboundRepository
@@ -62,7 +64,7 @@ export async function registerAdminInboxRoutes(
   route(app, "getInboxMessage", async (request, reply) => {
     const { id } = idParam(request)
     const dto = await repo().get(id)
-    if (dto === null) throw AppError.notFound("Inbound email not found.")
+    if (dto === null) throw AppError.notFound(INBOUND_EMAIL_NOT_FOUND)
     await auditRead(request, container, requireOperator(request), {
       action: "inbox.message_viewed",
       target: `inbound_email:${id}`,
@@ -92,7 +94,7 @@ export async function registerAdminInboxRoutes(
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SetInboxStatusRequestSchema, request)
     const ok = await repo().setStatus(id, body.status, operatorId)
-    if (!ok) throw AppError.notFound("Inbound email not found.")
+    if (!ok) throw AppError.notFound(INBOUND_EMAIL_NOT_FOUND)
     sendOk(reply)
   })
 }

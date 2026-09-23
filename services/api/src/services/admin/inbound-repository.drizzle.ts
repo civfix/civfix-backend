@@ -41,8 +41,6 @@ export interface InboundRepository {
   clearBounceFailures(objectKey: string): Promise<void>
 }
 
-export { toPreview }
-
 export function localPartOf(recipient: string | null): string {
   if (!recipient) return ""
   const at = recipient.indexOf("@")
