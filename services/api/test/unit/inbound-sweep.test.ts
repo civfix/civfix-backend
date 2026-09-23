@@ -91,7 +91,7 @@ describe("runInboundSweep: side-effect re-drive", () => {
         "From: clerk@lacity.gov",
         `To: reply+${TOKEN}@civfix.org`,
         "Message-ID: <reply-redrive@lacity.gov>",
-        "Authentication-Results: mx.civfix.org; dmarc=pass header.from=lacity.gov",
+        "Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=lacity.gov",
         "",
         body,
       ].join("\n"),

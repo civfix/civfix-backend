@@ -60,7 +60,7 @@ function rfc822(opts: {
   if (opts.messageId !== undefined) lines.push(`Message-ID: ${opts.messageId}`)
   if (opts.authenticated !== false) {
     const domain = opts.from.slice(opts.from.lastIndexOf("@") + 1)
-    lines.push(`Authentication-Results: mx.civfix.org; dmarc=pass header.from=${domain}`)
+    lines.push(`Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=${domain}`)
   }
   lines.push("", opts.body ?? "")
   return Buffer.from(lines.join("\n"), "utf8")

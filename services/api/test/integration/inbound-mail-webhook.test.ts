@@ -56,7 +56,7 @@ function rfc822(opts: {
 }
 
 /** A DMARC-aligned pass, as Cloudflare Email Routing's MTA stamps it. */
-const DMARC_PASS = "civfix.org; spf=pass; dkim=pass header.d=lacity.gov; dmarc=pass"
+const DMARC_PASS = "mx.cloudflare.net; spf=pass; dkim=pass header.d=lacity.gov; dmarc=pass header.from=lacity.gov"
 
 describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
   let h: PgHarness
@@ -185,7 +185,7 @@ describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
         to: "reply+0c0c0c0c0c0c0c0c0c0c0c0c@civfix.org",
         subject: "Re: Graffiti",
         body: "nope",
-        auth: "civfix.org; spf=fail; dkim=fail; dmarc=fail",
+        auth: "mx.cloudflare.net; spf=fail; dkim=fail; dmarc=fail header.from=lacity.gov",
       }),
       key,
     )

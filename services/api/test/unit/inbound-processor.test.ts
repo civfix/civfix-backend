@@ -43,7 +43,7 @@ function rfc822(opts: {
   if (opts.inReplyTo !== undefined) lines.push(`In-Reply-To: ${opts.inReplyTo}`)
   const headers = opts.headers ?? {}
   if (opts.authenticated !== false && headers["Authentication-Results"] === undefined) {
-    lines.push(`Authentication-Results: mx.civfix.org; dmarc=pass header.from=${domainOf(opts.from)}`)
+    lines.push(`Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=${domainOf(opts.from)}`)
   }
   for (const [k, v] of Object.entries(headers)) lines.push(`${k}: ${v}`)
   lines.push("", opts.body ?? "")
@@ -934,7 +934,7 @@ describe("processInboundObject: message authentication gate (M7)", () => {
         from: "clerk@lacity.gov",
         to: `reply+${TOKEN}@civfix.org`,
         body: "spoofed",
-        headers: { "Authentication-Results": "mx.civfix.org; spf=pass; dmarc=fail" },
+        headers: { "Authentication-Results": "mx.cloudflare.net; spf=pass; dmarc=fail" },
       }),
     )
 

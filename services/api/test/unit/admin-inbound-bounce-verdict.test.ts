@@ -107,7 +107,7 @@ describe("DSN/bounce: the stored auth verdict is the REAL one, not a default 'pa
         from: "mailer-daemon@evil.example",
         messageId: "<dmarc-fail@evil.example>",
         failedRecipient: "publicworks@city.gov",
-        authResults: "mx.civfix.org; spf=pass; dmarc=fail header.from=evil.example",
+        authResults: "mx.cloudflare.net; spf=pass; dmarc=fail header.from=evil.example",
       }),
     )
     expect(verdict).toBe("fail")
@@ -122,7 +122,7 @@ describe("DSN/bounce: the stored auth verdict is the REAL one, not a default 'pa
         from: "mailer-daemon@lacity.gov",
         messageId: "<dmarc-pass@lacity.gov>",
         failedRecipient: "clerk@lacity.gov",
-        authResults: "mx.civfix.org; dmarc=pass header.from=lacity.gov",
+        authResults: "mx.cloudflare.net; dmarc=pass header.from=lacity.gov",
       }),
     )
     expect(verdict).toBe("pass")
@@ -233,7 +233,7 @@ describe("DSN/bounce: only the receiving domain or our own provider can report a
         messageId: "<spoof-dmarc-fail@lacity.gov>",
         failedRecipient: failed,
         originalMessageId: "<out-42@civfix.org>",
-        authResults: "mx.civfix.org; dmarc=fail header.from=lacity.gov",
+        authResults: "mx.cloudflare.net; dmarc=fail header.from=lacity.gov",
       }),
     )
 
