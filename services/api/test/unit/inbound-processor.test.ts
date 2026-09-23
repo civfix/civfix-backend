@@ -165,6 +165,16 @@ describe("processInboundObject: routing", () => {
     expect(c.mailRepo.threads.size).toBe(0)
     expect(c.storage.get(key)).toBeNull()
   })
+
+  it("stores an HTML-only catch-all message's body as readable text for the Inbox", async () => {
+    const c = ctx(new CfInboundMail())
+    const key = `${INBOUND_PENDING_PREFIX}html-inbox.eml`
+    const headers = { "Content-Type": "text/html; charset=UTF-8" }
+    const html = "<p>Hello</p><p>there</p>"
+    await put(c, key, rfc822({ from: "r@example.com", to: "support@civfix.org", body: html, headers }))
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("inbox")
+    expect(c.inboundRepo.rows[0]?.bodyText).toBe("Hello\n\nthere")
+  })
 })
 
 describe("processInboundObject: idempotency", () => {
@@ -385,6 +395,21 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     expect(c.chatEvents).toHaveLength(1)
     expect(c.chatEvents[0]?.body).toBe("Ticket 4821 is open.")
     expect(c.chatEvents[0]?.body).not.toContain("civfix reference ABC123")
+  })
+
+  it("cuts the chat body at a reply address on the configured MAIL_REPLY_DOMAIN", async () => {
+    const reportId = "report-domain"
+    const c = ctx()
+    Object.assign(c.container.env, { MAIL_REPLY_DOMAIN: "civfix.dev" })
+    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const key = `${INBOUND_PENDING_PREFIX}reply-domain.eml`
+    const body = `Ticket 4821 is open.\nForwarded by report-${TOKEN}@civfix.dev`
+    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body }))
+
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    expect(c.chatEvents.map((e) => e.body)).toEqual(["Ticket 4821 is open."])
   })
 
   it("H6: an HTML-only city reply lands on the thread as TEXT and reaches the chat as text", async () => {
@@ -1092,6 +1117,7 @@ describe("processInboundObject: message authentication gate (M7)", () => {
 
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("inbox")
     expect(c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")).toHaveLength(0)
+    expect(c.inboundRepo.rows[0]?.fromAddr).toBe("x@attacker.example, clerk@lacity.gov")
   })
 
   it("a sender-supplied X-Civfix-Auth-Verdict header cannot forge the stored verdict", async () => {

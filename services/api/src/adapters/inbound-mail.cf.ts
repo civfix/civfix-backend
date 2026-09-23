@@ -16,7 +16,7 @@ export interface CfInboundMailConfig {
   replyDomain?: string
 }
 
-const DEFAULT_REPLY_DOMAIN = "civfix.org"
+export const DEFAULT_REPLY_DOMAIN = "civfix.org"
 
 const REPLY_ADDRESS_RE = /^(?:reply|report|event)[-+]([^@\s]+)@([^@\s]+)$/
 
@@ -61,20 +61,23 @@ export class CfInboundMail implements InboundMail {
     }
     const { simpleParser } = await import("mailparser")
     const parsed = await simpleParser(Buffer.from(raw), {
-      maxHtmlLengthToParse: 2 * 1024 * 1024,
       skipImageLinks: true,
+      skipHtmlToText: true,
     })
 
     const fromValue = singleFromMailbox(parsed.headerLines, parsed.from)
+    const headers = flattenHeaders(parsed.headers)
+    const fromLines = parsed.headerLines.filter((line) => line.key === "from")
+    if (fromLines.length > 1) headers["from"] = fromLines.map(headerLineValue).join(", ")
     return {
       from: fromValue ? toAddress(fromValue) : null,
       to: toAddresses(parsed.to),
       subject: parsed.subject ?? null,
-      text: parsed.text ?? null,
+      text: parsed.text !== undefined && parsed.text.trim() !== "" ? parsed.text : null,
       html: typeof parsed.html === "string" ? parsed.html : null,
       messageId: parsed.messageId ?? null,
       inReplyTo: parsed.inReplyTo ?? null,
-      headers: flattenHeaders(parsed.headers),
+      headers,
       attachments: (parsed.attachments ?? []).map(toAttachment),
     }
   }
@@ -239,6 +242,10 @@ function singleFromMailbox(
   if (headerLines.filter((line) => line.key === "from").length !== 1) return null
   const mailboxes = (from?.value ?? []).flatMap((entry) => entry.group ?? [entry])
   return mailboxes.length === 1 ? (mailboxes[0] ?? null) : null
+}
+
+function headerLineValue(header: HeaderLines[number]): string {
+  return header.line.slice(header.line.indexOf(":") + 1).replace(/\s+/g, " ").trim()
 }
 
 function toAddress(value: EmailAddress): ParsedMailAddress {
