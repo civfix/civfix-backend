@@ -111,7 +111,7 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "certificate.seal.line": "확인된 기록",
   "certificate.issuer.line": "civfix 발급 · civfix.org",
   "certificate.issuer.generated": "생성 {{timestamp}}",
-  "certificate.verify.prompt": "civfix.org/service-record에서 이 기록을 확인하세요",
+  "certificate.verify.prompt": "{{url}}에서 이 기록을 확인하세요",
   "certificate.verify.fingerprint": "문서 지문",
   "certificate.footer.page": "{{total}}페이지 중 {{page}}페이지",
   "certificate.footer.timezone": "날짜는 태평양 시간(America/Los_Angeles) 기준이에요.",

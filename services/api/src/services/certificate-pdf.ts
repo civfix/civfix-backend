@@ -465,7 +465,7 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
     drawQr(verifyUrl, 474, blockTop, 84)
     const textX = 306
     const textW = 156
-    const prompt = t("certificate.verify.prompt")
+    const prompt = t("certificate.verify.prompt", { url: verifyLabel })
     font(fontFor(prompt, "regular"), 8).fillColor(COLOR.ink2)
     doc.text(prompt, textX, blockTop + 4, {
       width: textW,

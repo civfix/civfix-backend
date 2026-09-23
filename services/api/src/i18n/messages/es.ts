@@ -111,7 +111,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   "certificate.seal.line": "Registro verificado",
   "certificate.issuer.line": "Emitido por civfix · civfix.org",
   "certificate.issuer.generated": "Generado {{timestamp}}",
-  "certificate.verify.prompt": "Verifica este registro en civfix.org/service-record",
+  "certificate.verify.prompt": "Verifica este registro en {{url}}",
   "certificate.verify.fingerprint": "Huella del documento",
   "certificate.footer.page": "Página {{page}} de {{total}}",
   "certificate.footer.timezone":

@@ -112,7 +112,7 @@ export const de: Partial<Record<MessageKey, string>> = {
   "certificate.seal.line": "Verifizierter Nachweis",
   "certificate.issuer.line": "Ausgestellt von civfix · civfix.org",
   "certificate.issuer.generated": "Erstellt {{timestamp}}",
-  "certificate.verify.prompt": "Diesen Nachweis auf civfix.org/service-record prüfen",
+  "certificate.verify.prompt": "Diesen Nachweis auf {{url}} prüfen",
   "certificate.verify.fingerprint": "Dokument-Fingerabdruck",
   "certificate.footer.page": "Seite {{page}} von {{total}}",
   "certificate.footer.timezone": "Datumsangaben in Pazifikzeit (America/Los_Angeles).",

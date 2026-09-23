@@ -85,4 +85,35 @@ describe("certificate verify link follows the deployment's web origin", () => {
     expect(written).toContain("civfix.dev/service-record")
     expect(written).not.toContain("civfix.org/service-record")
   })
+
+  it("names the staging verify page in the prompt beside the QR", async () => {
+    const written = textsWritten()
+    await issueWith("https://civfix.dev/service-record")
+
+    expect(written).toContain("Verify this record at civfix.dev/service-record")
+    expect(written).not.toContain("Verify this record at civfix.org/service-record")
+  })
+
+  it("keeps the production prompt word for word when no base URL is wired", async () => {
+    const written = textsWritten()
+    await issueWith(undefined)
+
+    expect(written).toContain("Verify this record at civfix.org/service-record")
+  })
 })
+
+async function issueWith(verifyBaseUrl: string | undefined): Promise<void> {
+  const certs = new InMemoryCertificateRepository()
+  certs.setHolder(USER, { displayName: "Jane Doe", handle: "jane" })
+  const service = makeCertificateService({
+    repo: certs,
+    hours: {
+      entriesForCertificate: () =>
+        Promise.resolve({ items: [ENTRY], totalHours: 2, entryCount: 1 }),
+    },
+    storage: new FakeStorage(),
+    ...(verifyBaseUrl === undefined ? {} : { verifyBaseUrl }),
+    mintCode: () => "A1B2C3D4E5F6",
+  })
+  await service.issue(USER, "en")
+}

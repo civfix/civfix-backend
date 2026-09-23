@@ -155,7 +155,9 @@ export const en = {
   "certificate.seal.line": "Verified record",
   "certificate.issuer.line": "Issued by civfix · civfix.org",
   "certificate.issuer.generated": "Generated {{timestamp}}",
-  "certificate.verify.prompt": "Verify this record at civfix.org/service-record",
+  // {{url}} = the deployment's verify page without its scheme, so a staging PDF never sends a reader to
+  // production to check it.
+  "certificate.verify.prompt": "Verify this record at {{url}}",
   "certificate.verify.fingerprint": "Document fingerprint",
   "certificate.footer.page": "Page {{page}} of {{total}}",
   "certificate.footer.timezone": "Dates shown in Pacific Time (America/Los_Angeles).",
