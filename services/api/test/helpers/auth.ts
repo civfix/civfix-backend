@@ -188,6 +188,13 @@ export async function makeAuthHarness(opts: MakeAuthHarnessOptions = {}): Promis
   const now = (): number => nowMs.value
 
   const stores = makeInMemoryStores()
+  const notificationRepo = opts.server?.notificationOverrides?.repo
+  if (notificationRepo) {
+    stores.users.cascadeErasureTo(async (userId) => {
+      await notificationRepo.deletePushTokensForUser(userId)
+      await notificationRepo.deleteAllNotificationsForUser(userId)
+    })
+  }
   const cache = new InMemoryCacheClient(now)
   const mailer = new FakeMailer()
   const verifier = new StubJwksVerifier()

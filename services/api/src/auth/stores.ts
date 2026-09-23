@@ -189,10 +189,13 @@ export interface UpdateSettingsInput {
 export const PRIMARY_ORGANIZATION_NOT_A_MEMBER =
   "Pick an organization you belong to, or clear the selection."
 
+export type ErasureCascade = (userId: string) => Promise<unknown>
+
 export class InMemoryUserStore implements UserStore {
   private readonly byId = new Map<string, UserRecord>()
   private readonly statuses = new Map<string, AccountStatus>()
   private readonly memberships = new Map<string, Set<string>>()
+  private readonly erasureCascades: ErasureCascade[] = []
   private readonly now: () => Date
 
   constructor(opts: { now?: () => Date } = {}) {
@@ -339,9 +342,16 @@ export class InMemoryUserStore implements UserStore {
     this.memberships.set(userId, set)
   }
 
-  softDeleteAndAnonymize(id: string): Promise<UserRecord> {
+  // The Postgres erasure transaction also deletes the user's sessions, push tokens and notifications.
+  // Here those rows live in other in-memory stores, so each one registers how to drop them.
+  cascadeErasureTo(cascade: ErasureCascade): void {
+    this.erasureCascades.push(cascade)
+  }
+
+  async softDeleteAndAnonymize(id: string): Promise<UserRecord> {
     const row = this.byId.get(id)
     if (!row) throw new Error("InMemoryUserStore.softDeleteAndAnonymize: user not found")
+    for (const cascade of this.erasureCascades) await cascade(id)
     const next: UserRecord = {
       ...row,
       deletedAt: row.deletedAt ?? new Date(),
@@ -354,7 +364,7 @@ export class InMemoryUserStore implements UserStore {
       primaryOrganizationId: null,
     }
     this.byId.set(id, next)
-    return Promise.resolve({ ...next })
+    return { ...next }
   }
 
   seed(_email: string | null, row: UserRecord): void {
@@ -495,9 +505,12 @@ export function makeInMemoryStores(): AuthStores & {
   oauth: InMemoryOAuthIdentityStore
   otps: InMemoryOtpStore
 } {
+  const users = new InMemoryUserStore()
+  const sessions = new InMemorySessionStore()
+  users.cascadeErasureTo((userId) => sessions.deleteAllForUser(userId))
   return {
-    users: new InMemoryUserStore(),
-    sessions: new InMemorySessionStore(),
+    users,
+    sessions,
     oauth: new InMemoryOAuthIdentityStore(),
     otps: new InMemoryOtpStore(),
   }

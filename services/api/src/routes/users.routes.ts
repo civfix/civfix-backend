@@ -6,6 +6,7 @@ import {
   PaginationQuerySchema,
   IdSchema,
   AppError,
+  ErrorCode,
   type SearchUsersResponse,
   type BlockUserResponse,
   type ListBlocksResponse,
@@ -22,6 +23,7 @@ import { clearCsrfCookie } from "../auth/csrf.js"
 import { clearSessionCookie } from "../auth/transport.js"
 import { searchByHandlePrefix, searchMentionable } from "../services/social-repository.drizzle.js"
 import { toUserDTO } from "../auth/auth-services.js"
+import { exposeMessage } from "../errors/exposed-message.js"
 import { writeAudit } from "../services/admin/audit.js"
 import { DATA_EXPORT_JOB, dataExportSupportEmail } from "../services/data-export-jobs.js"
 import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
@@ -51,6 +53,9 @@ const USER_SEARCH_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
 export const BLOCK_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
 export const UNBLOCKABLE_MESSAGE = "User not found"
+
+export const ACCOUNT_DELETION_UNAVAILABLE_MESSAGE =
+  "We couldn't delete your account right now. Nothing was changed. Please try again in a few minutes."
 
 export async function registerUsersRoutes(
   app: FastifyInstance,
@@ -201,10 +206,32 @@ export async function registerUsersRoutes(
         }
       }
 
-      // The erasure transaction also deletes the durable sessions, push tokens and notifications. The
-      // steps below run after it commits: the ban marker and epoch bump retire cached session projections,
-      // and a failure is logged rather than failing a deletion that already happened.
-      await store.softDeleteAndAnonymize(userId)
+      // A cached session projection is checked against the ban marker and the epoch, never the sessions
+      // table, so deleting the rows alone would leave every cached bearer working, and sliding forward,
+      // up to the absolute session cap. The marker goes up before anything is erased: if it cannot be
+      // written the deletion is refused, and if the erasure then fails the marker comes down again so the
+      // account keeps working.
+      try {
+        await sessions.markBanned(userId)
+      } catch (err) {
+        throw exposeMessage(
+          new AppError(ErrorCode.INTERNAL, ACCOUNT_DELETION_UNAVAILABLE_MESSAGE, {
+            httpStatus: 503,
+            cause: err,
+          }),
+        )
+      }
+      try {
+        await store.softDeleteAndAnonymize(userId)
+      } catch (err) {
+        await sessions.clearBan(userId).catch((clearErr: unknown) => {
+          request.log.error(
+            { err: clearErr, userId },
+            "account deletion: erasure failed and the pre-set ban marker could not be cleared; the live account stays locked out until the marker expires or an operator restores its status",
+          )
+        })
+        throw err
+      }
 
       clearSessionCookie(reply)
       clearCsrfCookie(reply)
@@ -226,7 +253,7 @@ export async function registerUsersRoutes(
         if (outcome.status === "rejected") {
           request.log.error(
             { err: outcome.reason, userId, step: cleanups[i]![0] },
-            "account deletion: post-revocation cleanup step failed (the account IS deleted and every session revoked)",
+            "account deletion: post-commit cleanup step failed (the account IS deleted, its session rows went with the erasure and the ban marker set before it still rejects cached sessions)",
           )
         }
       })
