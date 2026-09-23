@@ -102,8 +102,8 @@ response can be answered truthfully. It is the source of record for the
 
 An account closure must not cancel events other people are running, so
 `softDeleteAndAnonymize` walks a ladder before it cancels anything
-(`transferHostedEvents` / `releaseOrganizations` in `pg-stores.ts`, all inside the
-one erasure transaction):
+(`transferHostedEvents` / `releaseOrganizations` in `erasure-repository.drizzle.ts`,
+called from `pg-stores.ts`, all inside the one erasure transaction):
 
 1. **The owning organization's owner** takes over any `upcoming`/`active` event
    whose `organization_id` points at a live organization with a live owner. A
@@ -149,7 +149,7 @@ Two rungs of that scrub exist for a reason:
 - **A `cohost`, `coordinator` or `staff` row on someone else's event is stepped
   down to `member`.** The organizer rung already demotes the departing organizer;
   without this one a tombstone stays on the team roster as a "Deleted User" cohost and
-  keeps receiving the realtime host-team signals (`hostTeamUserIds`). Each
+  keeps receiving the realtime host-team signals (`HostTeamRepository.listTeamUserIds`). Each
   step-down writes an `event.team_role_changed` audit row with a **null actor**:
   nobody performed it; the erasure did.
 
@@ -249,8 +249,8 @@ Verified call sites (all public projections):
 | Report **discussion** comments | `services/api/src/services/discussion-service.ts` (`toAuthorDTO`) | Renders "Deleted User", no handle, `deleted: true`. |
 | Cleanup group **chat** | `services/api/src/services/chat-repository.drizzle.ts` (`toMessageDTO`) | Renders "Deleted User", no handle/avatar, bio nulled, `deleted: true`. |
 | **Direct messages** | `services/api/src/services/dm-repository.drizzle.ts` | Uses `publicAuthorIdentity` ("Deleted User"). The surviving party KEEPS the thread in their inbox (the thread list no longer filters the peer on `deleted_at IS NULL`), with the peer rendered as "Deleted User", no handle/avatar/bio, `deleted: true`. |
-| **Profiles / people directory / follow lists** | `services/api/src/services/social-repository.drizzle.ts` | Soft-deleted users are **excluded** (`deleted_at IS NULL`): the profile read returns *not found*, and they never appear in the directory, follower/following lists, search, or @-mention pickers. |
-| @-mention resolution | `services/api/src/services/social-repository.drizzle.ts` | Excludes soft-deleted users. |
+| **Profiles / people directory / follow lists** | `services/api/src/services/social-repository.drizzle.ts` (search: `user-search-repository.drizzle.ts`) | Soft-deleted users are **excluded** (`deleted_at IS NULL`): the profile read returns *not found*, and they never appear in the directory, follower/following lists, search, or @-mention pickers. |
+| @-mention resolution | `services/api/src/services/mention-targets-repository.drizzle.ts` | Excludes soft-deleted users. |
 | Cleanup report galleries | `services/api/src/services/cleanup-repository.drizzle.ts` | Joins exclude `deleted_at IS NOT NULL` rows. |
 
 **Linked-report reconcile is visibility-scoped.** Because a host's

@@ -244,7 +244,7 @@ The verdict is: a hard `failed` on the newest attempt → failed; a `deadline` f
 in flight; any other `failed` → failed; no event and younger than the stale window → in flight; no event
 and older than the stale window → crashed claim.
 
-`sendInFlightExpr` (`services/api/src/services/admin/outbound-send-sql.ts`) is the in-flight half of that
+`sendInFlightExpr` (`services/api/src/services/admin/mail-repository.drizzle.ts`) is the in-flight half of that
 verdict, read from the same newest attempt: no `sent` event, and either a `deadline` failure inside the
 window or no `failed` event at all while the outbound row is younger than the stale window. The outbound
 row is inserted before transmission starts, so an attempt with no outcome yet is a send still on the

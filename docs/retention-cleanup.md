@@ -36,6 +36,8 @@ so a backlog drains over several daily runs rather than one long-locking DELETE.
   (`runRetentionSweep`): pure deps, injectable clock/log/report, **never throws**
   (a per-table failure is counted + reported to GlitchTip; the other tables still
   run). Mirrors the orphan-sweep job shape exactly.
+- Statements: `services/api/src/services/retention-repository.drizzle.ts` (imported by the worker as
+  `@civfix/api/retention-repo`).
 - Registration: `services/media-worker/src/worker.ts`: `RETENTION_SWEEP_JOB`
   queue + worker + `jobs.schedule(RETENTION_SWEEP_JOB, RETENTION_SWEEP_CRON)`.
 - Schedule: `services/media-worker/src/config.ts`: `RETENTION_SWEEP_CRON`
@@ -336,9 +338,10 @@ retention rule and that is deliberate**:
 **Indexing is the real constraint.** Every predicate above must be reachable
 through `mail_events_thread_idx` (`thread_id`); the table has no `message_id`
 index, so a per-attempt subquery filtered only on `message_id` seq-scans it.
-`services/api/src/services/admin/outbound-send-sql.ts` is the single place those
-expressions are built, and every `mail_events` subquery there carries the thread
-filter, asserted offline by
+The send-state fragments (`sendInFlightExpr`, `sendFailedExpr`, `attemptEventExists`
+in `services/api/src/services/admin/mail-repository.drizzle.ts`) are the single place
+those expressions are built, and every `mail_events` subquery in them carries the
+thread filter, asserted offline by
 `services/api/test/unit/outbound-send-sql.test.ts`.
 
 **Pending decision (not taken here):** if outbound volume ever makes the table

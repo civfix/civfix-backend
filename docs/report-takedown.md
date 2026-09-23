@@ -23,7 +23,7 @@ auth + csrf, rate-limited). The handler:
 
 1. Files a `user_report` moderation item into the existing admin queue
    (`moderation_items`, the same queue operators already read).
-2. **Detects ownership server-side** (`reportOwnedBy`): when the `report`
+2. **Detects ownership server-side** (`isReportOwnedBy`): when the `report`
    subject's `reporter_user_id` equals the caller, the item is marked distinctly
    so an operator can fast-track an owner-consented removal:
    - `flag = "Owner takedown request"` (vs. `"User report"` for third-party reports),
@@ -42,7 +42,7 @@ spam the queue.
 
 ## Offline / no-DB behavior
 
-`reportOwnedBy` is DB-gated: with no `DATABASE_URL` (all-fakes boot) it returns
+The owner check is DB-gated: with no `DATABASE_URL` (all-fakes boot) the route returns
 `false`, so the route degrades to the ordinary user-report path (the request is
 still filed, just not flagged as an owner takedown). A query error is not caught:
 it propagates and the request fails with 500 (not filed), so a transient DB error
