@@ -80,15 +80,22 @@ export class CfInboundMail implements InboundMail {
   }
 
   extractThreadToken(mail: ParsedMail): string | null {
-    const replyDomain = (this.config.replyDomain ?? DEFAULT_REPLY_DOMAIN).toLowerCase()
-    for (const addr of mail.to) {
-      const match = addr.address.match(REPLY_ADDRESS_RE)
-      if (match && match[1] && match[2] && match[2].toLowerCase() === replyDomain) {
-        if (THREAD_TOKEN_RE.test(match[1])) return match[1]
-      }
+    const replyDomain = this.config.replyDomain ?? DEFAULT_REPLY_DOMAIN
+    const ccAddresses = (mail.headers["cc"] ?? "").match(REPLY_ADDRESS_SCAN_RE) ?? []
+    for (const address of [...mail.to.map((addr) => addr.address), ...ccAddresses]) {
+      const token = replyAddressToken(address, replyDomain)
+      if (token !== null) return token
     }
     return null
   }
+}
+
+const REPLY_ADDRESS_SCAN_RE = /(?<![^\s<,;:"])(?:reply|report|event)[-+][^@\s<>,;"]+@[^@\s<>,;"]+/gi
+
+export function replyAddressToken(address: string, replyDomain: string): string | null {
+  const match = address.toLowerCase().match(REPLY_ADDRESS_RE)
+  if (!match?.[1] || match[2] !== replyDomain.toLowerCase()) return null
+  return THREAD_TOKEN_RE.test(match[1]) ? match[1] : null
 }
 
 export type MailAuthVerdict = "pass" | "fail" | "unknown"

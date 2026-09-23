@@ -229,6 +229,21 @@ describe("CfInboundMail.extractThreadToken (M7)", () => {
     const m = mail({ to: [{ address: "reply-abcdefgh1234@civfix.org.attacker.example" }] })
     expect(adapter.extractThreadToken(m)).toBeNull()
   })
+
+  it("matches the reply address case-insensitively and returns the token lowercased", () => {
+    const m = mail({ to: [{ address: "REPORT-ABCDEFGH1234@CivFix.org" }] })
+    expect(adapter.extractThreadToken(m)).toBe("abcdefgh1234")
+  })
+
+  it("recovers a token from Cc when To carries none", () => {
+    const tokenFromCc = (cc: string) =>
+      adapter.extractThreadToken(mail({ to: [{ address: "clerk@lacity.gov" }], headers: { cc } }))
+    expect(tokenFromCc('"Some, Name" <report-abcdefgh1234@civfix.org>, other@x.com')).toBe(
+      "abcdefgh1234",
+    )
+    expect(tokenFromCc("xreport-abcdefgh1234@civfix.org")).toBeNull()
+    expect(tokenFromCc("report-abcdefgh1234@civfix.org.attacker.example")).toBeNull()
+  })
 })
 
 describe("sanitizeInboundHtml (M6)", () => {
