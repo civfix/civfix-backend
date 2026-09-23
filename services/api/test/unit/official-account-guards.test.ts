@@ -20,6 +20,11 @@ describe("display names that read as the official account", () => {
     "\u0421iv\u0192i\u0445",
     "\uff23\uff49\uff56\uff26\uff49\uff58",
     "C\u00edvF\u00efx",
+    "\u03f9ivFix",
+    "\u03f2ivfix",
+    "\u1d04\u026a\u1d20\ua730\u026ax",
+    "Ci\u028bFix",
+    "Civ\u0493ix",
   ])("reserves %s", (name) => {
     expect(impersonatesOfficialName(name)).toBe(true)
   })

@@ -24,13 +24,23 @@ const NAME_LOOKALIKES: Readonly<Record<string, string>> = {
   "\u00d7": "x",
   "\u03c7": "x",
   "\u0445": "x",
+  "\u1d04": "c",
+  "\u026a": "i",
+  "\u1d20": "v",
+  "\u028b": "v",
+  "\ua730": "f",
+  "\u0493": "f",
 }
 
 function nameKey(name: string): string {
   let key = ""
-  for (const ch of name.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase()) {
-    const mapped = NAME_LOOKALIKES[ch] ?? ch
-    if (/^[a-z0-9]$/.test(mapped)) key += mapped
+  for (const raw of name.toLowerCase()) {
+    const folded =
+      NAME_LOOKALIKES[raw] ?? raw.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase()
+    for (const ch of folded) {
+      const mapped = NAME_LOOKALIKES[ch] ?? ch
+      if (/^[a-z0-9]$/.test(mapped)) key += mapped
+    }
   }
   return key
 }
@@ -39,4 +49,8 @@ const OFFICIAL_NAME_KEY = nameKey(CIVFIX_OFFICIAL_DISPLAY_NAME)
 
 export function impersonatesOfficialName(name: string): boolean {
   return nameKey(name) === OFFICIAL_NAME_KEY
+}
+
+export function newAccountDisplayName(name: string, fallback: string): string {
+  return impersonatesOfficialName(name) ? fallback : name
 }

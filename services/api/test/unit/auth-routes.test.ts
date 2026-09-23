@@ -904,9 +904,36 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
     }
     expect((await put(resident.token, "resident_1", "Civic Fixer")).statusCode).toBe(200)
 
-    const existing = await signIn(h, "civfix@example.com")
+    await h.stores.users.create("legacy@example.com", { displayName: "civfix", role: "citizen" })
+    const existing = await signIn(h, "legacy@example.com")
     expect((await put(existing.token, "existing_1", "civfix")).statusCode).toBe(200)
     expect((await put(existing.token, "existing_1", "CivFix")).statusCode).toBe(422)
+  })
+
+  it("never creates an account whose display name reads as CivFix", async () => {
+    harness = await makeAuthHarness()
+    const h = harness
+    expect((await h.signIn("civfix@example.test")).user.displayName).toBe("citizen")
+
+    const oauth = async (provider: "apple" | "google", name: string | null, fullName?: string) => {
+      const nonce = await mintNonce(h)
+      const token = `${provider}-reserved-${fullName ?? name}`
+      const claims = { sub: token, email: null, emailVerified: false, name, picture: null }
+      h.verifier.register(token, claims, nonce)
+      const payload =
+        provider === "apple" ? { identityToken: token, fullName, nonce } : { idToken: token, nonce }
+      const res = await h.app.inject({
+        method: "POST",
+        url: `/v1/auth/${provider}`,
+        headers: { "x-client": "mobile" },
+        payload,
+      })
+      expect(res.statusCode).toBe(200)
+      return res.json().user.displayName as string
+    }
+    expect(await oauth("apple", null, "CivFix")).toBe("Apple user")
+    expect(await oauth("google", "Civ Fix")).toBe("Google user")
+    expect(await oauth("apple", null, "Civic Fixer")).toBe("Civic Fixer")
   })
 
   it("validates the handle format (bad handle -> 422)", async () => {
