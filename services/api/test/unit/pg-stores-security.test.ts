@@ -126,3 +126,23 @@ describe("account erasure revokes the user's pending organization invites", () =
     expect(revoke.params.slice(0, 2)).toEqual([USER_ID, USER_ID])
   })
 })
+
+describe("account erasure takes attendee locks in the order the event ban takes them", () => {
+  it("cancels the user's waitlist rows before it touches their registrations", async () => {
+    const { db, statements } = recordingDb(answerErasure())
+
+    await new PgUserStore(db).softDeleteAndAnonymize(USER_ID)
+
+    const waitlistAt = statements.findIndex((s) => /update cleanup_waitlist/i.test(s.sql))
+    const registrationAt = statements.findIndex((s) =>
+      /update cleanup_registrations\b/i.test(s.sql),
+    )
+    const seatsAt = statements.findIndex((s) => /update cleanup_registration_seats/i.test(s.sql))
+    const answersAt = statements.findIndex((s) => /update cleanup_answers/i.test(s.sql))
+    expect(waitlistAt).toBeGreaterThanOrEqual(0)
+    expect(registrationAt).toBeGreaterThan(waitlistAt)
+    expect(seatsAt).toBeGreaterThan(waitlistAt)
+    expect(answersAt).toBeGreaterThan(waitlistAt)
+    expect(statements[waitlistAt]!.sql).toMatch(/update cleanup_ticket_types/i)
+  })
+})

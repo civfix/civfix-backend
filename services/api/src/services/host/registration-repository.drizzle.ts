@@ -1722,6 +1722,14 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       now: Date
     }): Promise<TransferRegistrationOutcome> {
       return sql.begin(async (tx) => {
+        // The event row first, as applyBanIn takes it: a ban holds it while it moves ticket-type seats and
+        // then cancels registrations, so a transfer that locked its registration before the ticket types
+        // could wait on the ban from the opposite end. registerIn's FOR SHARE on the same row keeps the
+        // same order.
+        const event = await tx<{ id: string }[]>`
+          SELECT id FROM cleanups WHERE id = ${args.cleanupId} LIMIT 1 FOR NO KEY UPDATE
+        `
+        if (event[0] === undefined) return { kind: "not_found" as const }
         const locked = await tx<
           { id: string; ticket_type_id: string | null; party_size: number; status: string }[]
         >`

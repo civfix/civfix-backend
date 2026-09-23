@@ -279,8 +279,10 @@ export interface CreateOrganizationInviteArgs {
   now: Date
 }
 
-/** `already_invited` carries the open invite so the caller can answer with it (idempotent re-invite). */
-/** `forbidden`: the inviter no longer holds the power to invite once the organization is locked. */
+/**
+ * `already_invited` carries the open invite so the caller can answer with it (idempotent re-invite).
+ * `forbidden`: the inviter no longer holds the power to invite once the organization is locked.
+ */
 export type CreateOrganizationInviteOutcome =
   | { kind: "created"; invite: OrganizationInviteRecord }
   | { kind: "already_invited"; invite: OrganizationInviteRecord }
