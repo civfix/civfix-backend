@@ -45,6 +45,17 @@ describe("cityReplyChatBody: quoted history in every client's shape", () => {
     const attribution = `On Tue, Sep 22, 2026 at 8:47 PM civfix <${ADDR}> wrote:`
     expect(cityReplyChatBody(`${top}\n\n${attribution}\n${PACKET}`)).toBe(top)
   })
+
+  it.each([
+    ["On it.", `On Tue, Sep 22, 2026 at 8:47 PM civfix Reports <\n${ADDR}> wrote:`],
+    ["On it.", `On Tue, Sep 22, 2026 at 8:47 PM civfix Reports <${ADDR}> wrote:`],
+    ["On it.\nCrew will come tomorrow.", "On Tue, Sep 22, 2026 at 8:47 PM Clerk <clerk@testville.gov> wrote:"],
+    ["El camión pasará mañana.", `El mar, 22 sept 2026 a las 20:47, civfix Reports (<${ADDR}>) escribió:`],
+    ["Am Mittwoch kommt der Wagen.", `Am Di., 22. Sept. 2026 um 20:47 Uhr schrieb civfix Reports <${ADDR}>:`],
+    ["Bonjour,\nLe camion passera demain.", `Le mar. 22 sept. 2026 à 20:47, civfix Reports <${ADDR}> a écrit :`],
+  ])("keeps reply text that opens like an attribution right above one: %j", (text, attribution) => {
+    expect(cityReplyChatBody(`${text}\n${attribution}\n> x`)).toBe(text)
+  })
 })
 
 function htmlMail(html: string): Uint8Array {
@@ -80,5 +91,10 @@ describe("cityReplyChatBody: HTML-only replies go through htmlToText, not mailpa
       `<div>Tracked as <a href="https://testville.gov/t/4821">ticket 4821</a>.</div><blockquote type="cite"><div>A resident reported a Trash issue.</div></blockquote>`,
     )
     expect(out).toBe("Tracked as ticket 4821 (https://testville.gov/t/4821).")
+  })
+
+  it("pre-formatted: keeps the <pre> line breaks so an address-less attribution still cuts", async () => {
+    const pre = "Crew en route.\n\nOn Tue, Sep 22, 2026 at 8:47 PM civfix Reports wrote:\n> A resident reported a Trash issue.\n> Location: 100 Test St"
+    expect(await publishedFromHtml(`<pre>${pre}</pre>`)).toBe("Crew en route.")
   })
 })

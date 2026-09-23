@@ -43,6 +43,7 @@ export function htmlToText(html: string): string {
   const lines: string[] = []
   let line = ""
   let quoteDepth = 0
+  let preDepth = 0
   let href: string | null = null
   let anchorText = ""
   const breakLine = (): void => {
@@ -54,7 +55,12 @@ export function htmlToText(html: string): string {
   for (;;) {
     const lt = html.indexOf("<", i)
     const segment = decodeTextEntities(html.slice(i, lt === -1 ? html.length : lt))
-    line += segment
+    const [first = "", ...rest] = preDepth > 0 ? segment.split(/\r?\n/) : [segment]
+    line += first
+    for (const row of rest) {
+      breakLine()
+      line += row
+    }
     if (href !== null) anchorText += segment
     if (lt === -1) break
 
@@ -75,6 +81,7 @@ export function htmlToText(html: string): string {
     if (BLOCK_ELEMENTS.has(parsed.name)) {
       breakLine()
       if (parsed.name === "blockquote") quoteDepth = Math.max(0, quoteDepth + (closing ? -1 : 1))
+      if (parsed.name === "pre") preDepth = Math.max(0, preDepth + (closing ? -1 : 1))
       continue
     }
     if (parsed.name === "a") {

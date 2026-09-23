@@ -80,14 +80,15 @@ The stored body is the message's `text/plain` part. The adapter parses with mail
 `skipHtmlToText`, so an HTML-only reply is flattened by our own `htmlToText`
 (`services/api/src/services/admin/mail-preview.ts`) before it is stored: block elements break lines,
 `<blockquote>` lines get a `> ` prefix, images are dropped, and an `http(s)` link keeps its target in
-parentheses. The Inbox stores the same text for an HTML-only message.
+parentheses; `<pre>` keeps its own line breaks. The Inbox stores the same text for an HTML-only message.
 
 A line is a cut point when it is:
 
 - an attribution — `On … wrote:`, `El … escribió:`, `Am … schrieb …:`, `Le … a écrit :` or
   `2026년 … 작성:` — anchored at the end so prose like "On Tuesday our crew wrote: see below" is not
   mistaken for one. Up to three lines are joined when the joined text holds an `@`, because Gmail
-  wraps a long attribution;
+  wraps a long attribution. The join stops at a line that itself opens an attribution, so a reply line
+  starting with `On`, `El`, `Am` or `Le` right above one is kept;
 - an Outlook separator — `-----Original Message-----`, tolerant of the dash count;
 - an unquoted Outlook header block — `/^From:\s.+$/` followed within two lines by `Sent:`, `Date:` or
   `To:`;
