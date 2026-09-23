@@ -78,10 +78,11 @@ Expect an `inbound/pending/test-001@example.gov.eml` object and a signed POST to
 ## Deploy + enable Email Routing
 
 ```sh
-pnpm deploy            # wrangler deploy --env production (after `wrangler login` / CLOUDFLARE_API_TOKEN)
+pnpm run deploy          # wrangler deploy --env production
+pnpm run deploy:staging  # wrangler deploy --env staging (after `wrangler login` / CLOUDFLARE_API_TOKEN)
 ```
 
-CI does not deploy the Worker: a change under `src/` reaches Cloudflare only through `pnpm deploy`.
+CI does not deploy the Worker: a change under `src/` reaches Cloudflare only through `pnpm run deploy` (a bare `pnpm deploy` is pnpm's own workspace-deploy command and never runs this script).
 
 Then, in the Cloudflare dashboard (or API): enable **Email Routing** on `civfix.org` (auto-manages
 MX/TXT and **takes over inbound mail for the domain** — confirm no other inbound provider first), and
