@@ -18,6 +18,7 @@ import {
   findThreadByReferences,
   inboundEffectDeps,
   type InboundEffectDeps,
+  type InboundLogger,
   isJurisdictionSender,
   isSelfOriginated,
   parseMessageIdList,
@@ -29,7 +30,13 @@ import { readMailAuthVerdict, type MailAuthVerdict } from "../../adapters/inboun
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
 
-export { detectBounce, resolveMessageId, parseMessageIdList, type BounceDetection }
+export {
+  detectBounce,
+  resolveMessageId,
+  parseMessageIdList,
+  type BounceDetection,
+  type InboundLogger,
+}
 export { readMailAuthVerdict, sanitizeInboundHtml, type MailAuthVerdict }
 
 export const INBOUND_PENDING_PREFIX = "inbound/pending/"
@@ -67,11 +74,7 @@ export interface ProcessResult {
   id?: string
 }
 
-export interface InboundLogger {
-  warn(obj: unknown, msg?: string): void
-}
-
-const NOOP_LOGGER: InboundLogger = { warn: () => {} }
+const NOOP_LOGGER: InboundLogger = { warn: () => {}, error: () => {} }
 
 export interface InboundProcessorDeps {
   logger?: InboundLogger
@@ -103,6 +106,10 @@ export async function processInboundObject(
   }
 
   if (bytes.byteLength > INBOUND_OBJECT_MAX_BYTES) {
+    logger.warn(
+      { key, bytes: bytes.byteLength },
+      "inbound: object over the size cap; parked under inbound/failed/",
+    )
     await moveToFailed(storage, key, bytes)
     return { outcome: "failed", reason: "too-large" }
   }
@@ -110,7 +117,8 @@ export async function processInboundObject(
   let mail: ParsedMail
   try {
     mail = await withTimeout(inboundMail.parse(bytes), INBOUND_PARSE_TIMEOUT_MS)
-  } catch {
+  } catch (err) {
+    logger.warn({ key, err: errorText(err) }, "inbound: parse failed; parked under inbound/failed/")
     await moveToFailed(storage, key, bytes)
     return { outcome: "failed", reason: "parse-failed" }
   }
@@ -125,7 +133,9 @@ export async function processInboundObject(
       await handleBounce(container, mailRepo, bounce, {
         fromAddr: mail.from?.address ?? null,
         authVerdict: bounceVerdict,
-      }).catch(() => {})
+      }).catch((err: unknown) => {
+        logger.warn({ key, err: errorText(err) }, "inbound: bounce bookkeeping failed")
+      })
     }
     if (result.outcome === "inbox" || result.outcome === "replay") await storage.delete(key)
     return result
@@ -177,10 +187,10 @@ async function correlateThread(
 
   let resolvedThread: MailThreadRecord | null = null
   if (token !== null && token.length > 0) {
-    resolvedThread = await mailRepo.findThreadByToken(token).catch(() => null)
+    resolvedThread = await mailRepo.findThreadByToken(token)
   }
   if (resolvedThread !== null || authVerdict !== "pass") return resolvedThread
-  return findThreadByReferences(mailRepo, mail).catch(() => null)
+  return findThreadByReferences(mailRepo, mail)
 }
 
 async function routeThreaded(
@@ -370,12 +380,8 @@ async function moveToFailed(storage: Storage, key: string, bytes: Uint8Array): P
   const failedKey = key.startsWith(INBOUND_PENDING_PREFIX)
     ? INBOUND_FAILED_PREFIX + key.slice(INBOUND_PENDING_PREFIX.length)
     : INBOUND_FAILED_PREFIX + key
-  try {
-    await storage.put(failedKey, bytes, { contentType: "message/rfc822" })
-    await storage.delete(key)
-  } catch {
-    void 0
-  }
+  await storage.put(failedKey, bytes, { contentType: "message/rfc822" })
+  await storage.delete(key)
 }
 
 function sanitizeFilename(name: string): string {
