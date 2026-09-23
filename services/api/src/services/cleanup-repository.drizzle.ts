@@ -24,6 +24,7 @@ import { userUploader } from "./media-uploader.js"
 import { isUniqueViolationOn } from "./host/registration-sql.js"
 import { applyBanIn } from "./host/registration-repository.drizzle.js"
 import { deterministicUuid } from "./deterministic-uuid.js"
+import { firstUsableLegacyContactExpr, usableContactRowExpr } from "./admin/sql-fragments.js"
 import type {
   AttendeeView,
   CancelCleanupOutcome,
@@ -1478,8 +1479,8 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           j.name,
           (SELECT jc.email FROM jurisdiction_contacts jc
              WHERE jc.geoid = j.geoid AND jc.category IS NULL
-               AND jc.email IS NOT NULL AND jc.email <> '' LIMIT 1) AS default_email,
-          j.contact_emails[1] AS legacy_email
+               AND ${usableContactRowExpr(sql, "jc")} LIMIT 1) AS default_email,
+          ${firstUsableLegacyContactExpr(sql, "j")} AS legacy_email
         FROM jurisdictions j
         WHERE j.geoid = ${geoid}
         LIMIT 1
