@@ -48,6 +48,22 @@ describe("loadEnv: APNS_PRODUCTION", () => {
     expect(env.APNS_PRODUCTION).toBe(false)
   })
 
+  it.each([
+    ["t", true],
+    ["F", false],
+    ["y", true],
+    ["N", false],
+  ])("accepts the one-letter form %s", (raw, expected) => {
+    const env = loadEnv({ ...validProdEnv(), ...APNS_QUARTET, APNS_PRODUCTION: raw })
+    expect(env.APNS_PRODUCTION).toBe(expected)
+  })
+
+  it("rejects any other one-letter value and names every accepted form", () => {
+    expect(() => loadEnv({ ...validProdEnv(), ...APNS_QUARTET, APNS_PRODUCTION: "x" })).toThrow(
+      /APNS_PRODUCTION: must be one of true\/t\/yes\/y\/on\/1 or false\/f\/no\/n\/off\/0/,
+    )
+  })
+
   it("does not demand the flag when APNs is not configured", () => {
     expect(() => loadEnv(validProdEnv())).not.toThrow()
   })
@@ -67,6 +83,16 @@ describe("push config: APNs gateway default", () => {
       container.pushSender as unknown as { config: { apns?: { production: boolean } } }
     ).config
     expect(config.apns?.production).toBe(true)
+  })
+})
+
+describe("loadEnv: SHUTDOWN_DRAIN_MS", () => {
+  it("reads the leading digits of a value carrying a unit suffix instead of turning the drain off", () => {
+    expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "8000ms" }).SHUTDOWN_DRAIN_MS).toBe(8000)
+  })
+
+  it("still reads a value with no leading digits as no drain", () => {
+    expect(loadEnv({ ...validProdEnv(), SHUTDOWN_DRAIN_MS: "nope" }).SHUTDOWN_DRAIN_MS).toBe(0)
   })
 })
 

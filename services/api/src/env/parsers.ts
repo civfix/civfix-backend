@@ -14,8 +14,14 @@ export function parseBool(raw: string | undefined, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase())
 }
 
-const STRICT_TRUE = new Set(["1", "true", "yes", "on"])
-const STRICT_FALSE = new Set(["0", "false", "no", "off"])
+// The single-letter forms are accepted because deployed boxes already hold one-character values for
+// strict flags, and a boot failure over an unambiguous spelling would take the API down on deploy.
+const STRICT_TRUE_FORMS = ["true", "t", "yes", "y", "on", "1"]
+const STRICT_FALSE_FORMS = ["false", "f", "no", "n", "off", "0"]
+const STRICT_TRUE = new Set(STRICT_TRUE_FORMS)
+const STRICT_FALSE = new Set(STRICT_FALSE_FORMS)
+
+export const STRICT_BOOL_ACCEPTED_FORMS = `${STRICT_TRUE_FORMS.join("/")} or ${STRICT_FALSE_FORMS.join("/")}`
 
 export function parseStrictBool(raw: string): boolean | undefined {
   const value = raw.trim().toLowerCase()
@@ -70,9 +76,11 @@ export function parsePositiveIntOr(
 
 export const SHUTDOWN_DRAIN_MS_MAX = 10_000
 
+// Deliberately lenient (leading digits, as parseInt reads them) unlike every other integer: a boot
+// failure over shutdown timing is worse than draining for the digits the operator plainly meant.
 export function parseDrainMs(raw: string | undefined): number {
-  const n = parseIntOr(raw, 0)
-  if (n < 0) return 0
+  const n = Number.parseInt((raw ?? "").trim(), 10)
+  if (!Number.isFinite(n) || n < 0) return 0
   return Math.min(n, SHUTDOWN_DRAIN_MS_MAX)
 }
 

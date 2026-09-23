@@ -15,6 +15,7 @@ import {
   parseIntOr,
   parsePositiveIntOr,
   parseStrictBool,
+  STRICT_BOOL_ACCEPTED_FORMS,
   parseTrustProxy,
 } from "./env/parsers.js"
 
@@ -211,7 +212,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
       return undefined
     }
     const value = parseStrictBool(raw)
-    if (value === undefined) errors.push("APNS_PRODUCTION: must be true or false")
+    if (value === undefined) {
+      errors.push(`APNS_PRODUCTION: must be one of ${STRICT_BOOL_ACCEPTED_FORMS}`)
+    }
     return value
   }
 
