@@ -101,7 +101,29 @@ describe("readMailAuthVerdict (M7)", () => {
     for (const dmarc of ["dmarc=none header.from=lacity.gov", "dmarc=temperror", "dmarc=permerror"]) {
       expect(verdict(cf(dmarc, "spf=pass smtp.mailfrom=clerk@lacity.gov"))).toBe("pass")
     }
-    expect(verdict(cf("spf=pass smtp.mailfrom=lacity.gov"))).toBe("pass")
+    expect(verdict(cf("spf=pass smtp.mailfrom=clerk@lacity.gov"))).toBe("pass")
+    expect(verdict(cf("spf=pass smtp.mailfrom=clerk@lacity.gov", "arc=none smtp.remote-ip=192.0.2.1"))).toBe("pass")
+  })
+
+  it("counts SPF only for a lone address-shaped smtp.mailfrom followed by nothing but Cloudflare's arc result", () => {
+    expect(verdict(cf("spf=pass smtp.mailfrom=lacity.gov"))).toBe("fail")
+    expect(verdict(cf("spf=pass smtp.mailfrom=clerk@lacity.gov", "arc=none smtp.remote-ip=x@lacity.gov"))).toBe("fail")
+    expect(verdict(cf("spf=pass smtp.mailfrom=clerk@lacity.gov", "dkim=none"))).toBe("fail")
+  })
+
+  it("fails an echoed envelope sender that spills into another result or property", () => {
+    const echoed = [
+      "lacity.gov;@evil.example",
+      "x@lacity.gov;@evil.example",
+      "lacity.gov @evil.example",
+      "lacity.gov;x=y@evil.example",
+      "x@lacity.gov a.b=y@evil.example",
+      "x@lacity.gov;arc=none a.b=y@evil.example",
+      "x@lacity.gov;dkim=pass header.i=y@evil.example",
+    ]
+    for (const mailFrom of echoed) {
+      expect(verdict(stamp("relay.evil.example", mailFrom))).toBe("fail")
+    }
   })
 
   it("fails dmarc=none when neither DKIM nor SPF is aligned with the From domain", () => {
@@ -175,6 +197,7 @@ describe("readMailAuthVerdict (M7)", () => {
   it("fails a public-suffix From domain that the sender's own domain would suffix-match", () => {
     const noPolicy = "dmarc=none header.from=org policy.dmarc=none"
     expect(verdict(cf("dkim=pass header.d=evil.org", noPolicy), "x@org")).toBe("fail")
+    expect(verdict(cf("dkim=none", noPolicy, "spf=pass smtp.mailfrom=a@evil.org"), "x@org")).toBe("fail")
     expect(verdict(cf("dkim=pass header.d=evil.co.uk", "dmarc=none header.from=co.uk"), "x@co.uk")).toBe("fail")
   })
 })

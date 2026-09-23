@@ -25,8 +25,9 @@ authentication to `pass`, `fail` or `unknown`. The email Worker applies no filte
   that carries `smtp.helo` or `smtp.mailfrom` is `fail`: Cloudflare writes DKIM, then DMARC, then SPF.
 - With no DMARC policy (`dmarc=none`, `temperror`, `permerror`, or no dmarc result), a `dkim=pass` whose
   `header.d` aligns with the From domain passes, else an `spf=pass` whose `smtp.mailfrom` domain aligns
-  with it. Only the DKIM results the stamp opens with count, and SPF counts only when `smtp.mailfrom`
-  appears exactly once in the whole header, on that SPF result.
+  with it. Only the DKIM results the stamp opens with count. SPF counts only when `smtp.mailfrom`
+  appears exactly once in the whole header, as the only property of that SPF result, holding a single
+  `local@domain` address, with nothing after that result but at most one `arc` result.
 - Aligned means the same organizational domain under the Public Suffix List (`tldts`, private
   suffixes included), as DMARC relaxed alignment defines it. A From domain that is itself a public
   suffix (`org`, `co.uk`) has no organizational domain and is `fail`. `isJurisdictionSender` compares

@@ -107,6 +107,10 @@ const QUOTED_REMOTE_IP_RE = /smtp\.remote-ip\s*=\s*"[0-9a-f:.]+"/gi
 
 const FLAT_COMMENT_RE = /\([^()]*\)/g
 
+const ENVELOPE_ADDRESS_RE = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@([^@]+)$/
+
+const REMOTE_IP_RE = /^[0-9a-f:.]+$/
+
 const HOSTNAME_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 
 const ORGANIZATIONAL_DOMAIN_OPTIONS = { allowPrivateDomains: true, extractHostname: false } as const
@@ -180,8 +184,22 @@ function leadingDkimResults(results: readonly AuthResult[]): readonly AuthResult
 
 function soleMailFromResult(stamp: string, results: readonly AuthResult[]): AuthResult | undefined {
   if (stamp.match(/smtp\.mailfrom/gi)?.length !== 1) return undefined
-  const [carrier] = results.filter((r) => r.props.has("smtp.mailfrom"))
-  return carrier?.method === "spf" ? carrier : undefined
+  const index = results.findIndex((r) => r.props.has("smtp.mailfrom"))
+  const carrier = results[index]
+  if (carrier?.method !== "spf" || carrier.props.size !== 1) return undefined
+  if (!isEnvelopeAddress(carrier.props.get("smtp.mailfrom") ?? "")) return undefined
+  const trailing = results.slice(index + 1)
+  return trailing.length <= 1 && trailing.every(isBareArcResult) ? carrier : undefined
+}
+
+function isEnvelopeAddress(value: string): boolean {
+  const domain = ENVELOPE_ADDRESS_RE.exec(value)?.[1]
+  return domain !== undefined && HOSTNAME_RE.test(domain)
+}
+
+function isBareArcResult(result: AuthResult): boolean {
+  if (result.method !== "arc") return false
+  return [...result.props].every(([name, value]) => name === "smtp.remote-ip" && REMOTE_IP_RE.test(value))
 }
 
 function isAlignedPass(result: AuthResult, identity: string | undefined, from: string): boolean {
