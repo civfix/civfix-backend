@@ -22,16 +22,20 @@ import {
   type RecordEventInput,
   type RecordSendFailureInput,
   type ThreadInit,
-} from "./mail-repository.js"
-import { mintThreadToken, toMessageDTO, toThreadListItem } from "./mail-mappers.js"
-import { buildMailStats } from "./mail-stats.js"
+} from "../../../src/services/admin/mail-repository.js"
+import {
+  mintThreadToken,
+  toMessageDTO,
+  toThreadListItem,
+} from "../../../src/services/admin/mail-mappers.js"
+import { buildMailStats } from "../../../src/services/admin/mail-stats.js"
 import {
   ROUTE_CLAIM_STALE_SECONDS,
   ROUTE_DEADLINE_INFLIGHT_SECONDS,
-} from "./outbound-send-policy.js"
-import { clampLimit } from "./pagination.js"
-import { pageBeforeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
-import { MS_PER_DAY } from "../../lib/time.js"
+} from "../../../src/services/admin/outbound-send-policy.js"
+import { clampLimit } from "../../../src/services/admin/pagination.js"
+import { pageBeforeTimeCursor, parseKeysetCursor } from "../../../src/db/cursor-helpers.js"
+import { MS_PER_DAY } from "../../../src/lib/time.js"
 import type { MailDelivery, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
 
 export interface StoredMailEvent {

@@ -10,11 +10,11 @@ import {
   makeMessageUpdateAnnouncer,
 } from "../../src/services/admin/admin-report-chat-service.js"
 import { findMessageRoom } from "../../src/services/admin/admin-report-chat-repository.drizzle.js"
-import { InMemoryAdminReportChatRepository } from "../../src/services/admin/admin-report-chat-repository.memory.js"
+import { InMemoryAdminReportChatRepository } from "../helpers/admin/admin-report-chat-repository.memory.js"
 import { makeAdminUserService } from "../../src/services/admin/admin-user-service.js"
-import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
+import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
 import { makeModerationService } from "../../src/services/admin/moderation-service.js"
-import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
+import { InMemoryModerationRepository } from "../helpers/admin/moderation-repository.memory.js"
 import type { ReportChatSendDeps } from "../../src/services/report-chat-send.js"
 
 const REPORT_ID = "0b8f3a52-7a55-4d6e-9d0c-5a8f1b7c9e61"

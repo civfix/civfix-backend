@@ -25,8 +25,8 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
-import { InMemoryCertificateRepository } from "../../src/services/certificate-repository.memory.js"
+import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
+import { InMemoryCertificateRepository } from "../helpers/certificate-repository.memory.js"
 import {
   makeCertificateService,
   type CertificateStorage,

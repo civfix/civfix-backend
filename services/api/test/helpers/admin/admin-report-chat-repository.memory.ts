@@ -1,7 +1,7 @@
 import type {
   AdminReportChatRepository,
   RemoveReportMessageInput,
-} from "./admin-report-chat-repository.js"
+} from "../../../src/services/admin/admin-report-chat-repository.js"
 
 export interface MemoryReportChatMessage {
   id: string

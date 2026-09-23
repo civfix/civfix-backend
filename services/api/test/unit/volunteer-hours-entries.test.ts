@@ -5,7 +5,7 @@ import {
   type CleanupHoursView,
   type VolunteerHoursService,
 } from "../../src/services/volunteer-hours-service.js"
-import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
+import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
 
 const HOST = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"

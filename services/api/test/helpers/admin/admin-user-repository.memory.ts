@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { pageInMemoryById } from "./pagination.js"
+import { pageInMemoryById } from "../../../src/services/admin/pagination.js"
 import type {
   AdminUserOrganizationRecord,
   AdminUserRecord,
@@ -8,7 +8,7 @@ import type {
   UserEventRecord,
   UserMessageRecord,
   UserReportRecord,
-} from "./admin-user-repository.js"
+} from "../../../src/services/admin/admin-user-repository.js"
 import type { AdminUserCounts, Role, UserStatus } from "@civfix/shared"
 
 export interface RecordedUserAudit {

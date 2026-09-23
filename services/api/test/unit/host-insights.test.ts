@@ -6,7 +6,7 @@ import {
   makeHostAnalyticsCache,
   type HostAnalyticsCache,
 } from "../../src/services/host/host-analytics-cache.js"
-import { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../helpers/host/registration-repository.memory.js"
 import {
   INSIGHTS_CACHE_TTL_SEC,
   INSIGHTS_LIVE_CACHE_TTL_SEC,

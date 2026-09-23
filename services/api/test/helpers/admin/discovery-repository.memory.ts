@@ -2,8 +2,8 @@
 // task record rather than recomputed, since the Drizzle repository derives them in SQL.
 
 import { randomUUID } from "node:crypto"
-import { pageInMemoryById } from "./pagination.js"
-import { computeContactState } from "./discovery-service.js"
+import { pageInMemoryById } from "../../../src/services/admin/pagination.js"
+import { computeContactState } from "../../../src/services/admin/discovery-service.js"
 import type {
   DiscoveryContactRecord,
   DiscoveryContactSuggestionRecord,
@@ -13,7 +13,7 @@ import type {
   DiscoverySamplePinRecord,
   DiscoveryTaskRecord,
   ListDiscoveryArgs,
-} from "./discovery-repository.js"
+} from "../../../src/services/admin/discovery-repository.js"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 
 export interface SeededDiscoveryTask {

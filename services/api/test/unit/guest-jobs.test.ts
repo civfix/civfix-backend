@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import { makeBroadcastLanes } from "../../src/services/host/broadcast-lanes.js"
 import type { EventBroadcastContext } from "../../src/services/host/broadcast-types.js"
 import { runGuestUpdateFanout } from "../../src/services/guest-jobs.js"

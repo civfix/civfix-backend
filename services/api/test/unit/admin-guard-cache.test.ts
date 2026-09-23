@@ -8,7 +8,7 @@ import { makeInMemoryStores } from "../../src/auth/stores.js"
 import type { UserRecord, UserStore } from "../../src/auth/stores.js"
 import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { OPERATOR_ALLOWLIST_TTL_SECONDS } from "../../src/auth/admin-guard.js"
-import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
+import { InMemoryModerationRepository } from "../helpers/admin/moderation-repository.memory.js"
 
 const ALLOWED = "ops@civfix.org"
 const NOT_ALLOWED = "stranger@example.com"

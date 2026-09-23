@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import { InMemoryOrganizationRepository } from "../../../src/services/host/organization-repository.memory.js"
+import { InMemoryOrganizationRepository } from "../../helpers/host/organization-repository.memory.js"
 import { makeDrizzleOrganizationRepository } from "../../../src/services/host/organization-repository.drizzle.js"
 import {
   makeOrganizationService,

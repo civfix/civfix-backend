@@ -17,7 +17,7 @@ import type {
   TopContributorRow,
   TopJurisdictionRow,
   WeekBucket,
-} from "./analytics-repository.js"
+} from "../../../src/services/admin/analytics-repository.js"
 
 /** All zero, so a test only sets what it asserts. */
 function zeroKpis(): KpiAggregates {

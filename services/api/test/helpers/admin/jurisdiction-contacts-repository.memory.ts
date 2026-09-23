@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto"
-import { clampLimit } from "./pagination.js"
-import { decodeOffsetCursor, encodeOffsetCursor } from "../../db/cursor-helpers.js"
-import type { OutreachStateRecord } from "./mail-repository.drizzle.js"
+import { clampLimit } from "../../../src/services/admin/pagination.js"
+import { decodeOffsetCursor, encodeOffsetCursor } from "../../../src/db/cursor-helpers.js"
+import type { OutreachStateRecord } from "../../../src/services/admin/mail-repository.drizzle.js"
 import {
   buildUnmappedRecord,
   directoryMethod,
   shouldIncludeUnmapped,
-} from "./jurisdiction-directory-projection.js"
+} from "../../../src/services/admin/jurisdiction-directory-projection.js"
 import type {
   JurisdictionContactsRepository,
   JurisdictionDirectoryRecord,
@@ -15,7 +15,7 @@ import type {
   ListDirectoryResult,
   PatchContactsInput,
   SaveContactsInput,
-} from "./jurisdiction-contacts-repository.js"
+} from "../../../src/services/admin/jurisdiction-contacts-repository.js"
 import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 

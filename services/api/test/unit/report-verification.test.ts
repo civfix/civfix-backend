@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto"
 import { FakeJobs, FakeMailer } from "@civfix/shared/fakes"
 import { AppError } from "@civfix/shared"
 import type { CreateReportRequest } from "@civfix/shared"
-import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
-import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
+import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
+import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
 import {
   makeAdminReportService,
   REPORT_VERIFIED_THRESHOLD,
@@ -14,7 +14,7 @@ import {
   makeAdminUserService,
   type AdminUserService,
 } from "../../src/services/admin/admin-user-service.js"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import {
   makeOutboundMailService,
   OutboundSendDeadlineError,

@@ -2,7 +2,7 @@ import type {
   ForwardTemplateRepository,
   ForwardTemplateSettingsRecord,
   SetForwardTemplateInput,
-} from "./forward-template-repository.js"
+} from "../../../src/services/admin/forward-template-repository.js"
 
 export class InMemoryForwardTemplateRepository implements ForwardTemplateRepository {
   record: ForwardTemplateSettingsRecord | null = null

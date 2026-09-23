@@ -5,7 +5,7 @@ import type { Container } from "../../src/di.js"
 import { makeErrorHandler, makeNotFoundHandler } from "../../src/errors/http-mapper.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { registerUnsubscribeRoutes } from "../../src/routes/host/unsubscribe.routes.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import {
   makeBroadcastService,
   type BroadcastConfig,

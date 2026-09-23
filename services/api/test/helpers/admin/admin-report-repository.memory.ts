@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { isUuid } from "../../db/cursor-helpers.js"
-import { pageInMemoryById } from "./pagination.js"
+import { isUuid } from "../../../src/db/cursor-helpers.js"
+import { pageInMemoryById } from "../../../src/services/admin/pagination.js"
 import type {
   AdminReportMediaRecord,
   AdminReportRecord,
@@ -10,7 +10,7 @@ import type {
   AdminReporterRecord,
   ListReportsArgs,
   ReportOutreachState,
-} from "./admin-report-repository.js"
+} from "../../../src/services/admin/admin-report-repository.js"
 import type {
   AdminReportCounts,
   AdminReportStatus,
@@ -18,10 +18,13 @@ import type {
   ReportTimelineItem,
   ReportVisibility,
 } from "@civfix/shared"
-import { mapOutreachStatus } from "./admin-report-repository.drizzle.js"
-import { isPacketKind, type MailMessageKind } from "./mail-repository.js"
-import { pickPreviewMedia, REPORT_VERIFIED_THRESHOLD } from "./admin-report-types.js"
-import { STATUS_BUCKETS } from "./admin-report-status.js"
+import { mapOutreachStatus } from "../../../src/services/admin/admin-report-repository.drizzle.js"
+import { isPacketKind, type MailMessageKind } from "../../../src/services/admin/mail-repository.js"
+import {
+  pickPreviewMedia,
+  REPORT_VERIFIED_THRESHOLD,
+} from "../../../src/services/admin/admin-report-types.js"
+import { STATUS_BUCKETS } from "../../../src/services/admin/admin-report-status.js"
 
 export interface RecordedAudit {
   action: string

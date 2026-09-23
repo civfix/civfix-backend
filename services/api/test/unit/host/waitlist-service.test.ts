@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import { sha256Hex } from "../../../src/auth/crypto.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {
   makeWaitlistService,
   WAITLIST_CLAIM_WINDOW_MS,

@@ -1,8 +1,7 @@
 /**
  * Behavioural in-memory twin of the Drizzle `CertificateRepository`.
  *
- * It lives beside its Drizzle counterpart (the same placement as
- * `volunteer-hours-repository.memory.ts`) because the ONLY thing keeping the two honest is that they are
+ * Keep it in step with its Drizzle counterpart: the ONLY thing keeping the two honest is that they are
  * read side by side: `certificate-routes.test.ts` runs the whole route surface against this class with no
  * Docker, so any rule the SQL enforces and this class does not is invisible to CI until production.
  *
@@ -18,15 +17,15 @@
  * `snapshot` is stored but never read back, exactly as in production.
  */
 
-import { CertificateConflictError } from "./certificate-service.js"
+import { CertificateConflictError } from "../../src/services/certificate-service.js"
 import type {
   CertificateHolder,
   CertificateInsert,
   CertificateRepository,
   CertificateRow,
   CertificateVerifyRow,
-} from "./certificate-repository.js"
-import type { TranscriptModel } from "./certificate-model.js"
+} from "../../src/services/certificate-repository.js"
+import type { TranscriptModel } from "../../src/services/certificate-model.js"
 
 /** Mirrors the `users.locale` column default. */
 const DEFAULT_HOLDER_LOCALE = "en"

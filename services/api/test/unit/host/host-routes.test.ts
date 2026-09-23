@@ -11,7 +11,7 @@ import { InMemoryCacheClient } from "../../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../../src/auth/stores.js"
 import { makeAuthServices } from "../../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../../helpers/auth.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {
   OPEN_HOST_GUARDS,
   ORGANIZER_STANDING,

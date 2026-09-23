@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto"
-import { clampLimit } from "./pagination.js"
-import { pageBeforeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
+import { clampLimit } from "../../../src/services/admin/pagination.js"
+import { pageBeforeTimeCursor, parseKeysetCursor } from "../../../src/db/cursor-helpers.js"
 import {
   assertTargetIsNotOfficialAccount,
   assertTargetIsNotOperatorRole,
-} from "../../auth/operator-target.js"
-import { isMessageSubject, isUserSubject } from "./moderation-service.js"
+} from "../../../src/auth/operator-target.js"
+import { isMessageSubject, isUserSubject } from "../../../src/services/admin/moderation-service.js"
 import type {
   CreateModerationItemInput,
   ListModerationArgs,
   ModerationItemRecord,
   ModerationRepository,
-} from "./moderation-repository.js"
+} from "../../../src/services/admin/moderation-repository.js"
 
 export interface SeededHeldReport {
   id: string

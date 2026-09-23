@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import { InMemoryBroadcastRepository } from "../../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../../helpers/host/broadcast-repository.memory.js"
 import {
   makeBroadcastService,
   type BroadcastConfig,

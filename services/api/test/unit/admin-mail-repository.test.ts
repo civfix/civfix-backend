@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import type { MailThreadDTO } from "@civfix/shared"
 import type { Storage } from "@civfix/shared/interfaces"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { presignThreadAttachments } from "../../src/routes/admin/mail.routes.js"
 import {
   buildMailStats,

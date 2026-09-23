@@ -4,9 +4,9 @@ import {
   CIVFIX_OFFICIAL_USER_ID,
   impersonatesOfficialName,
 } from "../../src/auth/official-account.js"
-import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
+import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
 import { makeAdminUserService } from "../../src/services/admin/admin-user-service.js"
-import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
+import { InMemoryModerationRepository } from "../helpers/admin/moderation-repository.memory.js"
 import { makeModerationService } from "../../src/services/admin/moderation-service.js"
 
 const OFFICIAL = CIVFIX_OFFICIAL_USER_ID

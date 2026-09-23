@@ -6,16 +6,16 @@ import type {
   OrganizationRefDTO,
   VolunteerHoursSource,
 } from "@civfix/shared"
-import { encodeTimeCursor, isBeforeTimeCursor, pageWith } from "../db/cursor-helpers.js"
-import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
-import { eventDayKey } from "./host/event-day.js"
+import { encodeTimeCursor, isBeforeTimeCursor, pageWith } from "../../src/db/cursor-helpers.js"
+import { DEFAULT_EVENT_TIME_ZONE } from "../../src/services/host/event-fields.js"
+import { eventDayKey } from "../../src/services/host/event-day.js"
 import {
   DAILY_HOURS_CAP,
   ITEMISED_SOURCES,
   MAX_ORG_CHIPS_FETCH,
   RECIPROCAL_LOOKBACK_MS,
   WEEKLY_HOURS_FLAG_DEFAULT,
-} from "./volunteer-hours-service.js"
+} from "../../src/services/volunteer-hours-service.js"
 import type {
   CertificateEntriesPage,
   EntriesForCertificateArgs,
@@ -30,8 +30,8 @@ import type {
   VolunteerHoursAnomaly,
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
-} from "./volunteer-hours-repository.js"
-import { MS_PER_WEEK } from "../lib/time.js"
+} from "../../src/services/volunteer-hours-repository.js"
+import { MS_PER_WEEK } from "../../src/lib/time.js"
 
 export interface MemoryLeaderboardUser {
   name: string

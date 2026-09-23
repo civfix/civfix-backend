@@ -8,12 +8,12 @@ import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { makeServer } from "../../src/server.js"
 import type { HostStandingResolution } from "../../src/services/host/host-standing-repository.js"
-import { InMemoryHostTeamRepository } from "../../src/services/host/host-team-repository.memory.js"
+import { InMemoryHostTeamRepository } from "../helpers/host/host-team-repository.memory.js"
 import {
   makeHostTeamService,
   type HostTeamServiceDeps,
 } from "../../src/services/host/host-team-service.js"
-import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
+import { InMemoryOrganizationRepository } from "../helpers/host/organization-repository.memory.js"
 import {
   makeOrganizationService,
   type OrganizationServiceDeps,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { InMemoryActivityRepository } from "../../src/services/admin/activity-repository.memory.js"
+import { InMemoryActivityRepository } from "../helpers/admin/activity-repository.memory.js"
 import {
   classifyActivity,
   classifyAuditAction,

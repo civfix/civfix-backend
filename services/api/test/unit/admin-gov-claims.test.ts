@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest"
 import {
   InMemoryGovClaimsRepository,
   InMemoryUserProvisioner,
-} from "../../src/services/admin/gov-claims-repository.memory.js"
+} from "../helpers/admin/gov-claims-repository.memory.js"
 import {
   makeGovClaimsService,
   pendingChecks,

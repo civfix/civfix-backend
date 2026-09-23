@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
+import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
 import {
   makeAdminUserService,
   resolveUserFilter,

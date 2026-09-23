@@ -12,9 +12,9 @@ import {
   isBeforeTimeCursor,
   pageWith,
   parseTimeCursor,
-} from "../../db/cursor-helpers.js"
-import { eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
-import type { CleanupPersonView } from "../cleanup-repository.js"
+} from "../../../src/db/cursor-helpers.js"
+import { eventWindowOf, hasEventEnded } from "../../../src/services/cleanup-rules.js"
+import type { CleanupPersonView } from "../../../src/services/cleanup-repository.js"
 import type {
   AcceptTeamInviteByIdOutcome,
   AcceptTeamInviteOutcome,
@@ -29,9 +29,9 @@ import type {
   OpenTeamInviteQuery,
   PendingInviteForUserRecord,
   RevokeTeamInviteOutcome,
-} from "./host-team-repository.js"
-import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.js"
-import { MS_PER_DAY } from "../../lib/time.js"
+} from "../../../src/services/host/host-team-repository.js"
+import { TEAM_INVITE_CAP_MESSAGE } from "../../../src/services/host/host-team-repository.js"
+import { MS_PER_DAY } from "../../../src/lib/time.js"
 
 interface StoredInvite {
   id: string

@@ -7,14 +7,14 @@
  * and the service's classifier ever disagree.
  */
 
-import { AUDIT_READ_ACTIONS } from "./audit.js"
-import { pageInMemoryById } from "./pagination.js"
-import { classifyActivity } from "./activity-service.js"
+import { AUDIT_READ_ACTIONS } from "../../../src/services/admin/audit.js"
+import { pageInMemoryById } from "../../../src/services/admin/pagination.js"
+import { classifyActivity } from "../../../src/services/admin/activity-service.js"
 import type {
   ActivityRepository,
   ActivitySourceRecord,
   ListActivityArgs,
-} from "./activity-repository.js"
+} from "../../../src/services/admin/activity-repository.js"
 
 const READ_ACTIONS: ReadonlySet<string> = new Set(AUDIT_READ_ACTIONS)
 

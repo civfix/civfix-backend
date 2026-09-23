@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { InMemoryHomeRepository } from "../../src/services/admin/home-repository.memory.js"
-import { InMemoryAnalyticsRepository } from "../../src/services/admin/analytics-repository.memory.js"
+import { InMemoryHomeRepository } from "../helpers/admin/home-repository.memory.js"
+import { InMemoryAnalyticsRepository } from "../helpers/admin/analytics-repository.memory.js"
 import {
   HOME_SUMMARY_CONCURRENCY,
   makeHomeService,

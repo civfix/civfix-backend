@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest"
-import { InMemoryAnalyticsRepository } from "../../src/services/admin/analytics-repository.memory.js"
+import { InMemoryAnalyticsRepository } from "../helpers/admin/analytics-repository.memory.js"
 import { makeDrizzleAnalyticsRepository } from "../../src/services/admin/analytics-repository.drizzle.js"
 import type { Sql } from "../../src/db/client.js"
 import {

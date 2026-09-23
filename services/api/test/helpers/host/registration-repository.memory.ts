@@ -5,27 +5,27 @@ import {
   pageBeforeTimeCursor,
   pageWith,
   parseTimeCursor,
-} from "../../db/cursor-helpers.js"
+} from "../../../src/db/cursor-helpers.js"
 import {
   DEFAULT_EVENT_DURATION_MS,
   eventEndsAtMs,
   eventWindowOf,
   hasEventEnded,
-} from "../cleanup-rules.js"
+} from "../../../src/services/cleanup-rules.js"
 import { LIVE_TAIL_MS } from "@civfix/shared/host"
 import {
   ARRIVAL_BUCKET_MINUTES,
   buildCheckinResult,
   emptyCheckinResult,
-} from "./registration-repository-checkin.drizzle.js"
+} from "../../../src/services/host/registration-repository-checkin.drizzle.js"
 import {
   guestSelfRegistrationOnPrivateEvent,
   subjectOwner,
   withinSalesWindow,
-} from "./registration-repository-register.drizzle.js"
-import type { AppliedBan } from "./registration-repository-roster.drizzle.js"
-import { MAX_TICKET_TYPES } from "./registration-repository-ticket-types.drizzle.js"
-import { waitlistEntryAsRegistration } from "./registration-repository-waitlist.drizzle.js"
+} from "../../../src/services/host/registration-repository-register.drizzle.js"
+import type { AppliedBan } from "../../../src/services/host/registration-repository-roster.drizzle.js"
+import { MAX_TICKET_TYPES } from "../../../src/services/host/registration-repository-ticket-types.drizzle.js"
+import { waitlistEntryAsRegistration } from "../../../src/services/host/registration-repository-waitlist.drizzle.js"
 import type {
   AnswerRecord,
   CancelRegistrationOutcome,
@@ -61,7 +61,7 @@ import type {
   WalkupRegisterArgs,
   WaitlistOffer,
   WaitlistRecord,
-} from "./registration-repository.js"
+} from "../../../src/services/host/registration-repository.js"
 
 interface MemoryRegistration extends RegistrationRecord {
   answers: AnswerRecord[]

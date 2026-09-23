@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { randomUUID } from "node:crypto"
-import { InMemoryDiscoveryRepository } from "../../src/services/admin/discovery-repository.memory.js"
+import { InMemoryDiscoveryRepository } from "../helpers/admin/discovery-repository.memory.js"
 import {
   makeDiscoveryService,
   computeContactState,

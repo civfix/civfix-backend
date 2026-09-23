@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { PAGE_SLUG_MAX, PageSlugSchema } from "@civfix/shared"
 import type { EventPageBlock } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {
   HOST_PAGE_PUBLISH_PER_DAY,
   makePageService,

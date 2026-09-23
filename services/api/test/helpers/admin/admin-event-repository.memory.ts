@@ -6,8 +6,8 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { isUuid } from "../../db/cursor-helpers.js"
-import { pageInMemoryById } from "./pagination.js"
+import { isUuid } from "../../../src/db/cursor-helpers.js"
+import { pageInMemoryById } from "../../../src/services/admin/pagination.js"
 import {
   ADMIN_EVENT_MESSAGE_CAP,
   EVENT_NOTE_FLAGGED,
@@ -15,13 +15,16 @@ import {
   EVENT_NOTE_UNFLAGGED,
   eventOutcomeNote,
   flaggedFromTimeline,
-} from "./admin-event-helpers.js"
-import { isPubliclyVisibleStatus } from "../report-visibility.js"
-import { toEventStatus } from "./event-status.js"
-import { CIVFIX_OFFICIAL_DISPLAY_NAME } from "../../auth/official-account.js"
-import { DEFAULT_EVENT_DURATION_MS, deriveCleanupStatus } from "../cleanup-rules.js"
-import { MS_PER_HOUR } from "../../lib/time.js"
-import type { EventMemberRef } from "./admin-event-service.js"
+} from "../../../src/services/admin/admin-event-helpers.js"
+import { isPubliclyVisibleStatus } from "../../../src/services/report-visibility.js"
+import { toEventStatus } from "../../../src/services/admin/event-status.js"
+import { CIVFIX_OFFICIAL_DISPLAY_NAME } from "../../../src/auth/official-account.js"
+import {
+  DEFAULT_EVENT_DURATION_MS,
+  deriveCleanupStatus,
+} from "../../../src/services/cleanup-rules.js"
+import { MS_PER_HOUR } from "../../../src/lib/time.js"
+import type { EventMemberRef } from "../../../src/services/admin/admin-event-service.js"
 import type {
   AdminEventMessageRecord,
   AdminEventRecord,
@@ -29,8 +32,8 @@ import type {
   AdminEventTimelineRecord,
   AdminOrganizerRecord,
   ListEventsArgs,
-} from "./admin-event-repository.js"
-import type { LinkedReportView } from "../cleanup-service.js"
+} from "../../../src/services/admin/admin-event-repository.js"
+import type { LinkedReportView } from "../../../src/services/cleanup-service.js"
 import type { AdminEventCounts, EventKind, EventStatus, ReportCategory } from "@civfix/shared"
 
 const IN_PROGRESS_SEED_OFFSET_MS = -MS_PER_HOUR

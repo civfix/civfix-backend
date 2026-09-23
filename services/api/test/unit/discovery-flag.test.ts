@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 import { makeDrizzleDiscoveryRepository } from "../../src/services/admin/discovery-repository.drizzle.js"
-import { InMemoryDiscoveryRepository } from "../../src/services/admin/discovery-repository.memory.js"
+import { InMemoryDiscoveryRepository } from "../helpers/admin/discovery-repository.memory.js"
 import type { Sql } from "../../src/db/client.js"
 
 const TASK_ID = "11111111-1111-1111-1111-111111111111"

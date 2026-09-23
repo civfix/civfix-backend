@@ -8,7 +8,7 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
+import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../src/services/media-intake-service.js"
 
 // The operator uses a bearer token, which is CSRF-exempt by transport, so the mutation is reachable

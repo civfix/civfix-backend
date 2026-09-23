@@ -11,7 +11,7 @@ import {
   mintUnsubscribeToken,
   unsubscribeExpiryFrom,
 } from "../../src/services/host/broadcast-capability-token.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import {
   makeBroadcastService,
   type BroadcastConfig,

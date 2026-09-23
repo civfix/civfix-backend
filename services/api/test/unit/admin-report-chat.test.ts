@@ -7,7 +7,7 @@ import {
 } from "@civfix/shared"
 import type { PersistChatInput } from "@civfix/shared/interfaces"
 import { makeAdminReportChatService } from "../../src/services/admin/admin-report-chat-service.js"
-import { InMemoryAdminReportChatRepository } from "../../src/services/admin/admin-report-chat-repository.memory.js"
+import { InMemoryAdminReportChatRepository } from "../helpers/admin/admin-report-chat-repository.memory.js"
 import {
   sendReportChatMessage,
   type ReportChatPersistContext,

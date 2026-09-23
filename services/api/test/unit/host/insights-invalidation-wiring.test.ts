@@ -5,7 +5,7 @@ import { makeContainer } from "../../../src/di.js"
 import { loadEnv } from "../../../src/env.js"
 import { InMemoryCacheClient } from "../../../src/auth/cache.js"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {
   makeContainerRegistrationServices,
   type HostRegistrationServices,

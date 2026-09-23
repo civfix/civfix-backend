@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest"
 import { makeFakeSql, type SqlHandler } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleAdminEventRepository } from "../../src/services/admin/admin-event-repository.drizzle.js"
-import { InMemoryAdminEventRepository } from "../../src/services/admin/admin-event-repository.memory.js"
+import { InMemoryAdminEventRepository } from "../helpers/admin/admin-event-repository.memory.js"
 import { ADMIN_EVENT_MESSAGE_CAP } from "../../src/services/admin/admin-event-helpers.js"
 
 const EVENT_ID = "0b8f3a52-7a55-4d6e-9d0c-5a8f1b7c9e41"

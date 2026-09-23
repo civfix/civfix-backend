@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { InMemoryAdminEventRepository } from "../../src/services/admin/admin-event-repository.memory.js"
+import { InMemoryAdminEventRepository } from "../helpers/admin/admin-event-repository.memory.js"
 import {
   makeAdminEventService,
   resolveEventFilter,

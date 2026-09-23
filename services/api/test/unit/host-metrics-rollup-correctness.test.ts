@@ -6,7 +6,7 @@ import type { MetricUpsert, MetricsRepository } from "../../src/services/host/me
 import type { AnalyticsRepository } from "../../src/services/host/analytics-repository.js"
 import { makeInsightsService } from "../../src/services/host/insights-service.js"
 import { makeHostAnalyticsCache } from "../../src/services/host/host-analytics-cache.js"
-import { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../helpers/host/registration-repository.memory.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "../../src/services/host/event-fields.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"

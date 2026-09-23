@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { InMemoryAuditRepository } from "../../src/services/admin/audit-repository.memory.js"
+import { InMemoryAuditRepository } from "../helpers/admin/audit-repository.memory.js"
 import {
   makeAuditService,
   toAuditEntryDTO,

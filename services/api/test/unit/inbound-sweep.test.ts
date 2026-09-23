@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest"
 import { FakeInboundMail, FakeStorage } from "@civfix/shared/fakes"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
+import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import { runInboundSweep } from "../../src/services/admin/inbound-sweep.js"
 import {
   INBOUND_PENDING_PREFIX,
   type InboundProcessorDeps,
 } from "../../src/services/admin/inbound-processor.js"
-import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
+import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
 import { RecordingNotifier } from "../helpers/notifications.js"
 import { JURISDICTION_REPLY_NOTE } from "../../src/services/admin/inbound-thread-correlation.js"
 import type { Container } from "../../src/di.js"

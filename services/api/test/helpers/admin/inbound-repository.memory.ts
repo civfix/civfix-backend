@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto"
-import { clampLimit } from "./pagination.js"
-import { pageBeforeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
-import { localPartOf } from "./inbound-repository.drizzle.js"
-import type { InboundEmailInsert, InboundRepository } from "./inbound-repository.js"
-import { toPreview } from "./mail-preview.js"
+import { clampLimit } from "../../../src/services/admin/pagination.js"
+import { pageBeforeTimeCursor, parseKeysetCursor } from "../../../src/db/cursor-helpers.js"
+import { localPartOf } from "../../../src/services/admin/inbound-repository.drizzle.js"
+import type {
+  InboundEmailInsert,
+  InboundRepository,
+} from "../../../src/services/admin/inbound-repository.js"
+import { toPreview } from "../../../src/services/admin/mail-preview.js"
 import type {
   InboundEmailDTO,
   InboundEmailListItemDTO,

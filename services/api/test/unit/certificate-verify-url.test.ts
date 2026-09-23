@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import PDFDocument from "pdfkit"
 import { FakeStorage } from "@civfix/shared/fakes"
-import { InMemoryCertificateRepository } from "../../src/services/certificate-repository.memory.js"
+import { InMemoryCertificateRepository } from "../helpers/certificate-repository.memory.js"
 import { makeCertificateService } from "../../src/services/certificate-service.js"
 import type { VolunteerHoursEntryView } from "../../src/services/volunteer-hours-repository.js"
 

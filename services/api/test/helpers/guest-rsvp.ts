@@ -11,7 +11,7 @@ import type {
   InsertGuestOtpArgs,
   UpsertGuestArgs,
 } from "../../src/services/guest-rsvp-repository.js"
-import type { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
+import type { InMemoryHostRegistrationRepository } from "./host/registration-repository.memory.js"
 import type { GuestCountSource } from "./cleanups.js"
 
 export interface StoredGuest {

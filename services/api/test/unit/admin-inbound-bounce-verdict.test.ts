@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { FakeInboundMail, FakeJobs, FakeStorage } from "@civfix/shared/fakes"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
+import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import {
   processInboundObject,
   INBOUND_PENDING_PREFIX,

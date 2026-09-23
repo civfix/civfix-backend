@@ -8,7 +8,7 @@ import {
   type HoursModerationSink,
   type VolunteerHoursService,
 } from "../../src/services/volunteer-hours-service.js"
-import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
+import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
 import type { InsightsInvalidator } from "../../src/services/host/host-analytics-cache.js"
 import type { NotificationService } from "../../src/services/notification-service.js"
 import { makeServer } from "../../src/server.js"

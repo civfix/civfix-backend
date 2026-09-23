@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto"
-import { OUTREACH_CATEGORIES } from "./outreach-service.js"
-import type { OutreachDigest, OutreachRepository } from "./outreach-repository.js"
-import type { OutreachStateRecord } from "./mail-repository.js"
+import { OUTREACH_CATEGORIES } from "../../../src/services/admin/outreach-service.js"
+import type {
+  OutreachDigest,
+  OutreachRepository,
+} from "../../../src/services/admin/outreach-repository.js"
+import type { OutreachStateRecord } from "../../../src/services/admin/mail-repository.js"
 import type { ReportCategory } from "@civfix/shared"
 
 interface SeededOutreachJurisdiction {

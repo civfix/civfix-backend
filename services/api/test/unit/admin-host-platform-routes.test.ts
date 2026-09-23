@@ -9,9 +9,9 @@ import { registerAdminLegalRoutes } from "../../src/routes/admin/legal.routes.js
 import { registerAdminBroadcastRoutes } from "../../src/routes/admin/broadcasts.routes.js"
 import { registerAdminOrgRoutes } from "../../src/routes/admin/orgs.routes.js"
 import type { AdminEventPageRow } from "../../src/services/host/admin-pages-repository.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
-import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
-import { InMemoryAdminEventRepository } from "../../src/services/admin/admin-event-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
+import { InMemoryOrganizationRepository } from "../helpers/host/organization-repository.memory.js"
+import { InMemoryAdminEventRepository } from "../helpers/admin/admin-event-repository.memory.js"
 import type { MediaAssetView, MediaRepository } from "../../src/services/media-repository.js"
 
 const OPERATOR = "11111111-1111-1111-1111-111111111111"

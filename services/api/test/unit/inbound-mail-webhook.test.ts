@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from "vitest"
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify"
 import { FakeInboundMail, FakeStorage } from "@civfix/shared/fakes"
 import type { InboundMail, ParsedMail } from "@civfix/shared/interfaces"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
+import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import {
   assertSignature,
   registerInboundMailWebhook,
