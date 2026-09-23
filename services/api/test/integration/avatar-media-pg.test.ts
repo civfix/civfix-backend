@@ -11,7 +11,7 @@ import type { PresignMedia } from "../../src/services/media-presign.js"
 const pg = await withPg()
 
 const ANY_CLAIMANT = { uploader: userUploader(randomUUID()) }
-const GROUP_ADMIN = { uploaderUserId: randomUUID() }
+const GROUP_ADMIN = randomUUID()
 
 const fakePresign: PresignMedia = (r2Key, thumbKey) =>
   Promise.resolve({
@@ -432,64 +432,130 @@ describe.skipIf(!pg)("CVX-004 avatar media validation (integration)", () => {
     })
   })
 
-  describe("group avatar (findMediaIdByUploadId)", () => {
+  describe("group avatar (claimed inside the group write)", () => {
     const groups = () => makeChatGroupRepository(h.sql, fakePresign)
 
-    it("resolves a ready, unbound image to its media id", async () => {
+    async function groupAvatarOf(groupId: string): Promise<string | null> {
+      const [row] = await h.sql<{ avatar_media_id: string | null }[]>`
+        SELECT avatar_media_id FROM chat_groups WHERE id = ${groupId}
+      `
+      return row!.avatar_media_id
+    }
+
+    async function setAvatar(groupId: string, uploadId: string, actorId = GROUP_ADMIN) {
+      await groups().update(groupId, { avatarUploadId: uploadId }, actorId)
+    }
+
+    it("binds a ready, unbound image", async () => {
+      const group = await seedGroup()
       const media = await seedMedia()
-      expect(await groups().findMediaIdByUploadId(media.uploadId, GROUP_ADMIN)).toBe(media.id)
+      await setAvatar(group, media.uploadId)
+      expect(await groupAvatarOf(group)).toBe(media.id)
     })
 
     it("rejects a nonexistent uploadId (422)", async () => {
-      await expect(groups().findMediaIdByUploadId(randomUUID(), GROUP_ADMIN)).rejects.toMatchObject(
-        rejects422,
-      )
+      const group = await seedGroup()
+      await expect(setAvatar(group, randomUUID())).rejects.toMatchObject(rejects422)
+      expect(await groupAvatarOf(group)).toBeNull()
     })
 
     it("rejects a rejected upload", async () => {
+      const group = await seedGroup()
       const media = await seedMedia({ status: "rejected" })
-      await expect(
-        groups().findMediaIdByUploadId(media.uploadId, GROUP_ADMIN),
-      ).rejects.toMatchObject(rejects422)
+      await expect(setAvatar(group, media.uploadId)).rejects.toMatchObject(rejects422)
     })
 
     it("rejects a still-validating upload that was never finalized", async () => {
+      const group = await seedGroup()
       const media = await seedMedia({ status: "validating" })
-      await expect(
-        groups().findMediaIdByUploadId(media.uploadId, GROUP_ADMIN),
-      ).rejects.toMatchObject(rejects422)
+      await expect(setAvatar(group, media.uploadId)).rejects.toMatchObject(rejects422)
     })
 
     it("accepts a finalized-but-validating upload", async () => {
+      const group = await seedGroup()
       const media = await seedMedia({ status: "validating", finalizedAt: new Date() })
-      expect(await groups().findMediaIdByUploadId(media.uploadId, GROUP_ADMIN)).toBe(media.id)
+      await setAvatar(group, media.uploadId)
+      expect(await groupAvatarOf(group)).toBe(media.id)
     })
 
     it("rejects a foreign user's private (chat-bound) media", async () => {
+      const group = await seedGroup()
       const media = await seedMedia({ chatMessageId: randomUUID() })
-      await expect(
-        groups().findMediaIdByUploadId(media.uploadId, GROUP_ADMIN),
-      ).rejects.toMatchObject(rejects422)
+      await expect(setAvatar(group, media.uploadId)).rejects.toMatchObject(rejects422)
     })
 
     it("rejects another user's report-bound media", async () => {
+      const group = await seedGroup()
       const reportId = await seedForeignReport()
       const media = await seedMedia({ reportId })
-      await expect(
-        groups().findMediaIdByUploadId(media.uploadId, GROUP_ADMIN),
-      ).rejects.toMatchObject(rejects422)
+      await expect(setAvatar(group, media.uploadId)).rejects.toMatchObject(rejects422)
     })
 
     it("F074: rejects an avatar another group already holds, and stays idempotent for the holder", async () => {
       const media = await seedMedia()
       const holder = await seedGroup()
+      const other = await seedGroup()
       await claimGroupAvatar(holder, media.id)
+      await expect(setAvatar(other, media.uploadId)).rejects.toMatchObject(rejects422)
+      await setAvatar(holder, media.uploadId)
+      expect(await groupAvatarOf(holder)).toBe(media.id)
+    })
+
+    it("rejects another account's upload and leaves the rest of the edit unwritten", async () => {
+      const group = await seedGroup()
+      const media = await seedMedia({ uploader: userUploader(randomUUID()) })
       await expect(
-        groups().findMediaIdByUploadId(media.uploadId, GROUP_ADMIN),
+        groups().update(group, { name: "Renamed", avatarUploadId: media.uploadId }, GROUP_ADMIN),
       ).rejects.toMatchObject(rejects422)
-      expect(
-        await groups().findMediaIdByUploadId(media.uploadId, { ...GROUP_ADMIN, groupId: holder }),
-      ).toBe(media.id)
+      const [row] = await h.sql<{ name: string; avatar_media_id: string | null }[]>`
+        SELECT name, avatar_media_id FROM chat_groups WHERE id = ${group}
+      `
+      expect(row).toEqual({ name: "Avatar Group", avatar_media_id: null })
+    })
+
+    it("accepts the acting admin's own attributed upload", async () => {
+      const group = await seedGroup()
+      const media = await seedMedia({ uploader: userUploader(GROUP_ADMIN) })
+      await setAvatar(group, media.uploadId)
+      expect(await groupAvatarOf(group)).toBe(media.id)
+    })
+
+    it("a new group refuses another account's upload and creates nothing", async () => {
+      const ownerId = await seedUser()
+      const media = await seedMedia({ uploader: userUploader(randomUUID()) })
+      const name = `Refused ${randomUUID()}`
+      await expect(
+        groups().create(
+          {
+            kind: "group",
+            name,
+            description: null,
+            avatarUploadId: media.uploadId,
+            ownerId,
+            visibility: "private",
+          },
+          [],
+        ),
+      ).rejects.toMatchObject(rejects422)
+      const rows = await h.sql`SELECT id FROM chat_groups WHERE name = ${name}`
+      expect(rows).toHaveLength(0)
+    })
+
+    it("a new group binds its owner's own upload", async () => {
+      const ownerId = await seedUser()
+      const media = await seedMedia({ uploader: userUploader(ownerId) })
+      const id = await groups().create(
+        {
+          kind: "group",
+          name: "Owned avatar",
+          description: null,
+          avatarUploadId: media.uploadId,
+          ownerId,
+          visibility: "private",
+        },
+        [],
+      )
+      expect(await groupAvatarOf(id)).toBe(media.id)
     })
   })
 })
