@@ -13,9 +13,11 @@
  */
 
 import {
+  InboxFeedQuerySchema,
   InboxListQuerySchema,
   SetInboxStatusRequestSchema,
   type InboundEmailDTO,
+  type InboxFeedResponse,
   type InboxListResponse,
 } from "@civfix/shared"
 import type { Storage } from "@civfix/shared/interfaces"
@@ -32,6 +34,10 @@ import {
   makeDrizzleInboundRepository,
   type InboundRepository,
 } from "../../services/admin/inbound-repository.drizzle.js"
+import {
+  makeDrizzleInboxFeedRepository,
+  type InboxFeedRepository,
+} from "../../services/admin/inbox-feed-repository.drizzle.js"
 
 /** Hard cap on attachments presigned per inbound email (defends a crafted mail with thousands of parts). */
 const MAX_INBOX_ATTACHMENTS = 50
@@ -43,6 +49,7 @@ const MAX_INBOX_ATTACHMENTS = 50
 export interface AdminInboxRouteOverrides {
   repo: InboundRepository
   storage: Storage
+  feed?: InboxFeedRepository
 }
 
 declare module "fastify" {
@@ -64,11 +71,20 @@ export async function registerAdminInboxRoutes(
   function storage(): Storage {
     return app.adminInboxOverrides?.storage ?? container.inboundStorage
   }
+  function feed(): InboxFeedRepository {
+    return app.adminInboxOverrides?.feed ?? makeDrizzleInboxFeedRepository(container.getDb().sql)
+  }
 
   // GET /admin/inbox
   route(app, "listInbox", async (request, reply) => {
     const query = parse(InboxListQuerySchema, request.query)
     const payload: InboxListResponse = await repo().list(query)
+    reply.status(200).send(payload)
+  })
+
+  route(app, "listInboxFeed", async (request, reply) => {
+    const query = parse(InboxFeedQuerySchema, request.query)
+    const payload: InboxFeedResponse = await feed().list(query)
     reply.status(200).send(payload)
   })
 

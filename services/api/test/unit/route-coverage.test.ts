@@ -42,7 +42,6 @@ const SIGNING_KEY = "test-anon-signing-key"
 const PARAM_VALUE = "11111111-1111-1111-1111-111111111111"
 
 const NOT_YET_ROUTED = new Set<string>([
-  "listInboxFeed",
   "getForwardTemplateDefault",
   "setForwardTemplateDefault",
   "previewForwardTemplate",

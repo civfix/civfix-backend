@@ -175,7 +175,10 @@ export function replyPublication(
   return message.unaffiliated ? "withheld" : "pending"
 }
 
-export function toMessageDTO(message: MailMessageRecord): MailMessageDTO {
+export function toMessageDTO(
+  message: MailMessageRecord,
+  thread: PublicationThread,
+): MailMessageDTO {
   return {
     id: message.id,
     who: deriveWho(message.direction, message.fromAddr),
@@ -187,6 +190,8 @@ export function toMessageDTO(message: MailMessageRecord): MailMessageDTO {
     attachments: message.attachments,
     ...(message.truncated === true ? { truncated: true } : {}),
     delivery: deliveryOf(message),
+    authVerdict: message.direction === "in" ? message.authVerdict : null,
+    publication: replyPublication(thread, message),
   }
 }
 
@@ -197,7 +202,7 @@ export function toThreadDTO(
   const latest = messages.length > 0 ? (messages[messages.length - 1] ?? null) : null
   return {
     ...toThreadListItem(thread, latest),
-    messages: messages.map(toMessageDTO),
+    messages: messages.map((message) => toMessageDTO(message, thread)),
   }
 }
 
