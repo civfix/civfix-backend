@@ -46,7 +46,6 @@ const NOT_YET_ROUTED = new Set<string>([
   "getForwardTemplateDefault",
   "setForwardTemplateDefault",
   "previewForwardTemplate",
-  "publishMailReply",
 ])
 
 async function buildFullFakeServer(): Promise<FastifyInstance> {

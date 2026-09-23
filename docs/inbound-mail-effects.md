@@ -1,7 +1,7 @@
 # Mail effects and the outbound send triad
 
 **Audience:** internal (engineering). Not served publicly.
-**Last updated:** 2026-09-23 (withheld replies flag their thread for review; a reply stripped to nothing is flagged too).
+**Last updated:** 2026-09-23 (withheld replies flag their thread for review and an operator can publish one; a reply stripped to nothing is flagged too).
 
 An inbound message that correlates to a mail thread can drive **public** effects: a report status
 transition, a public `report_timeline` row, a report-chat system message, and a push to the reporter.
@@ -59,6 +59,16 @@ A delivered outbound message clears a send failure's `needs_action` back to `sen
 thread still holds a withheld reply (`hasWithheldReply`): a resend, a follow-up or a resident's @city
 forward would otherwise drop the reply out of review. A thread with no report or event has nothing
 public to publish to, so an unaffiliated reply there is stored without the flag.
+
+An operator publishes a withheld reply with `publishMailReply`
+(`POST /admin/mail/:id/messages/:messageId/publish`: operator only, CSRF, 20 a minute per operator).
+It is an explicit, audited override of the affiliation gate. One transaction clears `unaffiliated` and
+writes a `mail.reply_published` audit row naming the operator (with the sender's domain, never the
+address); then exactly the effects a verified reply gets run, under the same lease. Only an inbound
+message of that thread qualifies (404 otherwise), and a thread with no report or event is refused with
+409. Publishing an already published reply is a no-op with no second audit row. When the effects fail,
+or another runner holds the lease, the answer is `pending`: the cleared flag makes the reply eligible
+for the sweep, which finishes it.
 
 ## Stage 2 publishes the city's reply text (product decision)
 
