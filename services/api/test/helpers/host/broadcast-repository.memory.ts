@@ -5,6 +5,7 @@ import type {
   AdminBroadcastListQuery,
   AnnouncementCap,
   AnnouncementListQuery,
+  AudienceCountQuery,
   AudiencePageQuery,
   BroadcastListQuery,
   BroadcastRepository,
@@ -39,6 +40,8 @@ import {
   DEFAULT_BROADCAST_CHUNK_SIZE,
   HOST_COMPOSED_BROADCAST_KINDS,
 } from "../../../src/services/host/broadcast-types.js"
+
+type AudienceScopeQuery = Pick<AudiencePageQuery, "cleanupId" | "segment" | "kind">
 
 interface DeliveryRow extends DeliveryRowInput {
   id: string
@@ -723,6 +726,15 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     return Promise.resolve(this.events.get(cleanupId) ?? null)
   }
 
+  eventContexts(cleanupIds: readonly string[]): Promise<Map<string, EventBroadcastContext>> {
+    const out = new Map<string, EventBroadcastContext>()
+    for (const id of cleanupIds) {
+      const event = this.events.get(id)
+      if (event !== undefined) out.set(id, event)
+    }
+    return Promise.resolve(out)
+  }
+
   hostMessagingState(userId: string): Promise<HostMessagingState | null> {
     if (this.deletedHosts.has(userId)) return Promise.resolve(null)
     return Promise.resolve(this.hosts.get(userId) ?? null)
@@ -792,26 +804,22 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   }
 
   audiencePage(query: AudiencePageQuery): Promise<{ members: string[]; guests: string[] }> {
-    const members = (this.members.get(query.cleanupId) ?? [])
-      .filter((m) => this.memberMatchesSegment(m, query))
-      .filter((m) => m.deleted !== true && m.suspended !== true && m.banned !== true)
-      .filter((m) => this.memberAudible(query.cleanupId, m, query.kind))
-      .map((m) => m.userId)
-      .filter((id) => query.afterMember === null || id > query.afterMember)
-      .sort()
-    const guests = (this.guests.get(query.cleanupId) ?? [])
-      .filter((g) => this.guestMatchesSegment(g, query))
-      .filter((g) => g.cancelled !== true && g.scrubbed !== true && g.email !== null)
-      .filter(
-        (g) => CRITICAL_BROADCAST_KINDS.has(query.kind) || !this.guestOptedOut(query.cleanupId, g),
-      )
-      .map((g) => g.guestId)
-      .filter((id) => query.afterGuest === null || id > query.afterGuest)
-      .sort()
+    const members = this.memberAudience(query).filter(
+      (id) => query.afterMember === null || id > query.afterMember,
+    )
+    const guests = this.guestAudience(query).filter(
+      (id) => query.afterGuest === null || id > query.afterGuest,
+    )
     return Promise.resolve({
       members: members.slice(0, query.limit),
       guests: guests.slice(0, query.limit),
     })
+  }
+
+  audienceCount(query: AudienceCountQuery): Promise<number> {
+    const members = Math.min(this.memberAudience(query).length, query.cap)
+    const guests = Math.min(this.guestAudience(query).length, query.cap)
+    return Promise.resolve(members + guests)
   }
 
   scrubBroadcastContent(cutoff: Date, batchSize: number): Promise<number> {
@@ -845,6 +853,26 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     return Promise.resolve(n)
   }
 
+  private memberAudience(query: AudienceScopeQuery): string[] {
+    return (this.members.get(query.cleanupId) ?? [])
+      .filter((m) => this.memberMatchesSegment(m, query))
+      .filter((m) => m.deleted !== true && m.suspended !== true && m.banned !== true)
+      .filter((m) => this.memberAudible(query.cleanupId, m, query.kind))
+      .map((m) => m.userId)
+      .sort()
+  }
+
+  private guestAudience(query: AudienceScopeQuery): string[] {
+    return (this.guests.get(query.cleanupId) ?? [])
+      .filter((g) => this.guestMatchesSegment(g, query))
+      .filter((g) => g.cancelled !== true && g.scrubbed !== true && g.email !== null)
+      .filter(
+        (g) => CRITICAL_BROADCAST_KINDS.has(query.kind) || !this.guestOptedOut(query.cleanupId, g),
+      )
+      .map((g) => g.guestId)
+      .sort()
+  }
+
   private memberAudible(cleanupId: string, member: MemoryMember, kind: BroadcastKind): boolean {
     if (CRITICAL_BROADCAST_KINDS.has(kind)) return true
     if (HOST_COMPOSED_BROADCAST_KINDS.has(kind) && member.hostBroadcastsPref === false) return false
@@ -862,7 +890,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     return this.unsubscribes.has(unsubscribeKey("global", null, "guest", guest.guestId))
   }
 
-  private memberMatchesSegment(member: MemoryMember, query: AudiencePageQuery): boolean {
+  private memberMatchesSegment(member: MemoryMember, query: AudienceScopeQuery): boolean {
     const segment = query.segment
     switch (segment.kind) {
       case "all_registered":
@@ -886,7 +914,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     }
   }
 
-  private guestMatchesSegment(guest: MemoryGuest, query: AudiencePageQuery): boolean {
+  private guestMatchesSegment(guest: MemoryGuest, query: AudienceScopeQuery): boolean {
     const segment = query.segment
     switch (segment.kind) {
       case "all_registered":

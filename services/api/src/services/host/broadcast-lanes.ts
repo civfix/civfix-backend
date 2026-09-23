@@ -163,10 +163,14 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
         defaultOffsets: DEFAULT_REMINDER_OFFSETS_MIN,
         limit: REMINDER_SWEEP_LIMIT,
       })
+      const events =
+        due.length === 0
+          ? new Map<string, EventBroadcastContext>()
+          : await deps.repo.eventContexts([...new Set(due.map((reminder) => reminder.cleanupId))])
       let created = 0
       for (const reminder of due) {
-        const event = await deps.repo.eventContext(reminder.cleanupId)
-        if (event === null) continue
+        const event = events.get(reminder.cleanupId)
+        if (event === undefined) continue
         const record = await deps.repo.createIfAbsent({
           ...automatedBroadcast(
             event,

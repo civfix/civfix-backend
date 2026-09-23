@@ -16,6 +16,7 @@ import type {
   AdminBroadcastListQuery,
   AnnouncementCap,
   AnnouncementListQuery,
+  AudienceCountQuery,
   AudiencePageQuery,
   BroadcastListQuery,
   BroadcastRepository,
@@ -134,6 +135,47 @@ function firstName(displayName: string): string {
   if (trimmed.length === 0) return ""
   const space = trimmed.indexOf(" ")
   return space === -1 ? trimmed : trimmed.slice(0, space)
+}
+
+interface EventContextRow {
+  id: string
+  title: string
+  page_slug: string | null
+  scheduled_at: Date
+  ends_at: Date | null
+  timezone: string | null
+  address: string | null
+  status: string
+  organizer_user_id: string
+  organization_suspended: boolean
+  host_reply_to: string | null
+  host_reply_to_verified_at: Date | null
+}
+
+function selectEventContext(sql: Queryable): SqlFragment {
+  return sql`
+        SELECT c.id, c.title, c.page_slug, c.scheduled_at, c.ends_at, c.timezone, c.address, c.status,
+               c.organizer_user_id, c.host_reply_to, c.host_reply_to_verified_at,
+               (o.suspended_at IS NOT NULL) AS organization_suspended
+          FROM cleanups c
+          LEFT JOIN organizations o ON o.id = c.organization_id AND o.deleted_at IS NULL`
+}
+
+function toEventContext(row: EventContextRow): EventBroadcastContext {
+  return {
+    cleanupId: row.id,
+    title: row.title,
+    pageSlug: row.page_slug,
+    scheduledAt: row.scheduled_at,
+    endsAt: row.ends_at,
+    timezone: row.timezone,
+    address: row.address,
+    status: row.status,
+    organizerUserId: row.organizer_user_id,
+    organizationSuspended: row.organization_suspended,
+    replyTo: row.host_reply_to,
+    replyToVerified: row.host_reply_to_verified_at !== null,
+  }
 }
 
 export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
@@ -825,45 +867,24 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
     },
 
     async eventContext(cleanupId: string): Promise<EventBroadcastContext | null> {
-      const rows = await sql<
-        {
-          id: string
-          title: string
-          page_slug: string | null
-          scheduled_at: Date
-          ends_at: Date | null
-          timezone: string | null
-          address: string | null
-          status: string
-          organizer_user_id: string
-          organization_suspended: boolean
-          host_reply_to: string | null
-          host_reply_to_verified_at: Date | null
-        }[]
-      >`
-        SELECT c.id, c.title, c.page_slug, c.scheduled_at, c.ends_at, c.timezone, c.address, c.status,
-               c.organizer_user_id, c.host_reply_to, c.host_reply_to_verified_at,
-               (o.suspended_at IS NOT NULL) AS organization_suspended
-          FROM cleanups c
-          LEFT JOIN organizations o ON o.id = c.organization_id AND o.deleted_at IS NULL
+      const rows = await sql<EventContextRow[]>`
+        ${selectEventContext(sql)}
          WHERE c.id = ${cleanupId}
          LIMIT 1`
       const row = rows[0]
-      if (row === undefined) return null
-      return {
-        cleanupId: row.id,
-        title: row.title,
-        pageSlug: row.page_slug,
-        scheduledAt: row.scheduled_at,
-        endsAt: row.ends_at,
-        timezone: row.timezone,
-        address: row.address,
-        status: row.status,
-        organizerUserId: row.organizer_user_id,
-        organizationSuspended: row.organization_suspended,
-        replyTo: row.host_reply_to,
-        replyToVerified: row.host_reply_to_verified_at !== null,
-      }
+      return row === undefined ? null : toEventContext(row)
+    },
+
+    async eventContexts(
+      cleanupIds: readonly string[],
+    ): Promise<Map<string, EventBroadcastContext>> {
+      const out = new Map<string, EventBroadcastContext>()
+      if (cleanupIds.length === 0) return out
+      const rows = await sql<EventContextRow[]>`
+        ${selectEventContext(sql)}
+         WHERE c.id = ANY(${[...cleanupIds]}::uuid[])`
+      for (const row of rows) out.set(row.id, toEventContext(row))
+      return out
     },
 
     async hostMessagingState(userId: string): Promise<HostMessagingState | null> {
@@ -993,6 +1014,10 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
 
     audiencePage(query: AudiencePageQuery): Promise<{ members: string[]; guests: string[] }> {
       return audience.audiencePage(query)
+    },
+
+    audienceCount(query: AudienceCountQuery): Promise<number> {
+      return audience.audienceCount(query)
     },
 
     async scrubBroadcastContent(cutoff: Date, batchSize: number): Promise<number> {

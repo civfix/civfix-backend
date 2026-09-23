@@ -1,7 +1,8 @@
 import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
+import type postgres from "postgres"
 import type { Queryable } from "../../db/client.js"
 import { CRITICAL_BROADCAST_KINDS, HOST_COMPOSED_BROADCAST_KINDS } from "./broadcast-types.js"
-import type { AudiencePageQuery } from "./broadcast-repository.js"
+import type { AudienceCountQuery, AudiencePageQuery } from "./broadcast-repository.js"
 import type { BroadcastAudienceRepository } from "./broadcast-audience-repository.js"
 
 // Sorts before every real id, so a first page starts at the beginning of the keyset.
@@ -19,11 +20,18 @@ interface IdRow {
   id: string
 }
 
+type AudienceStatement = postgres.PendingQuery<IdRow[]>
+
+interface CountRow {
+  n: number
+}
+
 export async function listMemberAudiencePage(
   sql: Queryable,
   query: AudienceQuery,
 ): Promise<string[]> {
-  const rows = await memberQuery(sql, query)
+  const page = memberQuery(sql, query)
+  const rows = page === null ? [] : await page
   return rows.map((row) => row.id)
 }
 
@@ -31,8 +39,16 @@ export async function listGuestAudiencePage(
   sql: Queryable,
   query: AudienceQuery,
 ): Promise<string[]> {
-  const rows = await guestQuery(sql, query)
+  const page = guestQuery(sql, query)
+  const rows = page === null ? [] : await page
   return rows.map((row) => row.id)
+}
+
+// Wraps the same statement a send pages through, so the preview count and the send share one predicate.
+async function countAudienceSide(sql: Queryable, page: AudienceStatement | null): Promise<number> {
+  if (page === null) return 0
+  const [row] = await sql<CountRow[]>`SELECT count(*)::int AS n FROM (${page}) s`
+  return row?.n ?? 0
 }
 
 export function makeDrizzleBroadcastAudienceRepository(
@@ -57,6 +73,21 @@ export function makeDrizzleBroadcastAudienceRepository(
         }),
       ])
       return { members, guests }
+    },
+
+    async audienceCount(query: AudienceCountQuery): Promise<number> {
+      const side: AudienceQuery = {
+        cleanupId: query.cleanupId,
+        segment: query.segment,
+        kind: query.kind,
+        after: null,
+        limit: query.cap,
+      }
+      const [members, guests] = await Promise.all([
+        countAudienceSide(sql, memberQuery(sql, side)),
+        countAudienceSide(sql, guestQuery(sql, side)),
+      ])
+      return members + guests
     },
   }
 }
@@ -105,7 +136,7 @@ function guestSuppressionTail(sql: Queryable, cleanupId: string, kind: Broadcast
        ${optOuts}`
 }
 
-function memberQuery(sql: Queryable, q: AudienceQuery): Promise<IdRow[]> {
+function memberQuery(sql: Queryable, q: AudienceQuery): AudienceStatement | null {
   const tail = memberSuppressionTail(sql, q.cleanupId, q.kind)
   const after = q.after ?? FIRST_UUID
   switch (q.segment.kind) {
@@ -173,11 +204,11 @@ function memberQuery(sql: Queryable, q: AudienceQuery): Promise<IdRow[]> {
          ORDER BY u.id
          LIMIT ${q.limit}`
     case "guests_only":
-      return Promise.resolve([])
+      return null
   }
 }
 
-function guestQuery(sql: Queryable, q: AudienceQuery): Promise<IdRow[]> {
+function guestQuery(sql: Queryable, q: AudienceQuery): AudienceStatement | null {
   const tail = guestSuppressionTail(sql, q.cleanupId, q.kind)
   const after = q.after ?? FIRST_UUID
   switch (q.segment.kind) {
@@ -235,6 +266,6 @@ function guestQuery(sql: Queryable, q: AudienceQuery): Promise<IdRow[]> {
          ORDER BY g.id
          LIMIT ${q.limit}`
     case "slots":
-      return Promise.resolve([])
+      return null
   }
 }
