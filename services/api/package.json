@@ -20,7 +20,10 @@
     "./adapters/storage-local": "./src/adapters/storage.local.ts",
     "./adapters/abuse-checks": "./src/adapters/abuse-checks.ts",
     "./errors": "./src/errors/glitchtip.ts",
-    "./migrate": "./src/db/migrate.ts"
+    "./migrate": "./src/db/migrate.ts",
+    "./env-parsers": "./src/env/parsers.ts",
+    "./concurrency": "./src/lib/concurrency.ts",
+    "./time": "./src/lib/time.ts"
   },
   "scripts": {
     "build": "tsup",

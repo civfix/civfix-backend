@@ -1,4 +1,5 @@
 import { encodeTimeCursor, parseKeysetCursor, type TimeCursor } from "../../db/cursor-helpers.js"
+import { clampPageLimit } from "../../lib/page-limit.js"
 
 export const ADMIN_DEFAULT_LIMIT = 25
 /** Mirrors the shared AdminListQuery limit ceiling. */
@@ -38,12 +39,6 @@ export function pageInMemoryById<T>(
   return { records, nextCursor: last !== undefined ? encodeTimeCursor(anchorOf(last)) : null }
 }
 
-// The wire schema already coerces and caps; this clamp keeps a repo from ever receiving a 0, negative or
-// huge LIMIT.
 export function clampLimit(limit: number | undefined): number {
-  if (limit === undefined || !Number.isFinite(limit)) return ADMIN_DEFAULT_LIMIT
-  const n = Math.floor(limit)
-  if (n < 1) return 1
-  if (n > ADMIN_MAX_LIMIT) return ADMIN_MAX_LIMIT
-  return n
+  return clampPageLimit(limit, ADMIN_DEFAULT_LIMIT, ADMIN_MAX_LIMIT)
 }
