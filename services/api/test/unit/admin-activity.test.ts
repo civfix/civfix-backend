@@ -53,6 +53,7 @@ describe("describeAuditAction", () => {
     expect(describeAuditAction("mail.reply_published_without_text")).toBe(
       "A city reply was posted without its text",
     )
+    expect(describeAuditAction("mail.reply_published")).toBe("Published a withheld city reply")
   })
 })
 
