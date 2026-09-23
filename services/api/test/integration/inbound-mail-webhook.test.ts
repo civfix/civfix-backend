@@ -189,7 +189,7 @@ describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
     expect(res.json()).toMatchObject({ accepted: true, outcome: "threaded" })
     const rows = await h.sql<{ unaffiliated: boolean; verdict: string | null }[]>`
       SELECT m.unaffiliated, e.meta->>'authVerdict' AS verdict
-      FROM mail_messages m JOIN mail_events e ON e.message_id = m.id
+      FROM mail_messages m JOIN mail_events e ON e.message_id = m.id::text
       WHERE m.thread_id = ${seeded.id}
     `
     expect(rows).toHaveLength(1)
