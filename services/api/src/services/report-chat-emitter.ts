@@ -52,8 +52,7 @@ export function makeContainerReportChatEmitter(
     // System messages have no author, so the notifier short-circuits this gate on a null actor. It is
     // wired to the real repo rather than a `() => false` stub so a timeline event that gains an author
     // is already correct. Resolved lazily: a caller's wiring may have no blocks repo, and a throw at
-    // construction would abort the caller (emit()'s try/catch only covers the emit). The batch form
-    // (blockedIdsAmong) is not wired because probing it needs the repo at construction time.
+    // construction would abort the caller (emit()'s try/catch only covers the emit).
     isBlockedEitherWay: (a, b) => container.getBlocksRepo().isBlockedEitherWay(a, b),
     logger,
   })

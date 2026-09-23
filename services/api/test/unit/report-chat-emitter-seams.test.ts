@@ -2,8 +2,8 @@
  * makeContainerReportChatEmitter's optional BATCH seams (src/services/report-chat-emitter.ts).
  *
  * The emitter is assembled from container primitives (report-chat repo + notification service + mutes repo
- * + blocks repo) and fans a per-member bell for every timeline system message. Both batch seams it wires
- * are OPTIONAL on their repositories, and chat-room-fanout-notifier treats a PRESENT batch seam as
+ * + blocks repo) and fans a per-member bell for every timeline system message. The mutes batch seam it
+ * wires is OPTIONAL on its repository, and chat-room-fanout-notifier treats a PRESENT batch seam as
  * AUTHORITATIVE: it then never runs the per-candidate gate. So binding an absent method through a
  * `?? Promise.resolve(new Set())` default (which is what this file used to do for mutes) silently turns the
  * gate OFF for the whole room: every muted member gets belled.
