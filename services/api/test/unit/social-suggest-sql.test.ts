@@ -6,6 +6,7 @@ import {
   SUGGEST_CANDIDATE_RADIUS_DEG,
 } from "../../src/services/social-repository.drizzle.js"
 import type { Sql } from "../../src/db/client.js"
+import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 
 const VIEWER = "11111111-1111-1111-1111-111111111111"
 
@@ -73,5 +74,10 @@ describe("suggestFollows: the nearby pool is KNN-bounded", () => {
     expect(stmt.values).toContain(SUGGEST_CANDIDATE_RADIUS_DEG)
     expect(stmt.values.filter((v) => v === SUGGEST_CANDIDATE_POOL)).toHaveLength(3)
     expect(stmt.values).toContain(10)
+  })
+
+  it("keeps the official account out of all three pools", async () => {
+    const stmt = await emittedStatement()
+    expect(stmt.values.filter((v) => v === CIVFIX_OFFICIAL_USER_ID)).toHaveLength(3)
   })
 })

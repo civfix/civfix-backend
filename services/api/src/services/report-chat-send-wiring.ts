@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../di.js"
 import { makeReportChatRepository } from "./report-chat-repository.drizzle.js"
@@ -12,18 +13,37 @@ import { makeContainerReportCityForward } from "./report-city-forward-wiring.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import type { ChatMentionRecordSeam } from "./chat-mention-resolver.js"
 import type { ReportChatSendDeps } from "./report-chat-send.js"
+import type { ChatRepository } from "./chat-repository.drizzle.js"
+import { writeAudit } from "./admin/audit.js"
 
 export interface ContainerReportChatSendOptions {
+  chatRepo: () => ChatRepository
   mentions?: ChatMentionRecordSeam | undefined
   logger?: FastifyBaseLogger | undefined
 }
 
+export function makeAuditedReportChatPersist(
+  chatRepo: () => ChatRepository,
+): ReportChatSendDeps["persist"] {
+  return (input, { actingUserId }) =>
+    chatRepo().insertMessage(input, randomUUID(), {
+      inTx: async (tx, row) => {
+        await writeAudit(tx, {
+          actorId: actingUserId,
+          action: "report.message_posted",
+          target: `report:${input.cleanupId}`,
+          meta: { messageId: row.id },
+        })
+      },
+    })
+}
+
 export function makeContainerReportChatSendDeps(
   container: Container,
-  options: ContainerReportChatSendOptions = {},
+  options: ContainerReportChatSendOptions,
 ): ReportChatSendDeps {
   const base: ReportChatSendDeps = {
-    persist: (input) => container.chatService.persist(input),
+    persist: makeAuditedReportChatPersist(options.chatRepo),
     broadcast: (roomKey, message) => container.chatService.broadcast(roomKey, message),
   }
   if (container.env.USE_FAKE_CHAT) {

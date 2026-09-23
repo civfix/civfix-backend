@@ -1,6 +1,7 @@
 import { AppError, type Role } from "@civfix/shared"
 import { generateToken, sha256Hex } from "./crypto.js"
 import type { CacheClient } from "./cache.js"
+import { isOfficialAccount } from "./official-account.js"
 import { assertTargetIsNotOperatorRole } from "./operator-target.js"
 import type { AccountStatus, SessionStore } from "./stores.js"
 
@@ -113,6 +114,9 @@ export class SessionService {
   }
 
   async createSession(userId: string, roles: Role[], meta: SessionMeta = {}): Promise<string> {
+    if (isOfficialAccount(userId)) {
+      throw AppError.forbidden("This account cannot start a new session.")
+    }
     const token = generateToken()
     const hash = await sha256Hex(token)
     const nowMs = this.now()
@@ -293,6 +297,7 @@ export class SessionService {
   }
 
   private async userGate(userId: string): Promise<UserGate> {
+    if (isOfficialAccount(userId)) return { active: false, epoch: 0 }
     const keys = [bannedKey(userId), epochKey(userId)]
     const [banned, epochRaw] = this.cache.mget
       ? await this.cache.mget(keys)

@@ -83,6 +83,7 @@ interface Ctx {
   jobs: FakeJobs
   db: FakeSqlControl
   chatEvents: ReportTimelineEvent[]
+  logs: string[]
 }
 
 function ctx(
@@ -98,7 +99,10 @@ function ctx(
   const jobs = new FakeJobs()
   const db = makeFakeSql(sqlHandlers)
   const chatEvents: ReportTimelineEvent[] = []
+  const logs: string[] = []
+  const record = (_obj: unknown, msg?: string) => logs.push(msg ?? "")
   const deps: InboundProcessorDeps = {
+    logger: { warn: record, error: record },
     storage,
     inboundMail,
     mailRepo,
@@ -133,6 +137,7 @@ function ctx(
     jobs,
     db,
     chatEvents,
+    logs,
   }
 }
 
@@ -163,6 +168,20 @@ describe("processInboundObject: routing", () => {
     expect(c.inboundRepo.rows[0]?.recipient).toBe("support@civfix.org")
     expect(c.mailRepo.threads.size).toBe(0)
     expect(c.storage.get(key)).toBeNull()
+  })
+
+  it("stores an HTML-only catch-all message's body as readable text for the Inbox", async () => {
+    const c = ctx(new CfInboundMail())
+    const key = `${INBOUND_PENDING_PREFIX}html-inbox.eml`
+    const headers = { "Content-Type": "text/html; charset=UTF-8" }
+    const html = "<p>Hello</p><p>there</p>"
+    await put(
+      c,
+      key,
+      rfc822({ from: "r@example.com", to: "support@civfix.org", body: html, headers }),
+    )
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("inbox")
+    expect(c.inboundRepo.rows[0]?.bodyText).toBe("Hello\n\nthere")
   })
 })
 
@@ -405,6 +424,21 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     expect(c.chatEvents).toHaveLength(1)
     expect(c.chatEvents[0]?.body).toBe("Ticket 4821 is open.")
     expect(c.chatEvents[0]?.body).not.toContain("civfix reference ABC123")
+  })
+
+  it("cuts the chat body at a reply address on the configured MAIL_REPLY_DOMAIN", async () => {
+    const reportId = "report-domain"
+    const c = ctx()
+    Object.assign(c.container.env, { MAIL_REPLY_DOMAIN: "civfix.dev" })
+    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const key = `${INBOUND_PENDING_PREFIX}reply-domain.eml`
+    const body = `Ticket 4821 is open.\nForwarded by report-${TOKEN}@civfix.dev`
+    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body }))
+
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    expect(c.chatEvents.map((e) => e.body)).toEqual(["Ticket 4821 is open."])
   })
 
   it("H6: an HTML-only city reply lands on the thread as TEXT and reaches the chat as text", async () => {
@@ -664,6 +698,44 @@ describe("processInboundObject: unaffiliated thread joiners (H5)", () => {
     expect(stored?.unaffiliated).toBe(false)
     expect(stored?.effectsAppliedAt).not.toBeNull()
     expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
+  })
+})
+
+describe("processInboundObject: failures surface instead of being swallowed", () => {
+  it("keeps the chat stage owed and releases the claim when the chat insert fails", async () => {
+    const reportId = "report-chatfail"
+    const insertFails: SqlHandler = {
+      match: /INSERT INTO chat_messages/i,
+      rows: () => {
+        throw new Error("chat insert failed")
+      },
+    }
+    const c = ctx(new FakeInboundMail(), [insertFails])
+    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    delete c.deps.chatEmitter
+    const key = `${INBOUND_PENDING_PREFIX}chatfail.eml`
+    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org` }))
+
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    const stored = c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")
+    expect(stored).toMatchObject({ effectsStage: 1, effectsClaimedAt: null })
+    expect(stored?.effectsAppliedAt).toBeNull()
+    expect(c.logs).toContain(
+      "inbound: side effects failed (claim released; the sweep re-drives it)",
+    )
+  })
+
+  it("leaves the object pending when the thread lookup fails", async () => {
+    const c = ctx()
+    c.mailRepo.findThreadByToken = () => Promise.reject(new Error("db down"))
+    const key = `${INBOUND_PENDING_PREFIX}lookupfail.eml`
+    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org` }))
+
+    await expect(processInboundObject(c.container, key, c.deps)).rejects.toThrow("db down")
+    expect(c.storage.get(key)).not.toBeNull()
+    expect(c.inboundRepo.rows).toHaveLength(0)
   })
 })
 
@@ -1140,6 +1212,7 @@ describe("processInboundObject: message authentication gate (M7)", () => {
 
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("inbox")
     expect(c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")).toHaveLength(0)
+    expect(c.inboundRepo.rows[0]?.fromAddr).toBe("x@attacker.example, clerk@lacity.gov")
   })
 
   it("a sender-supplied X-Civfix-Auth-Verdict header cannot forge the stored verdict", async () => {

@@ -33,7 +33,7 @@ authentication to `pass`, `fail` or `unknown`. The email Worker applies no filte
   suffix (`org`, `co.uk`) has no organizational domain and is `fail`. `isJurisdictionSender` compares
   the From domain with the thread's contact the same way.
 - A message with more than one `From` header or address has no parsed From. It never threads and goes
-  to the Inbox.
+  to the Inbox, whose row shows every claimed sender joined with commas, for display only.
 
 `processInboundObject` (`services/api/src/services/admin/inbound-processor.ts`) first drops our own
 outbound mail looping back (a Message-ID of the `<out-…@MAIL_FROM_OUTREACH domain>` shape, or a From that
@@ -74,23 +74,39 @@ fixed — suppressing it would mean stamping a template revision on every histor
 `mail_messages`/`mail_threads` row and gating stage 2 on it, and the alternative of not publishing at all
 defeats the feature. The exposure decays as old threads go quiet.
 
-What reaches the chat is `cityReplyChatBody(message.body)`
-(`services/api/src/services/admin/inbound-thread-correlation.ts`): the **stored plain-text** body (an
-HTML-only reply was already flattened by `htmlToText` before it was stored), conservatively stripped of
-quoted history, whitespace-trimmed, and clipped to `MESSAGE_BODY_MAX` (2000) so it passes chat
-validation. The clip is grapheme-safe (`clipToMessageBody` walks `segmentGraphemes` from
-`@civfix/shared` and stops before the code-unit budget), so the cut can never split a surrogate pair or
-a combining sequence and leave invalid text in the chat. The strip is deliberately conservative and is
-unit-tested; a line is a cut point when it is:
+What reaches the chat is `cityReplyChatBody(message.body, MAIL_REPLY_DOMAIN)`
+(`services/api/src/services/admin/inbound-thread-correlation.ts`): the **stored plain-text** body,
+conservatively stripped of quoted history, whitespace-trimmed, and clipped to `MESSAGE_BODY_MAX`
+(2000) so it passes chat validation. The clip is grapheme-safe (`clipToMessageBody` walks
+`segmentGraphemes` from `@civfix/shared` and stops before the code-unit budget), so the cut can never
+split a surrogate pair or a combining sequence and leave invalid text in the chat. The strip is deliberately conservative and is
+unit-tested.
 
-- a Gmail-style attribution — `/^On\s.+\swrote:$/`, anchored at the end so prose like "On Tuesday our
-  crew wrote: see below" is not mistaken for one;
+The stored body is the message's `text/plain` part. The adapter parses with mailparser's
+`skipHtmlToText`, so an HTML-only reply is flattened by our own `htmlToText`
+(`services/api/src/services/admin/mail-preview.ts`) before it is stored: block elements break lines,
+`<blockquote>` lines get a `> ` prefix, images are dropped, and an `http(s)` link keeps its target in
+parentheses; `<pre>` keeps its own line breaks. The Inbox stores the same text for an HTML-only message.
+
+A line is a cut point when it is:
+
+- an attribution — `On … wrote:`, `El … escribió:`, `Am … schrieb …:`, `Le … a écrit :` or
+  `2026년 … 작성:` — anchored at the end so prose like "On Tuesday our crew wrote: see below" is not
+  mistaken for one. Up to three lines are joined when the joined text holds an `@`, because Gmail
+  wraps a long attribution. The join stops only at a line where another attribution begins, so a reply
+  line starting with `On`, `El`, `Am` or `Le` right above one is kept, while a wrapped sender name that
+  starts with one of those words still joins;
 - an Outlook separator — `-----Original Message-----`, tolerant of the dash count;
 - an unquoted Outlook header block — `/^From:\s.+$/` followed within two lines by `Sent:`, `Date:` or
-  `To:`.
+  `To:`;
+- any line holding one of our own mail identifiers: a thread reply address (`report-`, `reply-` or
+  `event-` plus a token, on `MAIL_REPLY_DOMAIN`) or an outbound Message-ID (`out-<uuid>@…`). Every
+  quoting style repeats our From address or Message-ID in its attribution or header block, so this cut
+  holds for a client or language the patterns above miss, and no reply address reaches the chat.
 
-Everything from the first cut point onward is dropped, then a trailing run of `>`-prefixed (or blank)
-lines is dropped. A non-trailing quote is kept — a reply that quotes and then answers keeps both halves.
+Everything from the first cut point onward is dropped, then a trailing run of `>`-prefixed, blank or
+separator (`___`, `---`) lines is dropped. A non-trailing quote is kept — a reply that quotes and then
+answers keeps both halves — unless it holds one of our identifiers.
 
 If the result is empty (a reply that was nothing but quoted history), stage 2 falls back to the previous
 behavior: the note only, with `body: null`.
@@ -116,6 +132,13 @@ The columns on `mail_messages` (migration `0100`) are a **lease**, not a flag:
 stages it still owes, then calls `markMessageEffectsApplied`. On a throw it calls
 `releaseMessageEffects`, which drops the claim but **keeps the stage**, so the next sweep resumes rather
 than repeating.
+
+Stage 2 builds its emitter with `propagateInsertFailure`: a failed chat insert throws, so the stage stays
+at 1 and the sweep retries it. A broadcast or push failure after the row exists is logged and the stage
+advances, because retrying would post the reply into the chat twice. Every inbound failure is logged with
+its R2 key or message id: parse and park failures, correlation lookups (the object stays in
+`inbound/pending/` for the sweep instead of falling into the Inbox), and the sweep's per-object and
+re-drive errors.
 
 ## The pre-migration backfill
 

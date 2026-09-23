@@ -8,6 +8,7 @@ import {
   type UserStore,
 } from "./stores.js"
 import { RemoteJwksVerifier, type JwksVerifier, type VerifiedIdToken } from "./jwks.js"
+import { newAccountDisplayName } from "./official-account.js"
 
 export const GOOGLE_ISSUERS = ["https://accounts.google.com", "accounts.google.com"]
 export const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
@@ -181,7 +182,10 @@ export class OAuthService {
     let created: UserRecord
     try {
       created = await this.users.create(verifiedEmail, {
-        displayName: providerDisplayName(fullName, claims, provider),
+        displayName: newAccountDisplayName(
+          providerDisplayName(fullName, claims, provider),
+          providerFallbackName(provider),
+        ),
         role: "citizen",
         emailVerified: verifiedEmail !== null,
         avatarUrl: safeAvatarUrl(claims.picture),
@@ -279,6 +283,10 @@ function providerDisplayName(
     const name = sanitizeDisplayName(candidate)
     if (name !== null) return name
   }
+  return providerFallbackName(provider)
+}
+
+function providerFallbackName(provider: string): string {
   return provider === PROVIDER_APPLE ? "Apple user" : "Google user"
 }
 

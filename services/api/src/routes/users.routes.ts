@@ -17,6 +17,7 @@ import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
+import { isOfficialAccount } from "../auth/official-account.js"
 import { clearCsrfCookie } from "../auth/csrf.js"
 import { clearSessionCookie } from "../auth/transport.js"
 import { searchByHandlePrefix, searchMentionable } from "../services/social-repository.drizzle.js"
@@ -104,6 +105,9 @@ export async function registerUsersRoutes(
       const userId = requireAuth(request)
       const { id } = parse(UserIdParamsSchema, request.params)
       if (id === userId) throw AppError.validation({ id: "You cannot block yourself." })
+      if (isOfficialAccount(id)) {
+        throw AppError.forbidden("The official CivFix account can't be blocked.")
+      }
       const blocks = blocksRepo()
       await assertUserBlockable(app, blocks, userId, id)
       await blocks.block(userId, id)

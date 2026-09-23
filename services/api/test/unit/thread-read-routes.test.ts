@@ -252,11 +252,12 @@ describe("PUT /threads/read — participation gate (L9)", () => {
 describe("PUT /threads/read — abuse controls", () => {
   it("carries a per-identity rate limit and the csrf guard", () => {
     expect(THREAD_READ_RATE_LIMIT).toMatchObject({ max: 60, timeWindow: "1 minute" })
+    // Whitespace-collapsed so the assertion pins the declaration, not the formatter's line breaks.
     const src = readFileSync(
       new URL("../../src/routes/conversations.routes.ts", import.meta.url),
       "utf8",
-    )
-    const readRoute = src.slice(src.indexOf('route(\n    app,\n    "markThreadRead"'))
+    ).replace(/\s+/g, " ")
+    const readRoute = src.slice(src.indexOf('"markThreadRead",'))
     expect(readRoute.slice(0, 260)).toContain("preHandler: csrfProtect")
     expect(readRoute.slice(0, 260)).toContain("rateLimit: THREAD_READ_RATE_LIMIT")
   })

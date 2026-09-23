@@ -7,7 +7,12 @@ export async function registerInboundJobs(container: Container): Promise<void> {
   await container.jobs.schedule(INBOUND_SWEEP_JOB, container.env.INBOUND_SWEEP_CRON)
   await container.jobs.work(INBOUND_SWEEP_JOB, async () => {
     const result = await runInboundSweep(container, {
-      deps: { logger: { warn: (obj, msg) => console.warn(msg ?? "inbound.sweep", obj) } },
+      deps: {
+        logger: {
+          warn: (obj, msg) => console.warn(msg ?? "inbound.sweep", obj),
+          error: (obj, msg) => console.error(msg ?? "inbound.sweep", obj),
+        },
+      },
     })
     if (result.listError !== undefined) {
       console.error(

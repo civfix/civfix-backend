@@ -24,6 +24,7 @@ import { pageInMemoryById } from "./pagination.js"
 import { flaggedFromTimeline } from "./admin-event-helpers.js"
 import { isPubliclyVisibleStatus } from "../report-visibility.js"
 import { toEventStatus } from "./event-status.js"
+import { CIVFIX_OFFICIAL_DISPLAY_NAME } from "../../auth/official-account.js"
 import { DEFAULT_EVENT_DURATION_MS, deriveCleanupStatus } from "../cleanup-rules.js"
 import type {
   AdminEventMessageRecord,
@@ -375,7 +376,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     const seeded = this.events.get(id)
     if (!seeded) return null
     const list = this.messages.get(id) ?? []
-    list.push({ who: "operator", text: input.body, createdAt: this.nextDate() })
+    list.push({ who: CIVFIX_OFFICIAL_DISPLAY_NAME, text: input.body, createdAt: this.nextDate() })
     this.messages.set(id, list)
     this.appendTimeline(id, {
       kind: "message",
@@ -396,7 +397,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     this.audits.push({
       action: "event.message_posted",
       target: `cleanup:${id}`,
-      meta: { members: seeded.members.length },
+      meta: { members: seeded.members.length, messageId: randomUUID() },
     })
     return { notified: seeded.members.length }
   }

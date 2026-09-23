@@ -68,12 +68,12 @@ export function slugify(messageId: string): string {
     .slice(0, 200)
 }
 
-async function nudgeBackend(env: Env, key: string): Promise<void> {
+export async function nudgeBackend(env: Env, key: string): Promise<void> {
   const body = JSON.stringify({ key })
   const ts = Math.floor(Date.now() / 1000).toString()
-  const signature = await hmacSha256Hex(env.CF_EMAIL_WEBHOOK_SECRET, `${ts}.${body}`)
   try {
-    await fetch(env.BACKEND_WEBHOOK_URL, {
+    const signature = await hmacSha256Hex(env.CF_EMAIL_WEBHOOK_SECRET, `${ts}.${body}`)
+    const res = await fetch(env.BACKEND_WEBHOOK_URL, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -82,7 +82,14 @@ async function nudgeBackend(env: Env, key: string): Promise<void> {
       },
       body,
     })
-  } catch {}
+    if (!res.ok) {
+      console.error(
+        `inbound nudge rejected: HTTP ${res.status} for ${key}; the backend sweep will pick it up`,
+      )
+    }
+  } catch (err) {
+    console.error(`inbound nudge failed for ${key}; the backend sweep will pick it up`, err)
+  }
 }
 
 export async function hmacSha256Hex(secret: string, message: string): Promise<string> {

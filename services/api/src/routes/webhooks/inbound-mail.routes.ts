@@ -21,6 +21,10 @@ export const ACCEPT_LEGACY_UNTIMESTAMPED_SIGNATURE = true
 const LEGACY_WARN_INTERVAL_SEC = 300
 let lastLegacyWarnAtSec = 0
 
+const REJECT_WARN_INTERVAL_SEC = 60
+let lastRejectWarnAtSec = 0
+let rejectsSinceWarn = 0
+
 export const INBOUND_WEBHOOK_RATE_LIMIT = perHost({ max: 60, timeWindow: "1 minute" })
 
 const INBOUND_WEBHOOK_BODY_LIMIT = 4096
@@ -98,15 +102,15 @@ export function assertSignature(
   nowSec: number = Math.floor(Date.now() / 1000),
 ): void {
   if (!expectedSecret) {
-    throw AppError.unauthorized("Inbound mail webhook is not configured.")
+    throw rejected(request, nowSec, "not-configured", "Inbound mail webhook is not configured.")
   }
   if (rawBuf === null) {
-    throw AppError.unauthorized("Inbound mail webhook body missing.")
+    throw rejected(request, nowSec, "no-body", "Inbound mail webhook body missing.")
   }
   const header = request.headers[CF_WEBHOOK_SIGNATURE_HEADER]
   const presented = Array.isArray(header) ? header[0] : header
   if (!presented) {
-    throw AppError.unauthorized("Invalid inbound mail webhook signature.")
+    throw rejected(request, nowSec, "no-signature", "Invalid inbound mail webhook signature.")
   }
 
   const tsHeader = request.headers[CF_WEBHOOK_TIMESTAMP_HEADER]
@@ -115,20 +119,25 @@ export function assertSignature(
   if (rawTs !== undefined && rawTs !== "") {
     const ts = Number.parseInt(rawTs, 10)
     if (!Number.isFinite(ts) || Math.abs(nowSec - ts) > WEBHOOK_MAX_CLOCK_SKEW_SEC) {
-      throw AppError.unauthorized("Inbound mail webhook signature expired.")
+      throw rejected(request, nowSec, "expired", "Inbound mail webhook signature expired.")
     }
     const expected = createHmac("sha256", expectedSecret)
       .update(`${rawTs}.`)
       .update(rawBuf)
       .digest("hex")
     if (!constantTimeStringEqual(presented, expected)) {
-      throw AppError.unauthorized("Invalid inbound mail webhook signature.")
+      throw rejected(request, nowSec, "mismatch", "Invalid inbound mail webhook signature.")
     }
     return
   }
 
   if (!ACCEPT_LEGACY_UNTIMESTAMPED_SIGNATURE) {
-    throw AppError.unauthorized("Inbound mail webhook signature is missing its timestamp.")
+    throw rejected(
+      request,
+      nowSec,
+      "no-timestamp",
+      "Inbound mail webhook signature is missing its timestamp.",
+    )
   }
   const nowSecForWarn = nowSec
   if (nowSecForWarn - lastLegacyWarnAtSec >= LEGACY_WARN_INTERVAL_SEC) {
@@ -137,8 +146,26 @@ export function assertSignature(
   }
   const legacyExpected = createHmac("sha256", expectedSecret).update(rawBuf).digest("hex")
   if (!constantTimeStringEqual(presented, legacyExpected)) {
-    throw AppError.unauthorized("Invalid inbound mail webhook signature.")
+    throw rejected(request, nowSec, "mismatch", "Invalid inbound mail webhook signature.")
   }
+}
+
+function rejected(
+  request: FastifyRequest,
+  nowSec: number,
+  reason: string,
+  message: string,
+): AppError {
+  rejectsSinceWarn += 1
+  if (nowSec - lastRejectWarnAtSec >= REJECT_WARN_INTERVAL_SEC) {
+    request.log.warn(
+      { reason, rejected: rejectsSinceWarn },
+      "inbound-mail webhook: nudge rejected (401)",
+    )
+    lastRejectWarnAtSec = nowSec
+    rejectsSinceWarn = 0
+  }
+  return AppError.unauthorized(message)
 }
 
 function readKey(rawBuf: Buffer | null): string | null {

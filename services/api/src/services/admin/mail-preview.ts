@@ -13,6 +13,12 @@ export function toPreview(body: string | null | undefined, html?: string | null)
 
 const RAW_TEXT_ELEMENTS = new Set(["script", "style"])
 
+const BLOCK_ELEMENTS = new Set(
+  "blockquote br dd div dt h1 h2 h3 h4 h5 h6 hr li p pre table td th tr".split(" "),
+)
+
+const LINK_HREF_RE = /\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i
+
 const HTML_TAG_NAME_RE = /[a-zA-Z][^\s/>]{0,16}/y
 
 function tagNameAt(html: string, at: number): { name: string; end: number } | null {
@@ -33,19 +39,32 @@ function rawTextCloseAt(html: string, name: string, from: number): number {
 }
 
 export function htmlToText(html: string): string {
-  let out = ""
+  const lines: string[] = []
+  let line = ""
+  let quoteDepth = 0
+  let preDepth = 0
+  let href: string | null = null
+  let anchorText = ""
+  const breakLine = (): void => {
+    const text = line.replace(/\s+/g, " ").trim()
+    lines.push(quoteDepth > 0 && text !== "" ? `> ${text}` : text)
+    line = ""
+  }
   let i = 0
   for (;;) {
     const lt = html.indexOf("<", i)
-    if (lt === -1) {
-      out += html.slice(i)
-      break
+    const segment = decodeTextEntities(html.slice(i, lt === -1 ? html.length : lt))
+    const [first = "", ...rest] = preDepth > 0 ? segment.split(/\r?\n/) : [segment]
+    line += first
+    for (const row of rest) {
+      breakLine()
+      line += row
     }
-    out += html.slice(i, lt)
+    if (href !== null) anchorText += segment
+    if (lt === -1) break
 
     if (html.startsWith("!--", lt + 1)) {
       const end = html.indexOf("-->", lt + 4)
-      out += " "
       if (end === -1) break
       i = end + 3
       continue
@@ -53,20 +72,40 @@ export function htmlToText(html: string): string {
 
     const gt = html.indexOf(">", lt + 1)
     if (gt === -1) break
-    out += " "
     i = gt + 1
 
-    if (html[lt + 1] === "/") continue
-    const parsed = tagNameAt(html, lt + 1)
-    if (parsed === null || !RAW_TEXT_ELEMENTS.has(parsed.name)) continue
+    const closing = html[lt + 1] === "/"
+    const parsed = tagNameAt(html, closing ? lt + 2 : lt + 1)
+    if (parsed === null) continue
+    if (BLOCK_ELEMENTS.has(parsed.name)) {
+      breakLine()
+      if (parsed.name === "blockquote") quoteDepth = Math.max(0, quoteDepth + (closing ? -1 : 1))
+      if (parsed.name === "pre") preDepth = Math.max(0, preDepth + (closing ? -1 : 1))
+      continue
+    }
+    if (parsed.name === "a") {
+      if (!closing) {
+        const m = LINK_HREF_RE.exec(html.slice(parsed.end, gt))
+        href = m === null ? null : decodeTextEntities(m[1] ?? m[2] ?? m[3] ?? "")
+        anchorText = ""
+      } else if (href !== null) {
+        if (/^https?:\/\//i.test(href) && anchorText.trim() !== href) line += ` (${href})`
+        href = null
+      }
+      continue
+    }
+    if (closing || !RAW_TEXT_ELEMENTS.has(parsed.name)) continue
     const close = rawTextCloseAt(html, parsed.name, i)
     if (close >= html.length) break
     const closeGt = html.indexOf(">", close)
     if (closeGt === -1) break
-    out += " "
     i = closeGt + 1
   }
-  return decodeTextEntities(out)
+  breakLine()
+  return lines
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
 }
 
 function decodeTextEntities(text: string): string {
@@ -75,9 +114,16 @@ function decodeTextEntities(text: string): string {
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
-    .replace(/&#0*39;/g, "'")
+    .replace(/&#(?:x([0-9a-f]{1,6})|([0-9]{1,7}));/gi, (_m, hex?: string, dec?: string) =>
+      codePointText(hex !== undefined ? Number.parseInt(hex, 16) : Number(dec)),
+    )
     .replace(/&apos;/gi, "'")
     .replace(/&amp;/gi, "&")
+}
+
+function codePointText(code: number): string {
+  const invalid = code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)
+  return String.fromCodePoint(invalid ? 0xfffd : code)
 }
 
 function collapse(value: string): string {

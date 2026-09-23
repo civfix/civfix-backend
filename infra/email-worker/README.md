@@ -18,7 +18,21 @@ The Worker does **not** judge sender authentication. `message.headers` does not 
 The backend is the only gate: it reads the top-most `Authentication-Results` in the raw message and
 trusts it only when its authserv-id is `mx.cloudflare.net`.
 
-See `documents/17-inbound-email-worker.md` for the full pipeline + enablement guide.
+What the backend does with a message, and which messages may publish into a report chat, is in
+`docs/inbound-mail-effects.md`.
+
+## Topology
+
+| | Production | Staging |
+|---|---|---|
+| Mail domain (MX → Cloudflare Email Routing) | `civfix.org`, catch-all → Worker | `civfix.dev`: no MX, no routing rule |
+| Worker (`wrangler.toml` env) | `civfix-inbound-email` | `civfix-inbound-email-staging` |
+| R2 bucket the Worker writes | `civfix-emails` | `civfix-emails-staging` |
+| Backend nudge target | `https://api.civfix.org/webhooks/inbound-mail` | `https://api.civfix.dev/webhooks/inbound-mail` |
+
+The backend reads the same bucket through `R2_INBOUND_BUCKET`, which must differ from the media bucket
+`R2_BUCKET` and is required whenever `R2_PUBLIC_BASE` is set (`services/api/src/env.ts`). The reply
+addresses outbound mail advertises live on `MAIL_REPLY_DOMAIN` (default `civfix.org`).
 
 ## Layout
 
@@ -33,8 +47,8 @@ test/          vitest unit tests (id derivation, HMAC fixture shared with the ba
 
 ## Configure before deploy
 
-1. **`wrangler.toml` → `bucket_name`**: set to the backend's real `R2_BUCKET` value (same physical
-   bucket, so the backend sweep sees what the Worker writes).
+1. **`wrangler.toml` → `bucket_name`**: set to the backend's `R2_INBOUND_BUCKET` value, so the
+   backend sweep sees what the Worker writes. Never the media bucket `R2_BUCKET`.
 2. **`BACKEND_WEBHOOK_URL`**: must equal the backend `PUBLIC_API_URL` + `/webhooks/inbound-mail`.
 3. **Secret**: `wrangler secret put CF_EMAIL_WEBHOOK_SECRET --env production` — the **same value** the
    backend has for `CF_EMAIL_WEBHOOK_SECRET` (the HMAC key). They must be byte-identical.
@@ -75,8 +89,12 @@ backend.
 pnpm deploy            # wrangler deploy --env production (after `wrangler login` / CLOUDFLARE_API_TOKEN)
 ```
 
+CI does not deploy the Worker: a change under `src/` reaches Cloudflare only through `pnpm deploy`.
+
 Then, in the Cloudflare dashboard (or API): enable **Email Routing** on `civfix.org` (auto-manages
 MX/TXT and **takes over inbound mail for the domain** — confirm no other inbound provider first), and
 set the **catch-all** route Action to **Send to a Worker** → `civfix-inbound-email`. The
-`/webhooks/*` path stays un-gated by Cloudflare Access (documents/16), so the Worker can POST it
-through the tunnel. Details + the catch-all API call: `documents/17-inbound-email-worker.md`.
+`/webhooks/*` path stays un-gated by Cloudflare Access, so the Worker can POST it through the tunnel.
+
+A nudge the backend rejects (non-2xx) or that fails to send is logged with `console.error` and the
+object's key; the backend's `inbound.sweep` picks the object up either way.

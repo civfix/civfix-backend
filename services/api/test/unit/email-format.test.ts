@@ -52,6 +52,8 @@ function reportRecord(overrides: Partial<AdminReportRecord> = {}): AdminReportRe
 
 const NO_TEMPLATES = { subject: null, body: null }
 
+const photos = (...urls: string[]) => urls.map((url) => ({ kind: "image" as const, url }))
+
 const defaultSubjectUses = (token: string): boolean =>
   templateUsesToken(DEFAULT_FORWARD_SUBJECT_TEMPLATE, token)
 const defaultBodyUses = (token: string): boolean =>
@@ -108,7 +110,7 @@ describe("buildReportPacket", () => {
     const packet = buildReportPacket(
       reportRecord(),
       null,
-      ["https://r2/a?t=1", "https://r2/b?t=2"],
+      photos("https://r2/a?t=1", "https://r2/b?t=2"),
       "Please prioritize.",
       NO_TEMPLATES,
     )
@@ -131,13 +133,12 @@ describe("buildReportPacket", () => {
     const packet = buildReportPacket(
       reportRecord(),
       null,
-      ["https://r2/a?t=1", "https://r2/b?t=2"],
+      photos("https://r2/a?t=1", "https://r2/b?t=2"),
       null,
       NO_TEMPLATES,
     )
     if (defaultBodyUses("photoLinks")) {
-      expect(packet.text).toContain("https://r2/a?t=1")
-      expect(packet.text).toContain("https://r2/b?t=2")
+      expect(packet.text).toContain("\n- Photo 1: https://r2/a?t=1\n- Photo 2: https://r2/b?t=2\n")
       expect(packet.text).not.toContain("Photos (2)")
     } else {
       expect(packet.html).toContain(">Photo 1<")
@@ -159,7 +160,13 @@ describe("buildReportPacket", () => {
   })
 
   it("uses the real links, not the (none) placeholder, as soon as the report has media", () => {
-    const packet = buildReportPacket(reportRecord(), null, ["https://r2/a?t=1"], null, NO_TEMPLATES)
+    const packet = buildReportPacket(
+      reportRecord(),
+      null,
+      photos("https://r2/a?t=1"),
+      null,
+      NO_TEMPLATES,
+    )
     expect(packet.text).not.toContain(NO_PHOTO_LINKS)
   })
 
@@ -223,7 +230,7 @@ describe("buildReportPacket", () => {
     const packet = buildReportPacket(
       reportRecord(),
       null,
-      ["https://r2/a?t=1", "https://r2/b?t=2"],
+      photos("https://r2/a?t=1", "https://r2/b?t=2"),
       null,
       { subject: null, body: "A {category} report was filed at {address}." },
     )
@@ -236,7 +243,7 @@ describe("buildReportPacket", () => {
     const packet = buildReportPacket(
       reportRecord(),
       null,
-      ["https://r2/a?t=1", "https://r2/b?t=2"],
+      photos("https://r2/a?t=1", "https://r2/b?t=2"),
       null,
       { subject: null, body: "Photos:\n{photoLinks}" },
     )
@@ -306,7 +313,7 @@ describe("buildReportPacket", () => {
     const packet = buildReportPacket(
       reportRecord(),
       null,
-      ["https://r2/a?t=1"],
+      photos("https://r2/a?t=1"),
       "Please prioritize.",
       { subject: "{reporterName}", body: "Filed by {reporterName} ({dept})." },
     )
@@ -357,7 +364,7 @@ describe("buildReportPacket", () => {
     const packet = buildReportPacket(
       reportRecord(),
       null,
-      ["https://cdn.example.org/a.jpg", "https://cdn.example.org/b.jpg"],
+      photos("https://cdn.example.org/a.jpg", "https://cdn.example.org/b.jpg"),
       null,
       NO_TEMPLATES,
     )
@@ -365,7 +372,7 @@ describe("buildReportPacket", () => {
       "Location: 100 Main St<br>Coordinates: 39.5, -98.35<br>View the exact location",
     )
     expect(packet.html).toContain(
-      'a.jpg</a><br><a class="cv-link" href="https://cdn.example.org/b.jpg"',
+      'a.jpg</a><br>- Photo 2: <a class="cv-link" href="https://cdn.example.org/b.jpg"',
     )
     expect(packet.text).toContain("Location: 100 Main St\nCoordinates: 39.5, -98.35\n")
   })
@@ -377,6 +384,56 @@ describe("buildReportPacket", () => {
     })
     expect(packet.text).toContain("Status: In progress")
     expect(packet.text).not.toContain("in_progress")
+  })
+})
+
+describe("{photoLinks} and the appended media list", () => {
+  const mixed = [
+    { kind: "image" as const, url: "https://cdn.test/a.jpg" },
+    { kind: "video" as const, url: "https://cdn.test/v.mp4" },
+    { kind: "image" as const, url: "https://cdn.test/b.jpg?X-Amz-Signature=s&x=1" },
+  ]
+
+  it("renders one '- <Kind> <n>: <link>' line per item, numbered per kind in media order", () => {
+    const packet = buildReportPacket(reportRecord(), null, mixed, null, {
+      subject: null,
+      body: "Links ({photoCount}):\n{photoLinks}\n\nEnd.",
+    })
+    expect(packet.text).toContain(
+      "Links (3):\n- Photo 1: https://cdn.test/a.jpg\n- Video 1: https://cdn.test/v.mp4\n- Photo 2: https://cdn.test/b.jpg?X-Amz-Signature=s&x=1\n\nEnd.",
+    )
+    expect(packet.html).toContain(
+      'Links (3):<br>- Photo 1: <a class="cv-link" href="https://cdn.test/a.jpg"',
+    )
+    expect(packet.html).toContain(
+      '>https://cdn.test/a.jpg</a><br>- Video 1: <a class="cv-link" href="https://cdn.test/v.mp4"',
+    )
+    expect(packet.html).toContain(
+      '>https://cdn.test/v.mp4</a><br>- Photo 2: <a class="cv-link" href="https://cdn.test/b.jpg?X-Amz-Signature=s&amp;x=1"',
+    )
+    expect(packet.html).not.toContain("<ul")
+  })
+
+  it("keeps (none) on its own line when the report has no media", () => {
+    const packet = buildReportPacket(reportRecord(), null, [], null, {
+      subject: null,
+      body: "Links:\n{photoLinks}",
+    })
+    expect(packet.text).toContain("Links:\n(none)")
+    expect(packet.html).toContain("Links:<br>(none)")
+  })
+
+  it("labels the appended list per kind and names videos in its heading", () => {
+    const packet = buildReportPacket(reportRecord(), null, mixed, null, {
+      subject: null,
+      body: "Filed.",
+    })
+    expect(packet.text).toContain(
+      "Photos and videos (3):\n  Photo 1: https://cdn.test/a.jpg\n  Video 1: https://cdn.test/v.mp4\n  Photo 2: https://cdn.test/b.jpg",
+    )
+    expect(packet.html).toContain(">Photos and videos (3)<")
+    expect(packet.html).toMatch(/href="https:\/\/cdn\.test\/v\.mp4"[^>]*>Video 1<\/a>/)
+    expect(packet.html).not.toContain(">https://cdn.test/v.mp4<")
   })
 })
 

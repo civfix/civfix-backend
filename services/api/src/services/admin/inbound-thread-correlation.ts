@@ -15,6 +15,7 @@ import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import { MESSAGE_BODY_MAX, segmentGraphemes } from "@civfix/shared"
 import {
+  DEFAULT_REPLY_DOMAIN,
   domainOf,
   domainsAligned,
   organizationalDomain,
@@ -24,11 +25,17 @@ import { CONSUMER_MAIL_DOMAINS } from "./inbound-bounce.js"
 
 export { JURISDICTION_REPLY_NOTE }
 
+export interface InboundLogger {
+  warn(obj: unknown, msg?: string): void
+  error(obj: unknown, msg?: string): void
+}
+
 export interface InboundEffectDeps {
   reportRepo?: AdminReportRepository
   cleanupRepo?: CleanupRepository
   notifications?: ReporterNotifier
   chatEmitter?: ReportChatSystemEmitter
+  logger?: InboundLogger
 }
 
 export const EFFECTS_LEASE_MS = 10 * 60 * 1000
@@ -46,6 +53,7 @@ export function inboundEffectDeps(
     cleanupRepo?: CleanupRepository
     notifications?: ReporterNotifier
     chatEmitter?: ReportChatSystemEmitter
+    logger?: InboundLogger
   } = {},
 ): InboundEffectDeps {
   return {
@@ -53,10 +61,16 @@ export function inboundEffectDeps(
     ...(deps.cleanupRepo !== undefined ? { cleanupRepo: deps.cleanupRepo } : {}),
     ...(deps.notifications !== undefined ? { notifications: deps.notifications } : {}),
     ...(deps.chatEmitter !== undefined ? { chatEmitter: deps.chatEmitter } : {}),
+    ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
   }
 }
 
-const QUOTED_ATTRIBUTION_RE = /^On\s.+\swrote:$/
+const QUOTED_ATTRIBUTION_RE =
+  /^(?:On\s.+\swrote|El\s.+\sescribió|Am\s.+\sschrieb\s[^:]+|Le\s.+\sa\sécrit\s?|\d{4}(?:년|\.)\s.+작성):$/
+const ATTRIBUTION_MAX_CHARS = 400
+const ATTRIBUTION_MAX_LINES = 3
+const TRAILING_SEPARATOR_RE = /^[_-]{3,}$/
+const OUTBOUND_MESSAGE_ID_PATTERN = "out-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}@"
 const OUTLOOK_ORIGINAL_MESSAGE_RE = /^-{2,}\s*Original Message\s*-{2,}$/i
 const OUTLOOK_HEADER_FROM_RE = /^From:\s.+$/
 const OUTLOOK_HEADER_FOLLOW_RE = /^(?:Sent|Date|To):\s/
@@ -70,9 +84,28 @@ function hasReplyTextBefore(lines: string[], index: number): boolean {
   return false
 }
 
+function isQuotedAttributionAt(lines: string[], index: number, nested = false): boolean {
+  let candidate = ""
+  for (let n = 0; n < ATTRIBUTION_MAX_LINES; n++) {
+    const next = lines[index + n]?.trim()
+    if (next === undefined || next === "") return false
+    if (n > 0 && !nested && isQuotedAttributionAt(lines, index + n, true)) return false
+    candidate = n === 0 ? next : `${candidate} ${next}`
+    if (candidate.length > ATTRIBUTION_MAX_CHARS) return false
+    if ((n === 0 || candidate.includes("@")) && QUOTED_ATTRIBUTION_RE.test(candidate)) return true
+  }
+  return false
+}
+
+function ownMailIdentifierRe(replyDomain: string): RegExp {
+  const domain = replyDomain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const tokenAddress = `(?:reply|report|event)[-+][a-z0-9]{8,40}@${domain}`
+  return new RegExp(`${tokenAddress}|${OUTBOUND_MESSAGE_ID_PATTERN}`, "i")
+}
+
 function isQuotedHistoryStart(lines: string[], index: number): boolean {
   const line = lines[index]!.trim()
-  if (QUOTED_ATTRIBUTION_RE.test(line)) return true
+  if (isQuotedAttributionAt(lines, index)) return true
   if (OUTLOOK_ORIGINAL_MESSAGE_RE.test(line)) return true
   if (!OUTLOOK_HEADER_FROM_RE.test(line)) return false
   if (!hasReplyTextBefore(lines, index)) return false
@@ -84,18 +117,14 @@ function isQuotedHistoryStart(lines: string[], index: number): boolean {
   return false
 }
 
-export function stripQuotedHistory(raw: string): string {
+export function stripQuotedHistory(raw: string, replyDomain = DEFAULT_REPLY_DOMAIN): string {
   const lines = raw.replace(/\r\n?/g, "\n").split("\n")
-  let end = lines.length
-  for (let i = 0; i < lines.length; i++) {
-    if (isQuotedHistoryStart(lines, i)) {
-      end = i
-      break
-    }
-  }
+  const ownIdentifier = ownMailIdentifierRe(replyDomain)
+  let end = lines.findIndex((line, i) => ownIdentifier.test(line) || isQuotedHistoryStart(lines, i))
+  if (end === -1) end = lines.length
   while (end > 0) {
     const line = lines[end - 1]!.trim()
-    if (line !== "" && !line.startsWith(">")) break
+    if (line !== "" && !line.startsWith(">") && !TRAILING_SEPARATOR_RE.test(line)) break
     end -= 1
   }
   return lines.slice(0, end).join("\n").trim()
@@ -111,8 +140,11 @@ export function clipToMessageBody(text: string, max: number = MESSAGE_BODY_MAX):
   return kept
 }
 
-export function cityReplyChatBody(raw: string | null | undefined): string | null {
-  const clipped = clipToMessageBody(stripQuotedHistory(raw ?? ""))
+export function cityReplyChatBody(
+  raw: string | null | undefined,
+  replyDomain?: string,
+): string | null {
+  const clipped = clipToMessageBody(stripQuotedHistory(raw ?? "", replyDomain))
   return clipped === "" ? null : clipped
 }
 
@@ -174,12 +206,7 @@ export async function isJurisdictionSender(
   const fromAddress = mail.from?.address ?? null
   const fromDomain = domainOf(fromAddress)
   if (fromAddress === null || fromDomain === null) return false
-  let recipients: string[]
-  try {
-    recipients = await mailRepo.outboundRecipients(threadId)
-  } catch {
-    return false
-  }
+  const recipients = await mailRepo.outboundRecipients(threadId)
   const sender = normalizedMailbox(fromAddress)
   for (const recipient of recipients) {
     const contactDomain = domainOf(recipient)
@@ -227,7 +254,12 @@ export async function applyInboundEffects(
     }
     await mailRepo.markMessageEffectsApplied(message.id)
   } catch (err) {
-    await mailRepo.releaseMessageEffects(message.id).catch(() => {})
+    await mailRepo.releaseMessageEffects(message.id).catch((releaseErr: unknown) => {
+      injected.logger?.warn(
+        { err: String(releaseErr), messageId: message.id },
+        "inbound: effects claim release failed (the lease expires on its own)",
+      )
+    })
     throw err
   }
 }
@@ -268,13 +300,15 @@ export async function onJurisdictionReply(
 
   if (stage < EFFECTS_STAGE_CHAT) {
     const current = await reportRepo.getReport(reportId)
-    const emitter = injected.chatEmitter ?? makeContainerReportChatEmitter(container)
+    const emitter =
+      injected.chatEmitter ??
+      makeContainerReportChatEmitter(container, injected.logger, { propagateInsertFailure: true })
     await emitter.emit({
       reportId,
       status: current?.status ?? record.status,
       kind: "reply",
       note,
-      body: cityReplyChatBody(message.body),
+      body: cityReplyChatBody(message.body, container.env.MAIL_REPLY_DOMAIN),
     })
     await mailRepo.setMessageEffectsStage(messageId, EFFECTS_STAGE_CHAT)
   }

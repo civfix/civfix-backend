@@ -82,6 +82,7 @@ export async function registerAdminReportChatRoutes(
       repo: makeDrizzleAdminReportChatRepository(sql),
       historySource: historySourceFrom(getChatRepo),
       send: makeContainerReportChatSendDeps(container, {
+        chatRepo: getChatRepo,
         mentions: chatMentionDeps(app, container),
         logger: app.log,
       }),

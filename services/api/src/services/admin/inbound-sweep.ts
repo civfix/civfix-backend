@@ -73,8 +73,12 @@ export async function runInboundSweep(
         const result = await processInboundObject(container, key, opts.deps ?? {})
         if (result.outcome !== "skipped") processed += 1
         if (result.outcome === "failed") parked += 1
-      } catch {
+      } catch (err) {
         errors += 1
+        opts.deps?.logger?.warn(
+          { key, err: errorMessage(err) },
+          "inbound.sweep: processing failed; the object stays pending for the next run",
+        )
       }
     }
     cursor = next
@@ -130,6 +134,10 @@ async function redriveEffects(
     } catch (err) {
       effectsErrors += 1
       effectsError = errorMessage(err)
+      opts.deps?.logger?.warn(
+        { messageId: message.id, threadId: thread.id, err: effectsError },
+        "inbound.sweep: side effects failed; the claim was released for the next run",
+      )
     }
   }
   return {

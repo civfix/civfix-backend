@@ -27,6 +27,7 @@ import type { Role } from "@civfix/shared"
  */
 
 const ALLOWED = "ops@civfix.org"
+const ALLOWED_RESERVED_LOCAL = "civfix@civfix.org"
 const NOT_ALLOWED = "stranger@example.com"
 
 /** A stub Access verifier: returns the given identity, or throws (simulating an invalid/forged token). */
@@ -61,7 +62,10 @@ async function makeHarness(opts: { verifyAccessJwt?: VerifyAccessJwt } = {}): Pr
     verifier: new StubJwksVerifier(),
     now: () => Date.now(),
   })
-  const env = loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: `${ALLOWED}, OTHER@civfix.org` })
+  const env = loadEnv({
+    NODE_ENV: "test",
+    ADMIN_EMAILS: `${ALLOWED}, OTHER@civfix.org, ${ALLOWED_RESERVED_LOCAL}`,
+  })
   const app = await buildServer({ env, authServices: services })
   const audits: WriteAuditInput[] = []
   // Capture the operator.login audit (the offline harness has no DB to write through), and optionally
@@ -345,6 +349,20 @@ describe("doc 16: admin Cloudflare Access exchange (POST /admin/auth/access/exch
       headers: { cookie: sessionCookie },
     })
     expect([401, 403]).not.toContain(data.statusCode)
+  })
+
+  it("provisions an operator whose email local part reads as CivFix under a neutral name", async () => {
+    harness = await makeHarness({
+      verifyAccessJwt: fakeVerifier(identityFor(ALLOWED_RESERVED_LOCAL)),
+    })
+    const res = await harness.app.inject({
+      method: "POST",
+      url: "/v1/admin/auth/access/exchange",
+      headers: HEADER,
+    })
+    expect(res.statusCode).toBe(200)
+    const stored = await harness.stores.users.findByEmail(ALLOWED_RESERVED_LOCAL)
+    expect(stored?.displayName).toBe("Operator")
   })
 
   it("rejects a verified-but-non-allowlisted email with 403, issues NO session, creates NO user row", async () => {

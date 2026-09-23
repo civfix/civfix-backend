@@ -84,6 +84,23 @@ describe("runInboundSweep", () => {
     expect(result.processed).toBe(0)
   })
 
+  it("logs the key of an object whose processing throws, and leaves it pending", async () => {
+    const h = harness()
+    const key = `${INBOUND_PENDING_PREFIX}boom.eml`
+    await h.storage.put(key, rfc822("support@civfix.org"))
+    h.inboundRepo.insertIdempotent = () => Promise.reject(new Error("db down"))
+    const warnings: unknown[] = []
+    const record = (obj: unknown) => warnings.push(obj)
+
+    const result = await runInboundSweep(h.container, {
+      deps: { ...h.deps, logger: { warn: record, error: record } },
+    })
+
+    expect(result.errors).toBe(1)
+    expect(warnings).toContainEqual({ key, err: "db down" })
+    expect(h.storage.get(key)).not.toBeNull()
+  })
+
   it("isolates a poison object: it is parked under failed/ while the rest process", async () => {
     const h = harness()
     await h.storage.put(
@@ -233,13 +250,18 @@ describe("runInboundSweep: side-effect re-drive", () => {
       body: "Crew dispatched.",
     })
     h.adminReportRepo.getReport = () => Promise.reject(new Error("db down"))
+    const warnings: unknown[] = []
+    const record = (obj: unknown) => warnings.push(obj)
 
     const res = await runInboundSweep(h.container, {
-      deps: h.deps,
+      deps: { ...h.deps, logger: { warn: record, error: record } },
       effectsMinAgeMs: 0,
       now: () => new Date(Date.UTC(2030, 0, 1)),
     })
 
+    expect(warnings).toContainEqual(
+      expect.objectContaining({ threadId: thread.id, err: "db down" }),
+    )
     expect(res.effectsErrors).toBe(1)
     expect(res.effectsRedriven).toBe(0)
     const stored = h.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")

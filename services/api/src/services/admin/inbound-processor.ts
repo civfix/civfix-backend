@@ -19,6 +19,7 @@ import {
   findThreadByReferences,
   inboundEffectDeps,
   type InboundEffectDeps,
+  type InboundLogger,
   isJurisdictionSender,
   isSelfOriginated,
   parseMessageIdList,
@@ -30,7 +31,13 @@ import { readMailAuthVerdict, type MailAuthVerdict } from "../../adapters/inboun
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
 
-export { detectBounce, resolveMessageId, parseMessageIdList, type BounceDetection }
+export {
+  detectBounce,
+  resolveMessageId,
+  parseMessageIdList,
+  type BounceDetection,
+  type InboundLogger,
+}
 export { readMailAuthVerdict, sanitizeInboundHtml, type MailAuthVerdict }
 
 export const INBOUND_PENDING_PREFIX = "inbound/pending/"
@@ -74,11 +81,7 @@ export interface ProcessResult {
   id?: string
 }
 
-export interface InboundLogger {
-  warn(obj: unknown, msg?: string): void
-}
-
-const NOOP_LOGGER: InboundLogger = { warn: () => {} }
+const NOOP_LOGGER: InboundLogger = { warn: () => {}, error: () => {} }
 
 export interface InboundProcessorDeps {
   logger?: InboundLogger
@@ -110,6 +113,10 @@ export async function processInboundObject(
   }
 
   if (bytes.byteLength > INBOUND_OBJECT_MAX_BYTES) {
+    logger.warn(
+      { key, bytes: bytes.byteLength },
+      "inbound: object over the size cap; parked under inbound/failed/",
+    )
     await moveToFailed(storage, key, bytes)
     return { outcome: "failed", reason: "too-large" }
   }
@@ -117,7 +124,8 @@ export async function processInboundObject(
   let mail: ParsedMail
   try {
     mail = await withTimeout(inboundMail.parse(bytes), INBOUND_PARSE_TIMEOUT_MS)
-  } catch {
+  } catch (err) {
+    logger.warn({ key, err: errorText(err) }, "inbound: parse failed; parked under inbound/failed/")
     await moveToFailed(storage, key, bytes)
     return { outcome: "failed", reason: "parse-failed" }
   }
@@ -132,7 +140,9 @@ export async function processInboundObject(
       await handleBounce(container, mailRepo, bounce, {
         fromAddr: mail.from?.address ?? null,
         authVerdict: bounceVerdict,
-      }).catch(() => {})
+      }).catch((err: unknown) => {
+        logger.warn({ key, err: errorText(err) }, "inbound: bounce bookkeeping failed")
+      })
     }
     if (result.outcome === "inbox" || result.outcome === "replay") await storage.delete(key)
     return result
@@ -184,10 +194,10 @@ async function correlateThread(
 
   let resolvedThread: MailThreadRecord | null = null
   if (token !== null && token.length > 0) {
-    resolvedThread = await mailRepo.findThreadByToken(token).catch(() => null)
+    resolvedThread = await mailRepo.findThreadByToken(token)
   }
   if (resolvedThread !== null || authVerdict !== "pass") return resolvedThread
-  return findThreadByReferences(mailRepo, mail).catch(() => null)
+  return findThreadByReferences(mailRepo, mail)
 }
 
 async function routeThreaded(
@@ -263,7 +273,7 @@ async function insertThreadedMessage(
     fromAddr: mail.from?.address ?? null,
     toAddr: mail.to[0]?.address ?? null,
     subject: mail.subject ?? null,
-    body: threadBody(mail),
+    body: plainTextBody(mail),
     attachments,
     messageId,
     inReplyTo: mail.inReplyTo ?? null,
@@ -272,7 +282,7 @@ async function insertThreadedMessage(
   return message === null ? null : { message, oversize }
 }
 
-function threadBody(mail: ParsedMail): string | null {
+function plainTextBody(mail: ParsedMail): string | null {
   if (mail.text !== null && mail.text !== undefined) return clipBodyText(mail.text)
   if (mail.html === null || mail.html === undefined || mail.html.length === 0) return null
   return clipBodyText(htmlToText(mail.html.slice(0, INBOUND_HTML_SOURCE_MAX_CHARS)))
@@ -305,13 +315,14 @@ async function routeInbox(
       .map((a) => a.address)
       .filter((a) => a.length > 0)
       .join(", ") || null
+  const claimedFrom = mail.headers["from"]?.slice(0, INBOUND_HEADER_VALUE_MAX_CHARS) || null
   const { id, inserted } = await inboundRepo.insertIdempotent({
     messageId,
-    fromAddr: mail.from?.address ?? null,
+    fromAddr: mail.from?.address ?? claimedFrom,
     toAddr,
     recipient,
     subject: mail.subject ?? null,
-    bodyText: clipBodyText(mail.text),
+    bodyText: plainTextBody(mail),
     bodyHtml: sanitizeInboundHtml(mail.html),
     headers: buildStoredHeaders(mail.headers, authVerdict),
     attachments,
@@ -421,12 +432,8 @@ async function moveToFailed(storage: Storage, key: string, bytes: Uint8Array): P
   const failedKey = key.startsWith(INBOUND_PENDING_PREFIX)
     ? INBOUND_FAILED_PREFIX + key.slice(INBOUND_PENDING_PREFIX.length)
     : INBOUND_FAILED_PREFIX + key
-  try {
-    await storage.put(failedKey, bytes, { contentType: "message/rfc822" })
-    await storage.delete(key)
-  } catch {
-    void 0
-  }
+  await storage.put(failedKey, bytes, { contentType: "message/rfc822" })
+  await storage.delete(key)
 }
 
 function sanitizeFilename(name: string): string {

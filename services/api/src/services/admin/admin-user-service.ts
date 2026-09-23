@@ -22,7 +22,10 @@ import type {
 } from "@civfix/shared"
 import { toRelAbs } from "./admin-format.js"
 import { applyRoleChange } from "./role-change.js"
-import { assertTargetIsNotOperatorRole } from "../../auth/operator-target.js"
+import {
+  assertTargetIsNotOfficialAccount,
+  assertTargetIsNotOperatorRole,
+} from "../../auth/operator-target.js"
 
 export interface AdminUserRecord {
   id: string
@@ -315,6 +318,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       id: string,
       input: { reason: string | null; actorId: string | null },
     ): Promise<boolean> {
+      assertTargetIsNotOfficialAccount(id, "flag")
       const flagged = await deps.repo.toggleFlag(id, input)
       if (flagged === null) throw AppError.notFound("User not found")
       return flagged
@@ -332,6 +336,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
     },
 
     async setRole(id: string, input: { role: Role; actorId: string | null }): Promise<void> {
+      assertTargetIsNotOfficialAccount(id, "change the role of")
       if (!GRANTABLE_ROLES.has(input.role)) {
         throw AppError.forbidden(
           "Operator access is granted only through ADMIN_EMAILS and Cloudflare Access, not this endpoint.",
@@ -365,6 +370,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
       id: string,
       input: { value: boolean; actorId: string | null },
     ): Promise<void> {
+      assertTargetIsNotOfficialAccount(id, "verify")
       const ok = await deps.repo.setReportVerified(id, input)
       if (!ok) throw AppError.notFound("User not found")
     },
@@ -389,6 +395,7 @@ async function assertTargetIsNotOperator(
   id: string,
   verb: string,
 ): Promise<void> {
+  assertTargetIsNotOfficialAccount(id, verb)
   const target = await repo.getUser(id)
   if (!target) throw AppError.notFound("User not found")
   assertTargetIsNotOperatorRole(target.role, verb)

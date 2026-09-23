@@ -50,8 +50,21 @@ export interface ChatMessageMeta {
   deletedAt: Date | null
 }
 
+export interface InsertedChatRow {
+  id: string
+  createdAt: Date
+}
+
+export interface InsertMessageOptions {
+  inTx?: (tx: Queryable, row: InsertedChatRow) => Promise<void>
+}
+
 export interface ChatRepository {
-  insertMessage(input: PersistChatInput, id: string): Promise<ChatMessageDTO>
+  insertMessage(
+    input: PersistChatInput,
+    id: string,
+    options?: InsertMessageOptions,
+  ): Promise<ChatMessageDTO>
   findMessageMeta(messageId: string): Promise<ChatMessageMeta | null>
   history(
     cleanupId: string,
@@ -554,7 +567,11 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
   }
 
   return {
-    async insertMessage(input: PersistChatInput, id: string): Promise<ChatMessageDTO> {
+    async insertMessage(
+      input: PersistChatInput,
+      id: string,
+      options: InsertMessageOptions = {},
+    ): Promise<ChatMessageDTO> {
       const kind: ChatMessageKind = input.kind ?? "text"
       const uploadIds = input.mediaUploadIds ?? []
       const wantsMedia = !!presign && uploadIds.length > 0
@@ -593,11 +610,14 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
         )
         ${selectChatRowFrom(q, "inserted", isReport)}
       `
+      const inTx = options.inTx
       const [rows, reportCity] = await Promise.all([
-        wantsMedia
+        wantsMedia || inTx
           ? sql.begin(async (tx) => {
               const inserted = await run(tx)
-              await attachChatMedia(tx, id, uploadIds, inserted[0]!.created_at)
+              const createdAt = inserted[0]!.created_at
+              if (wantsMedia) await attachChatMedia(tx, id, uploadIds, createdAt)
+              if (inTx) await inTx(tx, { id, createdAt })
               return inserted
             })
           : run(sql),

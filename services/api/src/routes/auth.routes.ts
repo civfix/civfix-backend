@@ -30,6 +30,7 @@ import { sha256Hex } from "../auth/crypto.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { isReservedHandle, handleCollidesWithJurisdiction } from "../auth/reserved-handles.js"
 import { handleChanged } from "../auth/handle-policy.js"
+import { impersonatesOfficialName } from "../auth/official-account.js"
 import { isProd } from "../env.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
@@ -347,6 +348,9 @@ export async function registerAuthRoutes(
     assertNoSlur(body.bio ?? null, "bio")
 
     const current = await services.users.findById(userId)
+    if (current?.displayName !== body.displayName && impersonatesOfficialName(body.displayName)) {
+      throw AppError.validation({ displayName: "That name is reserved." })
+    }
     if (handleChanged(current?.handle ?? null, body.handle)) {
       assertNoSlur(body.handle, "handle")
       if (await isReservedOrJurisdiction(body.handle.trim())) {

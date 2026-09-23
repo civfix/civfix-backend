@@ -13,6 +13,7 @@ export type AdminAuditAction =
   | "report.unflagged"
   | "report.removed"
   | "report.followup_sent"
+  | "report.message_posted"
   | "report.routed"
   | "event.status_changed"
   | "event.flagged"

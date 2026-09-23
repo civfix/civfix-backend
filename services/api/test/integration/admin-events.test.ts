@@ -10,7 +10,7 @@
  *   - setStatus writes cleanup_timeline + an audit row;
  *   - toggleFlag appends a flag/unflag cleanup_timeline row (and the derived flagged flips) + audit;
  *   - cancel sets status cancelled + a 'cancel' timeline row + audit;
- *   - postMessage inserts a chat_messages row (from the operator) + a 'message' timeline row, returns
+ *   - postMessage inserts a chat_messages row (from the official account) + a 'message' timeline row, returns
  *     the members, and audits; notifyMember inserts a notifications row.
  *
  * When Docker is unavailable the whole describe block SKIPS; CI runs it for real.
@@ -18,6 +18,8 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
+import { seedOfficialAccount } from "../helpers/official-account.js"
+import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 import { makeDrizzleAdminEventRepository } from "../../src/services/admin/admin-event-repository.drizzle.js"
 import type { AdminEventRepository } from "../../src/services/admin/admin-event-service.js"
 
@@ -78,6 +80,7 @@ describe.skipIf(!pg)("admin event repository (integration: real schema)", () => 
     await h.sql`TRUNCATE cleanup_timeline, cleanup_members, chat_messages, notifications, audit_log RESTART IDENTITY CASCADE`
     await h.sql`DELETE FROM cleanups`
     await h.sql`DELETE FROM users`
+    await seedOfficialAccount(h.sql)
   })
 
   afterAll(async () => {
@@ -175,13 +178,18 @@ describe.skipIf(!pg)("admin event repository (integration: real schema)", () => 
     // L4: notifications are fanned out in the SAME transaction; the count matches the member count.
     expect(result?.notified).toBe(2)
     const chat = await h.sql<
-      { body: string | null }[]
-    >`SELECT body FROM chat_messages WHERE cleanup_id = ${id}`
+      { id: string; body: string | null; sender_id: string }[]
+    >`SELECT id, body, sender_id FROM chat_messages WHERE cleanup_id = ${id}`
     expect(chat[0]?.body).toBe("Rescheduled")
+    expect(chat[0]?.sender_id).toBe(CIVFIX_OFFICIAL_USER_ID)
     const audit = await h.sql<
-      { action: string }[]
-    >`SELECT action FROM audit_log WHERE action = 'event.message_posted'`
-    expect(audit).toHaveLength(1)
+      { actor_id: string; meta: { members: number; messageId: string } }[]
+    >`SELECT actor_id, meta FROM audit_log WHERE action = 'event.message_posted'`
+    expect(audit).toEqual([{ actor_id: org, meta: { members: 2, messageId: chat[0]!.id } }])
+    const timeline = await h.sql<
+      { actor_id: string }[]
+    >`SELECT actor_id FROM cleanup_timeline WHERE cleanup_id = ${id} AND kind = 'message'`
+    expect(timeline).toEqual([{ actor_id: org }])
 
     // A notification row was written for each member, atomically with the chat message.
     const notes = await h.sql<{ user_id: string; type: string }[]>`

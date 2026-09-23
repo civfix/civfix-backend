@@ -52,6 +52,7 @@ export interface ReportChatSystemEmitterDeps {
   roomKeyFor: (kind: "report", id: string) => string
   /** Optional logger for the swallowed best-effort failures (defaults to a no-op). */
   logger?: { warn: (obj: unknown, msg?: string) => void }
+  propagateInsertFailure?: boolean
 }
 
 /**
@@ -59,16 +60,25 @@ export interface ReportChatSystemEmitterDeps {
  *   1. persists the system chat row      (reportChat.insertSystemMessage)
  *   2. broadcasts it to the live room     (broadcast(roomKeyFor("report", id), msg))
  *   3. pushes the members                 (notify(id, msg))
- * All wrapped so ANY failure is caught + logged and never propagates.
  */
 export function makeReportChatSystemEmitter(
   deps: ReportChatSystemEmitterDeps,
 ): ReportChatSystemEmitter {
-  const warn = deps.logger?.warn ?? (() => {})
+  const warn = (obj: unknown, msg: string): void => deps.logger?.warn(obj, msg)
   return {
     async emit(event: ReportTimelineEvent): Promise<void> {
+      let msg: ChatMessageDTO
       try {
-        const msg = await deps.reportChat.insertSystemMessage(event)
+        msg = await deps.reportChat.insertSystemMessage(event)
+      } catch (err) {
+        if (deps.propagateInsertFailure === true) throw err
+        warn(
+          { err, reportId: event.reportId },
+          "report-chat: system-message emit failed (suppressed)",
+        )
+        return
+      }
+      try {
         await deps.broadcast(deps.roomKeyFor("report", event.reportId), msg)
         await deps.notify(event.reportId, msg)
       } catch (err) {

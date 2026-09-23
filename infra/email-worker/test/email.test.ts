@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto"
-import { describe, expect, it } from "vitest"
-import { slugify, deriveMessageId, hmacSha256Hex } from "../src/index"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { slugify, deriveMessageId, hmacSha256Hex, nudgeBackend, type Env } from "../src/index"
 
 describe("slugify", () => {
   it("strips angle brackets and unsafe chars", () => {
@@ -46,5 +46,37 @@ describe("hmacSha256Hex (must match the backend's node:crypto verifier)", () => 
     const body = '{"key":"inbound/pending/abc.eml"}'
     const sig = createHmac("sha256", secret).update(body).digest("hex")
     expect(await hmacSha256Hex(secret, body)).toBe(sig)
+  })
+})
+
+describe("nudgeBackend", () => {
+  const env = {
+    BACKEND_WEBHOOK_URL: "https://api.example/webhooks/inbound-mail",
+    CF_EMAIL_WEBHOOK_SECRET: "s",
+  } as Env
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it("logs a rejected nudge instead of dropping it silently", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 401 })),
+    )
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+    await nudgeBackend(env, "inbound/pending/a.eml")
+    expect(error.mock.calls[0]?.[0]).toContain("HTTP 401 for inbound/pending/a.eml")
+  })
+
+  it("logs a network failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Promise.reject(new Error("offline"))),
+    )
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+    await nudgeBackend(env, "inbound/pending/b.eml")
+    expect(error).toHaveBeenCalledTimes(1)
   })
 })
