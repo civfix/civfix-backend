@@ -35,7 +35,7 @@ civfix-backend/
   infra/
     email-worker/               Cloudflare Email Worker for inbound mail (standalone, own wrangler toolchain)
   scripts/                      the CI no-frontend guard + the manual dynamic-SQL check (pnpm check:sql)
-  docs/                         engineering notes (retention, erasure, migrations, security review, ...)
+  docs/                         engineering notes (retention, erasure, migrations, operator runbook, ...)
   .github/workflows/            ci.yml (PR checks), build-images.yml, deploy-staging.yml, deploy.yml
   tsconfig.base.json            strict base TS config
   turbo.json                    turborepo task graph
