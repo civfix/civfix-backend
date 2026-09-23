@@ -7,7 +7,6 @@ import {
 } from "../../src/services/admin/admin-user-service.js"
 import { avatarGradient, type UserStatus } from "@civfix/shared"
 
-
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
 interface Harness {
@@ -438,7 +437,6 @@ describe("admin users mutations", () => {
     })
     expect(revoked).toHaveLength(0)
   })
-
 
   it("H3: REFUSES to grant `operator` (no console-minted operator backdoor)", async () => {
     const { repo, svc, revoked } = harness()

@@ -198,7 +198,9 @@ describe("admin events list", () => {
 
     // The completed facet catches the legacy 'done' row; the in_progress facet catches both 'active' and
     // a Phase-2 'in_progress' row.
-    expect((await svc.list({ filter: "completed" })).items.map((i) => i.id)).toEqual(["legacy-done"])
+    expect((await svc.list({ filter: "completed" })).items.map((i) => i.id)).toEqual([
+      "legacy-done",
+    ])
     expect((await svc.list({ filter: "in_progress" })).items.map((i) => i.id).sort()).toEqual([
       "legacy-active",
       "p2-progress",

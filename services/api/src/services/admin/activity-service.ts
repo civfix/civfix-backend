@@ -10,7 +10,12 @@
  */
 
 import { relativeAgo, ActivityKindSchema } from "@civfix/shared"
-import type { ActivityItemDTO, ActivityKind, ActivityListQuery, ActivityListResponse } from "@civfix/shared"
+import type {
+  ActivityItemDTO,
+  ActivityKind,
+  ActivityListQuery,
+  ActivityListResponse,
+} from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
 
 export type ActivitySource = "audit" | "report" | "cleanup" | "mail_event"

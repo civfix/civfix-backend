@@ -63,7 +63,9 @@ export interface HostExportService {
   listForOrganization(organizationId: string): Promise<HostExportDTO[]>
   get(exportId: string): Promise<HostExportRecord>
   run(exportId: string): Promise<{ status: "ready" | "failed" | "skipped" }>
-  downloadUrl(record: HostExportRecord): Promise<{ url: string; expiresAt: string; filename: string }>
+  downloadUrl(
+    record: HostExportRecord,
+  ): Promise<{ url: string; expiresAt: string; filename: string }>
   reap(limit: number): Promise<{ reaped: number }>
 }
 

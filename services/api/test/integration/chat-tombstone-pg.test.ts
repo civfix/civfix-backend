@@ -128,7 +128,9 @@ describe.skipIf(!pg)("soft-deleted messages hydrate as tombstones (integration)"
     const victim = await seedLoadedMessage(cleanupId, organizerId, peerId)
     await repo.insertMessage({ cleanupId, userId: organizerId, body: "after" }, randomUUID())
 
-    expect(await repo.editMessage(cleanupId, victim, organizerId, "doxxing text and a photo")).not.toBeNull()
+    expect(
+      await repo.editMessage(cleanupId, victim, organizerId, "doxxing text and a photo"),
+    ).not.toBeNull()
     expect(await repo.setPinned(cleanupId, victim, organizerId, true)).not.toBeNull()
 
     const live = await repo.history(cleanupId, undefined, 20, peerId, victim)

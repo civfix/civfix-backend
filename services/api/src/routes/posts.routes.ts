@@ -1,4 +1,3 @@
-
 import {
   FeedCountsRequestSchema,
   HomeFeedQuerySchema,
@@ -28,7 +27,10 @@ export const CREATE_POST_RATE_LIMIT = perIdentity({ max: 12, timeWindow: "1 minu
 
 export const POST_INTERACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
-export async function registerPostRoutes(app: FastifyInstance, container: Container): Promise<void> {
+export async function registerPostRoutes(
+  app: FastifyInstance,
+  container: Container,
+): Promise<void> {
   const csrfProtect = container.csrf.protect
 
   const service = () => container.getPostService()
@@ -63,41 +65,71 @@ export async function registerPostRoutes(app: FastifyInstance, container: Contai
     reply.status(200).send(await service().listReplies(id, userId, pagination))
   })
 
-  route(app, "repostPost", { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(PostIdParamsSchema, request.params)
-    reply.status(200).send(await service().repostPost(id, userId))
-  })
+  route(
+    app,
+    "repostPost",
+    { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(PostIdParamsSchema, request.params)
+      reply.status(200).send(await service().repostPost(id, userId))
+    },
+  )
 
-  route(app, "unrepostPost", { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(PostIdParamsSchema, request.params)
-    reply.status(200).send(await service().unrepostPost(id, userId))
-  })
+  route(
+    app,
+    "unrepostPost",
+    { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(PostIdParamsSchema, request.params)
+      reply.status(200).send(await service().unrepostPost(id, userId))
+    },
+  )
 
-  route(app, "likePost", { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(PostIdParamsSchema, request.params)
-    reply.status(200).send(await service().likePost(id, userId))
-  })
+  route(
+    app,
+    "likePost",
+    { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(PostIdParamsSchema, request.params)
+      reply.status(200).send(await service().likePost(id, userId))
+    },
+  )
 
-  route(app, "unlikePost", { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(PostIdParamsSchema, request.params)
-    reply.status(200).send(await service().unlikePost(id, userId))
-  })
+  route(
+    app,
+    "unlikePost",
+    { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(PostIdParamsSchema, request.params)
+      reply.status(200).send(await service().unlikePost(id, userId))
+    },
+  )
 
-  route(app, "savePost", { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(PostIdParamsSchema, request.params)
-    reply.status(200).send(await service().savePost(id, userId))
-  })
+  route(
+    app,
+    "savePost",
+    { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(PostIdParamsSchema, request.params)
+      reply.status(200).send(await service().savePost(id, userId))
+    },
+  )
 
-  route(app, "unsavePost", { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(PostIdParamsSchema, request.params)
-    reply.status(200).send(await service().unsavePost(id, userId))
-  })
+  route(
+    app,
+    "unsavePost",
+    { preHandler: csrfProtect, config: { rateLimit: POST_INTERACTION_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(PostIdParamsSchema, request.params)
+      reply.status(200).send(await service().unsavePost(id, userId))
+    },
+  )
 
   const viewerLocationOf = (request: FastifyRequest): FeedViewerLocation => {
     const env = container.env
@@ -108,18 +140,23 @@ export async function registerPostRoutes(app: FastifyInstance, container: Contai
     return { lat: approximate.lat, lng: approximate.lng }
   }
 
-  route(app, "homeFeed", { config: { rateLimit: HOME_FEED_RATE_LIMIT } }, async (request, reply) => {
-    const userId = request.auth.userId
-    const query = parse(HomeFeedQuerySchema, request.query)
-    const location = viewerLocationOf(request)
-    reply
-      .status(200)
-      .send(
-        userId
-          ? await service().homeFeed(userId, query, location)
-          : await service().publicFeed(query, location),
-      )
-  })
+  route(
+    app,
+    "homeFeed",
+    { config: { rateLimit: HOME_FEED_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = request.auth.userId
+      const query = parse(HomeFeedQuerySchema, request.query)
+      const location = viewerLocationOf(request)
+      reply
+        .status(200)
+        .send(
+          userId
+            ? await service().homeFeed(userId, query, location)
+            : await service().publicFeed(query, location),
+        )
+    },
+  )
 
   route(
     app,

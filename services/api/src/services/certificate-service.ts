@@ -41,10 +41,7 @@ import type {
 } from "@civfix/shared"
 import type { StorageHead, StoragePutMeta } from "@civfix/shared/interfaces"
 import { resolveLocale } from "../i18n/locales.js"
-import {
-  CERTIFICATE_CODE_MINT_ATTEMPTS,
-  generateCertificateCode,
-} from "./certificate-code.js"
+import { CERTIFICATE_CODE_MINT_ATTEMPTS, generateCertificateCode } from "./certificate-code.js"
 import {
   buildTranscriptModel,
   certificateTranslator,
@@ -353,7 +350,10 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
       const head = await storage.head(existing.r2Key)
       if (head !== null) {
         // The common repeat call renders NOTHING: a row lookup, a HEAD and a presign (DP §4.1).
-        return { certificate: toCertificateDTO(existing, await presign(existing.r2Key), at), reused: true }
+        return {
+          certificate: toCertificateDTO(existing, await presign(existing.r2Key), at),
+          reused: true,
+        }
       }
       // DP §4.4, expected to be exercised approximately never (operator error / a bucket incident). The
       // row is the record of truth, so re-render THIS document — same code, same issue date, same key —

@@ -43,7 +43,10 @@ function seededWindow(
   endsAt: Date | undefined,
 ): { scheduledAt: Date; endsAt: Date } {
   const start = scheduledAt ?? new Date(Date.now() + defaultStartOffsetMs(status))
-  return { scheduledAt: start, endsAt: endsAt ?? new Date(start.getTime() + DEFAULT_EVENT_DURATION_MS) }
+  return {
+    scheduledAt: start,
+    endsAt: endsAt ?? new Date(start.getTime() + DEFAULT_EVENT_DURATION_MS),
+  }
 }
 
 function defaultStartOffsetMs(status: string): number {
@@ -213,7 +216,10 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
    */
   private reportVisible(r: SeededAdminReport | undefined): r is SeededAdminReport {
     return (
-      r !== undefined && !r.deleted && isPubliclyVisibleStatus(r.status) && r.visibility === "public"
+      r !== undefined &&
+      !r.deleted &&
+      isPubliclyVisibleStatus(r.status) &&
+      r.visibility === "public"
     )
   }
 

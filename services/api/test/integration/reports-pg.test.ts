@@ -151,7 +151,12 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
 
     // Submit the SAME key again (with a different-looking body to prove the original wins).
     const second = await service.createReport(
-      createReq({ idempotencyKey: key, category: "hazard", description: "changed", mediaUploadIds: [media.uploadId] }),
+      createReq({
+        idempotencyKey: key,
+        category: "hazard",
+        description: "changed",
+        mediaUploadIds: [media.uploadId],
+      }),
       { userId },
     )
 
@@ -187,9 +192,12 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     `
 
     await expect(
-      service.createReport(createReq({ idempotencyKey: randomUUID(), mediaUploadIds: [uploadId] }), {
-        userId,
-      }),
+      service.createReport(
+        createReq({ idempotencyKey: randomUUID(), mediaUploadIds: [uploadId] }),
+        {
+          userId,
+        },
+      ),
     ).rejects.toMatchObject({
       httpStatus: 422,
       code: "VALIDATION",
@@ -224,10 +232,9 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     // to get a 201 with their photo missing from the gallery and no way to tell that had happened.
     const keyB = randomUUID()
     await expect(
-      service.createReport(
-        createReq({ idempotencyKey: keyB, mediaUploadIds: [media.uploadId] }),
-        { userId },
-      ),
+      service.createReport(createReq({ idempotencyKey: keyB, mediaUploadIds: [media.uploadId] }), {
+        userId,
+      }),
     ).rejects.toMatchObject({
       httpStatus: 422,
       code: "VALIDATION",

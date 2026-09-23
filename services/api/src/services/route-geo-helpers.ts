@@ -99,4 +99,3 @@ export function makeCachedAddressResolver(container: Container): AddressResolver
     cache: makeGeocodeCache({ getSql: () => container.getDb().sql }),
   })
 }
-

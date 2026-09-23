@@ -444,7 +444,11 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
       expect(p1.members[0]).toMatchObject({ user: { id: ownerId }, role: "owner" })
       expect(p1.nextCursor).toBe(p1.members[2]!.user.id)
 
-      const page2 = await inject(tok, "GET", `/v1/groups/${dto.id}/members?limit=3&cursor=${p1.nextCursor}`)
+      const page2 = await inject(
+        tok,
+        "GET",
+        `/v1/groups/${dto.id}/members?limit=3&cursor=${p1.nextCursor}`,
+      )
       expect(page2.statusCode).toBe(200)
       const p2 = page2.json() as {
         members: Array<{ user: { id: string } }>

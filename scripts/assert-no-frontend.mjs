@@ -61,7 +61,9 @@ let lockfileText
 try {
   lockfileText = readFileSync(lockfilePath, "utf8")
 } catch (err) {
-  console.error(`[assert-no-frontend] FAIL: could not read ${LOCKFILE} at ${lockfilePath}: ${err.message}`)
+  console.error(
+    `[assert-no-frontend] FAIL: could not read ${LOCKFILE} at ${lockfilePath}: ${err.message}`,
+  )
   process.exit(1)
 }
 

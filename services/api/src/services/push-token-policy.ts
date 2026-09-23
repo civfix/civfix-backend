@@ -1,4 +1,3 @@
-
 import { isIP } from "node:net"
 import { lookup, Resolver } from "node:dns/promises"
 import type { PushPlatform } from "@civfix/shared/interfaces"
@@ -140,7 +139,13 @@ function isPublicIpv6(addr: string): boolean {
   const first10Zero = b.slice(0, 10).every((x) => x === 0)
   if (first10Zero && b[10] === 0xff && b[11] === 0xff) return isPublicIpv4(embeddedV4())
   if (first10Zero && b[10] === 0 && b[11] === 0) return isPublicIpv4(embeddedV4())
-  if (b[0] === 0 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && b.slice(4, 12).every((x) => x === 0)) {
+  if (
+    b[0] === 0 &&
+    b[1] === 0x64 &&
+    b[2] === 0xff &&
+    b[3] === 0x9b &&
+    b.slice(4, 12).every((x) => x === 0)
+  ) {
     return isPublicIpv4(embeddedV4())
   }
   if (b[0] === 0xfe && (b[1]! & 0xc0) === 0x80) return false

@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { loadLimits } from "../../src/config.js"
@@ -127,7 +126,13 @@ describe("orphan.sweep", () => {
     }
 
     const paged = { ...limits, orphanSweepBatch: 10, orphanSweepMaxPages: 50 }
-    const res = await runOrphanSweep({ repo, storage, limits: paged, now: () => now, log: () => {} })
+    const res = await runOrphanSweep({
+      repo,
+      storage,
+      limits: paged,
+      now: () => now,
+      log: () => {},
+    })
 
     expect(res.deleted).toBe(total)
     expect(res.scanned).toBe(total)
@@ -153,7 +158,13 @@ describe("orphan.sweep", () => {
     }
 
     const capped = { ...limits, orphanSweepBatch: 10, orphanSweepMaxPages: 2 }
-    const res = await runOrphanSweep({ repo, storage, limits: capped, now: () => now, log: () => {} })
+    const res = await runOrphanSweep({
+      repo,
+      storage,
+      limits: capped,
+      now: () => now,
+      log: () => {},
+    })
 
     expect(res.deleted).toBe(20)
     expect(repo.byId.size).toBe(10)
@@ -438,9 +449,33 @@ describe("media.stuck.sweep", () => {
   it("re-enqueues media.checks for FINALIZED rows stuck at validating past the TTL (singletonKey = uploadId)", async () => {
     const repo = makeRepo()
     const fresh = new Date(now.getTime() - 60_000)
-    repo.seed({ id: "stuck-1", uploadId: "u1", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
-    repo.seed({ id: "fresh-1", uploadId: "u2", kind: "image", r2Key: "uploads/s2", status: "validating", createdAt: fresh, finalizedAt: fresh })
-    repo.seed({ id: "ready-1", uploadId: "u3", kind: "image", r2Key: "uploads/s3", status: "ready", createdAt: old, finalizedAt: old })
+    repo.seed({
+      id: "stuck-1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/s1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+    })
+    repo.seed({
+      id: "fresh-1",
+      uploadId: "u2",
+      kind: "image",
+      r2Key: "uploads/s2",
+      status: "validating",
+      createdAt: fresh,
+      finalizedAt: fresh,
+    })
+    repo.seed({
+      id: "ready-1",
+      uploadId: "u3",
+      kind: "image",
+      r2Key: "uploads/s3",
+      status: "ready",
+      createdAt: old,
+      finalizedAt: old,
+    })
 
     const { jobs, enqueued } = makeJobsSpy()
     const res = await run(repo, jobs)
@@ -459,7 +494,15 @@ describe("media.stuck.sweep", () => {
 
   it("never throws: an enqueue failure is counted + reported, the sweep continues", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "stuck-1", uploadId: "u1", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
+    repo.seed({
+      id: "stuck-1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/s1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+    })
 
     const reports: unknown[] = []
     const { jobs } = makeJobsSpy(true)
@@ -473,8 +516,24 @@ describe("media.stuck.sweep", () => {
 
   it("F087b: NEVER-FINALIZED rows are out of scope - a presigned upload whose bytes never arrived is the orphan sweep's job", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "intent-1", uploadId: "u1", kind: "image", r2Key: "uploads/i1", status: "validating", createdAt: old, finalizedAt: null })
-    repo.seed({ id: "stuck-1", uploadId: "u2", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
+    repo.seed({
+      id: "intent-1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/i1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: null,
+    })
+    repo.seed({
+      id: "stuck-1",
+      uploadId: "u2",
+      kind: "image",
+      r2Key: "uploads/s1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+    })
 
     const { jobs, enqueued } = makeJobsSpy()
     const res = await run(repo, jobs)
@@ -486,8 +545,24 @@ describe("media.stuck.sweep", () => {
 
   it("F087d: staleness is measured from FINALIZE, not presign - a late-finalized asset gets a full TTL", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "late-1", uploadId: "u1", kind: "image", r2Key: "uploads/l1", status: "validating", createdAt: old, finalizedAt: new Date(now.getTime() - 60_000) })
-    repo.seed({ id: "stuck-1", uploadId: "u2", kind: "image", r2Key: "uploads/s1", status: "validating", createdAt: old, finalizedAt: old })
+    repo.seed({
+      id: "late-1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/l1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: new Date(now.getTime() - 60_000),
+    })
+    repo.seed({
+      id: "stuck-1",
+      uploadId: "u2",
+      kind: "image",
+      r2Key: "uploads/s1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+    })
 
     const { jobs, enqueued } = makeJobsSpy()
     const res = await run(repo, jobs)
@@ -500,7 +575,16 @@ describe("media.stuck.sweep", () => {
 
   it("F087d: the give-up budget starts at finalize too - a late-finalized asset is never terminalized early", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "late-1", uploadId: "u1", kind: "image", r2Key: "uploads/l1", status: "validating", createdAt: old, finalizedAt: new Date(now.getTime() - 60_000), stuckCheckCount: 9 })
+    repo.seed({
+      id: "late-1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/l1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: new Date(now.getTime() - 60_000),
+      stuckCheckCount: 9,
+    })
 
     const { jobs } = makeJobsSpy()
     const res = await run(repo, jobs, { stuckSweepMaxAttempts: 3 })
@@ -512,7 +596,15 @@ describe("media.stuck.sweep", () => {
   it("F087b: rotates - every pick is stamped, so an over-full batch serves never-checked rows first and cannot starve", async () => {
     const repo = makeRepo()
     for (const id of ["a", "b", "c"]) {
-      repo.seed({ id, uploadId: `up-${id}`, kind: "image", r2Key: `uploads/${id}`, status: "validating", createdAt: old, finalizedAt: old })
+      repo.seed({
+        id,
+        uploadId: `up-${id}`,
+        kind: "image",
+        r2Key: `uploads/${id}`,
+        status: "validating",
+        createdAt: old,
+        finalizedAt: old,
+      })
     }
     repo.get("a")!.stuckCheckedAt = new Date(now.getTime() - 60_000)
     repo.get("b")!.stuckCheckedAt = new Date(now.getTime() - 120_000)
@@ -529,7 +621,15 @@ describe("media.stuck.sweep", () => {
 
   it("F087b: terminalizes a hopeless row after the attempt cap - status 'rejected', no further enqueue, ever", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "hopeless", uploadId: "u1", kind: "image", r2Key: "uploads/h1", status: "validating", createdAt: old, finalizedAt: old })
+    repo.seed({
+      id: "hopeless",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/h1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+    })
 
     const { jobs, enqueued } = makeJobsSpy()
     for (let i = 0; i < 3; i++) {
@@ -555,7 +655,16 @@ describe("media.stuck.sweep", () => {
 
   it("F087b: a terminalize failure is counted + reported, never thrown", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "hopeless", uploadId: "u1", kind: "image", r2Key: "uploads/h1", status: "validating", createdAt: old, finalizedAt: old, stuckCheckCount: 9 })
+    repo.seed({
+      id: "hopeless",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/h1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+      stuckCheckCount: 9,
+    })
     repo.failApplyResult = new Error("db down")
 
     const reports: unknown[] = []
@@ -567,7 +676,16 @@ describe("media.stuck.sweep", () => {
   })
   it("F087b: NEVER clobbers a terminal status — a row the worker finished mid-sweep is left alone", async () => {
     const repo = makeRepo()
-    repo.seed({ id: "raced", uploadId: "u1", kind: "image", r2Key: "uploads/r1", status: "validating", createdAt: old, finalizedAt: old, stuckCheckCount: 9 })
+    repo.seed({
+      id: "raced",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/r1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+      stuckCheckCount: 9,
+    })
     const { jobs } = makeJobsSpy()
     await repo.applyResult("raced", { status: "ready" })
 
@@ -583,8 +701,16 @@ describe("media.stuck.sweep", () => {
   it("F087b: a terminalized row's bytes are reclaimed, exactly like an in-band rejection", async () => {
     const repo = makeRepo()
     repo.seed({
-      id: "hopeless", uploadId: "u1", kind: "image", r2Key: "uploads/h1", thumbKey: "uploads/h1.thumb",
-      reportId: "report-1", status: "validating", createdAt: old, finalizedAt: old, stuckCheckCount: 9,
+      id: "hopeless",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "uploads/h1",
+      thumbKey: "uploads/h1.thumb",
+      reportId: "report-1",
+      status: "validating",
+      createdAt: old,
+      finalizedAt: old,
+      stuckCheckCount: 9,
     })
     storage = new FakeStorage()
     await storage.put("uploads/h1", Buffer.from([1, 2, 3]))

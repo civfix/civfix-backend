@@ -1,4 +1,3 @@
-
 import type { HomeMapResponse, HomeSummaryResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"

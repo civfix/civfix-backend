@@ -168,9 +168,7 @@ export interface AdminReportServiceDeps {
     thumbKey: string | null,
   ) => Promise<{ url: string; thumbUrl?: string }>
   presignPacketMedia?: PresignPacketMedia
-  loadLinkedEventsForReports?: (
-    reportIds: string[],
-  ) => Promise<Map<string, LinkedEventView[]>>
+  loadLinkedEventsForReports?: (reportIds: string[]) => Promise<Map<string, LinkedEventView[]>>
   loadMediaBytes?: (r2Key: string) => Promise<Uint8Array | null>
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter

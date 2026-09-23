@@ -1,4 +1,3 @@
-
 import { runDbCli, runIfMain } from "./cli.js"
 import { backfillUserActivity } from "./backfill-user-activity-core.js"
 

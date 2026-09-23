@@ -1,4 +1,3 @@
-
 import { sql } from "drizzle-orm"
 import { check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
 import type { AddressPrecision, ReportAddressSource } from "@civfix/shared"
@@ -66,7 +65,9 @@ export const reports = pgTable(
       .on(t.reporterUserId, t.createdAt)
       .where(sql`reporter_user_id IS NOT NULL`),
     index("reports_anon_session_idx").on(t.anonSessionId),
-    uniqueIndex("reports_claim_code_key").on(t.claimCode).where(sql`claim_code IS NOT NULL`),
+    uniqueIndex("reports_claim_code_key")
+      .on(t.claimCode)
+      .where(sql`claim_code IS NOT NULL`),
     uniqueIndex("reports_claim_code_hash_key")
       .on(t.claimCodeHash)
       .where(sql`claim_code_hash IS NOT NULL`),

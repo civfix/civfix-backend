@@ -336,7 +336,9 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
     const afterCommit = await repo.findStuckValidating(cutoff, 10)
     expect(afterCommit.map((r) => r.id)).not.toContain(id)
     expect(await repo.terminalizeStuck(id)).toBeNull()
-    const [row] = await h.sql<{ status: string }[]>`SELECT status FROM media_assets WHERE id = ${id}`
+    const [row] = await h.sql<
+      { status: string }[]
+    >`SELECT status FROM media_assets WHERE id = ${id}`
     expect(row!.status).toBe("ready")
   })
 

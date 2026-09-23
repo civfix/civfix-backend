@@ -1,4 +1,3 @@
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { fileURLToPath } from "node:url"
 
@@ -11,9 +10,8 @@ vi.mock("../../src/sandbox/image-lane.js", () => ({
 
 const { FakeStorage, FakeAbuseChecks } = await import("@civfix/shared/fakes")
 const { loadLimits } = await import("../../src/config.js")
-const { SandboxSpawnError, SandboxToolError, resetSandboxIdentity } = await import(
-  "../../src/sandbox/exec.js"
-)
+const { SandboxSpawnError, SandboxToolError, resetSandboxIdentity } =
+  await import("../../src/sandbox/exec.js")
 const { processMedia } = await import("../../src/jobs/media-pipeline.js")
 const { runMediaChecksJob, MediaInfraError } = await import("../../src/jobs/media-checks.js")
 const { assertSandboxPreflight } = await import("../../src/sandbox/preflight.js")

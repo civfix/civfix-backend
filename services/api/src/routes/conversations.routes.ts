@@ -1,4 +1,3 @@
-
 import {
   MarkThreadReadRequestSchema,
   ToggleMuteRequestSchema,
@@ -67,7 +66,10 @@ function isMutableRoomKind(roomKind: string): roomKind is ConversationMuteRoomKi
   return MUTABLE_ROOM_KINDS.has(roomKind as ConversationMuteRoomKind)
 }
 
-export async function registerConversationRoutes(app: FastifyInstance, container: Container): Promise<void> {
+export async function registerConversationRoutes(
+  app: FastifyInstance,
+  container: Container,
+): Promise<void> {
   const csrfProtect = container.csrf.protect
 
   const overrides = app.conversationRoutesOverrides
@@ -99,7 +101,8 @@ export async function registerConversationRoutes(app: FastifyInstance, container
     }
     if (roomKind === "report") {
       if (await (reportChat ??= makeReportChatRepository(sql)).isMember(roomId, userId)) return true
-      const report = await (reports ??= makeDrizzleDiscussionRepository(sql)).findReportForDiscussion(roomId)
+      const report = await (reports ??=
+        makeDrizzleDiscussionRepository(sql)).findReportForDiscussion(roomId)
       return isReportVisibleTo(report, userId)
     }
     const access = await (groups ??= makeChatGroupRepository(sql)).accessOf(roomId, userId)

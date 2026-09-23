@@ -73,8 +73,12 @@ function compareIds(a: string, b: string): number {
 }
 
 export class InMemoryHostTeamRepository implements HostTeamRepository {
-  readonly members: { cleanupId: string; userId: string; role: CleanupMemberRole; joinedAt: Date }[] =
-    []
+  readonly members: {
+    cleanupId: string
+    userId: string
+    role: CleanupMemberRole
+    joinedAt: Date
+  }[] = []
   readonly invites: StoredInvite[] = []
   readonly bans: { cleanupId: string; userId: string }[] = []
   readonly closedEvents = new Set<string>()
@@ -387,9 +391,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
         }),
       )
     return Promise.resolve(
-      pageWith(rows, args.limit, (last) =>
-        encodeTimeCursor({ at: last.createdAt, id: last.id }),
-      ),
+      pageWith(rows, args.limit, (last) => encodeTimeCursor({ at: last.createdAt, id: last.id })),
     )
   }
 

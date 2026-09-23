@@ -16,7 +16,6 @@ import { SESSION_COOKIE } from "../../src/auth/transport.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
 import type { WsTicketPayload } from "../../src/auth/ws-ticket.js"
 
-
 let current: FastifyInstance | undefined
 
 afterEach(async () => {
@@ -121,7 +120,11 @@ describe("GET /threads", () => {
     const { token, userId } = await signIn(app, mailer, "member@example.com")
     const cleanupId = threadsRepo.seedCleanup("Cleanup with chatter")
     threadsRepo.addMember(cleanupId, userId, new Date("2026-06-01T10:00:00.000Z"))
-    threadsRepo.addMember(cleanupId, "99999999-9999-9999-9999-999999999999", new Date("2026-06-01T09:00:00.000Z"))
+    threadsRepo.addMember(
+      cleanupId,
+      "99999999-9999-9999-9999-999999999999",
+      new Date("2026-06-01T09:00:00.000Z"),
+    )
     threadsRepo.addMessage(cleanupId, {
       senderId: "99999999-9999-9999-9999-999999999999",
       body: "anyone bringing bags?",
@@ -147,7 +150,11 @@ describe("GET /threads", () => {
 })
 
 describe("resolveWsUser (dual handshake auth)", () => {
-  async function withSession(): Promise<{ sessions: SessionService; token: string; userId: string }> {
+  async function withSession(): Promise<{
+    sessions: SessionService
+    token: string
+    userId: string
+  }> {
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
     const sessions = new SessionService({ store: stores.sessions, cache, now: () => Date.now() })

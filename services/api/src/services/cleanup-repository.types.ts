@@ -241,11 +241,7 @@ export type RemoveMemberOutcome =
   | { kind: "closed" }
   | { kind: "not_found" }
 
-export type CancelCleanupOutcome =
-  | "cancelled"
-  | "already_cancelled"
-  | "already_ended"
-  | "not_found"
+export type CancelCleanupOutcome = "cancelled" | "already_cancelled" | "already_ended" | "not_found"
 
 export interface NearPoint {
   lat: number
@@ -341,7 +337,6 @@ export interface CleanupRepository {
   ): Promise<CancelCleanupOutcome>
   listAttendees(args: ListAttendeesArgs): Promise<AttendeeView[]>
 
-
   listSlots(cleanupId: string, viewerId: string | null): Promise<EventSlotView[]>
   loadSlotsForCleanups(
     cleanupIds: string[],
@@ -361,7 +356,9 @@ export interface CleanupRepository {
   ): Promise<ClaimSlotOutcome>
   releaseSlot(cleanupId: string, userId: string): Promise<ClaimSlotOutcome>
   slotOf(cleanupId: string, userId: string): Promise<string | null>
-  resolveJurisdictionContact(geoid: string | null): Promise<{ contact: string; name: string } | null>
+  resolveJurisdictionContact(
+    geoid: string | null,
+  ): Promise<{ contact: string; name: string } | null>
   appendCleanupTimeline(
     cleanupId: string,
     input: { kind: string; note: string | null; actorId: string | null },

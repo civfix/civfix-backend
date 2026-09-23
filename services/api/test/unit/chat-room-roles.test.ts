@@ -89,18 +89,24 @@ describe("resolveChatPowers — cleanup rooms", () => {
 
   it("plain member: nothing", async () => {
     const resolve = makeChatPowersResolver(deps({ cleanupRoleOf: async () => "member" }))
-    await expect(resolve({ roomKind: "cleanup", roomId: ROOM, userId: USER })).resolves.toEqual(NONE)
+    await expect(resolve({ roomKind: "cleanup", roomId: ROOM, userId: USER })).resolves.toEqual(
+      NONE,
+    )
   })
 
   it("non-member: nothing", async () => {
     const resolve = makeChatPowersResolver(deps({ cleanupRoleOf: async () => null }))
-    await expect(resolve({ roomKind: "cleanup", roomId: ROOM, userId: USER })).resolves.toEqual(NONE)
+    await expect(resolve({ roomKind: "cleanup", roomId: ROOM, userId: USER })).resolves.toEqual(
+      NONE,
+    )
   })
 
   it("operator gets NOTHING beyond their cleanup role — globalRoleOf is never even consulted", async () => {
     // globalRoleOf throws; a plain-member operator must resolve to nothing without touching it.
     const resolve = makeChatPowersResolver(deps({ cleanupRoleOf: async () => "member" }))
-    await expect(resolve({ roomKind: "cleanup", roomId: ROOM, userId: USER })).resolves.toEqual(NONE)
+    await expect(resolve({ roomKind: "cleanup", roomId: ROOM, userId: USER })).resolves.toEqual(
+      NONE,
+    )
   })
 })
 

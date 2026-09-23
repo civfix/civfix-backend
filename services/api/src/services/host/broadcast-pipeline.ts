@@ -26,10 +26,7 @@ import {
   renderBroadcast,
   type RenderedBroadcast,
 } from "./broadcast-render.js"
-import {
-  mintUnsubscribeToken,
-  unsubscribeExpiryFrom,
-} from "./broadcast-capability-token.js"
+import { mintUnsubscribeToken, unsubscribeExpiryFrom } from "./broadcast-capability-token.js"
 import {
   AUDIENCE_MAX_PAGES,
   AUDIENCE_PAGE_SIZE,
@@ -287,7 +284,10 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
 
     const reservedNow = await repo.markPlanned(record.id, { recipientCount, plannedAt: now() })
     if (reservedNow && record.createdBy !== null && BUDGETED_KINDS.has(record.kind)) {
-      const withinBudget = await deps.service.reserveRecipientBudget(record.createdBy, recipientCount)
+      const withinBudget = await deps.service.reserveRecipientBudget(
+        record.createdBy,
+        recipientCount,
+      )
       if (!withinBudget) {
         await repo.suppressRemaining(record.id, "cap")
         await repo.transition(record.id, ["sending"], "failed", { finishedAt: now() })
@@ -576,7 +576,11 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
       }
       const hash = addresses.get(claim.id) ?? emailHashOf(email)
       if (suppressedHashes.has(hash)) {
-        outcomes.push({ id: claim.id, status: "suppressed", suppressionReason: "bounce_suppressed" })
+        outcomes.push({
+          id: claim.id,
+          status: "suppressed",
+          suppressionReason: "bounce_suppressed",
+        })
         return
       }
       const fresh = await claimAddress(record.id, hash, claim.id)

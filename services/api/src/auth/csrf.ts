@@ -31,7 +31,13 @@ import { createHmac } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import type { FastifyReply, FastifyRequest } from "fastify"
 import { constantTimeStringEqual, generateToken, sha256Hex } from "./crypto.js"
-import { csrfCookieName, sessionCookieValue, bearerToken, CSRF_COOKIE, CSRF_COOKIE_HOST } from "./transport.js"
+import {
+  csrfCookieName,
+  sessionCookieValue,
+  bearerToken,
+  CSRF_COOKIE,
+  CSRF_COOKIE_HOST,
+} from "./transport.js"
 import { isProd, type Env } from "../env.js"
 
 /** Header carrying the echoed CSRF token on state-changing cookie requests. */

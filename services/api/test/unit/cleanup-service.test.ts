@@ -18,7 +18,6 @@ import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { CreateCleanupRequest } from "@civfix/shared"
 
-
 const ORG = "11111111-1111-1111-1111-111111111111"
 const ALICE = "22222222-2222-2222-2222-222222222222"
 const BOB = "33333333-3333-3333-3333-333333333333"
@@ -74,7 +73,9 @@ describe("createCleanup", () => {
 
     expect(repo.cleanups.has(dto.id)).toBe(true)
     expect(await repo.isMember(dto.id, ORG)).toBe(true)
-    const organizerMembers = repo.members.filter((m) => m.cleanupId === dto.id && m.role === "organizer")
+    const organizerMembers = repo.members.filter(
+      (m) => m.cleanupId === dto.id && m.role === "organizer",
+    )
     expect(organizerMembers).toHaveLength(1)
   })
 
@@ -118,7 +119,9 @@ describe("joinCleanup / leaveCleanup", () => {
 
     const again = await service.joinCleanup(created.id, ALICE)
     expect(again).toEqual({ joined: true, going: 2 })
-    expect(repo.members.filter((m) => m.cleanupId === created.id && m.userId === ALICE)).toHaveLength(1)
+    expect(
+      repo.members.filter((m) => m.cleanupId === created.id && m.userId === ALICE),
+    ).toHaveLength(1)
   })
 
   it("a member can leave; going drops and membership is removed", async () => {
@@ -243,7 +246,9 @@ describe("cancelCleanup", () => {
     const dto = await service.cancelCleanup(created.id, null, ORG)
     expect(dto.status).toBe("cancelled")
     expect(repo.cleanups.get(created.id)?.status).toBe("cancelled")
-    const cancelRows = repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "cancel")
+    const cancelRows = repo.timeline.filter(
+      (t) => t.cleanupId === created.id && t.kind === "cancel",
+    )
     expect(cancelRows).toHaveLength(1)
     expect(cancelRows[0]!.actorId).toBe(ORG)
   })
@@ -276,7 +281,9 @@ describe("cancelCleanup", () => {
       message: "This event has already ended and can't be cancelled.",
     })
     expect(repo.cleanups.get(created.id)?.status).toBe("upcoming")
-    expect(repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "cancel")).toEqual([])
+    expect(repo.timeline.filter((t) => t.cleanupId === created.id && t.kind === "cancel")).toEqual(
+      [],
+    )
   })
 
   it("F067: an ended event's date/title/location/type are frozen; cosmetic edits still apply", async () => {
@@ -582,11 +589,17 @@ describe("listCleanups filters", () => {
     )
     await service.joinCleanup(rsvped.id, ALICE)
     await service.createCleanup(
-      baseInput({ title: "Hosted", scheduledAt: new Date("2026-06-08T00:00:00.000Z").toISOString() }),
+      baseInput({
+        title: "Hosted",
+        scheduledAt: new Date("2026-06-08T00:00:00.000Z").toISOString(),
+      }),
       ALICE,
     )
     await service.createCleanup(
-      baseInput({ title: "Other", scheduledAt: new Date("2026-06-03T00:00:00.000Z").toISOString() }),
+      baseInput({
+        title: "Other",
+        scheduledAt: new Date("2026-06-03T00:00:00.000Z").toISOString(),
+      }),
       BOB,
     )
 
@@ -645,10 +658,7 @@ describe("listCleanups filters", () => {
       scheduledAt: new Date("2026-06-10T00:00:00.000Z"),
     })
 
-    const res = await service.listCleanups(
-      { near: { lat: 34.0, lng: -118.49 } },
-      { userId: null },
-    )
+    const res = await service.listCleanups({ near: { lat: 34.0, lng: -118.49 } }, { userId: null })
     expect(res.items.map((c) => c.title)).toEqual(["Near", "Far"])
     expect(res.items[0]!.dist!).toBeLessThan(res.items[1]!.dist!)
   })
@@ -840,11 +850,21 @@ describe("requestResources (D19 event resource request)", () => {
   }
 
   it("happy path: org-hosted event -> event thread send + resource_request timeline row", async () => {
-    const { repo: r, svc, sends, creator, organizationId } = harness({
+    const {
+      repo: r,
+      svc,
+      sends,
+      creator,
+      organizationId,
+    } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     const id = await seedEvent(r, creator, "0644000", organizationId)
-    const res = await svc.requestResources({ cleanupId: id, message: "Need 20 trash bags.", actorId: ORG })
+    const res = await svc.requestResources({
+      cleanupId: id,
+      message: "Need 20 trash bags.",
+      actorId: ORG,
+    })
     expect(res).toEqual({ ok: true })
 
     expect(sends).toHaveLength(1)
@@ -859,7 +879,13 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("F068: 422s a slur in the message and neither sends nor writes a timeline row", async () => {
-    const { repo: r, svc, sends, creator, organizationId } = harness({
+    const {
+      repo: r,
+      svc,
+      sends,
+      creator,
+      organizationId,
+    } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     const id = await seedEvent(r, creator, "0644000", organizationId)
@@ -867,12 +893,19 @@ describe("requestResources (D19 event resource request)", () => {
       svc.requestResources({ cleanupId: id, message: "please send bags nigger", actorId: ORG }),
     ).rejects.toMatchObject({ code: "VALIDATION" })
     expect(sends).toHaveLength(0)
-    expect(r.timeline.find((t) => t.cleanupId === id && t.kind === "resource_request")).toBeUndefined()
+    expect(
+      r.timeline.find((t) => t.cleanupId === id && t.kind === "resource_request"),
+    ).toBeUndefined()
   })
 
-
   it("M20: a FRESH event does not reset the host's budget (the old cleanupId-keyed bypass)", async () => {
-    const { repo: r, svc, sends, creator, organizationId } = harness({
+    const {
+      repo: r,
+      svc,
+      sends,
+      creator,
+      organizationId,
+    } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     for (let i = 0; i < RESOURCE_REQUEST_PER_HOST_PER_DAY; i += 1) {
@@ -889,7 +922,12 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("M20: caps a single jurisdiction per hour across DIFFERENT hosts (colluding accounts)", async () => {
-    const { repo: r, svc, sends, organizationId } = harness({
+    const {
+      repo: r,
+      svc,
+      sends,
+      organizationId,
+    } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     let host = 0
@@ -924,7 +962,13 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("M20: a rejected request (403) costs the host nothing", async () => {
-    const { repo: r, svc, sends, creator, organizationId } = harness({
+    const {
+      repo: r,
+      svc,
+      sends,
+      creator,
+      organizationId,
+    } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     const id = await seedEvent(r, creator, "0644000", organizationId)
@@ -938,7 +982,13 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("403s a non-host (and sends nothing)", async () => {
-    const { repo: r, svc, sends, creator, organizationId } = harness({
+    const {
+      repo: r,
+      svc,
+      sends,
+      creator,
+      organizationId,
+    } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     const id = await seedEvent(r, creator, "0644000", organizationId)
@@ -949,7 +999,12 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("403s a personal (org-less) event: city resources are an organization's ask", async () => {
-    const { repo: r, svc, sends, creator } = harness({
+    const {
+      repo: r,
+      svc,
+      sends,
+      creator,
+    } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     const id = await seedEvent(r, creator, "0644000")
@@ -960,7 +1015,13 @@ describe("requestResources (D19 event resource request)", () => {
   })
 
   it("403s an org member who only has a plain seat on the event (no manage_event)", async () => {
-    const { repo: r, svc, sends, creator, organizationId } = harness({
+    const {
+      repo: r,
+      svc,
+      sends,
+      creator,
+      organizationId,
+    } = harness({
       contact: { geoid: "0644000", email: "events@lacity.gov" },
     })
     const id = await seedEvent(r, creator, "0644000", organizationId)
@@ -1222,7 +1283,6 @@ describe("WS4 co-hosts: setMemberRole / removeMember / role-aware reads", () => 
   })
 })
 
-
 describe("M17: attendee removal is enforceable (cleanup_bans)", () => {
   let svc: CleanupService
 
@@ -1383,7 +1443,12 @@ describe("M19: the slur filter reaches event fields", () => {
 
   it("still accepts ordinary event text", async () => {
     const dto = await service.createCleanup(
-      baseInput({ title: "Ballona Creek sweep", description: "Meet by the bridge", address: "North gate", bring: ["gloves"] }),
+      baseInput({
+        title: "Ballona Creek sweep",
+        description: "Meet by the bridge",
+        address: "North gate",
+        bring: ["gloves"],
+      }),
       ORG,
     )
     expect(dto.title).toBe("Ballona Creek sweep")

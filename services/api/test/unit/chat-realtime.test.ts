@@ -1,18 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import {
-  handleClientFrame,
-  type GatewaySession,
-  type GatewayDeps,
-} from "../../src/ws/gateway.js"
+import { handleClientFrame, type GatewaySession, type GatewayDeps } from "../../src/ws/gateway.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub, chatChannel } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
-import {
-  WsClientMessageSchema,
-  WsServerMessageSchema,
-  type ChatMessageDTO,
-} from "@civfix/shared"
+import { WsClientMessageSchema, WsServerMessageSchema, type ChatMessageDTO } from "@civfix/shared"
 
 /**
  * THE PHASE-1 DONE-CRITERION, proven locally: two devices chat in real time.
@@ -48,7 +40,13 @@ let presence: InMemoryChatPresence
 /** Build a fresh gateway session for a user over a mock connection. */
 function sessionFor(userId: string, conn: MockConnection): GatewaySession {
   const deps: GatewayDeps = { chat, isMember: memberOf, presence }
-  return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+  return {
+    userId,
+    conn,
+    joined: new Set<string>(),
+    typingThrottle: new Map<string, number>(),
+    deps,
+  }
 }
 
 /** Assert a raw frame string parses as a valid client frame (outbound-from-client direction). */
@@ -142,9 +140,9 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     // Validate EVERY outbound frame on both sockets against the server schema (the broadcast frame B got
     // must NOT carry the internal excludeConnId hint - it is stripped before the wire).
     for (const raw of [...aConn.sent, ...bConn.sent]) assertServerFrame(raw)
-    expect(JSON.parse(bConn.sent.find((s) => JSON.parse(s).type === "message")!)).not.toHaveProperty(
-      "excludeConnId",
-    )
+    expect(
+      JSON.parse(bConn.sent.find((s) => JSON.parse(s).type === "message")!),
+    ).not.toHaveProperty("excludeConnId")
 
     // ---- The message was persisted: history returns it ----
     const page = await chat.history(ROOM, undefined, 50)
@@ -335,7 +333,10 @@ describe("ack updates read state for the open room", () => {
 
     // After joining, an ack marks THAT room read.
     await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
-    await handleClientFrame(session, JSON.stringify({ type: "ack", upToId: "55555555-5555-5555-5555-555555555555" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "ack", upToId: "55555555-5555-5555-5555-555555555555" }),
+    )
     expect(marks).toHaveLength(1)
     expect(marks[0]).toMatchObject({ cleanupId: ROOM, userId: ALICE })
   })

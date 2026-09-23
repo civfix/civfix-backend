@@ -13,11 +13,7 @@ import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,
 } from "../../src/services/dm-repository.memory.js"
-import {
-  WsServerMessageSchema,
-  type ChatMessageDTO,
-} from "@civfix/shared"
-
+import { WsServerMessageSchema, type ChatMessageDTO } from "@civfix/shared"
 
 const ALICE = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"
@@ -152,12 +148,24 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     const bConn = new MockConnection("B")
     const aSession = sessionFor(ALICE, aConn)
     const bSession = sessionFor(BOB, bConn)
-    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
-    await handleClientFrame(bSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
+    await handleClientFrame(
+      bSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
 
     await handleClientFrame(
       aSession,
-      JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c1", body: "hi bob" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: THREAD,
+        roomKind: "dm",
+        clientId: "c1",
+        body: "hi bob",
+      }),
     )
 
     const bMsgs = bConn.framesOfType("message")
@@ -186,12 +194,24 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     const bConn = new MockConnection("B")
     const aSession = sessionFor(ALICE, aConn)
     const bSession = sessionFor(BOB, bConn)
-    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
-    await handleClientFrame(bSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
+    await handleClientFrame(
+      bSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
 
     await handleClientFrame(
       aSession,
-      JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c1", body: "you retard" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: THREAD,
+        roomKind: "dm",
+        clientId: "c1",
+        body: "you retard",
+      }),
     )
 
     const errs = aConn.framesOfType("error")
@@ -210,7 +230,13 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     const aSession = sessionFor(ALICE, aConn)
     await handleClientFrame(
       aSession,
-      JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "cleanup", clientId: "c1", body: "you retard" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: THREAD,
+        roomKind: "cleanup",
+        clientId: "c1",
+        body: "you retard",
+      }),
     )
     const errs = aConn.framesOfType("error")
     expect(errs).toHaveLength(1)
@@ -223,10 +249,19 @@ describe("DM gateway routing (join/send/ack/block)", () => {
   it("a clean send is unaffected by the slur gate (general profanity passes)", async () => {
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
-    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
     await handleClientFrame(
       aSession,
-      JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c1", body: "this is damn slow" }),
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({
+        type: "send",
+        cleanupId: THREAD,
+        roomKind: "dm",
+        clientId: "c1",
+        body: "this is damn slow",
+      }),
     )
     expect(aConn.framesOfType("error")).toHaveLength(0)
     expect(aConn.framesOfType("ack")).toHaveLength(1)
@@ -239,7 +274,10 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
 
-    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
     const joinErr = aConn.framesOfType("error")
     expect(joinErr).toHaveLength(1)
     expect((joinErr[0] as { code: string }).code).toBe("FORBIDDEN")
@@ -247,7 +285,13 @@ describe("DM gateway routing (join/send/ack/block)", () => {
 
     await handleClientFrame(
       aSession,
-      JSON.stringify({ type: "send", cleanupId: THREAD, roomKind: "dm", clientId: "c", body: "let me in" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: THREAD,
+        roomKind: "dm",
+        clientId: "c",
+        body: "let me in",
+      }),
     )
     expect(aConn.framesOfType("error")).toHaveLength(2)
     expect(aConn.framesOfType("ack")).toHaveLength(0)
@@ -257,7 +301,10 @@ describe("DM gateway routing (join/send/ack/block)", () => {
   it("ack with roomKind:dm routes to the dm read-state seam (not the cleanup one)", async () => {
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
-    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
     await handleClientFrame(
       aSession,
       JSON.stringify({
@@ -275,7 +322,10 @@ describe("DM gateway routing (join/send/ack/block)", () => {
   it("ack with NO room fields falls back to the socket's first joined room (dm)", async () => {
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
-    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
     await handleClientFrame(
       aSession,
       JSON.stringify({ type: "ack", upToId: "44444444-4444-4444-4444-444444444444" }),
@@ -304,7 +354,10 @@ describe("DM gateway routing (join/send/ack/block)", () => {
   it("opening (join) a dm marks the room read on open and self-signals the reader's threads (#42)", async () => {
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
-    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
     expect(openMarks).toEqual([{ kind: "dm", id: THREAD, userId: ALICE }])
     await new Promise((r) => setTimeout(r, 0))
     expect(signals).toContainEqual({ userId: ALICE, topic: "threads", id: THREAD })
@@ -313,7 +366,10 @@ describe("DM gateway routing (join/send/ack/block)", () => {
   it("a dm ack self-signals the reader's threads so the badge refetches after the watermark (#42)", async () => {
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
-    await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }))
+    await handleClientFrame(
+      aSession,
+      JSON.stringify({ type: "join", cleanupId: THREAD, roomKind: "dm" }),
+    )
     signals.length = 0
     await handleClientFrame(
       aSession,

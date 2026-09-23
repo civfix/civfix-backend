@@ -1,4 +1,3 @@
-
 import {
   AdminUserListQuerySchema,
   FlagUserRequestSchema,
@@ -145,7 +144,11 @@ export async function registerAdminUsersRoutes(
   route(app, "removeUserMessage", { preHandler: csrfProtect }, async (request, reply) => {
     const actorId = requireOperator(request)
     const { id, messageId } = twoIdParams(request, "messageId")
-    const body = parse(RemoveUserMessageRequestSchema, { ...(request.body as object), id, messageId })
+    const body = parse(RemoveUserMessageRequestSchema, {
+      ...(request.body as object),
+      id,
+      messageId,
+    })
     await service().removeMessage(id, messageId, { reason: body.reason ?? null, actorId })
     sendOk(reply)
   })

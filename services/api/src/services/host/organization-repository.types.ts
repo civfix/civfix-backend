@@ -6,10 +6,7 @@ import type {
   OrgVerificationStatus,
   SocialLinks,
 } from "@civfix/shared"
-import type {
-  CleanupOrganizationView,
-  CleanupPersonView,
-} from "../cleanup-repository.types.js"
+import type { CleanupOrganizationView, CleanupPersonView } from "../cleanup-repository.types.js"
 
 export interface OrganizationBaseRecord {
   id: string
@@ -265,7 +262,12 @@ export interface PendingOrganizationInviteRecord {
 
 /** `role` is the SEATED role: for an existing member that is their current role, never an upgrade from the invite. */
 export type AcceptOrganizationInviteOutcome =
-  | { kind: "accepted"; organizationId: string; role: OrganizationMemberRole; alreadyMember: boolean }
+  | {
+      kind: "accepted"
+      organizationId: string
+      role: OrganizationMemberRole
+      alreadyMember: boolean
+    }
   | { kind: "invalid" }
   | { kind: "expired" }
   | { kind: "wrong_recipient" }

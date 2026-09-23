@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import {
   AppError,
@@ -302,9 +301,7 @@ function hostSetFragments(sql: Sql, patch: EventHostWrite): postgres.Fragment[] 
     sets.push(sql`organization_id = ${patch.organizationId}`)
   }
   if (patch.reminderOffsetsMin !== undefined) {
-    sets.push(
-      sql`reminder_offsets_min = ${patch.reminderOffsetsMin as unknown as number[] | null}`,
-    )
+    sets.push(sql`reminder_offsets_min = ${patch.reminderOffsetsMin as unknown as number[] | null}`)
   }
   if (patch.hostReplyTo !== undefined) {
     sets.push(sql`host_reply_to = ${patch.hostReplyTo}, host_reply_to_verified_at = NULL`)
@@ -606,9 +603,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       return grouped
     },
 
-    async loadLinkedEventsForReports(
-      reportIds: string[],
-    ): Promise<Map<string, LinkedEventView[]>> {
+    async loadLinkedEventsForReports(reportIds: string[]): Promise<Map<string, LinkedEventView[]>> {
       const grouped = new Map<string, LinkedEventView[]>()
       if (reportIds.length === 0) return grouped
       const rows = await sql<
@@ -1291,7 +1286,10 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             SELECT id, title, starts_at, ends_at FROM cleanup_slots WHERE cleanup_id = ${cleanupId}
           `
           const have = new Map<string, SlotIdentity>(
-            existing.map((r) => [r.id, { title: r.title, startsAt: r.starts_at, endsAt: r.ends_at }]),
+            existing.map((r) => [
+              r.id,
+              { title: r.title, startsAt: r.starts_at, endsAt: r.ends_at },
+            ]),
           )
 
           for (const slot of desired) {
@@ -1300,8 +1298,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             }
           }
 
-
-          const keep = new Set(desired.map((s) => s.id).filter((id): id is string => id !== undefined))
+          const keep = new Set(
+            desired.map((s) => s.id).filter((id): id is string => id !== undefined),
+          )
           const toRemove = [...have.keys()].filter((id) => !keep.has(id))
           const removed: SlotReconcileResult["removed"] = []
           if (toRemove.length > 0) {
@@ -1329,7 +1328,10 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           }
 
           const kept = desired.filter((s): s is DesiredSlot & { id: string } => s.id !== undefined)
-          const changed = (slot: DesiredSlot & { id: string }, keyOf: (s: SlotIdentity) => string): boolean => {
+          const changed = (
+            slot: DesiredSlot & { id: string },
+            keyOf: (s: SlotIdentity) => string,
+          ): boolean => {
             const before = have.get(slot.id)
             return before === undefined || keyOf(before) !== keyOf(slot)
           }
@@ -1434,7 +1436,8 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           return { kind: "not_found" }
         }
         if (cleanup.status === "cancelled") return { kind: "closed" }
-        if (hasEventEnded(eventWindowOfRow(cleanup), cleanup.now.getTime())) return { kind: "ended" }
+        if (hasEventEnded(eventWindowOfRow(cleanup), cleanup.now.getTime()))
+          return { kind: "ended" }
 
         const banned = await tx<{ one: number }[]>`
           SELECT 1 AS one FROM cleanup_bans
@@ -1518,7 +1521,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       geoid: string | null,
     ): Promise<{ contact: string; name: string } | null> {
       if (geoid === null) return null
-      const rows = await sql<{ name: string | null; default_email: string | null; legacy_email: string | null }[]>`
+      const rows = await sql<
+        { name: string | null; default_email: string | null; legacy_email: string | null }[]
+      >`
         SELECT
           j.name,
           (SELECT jc.email FROM jurisdiction_contacts jc

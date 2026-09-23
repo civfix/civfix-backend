@@ -1,4 +1,3 @@
-
 import {
   ListPeopleRequestSchema,
   FollowSuggestionsRequestSchema,
@@ -93,9 +92,7 @@ export async function registerSocialRoutes(
       ? undefined
       : (viewerId: string, targetId: string) =>
           container.getBlocksRepo().blockState(viewerId, targetId)
-    const affiliations = app.socialOverrides
-      ? undefined
-      : container.getAffiliationLoader()
+    const affiliations = app.socialOverrides ? undefined : container.getAffiliationLoader()
     return makeSocialService({
       repo: repo(),
       logger: app.log,
@@ -136,29 +133,44 @@ export async function registerSocialRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "followSuggestions", { config: { rateLimit: FOLLOW_SUGGESTIONS_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const q = parse(FollowSuggestionsRequestSchema, request.query)
-    const payload: FollowSuggestionsResponse = await service().followSuggestions(
-      userId,
-      q.limit ?? FOLLOW_SUGGESTIONS_DEFAULT_LIMIT,
-    )
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "followSuggestions",
+    { config: { rateLimit: FOLLOW_SUGGESTIONS_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const q = parse(FollowSuggestionsRequestSchema, request.query)
+      const payload: FollowSuggestionsResponse = await service().followSuggestions(
+        userId,
+        q.limit ?? FOLLOW_SUGGESTIONS_DEFAULT_LIMIT,
+      )
+      reply.status(200).send(payload)
+    },
+  )
 
-  route(app, "followPerson", { preHandler: csrfProtect, config: { rateLimit: FOLLOW_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(PersonIdParamsSchema, request.params)
-    const payload: FollowPersonResponse = await service(true).followPerson(userId, id)
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "followPerson",
+    { preHandler: csrfProtect, config: { rateLimit: FOLLOW_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(PersonIdParamsSchema, request.params)
+      const payload: FollowPersonResponse = await service(true).followPerson(userId, id)
+      reply.status(200).send(payload)
+    },
+  )
 
-  route(app, "unfollowPerson", { preHandler: csrfProtect, config: { rateLimit: FOLLOW_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(PersonIdParamsSchema, request.params)
-    const payload: FollowPersonResponse = await service().unfollowPerson(userId, id)
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "unfollowPerson",
+    { preHandler: csrfProtect, config: { rateLimit: FOLLOW_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(PersonIdParamsSchema, request.params)
+      const payload: FollowPersonResponse = await service().unfollowPerson(userId, id)
+      reply.status(200).send(payload)
+    },
+  )
 
   route(app, "getProfile", async (request, reply) => {
     const { id } = parse(PersonRefParamsSchema, request.params)

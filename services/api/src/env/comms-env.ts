@@ -68,7 +68,9 @@ export function loadCommsEnv(source: NodeJS.ProcessEnv, errors: string[]): Comms
 
   const mailFromEvents = (source.MAIL_FROM_EVENTS ?? "").trim() || DEFAULT_MAIL_FROM_EVENTS
   if (!mailFromEvents.includes("@")) {
-    errors.push("MAIL_FROM_EVENTS: must be an email address (it is the From of every host broadcast)")
+    errors.push(
+      "MAIL_FROM_EVENTS: must be an email address (it is the From of every host broadcast)",
+    )
   }
 
   let unsubscribeKey = (source.UNSUBSCRIBE_SIGNING_KEY ?? "").trim()
@@ -153,4 +155,3 @@ function clampDedupeSeconds(raw: string | undefined, errors: string[]): number {
   }
   return value
 }
-

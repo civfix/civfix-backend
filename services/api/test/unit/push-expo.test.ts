@@ -3,11 +3,13 @@ import { makeExpoDispatcher, isExpoPushToken } from "../../src/adapters/push-exp
 import type { PushLogger } from "../../src/adapters/push-sender.js"
 import type { PushPayload } from "@civfix/shared/interfaces"
 
-
 const logger: PushLogger = { warn: () => {}, error: () => {} }
 const PAYLOAD: PushPayload = { title: "Hi", body: "there", link: "/x", data: { k: "v" } }
 
-function jsonFetch(body: unknown): { fetchImpl: typeof fetch; calls: Array<{ url: string; init: RequestInit }> } {
+function jsonFetch(body: unknown): {
+  fetchImpl: typeof fetch
+  calls: Array<{ url: string; init: RequestInit }>
+} {
   const calls: Array<{ url: string; init: RequestInit }> = []
   const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
     calls.push({ url, init })
@@ -77,7 +79,9 @@ describe("makeExpoDispatcher", () => {
       makeExpoDispatcher({ fetchImpl: throwing }, logger)(["ExponentPushToken[a]"], PAYLOAD),
     ).resolves.toEqual({ invalidTokens: [] })
 
-    const http500 = vi.fn(async () => new Response("nope", { status: 500 })) as unknown as typeof fetch
+    const http500 = vi.fn(
+      async () => new Response("nope", { status: 500 }),
+    ) as unknown as typeof fetch
     await expect(
       makeExpoDispatcher({ fetchImpl: http500 }, logger)(["ExponentPushToken[a]"], PAYLOAD),
     ).resolves.toEqual({ invalidTokens: [] })

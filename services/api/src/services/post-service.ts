@@ -1,4 +1,3 @@
-
 import {
   AppError,
   DEFAULT_FEED_RANKING,
@@ -108,11 +107,7 @@ export interface PostService {
   unsavePost(id: string, viewerId: string): Promise<PostDTO>
   repostPost(id: string, viewerId: string): Promise<PostDTO>
   unrepostPost(id: string, viewerId: string): Promise<PostDTO>
-  homeFeed(
-    viewerId: string,
-    query: HomeFeedQuery,
-    location?: FeedViewerLocation,
-  ): Promise<FeedPage>
+  homeFeed(viewerId: string, query: HomeFeedQuery, location?: FeedViewerLocation): Promise<FeedPage>
   publicFeed(query: HomeFeedQuery, location?: FeedViewerLocation): Promise<FeedPage>
   getFeedCounts(postIds: readonly string[], viewerId: string): Promise<FeedCountsResponse>
   listUserPosts(authorId: string, viewerId: string, pagination: PaginationQuery): Promise<FeedPage>
@@ -469,7 +464,9 @@ export function makePostService(deps: PostServiceDeps): PostService {
       }
       for (const m of mentions) {
         if (await shouldNotify(authorId, m.id)) {
-          await safeNotify(() => deps.notifier!.onPostMention({ recipientId: m.id, actorName, postId }))
+          await safeNotify(() =>
+            deps.notifier!.onPostMention({ recipientId: m.id, actorName, postId }),
+          )
         }
       }
 
@@ -491,7 +488,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
     async deletePost(id: string, viewerId: string): Promise<{ ok: true }> {
       const brief = await deps.repo.getPostBrief(id)
       if (!brief || brief.deletedAt !== null) throw AppError.notFound("Post not found")
-      if (brief.authorId !== viewerId) throw AppError.forbidden("You can only delete your own post.")
+      if (brief.authorId !== viewerId)
+        throw AppError.forbidden("You can only delete your own post.")
       await deps.repo.softDeletePost(id)
       return { ok: true }
     },
@@ -517,7 +515,11 @@ export function makePostService(deps: PostServiceDeps): PostService {
       if (created && (await shouldNotify(viewerId, subject.authorId))) {
         const actorName = await deps.repo.actorNameOf(viewerId)
         await safeNotify(() =>
-          deps.notifier!.onPostLike({ recipientId: subject.authorId, actorName, postId: subject.id }),
+          deps.notifier!.onPostLike({
+            recipientId: subject.authorId,
+            actorName,
+            postId: subject.id,
+          }),
         )
       }
       return hydrateOrThrow(id, viewerId)
@@ -599,10 +601,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
       return rankedFeed(NIL_VIEWER_ID, query, location)
     },
 
-    async getFeedCounts(
-      postIds: readonly string[],
-      viewerId: string,
-    ): Promise<FeedCountsResponse> {
+    async getFeedCounts(postIds: readonly string[], viewerId: string): Promise<FeedCountsResponse> {
       const unique = [...new Set(postIds)]
       if (unique.length === 0) return { items: [] }
       const rows = await deps.repo.readableCounts(unique, viewerId)

@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest"
 import {
   AbuseReasonSchema,
@@ -157,16 +156,16 @@ describe("schema enum tuples mirror @civfix/shared", () => {
     ["UserStatus", USER_ACCOUNT_STATUS_VALUES, UserStatusSchema.options],
     ["Risk", USER_RISK_VALUES, RiskSchema.options],
     ["ModerationKind", MODERATION_KIND_VALUES, ModerationKindSchema.options],
-    [
-      "ModerationSubjectType",
-      MODERATION_SUBJECT_TYPE_VALUES,
-      ModerationSubjectTypeSchema.options,
-    ],
+    ["ModerationSubjectType", MODERATION_SUBJECT_TYPE_VALUES, ModerationSubjectTypeSchema.options],
     ["Priority", MODERATION_PRIORITY_VALUES, PrioritySchema.options],
     ["MailStatus", MAIL_THREAD_STATUS_VALUES, MailStatusSchema.options],
     ["MailDirection", MAIL_DIRECTION_VALUES, MailDirectionSchema.options],
     ["EventVisibility", EVENT_VISIBILITY_VALUES, EventVisibilitySchema.options],
-    ["OrganizationMemberRole", ORGANIZATION_MEMBER_ROLE_VALUES, OrganizationMemberRoleSchema.options],
+    [
+      "OrganizationMemberRole",
+      ORGANIZATION_MEMBER_ROLE_VALUES,
+      OrganizationMemberRoleSchema.options,
+    ],
     ["OrgVerificationStatus", ORG_VERIFICATION_STATUS_VALUES, OrgVerificationStatusSchema.options],
     ["OrgVerificationKind", ORG_VERIFICATION_KIND_VALUES, OrgVerificationKindSchema.options],
     ["EventTeamRole", EVENT_TEAM_ROLE_VALUES, EventTeamRoleSchema.options],

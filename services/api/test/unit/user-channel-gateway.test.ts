@@ -105,7 +105,11 @@ describe("subscribeUserChannel (per-socket lifecycle)", () => {
     await channel.publishToUser(ALICE, { topic: "threads", id: ROOM })
     expect(a1.framesOfType("signal")).toHaveLength(1)
     expect(a2.framesOfType("signal")).toHaveLength(1)
-    expect(a1.framesOfType("signal")[0]).toMatchObject({ type: "signal", topic: "threads", id: ROOM })
+    expect(a1.framesOfType("signal")[0]).toMatchObject({
+      type: "signal",
+      topic: "threads",
+      id: ROOM,
+    })
 
     // Close the first device; the second still gets later signals.
     await dispose1!()
@@ -139,7 +143,13 @@ describe("send fires a {topic:'threads'} signal to recipients (sender excluded b
       userChannel: channel,
       threadRecipientsOf,
     }
-    return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+    return {
+      userId,
+      conn,
+      joined: new Set<string>(),
+      typingThrottle: new Map<string, number>(),
+      deps,
+    }
   }
 
   it("publishes a threads signal to the resolved recipients on a cleanup send", async () => {
@@ -300,10 +310,9 @@ describe("registerChatGateway (subscribe-on-handshake / unsubscribe-on-close wir
    * A mock FastifyInstance whose `app.get("/ws", opts, handler)` captures the gateway handler so a test can
    * invoke it directly with a mock socket. registerChatGateway calls only app.get.
    */
-  function captureGatewayHandler(opts: Parameters<typeof registerChatGateway>[1]): (
-    socket: WebSocket,
-    request: FastifyRequest,
-  ) => void {
+  function captureGatewayHandler(
+    opts: Parameters<typeof registerChatGateway>[1],
+  ): (socket: WebSocket, request: FastifyRequest) => void {
     let captured: ((socket: WebSocket, request: FastifyRequest) => void) | undefined
     const app = {
       get(

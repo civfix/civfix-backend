@@ -1,4 +1,3 @@
-
 import type { Sql } from "../db/client.js"
 import { avatarGradient } from "@civfix/shared"
 import type { PersonDTO } from "@civfix/shared"

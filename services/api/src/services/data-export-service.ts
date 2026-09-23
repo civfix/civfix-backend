@@ -175,17 +175,13 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
       `
 
-      const cleanupsOrganized = sql<
-        { id: string; title: string | null; created_at: Date }[]
-      >`
+      const cleanupsOrganized = sql<{ id: string; title: string | null; created_at: Date }[]>`
         SELECT id, title, created_at FROM cleanups
         WHERE organizer_user_id = ${userId}
         ORDER BY created_at DESC
         LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
       `
-      const cleanupsJoined = sql<
-        { cleanup_id: string; role: string; joined_at: Date }[]
-      >`
+      const cleanupsJoined = sql<{ cleanup_id: string; role: string; joined_at: Date }[]>`
         SELECT cleanup_id, role, joined_at FROM cleanup_members
         WHERE user_id = ${userId}
         ORDER BY joined_at DESC
@@ -314,9 +310,7 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
         LIMIT ${DATA_EXPORT_MAX_ROWS + 1}
       `
 
-      const eventAnswers = sql<
-        { cleanup_id: string; prompt: string; value: string | null }[]
-      >`
+      const eventAnswers = sql<{ cleanup_id: string; prompt: string; value: string | null }[]>`
         SELECT a.cleanup_id, q.prompt,
                COALESCE(a.value_text, a.value_json::text) AS value
         FROM cleanup_answers a

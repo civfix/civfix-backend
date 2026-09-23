@@ -17,7 +17,9 @@ export async function loadChatReactions(
   messageId: string,
   viewerUserId: string | null,
 ): Promise<ReactionSummaryDTO[]> {
-  return (await loadReactionsFor(tag, CHAT_REACTIONS, [messageId], viewerUserId)).get(messageId) ?? []
+  return (
+    (await loadReactionsFor(tag, CHAT_REACTIONS, [messageId], viewerUserId)).get(messageId) ?? []
+  )
 }
 
 /** Batched: one grouped query for a whole page of message ids (the N+1 fix for list reads). */

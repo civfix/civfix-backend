@@ -85,108 +85,161 @@ export async function registerHostAnalyticsRoutes(
     return { cleanupId: query.id, range: query.range ?? "30d", viewerScope }
   }
 
-  route(app, "getEventAnalytics", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const query = parse(GetEventAnalyticsRequestSchema, mergeQuery(request))
-    const resolution = await requireCapability(
-      container.getDb().sql,
-      query.id,
-      userId,
-      "view_analytics",
-    )
-    const viewerScope = `${resolution.standing.eventRole ?? "none"}:${resolution.standing.orgRole ?? "none"}`
-    reply.status(200).send(
-      await eventAnalytics().analytics(query.id, query.scope ?? "full", {
-        userId,
-        organizationId: resolution.organizationId,
-        viewerScope,
-      }),
-    )
-  })
-
-  route(app, "eventAnalyticsOverview", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
-    const scope = await eventScope(request)
-    reply.status(200).send(await analytics().overview(scope.cleanupId, scope.range, scope.viewerScope))
-  })
-
-  route(app, "eventAnalyticsRegistrations", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
-    const scope = await eventScope(request)
-    reply
-      .status(200)
-      .send(await analytics().registrations(scope.cleanupId, scope.range, scope.viewerScope))
-  })
-
-  route(app, "eventAnalyticsCheckins", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
-    const scope = await eventScope(request)
-    reply.status(200).send(await analytics().checkins(scope.cleanupId, scope.range, scope.viewerScope))
-  })
-
-  route(app, "eventAnalyticsBroadcasts", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
-    const scope = await eventScope(request)
-    reply.status(200).send(await analytics().broadcasts(scope.cleanupId, scope.range, scope.viewerScope))
-  })
-
-  route(app, "eventAnalyticsSources", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
-    const scope = await eventScope(request)
-    reply.status(200).send(await analytics().sources(scope.cleanupId, scope.range, scope.viewerScope))
-  })
-
-  route(app, "getEventInsights", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const params = parse(GetEventInsightsRequestSchema, request.params)
-    const resolution = await requireCapability(
-      container.getDb().sql,
-      params.id,
-      userId,
-      "view_analytics",
-    )
-    if (!can(resolution.standing, "view_roster")) {
-      throw AppError.forbidden(hostForbiddenCopy("view_roster"))
-    }
-    const viewerScope = `${resolution.standing.eventRole ?? "none"}:${resolution.standing.orgRole ?? "none"}`
-    reply.status(200).send(
-      await insights().insights(params.id, {
-        userId,
-        viewerScope,
-      }),
-    )
-  })
-
-  route(app, "hostedEventsAnalytics", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const query = parse(HostedEventsAnalyticsRequestSchema, request.query)
-    let viewerScope = "self"
-    if (query.orgId !== undefined) {
-      const standing = await requireOrgCapability(
+  route(
+    app,
+    "getEventAnalytics",
+    { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const query = parse(GetEventAnalyticsRequestSchema, mergeQuery(request))
+      const resolution = await requireCapability(
         container.getDb().sql,
-        query.orgId,
+        query.id,
         userId,
         "view_analytics",
       )
-      viewerScope = `org:${standing.orgRole ?? "none"}`
-    }
-    const range: PortfolioAnalyticsRange = query.range ?? "90d"
-    reply
-      .status(200)
-      .send(await analytics().portfolio(userId, query.orgId ?? null, range, viewerScope))
-  })
+      const viewerScope = `${resolution.standing.eventRole ?? "none"}:${resolution.standing.orgRole ?? "none"}`
+      reply.status(200).send(
+        await eventAnalytics().analytics(query.id, query.scope ?? "full", {
+          userId,
+          organizationId: resolution.organizationId,
+          viewerScope,
+        }),
+      )
+    },
+  )
 
-  route(app, "hostedEventsAnalyticsSummary", { config: { rateLimit: ANALYTICS_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const query = parse(HostAnalyticsSummaryRequestSchema, request.query)
-    let viewerScope = "self"
-    if (query.orgId !== undefined) {
-      const standing = await requireOrgCapability(
+  route(
+    app,
+    "eventAnalyticsOverview",
+    { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
+    async (request, reply) => {
+      const scope = await eventScope(request)
+      reply
+        .status(200)
+        .send(await analytics().overview(scope.cleanupId, scope.range, scope.viewerScope))
+    },
+  )
+
+  route(
+    app,
+    "eventAnalyticsRegistrations",
+    { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
+    async (request, reply) => {
+      const scope = await eventScope(request)
+      reply
+        .status(200)
+        .send(await analytics().registrations(scope.cleanupId, scope.range, scope.viewerScope))
+    },
+  )
+
+  route(
+    app,
+    "eventAnalyticsCheckins",
+    { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
+    async (request, reply) => {
+      const scope = await eventScope(request)
+      reply
+        .status(200)
+        .send(await analytics().checkins(scope.cleanupId, scope.range, scope.viewerScope))
+    },
+  )
+
+  route(
+    app,
+    "eventAnalyticsBroadcasts",
+    { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
+    async (request, reply) => {
+      const scope = await eventScope(request)
+      reply
+        .status(200)
+        .send(await analytics().broadcasts(scope.cleanupId, scope.range, scope.viewerScope))
+    },
+  )
+
+  route(
+    app,
+    "eventAnalyticsSources",
+    { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
+    async (request, reply) => {
+      const scope = await eventScope(request)
+      reply
+        .status(200)
+        .send(await analytics().sources(scope.cleanupId, scope.range, scope.viewerScope))
+    },
+  )
+
+  route(
+    app,
+    "getEventInsights",
+    { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const params = parse(GetEventInsightsRequestSchema, request.params)
+      const resolution = await requireCapability(
         container.getDb().sql,
-        query.orgId,
+        params.id,
         userId,
         "view_analytics",
       )
-      viewerScope = `org:${standing.orgRole ?? "none"}`
-    }
-    const range: AnalyticsRange = query.range ?? "30d"
-    reply
-      .status(200)
-      .send(await analytics().summary(userId, query.orgId ?? null, range, viewerScope))
-  })
+      if (!can(resolution.standing, "view_roster")) {
+        throw AppError.forbidden(hostForbiddenCopy("view_roster"))
+      }
+      const viewerScope = `${resolution.standing.eventRole ?? "none"}:${resolution.standing.orgRole ?? "none"}`
+      reply.status(200).send(
+        await insights().insights(params.id, {
+          userId,
+          viewerScope,
+        }),
+      )
+    },
+  )
+
+  route(
+    app,
+    "hostedEventsAnalytics",
+    { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const query = parse(HostedEventsAnalyticsRequestSchema, request.query)
+      let viewerScope = "self"
+      if (query.orgId !== undefined) {
+        const standing = await requireOrgCapability(
+          container.getDb().sql,
+          query.orgId,
+          userId,
+          "view_analytics",
+        )
+        viewerScope = `org:${standing.orgRole ?? "none"}`
+      }
+      const range: PortfolioAnalyticsRange = query.range ?? "90d"
+      reply
+        .status(200)
+        .send(await analytics().portfolio(userId, query.orgId ?? null, range, viewerScope))
+    },
+  )
+
+  route(
+    app,
+    "hostedEventsAnalyticsSummary",
+    { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const query = parse(HostAnalyticsSummaryRequestSchema, request.query)
+      let viewerScope = "self"
+      if (query.orgId !== undefined) {
+        const standing = await requireOrgCapability(
+          container.getDb().sql,
+          query.orgId,
+          userId,
+          "view_analytics",
+        )
+        viewerScope = `org:${standing.orgRole ?? "none"}`
+      }
+      const range: AnalyticsRange = query.range ?? "30d"
+      reply
+        .status(200)
+        .send(await analytics().summary(userId, query.orgId ?? null, range, viewerScope))
+    },
+  )
 }

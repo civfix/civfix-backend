@@ -24,7 +24,10 @@ import type {
 } from "./analytics-repository.drizzle.js"
 import { hostAnalyticsCacheKey, type HostAnalyticsCache } from "./host-analytics-cache.js"
 import { leaderboardEntryOf } from "../volunteer-hours-service.js"
-import type { CheckinCountersRecord, HostRegistrationRepository } from "./registration-repository.types.js"
+import type {
+  CheckinCountersRecord,
+  HostRegistrationRepository,
+} from "./registration-repository.types.js"
 import { CHECKIN_COARSEN_DAYS } from "./registration-retention.js"
 
 export const INSIGHTS_LIVE_CACHE_TTL_SEC = 15

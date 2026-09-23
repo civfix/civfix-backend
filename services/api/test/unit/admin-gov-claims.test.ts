@@ -11,7 +11,6 @@ import {
   type GovClaimsService,
 } from "../../src/services/admin/gov-claims-service.js"
 
-
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
 function harness(): {
@@ -297,9 +296,9 @@ describe("gov claim approve", () => {
       status: "approved",
     })
 
-    await expect(
-      svc.approve("GOV-1", { actorId: "op-1", note: null }),
-    ).rejects.toMatchObject({ httpStatus: 409 })
+    await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toMatchObject({
+      httpStatus: 409,
+    })
 
     const placeholder = await users.findByEmail("dana@waynesboro-va.gov")
     expect(placeholder?.role ?? "citizen").toBe("citizen")
@@ -338,7 +337,9 @@ describe("gov claim approve", () => {
       revokeSessions: () => Promise.reject(new Error("redis down")),
       now: () => NOW,
     })
-    await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toThrow("redis down")
+    await expect(svc.approve("GOV-1", { actorId: "op-1", note: null })).rejects.toThrow(
+      "redis down",
+    )
     expect(users.users.get(existing.id)?.role).toBe("gov_admin")
     expect(repo.claims.get("GOV-1")?.status).toBe("approved")
   })

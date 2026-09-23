@@ -1,4 +1,3 @@
-
 import fastifyWebsocket from "@fastify/websocket"
 import {
   PaginationQuerySchema,
@@ -26,11 +25,7 @@ import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import type { ChatRepository } from "../services/chat-repository.drizzle.js"
 import type { ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
 import type { ChatPollRepository } from "../services/chat-poll-repository.drizzle.js"
-import {
-  type GatewayChatMentions,
-  type IsMemberFn,
-  type ReportVisibleFn,
-} from "../ws/gateway.js"
+import { type GatewayChatMentions, type IsMemberFn, type ReportVisibleFn } from "../ws/gateway.js"
 import {
   makeDrizzleGroupThreadsSource,
   makeDrizzleReportThreadsSource,
@@ -90,7 +85,10 @@ export const CHAT_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 mi
 
 export const CHAT_DELETE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
-export async function registerChatRoutes(app: FastifyInstance, container: Container): Promise<void> {
+export async function registerChatRoutes(
+  app: FastifyInstance,
+  container: Container,
+): Promise<void> {
   const csrfProtect = container.csrf.protect
 
   await app.register(fastifyWebsocket, { options: { maxPayload: 64 * 1024 } })
@@ -156,7 +154,12 @@ export async function registerChatRoutes(app: FastifyInstance, container: Contai
         dmPeerOf: wiring.dmPeerOf,
         isBlockedEitherWay: wiring.isBlockedEitherWay,
       })
-      const updated: ChatMessageDTO = await reactions.toggleCleanupReaction(cleanupId, messageId, userId, body.emoji)
+      const updated: ChatMessageDTO = await reactions.toggleCleanupReaction(
+        cleanupId,
+        messageId,
+        userId,
+        body.emoji,
+      )
       void Promise.resolve(
         container.chatService.broadcastEvent?.(roomKeyFor("cleanup", cleanupId), {
           type: "reaction",

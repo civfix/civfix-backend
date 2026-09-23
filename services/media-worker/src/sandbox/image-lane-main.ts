@@ -1,4 +1,3 @@
-
 import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { WorkerLimits } from "../config.js"
@@ -40,7 +39,8 @@ export function requestArg(argv: string[]): string | undefined {
 export function parseRequest(raw: string | undefined): ImageLaneRequest {
   if (raw === undefined) throw new Error("image-lane: missing request argument")
   const parsed: unknown = JSON.parse(raw)
-  if (typeof parsed !== "object" || parsed === null) throw new Error("image-lane: request is not an object")
+  if (typeof parsed !== "object" || parsed === null)
+    throw new Error("image-lane: request is not an object")
   const req = parsed as Record<string, unknown>
   if (typeof req.inputPath !== "string" || typeof req.outDir !== "string") {
     throw new Error("image-lane: request is missing inputPath/outDir")

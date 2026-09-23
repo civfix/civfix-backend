@@ -1,4 +1,3 @@
-
 export interface Env {
   R2_BUCKET: R2Bucket
   BACKEND_WEBHOOK_URL: string
@@ -36,7 +35,6 @@ export default {
   },
 }
 
-
 export async function deriveMessageId(headers: Headers, raw: ArrayBuffer): Promise<string> {
   const slug = slugify(headers.get("message-id") ?? "")
   if (slug.length > 0) return slug
@@ -54,7 +52,6 @@ export function slugify(messageId: string): string {
     .slice(0, 200)
 }
 
-
 async function nudgeBackend(env: Env, key: string): Promise<void> {
   const body = JSON.stringify({ key })
   const ts = Math.floor(Date.now() / 1000).toString()
@@ -69,8 +66,7 @@ async function nudgeBackend(env: Env, key: string): Promise<void> {
       },
       body,
     })
-  } catch {
-  }
+  } catch {}
 }
 
 export async function hmacSha256Hex(secret: string, message: string): Promise<string> {

@@ -109,7 +109,9 @@ describe("broadcast audience", () => {
       subjectId: u(1),
     })
     expect((await resolve(repo, { kind: "all_registered" })).members).not.toContain(u(1))
-    expect((await resolve(repo, { kind: "all_registered" }, "event_cancelled")).members).toContain(u(1))
+    expect((await resolve(repo, { kind: "all_registered" }, "event_cancelled")).members).toContain(
+      u(1),
+    )
   })
 
   it("honours a global unsubscribe for bulk", async () => {
@@ -127,7 +129,9 @@ describe("broadcast audience", () => {
     const repo = seed()
     await repo.setEventMute(EVENT, u(2), true)
     expect((await resolve(repo, { kind: "all_registered" })).members).not.toContain(u(2))
-    expect((await resolve(repo, { kind: "all_registered" }, "event_cancelled")).members).toContain(u(2))
+    expect((await resolve(repo, { kind: "all_registered" }, "event_cancelled")).members).toContain(
+      u(2),
+    )
   })
 
   it("honours a guest unsubscribe for bulk", async () => {

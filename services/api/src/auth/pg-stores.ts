@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { and, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm"
 import type { Db } from "../db/client.js"
@@ -13,7 +12,13 @@ import {
   userModeration,
   users,
 } from "../db/schema/index.js"
-import { AppError, DELETED_USER_LABEL, SOCIAL_PLATFORMS, type Role, type SocialLinks } from "@civfix/shared"
+import {
+  AppError,
+  DELETED_USER_LABEL,
+  SOCIAL_PLATFORMS,
+  type Role,
+  type SocialLinks,
+} from "@civfix/shared"
 import type { Jobs } from "@civfix/shared/interfaces"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
 import { resolveAvatarMediaOrThrow } from "../services/avatar-media.js"
@@ -631,10 +636,7 @@ export class PgUserStore implements UserStore {
 
     for (const key of erasure.objectKeys) {
       if (this.certificateObjects === undefined) {
-        this.logger?.warn(
-          { userId: id, key },
-          "erasure object not deleted: no object store wired",
-        )
+        this.logger?.warn({ userId: id, key }, "erasure object not deleted: no object store wired")
         continue
       }
       try {

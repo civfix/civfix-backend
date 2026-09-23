@@ -64,9 +64,18 @@ describe("makeRouteJurisdictionService", () => {
     const container = fakeContainer(lookup)
 
     // Each call rebuilds the service exactly as a request handler does.
-    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(34.05, -118.25)
-    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(34.05, -118.25)
-    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(34.05, -118.25)
+    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(
+      34.05,
+      -118.25,
+    )
+    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(
+      34.05,
+      -118.25,
+    )
+    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(
+      34.05,
+      -118.25,
+    )
 
     expect(lookup.calls).toHaveLength(1)
   })
@@ -95,14 +104,12 @@ describe("makeRouteJurisdictionService", () => {
     const lookupA = countingLookup()
     const lookupB = countingLookup()
 
-    await makeRouteJurisdictionService(fakeContainer(lookupA), { cacheLookup: true }).resolveForPoint(
-      34.05,
-      -118.25,
-    )
-    await makeRouteJurisdictionService(fakeContainer(lookupB), { cacheLookup: true }).resolveForPoint(
-      34.05,
-      -118.25,
-    )
+    await makeRouteJurisdictionService(fakeContainer(lookupA), {
+      cacheLookup: true,
+    }).resolveForPoint(34.05, -118.25)
+    await makeRouteJurisdictionService(fakeContainer(lookupB), {
+      cacheLookup: true,
+    }).resolveForPoint(34.05, -118.25)
 
     // The second container asked its OWN lookup rather than reading the first one's answer.
     expect(lookupA.calls).toHaveLength(1)
@@ -113,8 +120,14 @@ describe("makeRouteJurisdictionService", () => {
     const statements: string[] = []
     const container = fakeContainer(countingLookup(), statements)
 
-    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(34.05, -118.25)
-    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(34.05, -118.25)
+    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(
+      34.05,
+      -118.25,
+    )
+    await makeRouteJurisdictionService(container, { cacheLookup: true }).resolveForPoint(
+      34.05,
+      -118.25,
+    )
 
     expect(statements).not.toHaveLength(0)
     for (const text of statements) {

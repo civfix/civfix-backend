@@ -1,4 +1,3 @@
-
 export const PREVIEW_LEN = 140
 
 export const PREVIEW_SOURCE_CHARS = 400

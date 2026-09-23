@@ -74,9 +74,9 @@ function record(over: Partial<JurisdictionDirectoryRecord> = {}): JurisdictionDi
 describe("contacts pure helpers", () => {
   it("hasAnyContact is true when any field is filled", () => {
     expect(hasAnyContact({ contacts: {}, defaultEmails: [], formUrl: null })).toBe(false)
-    expect(hasAnyContact({ contacts: { trash: "a@b.gov" }, defaultEmails: [], formUrl: null })).toBe(
-      true,
-    )
+    expect(
+      hasAnyContact({ contacts: { trash: "a@b.gov" }, defaultEmails: [], formUrl: null }),
+    ).toBe(true)
     expect(hasAnyContact({ contacts: {}, defaultEmails: ["a@b.gov"], formUrl: null })).toBe(true)
     expect(hasAnyContact({ contacts: {}, defaultEmails: [], formUrl: "https://x.gov" })).toBe(true)
   })
@@ -105,9 +105,9 @@ describe("contacts pure helpers", () => {
 
   it("directoryStatus: bounced > verified (saved) > pending", () => {
     expect(directoryStatus(record())).toBe("pending")
-    expect(
-      directoryStatus(record({ defaultEmails: ["a@b.gov"], contactUpdatedAt: NOW })),
-    ).toBe("verified")
+    expect(directoryStatus(record({ defaultEmails: ["a@b.gov"], contactUpdatedAt: NOW }))).toBe(
+      "verified",
+    )
     expect(directoryStatus(record({ bounced: true, defaultEmails: ["a@b.gov"] }))).toBe("bounced")
   })
 })
@@ -324,7 +324,11 @@ describe("C1/C2: save -> enqueue -> worker send -> stamp -> second save throttle
     // outreach repo for the digest aggregation), with the routing contact the digest will resolve.
     contactsRepo.seedJurisdiction({ geoid: "0644000", name: "Los Angeles" })
     contactsRepo.seedReport({ id: "r1", geoid: "0644000", category: "trash", status: "submitted" })
-    outreachRepo.seedJurisdiction({ geoid: "0644000", org: "Los Angeles", defaultEmail: "311@lacity.gov" })
+    outreachRepo.seedJurisdiction({
+      geoid: "0644000",
+      org: "Los Angeles",
+      defaultEmail: "311@lacity.gov",
+    })
     outreachRepo.seedReport({ geoid: "0644000", category: "trash" })
 
     // 1) Save & route: persists the contact + enqueues the immediate (throttled) outreach.
@@ -499,8 +503,12 @@ describe("listDirectory", () => {
     // It pins to the top of the first page.
     expect(all.items[0]!.geoid).toBe("__unmapped__")
     // It appears under the "none" facet (no contacts) but never under email/form.
-    expect((await svc.listDirectory({ filter: "none" })).items.some((i) => i.geoid === "__unmapped__")).toBe(true)
-    expect((await svc.listDirectory({ filter: "email" })).items.some((i) => i.geoid === "__unmapped__")).toBe(false)
+    expect(
+      (await svc.listDirectory({ filter: "none" })).items.some((i) => i.geoid === "__unmapped__"),
+    ).toBe(true)
+    expect(
+      (await svc.listDirectory({ filter: "email" })).items.some((i) => i.geoid === "__unmapped__"),
+    ).toBe(false)
   })
 
   it("suppresses the 'Unmapped' row when every report resolves to a known jurisdiction", async () => {
@@ -555,9 +563,19 @@ describe("listDirectory", () => {
   it("filters by jurisdiction TYPE (layer) and scopes total/facets to it", async () => {
     const { repo, svc } = harness()
     // A routed state, an unrouted county, and two cities (one routed, one not).
-    repo.seedJurisdiction({ geoid: "06", name: "California", layer: "state", defaultEmails: ["gov@ca.gov"] })
+    repo.seedJurisdiction({
+      geoid: "06",
+      name: "California",
+      layer: "state",
+      defaultEmails: ["gov@ca.gov"],
+    })
     repo.seedJurisdiction({ geoid: "06037", name: "Los Angeles County", layer: "county" })
-    repo.seedJurisdiction({ geoid: "0644000", name: "Los Angeles", layer: "place", defaultEmails: ["311@lacity.gov"] })
+    repo.seedJurisdiction({
+      geoid: "0644000",
+      name: "Los Angeles",
+      layer: "place",
+      defaultEmails: ["311@lacity.gov"],
+    })
     repo.seedJurisdiction({ geoid: "0666000", name: "San Diego", layer: "place" })
 
     // Cities only: the two places, and total/facets count within the type (1 routed, 1 unrouted).
@@ -572,7 +590,9 @@ describe("listDirectory", () => {
 
     // Other single-type selections resolve to their one match.
     expect((await svc.listDirectory({ layer: "state" })).items.map((i) => i.geoid)).toEqual(["06"])
-    expect((await svc.listDirectory({ layer: "county" })).items.map((i) => i.geoid)).toEqual(["06037"])
+    expect((await svc.listDirectory({ layer: "county" })).items.map((i) => i.geoid)).toEqual([
+      "06037",
+    ])
   })
 
   it("scopes the total to the needs_mapping filter", async () => {

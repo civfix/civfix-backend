@@ -128,7 +128,12 @@ async function isChatMessageReportable(
 
   if (msg.report_id !== null) {
     const rows = await sql<
-      { reporter_user_id: string | null; status: string; visibility: string; deleted_at: Date | null }[]
+      {
+        reporter_user_id: string | null
+        status: string
+        visibility: string
+        deleted_at: Date | null
+      }[]
     >`
       SELECT reporter_user_id, status, visibility, deleted_at
       FROM reports WHERE id = ${msg.report_id} LIMIT 1

@@ -191,7 +191,9 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           request.log.warn({ origin: originHeader(request) }, "ws: rejected cross-site Origin")
         }
         try {
-          socket.send(serverFrame({ type: "error", code: handshake.code, message: handshake.message }))
+          socket.send(
+            serverFrame({ type: "error", code: handshake.code, message: handshake.message }),
+          )
         } catch (err) {
           request.log.debug({ err }, "ws: handshake-reject send failed (socket already closing)")
         }
@@ -207,9 +209,18 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
       ) {
         dropPending()
         try {
-          socket.send(serverFrame({ type: "error", code: "RATE_LIMITED", message: "Too many open connections." }))
+          socket.send(
+            serverFrame({
+              type: "error",
+              code: "RATE_LIMITED",
+              message: "Too many open connections.",
+            }),
+          )
         } catch (err) {
-          request.log.debug({ err }, "ws: connection-cap reject send failed (socket already closing)")
+          request.log.debug(
+            { err },
+            "ws: connection-cap reject send failed (socket already closing)",
+          )
         }
         socket.close(WS_CLOSE_POLICY_VIOLATION, "too many connections")
         return
@@ -233,11 +244,7 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
           : {}),
         ...(handshake.sessionHash !== undefined && opts.sessions !== undefined
           ? {
-              revalidateStatus: makeStatusRevalidator(
-                opts.sessions,
-                userId,
-                handshake.sessionHash,
-              ),
+              revalidateStatus: makeStatusRevalidator(opts.sessions, userId, handshake.sessionHash),
             }
           : {}),
         conn: wrapSocket(socket),
@@ -265,7 +272,12 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
         },
       }
 
-      let unsubscribeUser = await subscribeUserChannel(opts.userChannel, userId, session.conn, request.log)
+      let unsubscribeUser = await subscribeUserChannel(
+        opts.userChannel,
+        userId,
+        session.conn,
+        request.log,
+      )
 
       if (socket.readyState !== READY_STATE_OPEN) {
         dropPending()

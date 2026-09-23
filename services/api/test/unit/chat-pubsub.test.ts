@@ -40,7 +40,12 @@ describe("Redis pub/sub fan-out across two workers (in-memory pub/sub)", () => {
     expect(pubsub.channelCount).toBe(1)
 
     // Alice sends from worker 1: persist there, then broadcast (PUBLISH) on the shared pub/sub.
-    const msg = await worker1.persist({ cleanupId: ROOM, userId: ALICE, body: "cross-worker hi", clientId: "c1" })
+    const msg = await worker1.persist({
+      cleanupId: ROOM,
+      userId: ALICE,
+      body: "cross-worker hi",
+      clientId: "c1",
+    })
     await worker1.broadcast(ROOM, msg)
 
     // Bob (worker 2) received the broadcast even though Alice's socket lives on a different worker.
@@ -83,7 +88,12 @@ describe("Redis pub/sub fan-out across two workers (in-memory pub/sub)", () => {
 
     // Broadcast to a different cleanup id; this room's connection must NOT receive it.
     const other = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-    const msg = await worker.persist({ cleanupId: other, userId: ALICE, body: "elsewhere", clientId: "c" })
+    const msg = await worker.persist({
+      cleanupId: other,
+      userId: ALICE,
+      body: "elsewhere",
+      clientId: "c",
+    })
     await worker.broadcast(other, msg)
     expect(conn.framesOfType("message")).toHaveLength(0)
   })

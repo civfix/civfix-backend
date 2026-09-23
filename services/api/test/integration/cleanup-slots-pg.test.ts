@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -86,7 +85,9 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     endsAt: new Date(FUTURE.getTime() + 2 * SHIFT_MS),
   }
 
-  async function windowsOf(cleanupId: string): Promise<[string, string, number | null, number | null][]> {
+  async function windowsOf(
+    cleanupId: string,
+  ): Promise<[string, string, number | null, number | null][]> {
     const board = await repo.listSlots(cleanupId, null)
     return board.map((s) => [
       s.id,
@@ -132,9 +133,7 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const org = await newUser("Race Host")
     const cleanupId = await newCleanup(org)
     const slotId = await newSlot(cleanupId, { capacity: 1 })
-    const racers = await Promise.all(
-      Array.from({ length: 8 }, (_, i) => newUser(`Racer ${i}`)),
-    )
+    const racers = await Promise.all(Array.from({ length: 8 }, (_, i) => newUser(`Racer ${i}`)))
 
     const outcomes = await Promise.all(
       racers.map((userId) => repo.claimSlot(cleanupId, userId, slotId, signupSeat())),
@@ -170,12 +169,21 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const user = await newUser("Mover")
     const nextInLine = await newUser("Next in line")
 
-    expect(await repo.claimSlot(cleanupId, user, a, signupSeat())).toEqual({ kind: "claimed", slotId: a })
-    expect(await repo.claimSlot(cleanupId, user, b, signupSeat())).toEqual({ kind: "claimed", slotId: b })
+    expect(await repo.claimSlot(cleanupId, user, a, signupSeat())).toEqual({
+      kind: "claimed",
+      slotId: a,
+    })
+    expect(await repo.claimSlot(cleanupId, user, b, signupSeat())).toEqual({
+      kind: "claimed",
+      slotId: b,
+    })
 
     expect(await claimCount(a)).toBe(0)
     expect(await claimCount(b)).toBe(1)
-    expect(await repo.claimSlot(cleanupId, nextInLine, a, signupSeat())).toEqual({ kind: "claimed", slotId: a })
+    expect(await repo.claimSlot(cleanupId, nextInLine, a, signupSeat())).toEqual({
+      kind: "claimed",
+      slotId: a,
+    })
     expect(await repo.slotOf(cleanupId, user)).toBe(b)
   })
 
@@ -203,7 +211,9 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const foreignSlot = await newSlot(theirs, { title: "Their grill" })
     const user = await newUser("FK User")
 
-    expect(await repo.claimSlot(mine, user, foreignSlot, signupSeat())).toEqual({ kind: "slot_not_found" })
+    expect(await repo.claimSlot(mine, user, foreignSlot, signupSeat())).toEqual({
+      kind: "slot_not_found",
+    })
     await expect(
       h.sql`
         INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id)
@@ -276,7 +286,9 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
     expect(outcome.kind).toBe("removed")
     expect(await claimCount(slotId)).toBe(0)
-    expect(await repo.claimSlot(cleanupId, target, slotId, signupSeat())).toEqual({ kind: "banned" })
+    expect(await repo.claimSlot(cleanupId, target, slotId, signupSeat())).toEqual({
+      kind: "banned",
+    })
   })
 
   it("claiming auto-RSVPs, and is refused on a done or cancelled event", async () => {
@@ -298,7 +310,9 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       const closed = await newCleanup(org, { status })
       const closedSlot = await newSlot(closed)
       const latecomer = await newUser(`Late ${status}`)
-      expect(await repo.claimSlot(closed, latecomer, closedSlot, signupSeat())).toEqual(claimOutcome)
+      expect(await repo.claimSlot(closed, latecomer, closedSlot, signupSeat())).toEqual(
+        claimOutcome,
+      )
       expect(await repo.isMember(closed, latecomer)).toBe(false)
       expect(await repo.releaseSlot(closed, latecomer)).toEqual(releaseOutcome)
     }
@@ -311,7 +325,10 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const user = await newUser("Holder")
     await repo.claimSlot(cleanupId, user, slotId, signupSeat())
 
-    expect(await repo.claimSlot(cleanupId, user, slotId, signupSeat())).toEqual({ kind: "claimed", slotId })
+    expect(await repo.claimSlot(cleanupId, user, slotId, signupSeat())).toEqual({
+      kind: "claimed",
+      slotId,
+    })
     expect(await claimCount(slotId)).toBe(1)
   })
 
@@ -348,7 +365,10 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
       jurisdictionGeoid: null,
       jurCode: 0,
       linkedReportIds: [],
-      slots: [slot({ title: "Grill", capacity: 2, sortOrder: 0 }), slot({ title: "Sign-in", sortOrder: 1 })],
+      slots: [
+        slot({ title: "Grill", capacity: 2, sortOrder: 0 }),
+        slot({ title: "Sign-in", sortOrder: 1 }),
+      ],
       host: { endsAt: new Date(FUTURE.getTime() + 4 * 60 * 60 * 1000) },
     })
 
@@ -371,7 +391,10 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
 
     const result = await repo.reconcileSlots(
       cleanupId,
-      [slot({ id: keep, title: "Grill duty", capacity: 4 }), slot({ title: "Sign-in", sortOrder: 2 })],
+      [
+        slot({ id: keep, title: "Grill duty", capacity: 4 }),
+        slot({ title: "Sign-in", sortOrder: 2 }),
+      ],
       org,
     )
 
@@ -407,7 +430,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     `
     expect(foreignRow[0]).toEqual({ cleanup_id: theirs, title: "Theirs" })
   })
-
 
   it("reconcileSlots SWAPS two slot titles in one save", async () => {
     const org = await newUser("Swap Host")
@@ -446,9 +468,7 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     )
 
     expect(result.added).toHaveLength(1)
-    expect(result.removed).toEqual([
-      { slotId: old, title: "Grill", claimantUserIds: [claimant] },
-    ])
+    expect(result.removed).toEqual([{ slotId: old, title: "Grill", claimantUserIds: [claimant] }])
     const board = await repo.listSlots(cleanupId, null)
     expect(board.map((s) => [s.title, s.capacity])).toEqual([["Grill", 5]])
     expect(board[0]!.id).not.toBe(old)
@@ -589,7 +609,6 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     expect(await titlesOf(cleanupId)).toEqual([[existing, "Grill"]])
   })
 
-
   it("a `slot_not_found` claim commits NO cleanup_members row", async () => {
     const org = await newUser("No-RSVP Host")
     const cleanupId = await newCleanup(org)
@@ -627,7 +646,9 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const foreignSlot = await newSlot(theirs, { title: "Their grill" })
     const stranger = await newUser("Foreign RSVP Stranger")
 
-    expect(await repo.claimSlot(mine, stranger, foreignSlot, signupSeat())).toEqual({ kind: "slot_not_found" })
+    expect(await repo.claimSlot(mine, stranger, foreignSlot, signupSeat())).toEqual({
+      kind: "slot_not_found",
+    })
 
     expect(await membershipCount(mine, stranger)).toBe(0)
     expect(await membershipCount(theirs, stranger)).toBe(0)
@@ -703,16 +724,16 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const org = await newUser("Shrink Host")
     const cleanupId = await newCleanup(org)
     const slotId = await newSlot(cleanupId, { title: "Grill", capacity: 3 })
-    const claimants = await Promise.all(
-      Array.from({ length: 3 }, (_, i) => newUser(`Shrink ${i}`)),
-    )
+    const claimants = await Promise.all(Array.from({ length: 3 }, (_, i) => newUser(`Shrink ${i}`)))
     for (const u of claimants) await repo.claimSlot(cleanupId, u, slotId, signupSeat())
 
     await repo.reconcileSlots(cleanupId, [slot({ id: slotId, title: "Grill", capacity: 1 })], org)
 
     expect(await claimCount(slotId)).toBe(3)
     const latecomer = await newUser("Shrink latecomer")
-    expect(await repo.claimSlot(cleanupId, latecomer, slotId, signupSeat())).toEqual({ kind: "full" })
+    expect(await repo.claimSlot(cleanupId, latecomer, slotId, signupSeat())).toEqual({
+      kind: "full",
+    })
   })
 
   it("the capacity CHECK constraint refuses a zero or negative capacity", async () => {
@@ -727,8 +748,12 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     const org = await newUser("Missing Host")
     const cleanupId = await newCleanup(org)
     const user = await newUser("Missing User")
-    expect(await repo.claimSlot(randomUUID(), user, randomUUID(), signupSeat())).toEqual({ kind: "not_found" })
-    expect(await repo.claimSlot(cleanupId, user, randomUUID(), signupSeat())).toEqual({ kind: "slot_not_found" })
+    expect(await repo.claimSlot(randomUUID(), user, randomUUID(), signupSeat())).toEqual({
+      kind: "not_found",
+    })
+    expect(await repo.claimSlot(cleanupId, user, randomUUID(), signupSeat())).toEqual({
+      kind: "slot_not_found",
+    })
     expect(await repo.releaseSlot(randomUUID(), user)).toEqual({ kind: "not_found" })
   })
 })

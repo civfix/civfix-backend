@@ -1,4 +1,3 @@
-
 import type { Sql } from "../db/client.js"
 import {
   ReportStatusSchema,
@@ -128,7 +127,11 @@ export function makeReportChatRepository(
       return rows[0]?.role ?? null
     },
 
-    async join(reportId: string, userId: string, role: "owner" | "member" = "member"): Promise<void> {
+    async join(
+      reportId: string,
+      userId: string,
+      role: "owner" | "member" = "member",
+    ): Promise<void> {
       await sql`
         INSERT INTO report_chat_members (report_id, user_id, role)
         VALUES (${reportId}, ${userId}, ${role})
@@ -143,7 +146,11 @@ export function makeReportChatRepository(
       `
     },
 
-    async advanceReadWatermark(reportId: string, userId: string, upToMessageId: string): Promise<void> {
+    async advanceReadWatermark(
+      reportId: string,
+      userId: string,
+      upToMessageId: string,
+    ): Promise<void> {
       await monotonicReadWatermarkUpdate(
         sql,
         "report_chat_members",

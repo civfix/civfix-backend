@@ -165,10 +165,7 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
         })
     },
 
-    async adoptLegacyServedKeys(
-      olderThan: Date,
-      limit: number,
-    ): Promise<LegacyServedKeyAdoption> {
+    async adoptLegacyServedKeys(olderThan: Date, limit: number): Promise<LegacyServedKeyAdoption> {
       const candidates = await db
         .select({ id: mediaAssets.id })
         .from(mediaAssets)

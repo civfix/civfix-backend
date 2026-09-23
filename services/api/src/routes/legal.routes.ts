@@ -3,10 +3,7 @@ import type { FastifyInstance } from "fastify"
 import { perHost } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { route } from "../versioning/route.js"
-import {
-  LEGAL_VERSIONS_CACHE_SECONDS,
-  legalDocumentVersions,
-} from "../services/legal-service.js"
+import { LEGAL_VERSIONS_CACHE_SECONDS, legalDocumentVersions } from "../services/legal-service.js"
 
 export const LEGAL_VERSIONS_RATE_LIMIT = perHost({ max: 120, timeWindow: "1 minute" })
 

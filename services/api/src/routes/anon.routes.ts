@@ -1,4 +1,3 @@
-
 import {
   AnonReportRequestSchema,
   AnonReportStatusRequestSchema,
@@ -15,10 +14,7 @@ import { ANON_TOKEN_TTL_SECONDS } from "../abuse/anon-token.js"
 import { cfGeoFromTrustedEdge } from "../abuse/gps-sanity.js"
 import { makeAnonService, type AnonService } from "../services/anon-service.js"
 import { makeDrizzleAnonReportRepository } from "../services/anon-repository.drizzle.js"
-import {
-  makeCachedAddressResolver,
-  makeGeoidResolver,
-} from "../services/route-geo-helpers.js"
+import { makeCachedAddressResolver, makeGeoidResolver } from "../services/route-geo-helpers.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { route } from "../versioning/route.js"
 import { parse, trimTextFields } from "./_validate.js"
@@ -62,7 +58,15 @@ const AnonReportStatusResponseJsonSchema = {
   properties: {
     status: {
       type: "string",
-      enum: ["submitted", "held", "published", "acknowledged", "in_progress", "resolved", "rejected"],
+      enum: [
+        "submitted",
+        "held",
+        "published",
+        "acknowledged",
+        "in_progress",
+        "resolved",
+        "rejected",
+      ],
     },
     publishedAt: { type: "string", nullable: true },
   },

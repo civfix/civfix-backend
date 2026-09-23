@@ -1,4 +1,3 @@
-
 import type { Storage } from "@civfix/shared/interfaces"
 import type { LeakedObjectRow, MediaWorkerRepo, OrphanRow } from "@civfix/api/media-repo"
 import type { WorkerLimits } from "../config.js"
@@ -7,7 +6,11 @@ import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from 
 import { R2_PUT_TTL_SEC } from "@civfix/api/adapters/storage"
 import { servedKey, thumbnailKey } from "./media-keys.js"
 
-async function mapWithLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+async function mapWithLimit<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
   let cursor = 0
   const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (cursor < items.length) {
@@ -256,7 +259,11 @@ async function sweepPage(
   })
 }
 
-async function deleteObjects(o: OrphanRow, deps: OrphanSweepDeps, log: JobLogFn): Promise<string[]> {
+async function deleteObjects(
+  o: OrphanRow,
+  deps: OrphanSweepDeps,
+  log: JobLogFn,
+): Promise<string[]> {
   const outcomes = await Promise.all(
     derivedKeys(o).map(async (key) => {
       try {

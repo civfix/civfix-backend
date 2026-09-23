@@ -30,7 +30,6 @@ import {
 } from "../../src/ws/types.js"
 import { SESSION_COOKIE } from "../../src/auth/transport.js"
 
-
 const WS_OPEN = 1
 const WS_CLOSED = 3
 
@@ -418,15 +417,15 @@ describe("socket close DURING an in-flight join", () => {
       joinRoom: (roomKey: string, conn: unknown, userId: string) =>
         new Promise<void>((resolve) => {
           gate.release = () =>
-            resolve(chat.joinRoom(roomKey, conn as Parameters<WsChatService["joinRoom"]>[1], userId))
+            resolve(
+              chat.joinRoom(roomKey, conn as Parameters<WsChatService["joinRoom"]>[1], userId),
+            )
         }),
       leaveRoom: (roomKey: string, conn: unknown) =>
         chat.leaveRoom(roomKey, conn as Parameters<WsChatService["leaveRoom"]>[1]),
       persist: (input: unknown) => chat.persist(input as Parameters<WsChatService["persist"]>[0]),
-      history: (...args: unknown[]) =>
-        (chat.history as (...a: unknown[]) => unknown)(...args),
-      broadcast: (...args: unknown[]) =>
-        (chat.broadcast as (...a: unknown[]) => unknown)(...args),
+      history: (...args: unknown[]) => (chat.history as (...a: unknown[]) => unknown)(...args),
+      broadcast: (...args: unknown[]) => (chat.broadcast as (...a: unknown[]) => unknown)(...args),
       broadcastEvent: (...args: unknown[]) =>
         (chat.broadcastEvent as (...a: unknown[]) => unknown)(...args),
     } as unknown as GatewayOptions["chat"]
@@ -663,7 +662,12 @@ describe("send limiter routes each room kind to its own bucket", () => {
   it("F042: an UNAUTHORIZED report send creates no bucket key (authorization gates first)", async () => {
     const socket = await sendFrame(
       { type: "send", roomKind: "report", cleanupId: ROOM, clientId: "c1", body: "hi" },
-      { reportChat: { isMember: () => Promise.resolve(false), advanceReadWatermark: () => Promise.resolve() } },
+      {
+        reportChat: {
+          isMember: () => Promise.resolve(false),
+          advanceReadWatermark: () => Promise.resolve(),
+        },
+      },
     )
     expect(consumed).toEqual([])
     expect(socket.framesOfType("error")[0]).toMatchObject({ code: "FORBIDDEN" })
@@ -708,15 +712,15 @@ describe("F038: post-handshake frames are dispatched in wire order, one at a tim
       persist: (input: { body?: string }) => {
         if (input.body === "first") {
           return new Promise((resolve) => {
-            gate.release = () =>
-              resolve((chat.persist as (i: unknown) => unknown)(input))
+            gate.release = () => resolve((chat.persist as (i: unknown) => unknown)(input))
           })
         }
         return (chat.persist as (i: unknown) => unknown)(input)
       },
       history: (...a: unknown[]) => (chat.history as (...x: unknown[]) => unknown)(...a),
       broadcast: (...a: unknown[]) => (chat.broadcast as (...x: unknown[]) => unknown)(...a),
-      broadcastEvent: (...a: unknown[]) => (chat.broadcastEvent as (...x: unknown[]) => unknown)(...a),
+      broadcastEvent: (...a: unknown[]) =>
+        (chat.broadcastEvent as (...x: unknown[]) => unknown)(...a),
     } as unknown as GatewayOptions["chat"]
   }
 
@@ -727,8 +731,14 @@ describe("F038: post-handshake frames are dispatched in wire order, one at a tim
     handler(socket as unknown as WebSocket, authedRequest(ALICE))
     await flush()
 
-    socket.emit("message", JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "first" }))
-    socket.emit("message", JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c2", body: "second" }))
+    socket.emit(
+      "message",
+      JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "first" }),
+    )
+    socket.emit(
+      "message",
+      JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c2", body: "second" }),
+    )
     await flush()
 
     expect(gate.release).toBeTypeOf("function")

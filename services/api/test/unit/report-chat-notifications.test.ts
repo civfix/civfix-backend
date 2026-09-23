@@ -10,7 +10,10 @@ import {
   ROOM_FANOUT_MEMBER_CAP,
 } from "../../src/services/chat-room-fanout-notifier.js"
 import { makeDmBellNotifier } from "../../src/services/chat-bells.js"
-import { InMemoryNotificationRepository, flushNotificationDispatch } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  flushNotificationDispatch,
+} from "../helpers/notifications.js"
 import type { NotificationPrefsRecord } from "../../src/services/notification-service.js"
 import {
   makeNotificationService,
@@ -88,7 +91,12 @@ function userMessage(
 }
 
 function replyPreviewFrom(senderId: string, senderName: string): ReplyToDTO {
-  return { id: "target-1", from: { id: senderId, displayName: senderName }, excerpt: "orig", kind: "text" }
+  return {
+    id: "target-1",
+    from: { id: senderId, displayName: senderName },
+    excerpt: "orig",
+    kind: "text",
+  }
 }
 
 function systemMessage(): ChatMessageDTO {
@@ -200,7 +208,10 @@ describe("makeReportChatNotifier (D-E2)", () => {
       isBlockedEitherWay: () => Promise.resolve(false),
     })
 
-    await notify(REPORT, userMessage(ACTOR, "Dana", "replying", { replyTo: replyPreviewFrom(A, "Ann") }))
+    await notify(
+      REPORT,
+      userMessage(ACTOR, "Dana", "replying", { replyTo: replyPreviewFrom(A, "Ann") }),
+    )
 
     expect(reportNotifs(A)).toHaveLength(0)
     expect(reportNotifs(B)).toHaveLength(1)
@@ -253,7 +264,9 @@ describe("report fan-out mute seam (batch lookup vs per-user fallback)", () => {
 
     expect(reportNotifs(A)).toHaveLength(1)
     expect(reportNotifs(B)).toHaveLength(0)
-    expect(mutes.isMutedCalls.sort()).toEqual([`${A}|report|${REPORT}`, `${B}|report|${REPORT}`].sort())
+    expect(mutes.isMutedCalls.sort()).toEqual(
+      [`${A}|report|${REPORT}`, `${B}|report|${REPORT}`].sort(),
+    )
   })
 
   it("a repo WITH mutedUserIdsFor suppresses via ONE batch query and never calls the per-user isMuted", async () => {
@@ -289,7 +302,11 @@ describe("DM bell (makeDmBellNotifier: mute gate + P2 2.5 reply override)", () =
   const THREAD = "22222222-2222-2222-2222-222222222222"
 
   function makeIsMutedFor(mutes: ConversationMutesRepository | undefined) {
-    return async (userId: string, kind: ConversationMuteRoomKind, roomId: string): Promise<boolean> => {
+    return async (
+      userId: string,
+      kind: ConversationMuteRoomKind,
+      roomId: string,
+    ): Promise<boolean> => {
       if (!mutes) return false
       try {
         return await mutes.isMuted(userId, kind, roomId)
@@ -300,7 +317,10 @@ describe("DM bell (makeDmBellNotifier: mute gate + P2 2.5 reply override)", () =
   }
 
   function makeOnDmDelivered(mutes: ConversationMutesRepository | undefined) {
-    return makeDmBellNotifier({ notificationService: notifications, isMutedFor: makeIsMutedFor(mutes) })
+    return makeDmBellNotifier({
+      notificationService: notifications,
+      isMutedFor: makeIsMutedFor(mutes),
+    })
   }
 
   function dmNotifs(userId: string): typeof notifRepo.notifications {
@@ -333,7 +353,11 @@ describe("DM bell (makeDmBellNotifier: mute gate + P2 2.5 reply override)", () =
     mutes.mute(B, "dm", THREAD)
     const onDmDelivered = makeOnDmDelivered(mutes)
 
-    await onDmDelivered(THREAD, B, userMessage(A, "Alice", "re: hey", { replyTo: replyPreviewFrom(B, "Bee") }))
+    await onDmDelivered(
+      THREAD,
+      B,
+      userMessage(A, "Alice", "re: hey", { replyTo: replyPreviewFrom(B, "Bee") }),
+    )
 
     expect(dmNotifs(B)).toHaveLength(1)
     expect(dmNotifs(B)[0]!.title).toBe("Alice replied to you")
@@ -346,7 +370,11 @@ describe("DM bell (makeDmBellNotifier: mute gate + P2 2.5 reply override)", () =
     await notifications.updatePrefs(B, { mentions: false })
     const onDmDelivered = makeOnDmDelivered(mutes)
 
-    await onDmDelivered(THREAD, B, userMessage(A, "Alice", "re: hey", { replyTo: replyPreviewFrom(B, "Bee") }))
+    await onDmDelivered(
+      THREAD,
+      B,
+      userMessage(A, "Alice", "re: hey", { replyTo: replyPreviewFrom(B, "Bee") }),
+    )
 
     expect(dmNotifs(B)).toHaveLength(0)
   })
@@ -355,7 +383,11 @@ describe("DM bell (makeDmBellNotifier: mute gate + P2 2.5 reply override)", () =
     const mutes = new InMemoryConversationMutes()
     const onDmDelivered = makeOnDmDelivered(mutes)
 
-    await onDmDelivered(THREAD, B, userMessage(A, "Alice", "re: hey", { replyTo: replyPreviewFrom(B, "Bee") }))
+    await onDmDelivered(
+      THREAD,
+      B,
+      userMessage(A, "Alice", "re: hey", { replyTo: replyPreviewFrom(B, "Bee") }),
+    )
 
     expect(dmNotifs(B)).toHaveLength(1)
     expect(dmNotifs(B)[0]!.title).toBe("Alice replied to you")
@@ -366,7 +398,11 @@ describe("DM bell (makeDmBellNotifier: mute gate + P2 2.5 reply override)", () =
     mutes.mute(B, "dm", THREAD)
     const onDmDelivered = makeOnDmDelivered(mutes)
 
-    await onDmDelivered(THREAD, B, userMessage(A, "Alice", "self-thread", { replyTo: replyPreviewFrom(A, "Alice") }))
+    await onDmDelivered(
+      THREAD,
+      B,
+      userMessage(A, "Alice", "self-thread", { replyTo: replyPreviewFrom(A, "Alice") }),
+    )
 
     expect(dmNotifs(B)).toHaveLength(0)
   })
@@ -483,7 +519,9 @@ describe("F084: the shared room fan-out batches push delivery", () => {
 
     await notify(REPORT, systemMessage())
 
-    expect(notifRepo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
+    expect(notifRepo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(
+      roster.length,
+    )
     await flushNotificationDispatch()
     expect(pushSpy.singleSends).toHaveLength(0)
     await flushNotificationDispatch()
@@ -515,7 +553,9 @@ describe("F084: the shared room fan-out batches push delivery", () => {
 
     await notify(REPORT, systemMessage())
 
-    expect(notifRepo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(roster.length)
+    expect(notifRepo.notifications.filter((n) => n.type === "group_chat")).toHaveLength(
+      roster.length,
+    )
     await flushNotificationDispatch()
     expect(pushSpy.singleSends).toHaveLength(0)
     await flushNotificationDispatch()

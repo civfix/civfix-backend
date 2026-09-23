@@ -1,4 +1,3 @@
-
 import {
   CreateReportRequestSchema,
   ListReportsInBBoxRequestSchema,
@@ -22,10 +21,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import type { Sql } from "../db/client.js"
 import { requireAuth } from "../auth/context.js"
-import {
-  makeCachedAddressResolver,
-  makeGeoidResolver,
-} from "../services/route-geo-helpers.js"
+import { makeCachedAddressResolver, makeGeoidResolver } from "../services/route-geo-helpers.js"
 import { makeMediaPresigner, makePrivateMediaPresigner } from "../services/media-presign.js"
 import { perIdentity } from "../plugins/rate-limit.js"
 import {
@@ -46,7 +42,11 @@ import { route } from "../versioning/route.js"
 import { parse, trimTextFields } from "./_validate.js"
 import { CappedBBoxQueryParam, CategoriesQueryParam, TypesQueryParam } from "./query-encoding.js"
 
-export const CREATE_REPORT_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute", hostMax: 60 })
+export const CREATE_REPORT_RATE_LIMIT = perIdentity({
+  max: 20,
+  timeWindow: "1 minute",
+  hostMax: 60,
+})
 
 const MAP_REPORTS_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 const SEARCH_REPORTS_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const
@@ -317,23 +317,36 @@ export async function registerReportRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "mapReports", { schema: { response: { 200: MapReportsResponseJsonSchema } }, config: { rateLimit: MAP_REPORTS_RATE_LIMIT } }, async (request, reply) => {
-    const validated = parse(MapReportsQuerySchema, request.query)
-    const payload: ReportClusterResponse = await service().listReportsInBBox(
-      validated.bbox,
-      validated.categories ?? null,
-      validated.types ?? null,
-      validated.zoom,
-    )
-    reply.header("Cache-Control", "public, max-age=60")
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "mapReports",
+    {
+      schema: { response: { 200: MapReportsResponseJsonSchema } },
+      config: { rateLimit: MAP_REPORTS_RATE_LIMIT },
+    },
+    async (request, reply) => {
+      const validated = parse(MapReportsQuerySchema, request.query)
+      const payload: ReportClusterResponse = await service().listReportsInBBox(
+        validated.bbox,
+        validated.categories ?? null,
+        validated.types ?? null,
+        validated.zoom,
+      )
+      reply.header("Cache-Control", "public, max-age=60")
+      reply.status(200).send(payload)
+    },
+  )
 
-  route(app, "searchReports", { config: { rateLimit: SEARCH_REPORTS_RATE_LIMIT } }, async (request, reply) => {
-    const validated = parse(SearchReportsQuerySchema, request.query)
-    const payload: ListReportsSearchResponse = await service().searchReports(validated)
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "searchReports",
+    { config: { rateLimit: SEARCH_REPORTS_RATE_LIMIT } },
+    async (request, reply) => {
+      const validated = parse(SearchReportsQuerySchema, request.query)
+      const payload: ListReportsSearchResponse = await service().searchReports(validated)
+      reply.status(200).send(payload)
+    },
+  )
 
   route(app, "resolveReport", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
@@ -359,7 +372,10 @@ async function isReportVerified(sql: Sql, userId: string): Promise<boolean> {
   return rows[0]?.report_verified ?? false
 }
 
-function ownerOf(request: FastifyRequest): { userId?: string | undefined; anonSessionId?: string | undefined } {
+function ownerOf(request: FastifyRequest): {
+  userId?: string | undefined
+  anonSessionId?: string | undefined
+} {
   const auth = request.auth
   return {
     userId: auth?.userId ?? undefined,

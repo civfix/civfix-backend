@@ -10,7 +10,6 @@ import { buildAuthServices, type AuthServices } from "../../src/auth/auth-servic
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 
-
 let current: FastifyInstance | undefined
 afterEach(async () => {
   if (current) {
@@ -61,9 +60,7 @@ async function cleanupHarness(): Promise<{
     unlinkCalls += 1
     return Promise.reject(new Error("oauth store unavailable"))
   }
-  const fake = makeFakeSql([
-    { match: /INSERT INTO audit_log/i, rows: [{ id: "audit-1" }] },
-  ])
+  const fake = makeFakeSql([{ match: /INSERT INTO audit_log/i, rows: [{ id: "audit-1" }] }])
   const container = {
     ...buildContainer(env),
     getDb: () => ({ sql: fake.sql }),
@@ -114,7 +111,11 @@ describe("DELETE /me email-OTP gate", () => {
   it("rejects deletion with 401 when a freshly-issued code does not match", async () => {
     const { app, mailer } = await harness()
     const token = await signIn(app, mailer, "jane@example.com")
-    await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email: "jane@example.com" } })
+    await app.inject({
+      method: "POST",
+      url: "/v1/auth/otp/request",
+      payload: { email: "jane@example.com" },
+    })
     const real = mailer.lastOtpFor("jane@example.com")!
     const wrong = real === "123456" ? "654321" : "123456"
     const res = await del(app, token, wrong)
@@ -136,7 +137,11 @@ describe("DELETE /me email-OTP gate", () => {
     const { app, mailer } = await harness()
     const email = "jane@example.com"
     await signIn(app, mailer, email)
-    const res = await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/auth/otp/request",
+      payload: { email },
+    })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toMatchObject({ sent: true })
     const codes = mailer.sent.filter((m) => m.to === email && m.code !== undefined)
@@ -162,7 +167,10 @@ describe("DELETE /me post-revocation cleanup isolation", () => {
     expect(pushDelete?.values).toContain(userId)
 
     const audit = fake.statements.find((s) => /INSERT INTO audit_log/i.test(s.sql))
-    expect(audit, "the account.deleted audit row must not be skipped by the unlink failure").toBeDefined()
+    expect(
+      audit,
+      "the account.deleted audit row must not be skipped by the unlink failure",
+    ).toBeDefined()
     expect(audit?.values.slice(0, 3)).toEqual([userId, "account.deleted", `user:${userId}`])
 
     const notifDelete = fake.statements.find((s) => /DELETE FROM notifications/i.test(s.sql))

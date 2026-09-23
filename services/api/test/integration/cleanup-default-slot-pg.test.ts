@@ -94,7 +94,9 @@ describe.skipIf(!pg)("0169 default event slot backfill (integration)", () => {
 
   async function boardOf(
     cleanupId: string,
-  ): Promise<{ title: string; capacity: number | null; startsAt: Date | null; endsAt: Date | null }[]> {
+  ): Promise<
+    { title: string; capacity: number | null; startsAt: Date | null; endsAt: Date | null }[]
+  > {
     const rows = await h.sql<
       { title: string; capacity: number | null; starts_at: Date | null; ends_at: Date | null }[]
     >`
@@ -168,7 +170,10 @@ describe.skipIf(!pg)("0169 default event slot backfill (integration)", () => {
     const organizer = await newUser("Olive Organizer")
     const member = await newUser("Mel Member")
     const startsAt = new Date(Date.now() - 8 * HOUR)
-    const ended = await newCleanup(organizer, { startsAt, endsAt: new Date(startsAt.getTime() + 4 * HOUR) })
+    const ended = await newCleanup(organizer, {
+      startsAt,
+      endsAt: new Date(startsAt.getTime() + 4 * HOUR),
+    })
     const cancelled = await newCleanup(organizer, { status: "cancelled" })
     await addMember(ended, member)
     await addMember(cancelled, member)

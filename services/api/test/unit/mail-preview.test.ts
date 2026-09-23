@@ -26,7 +26,9 @@ describe("htmlToText", () => {
 
   it("toPreview prefers text, falls back to html, and bounds the length", () => {
     expect(toPreview("plain text wins", "<p>html</p>")).toBe("plain text wins")
-    expect(toPreview(null, "<p>Crew dispatched to 42 Elm St</p>")).toBe("Crew dispatched to 42 Elm St")
+    expect(toPreview(null, "<p>Crew dispatched to 42 Elm St</p>")).toBe(
+      "Crew dispatched to 42 Elm St",
+    )
     expect(toPreview("x".repeat(PREVIEW_LEN + 50))).toHaveLength(PREVIEW_LEN)
     expect(toPreview(null, null)).toBe("")
   })

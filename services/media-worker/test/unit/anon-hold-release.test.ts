@@ -1,4 +1,3 @@
-
 import { describe, it, expect } from "vitest"
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import type { LatLng } from "@civfix/shared"
@@ -190,7 +189,14 @@ describe("hold-release self-healing sweep (P2-8)", () => {
   it("leaves a held report held when its media are NOT yet ready (re-checked next run)", async () => {
     const repo = new InMemoryWorkerRepo()
     const reportId = "anon-report-pending"
-    repo.seed({ id: "m1", uploadId: "u1", kind: "image", r2Key: "k1", reportId, status: "validating" })
+    repo.seed({
+      id: "m1",
+      uploadId: "u1",
+      kind: "image",
+      r2Key: "k1",
+      reportId,
+      status: "validating",
+    })
     const holdRepo = new MemHoldRepo(heldReport(reportId), repo)
 
     const result = await runHoldReleaseSweep({

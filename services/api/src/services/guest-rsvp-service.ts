@@ -186,11 +186,7 @@ export interface GuestRsvpRepository {
   recordPhoneOptOut(phone: string): Promise<void>
   invalidateActiveOtps(cleanupId: string, contact: string, now: Date): Promise<void>
   insertOtp(args: InsertGuestOtpArgs): Promise<void>
-  findLatestActiveOtp(
-    cleanupId: string,
-    contact: string,
-    now: Date,
-  ): Promise<GuestOtpRecord | null>
+  findLatestActiveOtp(cleanupId: string, contact: string, now: Date): Promise<GuestOtpRecord | null>
   incrementOtpAttempts(otpId: string): Promise<number>
   markOtpConsumed(otpId: string, now: Date): Promise<boolean>
   upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string }>
@@ -584,9 +580,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
           ...(registration.ticketTypeId !== undefined
             ? { ticketTypeId: registration.ticketTypeId }
             : {}),
-          ...(registration.accessCode !== undefined
-            ? { accessCode: registration.accessCode }
-            : {}),
+          ...(registration.accessCode !== undefined ? { accessCode: registration.accessCode } : {}),
           ...(registration.answers !== undefined ? { answers: registration.answers } : {}),
           ...(registration.consent !== undefined ? { consent: registration.consent } : {}),
         },
@@ -627,11 +621,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       manageTokenHash,
       now: new Date(now()),
     })
-    const seat = await registerVerifiedGuest(
-      args.event.id,
-      guest.id,
-      args.registration ?? {},
-    )
+    const seat = await registerVerifiedGuest(args.event.id, guest.id, args.registration ?? {})
     const going = await deps.repo.goingCount(args.event.id)
     if (args.confirm) {
       await sendConfirmation({ ...args, rawToken }).catch((err: unknown) => {
@@ -660,7 +650,10 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     if (args.channel === "email") {
       await deps.mailer.sendTransactional(args.contact, "guest_confirmed", {
         title: args.event.title,
-        when: formatEventWhen(args.event.scheduledAt, args.event.timezone ?? DEFAULT_EVENT_TIME_ZONE),
+        when: formatEventWhen(
+          args.event.scheduledAt,
+          args.event.timezone ?? DEFAULT_EVENT_TIME_ZONE,
+        ),
         ...(args.event.address !== null && args.event.address.length > 0
           ? { place: args.event.address }
           : {}),
@@ -928,14 +921,16 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         limit,
       })
       const count = await deps.repo.countActiveGuests(event.id)
-      await deps.audit?.({
-        actorId: viewerUserId,
-        action: "event.guests_viewed",
-        target: `cleanup:${event.id}`,
-        meta: { rows: rows.length },
-      }).catch((err: unknown) => {
-        deps.logger?.warn({ err }, "guest contact: audit write failed (suppressed)")
-      })
+      await deps
+        .audit?.({
+          actorId: viewerUserId,
+          action: "event.guests_viewed",
+          target: `cleanup:${event.id}`,
+          meta: { rows: rows.length },
+        })
+        .catch((err: unknown) => {
+          deps.logger?.warn({ err }, "guest contact: audit write failed (suppressed)")
+        })
       return { guests: rows.map(toCleanupGuestDTO), count, nextCursor }
     },
 

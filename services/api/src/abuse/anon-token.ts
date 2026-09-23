@@ -148,7 +148,9 @@ export function assertUnderReportCap(
   cap: number = ANON_TOKEN_REPORT_CAP,
 ): { remaining: number } {
   if (row.reportCount >= cap) {
-    throw AppError.rateLimited("This anonymous session has reached its report limit. Sign in to continue.")
+    throw AppError.rateLimited(
+      "This anonymous session has reached its report limit. Sign in to continue.",
+    )
   }
   return { remaining: cap - row.reportCount }
 }

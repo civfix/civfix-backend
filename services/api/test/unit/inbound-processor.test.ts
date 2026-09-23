@@ -27,7 +27,6 @@ import { MESSAGE_BODY_MAX } from "@civfix/shared"
 import type { ReportTimelineEvent } from "../../src/services/report-timeline-event.js"
 import { CfInboundMail } from "../../src/adapters/inbound-mail.cf.js"
 
-
 const TOKEN = "0123456789abcdef01234567"
 
 function rfc822(opts: {
@@ -44,7 +43,9 @@ function rfc822(opts: {
   if (opts.inReplyTo !== undefined) lines.push(`In-Reply-To: ${opts.inReplyTo}`)
   const headers = opts.headers ?? {}
   if (opts.authenticated !== false && headers["Authentication-Results"] === undefined) {
-    lines.push(`Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=${domainOf(opts.from)}`)
+    lines.push(
+      `Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=${domainOf(opts.from)}`,
+    )
   }
   for (const [k, v] of Object.entries(headers)) lines.push(`${k}: ${v}`)
   lines.push("", opts.body ?? "")
@@ -84,7 +85,10 @@ interface Ctx {
   chatEvents: ReportTimelineEvent[]
 }
 
-function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlHandler[] = []): Ctx {
+function ctx(
+  inboundMail: InboundMail = new FakeInboundMail(),
+  sqlHandlers: SqlHandler[] = [],
+): Ctx {
   const storage = new FakeStorage()
   const mailRepo = new InMemoryMailRepository()
   const inboundRepo = new InMemoryInboundRepository()
@@ -182,7 +186,12 @@ describe("processInboundObject: idempotency", () => {
 
   it("inbox path dedups on the UNIQUE message_id", async () => {
     const c = ctx()
-    const eml = rfc822({ from: "r@example.com", to: "hi@civfix.org", body: "x", messageId: "<m2@example.com>" })
+    const eml = rfc822({
+      from: "r@example.com",
+      to: "hi@civfix.org",
+      body: "x",
+      messageId: "<m2@example.com>",
+    })
     const key = `${INBOUND_PENDING_PREFIX}d.eml`
     await put(c, key, eml)
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("inbox")
@@ -271,7 +280,11 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     seedContact(c, thread2.id, "publicworks@lacity.gov")
 
     const key = `${INBOUND_PENDING_PREFIX}reply2.eml`
-    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: "Done." }))
+    await put(
+      c,
+      key,
+      rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: "Done." }),
+    )
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
 
     expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("resolved")
@@ -286,10 +299,18 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
   it("a side-effect failure (report repo throws) never breaks routing / the delete", async () => {
     const c = ctx()
     c.adminReportRepo.getReport = () => Promise.reject(new Error("db down"))
-    const thread3 = c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-x", status: "sent" })
+    const thread3 = c.mailRepo.seedThread({
+      threadToken: TOKEN,
+      reportId: "report-x",
+      status: "sent",
+    })
     seedContact(c, thread3.id, "publicworks@lacity.gov")
     const key = `${INBOUND_PENDING_PREFIX}reply3.eml`
-    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: "hi" }))
+    await put(
+      c,
+      key,
+      rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: "hi" }),
+    )
     const r = await processInboundObject(c.container, key, c.deps)
     expect(r.outcome).toBe("threaded")
     expect(c.storage.get(key)).toBeNull()
@@ -321,7 +342,11 @@ describe("processInboundObject: jurisdiction reply -> report side-effects (#40)"
     }
     const reply = "A crew is scheduled for Tuesday."
     const key = `${INBOUND_PENDING_PREFIX}reply-full.eml`
-    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: reply }))
+    await put(
+      c,
+      key,
+      rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: reply }),
+    )
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
 
     expect(calls).toHaveLength(1)
@@ -494,9 +519,13 @@ describe("cityReplyChatBody (what a city reply publishes into the report chat)",
 
   it("drops an unquoted Outlook header block (From: followed by Sent:/Date:/To:)", () => {
     for (const follow of ["Sent: Monday", "Date: Mon, 21 Sep 2026", "To: ops@lacity.gov"]) {
-      const body = ["Crew assigned.", "", "From: civfix <report-x@civfix.org>", follow, "old body"].join(
-        "\n",
-      )
+      const body = [
+        "Crew assigned.",
+        "",
+        "From: civfix <report-x@civfix.org>",
+        follow,
+        "old body",
+      ].join("\n")
       expect(cityReplyChatBody(body)).toBe("Crew assigned.")
     }
   })
@@ -527,9 +556,13 @@ describe("cityReplyChatBody (what a city reply publishes into the report chat)",
   })
 
   it("still cuts a From: header block that real reply text precedes", () => {
-    const body = ["Crew 12 assigned.", "", "From: civfix <x@civfix.org>", "Sent: Monday", "old"].join(
-      "\n",
-    )
+    const body = [
+      "Crew 12 assigned.",
+      "",
+      "From: civfix <x@civfix.org>",
+      "Sent: Monday",
+      "old",
+    ].join("\n")
     expect(cityReplyChatBody(body)).toBe("Crew 12 assigned.")
   })
 
@@ -640,15 +673,22 @@ describe("processInboundObject: EVENT reply -> cleanup_timeline (D13/D19)", () =
     const c = ctx()
     const thread = c.mailRepo.seedThread({ threadToken: TOKEN, cleanupId, status: "sent" })
     seedContact(c, thread.id, "events@lacity.gov")
-    const fullBody = "Yes, we can supply 20 bags and gloves; pick them up at the depot Friday morning."
+    const fullBody =
+      "Yes, we can supply 20 bags and gloves; pick them up at the depot Friday morning."
     const key = `${INBOUND_PENDING_PREFIX}evt-reply.eml`
-    await put(c, key, rfc822({ from: "events@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: fullBody }))
+    await put(
+      c,
+      key,
+      rfc822({ from: "events@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body: fullBody }),
+    )
 
     const r = await processInboundObject(c.container, key, c.deps)
     expect(r.outcome).toBe("threaded")
     expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("replied")
 
-    const row = c.cleanupRepo.timeline.find((t) => t.cleanupId === cleanupId && t.kind === "city_reply")
+    const row = c.cleanupRepo.timeline.find(
+      (t) => t.cleanupId === cleanupId && t.kind === "city_reply",
+    )
     expect(row).toBeDefined()
     expect(row?.actorId).toBeNull()
     expect(row?.note).toBe(fullBody)
@@ -711,7 +751,9 @@ describe("processInboundObject: EVENT reply -> cleanup_timeline (D13/D19)", () =
     )
 
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
-    const row = c.cleanupRepo.timeline.find((t) => t.cleanupId === cleanupId && t.kind === "city_reply")
+    const row = c.cleanupRepo.timeline.find(
+      (t) => t.cleanupId === cleanupId && t.kind === "city_reply",
+    )
     expect(row?.note).toBe(fullBody)
     expect(row?.actorId).toBeNull()
     expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("replied")
@@ -725,7 +767,11 @@ describe("processInboundObject: self-originated mail (loop guard)", () => {
       env: { MAIL_FROM_OUTREACH: "outreach@civfix.org", MAIL_REPLY_DOMAIN: "civfix.org" },
     })
     const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "loop", status: "sent" })
-    c.mailRepo.seedMessage({ threadId: thread.id, direction: "out", messageId: "<out-1@civfix.org>" })
+    c.mailRepo.seedMessage({
+      threadId: thread.id,
+      direction: "out",
+      messageId: "<out-1@civfix.org>",
+    })
     const copies = [
       rfc822({
         from: "outreach@civfix.org",
@@ -804,7 +850,11 @@ describe("processInboundObject: DSN/bounce handling (#40)", () => {
       { match: /FROM\s+mail_messages/i, rows: [{ ok: true }] },
       { match: /SELECT\s+geoid\s+FROM\s+jurisdiction_contacts/i, rows: [{ geoid }] },
     ])
-    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, jurisdictionGeoid: geoid, status: "sent" })
+    const thread = c.mailRepo.seedThread({
+      threadToken: TOKEN,
+      jurisdictionGeoid: geoid,
+      status: "sent",
+    })
     c.mailRepo.seedMessage({
       threadId: thread.id,
       direction: "out",
@@ -817,7 +867,10 @@ describe("processInboundObject: DSN/bounce handling (#40)", () => {
       to: "outreach@civfix.org",
       messageId: "<dsn-bounce-1@lacity.gov>",
       headers: { "X-Failed-Recipients": failed },
-      body: ["Your message could not be delivered.", `Original-Message-ID: <out-99@civfix.org>`].join("\n"),
+      body: [
+        "Your message could not be delivered.",
+        `Original-Message-ID: <out-99@civfix.org>`,
+      ].join("\n"),
     })
     await put(c, key, dsn)
 
@@ -829,7 +882,9 @@ describe("processInboundObject: DSN/bounce handling (#40)", () => {
     expect(c.mailRepo.events.some((e) => e.type === "bounced")).toBe(true)
     expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("bounced")
 
-    const flag = c.db.statements.find((s) => /UPDATE\s+jurisdiction_contacts\s+SET\s+bounced_at/i.test(s.sql))
+    const flag = c.db.statements.find((s) =>
+      /UPDATE\s+jurisdiction_contacts\s+SET\s+bounced_at/i.test(s.sql),
+    )
     expect(flag).toBeDefined()
     expect(flag?.values).toContain(failed)
 
@@ -843,7 +898,9 @@ describe("processInboundObject: DSN/bounce handling (#40)", () => {
     expect(r2.outcome).toBe("replay")
     expect(c.mailRepo.events.filter((e) => e.type === "bounced")).toHaveLength(1)
     expect(
-      c.db.statements.filter((s) => /UPDATE\s+jurisdiction_contacts\s+SET\s+bounced_at/i.test(s.sql)),
+      c.db.statements.filter((s) =>
+        /UPDATE\s+jurisdiction_contacts\s+SET\s+bounced_at/i.test(s.sql),
+      ),
     ).toHaveLength(1)
     expect(c.jobs.jobsFor("jurisdiction.discovery")).toHaveLength(1)
   })
@@ -894,7 +951,9 @@ describe("detectBounce (pure)", () => {
 
   it("is NOT a bounce for an ordinary inbound message", async () => {
     const parser = new FakeInboundMail()
-    const mail = await parser.parse(rfc822({ from: "clerk@lacity.gov", to: "outreach@civfix.org", body: "hi" }))
+    const mail = await parser.parse(
+      rfc822({ from: "clerk@lacity.gov", to: "outreach@civfix.org", body: "hi" }),
+    )
     expect(detectBounce(mail).isBounce).toBe(false)
   })
 })
@@ -932,7 +991,11 @@ describe("parseMessageIdList", () => {
 describe("processInboundObject: message authentication gate (M7)", () => {
   it("files an UNAUTHENTICATED token-addressed reply on its thread as UNAFFILIATED, with no public effects", async () => {
     const c = ctx()
-    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-auth", status: "sent" })
+    const thread = c.mailRepo.seedThread({
+      threadToken: TOKEN,
+      reportId: "report-auth",
+      status: "sent",
+    })
     seedContact(c, thread.id, "publicworks@lacity.gov")
     c.adminReportRepo.seedReport({ id: "report-auth", status: "published", reporter: null })
 
@@ -952,7 +1015,10 @@ describe("processInboundObject: message authentication gate (M7)", () => {
     const stored = c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")
     expect(stored).toHaveLength(1)
     expect(stored[0]?.unaffiliated).toBe(true)
-    expect(c.mailRepo.events.at(-1)?.meta).toMatchObject({ authVerdict: "unknown", unaffiliated: true })
+    expect(c.mailRepo.events.at(-1)?.meta).toMatchObject({
+      authVerdict: "unknown",
+      unaffiliated: true,
+    })
     expect(c.inboundRepo.rows).toHaveLength(0)
     expect(c.adminReportRepo.reports.get("report-auth")?.record.status).toBe("published")
     expect(c.chatEvents).toHaveLength(0)
@@ -961,7 +1027,11 @@ describe("processInboundObject: message authentication gate (M7)", () => {
 
   it("files a DMARC-FAIL token-addressed reply as unaffiliated even when From matches the contact", async () => {
     const c = ctx()
-    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-fail", status: "sent" })
+    const thread = c.mailRepo.seedThread({
+      threadToken: TOKEN,
+      reportId: "report-fail",
+      status: "sent",
+    })
     seedContact(c, thread.id, "publicworks@lacity.gov")
     c.adminReportRepo.seedReport({ id: "report-fail", status: "published", reporter: null })
     const key = `${INBOUND_PENDING_PREFIX}dmarcfail.eml`
@@ -972,12 +1042,17 @@ describe("processInboundObject: message authentication gate (M7)", () => {
         from: "clerk@lacity.gov",
         to: `reply+${TOKEN}@civfix.org`,
         body: "spoofed",
-        headers: { "Authentication-Results": "mx.cloudflare.net; spf=pass; dmarc=fail header.from=lacity.gov" },
+        headers: {
+          "Authentication-Results":
+            "mx.cloudflare.net; spf=pass; dmarc=fail header.from=lacity.gov",
+        },
       }),
     )
 
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
-    expect(c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")?.unaffiliated).toBe(true)
+    expect(c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")?.unaffiliated).toBe(
+      true,
+    )
     expect(c.mailRepo.events.at(-1)?.meta).toMatchObject({ authVerdict: "fail" })
     expect(c.adminReportRepo.reports.get("report-fail")?.record.status).toBe("published")
     expect(c.chatEvents).toHaveLength(0)
@@ -985,8 +1060,16 @@ describe("processInboundObject: message authentication gate (M7)", () => {
 
   it("keeps an unauthenticated reply that only echoes an In-Reply-To in the Inbox", async () => {
     const c = ctx()
-    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-ref", status: "sent" })
-    c.mailRepo.seedMessage({ threadId: thread.id, direction: "out", messageId: "<out-9@civfix.org>" })
+    const thread = c.mailRepo.seedThread({
+      threadToken: TOKEN,
+      reportId: "report-ref",
+      status: "sent",
+    })
+    c.mailRepo.seedMessage({
+      threadId: thread.id,
+      direction: "out",
+      messageId: "<out-9@civfix.org>",
+    })
     const key = `${INBOUND_PENDING_PREFIX}refonly.eml`
     await put(
       c,
@@ -1026,14 +1109,20 @@ describe("processInboundObject: message authentication gate (M7)", () => {
     )
 
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
-    expect(c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")?.unaffiliated).toBe(false)
+    expect(c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")?.unaffiliated).toBe(
+      false,
+    )
     expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
     expect(c.chatEvents.map((e) => e.body)).toEqual(["Crew scheduled for Tuesday."])
   })
 
   it("sends a token-addressed message with two From headers to the Inbox", async () => {
     const c = ctx(new CfInboundMail({ replyDomain: "civfix.org" }))
-    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId: "report-twofrom", status: "sent" })
+    const thread = c.mailRepo.seedThread({
+      threadToken: TOKEN,
+      reportId: "report-twofrom",
+      status: "sent",
+    })
     seedContact(c, thread.id, "publicworks@lacity.gov")
     const key = `${INBOUND_PENDING_PREFIX}twofrom.eml`
     await put(

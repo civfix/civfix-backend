@@ -1,4 +1,3 @@
-
 import { ReportContentRequestSchema, type ReportContentResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
@@ -19,7 +18,11 @@ import {
   type ContentSubjectGate,
 } from "../services/content-report-subject.js"
 
-export const REPORT_CONTENT_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute", hostMax: 60 })
+export const REPORT_CONTENT_RATE_LIMIT = perIdentity({
+  max: 20,
+  timeWindow: "1 minute",
+  hostMax: 60,
+})
 
 declare module "fastify" {
   interface FastifyInstance {

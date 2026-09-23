@@ -54,7 +54,9 @@ describe("migrations contain no transaction-control statements", () => {
   })
 
   it.each(files)("%s drives no BEGIN / COMMIT / ROLLBACK of its own", (name) => {
-    const body = stripDollarQuoted(stripSqlComments(readFileSync(join(DRIZZLE_DIR, name), "utf8"))).toLowerCase()
+    const body = stripDollarQuoted(
+      stripSqlComments(readFileSync(join(DRIZZLE_DIR, name), "utf8")),
+    ).toLowerCase()
     for (const keyword of TXN_KEYWORDS) {
       // Statement-initial only: `;`/newline/start-of-file, then the keyword as a whole word. This keeps
       // identifiers that merely contain the word (a `commit_at` column, `rollback_reason`) legal.

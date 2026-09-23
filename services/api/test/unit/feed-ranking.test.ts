@@ -313,7 +313,12 @@ describe("feed ranking: ordering", () => {
 
   it("never emits a negative score", () => {
     const hostile: FeedRankingConfig = { ...CFG, baseWeight: 0 }
-    const score = scoreCandidate(candidate({ createdAtMs: NOW - 24 * 365 * HOUR }), hostile, NOW, SEED)
+    const score = scoreCandidate(
+      candidate({ createdAtMs: NOW - 24 * 365 * HOUR }),
+      hostile,
+      NOW,
+      SEED,
+    )
     expect(score).toBeGreaterThanOrEqual(0)
   })
 })
@@ -400,7 +405,10 @@ describe("feed ranking: the global half is viewer-independent by construction", 
     expect(viewerScore(candidate(), CFG)).toBe(0)
     expect(viewerScore(candidate({ authorFollowed: true }), CFG)).toBeCloseTo(CFG.followWeight, 10)
     expect(viewerScore(candidate({ authorIsViewer: true }), CFG)).toBeCloseTo(CFG.selfWeight, 10)
-    expect(viewerScore(candidate({ viewerMentioned: true }), CFG)).toBeCloseTo(CFG.mentionWeight, 10)
+    expect(viewerScore(candidate({ viewerMentioned: true }), CFG)).toBeCloseTo(
+      CFG.mentionWeight,
+      10,
+    )
     expect(viewerScore(candidate({ distanceKm: 0 }), CFG)).toBeCloseTo(CFG.nearbyWeight, 10)
   })
 

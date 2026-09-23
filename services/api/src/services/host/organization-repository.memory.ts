@@ -263,7 +263,11 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
         actorId: args.createdBy,
         action: "org.verification_verified",
         target: `organization:${org.id}`,
-        meta: { kind: verifiedKind, reason: args.operatorReason ?? null, source: "operator_create" },
+        meta: {
+          kind: verifiedKind,
+          reason: args.operatorReason ?? null,
+          source: "operator_create",
+        },
       })
     }
     return Promise.resolve(this.toRecord(org, ownerUserId))
@@ -276,7 +280,10 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     )
   }
 
-  findOrganizationBySlug(slug: string, viewerId: string | null): Promise<OrganizationRecord | null> {
+  findOrganizationBySlug(
+    slug: string,
+    viewerId: string | null,
+  ): Promise<OrganizationRecord | null> {
     const org = [...this.organizations.values()].find(
       (o) => o.slug === slug && o.deletedAt === null,
     )
@@ -284,7 +291,9 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
   }
 
   listMyOrganizations(userId: string, limit: number): Promise<OrganizationRecord[]> {
-    const ids = new Set(this.members.filter((m) => m.userId === userId).map((m) => m.organizationId))
+    const ids = new Set(
+      this.members.filter((m) => m.userId === userId).map((m) => m.organizationId),
+    )
     const records = [...this.organizations.values()]
       .filter((o) => ids.has(o.id) && o.deletedAt === null)
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
@@ -642,7 +651,9 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     return Promise.resolve(row === undefined ? null : this.toAdminRecord(row))
   }
 
-  adminGetVerifications(organizationIds: string[]): Promise<Map<string, AdminOrgVerificationRecord>> {
+  adminGetVerifications(
+    organizationIds: string[],
+  ): Promise<Map<string, AdminOrgVerificationRecord>> {
     const out = new Map<string, AdminOrgVerificationRecord>()
     for (const id of organizationIds) {
       const row = this.latestFor(id)
@@ -683,9 +694,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     const rows = searched
       .filter((o) => query.verified === undefined || o.verifiedStatus === query.verified)
       .filter((o) => query.kind === undefined || o.verifiedKind === query.kind)
-      .filter(
-        (o) => query.suspended === undefined || (o.suspendedAt !== null) === query.suspended,
-      )
+      .filter((o) => query.suspended === undefined || (o.suspendedAt !== null) === query.suspended)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
     const start =
       query.cursor === null
@@ -741,13 +750,19 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     const page = all.slice(start, start + args.limit)
     const next = all.length > start + args.limit ? page[page.length - 1] : undefined
     return Promise.resolve({
-      items: page.map((m) => ({ user: this.actorOf(m.userId), role: m.role, joinedAt: m.joinedAt })),
+      items: page.map((m) => ({
+        user: this.actorOf(m.userId),
+        role: m.role,
+        joinedAt: m.joinedAt,
+      })),
       nextCursor: next === undefined ? null : `${next.joinedAt.toISOString()}|${next.userId}`,
     })
   }
 
   private demoteOwner(organizationId: string): string | null {
-    const owner = this.members.find((m) => m.organizationId === organizationId && m.role === "owner")
+    const owner = this.members.find(
+      (m) => m.organizationId === organizationId && m.role === "owner",
+    )
     if (owner === undefined) return null
     owner.role = "admin"
     return owner.userId
@@ -899,7 +914,11 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     return Promise.resolve({ kind: "created", invite: this.toInviteRecord(invite) })
   }
 
-  listInvites(organizationId: string, now: Date, limit: number): Promise<OrganizationInviteRecord[]> {
+  listInvites(
+    organizationId: string,
+    now: Date,
+    limit: number,
+  ): Promise<OrganizationInviteRecord[]> {
     this.expireInvites(organizationId, now)
     const rows = this.invites
       .filter((i) => i.organizationId === organizationId)
@@ -965,9 +984,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       if (invite.expiresAt.getTime() <= args.now.getTime()) continue
       const org = this.organizations.get(invite.organizationId)
       if (org === undefined || org.deletedAt !== null || org.suspendedAt !== null) continue
-      if (
-        this.members.some((m) => m.organizationId === org.id && m.userId === args.userId)
-      ) {
+      if (this.members.some((m) => m.organizationId === org.id && m.userId === args.userId)) {
         continue
       }
       if (!this.inviteAddressesUser(invite, args.userId)) continue
@@ -1026,7 +1043,8 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     const invite = byToken
       ? this.invites.find((i) => i.tokenHash === (args.by as { tokenHash: string }).tokenHash)
       : this.invites.find((i) => i.id === (args.by as { inviteId: string }).inviteId)
-    if (invite === undefined || invite.status !== "pending") return Promise.resolve({ kind: "invalid" })
+    if (invite === undefined || invite.status !== "pending")
+      return Promise.resolve({ kind: "invalid" })
     const org = this.organizations.get(invite.organizationId)
     if (org === undefined || org.deletedAt !== null) return Promise.resolve({ kind: "invalid" })
     if (invite.expiresAt.getTime() <= args.now.getTime()) {

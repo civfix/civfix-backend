@@ -1,10 +1,5 @@
-
 import type { Sql } from "../db/client.js"
-import type {
-  AnonHoldReleaseRepo,
-  HeldReportView,
-  ReleaseMediaView,
-} from "./anon-hold-release.js"
+import type { AnonHoldReleaseRepo, HeldReportView, ReleaseMediaView } from "./anon-hold-release.js"
 
 export function makeDrizzleAnonHoldReleaseRepo(sql: Sql): AnonHoldReleaseRepo {
   return {

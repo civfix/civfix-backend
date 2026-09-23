@@ -1,9 +1,17 @@
 import { describe, expect, it } from "vitest"
-import { AppError, type ChatHistoryPage, type ChatMessageDTO, type UserMentionDTO } from "@civfix/shared"
+import {
+  AppError,
+  type ChatHistoryPage,
+  type ChatMessageDTO,
+  type UserMentionDTO,
+} from "@civfix/shared"
 import type { PersistChatInput } from "@civfix/shared/interfaces"
 import { makeAdminReportChatService } from "../../src/services/admin/admin-report-chat-service.js"
 import { InMemoryAdminReportChatRepository } from "../../src/services/admin/admin-report-chat-repository.memory.js"
-import { sendReportChatMessage, type ReportChatSendDeps } from "../../src/services/report-chat-send.js"
+import {
+  sendReportChatMessage,
+  type ReportChatSendDeps,
+} from "../../src/services/report-chat-send.js"
 import { roomKeyFor } from "../../src/ws/gateway.js"
 
 const REPORT_ID = "11111111-1111-1111-1111-111111111111"
@@ -37,7 +45,10 @@ interface SendHarness {
 }
 
 function sendHarness(
-  opts: { mentions?: UserMentionDTO[]; persistBody?: (input: PersistChatInput) => ChatMessageDTO } = {},
+  opts: {
+    mentions?: UserMentionDTO[]
+    persistBody?: (input: PersistChatInput) => ChatMessageDTO
+  } = {},
 ): SendHarness {
   const persisted: PersistChatInput[] = []
   const broadcasts: SendHarness["broadcasts"] = []

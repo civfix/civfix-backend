@@ -1,4 +1,3 @@
-
 import { customType } from "drizzle-orm/pg-core"
 
 export type GeometrySubtype = "Point" | "MultiPolygon" | "Polygon" | "Geometry"
@@ -130,17 +129,11 @@ export const ABUSE_SOURCE_VALUES = ["worker", "api", "user_report"] as const
 
 export const DISCOVERY_STATUS_VALUES = ["open", "in_progress", "done"] as const
 
-
 export const GOV_METHOD_VALUES = ["email", "cold_outreach"] as const
 
 export const GOV_CLAIM_STATUS_VALUES = ["pending", "approved", "rejected"] as const
 
-export const VERIFICATION_STATUS_VALUES = [
-  "unverified",
-  "pending",
-  "verified",
-  "rejected",
-] as const
+export const VERIFICATION_STATUS_VALUES = ["unverified", "pending", "verified", "rejected"] as const
 
 export const USER_ACCOUNT_STATUS_VALUES = ["active", "suspended", "review", "banned"] as const
 

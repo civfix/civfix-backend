@@ -32,9 +32,7 @@ const NULL_TEST_SKIP_PATH = /(^|[\\/])db[\\/]schema[\\/]/
 
 const IDENTIFIER_HELPER = /^[A-Za-z_$][A-Za-z0-9_$.]*\s*\(/
 
-const ALLOW_NULL_TEST = new Set([
-  "services/api/src/auth/pg-stores.ts:${users.email} is not null",
-])
+const ALLOW_NULL_TEST = new Set(["services/api/src/auth/pg-stores.ts:${users.email} is not null"])
 
 export function findParamNullTests(code) {
   const found = []
@@ -55,12 +53,30 @@ const walk = (dir) =>
   })
 
 const REGEX_PRECEDING_KEYWORDS = new Set([
-  "return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
-  "do", "else", "yield", "await", "case", "throw",
+  "return",
+  "typeof",
+  "instanceof",
+  "in",
+  "of",
+  "new",
+  "delete",
+  "void",
+  "do",
+  "else",
+  "yield",
+  "await",
+  "case",
+  "throw",
 ])
 
 function isIdentStart(c) {
-  return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "_" || c === "$" || c.charCodeAt(0) > 127
+  return (
+    (c >= "a" && c <= "z") ||
+    (c >= "A" && c <= "Z") ||
+    c === "_" ||
+    c === "$" ||
+    c.charCodeAt(0) > 127
+  )
 }
 function isIdentPart(c) {
   return isIdentStart(c) || (c >= "0" && c <= "9")
@@ -82,7 +98,10 @@ function stripComments(input) {
     i++
     while (i < n) {
       const c = input[i]
-      if (c === "\\") { i += 2; continue }
+      if (c === "\\") {
+        i += 2
+        continue
+      }
       if (c === q) return i + 1
       if (c === "\n") return i
       i++
@@ -96,10 +115,24 @@ function stripComments(input) {
     while (i < n) {
       const c = input[i]
       if (c === "\n") return i
-      if (c === "\\") { i += 2; continue }
-      if (c === "[") { inClass = true; i++; continue }
-      if (c === "]") { inClass = false; i++; continue }
-      if (c === "/" && !inClass) { i++; break }
+      if (c === "\\") {
+        i += 2
+        continue
+      }
+      if (c === "[") {
+        inClass = true
+        i++
+        continue
+      }
+      if (c === "]") {
+        inClass = false
+        i++
+        continue
+      }
+      if (c === "/" && !inClass) {
+        i++
+        break
+      }
       i++
     }
     while (i < n && isIdentPart(input[i])) i++
@@ -110,7 +143,10 @@ function stripComments(input) {
     i++
     while (i < n) {
       const c = input[i]
-      if (c === "\\") { i += 2; continue }
+      if (c === "\\") {
+        i += 2
+        continue
+      }
       if (c === "`") return i + 1
       if (c === "$" && input[i + 1] === "{") {
         i = scanCode(i + 2, true)
@@ -134,7 +170,10 @@ function stripComments(input) {
     let depth = 0
     while (i < n) {
       const c = input[i]
-      if (c === " " || c === "\t" || c === "\n" || c === "\r") { i++; continue }
+      if (c === " " || c === "\t" || c === "\n" || c === "\r") {
+        i++
+        continue
+      }
       if (c === "/" && input[i + 1] === "/") {
         const start = i
         i += 2
@@ -150,11 +189,28 @@ function stripComments(input) {
         spans.push({ start, end: i })
         continue
       }
-      if (c === '"' || c === "'") { i = scanString(i, c); prevType = "value"; prevWord = ""; continue }
-      if (c === "`") { i = scanTemplate(i); prevType = "value"; prevWord = ""; continue }
+      if (c === '"' || c === "'") {
+        i = scanString(i, c)
+        prevType = "value"
+        prevWord = ""
+        continue
+      }
+      if (c === "`") {
+        i = scanTemplate(i)
+        prevType = "value"
+        prevWord = ""
+        continue
+      }
       if (c === "/") {
-        if (regexAllowed()) { i = scanRegex(i); prevType = "value"; prevWord = "" }
-        else { i++; prevType = "punct"; prevWord = "" }
+        if (regexAllowed()) {
+          i = scanRegex(i)
+          prevType = "value"
+          prevWord = ""
+        } else {
+          i++
+          prevType = "punct"
+          prevWord = ""
+        }
         continue
       }
       if (isIdentStart(c)) {
@@ -168,19 +224,33 @@ function stripComments(input) {
       if (c >= "0" && c <= "9") {
         i++
         while (i < n && /[0-9a-fA-FxXbBoOeE._n]/.test(input[i])) i++
-        prevType = "value"; prevWord = ""
+        prevType = "value"
+        prevWord = ""
         continue
       }
-      if (c === "{") { depth++; i++; prevType = "punct"; prevWord = ""; continue }
+      if (c === "{") {
+        depth++
+        i++
+        prevType = "punct"
+        prevWord = ""
+        continue
+      }
       if (c === "}") {
         if (stopAtBrace && depth === 0) return i
         if (depth > 0) depth--
-        i++; prevType = "punct"; prevWord = ""
+        i++
+        prevType = "punct"
+        prevWord = ""
         continue
       }
       i++
-      if (c === ")" || c === "]") { prevType = "value"; prevWord = "" }
-      else { prevType = "punct"; prevWord = "" }
+      if (c === ")" || c === "]") {
+        prevType = "value"
+        prevWord = ""
+      } else {
+        prevType = "punct"
+        prevWord = ""
+      }
     }
     return i
   }

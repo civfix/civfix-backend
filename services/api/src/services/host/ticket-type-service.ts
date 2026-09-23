@@ -122,11 +122,16 @@ export function makeTicketTypeService(deps: TicketTypeServiceDeps): TicketTypeSe
         name: input.name,
         description: input.description ?? null,
         capacity: input.capacity ?? null,
-        salesOpensAt: input.salesOpensAt === undefined || input.salesOpensAt === null ? null : new Date(input.salesOpensAt),
-        salesClosesAt: input.salesClosesAt === undefined || input.salesClosesAt === null ? null : new Date(input.salesClosesAt),
+        salesOpensAt:
+          input.salesOpensAt === undefined || input.salesOpensAt === null
+            ? null
+            : new Date(input.salesOpensAt),
+        salesClosesAt:
+          input.salesClosesAt === undefined || input.salesClosesAt === null
+            ? null
+            : new Date(input.salesClosesAt),
         visibility: input.visibility,
-        accessCodeHash:
-          input.accessCode == null ? null : await sha256Hex(input.accessCode.trim()),
+        accessCodeHash: input.accessCode == null ? null : await sha256Hex(input.accessCode.trim()),
         clearAccessCode: false,
         maxPartySize: input.maxPartySize,
         sortOrder: input.sortOrder ?? null,

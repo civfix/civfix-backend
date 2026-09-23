@@ -1,4 +1,3 @@
-
 import type * as SentryNode from "@sentry/node"
 import { redactPans } from "./pan-redaction.js"
 
@@ -177,7 +176,12 @@ export function scrubEvent<T extends SentryEventLike>(event: T): T {
 
 export function scrubBreadcrumb<T extends SentryBreadcrumbLike>(crumb: T): T | null {
   const category = typeof crumb.category === "string" ? crumb.category.toLowerCase() : ""
-  if (category === "http" || category === "fetch" || category === "xhr" || category.includes("query")) {
+  if (
+    category === "http" ||
+    category === "fetch" ||
+    category === "xhr" ||
+    category.includes("query")
+  ) {
     return null
   }
   const out = { ...crumb } as SentryBreadcrumbLike

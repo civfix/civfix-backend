@@ -77,7 +77,10 @@ describe("discovery pure helpers", () => {
     expect(derivePriority({ ...base, total: 0 }, NOW)).toBe("low")
     expect(derivePriority({ ...base, total: 2, oldestWaitingAt: hoursAgo(2) }, NOW)).toBe("med")
     expect(
-      derivePriority({ ...base, total: 2, oldestWaitingAt: hoursAgo(DISCOVERY_SLA_HOURS + 5) }, NOW),
+      derivePriority(
+        { ...base, total: 2, oldestWaitingAt: hoursAgo(DISCOVERY_SLA_HOURS + 5) },
+        NOW,
+      ),
     ).toBe("high")
   })
 
@@ -136,8 +139,20 @@ describe("discovery list", () => {
 
   it("sorts by population desc by default and by reports when asked", async () => {
     const { repo, svc } = harness()
-    repo.seedTask({ id: "A", geoid: "1", place: "Alpha", population: 100, perCategory: { trash: 9 } })
-    repo.seedTask({ id: "B", geoid: "2", place: "Bravo", population: 900, perCategory: { trash: 1 } })
+    repo.seedTask({
+      id: "A",
+      geoid: "1",
+      place: "Alpha",
+      population: 100,
+      perCategory: { trash: 9 },
+    })
+    repo.seedTask({
+      id: "B",
+      geoid: "2",
+      place: "Bravo",
+      population: 900,
+      perCategory: { trash: 1 },
+    })
 
     const byPop = await svc.list({ sort: "pop" })
     expect(byPop.items.map((i) => i.id)).toEqual(["B", "A"])
@@ -176,7 +191,12 @@ describe("discovery list", () => {
    */
   it("search matches place or geoid (case-insensitive) and NEVER the task id", async () => {
     const { repo, svc } = harness()
-    repo.seedTask({ id: "JUR-1", geoid: "0644000", place: "Los Angeles", perCategory: { trash: 1 } })
+    repo.seedTask({
+      id: "JUR-1",
+      geoid: "0644000",
+      place: "Los Angeles",
+      perCategory: { trash: 1 },
+    })
     repo.seedTask({ id: "JUR-2", geoid: "0666000", place: "San Diego", perCategory: { trash: 1 } })
 
     expect((await svc.list({ q: "angeles" })).items.map((i) => i.id)).toEqual(["JUR-1"])
@@ -283,7 +303,11 @@ describe("discovery mutations", () => {
     const { repo, svc } = harness()
     repo.seedTask({ id: "JUR-1", geoid: "1", place: "LA", perCategory: { trash: 1 } })
 
-    const note = await svc.addNote("JUR-1", { text: "Called the clerk", actorId: "op-1", who: "jane" })
+    const note = await svc.addNote("JUR-1", {
+      text: "Called the clerk",
+      actorId: "op-1",
+      who: "jane",
+    })
     expect(note.text).toBe("Called the clerk")
     expect(note.who).toBe("jane")
     expect(note.when).toBe("now")

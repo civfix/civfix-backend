@@ -1,4 +1,3 @@
-
 import type { Storage } from "@civfix/shared/interfaces"
 import type { MediaWorkerRepo } from "@civfix/api/media-repo"
 import { R2_PUT_TTL_SEC } from "@civfix/api/adapters/storage"
@@ -116,7 +115,11 @@ export async function runUploadReapJob(
   }
 }
 
-function uploadKeyIsDead(asset: { status: string; r2Key: string; servedKey: string | null }): boolean {
+function uploadKeyIsDead(asset: {
+  status: string
+  r2Key: string
+  servedKey: string | null
+}): boolean {
   if (asset.status === "rejected") return true
   return asset.servedKey !== null && asset.servedKey !== asset.r2Key
 }

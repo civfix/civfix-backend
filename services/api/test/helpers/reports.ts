@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import type {
   BBox,
@@ -11,11 +10,7 @@ import type {
   ReportTimelineView,
   ReportVisibilityTimelineKind,
 } from "../../src/services/report-service.js"
-import {
-  formatReferenceCode,
-  reportScopeKey,
-  typeCodeFor,
-} from "../../src/db/reference-code.js"
+import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
 import { isPubliclyVisibleStatus } from "../../src/services/report-visibility.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
 import type { ReportDTO } from "@civfix/shared"
@@ -270,9 +265,7 @@ export class InMemoryReportRepository implements ReportRepository {
     return this.loadTimeline(reportId)
   }
 
-  async findTimelineForReports(
-    reportIds: string[],
-  ): Promise<Map<string, ReportTimelineView[]>> {
+  async findTimelineForReports(reportIds: string[]): Promise<Map<string, ReportTimelineView[]>> {
     const grouped = new Map<string, ReportTimelineView[]>()
     for (const id of reportIds) {
       grouped.set(id, await this.loadTimeline(id))
@@ -463,4 +456,3 @@ function notOwnerOutcome(r: {
 function idempotencyMapKey(scope: string, key: string, userOrAnon: string | null): string {
   return `${scope}:${key}:${userOrAnon ?? ""}`
 }
-

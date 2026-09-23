@@ -17,7 +17,6 @@ import RedisMock from "ioredis-mock"
 import type { RedisClient } from "../../src/adapters/redis.js"
 import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
 
-
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const OTHER_ROOM = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 const ALICE = "11111111-1111-1111-1111-111111111111"
@@ -28,9 +27,19 @@ const allMembers = (): Promise<boolean> => Promise.resolve(true)
 let chat: WsChatService
 let presence: InMemoryChatPresence
 
-function sessionFor(userId: string, conn: MockConnection, over: Partial<GatewayDeps> = {}): GatewaySession {
+function sessionFor(
+  userId: string,
+  conn: MockConnection,
+  over: Partial<GatewayDeps> = {},
+): GatewaySession {
   const deps: GatewayDeps = { chat, isMember: allMembers, presence, ...over }
-  return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+  return {
+    userId,
+    conn,
+    joined: new Set<string>(),
+    typingThrottle: new Map<string, number>(),
+    deps,
+  }
 }
 
 beforeEach(() => {
@@ -63,7 +72,10 @@ describe("H6: the leave frame is gated on what THIS socket joined", () => {
         markRead: () => Promise.resolve(),
       },
     })
-    await handleClientFrame(victim, JSON.stringify({ type: "join", roomKind: "dm", cleanupId: ROOM }))
+    await handleClientFrame(
+      victim,
+      JSON.stringify({ type: "join", roomKind: "dm", cleanupId: ROOM }),
+    )
     victimConn.sent.length = 0
 
     const attackerConn = new MockConnection("attacker")
@@ -349,7 +361,10 @@ describe("F041: ack does nothing for a room the socket never joined", () => {
     const conn = new MockConnection("a")
     const markRead = vi.fn(() => Promise.resolve())
     const session = sessionFor(ALICE, conn, { markRead })
-    await handleClientFrame(session, JSON.stringify({ type: "ack", cleanupId: ROOM, upToId: UP_TO }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "ack", cleanupId: ROOM, upToId: UP_TO }),
+    )
     expect(markRead).not.toHaveBeenCalled()
   })
 
@@ -358,7 +373,10 @@ describe("F041: ack does nothing for a room the socket never joined", () => {
     const markRead = vi.fn(() => Promise.resolve())
     const session = sessionFor(ALICE, conn, { markRead })
     await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: ROOM }))
-    await handleClientFrame(session, JSON.stringify({ type: "ack", cleanupId: ROOM, upToId: UP_TO }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "ack", cleanupId: ROOM, upToId: UP_TO }),
+    )
     expect(markRead).toHaveBeenCalledTimes(1)
   })
 })
@@ -373,7 +391,9 @@ describe("F022: live sockets are re-authorized against room membership", () => {
     expect(await canStillRead(session, key)).toBe(true)
     member = false
     expect(await canStillRead(session, key)).toBe(false)
-    const throwing = sessionFor(ALICE, conn, { isMember: () => Promise.reject(new Error("redis down")) })
+    const throwing = sessionFor(ALICE, conn, {
+      isMember: () => Promise.reject(new Error("redis down")),
+    })
     expect(await canStillRead(throwing, key)).toBe(true)
   })
 
@@ -448,7 +468,11 @@ describe("H4: a suspended account is read-only on the socket", () => {
     await handleClientFrame(session, JSON.stringify({ type: "typing", cleanupId: ROOM }))
     await handleClientFrame(
       session,
-      JSON.stringify({ type: "ack", cleanupId: ROOM, upToId: "00000000-0000-0000-0000-000000000001" }),
+      JSON.stringify({
+        type: "ack",
+        cleanupId: ROOM,
+        upToId: "00000000-0000-0000-0000-000000000001",
+      }),
     )
     expect(conn.framesOfType("error")).toHaveLength(0)
   })

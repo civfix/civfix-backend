@@ -56,7 +56,8 @@ function rfc822(opts: {
 }
 
 /** A DMARC-aligned pass, as Cloudflare Email Routing's MTA stamps it. */
-const DMARC_PASS = "mx.cloudflare.net; spf=pass; dkim=pass header.d=lacity.gov; dmarc=pass header.from=lacity.gov"
+const DMARC_PASS =
+  "mx.cloudflare.net; spf=pass; dkim=pass header.d=lacity.gov; dmarc=pass header.from=lacity.gov"
 
 describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
   let h: PgHarness
@@ -104,7 +105,10 @@ describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
   }
 
   it("threads an inbound reply onto an existing thread, marks unread, records an event", async () => {
-    const seeded = await makeDrizzleMailRepository(h.sql).createThread({ threadToken: "0a0a0a0a0a0a0a0a0a0a0a0a", subject: "Pothole" })
+    const seeded = await makeDrizzleMailRepository(h.sql).createThread({
+      threadToken: "0a0a0a0a0a0a0a0a0a0a0a0a",
+      subject: "Pothole",
+    })
     const key = `${INBOUND_PENDING_PREFIX}reply-1.eml`
     const res = await ingest(
       rfc822({
@@ -124,7 +128,9 @@ describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
     expect(dto?.messages).toHaveLength(1)
     expect(dto?.messages[0]?.dir).toBe("in")
     expect((await repo.getThreadRecord(seeded.id))?.unread).toBe(true)
-    const events = await h.sql<{ type: string }[]>`SELECT type FROM mail_events WHERE thread_id = ${seeded.id}`
+    const events = await h.sql<
+      { type: string }[]
+    >`SELECT type FROM mail_events WHERE thread_id = ${seeded.id}`
     expect(events[0]?.type).toBe("delivered")
     // Pending object consumed.
     expect(storage.get(key)).toBeNull()
@@ -201,7 +207,12 @@ describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
   it("lands a no-token message in inbound_emails (catch-all inbox)", async () => {
     const key = `${INBOUND_PENDING_PREFIX}cold-1.eml`
     const res = await ingest(
-      rfc822({ from: "resident@example.com", to: "support@civfix.org", subject: "Help", body: "a question" }),
+      rfc822({
+        from: "resident@example.com",
+        to: "support@civfix.org",
+        subject: "Help",
+        body: "a question",
+      }),
       key,
     )
     expect(res.statusCode).toBe(202)

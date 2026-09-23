@@ -15,10 +15,7 @@ import {
   makeInsightsGeneration,
   type InsightsGeneration,
 } from "../../../src/services/host/host-analytics-cache.js"
-import {
-  makeCleanupService,
-  type CleanupService,
-} from "../../../src/services/cleanup-service.js"
+import { makeCleanupService, type CleanupService } from "../../../src/services/cleanup-service.js"
 import { InMemoryCleanupRepository } from "../../helpers/cleanups.js"
 import {
   makeInsightsService,

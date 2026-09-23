@@ -1,4 +1,3 @@
-
 import type postgres from "postgres"
 import type { Sql } from "./client.js"
 
@@ -59,7 +58,9 @@ export async function backfillUserActivity(
     scanned += page.length
     filled += updated.length
     cursor = page[page.length - 1]!.id
-    log(`page of ${page.length} (filled ${updated.length}); running scanned=${scanned}, filled=${filled}`)
+    log(
+      `page of ${page.length} (filled ${updated.length}); running scanned=${scanned}, filled=${filled}`,
+    )
   }
 
   return { scanned, filled }

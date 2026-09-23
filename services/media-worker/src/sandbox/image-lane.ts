@@ -1,4 +1,3 @@
-
 import { existsSync } from "node:fs"
 import { z } from "zod"
 import { loadImageLaneEntry, type WorkerLimits } from "../config.js"
@@ -85,7 +84,9 @@ export async function processImageLane(
     }
     const parsed = envelopeSchema(limits).safeParse(raw)
     if (!parsed.success) {
-      throw new ImageProcessingError(`image lane returned an invalid result: ${parsed.error.message}`)
+      throw new ImageProcessingError(
+        `image lane returned an invalid result: ${parsed.error.message}`,
+      )
     }
     if (!parsed.data.ok) throw new ImageProcessingError(parsed.data.error)
 
@@ -108,10 +109,7 @@ export async function processImageLane(
   }
 }
 
-async function processInProcess(
-  bytes: Uint8Array,
-  limits: WorkerLimits,
-): Promise<ImageLaneResult> {
+async function processInProcess(bytes: Uint8Array, limits: WorkerLimits): Promise<ImageLaneResult> {
   const processed = await processImage(bytes, limits)
   let phash: string | null = null
   try {

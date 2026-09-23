@@ -139,7 +139,8 @@ function containerFor(opts: { batchBlocks?: string[] } = {}): Container {
 }
 
 function bells(userId: string): number {
-  return notifRepo.notifications.filter((n) => n.userId === userId && n.type === "report_chat").length
+  return notifRepo.notifications.filter((n) => n.userId === userId && n.type === "report_chat")
+    .length
 }
 
 describe("makeContainerReportChatEmitter: the mute seam is probed, never defaulted to empty", () => {

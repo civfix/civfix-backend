@@ -126,8 +126,8 @@ describe.skipIf(!pg)("admin jurisdiction directory (integration: real schema)", 
     `
     const other = others[0]
     if (other === undefined) return
-    await expect(repo.patch(other.geoid, { handle: "SF" }, { actorId: null })).rejects.toMatchObject(
-      { httpStatus: 409 },
-    )
+    await expect(
+      repo.patch(other.geoid, { handle: "SF" }, { actorId: null }),
+    ).rejects.toMatchObject({ httpStatus: 409 })
   })
 })

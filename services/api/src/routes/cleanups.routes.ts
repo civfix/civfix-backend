@@ -1,4 +1,3 @@
-
 import {
   CreateCleanupRequestSchema,
   UpdateCleanupRequestSchema,
@@ -44,20 +43,14 @@ import { enrichCleanupDTOs } from "../services/cleanup-enrichment.js"
 import { makeCommsRuntime } from "../services/host/comms-wiring.js"
 import { makeInsightsGeneration } from "../services/host/host-analytics-cache.js"
 import { makeEventMediaPresigner } from "../services/host/event-media.js"
-import {
-  SCHEDULE_MAX_AHEAD_MS,
-  SCHEDULE_MAX_BACKDATE_MS,
-} from "../services/cleanup-rules.js"
+import { SCHEDULE_MAX_AHEAD_MS, SCHEDULE_MAX_BACKDATE_MS } from "../services/cleanup-rules.js"
 import {
   makeDrizzleChatRepository,
   type ChatRepository,
 } from "../services/chat-repository.drizzle.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { buildIcs } from "@civfix/shared/ics"
-import {
-  makeCachedAddressResolver,
-  makeGeoidResolver,
-} from "../services/route-geo-helpers.js"
+import { makeCachedAddressResolver, makeGeoidResolver } from "../services/route-geo-helpers.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
@@ -263,20 +256,30 @@ export async function registerCleanupRoutes(
     return makeContainerCleanupService(app, container)
   }
 
-  route(app, "createCleanup", { preHandler: csrfProtect, config: { rateLimit: CREATE_CLEANUP_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const body = parse(CreateCleanupBodySchema, request.body)
-    const dto: CleanupDTO = await service().createCleanup(body, userId)
-    reply.status(201).send(dto)
-  })
+  route(
+    app,
+    "createCleanup",
+    { preHandler: csrfProtect, config: { rateLimit: CREATE_CLEANUP_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const body = parse(CreateCleanupBodySchema, request.body)
+      const dto: CleanupDTO = await service().createCleanup(body, userId)
+      reply.status(201).send(dto)
+    },
+  )
 
-  route(app, "duplicateCleanup", { preHandler: csrfProtect, config: { rateLimit: CREATE_CLEANUP_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(CleanupIdParamsSchema, request.params)
-    const body = parse(DuplicateCleanupBodySchema, { ...(request.body as object), id })
-    const dto: GetCleanupResponse = await service().duplicateCleanup(userId, body)
-    reply.status(201).send(dto)
-  })
+  route(
+    app,
+    "duplicateCleanup",
+    { preHandler: csrfProtect, config: { rateLimit: CREATE_CLEANUP_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(CleanupIdParamsSchema, request.params)
+      const body = parse(DuplicateCleanupBodySchema, { ...(request.body as object), id })
+      const dto: GetCleanupResponse = await service().duplicateCleanup(userId, body)
+      reply.status(201).send(dto)
+    },
+  )
 
   route(app, "updateCleanup", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
@@ -294,26 +297,36 @@ export async function registerCleanupRoutes(
     reply.status(200).send(dto)
   })
 
-  route(app, "completeCleanup", { preHandler: csrfProtect, config: { rateLimit: COMPLETE_CLEANUP_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(CleanupIdParamsSchema, request.params)
-    const body = parse(CompleteCleanupRequestSchema, { ...(request.body as object), id })
-    const dto: GetCleanupResponse = await service().completeCleanup(
-      id,
-      body.note ?? null,
-      userId,
-      request.headers["user-agent"] ?? null,
-    )
-    reply.status(200).send(dto)
-  })
+  route(
+    app,
+    "completeCleanup",
+    { preHandler: csrfProtect, config: { rateLimit: COMPLETE_CLEANUP_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(CleanupIdParamsSchema, request.params)
+      const body = parse(CompleteCleanupRequestSchema, { ...(request.body as object), id })
+      const dto: GetCleanupResponse = await service().completeCleanup(
+        id,
+        body.note ?? null,
+        userId,
+        request.headers["user-agent"] ?? null,
+      )
+      reply.status(200).send(dto)
+    },
+  )
 
-  route(app, "claimEventSlot", { preHandler: csrfProtect, config: { rateLimit: CLAIM_SLOT_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(CleanupIdParamsSchema, request.params)
-    const body = parse(ClaimEventSlotRequestSchema, { ...(request.body as object), id })
-    const dto: GetCleanupResponse = await service().claimEventSlot(id, userId, body.slotId)
-    reply.status(200).send(dto)
-  })
+  route(
+    app,
+    "claimEventSlot",
+    { preHandler: csrfProtect, config: { rateLimit: CLAIM_SLOT_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(CleanupIdParamsSchema, request.params)
+      const body = parse(ClaimEventSlotRequestSchema, { ...(request.body as object), id })
+      const dto: GetCleanupResponse = await service().claimEventSlot(id, userId, body.slotId)
+      reply.status(200).send(dto)
+    },
+  )
 
   route(app, "requestEventResources", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
@@ -327,26 +340,36 @@ export async function registerCleanupRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "setCleanupMemberRole", { preHandler: csrfProtect, config: { rateLimit: MEMBER_MANAGEMENT_RATE_LIMIT } }, async (request, reply) => {
-    const actorId = requireAuth(request)
-    const { id, userId } = parse(MemberParamsSchema, request.params)
-    const body = parse(SetMemberRoleRequestSchema, { ...(request.body as object), id, userId })
-    const payload: SetMemberRoleResponse = await service().setMemberRole(
-      id,
-      actorId,
-      body.userId,
-      body.role,
-    )
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "setCleanupMemberRole",
+    { preHandler: csrfProtect, config: { rateLimit: MEMBER_MANAGEMENT_RATE_LIMIT } },
+    async (request, reply) => {
+      const actorId = requireAuth(request)
+      const { id, userId } = parse(MemberParamsSchema, request.params)
+      const body = parse(SetMemberRoleRequestSchema, { ...(request.body as object), id, userId })
+      const payload: SetMemberRoleResponse = await service().setMemberRole(
+        id,
+        actorId,
+        body.userId,
+        body.role,
+      )
+      reply.status(200).send(payload)
+    },
+  )
 
-  route(app, "removeCleanupMember", { preHandler: csrfProtect, config: { rateLimit: MEMBER_MANAGEMENT_RATE_LIMIT } }, async (request, reply) => {
-    const actorId = requireAuth(request)
-    const { id, userId } = parse(MemberParamsSchema, request.params)
-    const body = parse(RemoveMemberRequestSchema, { ...(request.body as object), id, userId })
-    const payload: RemoveMemberResponse = await service().removeMember(id, actorId, body.userId)
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "removeCleanupMember",
+    { preHandler: csrfProtect, config: { rateLimit: MEMBER_MANAGEMENT_RATE_LIMIT } },
+    async (request, reply) => {
+      const actorId = requireAuth(request)
+      const { id, userId } = parse(MemberParamsSchema, request.params)
+      const body = parse(RemoveMemberRequestSchema, { ...(request.body as object), id, userId })
+      const payload: RemoveMemberResponse = await service().removeMember(id, actorId, body.userId)
+      reply.status(200).send(payload)
+    },
+  )
 
   route(app, "listCleanups", async (request, reply) => {
     const q = parse(ListCleanupsQuerySchema, request.query)
@@ -367,48 +390,63 @@ export async function registerCleanupRoutes(
     reply.status(200).send(dto)
   })
 
-  route(app, "getEventIcs", { config: { rateLimit: EVENT_ICS_RATE_LIMIT } }, async (request, reply) => {
-    const { id } = parse(GetEventIcsRequestSchema, request.params)
-    const event = await service().getCleanup(id, viewerOf(request))
-    const mine = event.slots.find(
-      (slot): slot is typeof slot & { startsAt: string; endsAt: string } =>
-        slot.mine === true && slot.startsAt != null && slot.endsAt != null,
-    )
-    const endsAt = mine !== undefined ? mine.endsAt : event.endsAt
-    const payload: GetEventIcsResponse = {
-      ics: buildIcs({
-        uid: `cleanup-${event.id}@civfix.org`,
-        title: mine !== undefined ? `${event.title} — ${mine.title}` : event.title,
-        startsAt: mine !== undefined ? mine.startsAt : event.scheduledAt,
-        ...(event.description !== undefined && event.description !== null
-          ? { description: event.description }
-          : {}),
-        ...(endsAt !== null && endsAt !== undefined ? { endsAt } : {}),
-        ...(event.timezone !== null && event.timezone !== undefined
-          ? { timezone: event.timezone }
-          : {}),
-        ...(event.address !== null ? { location: event.address } : {}),
-        url: `${webOrigin}/events/${event.id}`,
-        status: event.status === "cancelled" ? "CANCELLED" : "CONFIRMED",
-      }),
-      filename: `civfix-event-${event.id}.ics`,
-    }
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "getEventIcs",
+    { config: { rateLimit: EVENT_ICS_RATE_LIMIT } },
+    async (request, reply) => {
+      const { id } = parse(GetEventIcsRequestSchema, request.params)
+      const event = await service().getCleanup(id, viewerOf(request))
+      const mine = event.slots.find(
+        (slot): slot is typeof slot & { startsAt: string; endsAt: string } =>
+          slot.mine === true && slot.startsAt != null && slot.endsAt != null,
+      )
+      const endsAt = mine !== undefined ? mine.endsAt : event.endsAt
+      const payload: GetEventIcsResponse = {
+        ics: buildIcs({
+          uid: `cleanup-${event.id}@civfix.org`,
+          title: mine !== undefined ? `${event.title} — ${mine.title}` : event.title,
+          startsAt: mine !== undefined ? mine.startsAt : event.scheduledAt,
+          ...(event.description !== undefined && event.description !== null
+            ? { description: event.description }
+            : {}),
+          ...(endsAt !== null && endsAt !== undefined ? { endsAt } : {}),
+          ...(event.timezone !== null && event.timezone !== undefined
+            ? { timezone: event.timezone }
+            : {}),
+          ...(event.address !== null ? { location: event.address } : {}),
+          url: `${webOrigin}/events/${event.id}`,
+          status: event.status === "cancelled" ? "CANCELLED" : "CONFIRMED",
+        }),
+        filename: `civfix-event-${event.id}.ics`,
+      }
+      reply.status(200).send(payload)
+    },
+  )
 
-  route(app, "joinCleanup", { preHandler: csrfProtect, config: { rateLimit: CLEANUP_MEMBERSHIP_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(CleanupIdParamsSchema, request.params)
-    const payload: JoinCleanupResponse = await service().joinCleanup(id, userId)
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "joinCleanup",
+    { preHandler: csrfProtect, config: { rateLimit: CLEANUP_MEMBERSHIP_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(CleanupIdParamsSchema, request.params)
+      const payload: JoinCleanupResponse = await service().joinCleanup(id, userId)
+      reply.status(200).send(payload)
+    },
+  )
 
-  route(app, "leaveCleanup", { preHandler: csrfProtect, config: { rateLimit: CLEANUP_MEMBERSHIP_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(CleanupIdParamsSchema, request.params)
-    const payload: LeaveCleanupResponse = await service().leaveCleanup(id, userId)
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "leaveCleanup",
+    { preHandler: csrfProtect, config: { rateLimit: CLEANUP_MEMBERSHIP_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(CleanupIdParamsSchema, request.params)
+      const payload: LeaveCleanupResponse = await service().leaveCleanup(id, userId)
+      reply.status(200).send(payload)
+    },
+  )
 
   route(app, "getCleanupAttendees", async (request, reply) => {
     const { id } = parse(CleanupIdParamsSchema, request.params)

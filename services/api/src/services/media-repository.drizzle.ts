@@ -1,12 +1,7 @@
-
 import { and, eq, isNull, sql } from "drizzle-orm"
 import { mediaAssets } from "../db/schema/media.js"
 import type { Db } from "../db/client.js"
-import type {
-  MediaAssetView,
-  MediaRepository,
-  NewMediaAsset,
-} from "./media-intake-service.js"
+import type { MediaAssetView, MediaRepository, NewMediaAsset } from "./media-intake-service.js"
 
 function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
   return {

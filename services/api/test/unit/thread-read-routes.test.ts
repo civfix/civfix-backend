@@ -22,7 +22,6 @@ import type { ConversationMutesRepository } from "../../src/services/conversatio
 import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import type { ChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 
-
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const OTHER = "99999999-9999-9999-9999-999999999999"
 
@@ -253,7 +252,10 @@ describe("PUT /threads/read — participation gate (L9)", () => {
 describe("PUT /threads/read — abuse controls", () => {
   it("carries a per-identity rate limit and the csrf guard", () => {
     expect(THREAD_READ_RATE_LIMIT).toMatchObject({ max: 60, timeWindow: "1 minute" })
-    const src = readFileSync(new URL("../../src/routes/conversations.routes.ts", import.meta.url), "utf8")
+    const src = readFileSync(
+      new URL("../../src/routes/conversations.routes.ts", import.meta.url),
+      "utf8",
+    )
     const readRoute = src.slice(src.indexOf('route(\n    app,\n    "markThreadRead"'))
     expect(readRoute.slice(0, 260)).toContain("preHandler: csrfProtect")
     expect(readRoute.slice(0, 260)).toContain("rateLimit: THREAD_READ_RATE_LIMIT")

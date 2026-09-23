@@ -1,4 +1,3 @@
-
 import fastifyRateLimit from "@fastify/rate-limit"
 import { AppError } from "@civfix/shared"
 import type {
@@ -195,12 +194,14 @@ function appendOnRequestHook(
 }
 
 function hostCeilingLimitOf(config: unknown, url: string): RouteRateLimitSpec | null {
-  const limit = (config as {
-    rateLimit?: Partial<RouteRateLimitSpec> & {
-      keyGenerator?: unknown
-      [ROUTE_RATE_LIMIT_POLICY]?: unknown
+  const limit = (
+    config as {
+      rateLimit?: Partial<RouteRateLimitSpec> & {
+        keyGenerator?: unknown
+        [ROUTE_RATE_LIMIT_POLICY]?: unknown
+      }
     }
-  })?.rateLimit
+  )?.rateLimit
   if (!limit || typeof limit !== "object") return null
   if (limit.keyGenerator === undefined) return null
   if (limit[ROUTE_RATE_LIMIT_POLICY] !== true || limit.keyGenerator !== identityRateLimitKey) {
@@ -209,7 +210,10 @@ function hostCeilingLimitOf(config: unknown, url: string): RouteRateLimitSpec | 
     )
   }
   const { max, timeWindow, hostMax } = limit
-  if (typeof max !== "number" || (typeof timeWindow !== "string" && typeof timeWindow !== "number")) {
+  if (
+    typeof max !== "number" ||
+    (typeof timeWindow !== "string" && typeof timeWindow !== "number")
+  ) {
     throw new Error(
       `the rate limit on ${url} replaces the per-host key, so it needs a literal max and timeWindow to derive its host ceiling`,
     )

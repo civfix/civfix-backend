@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import {
   AppError,
@@ -90,10 +89,7 @@ import {
   eventWindowOf,
 } from "./cleanup-rules.js"
 import type { EventWindow } from "./cleanup-rules.js"
-import {
-  CLEANUP_GUEST_UPDATE_FANOUT_JOB,
-  type GuestUpdateFanoutJob,
-} from "./guest-rsvp-service.js"
+import { CLEANUP_GUEST_UPDATE_FANOUT_JOB, type GuestUpdateFanoutJob } from "./guest-rsvp-service.js"
 
 export * from "./cleanup-repository.types.js"
 export * from "./cleanup-rules.js"
@@ -312,8 +308,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     return { seatId, tokenHash: deps.tickets.hashFor(seatId) }
   }
 
-  const enrichDTOs =
-    deps.enrichDTOs ?? ((dtos: CleanupDTO[]) => Promise.resolve(dtos))
+  const enrichDTOs = deps.enrichDTOs ?? ((dtos: CleanupDTO[]) => Promise.resolve(dtos))
 
   async function enrichOne(dto: CleanupDTO, viewerUserId: string | null): Promise<CleanupDTO> {
     const [enriched] = await enrichDTOs([dto], viewerUserId)
@@ -333,7 +328,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     return deps.repo.standingsOf(cleanupIds, userId)
   }
 
-  function assertVisible(record: { visibility: CleanupRecord["visibility"] }, standing: HostStanding): void {
+  function assertVisible(
+    record: { visibility: CleanupRecord["visibility"] },
+    standing: HostStanding,
+  ): void {
     if (!hasHostStanding(standing) && !isEventPubliclyVisible(record.visibility)) {
       notFoundCleanup()
     }
@@ -369,7 +367,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   async function eventMediaUrls(
     record: CleanupRecord,
     opts: { gallery: boolean },
-  ): Promise<{ coverUrl: string | null; galleryUrls: string[]; organizationLogoUrl: string | null }> {
+  ): Promise<{
+    coverUrl: string | null
+    galleryUrls: string[]
+    organizationLogoUrl: string | null
+  }> {
     const presign = deps.presignEventMedia
     if (presign === undefined) {
       return { coverUrl: null, galleryUrls: [], organizationLogoUrl: null }
@@ -380,7 +382,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       opts.gallery && record.galleryMediaIds.length > 0
         ? deps.repo
             .galleryKeysFor(record.id)
-            .then((keys) => mapWithLimit(keys, PRESIGN_CONCURRENCY, (key) => presign(key, { forceSigned })))
+            .then((keys) =>
+              mapWithLimit(keys, PRESIGN_CONCURRENCY, (key) => presign(key, { forceSigned })),
+            )
         : Promise.resolve([]),
       record.organization === null || record.organization.logoKey === null
         ? Promise.resolve(null)
@@ -423,7 +427,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     organizationId: string | null,
     actorId: string,
     opts: { linking: boolean },
-  ): Promise<{ organization: CleanupOrganizationView | null; orgRole: OrganizationMemberRole | null }> {
+  ): Promise<{
+    organization: CleanupOrganizationView | null
+    orgRole: OrganizationMemberRole | null
+  }> {
     if (organizationId === null) return { organization: null, orgRole: null }
     const [organization, orgRole] = await Promise.all([
       deps.repo.loadOrganizationRef(organizationId),
@@ -439,9 +446,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     // linking is refused, while an unchanged organizationId on an edit passes so the host can still
     // manage what already exists.
     if (opts.linking && organization.suspended) {
-      throw AppError.conflict(
-        "That organization is suspended and can't host events right now.",
-      )
+      throw AppError.conflict("That organization is suspended and can't host events right now.")
     }
     return { organization, orgRole }
   }
@@ -882,7 +887,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     if (presign === undefined) return out
     const withCover = records.filter((r) => r.coverKey !== null)
     const urls = await mapWithLimit(withCover, PRESIGN_CONCURRENCY, (record) =>
-      presign(record.coverKey as string, { forceSigned: !isEventPubliclyVisible(record.visibility) }),
+      presign(record.coverKey as string, {
+        forceSigned: !isEventPubliclyVisible(record.visibility),
+      }),
     )
     withCover.forEach((record, i) => {
       const url = urls[i]
@@ -971,7 +978,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       throw AppError.validation({ linkedReportIds: "only cleanup events can link reports" })
     }
     await assertReportsLinkable(linkedReportIds)
-    const addressWrite = await resolveEventAddress(input, { fromStoredEvent: copyFrom !== undefined })
+    const addressWrite = await resolveEventAddress(input, {
+      fromStoredEvent: copyFrom !== undefined,
+    })
     if (input.endsAt === null) throw AppError.validation({ endsAt: "required" })
     if (input.slots !== undefined && input.slots.length === 0) {
       throw AppError.validation({ slots: EVENT_NEEDS_A_SLOT_MESSAGE })
@@ -1190,7 +1199,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       }
       const effectiveWindow: EventWindow = {
         status: current.status,
-        scheduledAt: patch.scheduledAt !== undefined ? new Date(patch.scheduledAt) : current.scheduledAt,
+        scheduledAt:
+          patch.scheduledAt !== undefined ? new Date(patch.scheduledAt) : current.scheduledAt,
         endsAt: patch.endsAt !== undefined ? new Date(patch.endsAt) : current.endsAt,
       }
       const windowMoved =
@@ -1597,11 +1607,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         target: `cleanup:${id}`,
         meta: { targetUserId, from: targetRole, to: role },
       })
-      await notifyRoleChange(
-        targetUserId,
-        role === "member" ? "demoted" : "promoted",
-        { id: record.id, title: record.title },
-      )
+      await notifyRoleChange(targetUserId, role === "member" ? "demoted" : "promoted", {
+        id: record.id,
+        title: record.title,
+      })
       return { ok: true }
     },
 
@@ -1644,11 +1653,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       return { ok: true, going: outcome.going }
     },
 
-    async claimEventSlot(
-      id: string,
-      userId: string,
-      slotId: string | null,
-    ): Promise<CleanupDTO> {
+    async claimEventSlot(id: string, userId: string, slotId: string | null): Promise<CleanupDTO> {
       const flips = await counters.incr(`cleanup:slot:${id}:${userId}`, SLOT_FLIP_WINDOW_SEC)
       if (flips > SLOT_FLIPS_PER_EVENT_PER_WINDOW) {
         throw AppError.rateLimited(
@@ -1690,11 +1695,17 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         eventMediaUrls(updated, { gallery: true }),
       ])
       return enrichOne(
-        toCleanupDTO(updated, hasHostStanding(nextStanding), linkedReports, nextStanding.eventRole, {
-          slots: slotBoard,
-          myCapabilities: capabilityList(nextStanding),
-          ...media,
-        }),
+        toCleanupDTO(
+          updated,
+          hasHostStanding(nextStanding),
+          linkedReports,
+          nextStanding.eventRole,
+          {
+            slots: slotBoard,
+            myCapabilities: capabilityList(nextStanding),
+            ...media,
+          },
+        ),
         userId,
       )
     },
@@ -1780,11 +1791,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     async runCancelFanout(job: CleanupCancelFanoutJob): Promise<void> {
       const record = await deps.repo.findCleanupById(job.cleanupId, null)
       if (record === null) return
-      await notifyCancellation(
-        { id: record.id, title: record.title },
-        job.reason,
-        job.actorId,
-      )
+      await notifyCancellation({ id: record.id, title: record.title }, job.reason, job.actorId)
     },
   }
 }

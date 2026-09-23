@@ -64,7 +64,11 @@ const CodeParamsSchema = z.object({ code: z.string().min(1).max(32) }).strict()
  * one NAT address would 429 after twenty checks. Enumeration is not the threat model — the code space is
  * 2^60.
  */
-export const CERTIFICATE_ISSUE_RATE_LIMIT = perIdentity({ max: 6, timeWindow: "1 hour", hostMax: 6 })
+export const CERTIFICATE_ISSUE_RATE_LIMIT = perIdentity({
+  max: 6,
+  timeWindow: "1 hour",
+  hostMax: 6,
+})
 export const CERTIFICATE_REVOKE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 hour" })
 export const CERTIFICATE_VERIFY_RATE_LIMIT = perHost({ max: 60, timeWindow: "1 minute" })
 

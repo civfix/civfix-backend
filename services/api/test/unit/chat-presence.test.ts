@@ -1,9 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import {
-  handleClientFrame,
-  type GatewaySession,
-  type GatewayDeps,
-} from "../../src/ws/gateway.js"
+import { handleClientFrame, type GatewaySession, type GatewayDeps } from "../../src/ws/gateway.js"
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence, PRESENCE_TTL_MS } from "../../src/adapters/chat-presence.js"
@@ -28,7 +24,13 @@ let presence: InMemoryChatPresence
 
 function sessionFor(userId: string, conn: MockConnection): GatewaySession {
   const deps: GatewayDeps = { chat, isMember: allMembers, presence }
-  return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+  return {
+    userId,
+    conn,
+    joined: new Set<string>(),
+    typingThrottle: new Map<string, number>(),
+    deps,
+  }
 }
 
 beforeEach(() => {
@@ -100,12 +102,17 @@ describe("gateway presence flow (snapshot to joiner, deltas to others)", () => {
 
     await handleClientFrame(bSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
     // B's snapshot lists both; A gets a presence(join) delta for B; B gets no delta about itself.
-    expect((bConn.framesOfType("presence_snapshot")[0] as { userIds: string[] }).userIds.sort()).toEqual(
-      [ALICE, BOB].sort(),
-    )
+    expect(
+      (bConn.framesOfType("presence_snapshot")[0] as { userIds: string[] }).userIds.sort(),
+    ).toEqual([ALICE, BOB].sort())
     const aDeltas = aConn.framesOfType("presence")
     expect(aDeltas).toHaveLength(1)
-    expect(aDeltas[0]).toMatchObject({ type: "presence", userId: BOB, state: "join", cleanupId: ROOM })
+    expect(aDeltas[0]).toMatchObject({
+      type: "presence",
+      userId: BOB,
+      state: "join",
+      cleanupId: ROOM,
+    })
     expect(bConn.framesOfType("presence")).toHaveLength(0)
   })
 
@@ -139,7 +146,9 @@ describe("gateway presence flow (snapshot to joiner, deltas to others)", () => {
     await handleClientFrame(a1Session, JSON.stringify({ type: "join", cleanupId: ROOM }))
     await handleClientFrame(a2Session, JSON.stringify({ type: "join", cleanupId: ROOM }))
 
-    const leaveDeltasBefore = bConn.framesOfType("presence").filter((f) => f.state === "leave").length
+    const leaveDeltasBefore = bConn
+      .framesOfType("presence")
+      .filter((f) => f.state === "leave").length
 
     // Alice's first device leaves: she still has a2, so NO leave delta.
     await handleClientFrame(a1Session, JSON.stringify({ type: "leave", cleanupId: ROOM }))

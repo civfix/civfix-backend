@@ -24,7 +24,11 @@ function message(): ChatMessageDTO {
   return {
     id: "msg-1",
     cleanupId: ROOM,
-    from: { id: ACTOR, name: "Blocker McBlocked", avatar: { kind: "gradient", from: "#000", to: "#fff" } },
+    from: {
+      id: ACTOR,
+      name: "Blocker McBlocked",
+      avatar: { kind: "gradient", from: "#000", to: "#fff" },
+    },
     body: "hello there",
     kind: "text",
     createdAt: new Date().toISOString(),
@@ -33,7 +37,10 @@ function message(): ChatMessageDTO {
   } as unknown as ChatMessageDTO
 }
 
-function notificationSpy(): { createNotifications: ReturnType<typeof vi.fn>; recipients: () => string[] } {
+function notificationSpy(): {
+  createNotifications: ReturnType<typeof vi.fn>
+  recipients: () => string[]
+} {
   const createNotifications = vi.fn(() => Promise.resolve())
   return {
     createNotifications,
@@ -180,7 +187,9 @@ describe("L10: the dm lane's pin power respects blocks", () => {
   })
 
   it("a blocked participant holds NO powers in the thread", async () => {
-    const resolve = makeChatPowersResolver(deps({ isDmBlocked: () => Promise.resolve(true) }) as never)
+    const resolve = makeChatPowersResolver(
+      deps({ isDmBlocked: () => Promise.resolve(true) }) as never,
+    )
     expect(await resolve({ roomKind: "dm", roomId: ROOM, userId: ACTOR })).toEqual({
       canPin: false,
       canDeleteOthers: false,
@@ -189,7 +198,9 @@ describe("L10: the dm lane's pin power respects blocks", () => {
   })
 
   it("an unblocked participant keeps canPin (and never canDeleteOthers)", async () => {
-    const resolve = makeChatPowersResolver(deps({ isDmBlocked: () => Promise.resolve(false) }) as never)
+    const resolve = makeChatPowersResolver(
+      deps({ isDmBlocked: () => Promise.resolve(false) }) as never,
+    )
     expect(await resolve({ roomKind: "dm", roomId: ROOM, userId: ACTOR })).toEqual({
       canPin: true,
       canDeleteOthers: false,

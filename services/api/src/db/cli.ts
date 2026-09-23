@@ -1,4 +1,3 @@
-
 import { fileURLToPath } from "node:url"
 import type { Db, Sql } from "./client.js"
 import { makeDb } from "./client.js"

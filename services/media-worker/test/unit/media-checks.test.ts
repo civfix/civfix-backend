@@ -1,4 +1,3 @@
-
 import { beforeEach, describe, expect, it } from "vitest"
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import { RealAbuseChecks } from "@civfix/api/adapters/abuse-checks"
@@ -107,14 +106,17 @@ describe("media.checks IMAGE path", () => {
     const input = await fx.makeValidJpegWithGps()
     const { id, uploadId, r2Key } = await seedAsset(local.storage, local.repo, "image", input)
 
-    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, local.deps)
+    const status = await runMediaChecksJob(
+      { mediaId: id, uploadId, r2Key, kind: "image" },
+      local.deps,
+    )
     expect(status).toBe("ready")
 
     const ready = logged.find((l) => l.line === "media.checks: ready")
     expect(ready).toBeDefined()
     expect(ready!.extra.exifGpsPresent).toBe(true)
     const serialized = JSON.stringify(logged)
-    expect(serialized).not.toContain("exifGps\"")
+    expect(serialized).not.toContain('exifGps"')
     expect(serialized).not.toContain("latitude")
     expect(serialized).not.toContain("longitude")
     expect(serialized).not.toContain("37.76")
@@ -189,7 +191,10 @@ describe("media.checks IMAGE path", () => {
     env.repo.seed({ id, uploadId, kind: "image", r2Key, reportId: "report-123" })
     await env.storage.put(r2Key, Buffer.from(input), { contentType: "image/jpeg" })
 
-    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    const status = await runMediaChecksJob(
+      { mediaId: id, uploadId, r2Key, kind: "image" },
+      env.deps,
+    )
     expect(status).toBe("held")
     expect(env.repo.moderationEnqueues).toHaveLength(1)
     expect(env.repo.moderationEnqueues[0]).toMatchObject({
@@ -207,7 +212,10 @@ describe("media.checks IMAGE path", () => {
     await env.storage.put(r2Key, Buffer.from(input), { contentType: "image/jpeg" })
     env.repo.failModerationEnqueue = new Error("moderation insert down")
 
-    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    const status = await runMediaChecksJob(
+      { mediaId: id, uploadId, r2Key, kind: "image" },
+      env.deps,
+    )
     expect(status).toBe("held")
     expect(env.repo.get(id)!.status).toBe("held")
   })
@@ -506,7 +514,8 @@ describe("media.checks orchestration robustness", () => {
     const uploadId = "up-too-large"
     const r2Key = `uploads/2026/06/${id}`
     env.repo.seed({ id, uploadId, kind: "image", r2Key })
-    const download: DownloadFn = () => Promise.reject(new DownloadTooLargeError(limits.maxDownloadBytes))
+    const download: DownloadFn = () =>
+      Promise.reject(new DownloadTooLargeError(limits.maxDownloadBytes))
 
     const status = await runMediaChecksJob(
       { mediaId: id, uploadId, r2Key, kind: "image" },
@@ -537,7 +546,10 @@ describe("media.checks orchestration robustness", () => {
     env.repo.findById = () => Promise.reject(new Error("connection reset"))
     env.repo.findByUploadId = () => Promise.reject(new Error("connection reset"))
     await expect(
-      runMediaChecksJob({ mediaId: "x", uploadId: "y", r2Key: "uploads/x", kind: "image" }, env.deps),
+      runMediaChecksJob(
+        { mediaId: "x", uploadId: "y", r2Key: "uploads/x", kind: "image" },
+        env.deps,
+      ),
     ).rejects.toBeInstanceOf(MediaInfraError)
   })
 
@@ -643,7 +655,10 @@ describe("media.checks terminal-status CAS (F087d)", () => {
       return realPut(key, bytes, opts)
     }
 
-    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    const status = await runMediaChecksJob(
+      { mediaId: id, uploadId, r2Key, kind: "image" },
+      env.deps,
+    )
 
     expect(status).toBe("rejected")
     expect(env.repo.get(id)!.status).toBe("rejected")
@@ -667,7 +682,10 @@ describe("media.checks terminal-status CAS (F087d)", () => {
       return realPut(key, bytes, opts)
     }
 
-    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    const status = await runMediaChecksJob(
+      { mediaId: id, uploadId, r2Key, kind: "image" },
+      env.deps,
+    )
 
     expect(status).toBe("ready")
     expect(env.repo.get(id)!.status).toBe("ready")
@@ -677,7 +695,12 @@ describe("media.checks terminal-status CAS (F087d)", () => {
 
   it("a rejection that loses the CAS does not clobber the winner, and leaves the winner's bytes alone", async () => {
     const env = makeDeps()
-    const { id, uploadId, r2Key } = await seedAsset(env.storage, env.repo, "image", fx.makeGarbageImage())
+    const { id, uploadId, r2Key } = await seedAsset(
+      env.storage,
+      env.repo,
+      "image",
+      fx.makeGarbageImage(),
+    )
     const inner = makeDownloader(env.storage)
     const download: DownloadFn = async (key, maxBytes, signal) => {
       const bytes = await inner(key, maxBytes, signal)
@@ -710,7 +733,10 @@ describe("media.checks terminal-status CAS (F087d)", () => {
       return realPut(key, bytes, opts)
     }
 
-    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, env.deps)
+    const status = await runMediaChecksJob(
+      { mediaId: id, uploadId, r2Key, kind: "image" },
+      env.deps,
+    )
 
     expect(status).toBe("rejected")
     expect(env.repo.get(id)).toBeUndefined()
@@ -754,7 +780,7 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
     expect(status).toBe("ready")
     const row = repo.get(id)!
     expect(row.status).toBe("ready")
-    expect((row.phash as string)).toMatch(/^[0-9a-f]{16}$/)
+    expect(row.phash as string).toMatch(/^[0-9a-f]{16}$/)
     expect(row.thumbKey).toBe(`thumbs/${r2Key}.jpg`)
     expect(repo.flags).toHaveLength(0)
   })
@@ -803,7 +829,10 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
     repo.seed({ id, uploadId, kind: "image", r2Key })
     await storage.put(r2Key, Buffer.from(input), { contentType: "image/png" })
 
-    const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "image" }, holdDeps)
+    const status = await runMediaChecksJob(
+      { mediaId: id, uploadId, r2Key, kind: "image" },
+      holdDeps,
+    )
     expect(status).toBe("held")
     expect(repo.get(id)!.status).toBe("held")
     expect(repo.flags[0]).toMatchObject({ subjectId: id, reason: "nsfw" })

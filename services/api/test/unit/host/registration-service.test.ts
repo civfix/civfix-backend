@@ -112,13 +112,13 @@ describe("registration service", () => {
     })
     h.repo.seedTicketType({ cleanupId: EVENT, capacity: 10, maxPartySize: 4 })
 
-    await expect(h.service.register(request(), { kind: "user", userId: USER })).rejects.toMatchObject(
-      {
-        code: "CONFLICT",
-        message: "This event has already ended.",
-        fields: { event: "ended" },
-      },
-    )
+    await expect(
+      h.service.register(request(), { kind: "user", userId: USER }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "This event has already ended.",
+      fields: { event: "ended" },
+    })
     expect(h.repo.registrations.size).toBe(0)
 
     const walkup = await h.service.walkup(
@@ -136,9 +136,9 @@ describe("registration service", () => {
     })
     h.repo.seedTicketType({ cleanupId: EVENT, capacity: 10 })
 
-    await expect(h.service.register(request(), { kind: "user", userId: USER })).rejects.toMatchObject(
-      { code: "CONFLICT", message: "This event has already ended." },
-    )
+    await expect(
+      h.service.register(request(), { kind: "user", userId: USER }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "This event has already ended." })
   })
 
   it("still registers someone for an event that started an hour ago with no endsAt", async () => {
@@ -247,18 +247,18 @@ describe("registration service", () => {
     ).toBe("access_code_required")
     expect(
       (
-        await h.service.register(
-          request({ ticketTypeId: type.id, accessCode: "wrong-code" }),
-          { kind: "user", userId: USER },
-        )
+        await h.service.register(request({ ticketTypeId: type.id, accessCode: "wrong-code" }), {
+          kind: "user",
+          userId: USER,
+        })
       ).outcome,
     ).toBe("access_code_invalid")
     expect(
       (
-        await h.service.register(
-          request({ ticketTypeId: type.id, accessCode: "open-sesame" }),
-          { kind: "user", userId: USER },
-        )
+        await h.service.register(request({ ticketTypeId: type.id, accessCode: "open-sesame" }), {
+          kind: "user",
+          userId: USER,
+        })
       ).outcome,
     ).toBe("registered")
   })
@@ -433,7 +433,10 @@ describe("registration service", () => {
 
   it("leaves no guest row behind when a walk-up is refused", async () => {
     h.repo.seedTicketType({ cleanupId: EVENT, capacity: 0 })
-    const refused = await h.service.walkup({ id: EVENT, name: "Ada", partySize: 1, checkInNow: false }, OTHER)
+    const refused = await h.service.walkup(
+      { id: EVENT, name: "Ada", partySize: 1, checkInNow: false },
+      OTHER,
+    )
 
     expect(refused.outcome).toBe("full")
     expect(refused.registration).toBeNull()
@@ -443,7 +446,10 @@ describe("registration service", () => {
   it("leaves no guest row behind when a walk-up replays the same minute", async () => {
     h.repo.seedTicketType({ cleanupId: EVENT, capacity: 10, maxPartySize: 4 })
     await h.service.walkup({ id: EVENT, name: "Ada", partySize: 1, checkInNow: false }, OTHER)
-    const replay = await h.service.walkup({ id: EVENT, name: "Ada", partySize: 1, checkInNow: false }, OTHER)
+    const replay = await h.service.walkup(
+      { id: EVENT, name: "Ada", partySize: 1, checkInNow: false },
+      OTHER,
+    )
 
     expect(replay.outcome).toBe("replayed")
     expect(h.repo.guests.size).toBe(1)
@@ -462,10 +468,10 @@ describe("registration service", () => {
 
   it("gates an event with no ticket types on the event capacity", async () => {
     h.repo.seedEvent({ cleanupId: EVENT, capacity: 2 })
-    const first = await h.service.register(
-      request({ partySize: 2 }),
-      { kind: "user", userId: USER },
-    )
+    const first = await h.service.register(request({ partySize: 2 }), {
+      kind: "user",
+      userId: USER,
+    })
     expect(first.outcome).toBe("registered")
 
     const second = await h.service.register(request(), { kind: "user", userId: OTHER })
@@ -654,5 +660,4 @@ describe("registration questions: which questions a registration must answer", (
     expect(res.outcome).toBe("answers_invalid")
     expect(res.fields?.[TIER_Q]).toBe("unknown question")
   })
-
 })

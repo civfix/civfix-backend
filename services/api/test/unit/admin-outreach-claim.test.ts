@@ -11,7 +11,6 @@ import {
 import type { OutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 import type { OutreachStateRecord } from "../../src/services/admin/mail-repository.js"
 
-
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 const THROTTLE_DAYS = 7
 const WINDOW_MS = THROTTLE_DAYS * 24 * 60 * 60 * 1000
@@ -66,7 +65,9 @@ function harness(): Harness {
   })
   const claim = outreachRepo.claimOutreachWindow
   if (claim === undefined) {
-    throw new Error("harness must construct InMemoryOutreachRepository with the shared outreach_state map")
+    throw new Error(
+      "harness must construct InMemoryOutreachRepository with the shared outreach_state map",
+    )
   }
   return { outreachRepo, mailRepo, mailer, state, svc, claim }
 }
@@ -96,7 +97,11 @@ describe("InMemoryOutreachRepository.claimOutreachWindow mirrors the SQL upsert-
 
   it("WINS again once the previous send falls outside the window", async () => {
     const { claim, state } = harness()
-    state.set(GEOID, { geoid: GEOID, lastOutreachAt: daysAgo(THROTTLE_DAYS + 1), suppressed: false })
+    state.set(GEOID, {
+      geoid: GEOID,
+      lastOutreachAt: daysAgo(THROTTLE_DAYS + 1),
+      suppressed: false,
+    })
     const won = await claim(GEOID, {
       at: NOW,
       windowStart: new Date(NOW.getTime() - WINDOW_MS),

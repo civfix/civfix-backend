@@ -64,7 +64,12 @@ describe.skipIf(!pg)("F158: connections pages key on the follow edge, not displa
     const oldestButAlphabeticallyFirst = await newUser("Aaron")
     const middle = await newUser("Mallory")
     const newest = await newUser("Zoe")
-    await seedFollowEdge(h.sql, oldestButAlphabeticallyFirst, target, new Date("2026-01-01T00:00:00Z"))
+    await seedFollowEdge(
+      h.sql,
+      oldestButAlphabeticallyFirst,
+      target,
+      new Date("2026-01-01T00:00:00Z"),
+    )
     await seedFollowEdge(h.sql, middle, target, new Date("2026-02-01T00:00:00Z"))
     await seedFollowEdge(h.sql, newest, target, new Date("2026-03-01T00:00:00Z"))
 

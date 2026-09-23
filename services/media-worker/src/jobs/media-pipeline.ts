@@ -1,4 +1,3 @@
-
 import type { AbuseChecks } from "@civfix/shared/interfaces"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 import type { WorkerAbuseReason } from "@civfix/api/media-repo"

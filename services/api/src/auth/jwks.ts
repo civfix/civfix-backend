@@ -1,4 +1,3 @@
-
 import { createHash } from "node:crypto"
 import { AppError, ErrorCode } from "@civfix/shared"
 import { constantTimeStringEqual } from "./crypto.js"

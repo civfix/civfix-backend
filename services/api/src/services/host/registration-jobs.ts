@@ -8,11 +8,7 @@ import {
 import { makeContainerRegistrationServices } from "./registration-wiring.js"
 import type { WaitlistPromoteJob } from "./waitlist-service.js"
 
-export {
-  CHECKIN_NOSHOW_SWEEP_JOB,
-  WAITLIST_EXPIRE_SWEEP_JOB,
-  WAITLIST_PROMOTE_JOB,
-}
+export { CHECKIN_NOSHOW_SWEEP_JOB, WAITLIST_EXPIRE_SWEEP_JOB, WAITLIST_PROMOTE_JOB }
 
 export function parseWaitlistPromoteJob(data: unknown): WaitlistPromoteJob | null {
   if (typeof data !== "object" || data === null) return null

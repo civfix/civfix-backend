@@ -274,9 +274,7 @@ describe("check-in service", () => {
   })
 
   it("refuses a guest ticket read behind an unknown manage token", async () => {
-    await expect(
-      h.service.guestTicket({ token: "x".repeat(32) }),
-    ).rejects.toBeInstanceOf(AppError)
+    await expect(h.service.guestTicket({ token: "x".repeat(32) })).rejects.toBeInstanceOf(AppError)
   })
 
   it("names a guest on a scanned seat that carries no attendee name of its own", async () => {

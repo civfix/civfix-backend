@@ -33,7 +33,8 @@ describe("makeDb: the raw sql client keeps postgres.js Date serializers (drizzle
     (oid) => {
       const serialize = serializers[oid]
       // Throw (not just expect) so TS narrows away `undefined` and the failure names the missing OID.
-      if (typeof serialize !== "function") throw new Error(`no serializer registered for OID ${oid}`)
+      if (typeof serialize !== "function")
+        throw new Error(`no serializer registered for OID ${oid}`)
       // A clean postgres.js client returns the ISO string; a drizzle-clobbered client returns the Date.
       const out = serialize(sample)
       expect(typeof out).toBe("string")

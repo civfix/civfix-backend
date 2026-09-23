@@ -8,7 +8,6 @@ import { InMemoryMediaRepository } from "../helpers/media.js"
 import { MEDIA_CHECKS_JOB } from "../../src/services/media-intake-service.js"
 import type { FakeStorage, FakeJobs } from "@civfix/shared/fakes"
 
-
 const SHA = "b".repeat(64)
 
 interface Harness {
@@ -64,7 +63,12 @@ describe("POST /media/upload", () => {
     const res = await app.inject({
       method: "POST",
       url: "/v1/media/upload",
-      payload: { kind: "image", contentType: "image/jpeg", byteSize: MAX_IMAGE_BYTES + 1, sha256: SHA },
+      payload: {
+        kind: "image",
+        contentType: "image/jpeg",
+        byteSize: MAX_IMAGE_BYTES + 1,
+        sha256: SHA,
+      },
     })
     expect(res.statusCode).toBe(422)
     expect(res.json().code).toBe("VALIDATION")
@@ -150,7 +154,10 @@ describe("media byte quota wiring", () => {
       jobs: container.jobs as unknown as FakeJobs,
     }
 
-    for (const anon of ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"]) {
+    for (const anon of [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]) {
       const res = await app.inject({
         method: "POST",
         url: "/v1/media/upload",

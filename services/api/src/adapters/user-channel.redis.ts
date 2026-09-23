@@ -1,4 +1,3 @@
-
 import { UserSignalSchema, type UserSignal } from "@civfix/shared"
 import type { ChatConnection, UserChannel } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"

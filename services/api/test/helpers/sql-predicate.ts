@@ -1,4 +1,3 @@
-
 export type PredicateRow = Record<string, string | null>
 
 export function evalSqlPredicate(text: string, row: PredicateRow): boolean {

@@ -91,13 +91,13 @@ const ACTIVE_REGISTRATION_CONSTRAINTS = [
 ]
 
 const ROSTER_SORTS = Object.freeze({
-    registered_at_desc: (tag: Sql) => tag`r.registered_at DESC, r.id DESC`,
-    registered_at_asc: (tag: Sql) => tag`r.registered_at ASC, r.id ASC`,
-    name_asc: (tag: Sql) =>
-      tag`lower(COALESCE(u.display_name, g.name, '')) ASC, r.registered_at DESC, r.id DESC`,
-    checked_in_at_desc: (tag: Sql) =>
-      tag`COALESCE(ci.first_at, 'epoch'::timestamptz) DESC, r.registered_at DESC, r.id DESC`,
-  }) satisfies Readonly<Record<RegistrationRosterSort, (tag: Sql) => unknown>>
+  registered_at_desc: (tag: Sql) => tag`r.registered_at DESC, r.id DESC`,
+  registered_at_asc: (tag: Sql) => tag`r.registered_at ASC, r.id ASC`,
+  name_asc: (tag: Sql) =>
+    tag`lower(COALESCE(u.display_name, g.name, '')) ASC, r.registered_at DESC, r.id DESC`,
+  checked_in_at_desc: (tag: Sql) =>
+    tag`COALESCE(ci.first_at, 'epoch'::timestamptz) DESC, r.registered_at DESC, r.id DESC`,
+}) satisfies Readonly<Record<RegistrationRosterSort, (tag: Sql) => unknown>>
 
 class RegistrationRefusal extends Error {
   readonly outcome: RegisterTxOutcome
@@ -162,16 +162,11 @@ export function registrationIdempotencyOwner(subject: RegistrationSubject): stri
   return subjectOwner(subject)
 }
 
-function withinSalesWindow(
-  now: Date,
-  opensAt: Date | null,
-  closesAt: Date | null,
-): boolean {
+function withinSalesWindow(now: Date, opensAt: Date | null, closesAt: Date | null): boolean {
   if (opensAt !== null && now < opensAt) return false
   if (closesAt !== null && now >= closesAt) return false
   return true
 }
-
 
 export function emptyCheckinResult(outcome: CheckinResultRecord["outcome"]): CheckinResultRecord {
   return {
@@ -608,10 +603,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     return null
   }
 
-  async function registerIn(
-    tx: TransactionSql,
-    args: RegisterTxArgs,
-  ): Promise<RegisterTxOutcome> {
+  async function registerIn(tx: TransactionSql, args: RegisterTxArgs): Promise<RegisterTxOutcome> {
     const partySize = args.seats.length
     const locked = await tx<
       {
@@ -627,13 +619,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     const event = locked[0]
     if (event === undefined) return { kind: "not_found" as const }
     if (event.status === "cancelled") return { kind: "closed" as const }
-    if (
-      !withinSalesWindow(
-        args.now,
-        event.registration_opens_at,
-        event.registration_closes_at,
-      )
-    ) {
+    if (!withinSalesWindow(args.now, event.registration_opens_at, event.registration_closes_at)) {
       return { kind: "registration_closed" as const }
     }
 
@@ -1159,8 +1145,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       cleanupId: string,
       opts?: { ticketTypeId?: string | null; includeArchived?: boolean },
     ): Promise<QuestionRecord[]> {
-      const archivedFilter =
-        opts?.includeArchived === true ? sql`` : sql`AND archived_at IS NULL`
+      const archivedFilter = opts?.includeArchived === true ? sql`` : sql`AND archived_at IS NULL`
       const scoped = opts !== undefined && "ticketTypeId" in opts
       const ticketTypeId = opts?.ticketTypeId ?? null
       const typeFilter = !scoped
@@ -1569,9 +1554,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
 
         const wanted = [
           ...new Set(
-            [args.ticketTypeId, current.ticket_type_id].filter(
-              (id): id is string => id !== null,
-            ),
+            [args.ticketTypeId, current.ticket_type_id].filter((id): id is string => id !== null),
           ),
         ].sort()
         const types = await tx<
@@ -1743,7 +1726,9 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
           `
           const existingId = existing[0]?.id
           const entry =
-            existingId === undefined ? null : await loadWaitlistEntry(sql, args.cleanupId, existingId)
+            existingId === undefined
+              ? null
+              : await loadWaitlistEntry(sql, args.cleanupId, existingId)
           if (entry === null) return { kind: "not_found" }
           return { kind: "already_waiting", entry }
         }
@@ -1807,10 +1792,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       return listWaitlistIn(sql, args)
     },
 
-    async findWaitlistEntry(
-      cleanupId: string,
-      waitlistId: string,
-    ): Promise<WaitlistRecord | null> {
+    async findWaitlistEntry(cleanupId: string, waitlistId: string): Promise<WaitlistRecord | null> {
       return loadWaitlistEntry(sql, cleanupId, waitlistId)
     },
 
@@ -1831,7 +1813,13 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       const expiresAt = new Date(args.now.getTime() + args.claimWindowMs)
       return sql.begin(async (tx) => {
         const candidates = await tx<
-          { id: string; cleanup_id: string; user_id: string | null; guest_id: string | null; party_size: number }[]
+          {
+            id: string
+            cleanup_id: string
+            user_id: string | null
+            guest_id: string | null
+            party_size: number
+          }[]
         >`
           SELECT id, cleanup_id, user_id, guest_id, party_size
             FROM cleanup_waitlist
@@ -2188,7 +2176,13 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
 
     async checkinCounters(cleanupId: string): Promise<CheckinCountersRecord> {
       const totals = await sql<
-        { registered: number; checked_in: number; no_show: number; waitlisted: number; capacity: number | null }[]
+        {
+          registered: number
+          checked_in: number
+          no_show: number
+          waitlisted: number
+          capacity: number | null
+        }[]
       >`
         SELECT
           COALESCE((

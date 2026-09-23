@@ -21,10 +21,7 @@ import {
   makeDrizzleThreadsRepository,
 } from "../../src/services/threads-repository.drizzle.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
-import {
-  makeThreadsService,
-  InMemoryChatReadState,
-} from "../../src/services/threads-service.js"
+import { makeThreadsService, InMemoryChatReadState } from "../../src/services/threads-service.js"
 
 const pg = await withPg()
 
@@ -122,7 +119,12 @@ describe.skipIf(!pg)("report chats in the threads inbox (integration)", () => {
     // A message from OTHER after I joined -> unread 1; and a later SYSTEM message (sender_id null) that
     // must ALSO count as "from others" (IS DISTINCT FROM) -> unread 2, and is the last message.
     await addReportMessage(reportId, "please look", other, new Date("2026-06-01T11:00:00.000Z"))
-    await addReportMessage(reportId, "Report was acknowledged.", null, new Date("2026-06-01T11:30:00.000Z"))
+    await addReportMessage(
+      reportId,
+      "Report was acknowledged.",
+      null,
+      new Date("2026-06-01T11:30:00.000Z"),
+    )
 
     const { items } = await service().listThreads(me)
     const t = items.find((x) => x.id === reportId)

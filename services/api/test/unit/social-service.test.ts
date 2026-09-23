@@ -17,11 +17,7 @@ import {
   type PersonRowSelect,
 } from "../../src/services/social-repository.drizzle.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
-import {
-  InMemorySocialRepository,
-  makeCleanupRecord,
-} from "../helpers/social.js"
-
+import { InMemorySocialRepository, makeCleanupRecord } from "../helpers/social.js"
 
 const A = "11111111-1111-1111-1111-111111111111"
 const B = "22222222-2222-2222-2222-222222222222"
@@ -47,7 +43,6 @@ function makeHarness(): {
   const service = makeSocialService({ repo, notifier })
   return { repo, notifier, service }
 }
-
 
 describe("avatarGradient", () => {
   it("is deterministic: same seed yields the same pair across calls", () => {
@@ -133,7 +128,6 @@ describe("toPersonDTO", () => {
     expect(toPersonDTO(view, false).avatarUrl).toBe("https://cdn.example.test/avatars/jane.jpg")
   })
 })
-
 
 describe("listPeople", () => {
   it("excludes the viewer and soft-deleted users", async () => {
@@ -248,7 +242,6 @@ describe("listPeople", () => {
   })
 })
 
-
 describe("followPerson", () => {
   it("follows, is idempotent, and returns the new follower count", async () => {
     const { repo, service } = makeHarness()
@@ -361,7 +354,6 @@ describe("unfollowPerson", () => {
     expect(notifier.calls).toHaveLength(0)
   })
 })
-
 
 describe("getProfile", () => {
   it("returns followers/following, isFollowing, stats, and recent-first pastEvents", async () => {
@@ -1288,7 +1280,9 @@ describe("profile events block gate", () => {
     const { repo, service } = makeBlockedHarness([{ blocker: A, blocked: B }])
     repo.seedUser({ id: A, displayName: "Alice" })
     repo.seedUser({ id: B, displayName: "Bob" })
-    repo.seedCleanup(makeCleanupRecord({ organizerUserId: B, title: "Past", scheduledAt: pastAt(3) }))
+    repo.seedCleanup(
+      makeCleanupRecord({ organizerUserId: B, title: "Past", scheduledAt: pastAt(3) }),
+    )
     const page = await service.listProfileEvents(B, { userId: A }, {})
     expect(page).toEqual({ items: [], nextCursor: null })
   })

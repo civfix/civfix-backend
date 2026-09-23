@@ -26,7 +26,6 @@ import { InMemoryMailRepository } from "../../src/services/admin/mail-repository
 import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 
-
 const OPERATOR = "ops@civfix.org"
 const FROM_OUTREACH = "outreach@civfix.org"
 
@@ -645,7 +644,9 @@ describe("every admin list route rejects a malformed query with 422", () => {
     for (const tab of ["reports", "events", "messages"]) {
       const res = await get(`/v1/admin/users/${SUBJECT_USER}/${tab}?limit=abc`)
       expect(res.statusCode, tab).toBe(422)
-      expect((res.json() as { fields?: Record<string, string> }).fields, tab).toHaveProperty("limit")
+      expect((res.json() as { fields?: Record<string, string> }).fields, tab).toHaveProperty(
+        "limit",
+      )
     }
     expect(h.reads).toEqual([])
   })

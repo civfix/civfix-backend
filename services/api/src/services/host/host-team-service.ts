@@ -68,11 +68,7 @@ export interface HostTeamMailer {
 }
 
 export interface HostTeamStandingLookup {
-  (
-    cleanupId: string,
-    userId: string,
-    capability: HostCapability,
-  ): Promise<HostStandingResolution>
+  (cleanupId: string, userId: string, capability: HostCapability): Promise<HostStandingResolution>
 }
 
 export interface HostTeamNotifier {
@@ -234,7 +230,11 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
     const base = deps.webOrigin ?? "https://civfix.org"
     const link = `${base}/cleanups/${cleanupId}#teamInvite=${encodeURIComponent(token)}`
     try {
-      await deps.mailer.sendTransactional(email, "action", teamInviteEmailVars({ title, role, link }))
+      await deps.mailer.sendTransactional(
+        email,
+        "action",
+        teamInviteEmailVars({ title, role, link }),
+      )
     } catch (err) {
       deps.logger?.warn({ err, cleanupId }, "event team invite email failed (suppressed)")
     }
@@ -271,12 +271,15 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
         deps.repo.listInvites(cleanupId, TEAM_INVITE_LIST_CAP),
       ])
       const affiliations = deps.affiliations
-        ? await deps.affiliations([
-            ...members.map((m) => m.person.id),
-            ...invites.flatMap((i) =>
-              [i.invitee?.id, i.invitedBy?.id].filter((id): id is string => id !== undefined),
-            ),
-          ], actorId)
+        ? await deps.affiliations(
+            [
+              ...members.map((m) => m.person.id),
+              ...invites.flatMap((i) =>
+                [i.invitee?.id, i.invitedBy?.id].filter((id): id is string => id !== undefined),
+              ),
+            ],
+            actorId,
+          )
         : NO_AFFILIATIONS
       return {
         members: members.map((m) => toMemberDTO(m, { canManage, actorId, affiliations })),
@@ -442,10 +445,7 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
       return { ok: true, role: outcome.role, event }
     },
 
-    async declineMyInvite(
-      userId: string,
-      inviteId: string,
-    ): Promise<DeclineMyEventInviteResponse> {
+    async declineMyInvite(userId: string, inviteId: string): Promise<DeclineMyEventInviteResponse> {
       const outcome = await deps.repo.declineInviteTx({ inviteId, userId, now: now() })
       if (outcome === "not_found") throw AppError.notFound("That invitation is no longer valid.")
       if (outcome === "not_pending") {
@@ -453,7 +453,6 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
       }
       return { ok: true }
     },
-
   }
 }
 

@@ -1,4 +1,3 @@
-
 import type { VolunteerHoursAnomalyKind } from "./volunteer-hours-service.js"
 
 export const HOURS_ANOMALY_FLAG = "Volunteer hours anomaly"
@@ -27,9 +26,7 @@ export interface HoursAnomalyModerationItem {
   dedupeOpen: true
 }
 
-export function toHoursAnomalyModerationItem(
-  input: HoursAnomalyInput,
-): HoursAnomalyModerationItem {
+export function toHoursAnomalyModerationItem(input: HoursAnomalyInput): HoursAnomalyModerationItem {
   const desc =
     input.kind === "weekly_hours"
       ? `${round2(input.hours ?? 0)} volunteer hours credited to this account in the last 7 days; most recent credit on event ${input.cleanupId}.`

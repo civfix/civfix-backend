@@ -1,4 +1,3 @@
-
 import {
   ResolveAddressRequestSchema,
   ResolveJurisdictionRequestSchema,
@@ -23,10 +22,7 @@ import {
   makeCachedAddressResolver,
   makeRouteJurisdictionService,
 } from "../services/route-geo-helpers.js"
-import {
-  makeCleanupMapRepository,
-  MAP_CLEANUPS_LIMIT,
-} from "../services/cleanup-map-repository.js"
+import { makeCleanupMapRepository, MAP_CLEANUPS_LIMIT } from "../services/cleanup-map-repository.js"
 import { writeAudit } from "../services/admin/audit.js"
 import { CappedBBoxQueryParam } from "./query-encoding.js"
 import { parse, trimTextFields } from "./_validate.js"
@@ -142,26 +138,21 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
     },
   )
 
-  route(
-    app,
-    "suggest",
-    { config: { rateLimit: GEOCODER_RATE_LIMIT } },
-    async (request, reply) => {
-      const { q, proximity, proximityZoom, limit, language } = parse(
-        SuggestPlacesBodySchema,
-        request.body,
-      )
-      const suggestions = await suggestAddresses(q, {
-        ...(proximity ? { proximity } : {}),
-        ...(proximityZoom != null ? { proximityZoom } : {}),
-        ...(limit != null ? { limit } : {}),
-        ...(language ? { language } : {}),
-        ...(container.env.MAPBOX_TOKEN ? { mapboxToken: container.env.MAPBOX_TOKEN } : {}),
-      })
-      const payload: SuggestPlacesResponse = { suggestions }
-      reply.status(200).send(payload)
-    },
-  )
+  route(app, "suggest", { config: { rateLimit: GEOCODER_RATE_LIMIT } }, async (request, reply) => {
+    const { q, proximity, proximityZoom, limit, language } = parse(
+      SuggestPlacesBodySchema,
+      request.body,
+    )
+    const suggestions = await suggestAddresses(q, {
+      ...(proximity ? { proximity } : {}),
+      ...(proximityZoom != null ? { proximityZoom } : {}),
+      ...(limit != null ? { limit } : {}),
+      ...(language ? { language } : {}),
+      ...(container.env.MAPBOX_TOKEN ? { mapboxToken: container.env.MAPBOX_TOKEN } : {}),
+    })
+    const payload: SuggestPlacesResponse = { suggestions }
+    reply.status(200).send(payload)
+  })
 
   route(
     app,

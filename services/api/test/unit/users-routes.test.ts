@@ -1,4 +1,3 @@
-
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
@@ -172,7 +171,11 @@ describe("POST /users/:id/block", () => {
   it("422s a non-uuid :id before any store lookup", async () => {
     const h = await makeHarness()
     const me = await h.signIn("badid@example.com", "BadId")
-    const res = await h.app.inject({ method: "POST", url: blockUrl("not-a-uuid"), headers: bearer(me) })
+    const res = await h.app.inject({
+      method: "POST",
+      url: blockUrl("not-a-uuid"),
+      headers: bearer(me),
+    })
     expect(res.statusCode).toBe(422)
     expect(res.json().fields.id).toBeDefined()
   })
@@ -180,11 +183,16 @@ describe("POST /users/:id/block", () => {
   it("404s a user who does not exist", async () => {
     const h = await makeHarness()
     const me = await h.signIn("ghost@example.com", "Ghost")
-    const res = await h.app.inject({ method: "POST", url: blockUrl(UNKNOWN_ID), headers: bearer(me) })
+    const res = await h.app.inject({
+      method: "POST",
+      url: blockUrl(UNKNOWN_ID),
+      headers: bearer(me),
+    })
     expect(res.statusCode).toBe(404)
     expect(res.json().code).toBe("NOT_FOUND")
-    expect((await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })).json())
-      .toEqual({ blocked: [] })
+    expect(
+      (await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })).json(),
+    ).toEqual({ blocked: [] })
   })
 
   it("CVX-033: a user who ALREADY BLOCKED you answers exactly like an unknown user, writing no edge", async () => {
@@ -211,8 +219,9 @@ describe("POST /users/:id/block", () => {
     expect(blockedByThem.statusCode).toBe(unknown.statusCode)
     expect(body(blockedByThem)).toEqual(body(unknown))
     expect((await h.blocks.blockState(me.userId, them.userId)).blockedByViewer).toBe(false)
-    expect((await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })).json())
-      .toEqual({ blocked: [] })
+    expect(
+      (await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })).json(),
+    ).toEqual({ blocked: [] })
   })
 
   it("still 200s a target the VIEWER blocked (their own edge is idempotent, not an oracle)", async () => {
@@ -254,7 +263,11 @@ describe("POST /users/:id/block", () => {
     const gone = await h.signIn("gone@example.com", "Gone")
     await h.stores.users.softDeleteAndAnonymize(gone.userId)
 
-    const res = await h.app.inject({ method: "POST", url: blockUrl(gone.userId), headers: bearer(me) })
+    const res = await h.app.inject({
+      method: "POST",
+      url: blockUrl(gone.userId),
+      headers: bearer(me),
+    })
     expect(res.statusCode).toBe(404)
   })
 
@@ -327,10 +340,17 @@ describe("DELETE /users/:id/block", () => {
     await h.blocks.block(web.userId, them.userId)
 
     expect(
-      (await h.app.inject({ method: "DELETE", url: blockUrl("nope"), headers: { cookie: web.cookie, "x-csrf-token": web.csrfToken } }))
-        .statusCode,
+      (
+        await h.app.inject({
+          method: "DELETE",
+          url: blockUrl("nope"),
+          headers: { cookie: web.cookie, "x-csrf-token": web.csrfToken },
+        })
+      ).statusCode,
     ).toBe(422)
-    expect((await h.app.inject({ method: "DELETE", url: blockUrl(them.userId) })).statusCode).toBe(401)
+    expect((await h.app.inject({ method: "DELETE", url: blockUrl(them.userId) })).statusCode).toBe(
+      401,
+    )
 
     const noCsrf = await h.app.inject({
       method: "DELETE",
@@ -349,8 +369,9 @@ describe("GET /me/blocks", () => {
     const one = await h.signIn("one@example.com", "One")
     const two = await h.signIn("two@example.com", "Two")
 
-    expect((await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })).json())
-      .toEqual({ blocked: [] })
+    expect(
+      (await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })).json(),
+    ).toEqual({ blocked: [] })
 
     await h.app.inject({ method: "POST", url: blockUrl(one.userId), headers: bearer(me) })
     await h.app.inject({ method: "POST", url: blockUrl(two.userId), headers: bearer(me) })
@@ -374,7 +395,11 @@ describe("GET /me/blocks", () => {
     const bob = await h.signIn("bob@example.com", "Bob")
     await h.app.inject({ method: "POST", url: blockUrl(alice.userId), headers: bearer(bob) })
 
-    const bobList = await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(bob) })
+    const bobList = await h.app.inject({
+      method: "GET",
+      url: "/v1/me/blocks",
+      headers: bearer(bob),
+    })
     expect((bobList.json().blocked as PersonDTO[]).map((p) => p.id)).toEqual([alice.userId])
 
     const aliceList = await h.app.inject({
@@ -426,7 +451,12 @@ describe("block SIDE EFFECT: the DM lane closes both ways", () => {
     const bob = await h.signIn("dm-b@example.com", "DmB")
 
     const open = async (from: Session, to: Session) =>
-      h.app.inject({ method: "POST", url: "/v1/dm", headers: bearer(from), payload: { userId: to.userId } })
+      h.app.inject({
+        method: "POST",
+        url: "/v1/dm",
+        headers: bearer(from),
+        payload: { userId: to.userId },
+      })
 
     const before = await open(alice, bob)
     expect(before.statusCode).toBe(200)
@@ -489,12 +519,14 @@ describe("PUT /me/settings", () => {
     const stranger = await h.signIn("stranger@example.com", "Stranger")
 
     expect(
-      (await h.app.inject({
-        method: "POST",
-        url: "/v1/dm",
-        headers: bearer(keen),
-        payload: { userId: shy.userId },
-      })).statusCode,
+      (
+        await h.app.inject({
+          method: "POST",
+          url: "/v1/dm",
+          headers: bearer(keen),
+          payload: { userId: shy.userId },
+        })
+      ).statusCode,
     ).toBe(200)
 
     await h.app.inject({

@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -76,7 +75,8 @@ describe.skipIf(!pg)("host lock order (integration)", () => {
 
   function deadlocks(errors: unknown[]): unknown[] {
     return errors.filter(
-      (err) => typeof err === "object" && err !== null && (err as { code?: unknown }).code === DEADLOCK,
+      (err) =>
+        typeof err === "object" && err !== null && (err as { code?: unknown }).code === DEADLOCK,
     )
   }
 
@@ -428,7 +428,12 @@ describe.skipIf(!pg)("host lock order (integration)", () => {
         now,
       })
     }
-    const offer = await repo.offerWaitlistEntry({ cleanupId, waitlistId, now, claimWindowMs: 600_000 })
+    const offer = await repo.offerWaitlistEntry({
+      cleanupId,
+      waitlistId,
+      now,
+      claimWindowMs: 600_000,
+    })
     expect(offer).not.toBeNull()
 
     const claimed = await repo.claimWaitlistOffer({

@@ -1,4 +1,3 @@
-
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { FakePushSender } from "@civfix/shared/fakes"
@@ -68,13 +67,23 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     await h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${viewer}, ${blockedByViewer})`
     await h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${blockerOfViewer}, ${viewer})`
 
-    const followers = await repo.listFollowers({ id: subject, viewerId: viewer, cursor: null, limit: 50 })
+    const followers = await repo.listFollowers({
+      id: subject,
+      viewerId: viewer,
+      cursor: null,
+      limit: 50,
+    })
     const followerIds = followers.items.map((p) => p.id)
     expect(followerIds).toContain(innocent)
     expect(followerIds).not.toContain(blockedByViewer)
     expect(followerIds).not.toContain(blockerOfViewer)
 
-    const following = await repo.listFollowing({ id: subject, viewerId: viewer, cursor: null, limit: 50 })
+    const following = await repo.listFollowing({
+      id: subject,
+      viewerId: viewer,
+      cursor: null,
+      limit: 50,
+    })
     const followingIds = following.items.map((p) => p.id)
     expect(followingIds).toContain(innocent)
     expect(followingIds).not.toContain(blockedByViewer)
@@ -115,14 +124,24 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
 
     const older = await cleanupService.createCleanup(
       {
-        title: "Older Sweep", type: "site", eventKind: "cleanup", lat: 34.0, lng: -118.0, scheduledAt: "2025-01-01T10:00:00.000Z",
+        title: "Older Sweep",
+        type: "site",
+        eventKind: "cleanup",
+        lat: 34.0,
+        lng: -118.0,
+        scheduledAt: "2025-01-01T10:00:00.000Z",
         slots: [{ title: "General volunteers", capacity: null }],
       },
       organizer,
     )
     const newer = await cleanupService.createCleanup(
       {
-        title: "Newer Sweep", type: "site", eventKind: "cleanup", lat: 34.1, lng: -118.1, scheduledAt: "2025-03-01T10:00:00.000Z",
+        title: "Newer Sweep",
+        type: "site",
+        eventKind: "cleanup",
+        lat: 34.1,
+        lng: -118.1,
+        scheduledAt: "2025-03-01T10:00:00.000Z",
         slots: [{ title: "General volunteers", capacity: null }],
       },
       organizer,
@@ -342,37 +361,59 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
       device_id: string | null
       revoked_at: Date | null
     }> => {
-      const rows = await h.sql<{ user_id: string; device_id: string | null; revoked_at: Date | null }[]>`
+      const rows = await h.sql<
+        { user_id: string; device_id: string | null; revoked_at: Date | null }[]
+      >`
         SELECT user_id, device_id, revoked_at FROM push_tokens WHERE platform = 'ios' AND token = ${"tok-int"}
       `
       expect(rows).toHaveLength(1)
       return rows[0]!
     }
 
-    expect(await repo.upsertPushToken({ userId: userA, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
-      "stored",
-    )
+    expect(
+      await repo.upsertPushToken({
+        userId: userA,
+        platform: "ios",
+        token: "tok-int",
+        deviceId: "d1",
+      }),
+    ).toBe("stored")
     await h.sql`UPDATE push_tokens SET revoked_at = now() WHERE token = ${"tok-int"}`
 
-    expect(await repo.upsertPushToken({ userId: userA, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
-      "stored",
-    )
+    expect(
+      await repo.upsertPushToken({
+        userId: userA,
+        platform: "ios",
+        token: "tok-int",
+        deviceId: "d1",
+      }),
+    ).toBe("stored")
     let row = await readRow()
     expect(row.user_id).toBe(userA)
     expect(row.device_id).toBe("d1")
     expect(row.revoked_at).toBeNull()
 
-    expect(await repo.upsertPushToken({ userId: userB, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
-      "conflict",
-    )
+    expect(
+      await repo.upsertPushToken({
+        userId: userB,
+        platform: "ios",
+        token: "tok-int",
+        deviceId: "d1",
+      }),
+    ).toBe("conflict")
     row = await readRow()
     expect(row.user_id).toBe(userA)
     expect(row.revoked_at).toBeNull()
 
     await h.sql`UPDATE push_tokens SET revoked_at = now() WHERE token = ${"tok-int"}`
-    expect(await repo.upsertPushToken({ userId: userB, platform: "ios", token: "tok-int", deviceId: "d2" })).toBe(
-      "stored",
-    )
+    expect(
+      await repo.upsertPushToken({
+        userId: userB,
+        platform: "ios",
+        token: "tok-int",
+        deviceId: "d2",
+      }),
+    ).toBe("stored")
     row = await readRow()
     expect(row.user_id).toBe(userB)
     expect(row.device_id).toBe("d2")

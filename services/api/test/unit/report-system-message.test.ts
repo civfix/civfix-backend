@@ -11,7 +11,10 @@
 
 import { describe, expect, it } from "vitest"
 import { ReportStatusSchema } from "@civfix/shared"
-import { mapSystemRow, type SystemChatRow } from "../../src/services/report-chat-repository.drizzle.js"
+import {
+  mapSystemRow,
+  type SystemChatRow,
+} from "../../src/services/report-chat-repository.drizzle.js"
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const MSG = "dddddddd-dddd-dddd-dddd-dddddddddddd"

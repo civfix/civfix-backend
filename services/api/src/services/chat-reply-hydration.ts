@@ -162,5 +162,9 @@ export function replyMapForRows(
   table: ReplyTable,
   rows: ReadonlyArray<{ reply_to_id: string | null }>,
 ): Promise<Map<string, ReplyToDTO>> {
-  return loadReplyTargets(sql, table, rows.map((r) => r.reply_to_id))
+  return loadReplyTargets(
+    sql,
+    table,
+    rows.map((r) => r.reply_to_id),
+  )
 }

@@ -58,8 +58,7 @@ export function makeQuestionService(deps: QuestionServiceDeps): QuestionService 
           helpText: question.helpText ?? null,
           required: question.required,
           options: "options" in question ? question.options : [],
-          maxSelections:
-            question.kind === "multi_select" ? (question.maxSelections ?? null) : null,
+          maxSelections: question.kind === "multi_select" ? (question.maxSelections ?? null) : null,
           consentText: question.kind === "consent" ? question.consentText : null,
           showIf: question.showIf ?? null,
           sortOrder: question.sortOrder ?? index,

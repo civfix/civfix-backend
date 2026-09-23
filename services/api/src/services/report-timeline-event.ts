@@ -72,7 +72,10 @@ export function makeReportChatSystemEmitter(
         await deps.broadcast(deps.roomKeyFor("report", event.reportId), msg)
         await deps.notify(event.reportId, msg)
       } catch (err) {
-        warn({ err, reportId: event.reportId }, "report-chat: system-message emit failed (suppressed)")
+        warn(
+          { err, reportId: event.reportId },
+          "report-chat: system-message emit failed (suppressed)",
+        )
       }
     },
   }

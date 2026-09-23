@@ -78,7 +78,9 @@ describe.skipIf(!pg)("F148: un-reposting never destroys other users' content", (
     return m!.id
   }
 
-  async function postRow(id: string): Promise<{ deleted_at: Date | null; repost_count: number } | undefined> {
+  async function postRow(
+    id: string,
+  ): Promise<{ deleted_at: Date | null; repost_count: number } | undefined> {
     const rows = await h.sql<{ deleted_at: Date | null; repost_count: number }[]>`
       SELECT deleted_at, repost_count FROM posts WHERE id = ${id}
     `

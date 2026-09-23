@@ -109,11 +109,9 @@ export function makeContainerRegistrationServices(
   logger?: HostServiceLogger,
 ): HostRegistrationServices {
   const sql = overrides?.repo === undefined ? container.getDb().sql : undefined
-  const repo =
-    overrides?.repo ?? makeDrizzleHostRegistrationRepository(sql as Sql)
+  const repo = overrides?.repo ?? makeDrizzleHostRegistrationRepository(sql as Sql)
   const tokens = overrides?.tokens ?? container.getTicketTokenSigner()
-  const audit =
-    overrides?.audit ?? (sql === undefined ? undefined : auditWriter(sql, logger))
+  const audit = overrides?.audit ?? (sql === undefined ? undefined : auditWriter(sql, logger))
   const teamUserIds =
     overrides?.teamUserIds ??
     (sql === undefined
@@ -124,9 +122,7 @@ export function makeContainerRegistrationServices(
     (sql === undefined
       ? undefined
       : async (hash: string) => {
-          const rows = await sql<
-            { id: string; cleanup_id: string; cancelled_at: Date | null }[]
-          >`
+          const rows = await sql<{ id: string; cleanup_id: string; cancelled_at: Date | null }[]>`
             SELECT id, cleanup_id, cancelled_at FROM cleanup_guests
              WHERE manage_token_hash = ${hash}
              LIMIT 1
@@ -220,8 +216,7 @@ export function makeContainerPageService(
   const sql = overrides?.repo === undefined ? container.getDb().sql : undefined
   const repo = overrides?.repo ?? makeDrizzleHostRegistrationRepository(sql as Sql)
   const presign = makeMediaPresigner(container.storage)
-  const presignCover =
-    overrides?.presignCover ?? (async (r2Key: string) => presign(r2Key, null))
+  const presignCover = overrides?.presignCover ?? (async (r2Key: string) => presign(r2Key, null))
   const counters = overrides?.counters ?? container.getCounterStore()
   const standingOf =
     overrides?.standingOf ??

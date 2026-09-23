@@ -23,7 +23,10 @@ const TEAM = "https://civfix.cloudflareaccess.com"
 const AUD = "access-app-aud-tag"
 const KID = "test-key-1"
 
-async function setup(): Promise<{ privateKey: KeyLike; verify: ReturnType<typeof createAccessVerifier> }> {
+async function setup(): Promise<{
+  privateKey: KeyLike
+  verify: ReturnType<typeof createAccessVerifier>
+}> {
   const { publicKey, privateKey } = await generateKeyPair("RS256")
   const jwk = await exportJWK(publicKey)
   jwk.kid = KID
@@ -40,11 +43,7 @@ interface SignOpts {
   expEpoch?: number
 }
 
-function sign(
-  key: KeyLike,
-  claims: Record<string, unknown>,
-  opts: SignOpts = {},
-): Promise<string> {
+function sign(key: KeyLike, claims: Record<string, unknown>, opts: SignOpts = {}): Promise<string> {
   const nowSec = Math.floor(Date.now() / 1000)
   return new SignJWT(claims)
     .setProtectedHeader({ alg: opts.alg ?? "RS256", kid: KID })
@@ -81,7 +80,11 @@ describe("createAccessVerifier", () => {
 
   it("rejects a token with the wrong issuer", async () => {
     const { privateKey, verify } = await setup()
-    const token = await sign(privateKey, { email: "ops@civfix.org" }, { iss: "https://evil.example" })
+    const token = await sign(
+      privateKey,
+      { email: "ops@civfix.org" },
+      { iss: "https://evil.example" },
+    )
     await expect(verify(token)).rejects.toThrow()
   })
 

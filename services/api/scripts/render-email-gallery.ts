@@ -64,8 +64,18 @@ function sampleReport(): AdminReportRecord {
 
 function collect(): GalleryEntry[] {
   const entries: GalleryEntry[] = []
-  const push = (name: string, label: string, r: { subject: string; html?: string; text: string }): void => {
-    entries.push({ name, label, subject: r.subject, html: r.html ?? `<pre>${r.text}</pre>`, text: r.text })
+  const push = (
+    name: string,
+    label: string,
+    r: { subject: string; html?: string; text: string },
+  ): void => {
+    entries.push({
+      name,
+      label,
+      subject: r.subject,
+      html: r.html ?? `<pre>${r.text}</pre>`,
+      text: r.text,
+    })
   }
 
   push("signin-otp", "Sign-in passcode (Mailer.sendOtp)", renderOtp("482913", "en"))
@@ -257,7 +267,12 @@ function collect(): GalleryEntry[] {
     "admin-discussion-forward",
     "Admin discussion forward (to city office)",
     buildDiscussionForwardPacket(
-      { reportId: "11111111-2222-3333-4444-555555555555", category: "graffiti", place: "Del Rey", org: null },
+      {
+        reportId: "11111111-2222-3333-4444-555555555555",
+        category: "graffiti",
+        place: "Del Rey",
+        org: null,
+      },
       "The tags are back again this week - is there a schedule for abatement on this wall?",
     ),
   )

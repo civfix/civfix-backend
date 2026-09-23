@@ -52,7 +52,9 @@ export function decodeCursor(
  * (and the typed client's infinite-scroll loop) is unchanged.
  */
 export function encodeOffsetCursor(offset: number): string {
-  return Buffer.from(JSON.stringify({ o: Math.max(0, Math.floor(offset)) }), "utf8").toString("base64url")
+  return Buffer.from(JSON.stringify({ o: Math.max(0, Math.floor(offset)) }), "utf8").toString(
+    "base64url",
+  )
 }
 
 /**

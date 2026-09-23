@@ -129,15 +129,21 @@ describe("parseAcs geoid assembly", () => {
 
 describe("parseAcs population + row filtering", () => {
   it("rounds a fractional population", () => {
-    expect(parseAcs([[ACS_POP_VAR, "state"], ["123.6", "06"]])).toEqual([
-      { geoid: "06", population: 124 },
-    ])
+    expect(
+      parseAcs([
+        [ACS_POP_VAR, "state"],
+        ["123.6", "06"],
+      ]),
+    ).toEqual([{ geoid: "06", population: 124 }])
   })
 
   it("keeps a zero population (a real ACS value, not a missing one)", () => {
-    expect(parseAcs([[ACS_POP_VAR, "state"], ["0", "06"]])).toEqual([
-      { geoid: "06", population: 0 },
-    ])
+    expect(
+      parseAcs([
+        [ACS_POP_VAR, "state"],
+        ["0", "06"],
+      ]),
+    ).toEqual([{ geoid: "06", population: 0 }])
   })
 
   it("skips rows with a non-numeric or NEGATIVE population, keeping the rest", () => {
@@ -159,8 +165,18 @@ describe("parseAcs population + row filtering", () => {
     // over whatever was stored. Only "null"/"N"-style TEXT is rejected (NaN). Pinned here so that if the
     // parser is ever tightened to reject empty cells, this expectation flips deliberately rather than the
     // change slipping in unnoticed.
-    expect(parseAcs([[ACS_POP_VAR, "state"], ["", "36"]])).toEqual([{ geoid: "36", population: 0 }])
-    expect(parseAcs([[ACS_POP_VAR, "state"], [null, "36"]])).toEqual([{ geoid: "36", population: 0 }])
+    expect(
+      parseAcs([
+        [ACS_POP_VAR, "state"],
+        ["", "36"],
+      ]),
+    ).toEqual([{ geoid: "36", population: 0 }])
+    expect(
+      parseAcs([
+        [ACS_POP_VAR, "state"],
+        [null, "36"],
+      ]),
+    ).toEqual([{ geoid: "36", population: 0 }])
   })
 
   it("skips a non-array row without dropping the rows around it", () => {

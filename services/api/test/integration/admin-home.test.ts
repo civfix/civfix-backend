@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
@@ -62,7 +61,10 @@ describe.skipIf(!pg)("admin home repository (integration: real schema)", () => {
   })
 
   it("discoverySummary: queue counts open discovery tasks; reportsWaiting/overSla over unrouted waiting reports", async () => {
-    await insertReport(h, { status: "submitted", createdAt: new Date(Date.now() - 30 * 3600 * 1000) })
+    await insertReport(h, {
+      status: "submitted",
+      createdAt: new Date(Date.now() - 30 * 3600 * 1000),
+    })
     await insertReport(h, { status: "published", createdAt: new Date() })
     await h.sql`INSERT INTO jurisdiction_discovery_tasks (geoid) VALUES (${GEOID})`
 

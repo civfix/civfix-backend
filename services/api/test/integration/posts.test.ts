@@ -31,7 +31,11 @@ import { makeCleanupService } from "../../src/services/cleanup-service.js"
 const pg = await withPg()
 
 const echoPresign = (r2Key: string, thumbKey: string | null) =>
-  Promise.resolve(thumbKey === null ? { url: `m://${r2Key}` } : { url: `m://${r2Key}`, thumbUrl: `m://${thumbKey}` })
+  Promise.resolve(
+    thumbKey === null
+      ? { url: `m://${r2Key}` }
+      : { url: `m://${r2Key}`, thumbUrl: `m://${thumbKey}` },
+  )
 const echoAvatar = (k: string) => Promise.resolve(`m://${k}`)
 
 describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
@@ -224,7 +228,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     // reply
     const reply = await svc.createPost(
-      { kind: "reply", replyToId: created.id, body: "nice one", mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "reply",
+        replyToId: created.id,
+        body: "nice one",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       actor,
     )
     expect(reply.kind).toBe("reply")
@@ -266,7 +276,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(parent.counts.replies).toBe(0)
 
     const reply = await svc.createPost(
-      { kind: "post", replyToId: parent.id, body: "count me in", mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "post",
+        replyToId: parent.id,
+        body: "count me in",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       replier,
     )
     expect(reply.replyToId).toBe(parent.id)
@@ -276,7 +292,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(replies.items.map((p) => p.id)).toContain(reply.id)
 
     const second = await svc.createPost(
-      { kind: "post", replyToId: parent.id, body: "me too", mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "post",
+        replyToId: parent.id,
+        body: "me too",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       author,
     )
     expect((await svc.getPost(parent.id, author)).counts.replies).toBe(2)
@@ -298,7 +320,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       const post = await svc.createPost(
         parentId === null
           ? { kind: "post", body: "root", mediaUploadIds: [], mentionedUserIds: [] }
-          : { kind: "post", replyToId: parentId, body: `depth ${depth}`, mediaUploadIds: [], mentionedUserIds: [] },
+          : {
+              kind: "post",
+              replyToId: parentId,
+              body: `depth ${depth}`,
+              mediaUploadIds: [],
+              mentionedUserIds: [],
+            },
         author,
       )
       chain.push(post.id)
@@ -322,11 +350,23 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     )
 
     await svc.createPost(
-      { kind: "reply", replyToId: parent.id, body: "explicit reply", mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "reply",
+        replyToId: parent.id,
+        body: "explicit reply",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       author,
     )
     await svc.createPost(
-      { kind: "reply", replyToId: parent.id, body: "cross-author reply", mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "reply",
+        replyToId: parent.id,
+        body: "cross-author reply",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       other,
     )
 
@@ -339,7 +379,10 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const author = await newUser("Answering Author")
     const other = await newUser("Answered Other")
     const reply = (replyToId: string, body: string, by: string) =>
-      svc.createPost({ kind: "reply", replyToId, body, mediaUploadIds: [], mentionedUserIds: [] }, by)
+      svc.createPost(
+        { kind: "reply", replyToId, body, mediaUploadIds: [], mentionedUserIds: [] },
+        by,
+      )
 
     const post = await svc.createPost(
       { kind: "post", body: "root", mediaUploadIds: [], mentionedUserIds: [] },
@@ -367,12 +410,17 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const head = await svc.listReplies(post.id, other, { limit: 1 })
     expect(head.items.map((p) => p.id)).toEqual([first.id])
     expect(head.authorReplies.map((p) => p.id)).toEqual([latest.id])
-    const tail = await svc.listReplies(post.id, other, { limit: 1, cursor: head.nextCursor ?? undefined })
+    const tail = await svc.listReplies(post.id, other, {
+      limit: 1,
+      cursor: head.nextCursor ?? undefined,
+    })
     expect(tail.items.map((p) => p.id)).toEqual([second.id])
     expect(tail.authorReplies).toEqual([])
 
     await svc.deletePost(latest.id, author)
-    expect((await svc.listReplies(post.id, other, {})).authorReplies.map((p) => p.id)).toEqual([older.id])
+    expect((await svc.listReplies(post.id, other, {})).authorReplies.map((p) => p.id)).toEqual([
+      older.id,
+    ])
 
     const inner = await svc.listReplies(first.id, author, {})
     expect(inner.items.map((p) => p.id)).toEqual([older.id])
@@ -395,7 +443,12 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const media = await seedMedia()
 
     const created = await svc.createPost(
-      { kind: "post", body: "look at this photo", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
+      {
+        kind: "post",
+        body: "look at this photo",
+        mediaUploadIds: [media.uploadId],
+        mentionedUserIds: [],
+      },
       author,
     )
     expect(created.media).toHaveLength(1)
@@ -408,7 +461,9 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(created.media[0]!.thumbUrl).toBe(`m://${media.thumbKey}`)
 
     // The claim landed in the database: bound to THIS post, repurposed, and still unbound to any report.
-    const [row] = await h.sql<{ post_id: string | null; purpose: string; report_id: string | null }[]>`
+    const [row] = await h.sql<
+      { post_id: string | null; purpose: string; report_id: string | null }[]
+    >`
       SELECT post_id, purpose, report_id FROM media_assets WHERE id = ${media.id}
     `
     expect(row!.post_id).toBe(created.id)
@@ -429,11 +484,22 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const media = await seedMedia()
 
     const target = await svc.createPost(
-      { kind: "post", body: "the original photo", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
+      {
+        kind: "post",
+        body: "the original photo",
+        mediaUploadIds: [media.uploadId],
+        mentionedUserIds: [],
+      },
       author,
     )
     const quote = await svc.createPost(
-      { kind: "quote", repostOfId: target.id, body: "look at this", mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "quote",
+        repostOfId: target.id,
+        body: "look at this",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       quoter,
     )
 
@@ -445,7 +511,9 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     // It survives the LIST projection too, not just the create response.
     const listed = await svc.listUserPosts(quoter, quoter, {})
-    expect(listed.items.find((p) => p.id === quote.id)?.repostOf?.media.map((m) => m.id)).toEqual([media.id])
+    expect(listed.items.find((p) => p.id === quote.id)?.repostOf?.media.map((m) => m.id)).toEqual([
+      media.id,
+    ])
 
     // Deleting the target tombstones the ref: no excerpt AND no media. Surfacing a deleted post's photos
     // through a quote card would undo the delete. (`getPost` on the quote 404s instead - `requireReadable`
@@ -472,7 +540,12 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     )
     await expect(
       svc.createPost(
-        { kind: "post", body: "also mine?", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
+        {
+          kind: "post",
+          body: "also mine?",
+          mediaUploadIds: [media.uploadId],
+          mentionedUserIds: [],
+        },
         thief,
       ),
     ).rejects.toMatchObject({
@@ -560,12 +633,19 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     await expect(
       svc.createPost(
-        { kind: "post", body: "recycling a report photo", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
+        {
+          kind: "post",
+          body: "recycling a report photo",
+          mediaUploadIds: [media.uploadId],
+          mentionedUserIds: [],
+        },
         author,
       ),
     ).rejects.toMatchObject({ httpStatus: 422, code: "VALIDATION" })
 
-    const [row] = await h.sql<{ report_id: string | null; post_id: string | null; purpose: string }[]>`
+    const [row] = await h.sql<
+      { report_id: string | null; post_id: string | null; purpose: string }[]
+    >`
       SELECT report_id, post_id, purpose FROM media_assets WHERE id = ${media.id}
     `
     expect(row!.report_id).toBe(report)
@@ -658,12 +738,24 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     )
     // Arm 1: an author the viewer FOLLOWS replies.
     const theirReply = await svc.createPost(
-      { kind: "reply", replyToId: parent.id, body: "count me in", mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "reply",
+        replyToId: parent.id,
+        body: "count me in",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       author,
     )
     // Arm 2: the VIEWER themself replies (the `p.author_id = viewerId` arm).
     const myReply = await svc.createPost(
-      { kind: "reply", replyToId: parent.id, body: "me too", mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "reply",
+        replyToId: parent.id,
+        body: "me too",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       viewer,
     )
     expect(theirReply.replyToId).toBe(parent.id)
@@ -713,7 +805,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       author,
     )
     const reply = await svc.createPost(
-      { kind: "post", replyToId: parent.id, body: "count me in", mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "post",
+        replyToId: parent.id,
+        body: "count me in",
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       replier,
     )
 
@@ -748,7 +846,12 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     const event = await cleanupSvc.createCleanup(
       {
-        title: "Park Sweep", type: "site", eventKind: "cleanup", lat: 34.0, lng: -118.0, scheduledAt: "2025-06-01T10:00:00.000Z",
+        title: "Park Sweep",
+        type: "site",
+        eventKind: "cleanup",
+        lat: 34.0,
+        lng: -118.0,
+        scheduledAt: "2025-06-01T10:00:00.000Z",
         slots: [{ title: "General volunteers", capacity: null }],
       },
       host,
@@ -756,7 +859,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     // host is auto-joined as organizer → can attach
     const withEvent = await svc.createPost(
-      { kind: "post", body: "join us", eventId: event.id, mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "post",
+        body: "join us",
+        eventId: event.id,
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       host,
     )
     expect(withEvent.event?.id).toBe(event.id)
@@ -790,7 +899,12 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     const event = await cleanupSvc.createCleanup(
       {
-        title: "Alley Sweep", type: "site", eventKind: "cleanup", lat: 34.05, lng: -118.25, scheduledAt: "2026-08-01T17:00:00.000Z",
+        title: "Alley Sweep",
+        type: "site",
+        eventKind: "cleanup",
+        lat: 34.05,
+        lng: -118.25,
+        scheduledAt: "2026-08-01T17:00:00.000Z",
         slots: [{ title: "General volunteers", capacity: null }],
       },
       host,
@@ -804,7 +918,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(member?.role).toBe("organizer")
 
     const announcement = await svc.createPost(
-      { kind: "post", body: "come help out", eventId: event.id, mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "post",
+        body: "come help out",
+        eventId: event.id,
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       host,
     )
     expect(announcement.event?.id).toBe(event.id)
@@ -862,7 +982,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     await expect(
       svc.createPost(
-        { kind: "post", body: "look at this", reportId: held, mediaUploadIds: [], mentionedUserIds: [] },
+        {
+          kind: "post",
+          body: "look at this",
+          reportId: held,
+          mediaUploadIds: [],
+          mentionedUserIds: [],
+        },
         author,
       ),
     ).rejects.toMatchObject({ httpStatus: 404 })
@@ -892,7 +1018,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const report = await insertReport(author, "published", "public", "Public report")
 
     const post = await svc.createPost(
-      { kind: "post", body: "my report", reportId: report, mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "post",
+        body: "my report",
+        reportId: report,
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       author,
     )
     expect(post.report?.id).toBe(report)
@@ -926,7 +1058,10 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
   // test is the pin for that timing, so a client-side local-thumb overlay cannot be "optimized away".
 
   /** A report-bound media asset in the state finalizeMedia leaves behind: `validating`, not `ready`. */
-  async function attachReportMedia(reportId: string, status: SeedMediaStatus): Promise<SeededMedia> {
+  async function attachReportMedia(
+    reportId: string,
+    status: SeedMediaStatus,
+  ): Promise<SeededMedia> {
     const uploadId = randomUUID()
     return await seedMediaAsset(h.sql, {
       reportId,
@@ -980,12 +1115,16 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     // A brand-new report is `published`, so the post is an "all" post, never a "fix" — it migrates into
     // the fixes filter by itself the day the city resolves the report.
     await h.sql`INSERT INTO follows_people (follower_id, followee_id) VALUES (${reader}, ${author})`
-    expect((await svc.homeFeed(reader, { filter: "all" })).items.map((p) => p.id)).toContain(post.id)
+    expect((await svc.homeFeed(reader, { filter: "all" })).items.map((p) => p.id)).toContain(
+      post.id,
+    )
     expect((await svc.homeFeed(reader, { filter: "fixes" })).items.map((p) => p.id)).not.toContain(
       post.id,
     )
     await h.sql`UPDATE reports SET status = 'resolved' WHERE id = ${reportId}`
-    expect((await svc.homeFeed(reader, { filter: "fixes" })).items.map((p) => p.id)).toContain(post.id)
+    expect((await svc.homeFeed(reader, { filter: "fixes" })).items.map((p) => p.id)).toContain(
+      post.id,
+    )
   })
 
   it("SHARE: a slur in the caption is rejected and NO post row is written", async () => {
@@ -995,7 +1134,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     await expect(
       svc.createPost(
-        { kind: "post", body: "these retards again", reportId, mediaUploadIds: [], mentionedUserIds: [] },
+        {
+          kind: "post",
+          body: "these retards again",
+          reportId,
+          mediaUploadIds: [],
+          mentionedUserIds: [],
+        },
         author,
       ),
     ).rejects.toMatchObject({ httpStatus: 422, code: "VALIDATION" })
@@ -1007,7 +1152,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     // The same caption without the slur posts fine — the filter is slurs only, not profanity.
     const ok = await svc.createPost(
-      { kind: "post", body: "this damn light again", reportId, mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "post",
+        body: "this damn light again",
+        reportId,
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       author,
     )
     expect(ok.report?.id).toBe(reportId)
@@ -1030,7 +1181,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
 
     // isReportAttachable must accept `resolved` — this is the create that used to 404.
     const post = await svc.createPost(
-      { kind: "post", body: "the city fixed it", reportId: resolved, mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "post",
+        body: "the city fixed it",
+        reportId: resolved,
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       author,
     )
     expect(post.report?.id).toBe(resolved)
@@ -1051,7 +1208,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     for (const status of ["published", "acknowledged", "in_progress", "resolved"]) {
       const id = await insertReport(author, status, "public", `Report ${status}`)
       const post = await svc.createPost(
-        { kind: "post", body: `status ${status}`, reportId: id, mediaUploadIds: [], mentionedUserIds: [] },
+        {
+          kind: "post",
+          body: `status ${status}`,
+          reportId: id,
+          mediaUploadIds: [],
+          mentionedUserIds: [],
+        },
         author,
       )
       expect(post.report?.id, `attach failed for status ${status}`).toBe(id)
@@ -1063,7 +1226,13 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       const id = await insertReport(author, status, "public", `Report ${status}`)
       await expect(
         svc.createPost(
-          { kind: "post", body: `status ${status}`, reportId: id, mediaUploadIds: [], mentionedUserIds: [] },
+          {
+            kind: "post",
+            body: `status ${status}`,
+            reportId: id,
+            mediaUploadIds: [],
+            mentionedUserIds: [],
+          },
           author,
         ),
       ).rejects.toMatchObject({ httpStatus: 404 })
@@ -1080,11 +1249,23 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const working = await insertReport(author, "in_progress", "public", "Still being worked")
 
     const fixPost = await svc.createPost(
-      { kind: "post", body: "fixed!", reportId: resolved, mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "post",
+        body: "fixed!",
+        reportId: resolved,
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       author,
     )
     const wipPost = await svc.createPost(
-      { kind: "post", body: "in progress", reportId: working, mediaUploadIds: [], mentionedUserIds: [] },
+      {
+        kind: "post",
+        body: "in progress",
+        reportId: working,
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      },
       author,
     )
     const plainPost = await svc.createPost(

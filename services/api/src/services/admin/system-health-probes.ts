@@ -1,4 +1,3 @@
-
 import type { Sql } from "../../db/client.js"
 import type { ProbeResult, SystemHealthProbes } from "./system-health-service.js"
 import { MEDIA_WORKER_BACKLOG_WARN } from "./system-health-service.js"

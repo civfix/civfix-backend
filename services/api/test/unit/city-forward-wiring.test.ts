@@ -62,7 +62,8 @@ vi.mock("../../src/services/discussion-repository.drizzle.js", () => ({
 }))
 
 vi.mock("../../src/services/admin/outbound-mail-service.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/services/admin/outbound-mail-service.js")>()
+  const actual =
+    await importOriginal<typeof import("../../src/services/admin/outbound-mail-service.js")>()
   return {
     ...actual,
     makeOutboundMailService: () => ({

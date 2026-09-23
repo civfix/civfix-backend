@@ -20,9 +20,7 @@ describe("ticket tokens", () => {
 
   it("is deterministic for one seat and different for another", () => {
     expect(signer.tokenFor(SEAT)).toBe(signer.tokenFor(SEAT))
-    expect(signer.tokenFor(SEAT)).not.toBe(
-      signer.tokenFor("22222222-2222-2222-2222-222222222222"),
-    )
+    expect(signer.tokenFor(SEAT)).not.toBe(signer.tokenFor("22222222-2222-2222-2222-222222222222"))
   })
 
   it("changes completely when the secret rotates", () => {
@@ -39,9 +37,7 @@ describe("ticket tokens", () => {
   it("verifies a token round trip and rejects a forgery", () => {
     expect(signer.verify(SEAT, signer.tokenFor(SEAT))).toBe(true)
     expect(signer.verify(SEAT, "AAAAAAAAAAAAAAAAAAAAAAAAAA")).toBe(false)
-    expect(signer.verify("22222222-2222-2222-2222-222222222222", signer.tokenFor(SEAT))).toBe(
-      false,
-    )
+    expect(signer.verify("22222222-2222-2222-2222-222222222222", signer.tokenFor(SEAT))).toBe(false)
   })
 
   it("normalizes the scanner's spacing and case before hashing", () => {

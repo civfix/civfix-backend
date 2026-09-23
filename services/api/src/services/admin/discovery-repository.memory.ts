@@ -200,7 +200,11 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
     id: string,
     input: { text: string; actorId: string | null; who: string },
   ): Promise<DiscoveryNoteRecord> {
-    const note: DiscoveryNoteRecord = { text: input.text, who: input.who, createdAt: this.nextDate() }
+    const note: DiscoveryNoteRecord = {
+      text: input.text,
+      who: input.who,
+      createdAt: this.nextDate(),
+    }
     const list = this.notes.get(id) ?? []
     list.push(note)
     this.notes.set(id, list)

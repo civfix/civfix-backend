@@ -91,13 +91,18 @@ vi.mock("pg-boss", () => {
       this.scheduleCalls.push({ name, cron, data, opts })
       return Promise.resolve()
     }
-    work(name: string, options: unknown, handler: (jobs: unknown[]) => Promise<void>): Promise<void> {
+    work(
+      name: string,
+      options: unknown,
+      handler: (jobs: unknown[]) => Promise<void>,
+    ): Promise<void> {
       this.workCalls.push({ name, options })
       this.handler = handler
       return Promise.resolve()
     }
     complete(name: string, id: string): Promise<void> {
-      if (this.rejectCompleteFor === id) return Promise.reject(new Error(`complete write failed ${id}`))
+      if (this.rejectCompleteFor === id)
+        return Promise.reject(new Error(`complete write failed ${id}`))
       this.completeCalls.push({ name, id })
       return Promise.resolve()
     }
@@ -274,7 +279,10 @@ describe("PgBossWorkerJobs enqueue / schedule mapping", () => {
 })
 
 describe("PgBossWorkerJobs work(): PER-JOB completion of a delivered batch", () => {
-  async function startWithHandler(handler: JobHandler, settings?: { batchSize?: number }): Promise<void> {
+  async function startWithHandler(
+    handler: JobHandler,
+    settings?: { batchSize?: number },
+  ): Promise<void> {
     const jobs = new PgBossWorkerJobs("postgres://stub/civfix")
     await jobs.start()
     await jobs.workWithSettings(QUEUE, handler, settings)
@@ -328,7 +336,11 @@ describe("PgBossWorkerJobs work(): PER-JOB completion of a delivered batch", () 
     await startWithHandler((job) => (job.id === "j2" ? Promise.reject(boom) : Promise.resolve()))
 
     await expect(
-      lastBoss().deliver([{ id: "j1", data: 1 }, { id: "j2", data: 2 }, { id: "j3", data: 3 }]),
+      lastBoss().deliver([
+        { id: "j1", data: 1 },
+        { id: "j2", data: 2 },
+        { id: "j3", data: 3 },
+      ]),
     ).resolves.toBeUndefined()
 
     expect(lastBoss().failCalls).toEqual([{ name: QUEUE, id: "j2", output: boom }])
@@ -358,7 +370,10 @@ describe("PgBossWorkerJobs work(): PER-JOB completion of a delivered batch", () 
     lastBoss().rejectCompleteFor = "j2"
 
     await expect(
-      lastBoss().deliver([{ id: "j1", data: 1 }, { id: "j2", data: 2 }]),
+      lastBoss().deliver([
+        { id: "j1", data: 1 },
+        { id: "j2", data: 2 },
+      ]),
     ).rejects.toThrow(/complete write failed j2/)
 
     // The sibling's completion still landed before the rethrow.
@@ -366,11 +381,16 @@ describe("PgBossWorkerJobs work(): PER-JOB completion of a delivered batch", () 
   })
 
   it("RETHROWS when the FAIL write fails too (the failure must not be swallowed)", async () => {
-    await startWithHandler((job) => (job.id === "j1" ? Promise.reject(new Error("nope")) : Promise.resolve()))
+    await startWithHandler((job) =>
+      job.id === "j1" ? Promise.reject(new Error("nope")) : Promise.resolve(),
+    )
     lastBoss().rejectFailFor = "j1"
 
     await expect(
-      lastBoss().deliver([{ id: "j1", data: 1 }, { id: "j2", data: 2 }]),
+      lastBoss().deliver([
+        { id: "j1", data: 1 },
+        { id: "j2", data: 2 },
+      ]),
     ).rejects.toThrow(/fail write failed j1/)
     expect(lastBoss().completeCalls).toEqual([{ name: QUEUE, id: "j2" }])
   })
@@ -424,9 +444,9 @@ describe("buildJobs seam selection", () => {
   })
 
   it("THROWS when the real seam is selected without a DATABASE_URL", () => {
-    expect(() =>
-      buildJobs({ NODE_ENV: "test", USE_FAKE_JOBS: "0" } as NodeJS.ProcessEnv),
-    ).toThrow(/DATABASE_URL is required when USE_FAKE_JOBS is off/)
+    expect(() => buildJobs({ NODE_ENV: "test", USE_FAKE_JOBS: "0" } as NodeJS.ProcessEnv)).toThrow(
+      /DATABASE_URL is required when USE_FAKE_JOBS is off/,
+    )
   })
 
   it("builds the real handle in production and derives its stop grace from MEDIA_JOB_TIMEOUT_MS", async () => {

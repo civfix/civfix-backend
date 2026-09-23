@@ -67,7 +67,8 @@ export const JURISDICTION_LAYER_RANK_CASE =
  * today: federal -2, tribal -1, place 0, county 1, state 2 — see ingest LAYER_RANK / LAYER_PRIORITY), and
  * `geoid` (the PK, a total order) breaks the remaining ties so the choice is deterministic forever.
  */
-export const JURISDICTION_RESOLVE_ORDER_BY = `${JURISDICTION_LAYER_RANK_CASE}, priority, geoid` as const
+export const JURISDICTION_RESOLVE_ORDER_BY =
+  `${JURISDICTION_LAYER_RANK_CASE}, priority, geoid` as const
 
 /**
  * The canonical SQL text, exported for assertions/inspection. Uses positional params $1 (lng) and

@@ -202,8 +202,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
     },
 
     async list(query: BroadcastListQuery): Promise<BroadcastRecord[]> {
-      const statusFilter =
-        query.status !== undefined ? sql`AND status = ${query.status}` : sql``
+      const statusFilter = query.status !== undefined ? sql`AND status = ${query.status}` : sql``
       const cursorFilter =
         query.cursor !== null
           ? sql`AND (created_at, id) < (${query.cursor.createdAt}, ${query.cursor.id})`
@@ -628,9 +627,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
     },
 
     async deliveryCounts(broadcastId: string): Promise<DeliveryCounts> {
-      const rows = await sql<
-        { status: DeliveryStatus; n: string }[]
-      >`
+      const rows = await sql<{ status: DeliveryStatus; n: string }[]>`
         SELECT status, count(*)::text AS n
           FROM broadcast_deliveries
          WHERE broadcast_id = ${broadcastId}
@@ -670,7 +667,8 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
 
     async listDeliveries(query: DeliveryListQuery): Promise<DeliveryListRow[]> {
       const statusFilter = query.status !== undefined ? sql`AND status = ${query.status}` : sql``
-      const channelFilter = query.channel !== undefined ? sql`AND channel = ${query.channel}` : sql``
+      const channelFilter =
+        query.channel !== undefined ? sql`AND channel = ${query.channel}` : sql``
       const cursorFilter =
         query.cursor !== null
           ? sql`AND (created_at, id) < (${query.cursor.createdAt}, ${query.cursor.id})`

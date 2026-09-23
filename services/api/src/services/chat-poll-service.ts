@@ -1,4 +1,3 @@
-
 import { AppError, ErrorCode } from "@civfix/shared"
 import type { ChatMessageDTO } from "@civfix/shared"
 import type { ChatRepository } from "./chat-repository.drizzle.js"

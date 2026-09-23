@@ -28,7 +28,9 @@ export const consentRecords = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index("consent_records_donation_idx").on(t.donationId).where(sql`donation_id IS NOT NULL`),
+    index("consent_records_donation_idx")
+      .on(t.donationId)
+      .where(sql`donation_id IS NOT NULL`),
     index("consent_records_org_idx")
       .on(t.organizationId, t.acceptedAt.desc(), t.id.desc())
       .where(sql`organization_id IS NOT NULL`),

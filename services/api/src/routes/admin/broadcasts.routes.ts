@@ -151,17 +151,22 @@ export async function registerAdminBroadcastRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "adminSetHostMessagingSuspended", { preHandler: csrfProtect }, async (request, reply) => {
-    const operatorId = requireAuth(request)
-    const body = parse(SetHostMessagingSuspendedRequestSchema, mergeParams(request))
-    await broadcastRepo().setHostMessagingSuspended(body.id, body.suspended)
-    await writeAudit(container.getDb().sql, {
-      action: body.suspended ? "host.messaging_suspended" : "host.messaging_restored",
-      actorId: operatorId,
-      target: `user:${body.id}`,
-      meta: { reason: body.reason },
-    })
-    const payload: SetHostMessagingSuspendedResponse = { ok: true, suspended: body.suspended }
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "adminSetHostMessagingSuspended",
+    { preHandler: csrfProtect },
+    async (request, reply) => {
+      const operatorId = requireAuth(request)
+      const body = parse(SetHostMessagingSuspendedRequestSchema, mergeParams(request))
+      await broadcastRepo().setHostMessagingSuspended(body.id, body.suspended)
+      await writeAudit(container.getDb().sql, {
+        action: body.suspended ? "host.messaging_suspended" : "host.messaging_restored",
+        actorId: operatorId,
+        target: `user:${body.id}`,
+        meta: { reason: body.reason },
+      })
+      const payload: SetHostMessagingSuspendedResponse = { ok: true, suspended: body.suspended }
+      reply.status(200).send(payload)
+    },
+  )
 }

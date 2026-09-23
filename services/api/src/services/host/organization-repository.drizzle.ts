@@ -312,9 +312,7 @@ async function claimOrgLogoInTx(
   }
 }
 
-export function documentMediaIdsOf(
-  documents: { mediaId?: string }[] | null | undefined,
-): string[] {
+export function documentMediaIdsOf(documents: { mediaId?: string }[] | null | undefined): string[] {
   const out: string[] = []
   for (const doc of documents ?? []) {
     if (typeof doc.mediaId === "string" && !out.includes(doc.mediaId)) out.push(doc.mediaId)
@@ -451,7 +449,11 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
               actorId: args.createdBy,
               action: "org.verification_verified",
               target: `organization:${args.organizationId}`,
-              meta: { kind: verifiedKind, reason: args.operatorReason ?? null, source: "operator_create" },
+              meta: {
+                kind: verifiedKind,
+                reason: args.operatorReason ?? null,
+                source: "operator_create",
+              },
             })
           }
           const created = await readById(tx, args.organizationId, ownerUserId)
@@ -917,8 +919,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         cursor !== null
           ? sql`AND (v.submitted_at, v.id) < (${cursor.at}, ${cursor.id}::uuid)`
           : sql``
-      const statusFilter =
-        query.status !== undefined ? sql`AND v.status = ${query.status}` : sql``
+      const statusFilter = query.status !== undefined ? sql`AND v.status = ${query.status}` : sql``
       const kindFilter = query.kind !== undefined ? sql`AND v.kind = ${query.kind}` : sql``
       const qFilter =
         query.q !== undefined && query.q.length > 0
@@ -1004,9 +1005,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             ? sql`AND o.suspended_at IS NOT NULL`
             : sql`AND o.suspended_at IS NULL`
       const cursorFilter =
-        cursor !== null
-          ? sql`AND (o.created_at, o.id) < (${cursor.at}, ${cursor.id}::uuid)`
-          : sql``
+        cursor !== null ? sql`AND (o.created_at, o.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
       const rows = await sql<AdminOrganizationRowSelect[]>`
         SELECT ${adminOrganizationColumns(sql)}
         FROM organizations o
@@ -1614,7 +1613,9 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         await writeHostAudit(tx, {
           actorId: args.reviewedBy,
           action:
-            args.decision === "verified" ? "org.verification_verified" : "org.verification_rejected",
+            args.decision === "verified"
+              ? "org.verification_verified"
+              : "org.verification_rejected",
           target: `organization:${args.organizationId}`,
           meta: { kind: grantedKind, reason: args.reason },
         })
@@ -1805,7 +1806,10 @@ function toInviteRecord(row: InviteRowSelect): OrganizationInviteRecord {
   }
 }
 
-async function readInvite(tag: Queryable, inviteId: string): Promise<OrganizationInviteRecord | null> {
+async function readInvite(
+  tag: Queryable,
+  inviteId: string,
+): Promise<OrganizationInviteRecord | null> {
   const rows = await tag<InviteRowSelect[]>`
     SELECT ${inviteColumns(tag)}
     FROM organization_invites i

@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
@@ -59,7 +58,13 @@ describe.skipIf(!pg)("notification coalescing (integration)", () => {
     const repo = makeDrizzleNotificationRepository(h.sql)
     const userId = await newUser("Coalesce Read")
 
-    await repo.insertNotification({ userId, type: "group_chat", title: "Dana", body: "a", link: LINK })
+    await repo.insertNotification({
+      userId,
+      type: "group_chat",
+      title: "Dana",
+      body: "a",
+      link: LINK,
+    })
     await repo.clearByTypeAndLink(userId, "group_chat", LINK)
 
     const refreshed = await repo.refreshUnreadNotification({
@@ -176,7 +181,13 @@ describe.skipIf(!pg)("notification coalescing (integration)", () => {
     const theirs = await newUser("Coalesce Theirs")
     const since = new Date(Date.now() - 10 * 60 * 1000)
 
-    await repo.insertNotification({ userId: mine, type: "group_chat", title: "D", body: "a", link: LINK })
+    await repo.insertNotification({
+      userId: mine,
+      type: "group_chat",
+      title: "D",
+      body: "a",
+      link: LINK,
+    })
 
     expect(
       await repo.refreshUnreadNotification({

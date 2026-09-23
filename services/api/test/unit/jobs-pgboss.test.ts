@@ -80,8 +80,14 @@ describe("PgBossJobs (API enqueue adapter)", () => {
     // pending jobs in pg-boss v10 (the default "standard" policy does not, and createQueue is a no-op on
     // an already-existing queue — so updateQueue is what fixes a pre-existing default-policy queue).
     for (const name of API_QUEUE_NAMES) {
-      expect(lastBoss.createQueue).toHaveBeenCalledWith(name, expect.objectContaining({ policy: "short" }))
-      expect(lastBoss.updateQueue).toHaveBeenCalledWith(name, expect.objectContaining({ policy: "short" }))
+      expect(lastBoss.createQueue).toHaveBeenCalledWith(
+        name,
+        expect.objectContaining({ policy: "short" }),
+      )
+      expect(lastBoss.updateQueue).toHaveBeenCalledWith(
+        name,
+        expect.objectContaining({ policy: "short" }),
+      )
     }
   })
 

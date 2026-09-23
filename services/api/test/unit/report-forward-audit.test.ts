@@ -1,4 +1,3 @@
-
 import { describe, it, expect, vi } from "vitest"
 import {
   forwardReportCityMention,
@@ -217,7 +216,13 @@ describe("forwardReportCityMention audit writes (report_message_forwards)", () =
     expect(named.calls[0]!.body).toContain("there is a tag here")
 
     const anon = mailer()
-    await forwardReportCityMention(anon, { ...ctx(SF), actorDisplayName: null }, "@sf hi", CREATED, {})
+    await forwardReportCityMention(
+      anon,
+      { ...ctx(SF), actorDisplayName: null },
+      "@sf hi",
+      CREATED,
+      {},
+    )
     expect(anon.calls[0]!.body).toContain("A neighbor commented on a graffiti report in SF")
   })
 

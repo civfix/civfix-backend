@@ -6,12 +6,21 @@ import {
 } from "../../src/services/admin/moderation-service.js"
 import type { UserStatus } from "@civfix/shared"
 
-
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
 class FakeReportChatEmitter {
-  readonly events: { reportId: string; status: string; kind?: string | null; note?: string | null }[] = []
-  emit(event: { reportId: string; status: string; kind?: string | null; note?: string | null }): Promise<void> {
+  readonly events: {
+    reportId: string
+    status: string
+    kind?: string | null
+    note?: string | null
+  }[] = []
+  emit(event: {
+    reportId: string
+    status: string
+    kind?: string | null
+    note?: string | null
+  }): Promise<void> {
     this.events.push(event)
     return Promise.resolve()
   }
@@ -227,7 +236,9 @@ describe("moderation detail", () => {
         strikes: 0,
         device: "iOS - Los Angeles",
       },
-      media: [{ id: "MA-1", kind: "image", r2Key: "reports/x.jpg", thumbKey: "reports/x-thumb.jpg" }],
+      media: [
+        { id: "MA-1", kind: "image", r2Key: "reports/x.jpg", thumbKey: "reports/x-thumb.jpg" },
+      ],
     })
 
     const detail = await svc.getItem("MOD-1")
@@ -270,7 +281,9 @@ describe("moderation detail", () => {
     repo.seedItem({
       id: "MOD-P",
       kind: "image",
-      media: [{ id: "MA-2", kind: "image", r2Key: "reports/held.jpg", thumbKey: "reports/held-t.jpg" }],
+      media: [
+        { id: "MA-2", kind: "image", r2Key: "reports/held.jpg", thumbKey: "reports/held-t.jpg" },
+      ],
     })
     const detail = await svc.getItem("MOD-P")
     expect(detail.media[0]).toEqual({
@@ -479,7 +492,13 @@ describe("moderation actions", () => {
 
     repo.seedItem({ id: "MOD-U", subjectType: "user", subjectId: "USER-9", status: "open" })
     await svc.remove("MOD-U", { actorId: "op-1", reason: "abuse" })
-    repo.seedItem({ id: "APP-U", kind: "appeal", subjectType: "user", subjectId: "USER-9", status: "open" })
+    repo.seedItem({
+      id: "APP-U",
+      kind: "appeal",
+      subjectType: "user",
+      subjectId: "USER-9",
+      status: "open",
+    })
 
     await svc.appeal("APP-U", { decision: "overturn", actorId: "op-1", note: null })
 
@@ -502,14 +521,32 @@ describe("moderation actions", () => {
       },
     })
 
-    repo.seedItem({ id: "APP-KEEP", kind: "appeal", subjectType: "user", subjectId: "USER-1", status: "open" })
+    repo.seedItem({
+      id: "APP-KEEP",
+      kind: "appeal",
+      subjectType: "user",
+      subjectId: "USER-1",
+      status: "open",
+    })
     await svc.appeal("APP-KEEP", { decision: "uphold", actorId: "op-1", note: null })
 
-    repo.seedItem({ id: "APP-CHAT", kind: "appeal", subjectType: "chat", subjectId: "CHAT-1", status: "open" })
+    repo.seedItem({
+      id: "APP-CHAT",
+      kind: "appeal",
+      subjectType: "chat",
+      subjectId: "CHAT-1",
+      status: "open",
+    })
     await svc.appeal("APP-CHAT", { decision: "overturn", actorId: "op-1", note: null })
 
     repo.deletedUserIds.add("USER-GONE")
-    repo.seedItem({ id: "APP-GONE", kind: "appeal", subjectType: "user", subjectId: "USER-GONE", status: "open" })
+    repo.seedItem({
+      id: "APP-GONE",
+      kind: "appeal",
+      subjectType: "user",
+      subjectId: "USER-GONE",
+      status: "open",
+    })
     await svc.appeal("APP-GONE", { decision: "overturn", actorId: "op-1", note: null })
 
     expect(cleared).toEqual([])

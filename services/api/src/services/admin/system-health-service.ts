@@ -1,4 +1,3 @@
-
 import type { SystemHealthResponse, SystemService } from "@civfix/shared"
 
 export type HealthStatus = "ok" | "warn" | "down" | "not_deployed"
@@ -51,7 +50,8 @@ async function probeRow(
 }
 
 function classifyProbeError(err: unknown): string {
-  const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined
+  const code =
+    typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined
   const message = err instanceof Error ? err.message : String(err)
   if (message.includes("timed out") || code === "ETIMEDOUT") return "Timed out"
   if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "ECONNRESET") return "Unreachable"
@@ -98,16 +98,7 @@ export function makeSystemHealthService(deps: SystemHealthServiceDeps): SystemHe
       }
 
       return {
-        services: [
-          api,
-          postgres,
-          redis,
-          mediaWorker,
-          ociEmailRow,
-          glitchTip,
-          tileCdn,
-          routing,
-        ],
+        services: [api, postgres, redis, mediaWorker, ociEmailRow, glitchTip, tileCdn, routing],
       }
     },
   }

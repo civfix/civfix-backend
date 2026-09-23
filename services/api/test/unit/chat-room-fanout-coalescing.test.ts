@@ -1,4 +1,3 @@
-
 import { describe, it, expect, beforeEach } from "vitest"
 import { FakePushSender } from "@civfix/shared/fakes"
 import type { ChatMessageDTO, PersonDTO, UserMentionDTO } from "@civfix/shared"
@@ -12,7 +11,10 @@ import {
   makeNotificationService,
   type NotificationService,
 } from "../../src/services/notification-service.js"
-import { InMemoryNotificationRepository, flushNotificationDispatch } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  flushNotificationDispatch,
+} from "../helpers/notifications.js"
 
 const ACTOR = "dddddddd-dddd-dddd-dddd-dddddddddddd"
 const A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -132,9 +134,11 @@ describe("room-activity coalescing (H19)", () => {
     await flushNotificationDispatch()
 
     expect(bells(A)).toHaveLength(2)
-    expect(bells(A).map((n) => n.link).sort()).toEqual(
-      [`/messages/group/${ROOM}`, `/messages/group/${other}`].sort(),
-    )
+    expect(
+      bells(A)
+        .map((n) => n.link)
+        .sort(),
+    ).toEqual([`/messages/group/${ROOM}`, `/messages/group/${other}`].sort())
   })
 
   it("refreshes the coalesced bell to the LATEST sender + preview instead of inserting a second row", async () => {
@@ -170,7 +174,9 @@ describe("room-activity coalescing (H19)", () => {
 
   it("leaves the mention bell alone: mentioned members are excluded and their own bells are per message", async () => {
     const notify = makeNotifier({ members: [ACTOR, A, MENTIONED] })
-    const mention: UserMentionDTO[] = [{ id: MENTIONED, handle: "mentioned", displayName: "Mentioned" }]
+    const mention: UserMentionDTO[] = [
+      { id: MENTIONED, handle: "mentioned", displayName: "Mentioned" },
+    ]
 
     await notify(ROOM, message("hey @mentioned", mention))
     clockMs += 1_000
@@ -198,7 +204,11 @@ describe("room-activity coalescing (H19)", () => {
       send: (): Promise<void> => new Promise(() => {}),
       sendMany: (_userIds: string[], _payload: PushPayload): Promise<void> => new Promise(() => {}),
     }
-    const service = makeNotificationService({ repo, pushSender: hanging, now: () => new Date(clockMs) })
+    const service = makeNotificationService({
+      repo,
+      pushSender: hanging,
+      now: () => new Date(clockMs),
+    })
     const notify = makeRoomFanoutNotifier(
       { kind: "group", titleFallbackKey: "notification.group_chat.title_fallback" },
       {

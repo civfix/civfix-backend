@@ -16,7 +16,9 @@ import {
  */
 export function coverageLabel(record: JurisdictionDirectoryRecord): string {
   const covered = new Set(
-    record.categoryContacts.filter((c) => c.email !== null && c.email.trim() !== "").map((c) => c.category),
+    record.categoryContacts
+      .filter((c) => c.email !== null && c.email.trim() !== "")
+      .map((c) => c.category),
   )
   const hasDefault = record.hasDefaultContact || record.defaultEmails.some((e) => e.trim() !== "")
   if (hasDefault || covered.size === ADMIN_CATEGORIES.length) return "All categories"
@@ -37,7 +39,9 @@ export function directoryMethod(record: JurisdictionDirectoryRecord): "email" | 
   return "none"
 }
 
-export function directoryStatus(record: JurisdictionDirectoryRecord): "verified" | "pending" | "bounced" {
+export function directoryStatus(
+  record: JurisdictionDirectoryRecord,
+): "verified" | "pending" | "bounced" {
   if (record.bounced) return "bounced"
   if (record.contactUpdatedAt !== null && directoryMethod(record) !== "none") return "verified"
   return "pending"

@@ -96,7 +96,9 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
   }
 
   goingCount(cleanupId: string): Promise<number> {
-    return Promise.resolve((this.memberCounts.get(cleanupId) ?? 0) + this.activeGuestCount(cleanupId))
+    return Promise.resolve(
+      (this.memberCounts.get(cleanupId) ?? 0) + this.activeGuestCount(cleanupId),
+    )
   }
 
   isPhoneOptedOut(phone: string): Promise<boolean> {
@@ -176,7 +178,9 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
   upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string }> {
     const existing = this.guests.find(
       (g) =>
-        g.cleanupId === args.cleanupId && g.cancelledAt === null && g.contactKey === args.contactKey,
+        g.cleanupId === args.cleanupId &&
+        g.cancelledAt === null &&
+        g.contactKey === args.contactKey,
     )
     if (existing !== undefined) {
       existing.name = args.name
@@ -333,11 +337,7 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
     return Promise.resolve(rows)
   }
 
-  scrubExpiredGuestContacts(args: {
-    cutoff: Date
-    now: Date
-    batchSize: number
-  }): Promise<number> {
+  scrubExpiredGuestContacts(args: { cutoff: Date; now: Date; batchSize: number }): Promise<number> {
     let scrubbed = 0
     for (const guest of this.guests) {
       if (scrubbed >= args.batchSize) break

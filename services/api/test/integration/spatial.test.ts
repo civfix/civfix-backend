@@ -61,7 +61,11 @@ describe.skipIf(!pg)("spatial: jurisdiction resolution", () => {
 
   it("routes a national-forest point to the forest, not the surrounding city (ownership overrides place)", async () => {
     // PROBE_ANGELES_OVER_CITY sits inside the Angeles National Forest AND the LA city box; federal wins.
-    const r = await resolveJurisdiction(h.sql, PROBE_ANGELES_OVER_CITY.lng, PROBE_ANGELES_OVER_CITY.lat)
+    const r = await resolveJurisdiction(
+      h.sql,
+      PROBE_ANGELES_OVER_CITY.lng,
+      PROBE_ANGELES_OVER_CITY.lat,
+    )
     expect(r).not.toBeNull()
     expect(r?.geoid).toBe(PROBE_ANGELES_OVER_CITY.expectGeoid)
     expect(r?.layer).toBe("federal")

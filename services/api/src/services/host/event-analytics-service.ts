@@ -31,10 +31,7 @@ import {
   type KeyCount,
   type SeriesClosure,
 } from "@civfix/shared/host"
-import type {
-  AnalyticsRepository,
-  EventClockRecord,
-} from "./analytics-repository.drizzle.js"
+import type { AnalyticsRepository, EventClockRecord } from "./analytics-repository.drizzle.js"
 import type { EventAnalyticsRepository } from "./event-analytics-repository.drizzle.js"
 import type { MetricRow, MetricsRepository } from "./metrics-repository.drizzle.js"
 import { hostAnalyticsCacheKey, type HostAnalyticsCache } from "./host-analytics-cache.js"
@@ -72,9 +69,7 @@ export interface EventAnalyticsService {
 
 function shiftDayKey(day: string, deltaDays: number): string {
   const [year, month, date] = day.split("-").map(Number)
-  const shifted = new Date(
-    Date.UTC(year ?? 1970, (month ?? 1) - 1, date ?? 1) + deltaDays * DAY_MS,
-  )
+  const shifted = new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, date ?? 1) + deltaDays * DAY_MS)
   return shifted.toISOString().slice(0, 10)
 }
 
@@ -190,9 +185,7 @@ export function arrivalBuckets(offsets: readonly number[]): SeriesPoint[] {
     }))
 }
 
-export function makeEventAnalyticsService(
-  deps: EventAnalyticsServiceDeps,
-): EventAnalyticsService {
+export function makeEventAnalyticsService(deps: EventAnalyticsServiceDeps): EventAnalyticsService {
   const now = deps.now ?? (() => new Date())
 
   function lifecycleWindow(clock: EventClockRecord, timezone: string): DayRange {

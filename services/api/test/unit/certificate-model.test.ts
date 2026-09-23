@@ -1,4 +1,3 @@
-
 import { MAX_CERTIFICATE_ENTRIES } from "@civfix/shared"
 import { describe, expect, it } from "vitest"
 import {

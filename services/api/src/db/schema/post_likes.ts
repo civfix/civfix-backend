@@ -22,10 +22,7 @@ export const postLikes = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [
-    primaryKey({ columns: [t.postId, t.userId] }),
-    index("post_likes_user_idx").on(t.userId),
-  ],
+  (t) => [primaryKey({ columns: [t.postId, t.userId] }), index("post_likes_user_idx").on(t.userId)],
 )
 
 export type PostLikeRow = typeof postLikes.$inferSelect

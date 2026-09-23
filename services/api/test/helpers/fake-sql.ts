@@ -1,4 +1,3 @@
-
 export interface RecordedStatement {
   sql: string
   values: unknown[]
@@ -29,7 +28,9 @@ export interface FakeSqlControl {
 }
 
 function isNode(v: unknown): v is SqlNode {
-  return typeof v === "object" && v !== null && (v as { __isFakeSql?: boolean }).__isFakeSql === true
+  return (
+    typeof v === "object" && v !== null && (v as { __isFakeSql?: boolean }).__isFakeSql === true
+  )
 }
 
 export function makeFakeSql(handlers: SqlHandler[] = []): FakeSqlControl {
@@ -47,7 +48,10 @@ export function makeFakeSql(handlers: SqlHandler[] = []): FakeSqlControl {
     return Promise.resolve([])
   }
 
-  const tag = ((strings: TemplateStringsArray | readonly unknown[], ...values: unknown[]): SqlNode => {
+  const tag = ((
+    strings: TemplateStringsArray | readonly unknown[],
+    ...values: unknown[]
+  ): SqlNode => {
     if (!Array.isArray((strings as TemplateStringsArray).raw)) {
       const helper = strings as unknown
       const isList = Array.isArray(helper)

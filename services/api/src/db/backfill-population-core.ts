@@ -1,4 +1,3 @@
-
 import type { Sql } from "./client.js"
 
 export const ACS_POP_VAR = "B01003_001E"
@@ -22,7 +21,9 @@ const defaultFetchJson: CensusJsonFetch = async (url) => {
     }
     if (!res.ok) throw new Error(`Census API ${res.status} ${res.statusText}`)
     if (!contentType.includes("json")) {
-      throw new Error(`Census API returned a non-JSON response (${res.status}); check the query/year`)
+      throw new Error(
+        `Census API returned a non-JSON response (${res.status}); check the query/year`,
+      )
     }
     return (await res.json()) as unknown[][]
   } finally {
@@ -30,7 +31,12 @@ const defaultFetchJson: CensusJsonFetch = async (url) => {
   }
 }
 
-function acsUrl(year: number, forClause: string, inClause: string | null, key: string | null): string {
+function acsUrl(
+  year: number,
+  forClause: string,
+  inClause: string | null,
+  key: string | null,
+): string {
   const params = new URLSearchParams()
   params.set("get", ACS_POP_VAR)
   params.set("for", forClause)
@@ -53,7 +59,9 @@ export function parseAcs(rows: unknown[][]): { geoid: string; population: number
   const header = (rows[0] ?? []).map(String)
   const varIdx = header.indexOf(ACS_POP_VAR)
   if (varIdx < 0) return []
-  const geoCols = ACS_GEO_COLUMNS.map((c) => header.indexOf(c)).filter((i) => i >= 0 && i !== varIdx)
+  const geoCols = ACS_GEO_COLUMNS.map((c) => header.indexOf(c)).filter(
+    (i) => i >= 0 && i !== varIdx,
+  )
   const out: { geoid: string; population: number }[] = []
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r]

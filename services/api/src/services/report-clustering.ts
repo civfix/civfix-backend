@@ -140,7 +140,11 @@ export function clusterByZoom(
 
   const clusters: ReportClusterDTO[] = []
   for (const cell of cells.values()) {
-    clusters.push({ lat: cell.latSum / cell.count, lng: cell.lngSum / cell.count, count: cell.count })
+    clusters.push({
+      lat: cell.latSum / cell.count,
+      lng: cell.lngSum / cell.count,
+      count: cell.count,
+    })
   }
   return { clusters, pins: [] }
 }

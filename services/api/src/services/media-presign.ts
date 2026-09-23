@@ -34,7 +34,9 @@ export function makeMediaPresigner(storage: PresignStorage): PresignMedia {
  */
 export function makePrivateMediaPresigner(storage: PresignStorage): PresignMedia {
   return async (r2Key, thumbKey) => {
-    const url = await storage.presignGet(r2Key, MEDIA_PRIVATE_GET_URL_TTL_SEC, { forceSigned: true })
+    const url = await storage.presignGet(r2Key, MEDIA_PRIVATE_GET_URL_TTL_SEC, {
+      forceSigned: true,
+    })
     if (thumbKey === null) return { url }
     const thumbUrl = await storage.presignGet(thumbKey, MEDIA_PRIVATE_GET_URL_TTL_SEC, {
       forceSigned: true,

@@ -1,4 +1,3 @@
-
 import {
   ComposeRequestSchema,
   MailListQuerySchema,
@@ -96,7 +95,8 @@ export async function registerAdminMailRoutes(
       makeMailService({
         repo: overrides.repo,
         outboundMail: overrides.outboundMail,
-        loadAttachmentBytes: (key) => (overrides.outboundStorage ?? container.storage).getObject(key),
+        loadAttachmentBytes: (key) =>
+          (overrides.outboundStorage ?? container.storage).getObject(key),
       }),
     () => {
       const sql = container.getDb().sql
@@ -112,8 +112,7 @@ export async function registerAdminMailRoutes(
 
   function templateService(): ForwardTemplateService {
     const overrides = app.adminMailOverrides?.forwardTemplates
-    const repo =
-      overrides ?? makeDrizzleForwardTemplateRepository(container.getDb().sql)
+    const repo = overrides ?? makeDrizzleForwardTemplateRepository(container.getDb().sql)
     return makeForwardTemplateService({ repo })
   }
 
@@ -150,19 +149,29 @@ export async function registerAdminMailRoutes(
     reply.status(200).send(payload)
   })
 
-  route(app, "composeMail", { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } }, async (request, reply) => {
-    const actorId = requireOperator(request)
-    const body = parse(ComposeRequestSchema, request.body)
-    await service().compose({ to: body.to, subject: body.subject, body: body.body }, actorId)
-    sendOk(reply)
-  })
+  route(
+    app,
+    "composeMail",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } },
+    async (request, reply) => {
+      const actorId = requireOperator(request)
+      const body = parse(ComposeRequestSchema, request.body)
+      await service().compose({ to: body.to, subject: body.subject, body: body.body }, actorId)
+      sendOk(reply)
+    },
+  )
 
-  route(app, "replyMail", { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } }, async (request, reply) => {
-    const actorId = requireOperator(request)
-    const { id, body } = parseBodyWithId(ReplyRequestSchema, request)
-    await service().reply(id, { body: body.body }, actorId)
-    sendOk(reply)
-  })
+  route(
+    app,
+    "replyMail",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } },
+    async (request, reply) => {
+      const actorId = requireOperator(request)
+      const { id, body } = parseBodyWithId(ReplyRequestSchema, request)
+      await service().reply(id, { body: body.body }, actorId)
+      sendOk(reply)
+    },
+  )
 
   route(app, "markMailRead", { preHandler: csrfProtect }, async (request, reply) => {
     const { id } = parseBodyWithId(MarkMailReadRequestSchema, request)
@@ -177,12 +186,17 @@ export async function registerAdminMailRoutes(
     sendOk(reply)
   })
 
-  route(app, "resendMail", { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } }, async (request, reply) => {
-    const actorId = requireOperator(request)
-    const { id } = parseBodyWithId(ResendRequestSchema, request)
-    await service().resend(id, actorId)
-    sendOk(reply)
-  })
+  route(
+    app,
+    "resendMail",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } },
+    async (request, reply) => {
+      const actorId = requireOperator(request)
+      const { id } = parseBodyWithId(ResendRequestSchema, request)
+      await service().resend(id, actorId)
+      sendOk(reply)
+    },
+  )
 
   route(app, "getForwardTemplateDefault", async (_request, reply) => {
     const payload: ForwardTemplateSettingsDTO = await templateService().get()

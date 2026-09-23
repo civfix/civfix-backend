@@ -1,17 +1,16 @@
-
 import type { Container } from "../di.js"
 import type { OAuthProvider, UserDTO } from "@civfix/shared"
 import { RedisCacheClient, type CacheClient } from "./cache.js"
 import { SessionService, type SessionLogger } from "./session-service.js"
-import {
-  OtpService,
-  REVIEWER_OTP_EMAIL,
-  type OtpLogger,
-  type ReviewerOtpConfig,
-} from "./otp.js"
+import { OtpService, REVIEWER_OTP_EMAIL, type OtpLogger, type ReviewerOtpConfig } from "./otp.js"
 import { OAuthService, type OAuthConfig } from "./oauth.js"
 import type { JwksVerifier } from "./jwks.js"
-import { handleChangeableAtFrom, type AuthStores, type UserRecord, type UserStore } from "./stores.js"
+import {
+  handleChangeableAtFrom,
+  type AuthStores,
+  type UserRecord,
+  type UserStore,
+} from "./stores.js"
 import { PgAuthStores } from "./pg-stores.js"
 import { REVIEWER_OTP_CODE_MIN_LENGTH } from "../env.js"
 import { resolveLocale } from "../i18n/locales.js"
@@ -113,7 +112,11 @@ export function reviewerOtpConfigFromEnv(env: Container["env"]): ReviewerOtpConf
 
 export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
   const config: OAuthConfig = {}
-  if (env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET && env.GOOGLE_OAUTH_REDIRECT_URI) {
+  if (
+    env.GOOGLE_OAUTH_CLIENT_ID &&
+    env.GOOGLE_OAUTH_CLIENT_SECRET &&
+    env.GOOGLE_OAUTH_REDIRECT_URI
+  ) {
     const extraAudiences = [
       env.GOOGLE_OAUTH_IOS_CLIENT_ID,
       env.GOOGLE_OAUTH_ANDROID_CLIENT_ID,
@@ -140,9 +143,7 @@ export function oauthConfigFromEnv(env: Container["env"]): OAuthConfig {
       keyId: env.APPLE_OAUTH_KEY_ID,
       privateKey: env.APPLE_OAUTH_PRIVATE_KEY,
       redirectUri: `${env.PUBLIC_API_URL}/auth/apple/callback`,
-      ...(env.APPLE_OAUTH_WEB_CLIENT_ID
-        ? { webClientId: env.APPLE_OAUTH_WEB_CLIENT_ID }
-        : {}),
+      ...(env.APPLE_OAUTH_WEB_CLIENT_ID ? { webClientId: env.APPLE_OAUTH_WEB_CLIENT_ID } : {}),
       ...(appleExtraAudiences.length > 0 ? { extraAudiences: appleExtraAudiences } : {}),
     }
   }

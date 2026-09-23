@@ -131,9 +131,8 @@ function scopedRepo(records: readonly HostedEventRecord[]): HostPortfolioReposit
       const rows = inScope(args.organizationId)
       return Promise.resolve({
         eventsHosted: rows.length,
-        upcomingEvents: rows.filter(
-          (row) => row.startsAt >= args.now && row.status !== "cancelled",
-        ).length,
+        upcomingEvents: rows.filter((row) => row.startsAt >= args.now && row.status !== "cancelled")
+          .length,
       })
     },
   }
@@ -142,10 +141,15 @@ function scopedRepo(records: readonly HostedEventRecord[]): HostPortfolioReposit
 function portfolioService(counts: Map<string, HostedEventCounts>) {
   return makeHostPortfolioService({
     repo: scopedRepo(PORTFOLIO),
-    counts: (ids) => Promise.resolve(new Map(ids.flatMap((id) => {
-      const row = counts.get(id)
-      return row === undefined ? [] : [[id, row] as const]
-    }))),
+    counts: (ids) =>
+      Promise.resolve(
+        new Map(
+          ids.flatMap((id) => {
+            const row = counts.get(id)
+            return row === undefined ? [] : [[id, row] as const]
+          }),
+        ),
+      ),
     now: () => NOW,
   })
 }

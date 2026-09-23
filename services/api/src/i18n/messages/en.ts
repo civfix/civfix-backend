@@ -166,7 +166,8 @@ export const en = {
   // Sign-in passcode email. {{code}} = the numeric OTP.
   "email.otp.subject": "Your civfix sign-in code",
   "email.otp.body_line1": "Your civfix sign-in code is {{code}}.",
-  "email.otp.body_expiry": "It expires in 5 minutes. If you did not request it, you can ignore this email.",
+  "email.otp.body_expiry":
+    "It expires in 5 minutes. If you did not request it, you can ignore this email.",
   // HTML-variant intro (the code itself is rendered in a styled block by the template).
   "email.otp.html_intro": "Your civfix sign-in code is:",
 
@@ -205,14 +206,14 @@ export const en = {
   "email.guest_cancelled.subject": "{{title}} has been cancelled",
   "email.guest_cancelled.body":
     "{{title}} has been cancelled by the host. There is nothing you need to do.",
-  "email.guest_cancelled.body_reason": "{{title}} has been cancelled by the host. Reason: {{reason}}",
+  "email.guest_cancelled.body_reason":
+    "{{title}} has been cancelled by the host. Reason: {{reason}}",
   "sms.guest_otp.body":
     "{{code}} is your civfix code to RSVP for {{title}}. Msg&data rates may apply. Reply STOP to opt out.",
   "sms.guest_confirmed.body":
     "You are on the list for {{title}}. Cancel: {{link}} Reply STOP to opt out.",
   "sms.guest_updated.body": "{{title}} changed: now {{when}} at {{place}}. Reply STOP to opt out.",
   "sms.guest_cancelled.body": "{{title}} has been cancelled by the host. Reply STOP to opt out.",
-
 } satisfies MessageCatalog
 
 /** The exhaustive set of message keys, derived from the EN source so es/de/ko can be checked complete. */

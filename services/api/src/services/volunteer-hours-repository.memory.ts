@@ -121,7 +121,12 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
     if (row) row.voidedAt = this.now()
   }
 
-  seedLegacyReportEntry(userId: string, reportId: string, geoid: string | null, hours = 0.1): string {
+  seedLegacyReportEntry(
+    userId: string,
+    reportId: string,
+    geoid: string | null,
+    hours = 0.1,
+  ): string {
     const id = this.newId()
     this.entries.push({
       id,

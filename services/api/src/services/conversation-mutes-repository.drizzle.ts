@@ -53,7 +53,11 @@ export interface ConversationMutesRepository {
 
 export function makeConversationMutesRepository(sql: Sql): ConversationMutesRepository {
   return {
-    async isMuted(userId: string, roomKind: ConversationMuteRoomKind, roomId: string): Promise<boolean> {
+    async isMuted(
+      userId: string,
+      roomKind: ConversationMuteRoomKind,
+      roomId: string,
+    ): Promise<boolean> {
       const rows = await sql<{ exists: boolean }[]>`
         SELECT EXISTS (
           SELECT 1 FROM conversation_mutes

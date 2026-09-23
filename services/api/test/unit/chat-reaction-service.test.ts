@@ -101,7 +101,6 @@ describe("chat reaction service — cleanup group chat", () => {
     const h = makeHarness()
     await h.chat.insertMessage({ cleanupId: CLEANUP, userId: ALICE, body: "hi" }, MSG_ID)
     await expect(
-       
       h.service.toggleCleanupReaction(CLEANUP, MSG_ID, ALICE, "thumbsup" as any),
     ).rejects.toBeInstanceOf(AppError)
   })
@@ -134,9 +133,9 @@ describe("chat reaction service — direct messages", () => {
     const thread = await h.dm.openOrCreateThread(ALICE, BOB)
     const msg = await h.dm.persist({ threadId: thread.id, senderId: ALICE, body: "yo" })
     await h.blocks.block(ALICE, BOB)
-    await expect(
-      h.service.toggleDmReaction(thread.id, msg.id, BOB, "like"),
-    ).rejects.toMatchObject({ httpStatus: 403 })
+    await expect(h.service.toggleDmReaction(thread.id, msg.id, BOB, "like")).rejects.toMatchObject({
+      httpStatus: 403,
+    })
   })
 
   it("404s a missing dm message", async () => {

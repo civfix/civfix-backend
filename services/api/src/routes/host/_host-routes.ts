@@ -16,9 +16,7 @@ import type { PageService } from "../../services/host/page-service.js"
 
 export const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
 
-export const TicketTypeParamsSchema = z
-  .object({ id: IdSchema, ticketTypeId: IdSchema })
-  .strict()
+export const TicketTypeParamsSchema = z.object({ id: IdSchema, ticketTypeId: IdSchema }).strict()
 
 export const RegistrationParamsSchema = z
   .object({ id: IdSchema, registrationId: IdSchema })
@@ -61,10 +59,7 @@ export interface HostRouteContext {
   pageGuards(): HostGuards
 }
 
-export function makeHostRouteContext(
-  app: FastifyInstance,
-  container: Container,
-): HostRouteContext {
+export function makeHostRouteContext(app: FastifyInstance, container: Container): HostRouteContext {
   let services: HostRegistrationServices | undefined
   let guards: HostGuards | undefined
   let pages: PageService | undefined
