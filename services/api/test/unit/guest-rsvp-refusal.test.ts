@@ -20,19 +20,6 @@ const EVENT_ID = "11111111-1111-1111-1111-111111111111"
 const CODE = "424242"
 const ctx = { ip: "203.0.113.10" }
 
-/** Reports whether the upsert inserted, as the Postgres repository does with `xmax = 0`. */
-class CreationAwareGuestRepository extends InMemoryGuestRsvpRepository {
-  override upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string; created: boolean }> {
-    const existed = this.guests.some(
-      (g) =>
-        g.cleanupId === args.cleanupId &&
-        g.cancelledAt === null &&
-        g.contactKey === args.contactKey,
-    )
-    return super.upsertVerifiedGuest(args).then(({ id }) => ({ id, created: !existed }))
-  }
-}
-
 function refusal(
   outcome: RegisterForEventResponse["outcome"],
   extra: Partial<RegisterForEventResponse> = {},
@@ -43,7 +30,7 @@ function refusal(
 function build(register: GuestRegistrationBridge["register"]) {
   let clock = Date.parse("2026-08-25T12:00:00.000Z")
   const now = (): number => clock
-  const repo = new CreationAwareGuestRepository({ now })
+  const repo = new InMemoryGuestRsvpRepository({ now })
   repo.seedEvent({ id: EVENT_ID, title: "Beach cleanup" })
   repo.memberCounts.set(EVENT_ID, 3)
   const mailer = new FakeMailer()
@@ -191,5 +178,39 @@ describe("guest rsvp: the stored channel is the one the code was delivered on", 
       email: "ada@example.org",
       phone: null,
     })
+  })
+})
+
+describe("the in-memory guest repository reports an insert as the Postgres upsert does", () => {
+  const upsert: UpsertGuestArgs = {
+    cleanupId: EVENT_ID,
+    name: "Ada Lovelace",
+    channel: "email",
+    contactKey: "ada@example.org",
+    email: "ada@example.org",
+    phone: null,
+    manageTokenHash: "a".repeat(64),
+    now: new Date("2026-08-25T12:00:00.000Z"),
+  }
+
+  it("marks the first verify as created and a re-verify of the active guest as not", async () => {
+    const repo = new InMemoryGuestRsvpRepository()
+
+    const first = await repo.upsertVerifiedGuest(upsert)
+    const again = await repo.upsertVerifiedGuest({ ...upsert, manageTokenHash: "b".repeat(64) })
+
+    expect(first.created).toBe(true)
+    expect(again).toEqual({ id: first.id, created: false })
+  })
+
+  it("creates a fresh row once the earlier guest was cancelled", async () => {
+    const repo = new InMemoryGuestRsvpRepository()
+    const first = await repo.upsertVerifiedGuest(upsert)
+    await repo.cancelGuest(first.id, upsert.now)
+
+    const fresh = await repo.upsertVerifiedGuest(upsert)
+
+    expect(fresh.created).toBe(true)
+    expect(fresh.id).not.toBe(first.id)
   })
 })

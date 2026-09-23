@@ -40,6 +40,7 @@ import {
 } from "../auth/crypto.js"
 import type { CacheClient } from "../auth/cache.js"
 import type { CounterStore } from "../abuse/counter-store.js"
+import type { AdminAuditAction } from "./admin/audit.js"
 import { honeypotTripped } from "../abuse/honeypot.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
@@ -193,7 +194,7 @@ export interface GuestRsvpRepository {
   incrementOtpAttempts(otpId: string): Promise<number>
   markOtpConsumed(otpId: string, now: Date): Promise<boolean>
   /** `created` is true when this call inserted the row rather than re-verifying an active one. */
-  upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string; created?: boolean }>
+  upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string; created: boolean }>
   findGuestByManageTokenHash(
     hash: string,
   ): Promise<{ id: string; cleanupId: string; cancelledAt: Date | null } | null>
@@ -227,7 +228,7 @@ export interface GuestRsvpServiceDeps {
   jobs?: Jobs
   audit?: (input: {
     actorId: string | null
-    action: string
+    action: AdminAuditAction
     target: string
     meta?: Record<string, unknown>
   }) => Promise<void>
@@ -684,7 +685,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     // Only a row this verify inserted is rolled back: a re-verifying guest already held the RSVP
     // (possibly with a live registration that cancelGuest would also cancel).
     const rollBack = async (): Promise<void> => {
-      if (guest.created !== true) return
+      if (!guest.created) return
       const released = await deps.repo.cancelGuest(guest.id, new Date(now()))
       await enqueueWaitlistPromotion(deps.jobs, released, deps.logger)
     }
@@ -695,7 +696,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       await rollBack()
       throw err
     }
-    if (seat.refusal !== null && guest.created === true) {
+    if (seat.refusal !== null && guest.created) {
       await rollBack()
       throw seat.refusal
     }
