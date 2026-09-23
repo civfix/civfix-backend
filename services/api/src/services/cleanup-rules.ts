@@ -10,20 +10,16 @@ import {
   deriveCleanupStatus,
   eventEndsAtMs,
   hasEventEnded,
-  hasEventStarted,
 } from "@civfix/shared/host"
 import type { EventWindowLike } from "@civfix/shared/host"
 
-export {
-  DEFAULT_EVENT_DURATION_MS,
-  deriveCleanupStatus,
-  eventEndsAtMs,
-  hasEventEnded,
-  hasEventStarted,
-}
-export type { EventWindowLike }
+export { DEFAULT_EVENT_DURATION_MS, deriveCleanupStatus, eventEndsAtMs, hasEventEnded }
 
-export const SCHEDULE_MAX_BACKDATE_MS = 24 * 60 * 60 * 1000
+const MS_PER_MINUTE = 60 * 1000
+
+const MS_PER_DAY = 24 * 60 * MS_PER_MINUTE
+
+export const SCHEDULE_MAX_BACKDATE_MS = MS_PER_DAY
 
 export const DEFAULT_EVENT_SLOT_TITLE = "General volunteers"
 
@@ -40,17 +36,17 @@ export function defaultEventSlot(capacity: number | null): EventSlotInput {
   }
 }
 
-export const MIN_EVENT_DURATION_MS = MIN_EVENT_DURATION_MINUTES * 60 * 1000
+export const MIN_EVENT_DURATION_MS = MIN_EVENT_DURATION_MINUTES * MS_PER_MINUTE
 
-export const MAX_EVENT_DURATION_MS = MAX_EVENT_DURATION_MINUTES * 60 * 1000
+export const MAX_EVENT_DURATION_MS = MAX_EVENT_DURATION_MINUTES * MS_PER_MINUTE
 
-export const SCHEDULE_MAX_AHEAD_MS = 2 * 365 * 24 * 60 * 60 * 1000
+export const SCHEDULE_MAX_AHEAD_MS = 2 * 365 * MS_PER_DAY
 
-export const EVENT_ENDED_FIELD = "event"
+const EVENT_ENDED_FIELD = "event"
 
-export const EVENT_ENDED_REASON = "ended"
+const EVENT_ENDED_REASON = "ended"
 
-export const EVENT_ENDED_MESSAGE = "This event has already ended."
+const EVENT_ENDED_MESSAGE = "This event has already ended."
 
 export function eventEndedError(): AppError {
   return new AppError(ErrorCode.CONFLICT, EVENT_ENDED_MESSAGE, {

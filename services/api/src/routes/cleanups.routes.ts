@@ -168,6 +168,58 @@ export const RequestEventResourcesBodySchema = trimTextFields(
   "message",
 )
 
+type ContainerCleanupDeps = Omit<CleanupServiceDeps, "repo" | "tickets" | "logger">
+
+function productionCleanupDeps(app: FastifyInstance, container: Container): ContainerCleanupDeps {
+  return {
+    presignThumb: (thumbKey: string) =>
+      container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC),
+    resolveJurisdictionGeoid: makeGeoidResolver(container),
+    resolveAddress: makeCachedAddressResolver(container),
+    resolveJurisdictionCode: (geoid: string | null) =>
+      resolveJurisdictionCode(container.getDb().sql, geoid),
+    outboundMail: makeOutboundMailService({
+      repo: makeDrizzleMailRepository(container.getDb().sql),
+      mailer: container.mailer,
+      env: {
+        MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
+        MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
+      },
+    }),
+    affiliations: container.getAffiliationLoader(),
+    notifier: makeRouteNotificationService(container, app.log),
+    attendeeNotifier: makeCommsRuntime(container, app.log).lanes,
+    insightsInvalidator: makeInsightsGeneration({
+      cache: container.getCache(),
+      logger: app.log,
+    }),
+    counters: container.getCounterStore(),
+    jobs: container.jobs,
+    presignEventMedia: makeEventMediaPresigner(container.storage),
+    audit: makeHostAuditSink(container.getDb().sql, app.log),
+    enrichDTOs: (dtos, viewerUserId) => enrichCleanupDTOs(container, dtos, viewerUserId),
+  }
+}
+
+// Under test overrides the service runs on the injected repository plus only the seams the test names;
+// the ticket signer still comes from the container.
+function overriddenCleanupDeps(overrides: CleanupServiceOverrides): ContainerCleanupDeps {
+  return {
+    ...(overrides.presignThumb !== undefined ? { presignThumb: overrides.presignThumb } : {}),
+    ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
+    ...(overrides.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
+    ...(overrides.notifier !== undefined ? { notifier: overrides.notifier } : {}),
+    ...(overrides.attendeeNotifier !== undefined
+      ? { attendeeNotifier: overrides.attendeeNotifier }
+      : {}),
+    ...(overrides.counters !== undefined ? { counters: overrides.counters } : {}),
+    ...(overrides.presignEventMedia !== undefined
+      ? { presignEventMedia: overrides.presignEventMedia }
+      : {}),
+    ...(overrides.audit !== undefined ? { audit: overrides.audit } : {}),
+  }
+}
+
 export function makeContainerCleanupService(
   app: FastifyInstance,
   container: Container,
@@ -175,59 +227,12 @@ export function makeContainerCleanupService(
   const overrides = app.cleanupOverrides
   const repo: CleanupRepository =
     overrides !== undefined ? overrides.repo : makeDrizzleCleanupRepository(container.getDb().sql)
-
-  return makeCleanupService({
-    repo,
-    tickets: container.getTicketTokenSigner(),
-    ...(overrides?.presignThumb !== undefined
-      ? { presignThumb: overrides.presignThumb }
-      : overrides
-        ? {}
-        : {
-            presignThumb: (thumbKey: string) =>
-              container.storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC),
-          }),
-    ...(overrides
-      ? {}
-      : {
-          resolveJurisdictionGeoid: makeGeoidResolver(container),
-          resolveAddress: makeCachedAddressResolver(container),
-          resolveJurisdictionCode: (geoid: string | null) =>
-            resolveJurisdictionCode(container.getDb().sql, geoid),
-          outboundMail: makeOutboundMailService({
-            repo: makeDrizzleMailRepository(container.getDb().sql),
-            mailer: container.mailer,
-            env: {
-              MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
-              MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
-            },
-          }),
-          affiliations: container.getAffiliationLoader(),
-          notifier: makeRouteNotificationService(container, app.log),
-          attendeeNotifier: makeCommsRuntime(container, app.log).lanes,
-          insightsInvalidator: makeInsightsGeneration({
-            cache: container.getCache(),
-            logger: app.log,
-          }),
-          counters: container.getCounterStore(),
-          jobs: container.jobs,
-          presignEventMedia: makeEventMediaPresigner(container.storage),
-          audit: makeHostAuditSink(container.getDb().sql, app.log),
-          enrichDTOs: (dtos, viewerUserId) => enrichCleanupDTOs(container, dtos, viewerUserId),
-        }),
-    ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
-    ...(overrides?.outboundMail !== undefined ? { outboundMail: overrides.outboundMail } : {}),
-    ...(overrides?.notifier !== undefined ? { notifier: overrides.notifier } : {}),
-    ...(overrides?.attendeeNotifier !== undefined
-      ? { attendeeNotifier: overrides.attendeeNotifier }
-      : {}),
-    ...(overrides?.counters !== undefined ? { counters: overrides.counters } : {}),
-    ...(overrides?.presignEventMedia !== undefined
-      ? { presignEventMedia: overrides.presignEventMedia }
-      : {}),
-    ...(overrides?.audit !== undefined ? { audit: overrides.audit } : {}),
-    logger: app.log,
-  })
+  const tickets = container.getTicketTokenSigner()
+  const deps =
+    overrides !== undefined
+      ? overriddenCleanupDeps(overrides)
+      : productionCleanupDeps(app, container)
+  return makeCleanupService({ repo, tickets, ...deps, logger: app.log })
 }
 
 export async function registerCleanupRoutes(

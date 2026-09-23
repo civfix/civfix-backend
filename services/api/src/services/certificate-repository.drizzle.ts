@@ -18,6 +18,7 @@
 import type { Sql } from "../db/client.js"
 import {
   CertificateConflictError,
+  type CertificateConflictKind,
   type CertificateHolder,
   type CertificateInsert,
   type CertificateRepository,
@@ -31,21 +32,24 @@ const PG_UNIQUE_VIOLATION = "23505"
 const FINGERPRINT_INDEX = "service_hours_certificates_live_fp_uidx"
 /** The `(code)` index (0064). */
 const CODE_INDEX = "service_hours_certificates_code_uidx"
+/** Substrings of the driver's `detail` text naming each index's key columns. */
+const FINGERPRINT_DETAIL_MARKER = "ledger_fingerprint"
+const CODE_DETAIL_MARKER = "(code)"
 
 /**
  * postgres.js surfaces the violated index/constraint name on `constraint_name`. The `detail` fallback is
  * belt-and-braces for a driver that ever stops populating it: misclassifying a fingerprint conflict as a
  * code conflict would burn all five mint attempts and then 500 on a race the design says must succeed.
  */
-function conflictKind(err: unknown): "code" | "fingerprint" | null {
+function conflictKind(err: unknown): CertificateConflictKind | null {
   if (typeof err !== "object" || err === null) return null
   const e = err as { code?: unknown; constraint_name?: unknown; detail?: unknown }
   if (e.code !== PG_UNIQUE_VIOLATION) return null
   const constraint = typeof e.constraint_name === "string" ? e.constraint_name : ""
   const detail = typeof e.detail === "string" ? e.detail : ""
-  if (constraint === FINGERPRINT_INDEX || detail.includes("ledger_fingerprint"))
+  if (constraint === FINGERPRINT_INDEX || detail.includes(FINGERPRINT_DETAIL_MARKER))
     return "fingerprint"
-  if (constraint === CODE_INDEX || detail.includes("(code)")) return "code"
+  if (constraint === CODE_INDEX || detail.includes(CODE_DETAIL_MARKER)) return "code"
   return null
 }
 

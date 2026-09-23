@@ -1,12 +1,5 @@
 import { randomUUID } from "node:crypto"
-import {
-  AppError,
-  ErrorCode,
-  MAX_BRING_ITEMS,
-  MAX_EVENT_ADDRESS_LENGTH,
-  MAX_EVENT_SLOTS,
-  MIN_SLOT_DURATION_MINUTES,
-} from "@civfix/shared"
+import { AppError, ErrorCode, MAX_BRING_ITEMS, MAX_LINKED_REPORTS } from "@civfix/shared"
 import { can, hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
@@ -14,12 +7,11 @@ import { InMemoryCounterStore, type CounterStore } from "../abuse/counter-store.
 import type {
   CleanupAttendeesResponse,
   CleanupDTO,
+  CleanupMemberRole,
   CreateCleanupRequest,
   DuplicateCleanupRequest,
-  EventAddressSource,
   EventKind,
   EventSlotDTO,
-  EventSlotInput,
   HostCapability,
   OrganizationMemberRole,
   LinkedReportRef,
@@ -30,10 +22,8 @@ import type {
   UpdateCleanupRequest,
 } from "@civfix/shared"
 import type { Jobs } from "@civfix/shared/interfaces"
-import { isLocatedPrecision } from "@civfix/shared"
 import type { AddressResolver } from "./address-resolver.js"
 import type { NotificationService } from "./notification-service.js"
-import type { MessageKey } from "../i18n/messages/en.js"
 import { EVENT_HOURS_MEMBER_CAP } from "./volunteer-hours-service.js"
 import type { OutboundMailService } from "./admin/outbound-mail-service.js"
 import { buildEventPacket } from "./admin/mail-format.js"
@@ -43,7 +33,6 @@ import {
   CLEANUPS_DEFAULT_LIMIT,
   ATTENDEES_DEFAULT_LIMIT,
   LINKED_REPORTS_LIST_PREVIEW,
-  MAX_LINKED_REPORTS,
   toAttendeeDTO,
   toCleanupDTO,
   toEventSlotDTO,
@@ -90,20 +79,17 @@ import {
   eventWindowOf,
 } from "./cleanup-rules.js"
 import type { EventWindow } from "./cleanup-rules.js"
-import { CLEANUP_GUEST_UPDATE_FANOUT_JOB, type GuestUpdateFanoutJob } from "./guest-rsvp-service.js"
+import { eventAddressPatch, resolveEventAddress } from "./cleanup-address.js"
+import { assertKnownSlotIds, assertTimedSlotsFitWindow, toDesiredSlots } from "./cleanup-slots.js"
+import { makeCleanupNotifications, type CleanupCancelFanoutJob } from "./cleanup-notifications.js"
 
 export * from "./cleanup-repository.types.js"
-export * from "./cleanup-rules.js"
+export { CANCEL_FANOUT_MEMBER_CAP, CLEANUP_CANCEL_FANOUT_JOB } from "./cleanup-notifications.js"
 export {
   CLEANUPS_DEFAULT_LIMIT,
   ATTENDEES_DEFAULT_LIMIT,
   THREAD_SIGNAL_MEMBER_CAP,
-  MAX_LINKED_REPORTS,
-  toAttendeeDTO,
-  toAttendeePersonDTO,
-  toOrganizerPerson,
   toCleanupDTO,
-  toEventSlotDTO,
   toLinkedReportRef,
   toLinkedEventRef,
 } from "./cleanup-dto.js"
@@ -114,7 +100,7 @@ export interface CleanupViewer {
 
 export type UpdateCleanupPatchRequest = Omit<UpdateCleanupRequest, "id">
 
-export type HostEventPatch = Pick<
+type HostEventPatch = Pick<
   UpdateCleanupRequest,
   | "endsAt"
   | "timezone"
@@ -129,6 +115,10 @@ export type HostEventPatch = Pick<
   | "reminderOffsetsMinutes"
   | "hostReplyTo"
 > & { scheduledAt?: string }
+
+const SECONDS_PER_HOUR = 60 * 60
+
+const SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR
 
 // `joined` means an RSVP (a cleanup_members row, which the organizer always has). Org standing
 // grants host powers and visibility, not attendance: clients key Join/Leave off this flag.
@@ -163,13 +153,17 @@ function isUuid(value: string): boolean {
 
 const EVENT_CLOSED_MESSAGE = "This event is closed."
 
-/**
- * Floor for a host-confirmed event address. Long enough to reject the accidental keystroke and the
- * lone punctuation mark, short enough to allow a genuinely terse one ("Pier 3").
- */
-const MIN_EVENT_ADDRESS_LENGTH = 3
-
 const CANCELLED_EVENT_EDIT_MESSAGE = "This event has been cancelled and can no longer be edited."
+
+const ONLY_CLEANUPS_LINK_REPORTS_MESSAGE = "only cleanup events can link reports"
+
+const NOT_ATTENDING_MESSAGE = "That person isn't attending this event."
+
+const REMOVED_BY_HOST_MESSAGE = "A host removed you from this event, so you can't rejoin it."
+
+const RESOURCE_NOTE_PREVIEW_CHARS = 140
+
+const UNKNOWN_JURISDICTION_BUDGET_KEY = "unknown"
 
 function refusalOnceEnded(
   patch: UpdateCleanupPatchRequest,
@@ -200,67 +194,153 @@ function refusalOnceEnded(
   return null
 }
 
-function assertScheduledAtNotBackdated(next: string | undefined, stored: Date): void {
+function assertScheduledAtNotBackdated(
+  next: string | undefined,
+  stored: Date,
+  nowMs: number,
+): void {
   if (next === undefined) return
   const nextMs = Date.parse(next)
   if (Number.isNaN(nextMs)) return
-  if (nextMs >= Date.now() - SCHEDULE_MAX_BACKDATE_MS) return
+  if (nextMs >= nowMs - SCHEDULE_MAX_BACKDATE_MS) return
   if (nextMs >= stored.getTime()) return
   throw AppError.validation({ scheduledAt: "must not be in the past" })
 }
 
+function editedWindowOf(
+  current: CleanupRecord,
+  patch: UpdateCleanupPatchRequest,
+): { window: EventWindow; moved: boolean } {
+  if (patch.endsAt === null) {
+    throw AppError.validation({ endsAt: "an event must have an end time" })
+  }
+  const window: EventWindow = {
+    status: current.status,
+    scheduledAt:
+      patch.scheduledAt !== undefined ? new Date(patch.scheduledAt) : current.scheduledAt,
+    endsAt: patch.endsAt !== undefined ? new Date(patch.endsAt) : current.endsAt,
+  }
+  const moved =
+    window.scheduledAt.getTime() !== current.scheduledAt.getTime() ||
+    (window.endsAt?.getTime() ?? null) !== (current.endsAt?.getTime() ?? null)
+  return { window, moved }
+}
+
+function plannedEventWindow(input: CreateCleanupRequest): {
+  scheduledAt: Date
+  endsAt: Date
+  slots: DesiredSlot[]
+} {
+  if (input.endsAt === null) throw AppError.validation({ endsAt: "required" })
+  if (input.slots !== undefined && input.slots.length === 0) {
+    throw AppError.validation({ slots: EVENT_NEEDS_A_SLOT_MESSAGE })
+  }
+  const scheduledAt = new Date(input.scheduledAt)
+  const endsAt =
+    input.endsAt !== undefined
+      ? new Date(input.endsAt)
+      : new Date(scheduledAt.getTime() + DEFAULT_EVENT_DURATION_MS)
+  const slots = toDesiredSlots(
+    input.slots ?? [defaultEventSlot(null)],
+    { keepIds: false },
+    { scheduledAt, endsAt },
+  )
+  return { scheduledAt, endsAt, slots }
+}
+
+function duplicateRequestOf(
+  source: CleanupRecord,
+  sourceSlots: EventSlotView[],
+  input: DuplicateCleanupRequest,
+  organizationId: string | null,
+  now: Date,
+): CreateCleanupRequest {
+  const scheduledAt = new Date(input.scheduledAt)
+  const sourceDurationMs = source.endsAt.getTime() - source.scheduledAt.getTime()
+  const endsAt = input.endsAt ?? new Date(scheduledAt.getTime() + sourceDurationMs).toISOString()
+  const shiftMs = scheduledAt.getTime() - source.scheduledAt.getTime()
+  const shifted = (at: Date | null): string | null =>
+    at === null ? null : new Date(at.getTime() + shiftMs).toISOString()
+  return {
+    title: source.title,
+    type: source.type,
+    eventKind: source.eventKind,
+    ...(source.description !== null ? { description: source.description } : {}),
+    lat: source.lat,
+    lng: source.lng,
+    scheduledAt: scheduledAt.toISOString(),
+    ...(source.bring !== null ? { bring: source.bring } : {}),
+    ...(source.address !== null
+      ? {
+          address: source.address,
+          ...(source.addressSource !== null ? { addressSource: source.addressSource } : {}),
+        }
+      : {}),
+    slots:
+      sourceSlots.length > 0
+        ? sourceSlots.map((slot) => ({
+            title: slot.title,
+            description: slot.description,
+            capacity: slot.capacity,
+            startsAt: shifted(slot.startsAt),
+            endsAt: shifted(slot.endsAt),
+            sortOrder: slot.sortOrder,
+          }))
+        : [defaultEventSlot(source.capacity)],
+    endsAt,
+    timezone: source.timezone,
+    visibility: source.visibility,
+    donationUrl: source.donationUrl,
+    registrationOpensAt: futureOrNull(source.registrationOpensAt, now),
+    registrationClosesAt: futureOrNull(source.registrationClosesAt, now),
+    organizationId,
+    reminderOffsetsMinutes: source.reminderOffsetsMin,
+    hostReplyTo: source.hostReplyTo,
+  }
+}
+
 export const RESOURCE_REQUEST_PER_HOST_PER_DAY = 10
-const RESOURCE_REQUEST_HOST_WINDOW_SEC = 24 * 60 * 60
+const RESOURCE_REQUEST_HOST_WINDOW_SEC = SECONDS_PER_DAY
 
 export const RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR = 30
-const RESOURCE_REQUEST_JURISDICTION_WINDOW_SEC = 60 * 60
+const RESOURCE_REQUEST_JURISDICTION_WINDOW_SEC = SECONDS_PER_HOUR
 
 export const ROLE_CHANGES_PER_TARGET_PER_WINDOW = 6
-const ROLE_CHANGE_WINDOW_SEC = 60 * 60
+const ROLE_CHANGE_WINDOW_SEC = SECONDS_PER_HOUR
 
 export { MAX_BRING_ITEMS }
 
-export { MAX_EVENT_SLOTS }
-
 export const SLOT_FLIPS_PER_EVENT_PER_WINDOW = 20
-const SLOT_FLIP_WINDOW_SEC = 60 * 60
+const SLOT_FLIP_WINDOW_SEC = SECONDS_PER_HOUR
 
 export const MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW = 20
-const MEMBERSHIP_FLIP_WINDOW_SEC = 60 * 60
-
-export const CANCEL_FANOUT_MEMBER_CAP = 2000
-
-interface SlotFanoutBudget {
-  remaining: number
-}
-
-const CANCEL_FANOUT_CONCURRENCY = 8
+const MEMBERSHIP_FLIP_WINDOW_SEC = SECONDS_PER_HOUR
 
 const fallbackCounters = new InMemoryCounterStore()
 
-export const CLEANUP_CANCEL_FANOUT_JOB = "cleanup.cancel.fanout"
-
-export const CANCEL_FANOUT_DEDUPE_WINDOW_MS = 60 * 60 * 1000
-
-export interface CleanupCancelFanoutJob {
-  cleanupId: string
-  reason: string | null
-  actorId: string
-}
-
 export const HOST_EVENTS_PER_DAY = 10
-export const HOST_EVENTS_WINDOW_SEC = 24 * 60 * 60
+export const HOST_EVENTS_WINDOW_SEC = SECONDS_PER_DAY
 
 export const HOST_ROSTER_READS_PER_HOUR = 200
-const HOST_ROSTER_READ_WINDOW_SEC = 60 * 60
+const HOST_ROSTER_READ_WINDOW_SEC = SECONDS_PER_HOUR
 
-const ROSTER_AUDIT_DEDUPE_WINDOW_SEC = 60 * 60
+const ROSTER_AUDIT_DEDUPE_WINDOW_SEC = SECONDS_PER_HOUR
 
-export const CLEANUP_CREATE_IDEMPOTENCY_SCOPE = "cleanup.create"
+const CLEANUP_CREATE_IDEMPOTENCY_SCOPE = "cleanup.create"
 
 export interface EventMediaPresigner {
   (key: string, opts: { forceSigned: boolean }): Promise<string>
 }
+
+interface EventMediaUrls {
+  coverUrl: string | null
+  galleryUrls: string[]
+  organizationLogoUrl: string | null
+}
+
+type JurisdictionContact = NonNullable<
+  Awaited<ReturnType<CleanupRepository["resolveJurisdictionContact"]>>
+>
 
 export interface CleanupServiceDeps {
   repo: CleanupRepository
@@ -288,6 +368,7 @@ export interface CleanupServiceDeps {
     error(obj: unknown, msg?: string): void
   }
   newId?: () => string
+  now?: () => number
   enrichDTOs?: (dtos: CleanupDTO[], viewerUserId: string | null) => Promise<CleanupDTO[]>
   affiliations?: AffiliationLoader
 }
@@ -338,9 +419,11 @@ export interface CleanupService {
 
 export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   const newId = deps.newId ?? (() => randomUUID())
+  const now = deps.now ?? (() => Date.now())
   const presignThumb = deps.presignThumb ?? ((thumbKey: string) => Promise.resolve(thumbKey))
   const counters = deps.counters ?? fallbackCounters
   const audit = deps.audit ?? NULL_HOST_AUDIT_SINK
+  const notifications = makeCleanupNotifications(deps)
   function newSignupSeat(): SignupSeat {
     const seatId = randomUUID()
     return { seatId, tokenHash: deps.tickets.hashFor(seatId) }
@@ -405,11 +488,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   async function eventMediaUrls(
     record: CleanupRecord,
     opts: { gallery: boolean },
-  ): Promise<{
-    coverUrl: string | null
-    galleryUrls: string[]
-    organizationLogoUrl: string | null
-  }> {
+  ): Promise<EventMediaUrls> {
     const presign = deps.presignEventMedia
     if (presign === undefined) {
       return { coverUrl: null, galleryUrls: [], organizationLogoUrl: null }
@@ -431,6 +510,59 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     return { coverUrl, galleryUrls, organizationLogoUrl }
   }
 
+  async function hydrateDetail(
+    cleanupId: string,
+    record: CleanupRecord,
+    standing: HostStanding,
+    viewerId: string | null,
+    myRole: CleanupMemberRole | null = standing.eventRole,
+  ): Promise<CleanupDTO> {
+    const [linkedReports, slotBoard, media] = await Promise.all([
+      hydrateLinkedReports(cleanupId, record.eventKind),
+      hydrateSlots(cleanupId, viewerId),
+      eventMediaUrls(record, { gallery: true }),
+    ])
+    return enrichOne(
+      toCleanupDTO(record, isAttending(standing), linkedReports, myRole, {
+        slots: slotBoard,
+        myCapabilities: capabilityList(standing),
+        ...media,
+      }),
+      viewerId,
+    )
+  }
+
+  async function hydrateListItems(
+    records: CleanupRecord[],
+    viewerId: string | null,
+    organizationLogoUrl: () => Promise<string | null> = () => Promise.resolve(null),
+  ): Promise<CleanupDTO[]> {
+    const ids = records.map((r) => r.id)
+    const [standingsById, linkedByCleanup, slotCounts, coverUrls, logoUrl] = await Promise.all([
+      standingsOf(ids, viewerId),
+      hydrateLinkedReportsForMany(records),
+      deps.repo.slotCountsFor(ids),
+      hydrateCoverUrls(records),
+      organizationLogoUrl(),
+    ])
+    const items = records.map((record) => {
+      const standing = standingsById.get(record.id) ?? NO_HOST_STANDING
+      return toCleanupDTO(
+        record,
+        isAttending(standing),
+        linkedByCleanup.get(record.id) ?? [],
+        standing.eventRole,
+        {
+          slotCount: slotCounts.get(record.id) ?? 0,
+          myCapabilities: capabilityList(standing),
+          coverUrl: coverUrls.get(record.id) ?? null,
+          organizationLogoUrl: logoUrl,
+        },
+      )
+    })
+    return enrichDTOs(items, viewerId)
+  }
+
   async function assertRosterReadBudget(userId: string): Promise<void> {
     const reads = await counters.incr(`host:rosterReads:${userId}`, HOST_ROSTER_READ_WINDOW_SEC)
     if (reads > HOST_ROSTER_READS_PER_HOUR) {
@@ -438,6 +570,24 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         "You've opened attendee lists too many times in the past hour. Please try again later.",
       )
     }
+  }
+
+  async function recordRosterView(
+    cleanupId: string,
+    viewerId: string,
+    returned: number,
+  ): Promise<void> {
+    const seen = await counters.incr(
+      `host:rosterAudit:${cleanupId}:${viewerId}`,
+      ROSTER_AUDIT_DEDUPE_WINDOW_SEC,
+    )
+    if (seen !== 1) return
+    await audit.record({
+      actorId: viewerId,
+      action: "event.roster_viewed",
+      target: `cleanup:${cleanupId}`,
+      meta: { returned },
+    })
   }
 
   async function assertHostEventBudget(userId: string): Promise<void> {
@@ -457,6 +607,53 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     if (flips > MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW) {
       throw AppError.rateLimited(
         "You've joined and left this event too many times recently. Please try again later.",
+      )
+    }
+  }
+
+  async function assertRoleChangeBudget(cleanupId: string, targetUserId: string): Promise<void> {
+    const flips = await counters.incr(
+      `cleanup:role:${cleanupId}:${targetUserId}`,
+      ROLE_CHANGE_WINDOW_SEC,
+    )
+    if (flips > ROLE_CHANGES_PER_TARGET_PER_WINDOW) {
+      throw AppError.rateLimited(
+        "This attendee's role has been changed too many times recently. Please try again later.",
+      )
+    }
+  }
+
+  async function assertSlotFlipBudget(cleanupId: string, userId: string): Promise<void> {
+    const flips = await counters.incr(`cleanup:slot:${cleanupId}:${userId}`, SLOT_FLIP_WINDOW_SEC)
+    if (flips > SLOT_FLIPS_PER_EVENT_PER_WINDOW) {
+      throw AppError.rateLimited(
+        "You've changed your slot too many times recently. Please try again later.",
+      )
+    }
+  }
+
+  async function assertResourceRequestBudget(
+    actorId: string,
+    jurisdictionGeoid: string | null,
+  ): Promise<void> {
+    const hostSends = await counters.incr(
+      `cleanup:res-req:host:${actorId}`,
+      RESOURCE_REQUEST_HOST_WINDOW_SEC,
+    )
+    // The shared jurisdiction budget is charged only after the host's own cap passes, so one
+    // host hammering past its limit cannot exhaust the area for every other host.
+    if (hostSends > RESOURCE_REQUEST_PER_HOST_PER_DAY) {
+      throw AppError.rateLimited(
+        "You've sent the maximum number of resource requests for today. Please try again tomorrow.",
+      )
+    }
+    const jurisdictionSends = await counters.incr(
+      `cleanup:res-req:jur:${jurisdictionGeoid ?? UNKNOWN_JURISDICTION_BUDGET_KEY}`,
+      RESOURCE_REQUEST_JURISDICTION_WINDOW_SEC,
+    )
+    if (jurisdictionSends > RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR) {
+      throw AppError.rateLimited(
+        "This area has received too many resource requests in the past hour. Please try again later.",
       )
     }
   }
@@ -577,85 +774,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     for (const item of input.bring ?? []) assertNoSlur(item, "bring")
   }
 
-  /**
-   * The event address, with its provenance, for a create or an update.
-   *
-   * `addressSource` is the CLIENT-VERSION discriminator, and it has to be: `address` itself stays
-   * optional on the wire so the TestFlight build in someone's pocket keeps working.
-   *
-   *   addressSource PRESENT  -> a new client. It resolved the pin, showed the line to the host, and the
-   *                             host published with it on screen. That is the confirmation, so the
-   *                             server only has to refuse a blank one; a client that sends a source
-   *                             without an address has a bug, and storing it would produce an event
-   *                             whose address is "verified" and empty.
-   *   addressSource ABSENT   -> an old client. Whatever it sent in `address` is the host's own "name the
-   *                             spot" text, so it is 'manual' (the same call migration 0179 makes for
-   *                             existing rows). If it sent nothing, the shim resolves the pin and stores
-   *                             'resolved': unverified, but an event with a street line beats an event
-   *                             with "Meeting point", and only while old clients are still in the wild.
-   *
-   * The shim stores NOTHING when the ladder only reached `locality`: "Los Angeles, CA" is not a meeting
-   * address, and writing it would dress up a non-answer as a host-provided one.
-   *
-   * `fromStoredEvent` marks the DUPLICATE path, whose pair did not come off the wire at all: it is this
-   * server's own stored row, copied verbatim. The new-client length floor is a check on a client payload
-   * and would reject a backfilled one-or-two-character address that the host has been running for
-   * months. Slur checks still apply - they run over the whole input before this.
-   */
-  async function resolveEventAddress(
-    input: {
-      address?: string | undefined
-      addressSource?: EventAddressSource | undefined
-      lat: number
-      lng: number
-    },
-    opts?: { fromStoredEvent?: boolean },
-  ): Promise<{ address: string | null; addressSource: EventAddressSource | null }> {
-    if (input.addressSource !== undefined) {
-      if (opts?.fromStoredEvent === true && input.address !== undefined) {
-        return { address: input.address, addressSource: input.addressSource }
-      }
-      return { address: assertConfirmedAddress(input.address), addressSource: input.addressSource }
-    }
-    const typed = input.address?.trim() ?? ""
-    if (typed.length > 0) return { address: typed, addressSource: "manual" }
-    if (deps.resolveAddress === undefined) return { address: null, addressSource: null }
-    const resolved = await deps.resolveAddress(input.lat, input.lng)
-    if (resolved.address === null || !isLocatedPrecision(resolved.precision)) {
-      return { address: null, addressSource: null }
-    }
-    return {
-      address: resolved.address.slice(0, MAX_EVENT_ADDRESS_LENGTH),
-      addressSource: "resolved",
-    }
-  }
-
-  /** A new client that names a source must carry a real line with it. */
-  function assertConfirmedAddress(address: string | undefined): string {
-    const trimmed = address?.trim() ?? ""
-    if (trimmed.length < MIN_EVENT_ADDRESS_LENGTH) {
-      throw AppError.validation({
-        address: `must be at least ${MIN_EVENT_ADDRESS_LENGTH} characters`,
-      })
-    }
-    return trimmed
-  }
-
-  /** The update-path twin of resolveEventAddress: same rules, but every field stays optional. */
-  function eventAddressPatch(patch: {
-    address?: string | undefined
-    addressSource?: EventAddressSource | undefined
-  }): { address?: string | null; addressSource?: EventAddressSource | null } {
-    if (patch.addressSource !== undefined) {
-      return { address: assertConfirmedAddress(patch.address), addressSource: patch.addressSource }
-    }
-    if (patch.address === undefined) return {}
-    const trimmed = patch.address.trim()
-    return trimmed.length > 0
-      ? { address: trimmed, addressSource: "manual" }
-      : { address: null, addressSource: null }
-  }
-
   function clampBring<T extends string[] | null | undefined>(bring: T): T {
     if (bring !== null && bring !== undefined && bring.length > MAX_BRING_ITEMS) {
       throw AppError.validation({ bring: `at most ${MAX_BRING_ITEMS} items may be listed` })
@@ -669,137 +787,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
   function notFoundOrganization(): never {
     throw AppError.notFound("Organization not found")
-  }
-
-  async function notifyRoleChange(
-    targetUserId: string,
-    event: "promoted" | "demoted" | "removed",
-    cleanup: { id: string; title: string },
-  ): Promise<void> {
-    if (deps.notifier === undefined) return
-    try {
-      await deps.notifier.createNotification(targetUserId, {
-        type: "cleanup_role",
-        titleKey: `notification.cleanup_role.${event}.title`,
-        bodyKey: `notification.cleanup_role.${event}.body`,
-        vars: { title: cleanup.title },
-        link: `/cleanups/${cleanup.id}`,
-      })
-    } catch (err) {
-      deps.logger?.warn(
-        { err, targetUserId, cleanupId: cleanup.id, event },
-        "cleanup_role notification failed (suppressed)",
-      )
-    }
-  }
-
-  async function notifyCancellation(
-    cleanup: { id: string; title: string },
-    reason: string | null,
-    actorId: string,
-  ): Promise<void> {
-    await notifyMembersOfCancellation(cleanup, reason, actorId)
-    await notifyAttendeesOfCancellation(cleanup.id, reason)
-  }
-
-  async function notifyAttendeesOfCancellation(
-    cleanupId: string,
-    reason: string | null,
-  ): Promise<void> {
-    if (deps.attendeeNotifier === undefined) return
-    await deps.attendeeNotifier.eventCancelled(cleanupId, reason)
-  }
-
-  async function dispatchGuestUpdateFanout(cleanupId: string): Promise<void> {
-    if (deps.jobs === undefined) {
-      deps.logger?.warn(
-        { cleanupId },
-        "cleanup.guest.update.fanout: no job queue wired; guests are not notified",
-      )
-      return
-    }
-    try {
-      await deps.jobs.enqueue(
-        CLEANUP_GUEST_UPDATE_FANOUT_JOB,
-        { cleanupId } satisfies GuestUpdateFanoutJob,
-        { singletonKey: cleanupId },
-      )
-    } catch (err) {
-      deps.logger?.error(
-        { err, cleanupId },
-        "cleanup.guest.update.fanout enqueue failed; guests are not notified",
-      )
-    }
-  }
-
-  async function notifyMembersOfCancellation(
-    cleanup: { id: string; title: string },
-    reason: string | null,
-    actorId: string,
-  ): Promise<void> {
-    const notifier = deps.notifier
-    if (notifier === undefined) return
-    let memberIds: string[]
-    try {
-      memberIds = await deps.repo.listMemberIds(cleanup.id, CANCEL_FANOUT_MEMBER_CAP)
-    } catch (err) {
-      deps.logger?.warn(
-        { err, cleanupId: cleanup.id },
-        "cleanup_cancelled roster read failed (suppressed)",
-      )
-      return
-    }
-    const recipients = memberIds.filter((userId) => userId !== actorId)
-    await mapWithLimit(recipients, CANCEL_FANOUT_CONCURRENCY, async (userId) => {
-      try {
-        await notifier.createNotification(userId, {
-          type: "cleanup_cancelled",
-          titleKey: "notification.cleanup_cancelled.title",
-          bodyKey:
-            reason !== null
-              ? "notification.cleanup_cancelled.body_reason"
-              : "notification.cleanup_cancelled.body",
-          ...(reason !== null ? { vars: { reason } } : {}),
-          link: `/cleanups/${cleanup.id}`,
-          dedupeWindowMs: CANCEL_FANOUT_DEDUPE_WINDOW_MS,
-        })
-      } catch (err) {
-        deps.logger?.warn(
-          { err, cleanupId: cleanup.id, userId },
-          "cleanup_cancelled notification failed (suppressed)",
-        )
-      }
-    })
-  }
-
-  async function dispatchCancelFanout(
-    cleanup: { id: string; title: string },
-    reason: string | null,
-    actorId: string,
-  ): Promise<void> {
-    if (deps.jobs !== undefined) {
-      try {
-        await deps.jobs.enqueue(
-          CLEANUP_CANCEL_FANOUT_JOB,
-          { cleanupId: cleanup.id, reason, actorId } satisfies CleanupCancelFanoutJob,
-          { singletonKey: cleanup.id },
-        )
-        return
-      } catch (err) {
-        deps.logger?.error(
-          { err, cleanupId: cleanup.id },
-          "cleanup.cancel.fanout enqueue failed; ringing members inline, guests are not notified",
-        )
-      }
-    }
-    try {
-      await notifyMembersOfCancellation(cleanup, reason, actorId)
-    } catch (err) {
-      deps.logger?.warn(
-        { err, cleanupId: cleanup.id },
-        "cleanup_cancelled inline member fanout failed (suppressed; the cancellation itself stands)",
-      )
-    }
   }
 
   async function hydrateLinkedReports(
@@ -859,64 +846,134 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     return ids
   }
 
-  function slotWindowOf(slot: EventSlotInput): { startsAt: Date | null; endsAt: Date | null } {
-    const startsAt = slot.startsAt != null ? new Date(slot.startsAt) : null
-    const endsAt = slot.endsAt != null ? new Date(slot.endsAt) : null
-    return { startsAt, endsAt }
+  async function resolveCreateLinks(
+    requested: string[] | undefined,
+    eventKind: EventKind,
+  ): Promise<string[]> {
+    const linkedReportIds = clampLinkIds(requested ?? [])
+    if (eventKind !== "cleanup" && linkedReportIds.length > 0) {
+      throw AppError.validation({ linkedReportIds: ONLY_CLEANUPS_LINK_REPORTS_MESSAGE })
+    }
+    await assertReportsLinkable(linkedReportIds)
+    return linkedReportIds
   }
 
-  function assertSlotInsideEvent(
-    title: string,
-    window: { startsAt: Date; endsAt: Date },
-    event: EventWindow,
-  ): void {
-    if (event.endsAt === null) {
-      throw AppError.validation({
-        slots: "set an end time for the event before adding timed slots",
-      })
+  /** null leaves the stored links untouched; a non-cleanup event always clears them. */
+  async function resolveEditedLinks(
+    requested: string[] | undefined,
+    effectiveKind: EventKind,
+  ): Promise<string[] | null> {
+    if (requested !== undefined && effectiveKind !== "cleanup") {
+      throw AppError.validation({ linkedReportIds: ONLY_CLEANUPS_LINK_REPORTS_MESSAGE })
     }
-    if (window.startsAt < event.scheduledAt || window.endsAt > event.endsAt) {
-      throw AppError.validation({
-        slots: `slot "${title}" falls outside the event's start and end`,
-      })
+    const desiredLinks =
+      requested !== undefined ? clampLinkIds(requested) : effectiveKind !== "cleanup" ? [] : null
+    if (desiredLinks !== null && desiredLinks.length > 0) {
+      await assertReportsLinkable(desiredLinks)
     }
-    if (window.endsAt.getTime() - window.startsAt.getTime() < MIN_SLOT_DURATION_MINUTES * 60_000) {
-      throw AppError.validation({
-        slots: `slot "${title}" must last at least ${MIN_SLOT_DURATION_MINUTES} minutes`,
-      })
+    return desiredLinks
+  }
+
+  async function resolveEditedSlots(
+    cleanupId: string,
+    requested: UpdateCleanupPatchRequest["slots"],
+    edited: { window: EventWindow; moved: boolean },
+  ): Promise<DesiredSlot[] | null> {
+    if (requested !== undefined && requested.length === 0) {
+      throw AppError.validation({ slots: EVENT_NEEDS_A_SLOT_MESSAGE })
+    }
+    if (requested === undefined) {
+      if (edited.moved) {
+        assertTimedSlotsFitWindow(await deps.repo.listSlots(cleanupId, null), edited.window)
+      }
+      return null
+    }
+    const desiredSlots = toDesiredSlots(requested, { keepIds: true }, edited.window)
+    assertKnownSlotIds(desiredSlots, await deps.repo.listSlots(cleanupId, null))
+    return desiredSlots
+  }
+
+  /**
+   * Authz plus the cancelled/ended freezes. Returns the ended-event refusal (or null) because the
+   * transactional write re-checks it under its own lock: the event can end between here and there.
+   */
+  function assertEditable(
+    current: CleanupRecord,
+    standing: HostStanding,
+    patch: UpdateCleanupPatchRequest,
+  ): AppError | null {
+    assertCapability(current, standing, "manage_event")
+    if (patch.organizationId !== undefined && patch.organizationId !== current.organizationId) {
+      assertCapability(current, standing, "manage_org_link")
+    }
+    if (current.status === "cancelled") {
+      throw AppError.conflict(CANCELLED_EVENT_EDIT_MESSAGE)
+    }
+    const hasEnded = deriveCleanupStatus(eventWindowOf(current), now()) === "done"
+    const endedRefusal = refusalOnceEnded(patch, current)
+    if (hasEnded && endedRefusal !== null) throw endedRefusal
+    assertScheduledAtNotBackdated(patch.scheduledAt, current.scheduledAt, now())
+    return endedRefusal
+  }
+
+  async function resolveJurisdiction(
+    lat: number,
+    lng: number,
+  ): Promise<{ jurisdictionGeoid: string | null; jurCode: number }> {
+    const jurisdictionGeoid =
+      deps.resolveJurisdictionGeoid !== undefined
+        ? await deps.resolveJurisdictionGeoid(lat, lng)
+        : null
+    const jurCode =
+      deps.resolveJurisdictionCode !== undefined
+        ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
+        : UNKNOWN_JURCODE
+    return { jurisdictionGeoid, jurCode }
+  }
+
+  async function resolveEditedScalars(
+    cleanupId: string,
+    patch: UpdateCleanupPatchRequest,
+    current: CleanupRecord,
+    actorId: string,
+  ): Promise<UpdateCleanupPatch> {
+    const addressPatch = eventAddressPatch(patch)
+    const movedTo =
+      patch.lat !== undefined && patch.lng !== undefined ? { lat: patch.lat, lng: patch.lng } : null
+    const reresolvedGeoid =
+      movedTo !== null && deps.resolveJurisdictionGeoid !== undefined
+        ? await deps.resolveJurisdictionGeoid(movedTo.lat, movedTo.lng)
+        : undefined
+    const host = await resolveHostWrite({ patch, actorId, cleanupId, current })
+    return {
+      ...host,
+      ...(patch.title !== undefined ? { title: patch.title } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+      ...(patch.eventKind !== undefined ? { eventKind: patch.eventKind } : {}),
+      ...(patch.type !== undefined ? { type: patch.type } : {}),
+      ...(patch.scheduledAt !== undefined ? { scheduledAt: new Date(patch.scheduledAt) } : {}),
+      ...(movedTo ?? {}),
+      ...addressPatch,
+      ...(patch.bring !== undefined ? { bring: patch.bring } : {}),
+      ...(reresolvedGeoid !== undefined ? { jurisdictionGeoid: reresolvedGeoid } : {}),
     }
   }
 
-  function toDesiredSlots(
-    slots: EventSlotInput[],
-    opts: { keepIds: boolean },
-    window: EventWindow,
-  ): DesiredSlot[] {
-    if (slots.length > MAX_EVENT_SLOTS) {
-      throw AppError.validation({ slots: `at most ${MAX_EVENT_SLOTS} slots may be listed` })
+  async function announceUpdate(
+    record: CleanupRecord,
+    slotDiff: SlotReconcileResult | null,
+    current: CleanupRecord,
+    patch: UpdateCleanupPatchRequest,
+  ): Promise<void> {
+    if (slotDiff !== null) {
+      await notifications.notifySlotChanges(record, slotDiff)
     }
-    const seen = new Set<string>()
-    for (const slot of slots) {
-      const { startsAt, endsAt } = slotWindowOf(slot)
-      if (startsAt !== null && endsAt !== null) {
-        assertSlotInsideEvent(slot.title, { startsAt, endsAt }, window)
-      }
-      const key = `${slot.title.trim().toLowerCase()}|${startsAt?.getTime() ?? ""}|${endsAt?.getTime() ?? ""}`
-      if (seen.has(key)) {
-        throw AppError.validation({ slots: `duplicate slot title: ${slot.title}` })
-      }
-      seen.add(key)
-      assertNoSlur(slot.title, "slots")
-      assertNoSlur(slot.description ?? null, "slots")
+    if (
+      deriveCleanupStatus(eventWindowOf(record), now()) !== "done" &&
+      guestVisibleChange(current, patch)
+    ) {
+      await notifications.dispatchGuestUpdateFanout(record.id)
     }
-    return slots.map((slot, index) => ({
-      ...(opts.keepIds && slot.id !== undefined ? { id: slot.id } : {}),
-      title: slot.title,
-      description: slot.description ?? null,
-      capacity: slot.capacity ?? null,
-      ...slotWindowOf(slot),
-      sortOrder: slot.sortOrder ?? index,
-    }))
   }
 
   async function hydrateCoverUrls(records: CleanupRecord[]): Promise<Map<string, string>> {
@@ -941,69 +998,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     return views.map(toEventSlotDTO)
   }
 
-  async function notifySlotClaimants(
-    cleanup: { id: string; title: string },
-    entries: SlotReconcileResult["removed"],
-    keys: { titleKey: MessageKey; bodyKey: MessageKey },
-    budget: SlotFanoutBudget,
-  ): Promise<void> {
-    const notifier = deps.notifier
-    if (notifier === undefined) return
-    const targets: { userId: string; slot: string }[] = []
-    for (const entry of entries) {
-      for (const userId of entry.claimantUserIds) {
-        if (budget.remaining <= 0) break
-        budget.remaining -= 1
-        targets.push({ userId, slot: entry.title })
-      }
-    }
-    await mapWithLimit(targets, CANCEL_FANOUT_CONCURRENCY, async ({ userId, slot }) => {
-      try {
-        await notifier.createNotification(userId, {
-          type: "cleanup_slot",
-          titleKey: keys.titleKey,
-          bodyKey: keys.bodyKey,
-          vars: { slot, title: cleanup.title },
-          link: `/cleanups/${cleanup.id}`,
-        })
-      } catch (err) {
-        deps.logger?.warn(
-          { err, cleanupId: cleanup.id, userId },
-          "cleanup_slot notification failed (suppressed)",
-        )
-      }
-    })
-  }
-
-  async function notifySlotChanges(
-    cleanup: { id: string; title: string },
-    diff: SlotReconcileResult,
-  ): Promise<void> {
-    const budget: SlotFanoutBudget = { remaining: CANCEL_FANOUT_MEMBER_CAP }
-    if (diff.removed.length > 0) {
-      await notifySlotClaimants(
-        cleanup,
-        diff.removed,
-        {
-          titleKey: "notification.cleanup_slot.removed.title",
-          bodyKey: "notification.cleanup_slot.removed.body",
-        },
-        budget,
-      )
-    }
-    if (diff.rescheduled.length > 0) {
-      await notifySlotClaimants(
-        cleanup,
-        diff.rescheduled,
-        {
-          titleKey: "notification.cleanup_slot.moved.title",
-          bodyKey: "notification.cleanup_slot.moved.body",
-        },
-        budget,
-      )
-    }
-  }
-
   async function createEvent(
     input: CreateCleanupRequest,
     organizerUserId: string,
@@ -1011,28 +1005,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
   ): Promise<CleanupDTO> {
     assertEventTextClean(input)
     clampBring(input.bring)
-    const linkedReportIds = clampLinkIds(input.linkedReportIds ?? [])
-    if (input.eventKind !== "cleanup" && linkedReportIds.length > 0) {
-      throw AppError.validation({ linkedReportIds: "only cleanup events can link reports" })
-    }
-    await assertReportsLinkable(linkedReportIds)
-    const addressWrite = await resolveEventAddress(input, {
+    const linkedReportIds = await resolveCreateLinks(input.linkedReportIds, input.eventKind)
+    const addressWrite = await resolveEventAddress(input, deps.resolveAddress, {
       fromStoredEvent: copyFrom !== undefined,
     })
-    if (input.endsAt === null) throw AppError.validation({ endsAt: "required" })
-    if (input.slots !== undefined && input.slots.length === 0) {
-      throw AppError.validation({ slots: EVENT_NEEDS_A_SLOT_MESSAGE })
-    }
-    const scheduledAt = new Date(input.scheduledAt)
-    const endsAt =
-      input.endsAt !== undefined
-        ? new Date(input.endsAt)
-        : new Date(scheduledAt.getTime() + DEFAULT_EVENT_DURATION_MS)
-    const slots = toDesiredSlots(
-      input.slots ?? [defaultEventSlot(null)],
-      { keepIds: false },
-      { scheduledAt, endsAt },
-    )
+    const { scheduledAt, endsAt, slots } = plannedEventWindow(input)
 
     const host = await resolveHostWrite({
       patch: { ...input, scheduledAt: input.scheduledAt, endsAt: endsAt.toISOString() },
@@ -1042,14 +1019,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     })
     await assertHostEventBudget(organizerUserId)
 
-    const jurisdictionGeoid =
-      deps.resolveJurisdictionGeoid !== undefined
-        ? await deps.resolveJurisdictionGeoid(input.lat, input.lng)
-        : null
-    const jurCode =
-      deps.resolveJurisdictionCode !== undefined
-        ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
-        : UNKNOWN_JURCODE
+    const { jurisdictionGeoid, jurCode } = await resolveJurisdiction(input.lat, input.lng)
 
     const cleanupId = newId()
     const outcome = await deps.repo.createCleanupTx({
@@ -1084,19 +1054,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     })
     const record = outcome.record
     const standing = await standingOf(record.id, organizerUserId)
-    const [linkedReports, slotBoard, media] = await Promise.all([
-      hydrateLinkedReports(record.id, record.eventKind),
-      hydrateSlots(record.id, organizerUserId),
-      eventMediaUrls(record, { gallery: true }),
-    ])
-    return enrichOne(
-      toCleanupDTO(record, isAttending(standing), linkedReports, standing.eventRole, {
-        slots: slotBoard,
-        myCapabilities: capabilityList(standing),
-        ...media,
-      }),
-      organizerUserId,
-    )
+    return hydrateDetail(record.id, record, standing, organizerUserId)
   }
 
   async function resolveDuplicateOrganization(
@@ -1113,6 +1071,35 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     return organizationId
   }
 
+  async function sendResourceRequest(
+    outboundMail: OutboundMailService,
+    record: CleanupRecord,
+    routing: JurisdictionContact,
+    message: string,
+  ): Promise<void> {
+    const packet = buildEventPacket(
+      {
+        title: record.title,
+        host: record.organizer.displayName,
+        place: routing.name,
+        address: record.address,
+        lat: record.lat,
+        lng: record.lng,
+        referenceCode: record.referenceCode,
+      },
+      message,
+    )
+    await outboundMail.sendEventToJurisdiction({
+      cleanupId: record.id,
+      geoid: record.jurisdictionGeoid,
+      org: routing.name,
+      toAddr: routing.contact,
+      subject: packet.subject,
+      text: packet.text,
+      html: packet.html,
+    })
+  }
+
   return {
     createCleanup(input: CreateCleanupRequest, organizerUserId: string): Promise<CleanupDTO> {
       return createEvent(input, organizerUserId)
@@ -1122,51 +1109,9 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (input.endsAt === null) throw AppError.validation({ endsAt: "required" })
       const { record: source } = await requireCapabilityOn(input.id, actorId, "manage_event")
       const organizationId = await resolveDuplicateOrganization(source.organizationId, actorId)
-      const now = new Date()
-      const scheduledAt = new Date(input.scheduledAt)
-      const sourceDurationMs = source.endsAt.getTime() - source.scheduledAt.getTime()
-      const endsAt =
-        input.endsAt ?? new Date(scheduledAt.getTime() + sourceDurationMs).toISOString()
+      const copiedAt = new Date(now())
       const slots = await deps.repo.listSlots(source.id, null)
-      const shiftMs = scheduledAt.getTime() - source.scheduledAt.getTime()
-      const shifted = (at: Date | null): string | null =>
-        at === null ? null : new Date(at.getTime() + shiftMs).toISOString()
-      const copy: CreateCleanupRequest = {
-        title: source.title,
-        type: source.type,
-        eventKind: source.eventKind,
-        ...(source.description !== null ? { description: source.description } : {}),
-        lat: source.lat,
-        lng: source.lng,
-        scheduledAt: scheduledAt.toISOString(),
-        ...(source.bring !== null ? { bring: source.bring } : {}),
-        ...(source.address !== null
-          ? {
-              address: source.address,
-              ...(source.addressSource !== null ? { addressSource: source.addressSource } : {}),
-            }
-          : {}),
-        slots:
-          slots.length > 0
-            ? slots.map((slot) => ({
-                title: slot.title,
-                description: slot.description,
-                capacity: slot.capacity,
-                startsAt: shifted(slot.startsAt),
-                endsAt: shifted(slot.endsAt),
-                sortOrder: slot.sortOrder,
-              }))
-            : [defaultEventSlot(source.capacity)],
-        endsAt,
-        timezone: source.timezone,
-        visibility: source.visibility,
-        donationUrl: source.donationUrl,
-        registrationOpensAt: futureOrNull(source.registrationOpensAt, now),
-        registrationClosesAt: futureOrNull(source.registrationClosesAt, now),
-        organizationId,
-        reminderOffsetsMinutes: source.reminderOffsetsMin,
-        hostReplyTo: source.hostReplyTo,
-      }
+      const copy = duplicateRequestOf(source, slots, input, organizationId, copiedAt)
       return createEvent(copy, actorId, {
         cleanupId: source.id,
         ticketTypes: input.includeTicketTypes,
@@ -1185,113 +1130,15 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const standing = await standingOf(id, requesterUserId)
       const current = await deps.repo.findCleanupById(id, null)
       if (!current) notFoundCleanup()
-      assertCapability(current, standing, "manage_event")
-      if (patch.organizationId !== undefined && patch.organizationId !== current.organizationId) {
-        assertCapability(current, standing, "manage_org_link")
-      }
-      const requesterRole = standing.eventRole
-      if (current.status === "cancelled") {
-        throw AppError.conflict(CANCELLED_EVENT_EDIT_MESSAGE)
-      }
-      const hasEnded = deriveCleanupStatus(eventWindowOf(current), Date.now()) === "done"
-      const endedRefusal = refusalOnceEnded(patch, current)
-      if (hasEnded && endedRefusal !== null) throw endedRefusal
-      assertScheduledAtNotBackdated(patch.scheduledAt, current.scheduledAt)
-      const effectiveKind = patch.eventKind ?? current.eventKind
+      const endedRefusal = assertEditable(current, standing, patch)
+      const desiredLinks = await resolveEditedLinks(
+        patch.linkedReportIds,
+        patch.eventKind ?? current.eventKind,
+      )
+      const edited = editedWindowOf(current, patch)
+      const desiredSlots = await resolveEditedSlots(id, patch.slots, edited)
+      const scalarPatch = await resolveEditedScalars(id, patch, current, requesterUserId)
 
-      if (patch.linkedReportIds !== undefined && effectiveKind !== "cleanup") {
-        throw AppError.validation({ linkedReportIds: "only cleanup events can link reports" })
-      }
-      const desiredLinks =
-        patch.linkedReportIds !== undefined
-          ? clampLinkIds(patch.linkedReportIds)
-          : effectiveKind !== "cleanup"
-            ? []
-            : null
-
-      if (desiredLinks !== null && desiredLinks.length > 0) {
-        await assertReportsLinkable(desiredLinks)
-      }
-
-      if (patch.endsAt === null) {
-        throw AppError.validation({ endsAt: "an event must have an end time" })
-      }
-      const effectiveWindow: EventWindow = {
-        status: current.status,
-        scheduledAt:
-          patch.scheduledAt !== undefined ? new Date(patch.scheduledAt) : current.scheduledAt,
-        endsAt: patch.endsAt !== undefined ? new Date(patch.endsAt) : current.endsAt,
-      }
-      const windowMoved =
-        effectiveWindow.scheduledAt.getTime() !== current.scheduledAt.getTime() ||
-        (effectiveWindow.endsAt?.getTime() ?? null) !== (current.endsAt?.getTime() ?? null)
-
-      if (patch.slots !== undefined && patch.slots.length === 0) {
-        throw AppError.validation({ slots: EVENT_NEEDS_A_SLOT_MESSAGE })
-      }
-      const desiredSlots =
-        patch.slots !== undefined
-          ? toDesiredSlots(patch.slots, { keepIds: true }, effectiveWindow)
-          : null
-
-      if (desiredSlots === null && windowMoved) {
-        const timed = (await deps.repo.listSlots(id, null)).filter(
-          (slot): slot is EventSlotView & { startsAt: Date; endsAt: Date } =>
-            slot.startsAt !== null && slot.endsAt !== null,
-        )
-        const outside = timed.some(
-          (slot) =>
-            effectiveWindow.endsAt === null ||
-            slot.startsAt < effectiveWindow.scheduledAt ||
-            slot.endsAt > effectiveWindow.endsAt,
-        )
-        if (outside) {
-          throw AppError.validation({
-            scheduledAt:
-              "timed slots would fall outside the new start and end; update the slots in the same save",
-          })
-        }
-      }
-
-      if (desiredSlots !== null) {
-        const existingSlotIds = new Set((await deps.repo.listSlots(id, null)).map((s) => s.id))
-        for (const slot of desiredSlots) {
-          if (slot.id !== undefined && !existingSlotIds.has(slot.id)) {
-            throw AppError.validation({ slots: `unknown slot: ${slot.id}` })
-          }
-        }
-      }
-
-      const addressPatch = eventAddressPatch(patch)
-
-      const movedTo =
-        patch.lat !== undefined && patch.lng !== undefined
-          ? { lat: patch.lat, lng: patch.lng }
-          : null
-      const reresolvedGeoid =
-        movedTo !== null && deps.resolveJurisdictionGeoid !== undefined
-          ? await deps.resolveJurisdictionGeoid(movedTo.lat, movedTo.lng)
-          : undefined
-
-      const host = await resolveHostWrite({
-        patch,
-        actorId: requesterUserId,
-        cleanupId: id,
-        current,
-      })
-
-      const scalarPatch: UpdateCleanupPatch = {
-        ...host,
-        ...(patch.title !== undefined ? { title: patch.title } : {}),
-        ...(patch.description !== undefined ? { description: patch.description } : {}),
-        ...(patch.eventKind !== undefined ? { eventKind: patch.eventKind } : {}),
-        ...(patch.type !== undefined ? { type: patch.type } : {}),
-        ...(patch.scheduledAt !== undefined ? { scheduledAt: new Date(patch.scheduledAt) } : {}),
-        ...(movedTo ?? {}),
-        ...addressPatch,
-        ...(patch.bring !== undefined ? { bring: patch.bring } : {}),
-        ...(reresolvedGeoid !== undefined ? { jurisdictionGeoid: reresolvedGeoid } : {}),
-      }
       const outcome = await deps.repo.updateCleanupWithEdits(id, scalarPatch, {
         actorUserId: requesterUserId,
         links: desiredLinks,
@@ -1300,32 +1147,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       })
       if (outcome.kind === "not_found") notFoundCleanup()
       if (outcome.kind === "cancelled") throw AppError.conflict(CANCELLED_EVENT_EDIT_MESSAGE)
-      const { slotDiff } = outcome
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
-      if (slotDiff !== null) {
-        await notifySlotChanges(record, slotDiff)
-      }
-      if (
-        deriveCleanupStatus(eventWindowOf(record), Date.now()) !== "done" &&
-        guestVisibleChange(current, patch)
-      ) {
-        await dispatchGuestUpdateFanout(record.id)
-      }
-      const [linkedReports, slotBoard, media] = await Promise.all([
-        hydrateLinkedReports(id, record.eventKind),
-        hydrateSlots(id, requesterUserId),
-        eventMediaUrls(record, { gallery: true }),
-      ])
-      return enrichOne(
-        toCleanupDTO(record, isAttending(standing), linkedReports, requesterRole, {
-          slots: slotBoard,
-          myCapabilities: capabilityList(standing),
-          ...media,
-        }),
-        requesterUserId,
-      )
+      await announceUpdate(record, outcome.slotDiff, current, patch)
+      return hydrateDetail(id, record, standing, requesterUserId)
     },
 
     async cancelCleanup(
@@ -1356,26 +1182,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
-      if (outcome === "cancelled") await dispatchCancelFanout(record, cleanReason, requesterUserId)
-      const [linkedReports, slotBoard, media] = await Promise.all([
-        hydrateLinkedReports(id, record.eventKind),
-        hydrateSlots(id, requesterUserId),
-        eventMediaUrls(record, { gallery: true }),
-      ])
-      return enrichOne(
-        toCleanupDTO(
-          record,
-          isAttending(standing),
-          linkedReports,
-          standing.eventRole ?? "organizer",
-          {
-            slots: slotBoard,
-            myCapabilities: capabilityList(standing),
-            ...media,
-          },
-        ),
-        requesterUserId,
-      )
+      if (outcome === "cancelled") {
+        await notifications.dispatchCancelFanout(record, cleanReason, requesterUserId)
+      }
+      return hydrateDetail(id, record, standing, requesterUserId, standing.eventRole ?? "organizer")
     },
 
     async completeCleanup(
@@ -1385,26 +1195,13 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       userAgent: string | null = null,
     ): Promise<CleanupDTO> {
       const { standing } = await requireCapabilityOn(id, requesterUserId, "manage_event")
-      const requesterRole = standing.eventRole
       const trimmed = note?.trim()
       assertNoSlur(trimmed && trimmed.length > 0 ? trimmed : null, "note")
       deps.logger?.info({ cleanupId: id, userAgent }, "cleanup.complete.deprecated")
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
-      const [linkedReports, slotBoard, media] = await Promise.all([
-        hydrateLinkedReports(id, record.eventKind),
-        hydrateSlots(id, requesterUserId),
-        eventMediaUrls(record, { gallery: true }),
-      ])
-      return enrichOne(
-        toCleanupDTO(record, isAttending(standing), linkedReports, requesterRole, {
-          slots: slotBoard,
-          myCapabilities: capabilityList(standing),
-          ...media,
-        }),
-        requesterUserId,
-      )
+      return hydrateDetail(id, record, standing, requesterUserId)
     },
 
     async listCleanups(
@@ -1423,29 +1220,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         viewerId: viewer.userId,
       }
       const { records, nextCursor } = await deps.repo.listCleanups(filters)
-      const ids = records.map((r) => r.id)
-
-      const [standingsById, linkedByCleanup, slotCounts, coverUrls] = await Promise.all([
-        standingsOf(ids, viewer.userId),
-        hydrateLinkedReportsForMany(records),
-        deps.repo.slotCountsFor(ids),
-        hydrateCoverUrls(records),
-      ])
-      const items = records.map((record) => {
-        const standing = standingsById.get(record.id) ?? NO_HOST_STANDING
-        return toCleanupDTO(
-          record,
-          isAttending(standing),
-          linkedByCleanup.get(record.id) ?? [],
-          standing.eventRole,
-          {
-            slotCount: slotCounts.get(record.id) ?? 0,
-            myCapabilities: capabilityList(standing),
-            coverUrl: coverUrls.get(record.id) ?? null,
-          },
-        )
-      })
-      return { items: await enrichDTOs(items, viewer.userId), nextCursor }
+      return { items: await hydrateListItems(records, viewer.userId), nextCursor }
     },
 
     async listOrganizationEvents(
@@ -1463,34 +1238,14 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         cursor: query.cursor,
         limit: query.limit,
       })
-      const ids = records.map((r) => r.id)
       const presign = deps.presignEventMedia
-      const [standingsById, linkedByCleanup, slotCounts, coverUrls, organizationLogoUrl] =
-        await Promise.all([
-          standingsOf(ids, viewer.userId),
-          hydrateLinkedReportsForMany(records),
-          deps.repo.slotCountsFor(ids),
-          hydrateCoverUrls(records),
-          host.organization.logoKey === null || presign === undefined
-            ? Promise.resolve(null)
-            : presign(host.organization.logoKey, { forceSigned: false }),
-        ])
-      const items = records.map((record) => {
-        const standing = standingsById.get(record.id) ?? NO_HOST_STANDING
-        return toCleanupDTO(
-          record,
-          isAttending(standing),
-          linkedByCleanup.get(record.id) ?? [],
-          standing.eventRole,
-          {
-            slotCount: slotCounts.get(record.id) ?? 0,
-            myCapabilities: capabilityList(standing),
-            coverUrl: coverUrls.get(record.id) ?? null,
-            organizationLogoUrl,
-          },
-        )
-      })
-      return { items: await enrichDTOs(items, viewer.userId), nextCursor }
+      const logoKey = host.organization.logoKey
+      const items = await hydrateListItems(records, viewer.userId, () =>
+        logoKey === null || presign === undefined
+          ? Promise.resolve(null)
+          : presign(logoKey, { forceSigned: false }),
+      )
+      return { items, nextCursor }
     },
 
     async getCleanup(id: string, viewer: CleanupViewer): Promise<CleanupDTO> {
@@ -1501,28 +1256,14 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (!record) notFoundCleanup()
       const standing = await standingOf(record.id, viewer.userId)
       assertVisible(record, standing)
-      const [linkedReports, slotBoard, media] = await Promise.all([
-        hydrateLinkedReports(record.id, record.eventKind),
-        hydrateSlots(record.id, viewer.userId),
-        eventMediaUrls(record, { gallery: true }),
-      ])
-      return enrichOne(
-        toCleanupDTO(record, isAttending(standing), linkedReports, standing.eventRole, {
-          slots: slotBoard,
-          myCapabilities: capabilityList(standing),
-          ...media,
-        }),
-        viewer.userId,
-      )
+      return hydrateDetail(record.id, record, standing, viewer.userId)
     },
 
     async joinCleanup(id: string, userId: string): Promise<{ joined: boolean; going: number }> {
       await assertMembershipFlipBudget(id, userId)
       const outcome = await deps.repo.joinCleanupTx(id, userId, newSignupSeat())
       if (outcome === "not_found") notFoundCleanup()
-      if (outcome === "banned") {
-        throw AppError.forbidden("A host removed you from this event, so you can't rejoin it.")
-      }
+      if (outcome === "banned") throw AppError.forbidden(REMOVED_BY_HOST_MESSAGE)
       if (outcome === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
       if (outcome === "ended") throw eventEndedError()
       await deps.insightsInvalidator?.bumpInsightsGeneration(id)
@@ -1563,18 +1304,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         limit: actsAsHost ? EVENT_HOURS_MEMBER_CAP : ATTENDEES_DEFAULT_LIMIT,
       })
       if (actsAsHost && viewer.userId !== null) {
-        const seen = await counters.incr(
-          `host:rosterAudit:${id}:${viewer.userId}`,
-          ROSTER_AUDIT_DEDUPE_WINDOW_SEC,
-        )
-        if (seen === 1) {
-          await audit.record({
-            actorId: viewer.userId,
-            action: "event.roster_viewed",
-            target: `cleanup:${id}`,
-            meta: { returned: views.length },
-          })
-        }
+        await recordRosterView(id, viewer.userId, views.length)
       }
       const attendees = await attachAffiliations(
         deps.affiliations,
@@ -1604,22 +1334,14 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
           await deps.repo.unbanMember(id, targetUserId)
           return { ok: true }
         }
-        throw AppError.notFound("That person isn't attending this event.")
+        throw AppError.notFound(NOT_ATTENDING_MESSAGE)
       }
       if (targetRole === role) return { ok: true }
 
-      const flips = await counters.incr(
-        `cleanup:role:${id}:${targetUserId}`,
-        ROLE_CHANGE_WINDOW_SEC,
-      )
-      if (flips > ROLE_CHANGES_PER_TARGET_PER_WINDOW) {
-        throw AppError.rateLimited(
-          "This attendee's role has been changed too many times recently. Please try again later.",
-        )
-      }
+      await assertRoleChangeBudget(id, targetUserId)
 
       const flipped = await deps.repo.setMemberRole(id, targetUserId, role)
-      if (!flipped) throw AppError.notFound("That person isn't attending this event.")
+      if (!flipped) throw AppError.notFound(NOT_ATTENDING_MESSAGE)
 
       await audit.record({
         actorId,
@@ -1627,10 +1349,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         target: `cleanup:${id}`,
         meta: { targetUserId, from: targetRole, to: role },
       })
-      await notifyRoleChange(targetUserId, role === "member" ? "demoted" : "promoted", {
-        id: record.id,
-        title: record.title,
-      })
+      await notifications.notifyRoleChange(
+        targetUserId,
+        role === "member" ? "demoted" : "promoted",
+        { id: record.id, title: record.title },
+      )
       return { ok: true }
     },
 
@@ -1648,7 +1371,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       }
       const targetRole = await deps.repo.roleOf(id, targetUserId)
       if (targetRole === null) {
-        throw AppError.notFound("That person isn't attending this event.")
+        throw AppError.notFound(NOT_ATTENDING_MESSAGE)
       }
       if (targetRole !== "member" && !can(standing, "manage_team")) {
         throw AppError.forbidden(hostForbiddenCopy("manage_team"))
@@ -1658,7 +1381,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (outcome.kind === "not_found") notFoundCleanup()
       if (outcome.kind === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
       if (outcome.kind === "not_member") {
-        throw AppError.notFound("That person isn't attending this event.")
+        throw AppError.notFound(NOT_ATTENDING_MESSAGE)
       }
 
       await enqueueWaitlistPromotion(deps.jobs, outcome.releasedWaitlistTicketTypeIds, deps.logger)
@@ -1670,17 +1393,15 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         target: `cleanup:${id}`,
         meta: { targetUserId, role: targetRole },
       })
-      await notifyRoleChange(targetUserId, "removed", { id: record.id, title: record.title })
+      await notifications.notifyRoleChange(targetUserId, "removed", {
+        id: record.id,
+        title: record.title,
+      })
       return { ok: true, going: outcome.going }
     },
 
     async claimEventSlot(id: string, userId: string, slotId: string | null): Promise<CleanupDTO> {
-      const flips = await counters.incr(`cleanup:slot:${id}:${userId}`, SLOT_FLIP_WINDOW_SEC)
-      if (flips > SLOT_FLIPS_PER_EVENT_PER_WINDOW) {
-        throw AppError.rateLimited(
-          "You've changed your slot too many times recently. Please try again later.",
-        )
-      }
+      await assertSlotFlipBudget(id, userId)
 
       const [record, standing] = await Promise.all([
         deps.repo.findCleanupById(id, null),
@@ -1698,9 +1419,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (outcome.kind === "slot_not_found") {
         throw AppError.notFound("That slot no longer exists.")
       }
-      if (outcome.kind === "banned") {
-        throw AppError.forbidden("A host removed you from this event, so you can't rejoin it.")
-      }
+      if (outcome.kind === "banned") throw AppError.forbidden(REMOVED_BY_HOST_MESSAGE)
       if (outcome.kind === "closed") throw AppError.conflict(EVENT_CLOSED_MESSAGE)
       if (outcome.kind === "ended") throw eventEndedError()
       if (outcome.kind === "full") throw AppError.conflict("That slot is already full.")
@@ -1710,19 +1429,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       const updated = await deps.repo.findCleanupById(id, null)
       if (!updated) notFoundCleanup()
       const nextStanding = await standingOf(id, userId)
-      const [linkedReports, slotBoard, media] = await Promise.all([
-        hydrateLinkedReports(id, updated.eventKind),
-        hydrateSlots(id, userId),
-        eventMediaUrls(updated, { gallery: true }),
-      ])
-      return enrichOne(
-        toCleanupDTO(updated, isAttending(nextStanding), linkedReports, nextStanding.eventRole, {
-          slots: slotBoard,
-          myCapabilities: capabilityList(nextStanding),
-          ...media,
-        }),
-        userId,
-      )
+      return hydrateDetail(id, updated, nextStanding, userId)
     },
 
     async requestResources(input: {
@@ -1730,7 +1437,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       message: string
       actorId: string
     }): Promise<RequestEventResourcesResponse> {
-      if (deps.outboundMail === undefined) {
+      const outboundMail = deps.outboundMail
+      if (outboundMail === undefined) {
         throw AppError.internal("Event resource requests are not available")
       }
       const { record, standing } = await requireCapabilityOn(
@@ -1754,48 +1462,8 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         )
       }
 
-      const hostSends = await counters.incr(
-        `cleanup:res-req:host:${input.actorId}`,
-        RESOURCE_REQUEST_HOST_WINDOW_SEC,
-      )
-      // The shared jurisdiction budget is charged only after the host's own cap passes, so one
-      // host hammering past its limit cannot exhaust the area for every other host.
-      if (hostSends > RESOURCE_REQUEST_PER_HOST_PER_DAY) {
-        throw AppError.rateLimited(
-          "You've sent the maximum number of resource requests for today. Please try again tomorrow.",
-        )
-      }
-      const jurisdictionSends = await counters.incr(
-        `cleanup:res-req:jur:${record.jurisdictionGeoid ?? "unknown"}`,
-        RESOURCE_REQUEST_JURISDICTION_WINDOW_SEC,
-      )
-      if (jurisdictionSends > RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR) {
-        throw AppError.rateLimited(
-          "This area has received too many resource requests in the past hour. Please try again later.",
-        )
-      }
-
-      const packet = buildEventPacket(
-        {
-          title: record.title,
-          host: record.organizer.displayName,
-          place: routing.name,
-          address: record.address,
-          lat: record.lat,
-          lng: record.lng,
-          referenceCode: record.referenceCode,
-        },
-        input.message,
-      )
-      await deps.outboundMail.sendEventToJurisdiction({
-        cleanupId: record.id,
-        geoid: record.jurisdictionGeoid,
-        org: routing.name,
-        toAddr: routing.contact,
-        subject: packet.subject,
-        text: packet.text,
-        html: packet.html,
-      })
+      await assertResourceRequestBudget(input.actorId, record.jurisdictionGeoid)
+      await sendResourceRequest(outboundMail, record, routing, input.message)
 
       await deps.repo.appendCleanupTimeline(record.id, {
         kind: "resource_request",
@@ -1808,7 +1476,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     async runCancelFanout(job: CleanupCancelFanoutJob): Promise<void> {
       const record = await deps.repo.findCleanupById(job.cleanupId, null)
       if (record === null) return
-      await notifyCancellation({ id: record.id, title: record.title }, job.reason, job.actorId)
+      await notifications.notifyCancellation(
+        { id: record.id, title: record.title },
+        job.reason,
+        job.actorId,
+      )
     },
   }
 }
@@ -1831,6 +1503,9 @@ function guestVisibleChange(
 
 function resourceRequestNote(message: string): string {
   const collapsed = message.replace(/\s+/g, " ").trim()
-  const preview = collapsed.length > 140 ? `${collapsed.slice(0, 140)}…` : collapsed
+  const preview =
+    collapsed.length > RESOURCE_NOTE_PREVIEW_CHARS
+      ? `${collapsed.slice(0, RESOURCE_NOTE_PREVIEW_CHARS)}…`
+      : collapsed
   return preview.length > 0 ? `Resources requested: ${preview}` : "Resources requested"
 }

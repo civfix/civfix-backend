@@ -49,8 +49,14 @@ declare module "fastify" {
   }
 }
 
+const GEOID_MAX_CHARS = 64
+
+const ANONYMOUS_CACHE_CONTROL = "public, max-age=60"
+
+const VIEWER_CACHE_CONTROL = "private, max-age=0, no-store"
+
 const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
-const GeoidParamsSchema = z.object({ geoid: z.string().min(1).max(64) }).strict()
+const GeoidParamsSchema = z.object({ geoid: z.string().min(1).max(GEOID_MAX_CHARS) }).strict()
 const UserIdParamsSchema = z.object({ id: IdSchema }).strict()
 
 const LEADERBOARD_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
@@ -74,6 +80,12 @@ function appendVary(reply: FastifyReply, ...fields: readonly string[]): void {
     if (!current.some((c) => c.toLowerCase() === field.toLowerCase())) current.push(field)
   }
   reply.header("Vary", current.join(", "))
+}
+
+// The body differs per viewer (blocks, own rank), so a shared cache may only hold the anonymous copy.
+function setViewerCacheHeaders(reply: FastifyReply, viewerId: string | null): void {
+  appendVary(reply, "Cookie", "Authorization")
+  reply.header("Cache-Control", viewerId === null ? ANONYMOUS_CACHE_CONTROL : VIEWER_CACHE_CONTROL)
 }
 
 export async function registerVolunteerHoursRoutes(
@@ -198,11 +210,7 @@ export async function registerVolunteerHoursRoutes(
       const viewerId = request.auth?.userId ?? null
       const payload: PublicVolunteerHoursResponse = await service().getPublicHours(query, viewerId)
 
-      appendVary(reply, "Cookie", "Authorization")
-      reply.header(
-        "Cache-Control",
-        viewerId === null ? "public, max-age=60" : "private, max-age=0, no-store",
-      )
+      setViewerCacheHeaders(reply, viewerId)
       reply.status(200).send(payload)
     },
   )
@@ -248,11 +256,7 @@ export async function registerVolunteerHoursRoutes(
       const viewerId = request.auth?.userId ?? null
       const payload: LeaderboardResponse = await service().leaderboard(geoid, query, viewerId)
 
-      appendVary(reply, "Cookie", "Authorization")
-      reply.header(
-        "Cache-Control",
-        viewerId === null ? "public, max-age=60" : "private, max-age=0, no-store",
-      )
+      setViewerCacheHeaders(reply, viewerId)
       reply.status(200).send(payload)
     },
   )

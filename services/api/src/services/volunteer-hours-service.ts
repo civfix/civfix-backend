@@ -35,23 +35,27 @@ import type { TopVolunteerRow } from "./host/analytics-repository.drizzle.js"
 import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import type { NotificationService } from "./notification-service.js"
 
-export const LEADERBOARD_DEFAULT_LIMIT = 20
+const LEADERBOARD_DEFAULT_LIMIT = 20
 export const LEADERBOARD_MAX_LIMIT = 50
 export const LEADERBOARD_MAX_OFFSET = 500
 export const EVENT_HOURS_MEMBER_CAP = 2000
 
-export { MAX_EVENT_HOURS_ENTRIES } from "@civfix/shared"
+const HOURS_ENTRIES_DEFAULT_LIMIT = 20
+const HOURS_ENTRIES_MAX_LIMIT = 50
 
-export const HOURS_ENTRIES_DEFAULT_LIMIT = 20
-export const HOURS_ENTRIES_MAX_LIMIT = 50
-
-export const LEADERBOARD_EXTRAS_MIN_LIMIT = 25
+const LEADERBOARD_EXTRAS_MIN_LIMIT = 25
 
 export const MAX_ORG_CHIPS_FETCH = 20
 
-export const HOURS_NOTIFY_CONCURRENCY = 8
+const HOURS_NOTIFY_CONCURRENCY = 8
 
-export const EVENT_WINDOW_GRACE_MS = 60 * 60 * 1000
+const MS_PER_MINUTE = 60_000
+
+const MS_PER_HOUR = 60 * MS_PER_MINUTE
+
+const HOURS_ROUNDING_FACTOR = 100
+
+const EVENT_WINDOW_GRACE_MS = MS_PER_HOUR
 
 export const DAILY_HOURS_CAP = 24
 
@@ -87,11 +91,11 @@ export interface EventHoursWindow {
 export function creditableHoursForEvent(cleanup: EventHoursWindow): number {
   const windowMs = eventDurationMs(cleanup)
   if (windowMs <= 0) return 0
-  const hours = (windowMs + EVENT_WINDOW_GRACE_MS) / (60 * 60 * 1000)
-  return Math.min(MAX_EVENT_HOURS, Math.round(hours * 100) / 100)
+  const hours = (windowMs + EVENT_WINDOW_GRACE_MS) / MS_PER_HOUR
+  return Math.min(MAX_EVENT_HOURS, round2(hours))
 }
 
-export function eventDurationMs(cleanup: EventHoursWindow): number {
+function eventDurationMs(cleanup: EventHoursWindow): number {
   const end = cleanup.completedAt ?? cleanup.endsAt
   return end.getTime() - cleanup.scheduledAt.getTime()
 }
@@ -317,10 +321,10 @@ function neutralPublicHours(): PublicVolunteerHoursResponse {
 }
 
 function round2(n: number): number {
-  return Math.round(n * 100) / 100
+  return Math.round(n * HOURS_ROUNDING_FACTOR) / HOURS_ROUNDING_FACTOR
 }
 
-export async function entriesWithCreditorAffiliation(
+async function entriesWithCreditorAffiliation(
   load: AffiliationLoader | undefined,
   views: readonly VolunteerHoursEntryView[],
   viewerId: string | null,
@@ -346,7 +350,7 @@ export async function entriesWithCreditorAffiliation(
   )
 }
 
-export function toVolunteerHoursEntryDTO(view: VolunteerHoursEntryView): VolunteerHoursEntryDTO {
+function toVolunteerHoursEntryDTO(view: VolunteerHoursEntryView): VolunteerHoursEntryDTO {
   return {
     id: view.id,
     source: view.source,
@@ -383,6 +387,64 @@ function toEventHoursRow(entry: EventHoursLedgerEntry): {
     userId: entry.userId,
     hours: round2(entry.hours),
     loggedAt: entry.loggedAt.toISOString(),
+  }
+}
+
+function assertHoursLoggable(
+  cleanup: CleanupHoursView,
+  actorStanding: HostStanding,
+): { durationMs: number; windowCap: number } {
+  if (!can(actorStanding, "manage_event")) {
+    throw AppError.forbidden("Only the event hosts can log volunteer hours.")
+  }
+  if (cleanup.status === "cancelled") {
+    throw AppError.conflict("Volunteer hours can't be logged for a cancelled event.")
+  }
+  if (!hasEventEnded(eventWindowOf(cleanup), Date.now())) {
+    throw AppError.conflict("Volunteer hours can be logged once the event has ended.")
+  }
+  const durationMs = eventDurationMs(cleanup)
+  if (durationMs < MIN_EVENT_DURATION_MS) {
+    throw AppError.conflict(
+      `This event ran for less than ${MIN_EVENT_DURATION_MS / MS_PER_MINUTE} minutes, so no volunteer hours can be logged against it.`,
+    )
+  }
+  return { durationMs, windowCap: creditableHoursForEvent(cleanup) }
+}
+
+function assertCreditableEntries(
+  entries: readonly EventHoursEntry[],
+  actorId: string,
+  durationMs: number,
+  windowCap: number,
+): void {
+  if (entries.length > MAX_EVENT_HOURS_ENTRIES) {
+    throw AppError.validation({
+      entries: `at most ${MAX_EVENT_HOURS_ENTRIES} attendees may be credited in one request`,
+    })
+  }
+
+  const seen = new Set<string>()
+  for (const entry of entries) {
+    if (entry.userId === actorId) {
+      throw AppError.forbidden(
+        "You can't log volunteer hours for yourself. Another host must credit you.",
+      )
+    }
+    if (!(entry.hours >= MIN_EVENT_HOURS) || entry.hours > MAX_EVENT_HOURS) {
+      throw AppError.validation({
+        entries: `hours must be at least ${MIN_EVENT_HOURS} and at most ${MAX_EVENT_HOURS}`,
+      })
+    }
+    if (entry.hours > windowCap) {
+      throw AppError.validation({
+        entries: `this event ran for ${round2(durationMs / MS_PER_HOUR)} h, so at most ${windowCap} h may be credited per attendee`,
+      })
+    }
+    if (seen.has(entry.userId)) {
+      throw AppError.validation({ entries: `duplicate userId: ${entry.userId}` })
+    }
+    seen.add(entry.userId)
   }
 }
 
@@ -488,6 +550,19 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
     }
   }
 
+  async function assertAllAttending(
+    cleanupId: string,
+    entries: readonly EventHoursEntry[],
+  ): Promise<void> {
+    const memberIds = new Set(await deps.cleanups.listMemberIds(cleanupId, EVENT_HOURS_MEMBER_CAP))
+    const nonMembers = entries.filter((e) => !memberIds.has(e.userId))
+    if (nonMembers.length > 0) {
+      throw AppError.validation({
+        entries: `not attending this event: ${nonMembers.map((e) => e.userId).join(", ")}`,
+      })
+    }
+  }
+
   return {
     async getMyHours(userId: string): Promise<MyVolunteerHoursDTO> {
       const totals = await deps.repo.totalsFor(userId)
@@ -590,60 +665,9 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         input.cleanupId,
         input.actorId,
       )
-      if (!can(actorStanding, "manage_event")) {
-        throw AppError.forbidden("Only the event hosts can log volunteer hours.")
-      }
-      if (cleanup.status === "cancelled") {
-        throw AppError.conflict("Volunteer hours can't be logged for a cancelled event.")
-      }
-      if (!hasEventEnded(eventWindowOf(cleanup), Date.now())) {
-        throw AppError.conflict("Volunteer hours can be logged once the event has ended.")
-      }
-      const durationMs = eventDurationMs(cleanup)
-      if (durationMs < MIN_EVENT_DURATION_MS) {
-        throw AppError.conflict(
-          `This event ran for less than ${MIN_EVENT_DURATION_MS / 60_000} minutes, so no volunteer hours can be logged against it.`,
-        )
-      }
-      const windowCap = creditableHoursForEvent(cleanup)
-
-      if (input.entries.length > MAX_EVENT_HOURS_ENTRIES) {
-        throw AppError.validation({
-          entries: `at most ${MAX_EVENT_HOURS_ENTRIES} attendees may be credited in one request`,
-        })
-      }
-
-      const seen = new Set<string>()
-      for (const entry of input.entries) {
-        if (entry.userId === input.actorId) {
-          throw AppError.forbidden(
-            "You can't log volunteer hours for yourself. Another host must credit you.",
-          )
-        }
-        if (!(entry.hours >= MIN_EVENT_HOURS) || entry.hours > MAX_EVENT_HOURS) {
-          throw AppError.validation({
-            entries: `hours must be at least ${MIN_EVENT_HOURS} and at most ${MAX_EVENT_HOURS}`,
-          })
-        }
-        if (entry.hours > windowCap) {
-          throw AppError.validation({
-            entries: `this event ran for ${round2(durationMs / 3_600_000)} h, so at most ${windowCap} h may be credited per attendee`,
-          })
-        }
-        if (seen.has(entry.userId)) {
-          throw AppError.validation({ entries: `duplicate userId: ${entry.userId}` })
-        }
-        seen.add(entry.userId)
-      }
-      const memberIds = new Set(
-        await deps.cleanups.listMemberIds(input.cleanupId, EVENT_HOURS_MEMBER_CAP),
-      )
-      const nonMembers = input.entries.filter((e) => !memberIds.has(e.userId))
-      if (nonMembers.length > 0) {
-        throw AppError.validation({
-          entries: `not attending this event: ${nonMembers.map((e) => e.userId).join(", ")}`,
-        })
-      }
+      const { durationMs, windowCap } = assertHoursLoggable(cleanup, actorStanding)
+      assertCreditableEntries(input.entries, input.actorId, durationMs, windowCap)
+      await assertAllAttending(input.cleanupId, input.entries)
 
       const result = await deps.repo.logEventHours({
         actorId: input.actorId,

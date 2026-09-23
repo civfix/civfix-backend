@@ -95,8 +95,6 @@ export const FONT = {
   cjk: "NotoSansKR-Regular.otf",
 } as const
 
-export type FontRole = keyof typeof FONT
-
 /**
  * Codepoint ranges the Latin brand faces cannot cover, i.e. roughly what Noto Sans KR provides.
  *
@@ -117,7 +115,7 @@ const CJK_RANGES: readonly (readonly [number, number])[] = [
   [0xff00, 0xffef], // Halfwidth and fullwidth forms
 ]
 
-export function needsCjk(text: string): boolean {
+function needsCjk(text: string): boolean {
   for (const ch of text) {
     const cp = ch.codePointAt(0) ?? 0
     for (const [lo, hi] of CJK_RANGES) {

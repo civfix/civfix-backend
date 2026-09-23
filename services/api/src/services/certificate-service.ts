@@ -49,6 +49,17 @@ import type {
   VolunteerHoursRepository,
 } from "./volunteer-hours-service.js"
 
+const CERTIFICATE_KEY_PREFIX = "certificates/service-hours"
+const PDF_CONTENT_TYPE = "application/pdf"
+const MS_PER_SECOND = 1000
+const HOLDER_REVOKED_REASON = "holder"
+const TOMBSTONE_REVOKED_REASON = "account_closed"
+
+interface StoredDocument {
+  documentSha256: string
+  byteSize: number
+}
+
 /**
  * Structural slice of the storage adapter, declared locally for the same reason as in
  * `services/media-presign.ts`: the shared `Storage` interface declares `presignGet(key, ttlSec)` with only TWO parameters. The third
@@ -204,10 +215,10 @@ export interface CertificateService {
  * `gen_random_uuid()` and is NEVER disclosed by the public verify endpoint, so even
  * `<R2_PUBLIC_BASE>/<key>` is unguessable: the same defence-in-depth posture as `buildR2Key(uploadId, now)` in media-intake-service.ts.
  */
-export function certificateObjectKey(id: string, issuedAt: Date): string {
+function certificateObjectKey(id: string, issuedAt: Date): string {
   const year = issuedAt.getUTCFullYear().toString().padStart(4, "0")
   const month = (issuedAt.getUTCMonth() + 1).toString().padStart(2, "0")
-  return `certificates/service-hours/${year}/${month}/${id}.pdf`
+  return `${CERTIFICATE_KEY_PREFIX}/${year}/${month}/${id}.pdf`
 }
 
 /**
@@ -216,7 +227,7 @@ export function certificateObjectKey(id: string, issuedAt: Date): string {
  * which already offers Download and Print. On mobile it is what makes Safari/Chrome show the document
  * with a Share affordance.
  */
-export function certificateContentDisposition(code: string): string {
+function certificateContentDisposition(code: string): string {
   return `inline; filename="civfix-service-hours-${formatCertificateCode(code)}.pdf"`
 }
 
@@ -284,23 +295,39 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
       url,
       urlExpiresAt:
         url !== null
-          ? new Date(at.getTime() + CERTIFICATE_GET_URL_TTL_SEC * 1000).toISOString()
+          ? new Date(at.getTime() + CERTIFICATE_GET_URL_TTL_SEC * MS_PER_SECOND).toISOString()
           : null,
       revokedAt: row.revokedAt?.toISOString() ?? null,
     }
   }
 
-  async function issue(
+  async function renderAndStore(
+    model: TranscriptModel,
+    fingerprint: string,
+    key: string,
+    code: string,
+    issuedAt: Date,
+  ): Promise<StoredDocument> {
+    const bytes = await buildServiceHoursPdf({
+      model,
+      code,
+      issuedAt,
+      fingerprint,
+      ...(deps.verifyBaseUrl !== undefined ? { verifyBaseUrl: deps.verifyBaseUrl } : {}),
+    })
+    const documentSha256 = sha256Hex(bytes)
+    await storage.put(key, bytes, {
+      contentType: PDF_CONTENT_TYPE,
+      contentDisposition: certificateContentDisposition(code),
+    })
+    return { documentSha256, byteSize: bytes.byteLength }
+  }
+
+  async function buildLedgerModel(
     userId: string,
-    requestedLocale?: string,
-  ): Promise<IssueServiceHoursCertificateResponse> {
-    const at = now()
-    const holder = await repo.findHolder(userId)
-    // Only reachable for a session whose user row is gone/tombstoned; 404 rather than 500.
-    if (holder === null) throw AppError.notFound()
-
-    const locale = resolveLocale(requestedLocale ?? holder.locale)
-
+    holder: CertificateHolder,
+    locale: string,
+  ): Promise<TranscriptModel> {
     // v1 issues over the WHOLE ledger: no geoid / from / to filters. `entryCount` is the full matching
     // count; `totalHours` is the sum of the RETURNED rows, because a printed total that does not equal
     // the sum of the printed lines is a self-contradicting document.
@@ -317,7 +344,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
       throw AppError.conflict(certificateTranslator(locale)("certificate.error.no_hours"))
     }
 
-    const model = buildTranscriptModel({
+    return buildTranscriptModel({
       holder: {
         userId,
         displayName: holder.displayName,
@@ -327,54 +354,57 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
       totals: { entryCount: page.entryCount, totalHours: page.totalHours },
       locale,
     })
-    const fingerprint = ledgerFingerprint(model)
+  }
 
-    const existing = await repo.findLiveByFingerprint(userId, fingerprint)
-    if (existing !== null) {
-      const head = await storage.head(existing.r2Key)
-      if (head !== null) {
-        // The common repeat call renders NOTHING: a row lookup, a HEAD and a presign.
-        return {
-          certificate: toCertificateDTO(existing, await presign(existing.r2Key), at),
-          reused: true,
-        }
-      }
-      // Expected to be exercised approximately never (operator error / a bucket incident). The row is
-      // the record of truth, so re-render THIS document (same code, same issue date, same key) rather than minting a second certificate over the same ledger, which the partial unique index
-      // would reject anyway. The model rebuilt above has the same fingerprint as the stored snapshot, so
-      // it is used directly instead of detoasting `snapshot` on a path that is otherwise free.
-      const bytes = await buildServiceHoursPdf({
-        model,
-        code: existing.code,
-        issuedAt: existing.issuedAt,
-        fingerprint,
-        ...(deps.verifyBaseUrl !== undefined ? { verifyBaseUrl: deps.verifyBaseUrl } : {}),
-      })
-      const documentSha256 = sha256Hex(bytes)
-      await storage.put(existing.r2Key, bytes, {
-        contentType: "application/pdf",
-        contentDisposition: certificateContentDisposition(existing.code),
-      })
-      await repo.markRegenerated({
-        id: existing.id,
-        documentSha256,
-        byteSize: bytes.byteLength,
-        at,
-      })
-      deps.logger?.warn(
-        { certificateId: existing.id, r2Key: existing.r2Key },
-        "certificate object missing for a live row; re-rendered from the ledger",
-      )
+  async function reuseLive(
+    existing: CertificateRow,
+    model: TranscriptModel,
+    fingerprint: string,
+    at: Date,
+  ): Promise<IssueServiceHoursCertificateResponse> {
+    const head = await storage.head(existing.r2Key)
+    if (head !== null) {
+      // The common repeat call renders NOTHING: a row lookup, a HEAD and a presign.
       return {
-        certificate: toCertificateDTO(
-          { ...existing, documentSha256, byteSize: bytes.byteLength, regeneratedAt: at },
-          await presign(existing.r2Key),
-          at,
-        ),
+        certificate: toCertificateDTO(existing, await presign(existing.r2Key), at),
         reused: true,
       }
     }
+    // Expected to be exercised approximately never (operator error / a bucket incident). The row is
+    // the record of truth, so re-render THIS document (same code, same issue date, same key) rather
+    // than minting a second certificate over the same ledger, which the partial unique index would
+    // reject anyway. The freshly built model has the same fingerprint as the stored snapshot, so it is
+    // used directly instead of detoasting `snapshot` on a path that is otherwise free.
+    const { documentSha256, byteSize } = await renderAndStore(
+      model,
+      fingerprint,
+      existing.r2Key,
+      existing.code,
+      existing.issuedAt,
+    )
+    await repo.markRegenerated({ id: existing.id, documentSha256, byteSize, at })
+    deps.logger?.warn(
+      { certificateId: existing.id, r2Key: existing.r2Key },
+      "certificate object missing for a live row; re-rendered from the ledger",
+    )
+    return {
+      certificate: toCertificateDTO(
+        { ...existing, documentSha256, byteSize, regeneratedAt: at },
+        await presign(existing.r2Key),
+        at,
+      ),
+      reused: true,
+    }
+  }
 
+  async function mintNew(
+    userId: string,
+    holder: CertificateHolder,
+    locale: string,
+    model: TranscriptModel,
+    fingerprint: string,
+    at: Date,
+  ): Promise<IssueServiceHoursCertificateResponse> {
     const id = newId()
     const r2Key = certificateObjectKey(id, at)
 
@@ -382,18 +412,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
       // The code is PRINTED on the document, so a re-mint must re-render. The key is derived from the
       // row id, which does not change across attempts, so the re-put overwrites rather than orphaning.
       const code = mintCode()
-      const bytes = await buildServiceHoursPdf({
-        model,
-        code,
-        issuedAt: at,
-        fingerprint,
-        ...(deps.verifyBaseUrl !== undefined ? { verifyBaseUrl: deps.verifyBaseUrl } : {}),
-      })
-      const documentSha256 = sha256Hex(bytes)
-      await storage.put(r2Key, bytes, {
-        contentType: "application/pdf",
-        contentDisposition: certificateContentDisposition(code),
-      })
+      const { documentSha256, byteSize } = await renderAndStore(model, fingerprint, r2Key, code, at)
 
       try {
         const row = await repo.insert({
@@ -412,7 +431,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
           snapshot: model,
           r2Key,
           documentSha256,
-          byteSize: bytes.byteLength,
+          byteSize,
           issuedAt: at,
         })
         return { certificate: toCertificateDTO(row, await presign(r2Key), at), reused: false }
@@ -442,6 +461,24 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
     throw AppError.internal("Could not mint a unique certificate code")
   }
 
+  async function issue(
+    userId: string,
+    requestedLocale?: string,
+  ): Promise<IssueServiceHoursCertificateResponse> {
+    const at = now()
+    const holder = await repo.findHolder(userId)
+    // Only reachable for a session whose user row is gone/tombstoned; 404 rather than 500.
+    if (holder === null) throw AppError.notFound()
+
+    const locale = resolveLocale(requestedLocale ?? holder.locale)
+    const model = await buildLedgerModel(userId, holder, locale)
+    const fingerprint = ledgerFingerprint(model)
+
+    const existing = await repo.findLiveByFingerprint(userId, fingerprint)
+    if (existing !== null) return reuseLive(existing, model, fingerprint, at)
+    return mintNew(userId, holder, locale, model, fingerprint, at)
+  }
+
   async function list(userId: string): Promise<ListMyCertificatesResponse> {
     const at = now()
     const rows = await repo.listFor(userId)
@@ -453,7 +490,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
 
   async function revoke(userId: string, code: string): Promise<RevokeCertificateResponse> {
     const at = now()
-    const row = await repo.revoke(userId, code, "holder", at)
+    const row = await repo.revoke(userId, code, HOLDER_REVOKED_REASON, at)
     // Someone else's code is 404, NOT 403: a 403 would confirm that the code exists (the existence-oracle
     // rule documented in media.routes.ts).
     if (row === null) throw AppError.notFound()
@@ -507,7 +544,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
         revokedAt: row.revokedAt?.toISOString() ?? null,
         // Hardcoded rather than echoing `row.revokedReason`: the tombstone is the authoritative answer
         // even for a row the holder had already revoked for their own reason.
-        revokedReason: "account_closed",
+        revokedReason: TOMBSTONE_REVOKED_REASON,
       }
     }
 

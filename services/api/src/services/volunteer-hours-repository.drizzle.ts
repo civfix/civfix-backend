@@ -36,7 +36,11 @@ import type {
 
 const MORE_PAGES = "more"
 
-const RECIPROCAL_LOOKBACK_INTERVAL = `${RECIPROCAL_LOOKBACK_MS / 1000} seconds`
+const MS_PER_SECOND = 1000
+
+const HOURS_ROUNDING_FACTOR = 100
+
+const RECIPROCAL_LOOKBACK_INTERVAL = `${RECIPROCAL_LOOKBACK_MS / MS_PER_SECOND} seconds`
 const WEEKLY_WINDOW_INTERVAL = "7 days"
 
 interface LedgerRow {
@@ -64,6 +68,10 @@ interface OrgHoursRow {
   verified_status: OrgVerificationStatus
   verified_kind: OrganizationRefDTO["verifiedKind"]
   hours: number
+}
+
+function round2(n: number): number {
+  return Math.round(n * HOURS_ROUNDING_FACTOR) / HOURS_ROUNDING_FACTOR
 }
 
 function toOrgHoursView(r: OrgHoursRow): OrgHoursView {
@@ -115,7 +123,7 @@ async function computeTotalHours(sql: Sql, userId: string): Promise<number> {
             AND source <> 'report' AND jurisdiction_geoid IS NULL)
     )::float8 AS total
   `
-  return Math.round((rows[0]?.total ?? 0) * 100) / 100
+  return round2(rows[0]?.total ?? 0)
 }
 
 async function detectHoursAnomalies(
@@ -165,24 +173,29 @@ async function detectHoursAnomalies(
   return anomalies
 }
 
-export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRepository {
-  return {
-    async logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
-      if (args.entries.length === 0) return { credited: 0, changed: [], anomalies: [] }
-      const userIds = args.entries.map((e) => e.userId)
-      const hoursByRow = args.entries.map((e) => e.hours)
-      return sql.begin(async (tx) => {
-        await tx`SELECT pg_advisory_xact_lock(hashtext('volunteer_event:' || ${args.cleanupId}))`
-        const lockIds = [...new Set(userIds)].sort()
-        if (lockIds.length > 0) {
-          await tx`
+interface EventHoursWrite {
+  args: LogEventHoursArgs
+  userIds: string[]
+  hoursByRow: number[]
+}
+
+async function lockEventAndUsers(tx: Queryable, { args, userIds }: EventHoursWrite): Promise<void> {
+  await tx`SELECT pg_advisory_xact_lock(hashtext('volunteer_event:' || ${args.cleanupId}))`
+  const lockIds = [...new Set(userIds)].sort()
+  if (lockIds.length > 0) {
+    await tx`
             SELECT pg_advisory_xact_lock(hashtext('volunteer_user:' || u))
             FROM unnest(${lockIds}::uuid[]) AS t(u)
             ORDER BY u
           `
-        }
+  }
+}
 
-        const reciprocal = await tx<{ logged_by_user_id: string }[]>`
+async function assertNoReciprocalCredit(
+  tx: Queryable,
+  { args, userIds }: EventHoursWrite,
+): Promise<void> {
+  const reciprocal = await tx<{ logged_by_user_id: string }[]>`
           SELECT DISTINCT logged_by_user_id
           FROM volunteer_hours
           WHERE cleanup_id = ${args.cleanupId}
@@ -192,13 +205,18 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
             AND logged_by_user_id <> ${args.actorId}
             AND logged_by_user_id = ANY(${userIds}::uuid[])
         `
-        if (reciprocal.length > 0) {
-          throw AppError.conflict(
-            "You can't credit hours to someone who has already credited you for this event.",
-          )
-        }
+  if (reciprocal.length > 0) {
+    throw AppError.conflict(
+      "You can't credit hours to someone who has already credited you for this event.",
+    )
+  }
+}
 
-        const sameDay = await tx<{ user_id: string; hours: number }[]>`
+async function assertWithinDailyCap(
+  tx: Queryable,
+  { args, userIds }: EventHoursWrite,
+): Promise<void> {
+  const sameDay = await tx<{ user_id: string; hours: number }[]>`
           SELECT vh.user_id, COALESCE(SUM(vh.hours), 0)::float8 AS hours
           FROM volunteer_hours vh
           JOIN cleanups c ON c.id = vh.cleanup_id
@@ -212,20 +230,23 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
             )
           GROUP BY vh.user_id
         `
-        const dailyCapHours = args.dailyCapHours ?? DAILY_HOURS_CAP
-        const heldByUser = new Map(sameDay.map((r) => [r.user_id, r.hours]))
-        for (const entry of args.entries) {
-          const held = heldByUser.get(entry.userId) ?? 0
-          if (held + entry.hours > dailyCapHours) {
-            throw AppError.conflict(
-              `That attendee already holds ${Math.round(held * 100) / 100} h for events on this date; the daily limit is ${dailyCapHours} h.`,
-            )
-          }
-        }
+  const dailyCapHours = args.dailyCapHours ?? DAILY_HOURS_CAP
+  const heldByUser = new Map(sameDay.map((r) => [r.user_id, r.hours]))
+  for (const entry of args.entries) {
+    const held = heldByUser.get(entry.userId) ?? 0
+    if (held + entry.hours > dailyCapHours) {
+      throw AppError.conflict(
+        `That attendee already holds ${round2(held)} h for events on this date; the daily limit is ${dailyCapHours} h.`,
+      )
+    }
+  }
+}
 
-        const audit = await tx<
-          { user_id: string; previous_hours: number | null; new_hours: number }[]
-        >`
+async function writeHoursAudit(
+  tx: Queryable,
+  { args, userIds, hoursByRow }: EventHoursWrite,
+): Promise<LogEventHoursResult["changed"]> {
+  const audit = await tx<{ user_id: string; previous_hours: number | null; new_hours: number }[]>`
           INSERT INTO volunteer_hours_audit
             (cleanup_id, user_id, actor_user_id, previous_hours, new_hours)
           SELECT
@@ -240,14 +261,21 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
             previous_hours::float8 AS previous_hours,
             new_hours::float8 AS new_hours
         `
-        const changed = audit.map((r) => ({
-          userId: r.user_id,
-          hours: r.new_hours,
-          previousHours: r.previous_hours,
-        }))
+  return audit.map((r) => ({
+    userId: r.user_id,
+    hours: r.new_hours,
+    previousHours: r.previous_hours,
+  }))
+}
 
-        if (args.geoid === null) {
-          const upserted = await tx<{ user_id: string }[]>`
+async function upsertEventHours(
+  tx: Queryable,
+  { args, userIds, hoursByRow }: EventHoursWrite,
+): Promise<number> {
+  if (args.geoid === null) {
+    // With no jurisdiction there is no rollup to credit, so only a stale one from an earlier geoid is
+    // reversed.
+    const upserted = await tx<{ user_id: string }[]>`
             WITH prev AS (
               SELECT user_id, hours AS old_hours, jurisdiction_geoid AS old_geoid
               FROM volunteer_hours
@@ -278,15 +306,9 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
             )
             SELECT user_id FROM upsert
           `
-          const anomalies = await detectHoursAnomalies(tx, {
-            actorId: args.actorId,
-            cleanupId: args.cleanupId,
-            userIds,
-            weeklyFlagHours: args.weeklyFlagHours ?? WEEKLY_HOURS_FLAG_DEFAULT,
-          })
-          return { credited: upserted.length, changed, anomalies }
-        }
-        const upserted = await tx<{ user_id: string }[]>`
+    return upserted.length
+  }
+  const upserted = await tx<{ user_id: string }[]>`
           WITH prev AS (
             SELECT user_id, hours AS old_hours, jurisdiction_geoid AS old_geoid
             FROM volunteer_hours
@@ -329,13 +351,31 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           DO UPDATE SET total_hours = user_jurisdiction_hours.total_hours + EXCLUDED.total_hours
           RETURNING user_id
         `
+  return new Set(upserted.map((r) => r.user_id)).size
+}
+
+export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRepository {
+  return {
+    async logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
+      if (args.entries.length === 0) return { credited: 0, changed: [], anomalies: [] }
+      const write: EventHoursWrite = {
+        args,
+        userIds: args.entries.map((e) => e.userId),
+        hoursByRow: args.entries.map((e) => e.hours),
+      }
+      return sql.begin(async (tx) => {
+        await lockEventAndUsers(tx, write)
+        await assertNoReciprocalCredit(tx, write)
+        await assertWithinDailyCap(tx, write)
+        const changed = await writeHoursAudit(tx, write)
+        const credited = await upsertEventHours(tx, write)
         const anomalies = await detectHoursAnomalies(tx, {
           actorId: args.actorId,
           cleanupId: args.cleanupId,
-          userIds,
+          userIds: write.userIds,
           weeklyFlagHours: args.weeklyFlagHours ?? WEEKLY_HOURS_FLAG_DEFAULT,
         })
-        return { credited: new Set(upserted.map((r) => r.user_id)).size, changed, anomalies }
+        return { credited, changed, anomalies }
       })
     },
 
@@ -624,7 +664,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       const items = rows.reverse().map(toEntryView)
       return {
         items,
-        totalHours: Math.round(items.reduce((sum, r) => sum + r.hours, 0) * 100) / 100,
+        totalHours: round2(items.reduce((sum, r) => sum + r.hours, 0)),
         entryCount: countRows[0]?.count ?? items.length,
       }
     },

@@ -40,7 +40,7 @@ declare module "fastify" {
 
 const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
 
-export const GuestRsvpRequestBodySchema = trimTextFields(GuestRsvpRequestRequestSchema, "name")
+const GuestRsvpRequestBodySchema = trimTextFields(GuestRsvpRequestRequestSchema, "name")
 
 export async function registerGuestRsvpRoutes(
   app: FastifyInstance,

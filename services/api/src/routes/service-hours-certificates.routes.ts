@@ -49,8 +49,18 @@ declare module "fastify" {
   }
 }
 
+const CODE_PARAM_MAX_CHARS = 32
+
 /** Validates the raw path param before the shared schema's normalizing transform runs. */
-const CodeParamsSchema = z.object({ code: z.string().min(1).max(32) }).strict()
+const CodeParamsSchema = z.object({ code: z.string().min(1).max(CODE_PARAM_MAX_CHARS) }).strict()
+
+/**
+ * An overrides object with no ledger twin means "no hours": every issue then 409s, which is exactly
+ * what an offline harness wants, and it is never a silent reach for the database.
+ */
+const EMPTY_LEDGER: Pick<VolunteerHoursRepository, "entriesForCertificate"> = {
+  entriesForCertificate: () => Promise.resolve({ items: [], totalHours: 0, entryCount: 0 }),
+}
 
 /**
  * ISSUE renders a PDF synchronously and mints a durable public artifact from personal data; 6/hour caps
@@ -78,16 +88,7 @@ export async function registerServiceHoursCertificateRoutes(
     const overrides = app.certificateOverrides
     return makeCertificateService({
       repo: overrides ? overrides.repo : container.getCertificateRepo(),
-      hours:
-        overrides?.hours ??
-        (overrides
-          ? // An overrides object with no ledger twin means "no hours": every issue then 409s, which is
-            // exactly what an offline harness wants, and it is never a silent reach for the database.
-            {
-              entriesForCertificate: () =>
-                Promise.resolve({ items: [], totalHours: 0, entryCount: 0 }),
-            }
-          : container.getVolunteerHoursRepo()),
+      hours: overrides ? (overrides.hours ?? EMPTY_LEDGER) : container.getVolunteerHoursRepo(),
       storage: overrides?.storage ?? container.storage,
       verifyBaseUrl: `${webBaseUrlOf(container.env)}${CERTIFICATE_VERIFY_PATH}`,
       logger: app.log,
