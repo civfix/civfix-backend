@@ -342,6 +342,14 @@ async function claimVerificationDocumentsInTx(
   }
 }
 
+async function countAdminSeats(tx: Queryable, organizationId: string): Promise<number> {
+  const rows = await tx<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM organization_members
+    WHERE organization_id = ${organizationId} AND role IN ('owner','admin')
+  `
+  return rows[0]?.n ?? 0
+}
+
 export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationRepository {
   async function readById(
     tag: Queryable,
@@ -723,6 +731,9 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       actorId: string
     }): Promise<SetOrganizationMemberRoleOutcome> {
       return sql.begin(async (tx) => {
+        await tx`
+          SELECT id FROM organizations WHERE id = ${args.organizationId} LIMIT 1 FOR UPDATE
+        `
         const current = await tx<{ role: OrganizationMemberRole }[]>`
           SELECT role FROM organization_members
           WHERE organization_id = ${args.organizationId} AND user_id = ${args.userId}
@@ -733,6 +744,10 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         if (existing === undefined) return "not_member"
         if (existing.role === "owner") return "owner"
         if (existing.role === args.role) return "updated"
+        if (existing.role === "admin" && args.role === "member") {
+          const seats = await countAdminSeats(tx, args.organizationId)
+          if (seats <= 1) return "last_admin"
+        }
         await tx`
           UPDATE organization_members SET role = ${args.role}
           WHERE organization_id = ${args.organizationId} AND user_id = ${args.userId}
@@ -755,8 +770,21 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
     }): Promise<RemoveOrganizationMemberOutcome> {
       return sql.begin(async (tx) => {
         await tx`
+          SELECT id FROM organizations WHERE id = ${args.organizationId} LIMIT 1 FOR UPDATE
+        `
+        await tx`
           SELECT id FROM users WHERE id = ${args.userId} LIMIT 1 FOR UPDATE
         `
+        const target = await tx<{ role: OrganizationMemberRole }[]>`
+          SELECT role FROM organization_members
+          WHERE organization_id = ${args.organizationId} AND user_id = ${args.userId}
+          LIMIT 1
+          FOR UPDATE
+        `
+        if (target[0]?.role === "admin") {
+          const seats = await countAdminSeats(tx, args.organizationId)
+          if (seats <= 1) return "last_admin"
+        }
         const removed = await tx<{ role: OrganizationMemberRole }[]>`
           DELETE FROM organization_members
           WHERE organization_id = ${args.organizationId}

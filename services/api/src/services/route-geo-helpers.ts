@@ -17,8 +17,10 @@ import {
   type JurisdictionLookup,
 } from "../adapters/jurisdiction-lookup.census.js"
 import { makeJurisdictionService, type JurisdictionService } from "./jurisdiction-service.js"
+import { makeAddressResolver, type AddressResolver } from "./address-resolver.js"
+import { makeGeocodeCache } from "./geocode-cache.js"
 
-/** Coords -> geoid (or null outside coverage) / one-line address (or null). Matches the service deps. */
+/** Coords -> the owning jurisdiction's geoid, or null outside coverage. Matches the service deps. */
 export type PointToString = (lat: number, lng: number) => Promise<string | null>
 
 /**
@@ -80,10 +82,21 @@ export function makeGeoidResolver(container: Container): PointToString {
 }
 
 /**
- * reverseGeocode dep: street-level first (Mapbox/Photon chain), falling back to the local "City, ST"
- * label. Best-effort by contract — null leaves the address empty and never blocks a submit.
+ * resolveAddress dep: the full precision ladder (Mapbox/Photon chain, then the local TIGER "City, ST"
+ * label) behind the read-through `geocode_cache`, so the preview a client just ran and the create that
+ * follows it cost ONE provider call between them.
+ *
+ * Built per call like every other helper here: `container.getDb()` is only ever touched INSIDE the
+ * returned closure (mounting a plugin must not open a connection), and the cache swallows the throw a
+ * DB-less process raises, degrading to an uncached resolve rather than an error.
+ *
+ * Best-effort by contract — a null address leaves the field empty and never blocks a submit.
  */
-export function makeReverseGeocoder(container: Container): PointToString {
-  return async (lat, lng) =>
-    (await container.streetReverseGeocode(lat, lng)) ?? container.geocoder.cityStateLabel(lat, lng)
+export function makeCachedAddressResolver(container: Container): AddressResolver {
+  return makeAddressResolver({
+    streetReverseGeocode: container.streetReverseGeocode,
+    geocoder: container.geocoder,
+    cache: makeGeocodeCache({ getSql: () => container.getDb().sql }),
+  })
 }
+

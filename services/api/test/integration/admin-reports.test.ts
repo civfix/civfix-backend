@@ -108,8 +108,8 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     const reporter = await insertUser(h, { name: "Jane", handle: "jane", emailVerified: true })
     const id = await insertReport(h, { reporterId: reporter, title: "Overflowing bin" })
     await h.sql`
-      INSERT INTO media_assets (report_id, upload_id, kind, r2_key, status)
-      VALUES (${id}, gen_random_uuid(), 'image', 'k/photo.jpg', 'ready')
+      INSERT INTO media_assets (report_id, upload_id, kind, r2_key, served_key, status)
+      VALUES (${id}, gen_random_uuid(), 'image', 'k/photo.jpg', 'k/photo.serve.jpg', 'ready')
     `
     const { records } = await repo.listReports({
       q: null,

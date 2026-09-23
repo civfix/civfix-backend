@@ -64,7 +64,7 @@ describe("broadcast rendering", () => {
       ctx,
     )
     expect(out.html).not.toContain("javascript:")
-    expect(out.html).not.toContain("<a ")
+    expect(out.html).not.toContain(">click</a>")
   })
 
   it("renders a CTA button when a url is present", () => {

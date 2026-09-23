@@ -1,6 +1,12 @@
 import type postgres from "postgres"
 import type { Queryable } from "../db/client.js"
-import type { ReportCategory, ReportStatus, ReportType } from "@civfix/shared"
+import type {
+  AddressPrecision,
+  ReportAddressSource,
+  ReportCategory,
+  ReportStatus,
+  ReportType,
+} from "@civfix/shared"
 import { PUBLIC_REPORT_STATUSES } from "./report-visibility.js"
 import type {
   ReportMapPoint,
@@ -33,6 +39,8 @@ export interface ReportRowSelect {
   title: string | null
   description: string | null
   addr: string | null
+  addr_source: ReportAddressSource | null
+  addr_precision: AddressPrecision | null
   status: ReportStatus
   visibility: "public" | "hidden"
   lng: number
@@ -55,6 +63,8 @@ export function toRecord(r: ReportRowSelect): ReportRecord {
     title: r.title,
     description: r.description,
     addr: r.addr,
+    addrSource: r.addr_source,
+    addrPrecision: r.addr_precision,
     status: r.status,
     visibility: r.visibility,
     lat: r.lat,
@@ -70,7 +80,8 @@ export function toRecord(r: ReportRowSelect): ReportRecord {
 
 export function reportColumns(sql: Queryable) {
   return sql`
-    id, reporter_user_id, anon_session_id, category, type, title, description, addr, status, visibility,
+    id, reporter_user_id, anon_session_id, category, type, title, description, addr, addr_source,
+    addr_precision, status, visibility,
     ST_X(geom) AS lng, ST_Y(geom) AS lat, geom_source, jurisdiction_geoid, reference_code,
     created_at, published_at, deleted_at
   `

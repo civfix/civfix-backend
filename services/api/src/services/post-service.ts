@@ -1,20 +1,87 @@
 
-import { AppError } from "@civfix/shared"
-import type { HomeFeedQuery, PaginationQuery, PostComposeInput, PostDTO } from "@civfix/shared"
+import {
+  AppError,
+  DEFAULT_FEED_RANKING,
+  formatFeedScoreCursor,
+  isAfterFeedScoreCursor,
+  parseFeedScoreCursor,
+} from "@civfix/shared"
+import type {
+  FeedCountsResponse,
+  FeedRankingConfig,
+  HomeFeedQuery,
+  PaginationQuery,
+  PostComposeInput,
+  PostDTO,
+} from "@civfix/shared"
+import type { UserChannel } from "@civfix/shared/interfaces"
+import { randomInt } from "node:crypto"
 import type { Sql } from "../db/client.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { resolveMentionTargets } from "./mention-resolver.drizzle.js"
+import { parseTimeCursor } from "../db/cursor-helpers.js"
 import {
+  NIL_VIEWER_ID,
   POSTS_DEFAULT_LIMIT,
+  type FeedCandidateRow,
   type FeedPage,
   type PostBrief,
   type PostRepository,
   type RepliesPage,
 } from "./post-repository.drizzle.js"
+import {
+  applyCutoff,
+  bucketSeed,
+  quantizeClock,
+  rankCandidates,
+  type FeedCandidate,
+  type RankedCandidate,
+} from "./feed-ranking.js"
+import { mapWithLimit } from "./media-presign.js"
+import type { FeedPresence, FeedSnapshotEntry } from "./feed-presence.js"
 import type { PostNotifier } from "./notification-service.js"
 
 function isVisible(brief: PostBrief): boolean {
   return brief.deletedAt === null && brief.visibility === "public"
+}
+
+interface FeedScoreCursor {
+  score: number
+  postId: string
+}
+
+interface RankedSet {
+  ranked: RankedCandidate[]
+  recomputable: () => RankedCandidate[]
+}
+
+function normalizeScoreCursor(cursor: FeedScoreCursor | null): FeedScoreCursor | null {
+  if (cursor === null) return null
+  return { score: cursor.score, postId: cursor.postId.toLowerCase() }
+}
+
+function isLegacyTimeCursor(cursor: string | null | undefined): boolean {
+  if (cursor === null || cursor === undefined || cursor === "") return false
+  if (parseFeedScoreCursor(cursor) !== null) return false
+  return parseTimeCursor(cursor) !== null
+}
+
+export const FEED_FANOUT_CONCURRENCY = 16
+
+export const FEED_DISTANCE_RESOLUTION_KM = 1
+
+export const FEED_SEED_SPAN = 2 ** 31
+
+export const PUBLIC_FEED_SEED_KEY = "public"
+
+function coarseDistanceKm(distanceKm: number | null): number | null {
+  if (distanceKm === null || !Number.isFinite(distanceKm)) return null
+  return Math.round(distanceKm / FEED_DISTANCE_RESOLUTION_KM) * FEED_DISTANCE_RESOLUTION_KM
+}
+
+export interface FeedViewerLocation {
+  lat: number
+  lng: number
 }
 
 export interface PostServiceDeps {
@@ -23,6 +90,11 @@ export interface PostServiceDeps {
   notifier?: PostNotifier
   isBlockedEitherWay?: (a: string, b: string) => Promise<boolean>
   logger?: { warn(obj: unknown, msg: string): void }
+  feedRanking?: FeedRankingConfig
+  feedPresence?: FeedPresence
+  userChannel?: UserChannel
+  now?: () => number
+  feedSeed?: () => number
 }
 
 export interface PostService {
@@ -36,14 +108,255 @@ export interface PostService {
   unsavePost(id: string, viewerId: string): Promise<PostDTO>
   repostPost(id: string, viewerId: string): Promise<PostDTO>
   unrepostPost(id: string, viewerId: string): Promise<PostDTO>
-  homeFeed(viewerId: string, query: HomeFeedQuery): Promise<FeedPage>
-  publicFeed(query: HomeFeedQuery): Promise<FeedPage>
+  homeFeed(
+    viewerId: string,
+    query: HomeFeedQuery,
+    location?: FeedViewerLocation,
+  ): Promise<FeedPage>
+  publicFeed(query: HomeFeedQuery, location?: FeedViewerLocation): Promise<FeedPage>
+  getFeedCounts(postIds: readonly string[], viewerId: string): Promise<FeedCountsResponse>
   listUserPosts(authorId: string, viewerId: string, pagination: PaginationQuery): Promise<FeedPage>
   listSaves(viewerId: string, pagination: PaginationQuery): Promise<FeedPage>
 }
 
 export function makePostService(deps: PostServiceDeps): PostService {
   const isBlocked = deps.isBlockedEitherWay ?? (() => Promise.resolve(false))
+  const feedConfig = deps.feedRanking ?? DEFAULT_FEED_RANKING
+  const nowMs = deps.now ?? (() => Date.now())
+  const mintSeed = deps.feedSeed ?? (() => randomInt(0, FEED_SEED_SPAN))
+
+  function fanout(recipients: readonly string[], topic: "feed" | "feed_counts", id: string): void {
+    const channel = deps.userChannel
+    if (channel === undefined || recipients.length === 0) return
+    void mapWithLimit([...recipients], FEED_FANOUT_CONCURRENCY, (userId) =>
+      channel.publishToUser(userId, { topic, id }),
+    ).catch((err: unknown) => {
+      deps.logger?.warn({ err, topic, id }, "post: realtime feed fanout failed (suppressed)")
+    })
+  }
+
+  async function announceNewPost(postId: string, authorId: string): Promise<void> {
+    if (deps.userChannel === undefined) return
+    try {
+      const followers = await deps.repo.followerIdsOf(authorId, feedConfig.newPostFanoutMax)
+      fanout(followers, "feed", postId)
+    } catch (err) {
+      deps.logger?.warn({ err, postId }, "post: new-post fanout lookup failed (suppressed)")
+    }
+  }
+
+  function presenceFor(viewerId: string): FeedPresence | undefined {
+    if (deps.feedPresence === undefined) return undefined
+    if (viewerId === NIL_VIEWER_ID) return undefined
+    return deps.feedPresence
+  }
+
+  async function announceCountChange(postId: string, actorId: string): Promise<void> {
+    if (deps.userChannel === undefined || deps.feedPresence === undefined) return
+    try {
+      const viewers = await deps.feedPresence.viewersOf(postId)
+      fanout(
+        viewers.filter((viewerId) => viewerId !== actorId),
+        "feed_counts",
+        postId,
+      )
+    } catch (err) {
+      deps.logger?.warn({ err, postId }, "post: count fanout lookup failed (suppressed)")
+    }
+  }
+
+  function toCandidate(row: FeedCandidateRow, seen: ReadonlySet<string>): FeedCandidate {
+    return {
+      id: row.id,
+      authorId: row.author_id,
+      createdAtMs: row.created_at.getTime(),
+      likeCount: Number(row.like_count),
+      replyCount: Number(row.reply_count),
+      repostCount: Number(row.repost_count),
+      hasMedia: row.has_media,
+      hasReport: row.has_report,
+      hasLiveEvent: row.has_live_event,
+      authorFollowed: row.author_followed,
+      authorIsViewer: row.author_is_viewer,
+      viewerMentioned: row.viewer_mentioned,
+      authorOrgVerified: row.author_org_verified,
+      distanceKm: coarseDistanceKm(row.distance_km === null ? null : Number(row.distance_km)),
+      alreadySeen: seen.has(row.id),
+    }
+  }
+
+  function sliceAfterCursor(
+    entries: readonly FeedSnapshotEntry[],
+    cursor: { score: number; postId: string },
+  ): FeedSnapshotEntry[] {
+    const anchor = entries.findIndex((entry) => entry.id === cursor.postId)
+    if (anchor !== -1) return entries.slice(anchor + 1)
+    return entries.filter((entry) =>
+      isAfterFeedScoreCursor({ score: entry.score, postId: entry.id }, cursor),
+    )
+  }
+
+  async function pageFrom(
+    viewerId: string,
+    entries: readonly FeedSnapshotEntry[],
+    limit: number,
+  ): Promise<FeedPage> {
+    const pageEntries = entries.slice(0, limit)
+    const hasMore = entries.length > pageEntries.length
+    const last = pageEntries[pageEntries.length - 1]
+    const nextCursor =
+      hasMore && last !== undefined
+        ? formatFeedScoreCursor({ score: last.score, postId: last.id })
+        : null
+
+    const items = await deps.repo.hydrateByIds(
+      pageEntries.map((entry) => entry.id),
+      viewerId,
+    )
+
+    const presence = presenceFor(viewerId)
+    if (presence !== undefined) {
+      void presence
+        .recordServed(
+          viewerId,
+          items.map((item) => item.id),
+        )
+        .catch((err: unknown) => {
+          deps.logger?.warn({ err }, "post: feed served-set write failed (suppressed)")
+        })
+    }
+
+    return { items, nextCursor }
+  }
+
+  function seedFor(
+    viewerId: string,
+    filter: string,
+    isFirstPage: boolean,
+    nowBucketMs: number,
+  ): number {
+    const presence = presenceFor(viewerId)
+    if (isFirstPage && presence !== undefined && presence.snapshotsAvailable) return mintSeed()
+    const key = viewerId === NIL_VIEWER_ID ? PUBLIC_FEED_SEED_KEY : viewerId
+    return bucketSeed(key, filter, nowBucketMs)
+  }
+
+  async function rankCandidateSet(
+    viewerId: string,
+    query: HomeFeedQuery,
+    location: FeedViewerLocation | undefined,
+    isFirstPage: boolean,
+  ): Promise<RankedSet> {
+    const rows = await deps.repo.feedCandidates({
+      viewerId,
+      filter: query.filter,
+      fallbackLat: location?.lat ?? null,
+      fallbackLng: location?.lng ?? null,
+      windowDays: feedConfig.candidateWindowDays,
+      radiusKm: feedConfig.nearbyRadiusKm,
+      candidateCap: feedConfig.candidateCap,
+    })
+
+    const presence = presenceFor(viewerId)
+    const seen =
+      presence === undefined || !isFirstPage
+        ? new Set<string>()
+        : await presence.seenBy(
+            viewerId,
+            rows.map((r) => r.id),
+          )
+
+    const nowBucketMs = quantizeClock(nowMs(), feedConfig.clockBucketSeconds)
+    function rankWith(seenSet: ReadonlySet<string>, seed: number): RankedCandidate[] {
+      return applyCutoff(
+        rankCandidates(
+          rows.map((row) => toCandidate(row, seenSet)),
+          feedConfig,
+          nowBucketMs,
+          seed,
+        ),
+        feedConfig,
+      )
+    }
+
+    return {
+      ranked: rankWith(seen, seedFor(viewerId, query.filter, isFirstPage, nowBucketMs)),
+      recomputable: () =>
+        rankWith(new Set<string>(), seedFor(viewerId, query.filter, false, nowBucketMs)),
+    }
+  }
+
+  function persistSnapshot(
+    viewerId: string,
+    filter: string,
+    ranked: readonly RankedCandidate[],
+  ): void {
+    const presence = presenceFor(viewerId)
+    if (presence === undefined || !presence.snapshotsAvailable) return
+    void presence.writeSnapshot(viewerId, filter, ranked).catch((err: unknown) => {
+      deps.logger?.warn({ err }, "post: feed snapshot write failed (suppressed)")
+    })
+  }
+
+  async function storeFirstSnapshot(
+    viewerId: string,
+    filter: string,
+    ranked: readonly RankedCandidate[],
+  ): Promise<boolean> {
+    const presence = presenceFor(viewerId)
+    if (presence === undefined || !presence.snapshotsAvailable) return true
+    try {
+      return await presence.writeSnapshot(viewerId, filter, ranked)
+    } catch {
+      return false
+    }
+  }
+
+  async function continueRankedPage(
+    viewerId: string,
+    query: HomeFeedQuery,
+    location: FeedViewerLocation | undefined,
+    cursor: { score: number; postId: string },
+    limit: number,
+  ): Promise<FeedPage> {
+    const presence = presenceFor(viewerId)
+    if (presence !== undefined && presence.snapshotsAvailable) {
+      const snapshot = await presence.readSnapshot(viewerId, query.filter)
+      if (snapshot !== null) {
+        void presence.touchSnapshot(viewerId, query.filter).catch((err: unknown) => {
+          deps.logger?.warn({ err }, "post: feed snapshot touch failed (suppressed)")
+        })
+        return pageFrom(viewerId, sliceAfterCursor(snapshot, cursor), limit)
+      }
+    }
+
+    const { ranked } = await rankCandidateSet(viewerId, query, location, false)
+    persistSnapshot(viewerId, query.filter, ranked)
+    return pageFrom(viewerId, sliceAfterCursor(ranked, cursor), limit)
+  }
+
+  async function rankedFeed(
+    viewerId: string,
+    query: HomeFeedQuery,
+    location: FeedViewerLocation | undefined,
+  ): Promise<FeedPage> {
+    const limit = query.limit ?? POSTS_DEFAULT_LIMIT
+    const cursor = normalizeScoreCursor(parseFeedScoreCursor(query.cursor))
+
+    if (cursor !== null) {
+      return continueRankedPage(viewerId, query, location, cursor, limit)
+    }
+
+    const { ranked, recomputable } = await rankCandidateSet(viewerId, query, location, true)
+    if (await storeFirstSnapshot(viewerId, query.filter, ranked)) {
+      return pageFrom(viewerId, ranked, limit)
+    }
+    deps.logger?.warn(
+      { viewerId, filter: query.filter },
+      "post: feed snapshot unavailable, serving the reproducible bucket order",
+    )
+    return pageFrom(viewerId, recomputable(), limit)
+  }
 
   async function safeNotify(fn: () => Promise<void>): Promise<void> {
     if (!deps.notifier) return
@@ -100,9 +413,11 @@ export function makePostService(deps: PostServiceDeps): PostService {
       const kind =
         input.replyToId !== undefined ? "reply" : input.repostOfId !== undefined ? "quote" : "post"
 
+      let replyParentId: string | null = null
       let replyParentAuthor: string | null = null
       if (input.replyToId !== undefined) {
         const parent = await requireReadable(input.replyToId, authorId)
+        replyParentId = parent.id
         replyParentAuthor = parent.authorId
       }
       let quoteTargetAuthor: string | null = null
@@ -158,6 +473,13 @@ export function makePostService(deps: PostServiceDeps): PostService {
         }
       }
 
+      if (kind === "post" || kind === "quote") {
+        await announceNewPost(postId, authorId)
+      }
+      if (replyParentId !== null) {
+        await announceCountChange(replyParentId, authorId)
+      }
+
       return hydrateOrThrow(postId, authorId)
     },
 
@@ -191,6 +513,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
     async likePost(id: string, viewerId: string): Promise<PostDTO> {
       const subject = await requireReadable(id, viewerId)
       const created = await deps.repo.like(subject.id, viewerId)
+      if (created) await announceCountChange(subject.id, viewerId)
       if (created && (await shouldNotify(viewerId, subject.authorId))) {
         const actorName = await deps.repo.actorNameOf(viewerId)
         await safeNotify(() =>
@@ -202,7 +525,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
     async unlikePost(id: string, viewerId: string): Promise<PostDTO> {
       const subject = await requireReadable(id, viewerId)
-      await deps.repo.unlike(subject.id, viewerId)
+      const removed = await deps.repo.unlike(subject.id, viewerId)
+      if (removed) await announceCountChange(subject.id, viewerId)
       return hydrateOrThrow(id, viewerId)
     },
 
@@ -224,6 +548,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
         throw AppError.validation({ id: "You cannot repost your own post." })
       }
       const { targetId, created } = await deps.repo.repost(id, viewerId)
+      if (created) await announceCountChange(targetId, viewerId)
       if (created) {
         const targetBrief = await deps.repo.getPostBrief(targetId)
         if (targetBrief && (await shouldNotify(viewerId, targetBrief.authorId))) {
@@ -242,25 +567,56 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
     async unrepostPost(id: string, viewerId: string): Promise<PostDTO> {
       await requireReadable(id, viewerId)
-      const { targetId } = await deps.repo.unrepost(id, viewerId)
+      const { targetId, removed } = await deps.repo.unrepost(id, viewerId)
+      if (removed) await announceCountChange(targetId, viewerId)
       return hydrateOrThrow(targetId, viewerId)
     },
 
-    async homeFeed(viewerId: string, query: HomeFeedQuery): Promise<FeedPage> {
-      return deps.repo.homeFeed({
-        viewerId,
-        filter: query.filter,
-        cursor: query.cursor ?? null,
-        limit: query.limit ?? POSTS_DEFAULT_LIMIT,
-      })
+    async homeFeed(
+      viewerId: string,
+      query: HomeFeedQuery,
+      location?: FeedViewerLocation,
+    ): Promise<FeedPage> {
+      if (isLegacyTimeCursor(query.cursor)) {
+        return deps.repo.homeFeedChronological({
+          viewerId,
+          filter: query.filter,
+          cursor: query.cursor ?? null,
+          limit: query.limit ?? POSTS_DEFAULT_LIMIT,
+        })
+      }
+      return rankedFeed(viewerId, query, location)
     },
 
-    async publicFeed(query: HomeFeedQuery): Promise<FeedPage> {
-      return deps.repo.publicFeed({
-        filter: query.filter,
-        cursor: query.cursor ?? null,
-        limit: query.limit ?? POSTS_DEFAULT_LIMIT,
-      })
+    async publicFeed(query: HomeFeedQuery, location?: FeedViewerLocation): Promise<FeedPage> {
+      if (isLegacyTimeCursor(query.cursor)) {
+        return deps.repo.publicFeed({
+          filter: query.filter,
+          cursor: query.cursor ?? null,
+          limit: query.limit ?? POSTS_DEFAULT_LIMIT,
+        })
+      }
+      return rankedFeed(NIL_VIEWER_ID, query, location)
+    },
+
+    async getFeedCounts(
+      postIds: readonly string[],
+      viewerId: string,
+    ): Promise<FeedCountsResponse> {
+      const unique = [...new Set(postIds)]
+      if (unique.length === 0) return { items: [] }
+      const rows = await deps.repo.readableCounts(unique, viewerId)
+      return {
+        items: rows.map((row) => ({
+          id: row.id,
+          counts: {
+            likes: Number(row.like_count),
+            reposts: Number(row.repost_count),
+            replies: Number(row.reply_count),
+            saves: Number(row.save_count),
+          },
+        })),
+      }
     },
 
     async listUserPosts(

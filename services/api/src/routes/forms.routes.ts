@@ -166,7 +166,7 @@ export async function registerHomeTurfRoutes(
   )
 }
 
-interface FormOutboundEmail {
+export interface FormOutboundEmail {
   from: string
   to: string
   replyTo?: string
@@ -191,7 +191,7 @@ function formRows(form: HomeTurfForm): Array<[string, string]> {
   return rows
 }
 
-function buildNotificationEmail(form: HomeTurfForm, from: string, to: string): FormOutboundEmail {
+export function buildNotificationEmail(form: HomeTurfForm, from: string, to: string): FormOutboundEmail {
   const subject = sanitizeHeaderValue(`Home Turf sign-up: ${form.school}`)
   const { text, html } = renderEmailBody({
     preheader: subject,
@@ -200,7 +200,7 @@ function buildNotificationEmail(form: HomeTurfForm, from: string, to: string): F
   return { from, to, replyTo: form.email, subject, text, html }
 }
 
-function buildConfirmationEmail(form: HomeTurfForm, from: string, notifyTo: string): FormOutboundEmail {
+export function buildConfirmationEmail(form: HomeTurfForm, from: string, notifyTo: string): FormOutboundEmail {
   const subject = "We got your Home Turf sign-up"
   const { text, html } = renderEmailBody({
     preheader: subject,

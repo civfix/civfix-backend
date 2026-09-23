@@ -15,7 +15,10 @@ import { ANON_TOKEN_TTL_SECONDS } from "../abuse/anon-token.js"
 import { cfGeoFromTrustedEdge } from "../abuse/gps-sanity.js"
 import { makeAnonService, type AnonService } from "../services/anon-service.js"
 import { makeDrizzleAnonReportRepository } from "../services/anon-repository.drizzle.js"
-import { makeGeoidResolver, makeReverseGeocoder } from "../services/route-geo-helpers.js"
+import {
+  makeCachedAddressResolver,
+  makeGeoidResolver,
+} from "../services/route-geo-helpers.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { route } from "../versioning/route.js"
 import { parse, trimTextFields } from "./_validate.js"
@@ -82,7 +85,7 @@ export async function registerAnonRoutes(
       anonTokenSigningKey: container.env.ANON_TOKEN_SIGNING_KEY,
       resolveJurisdictionGeoid: makeGeoidResolver(container),
       resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
-      reverseGeocode: makeReverseGeocoder(container),
+      resolveAddress: makeCachedAddressResolver(container),
       raiseAbuseFlag: async (subjectType, subjectId, reason) => {
         await sql`
           INSERT INTO abuse_flags (subject_type, subject_id, reason, source)

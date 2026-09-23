@@ -21,7 +21,7 @@ import type {
 } from "@civfix/shared"
 import { mapOutreachStatus } from "./admin-report-repository.drizzle.js"
 import { isPacketKind, type MailMessageKind } from "./mail-repository.js"
-import { REPORT_VERIFIED_THRESHOLD } from "./admin-report-service.js"
+import { pickPreviewMedia, REPORT_VERIFIED_THRESHOLD } from "./admin-report-service.js"
 import { STATUS_BUCKETS } from "./admin-report-status.js"
 
 export interface RecordedAudit {
@@ -108,6 +108,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
         lat: input.lat ?? 0,
         lng: input.lng ?? 0,
         hasPhoto: input.hasPhoto ?? false,
+        previewMedia: pickPreviewMedia(input.media ?? []),
         createdAt: input.createdAt ?? this.now,
         referenceCode: input.referenceCode ?? null,
         verificationVerdict: input.verificationVerdict ?? null,

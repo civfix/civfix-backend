@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest"
 import {
   runInboundEmailRetentionLane,
   runRetentionSweep,
+  RETENTION_GEOCODE_CACHE_MS,
   RETENTION_GRACE_MS,
   RETENTION_INBOUND_EMAILS_MS,
 } from "../../src/jobs/retention-sweep.js"
+import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
 import type {
   InboundRetentionRepository,
   ReapedInboundEmail,
@@ -36,6 +38,7 @@ const EMPTY = {
   sessions: 0,
   idempotencyKeys: 0,
   notifications: 0,
+  geocodeCache: 0,
   inboundEmails: 0,
   inboundEmailObjectsLeaked: 0,
   errors: 0,
@@ -53,16 +56,24 @@ function fakeInboundStorage(): { deleted: string[]; delete: (key: string) => Pro
 }
 
 describe("retention.sweep", () => {
-  it("deletes from email_otps, anon_tokens, sessions, idempotency_keys and notifications, returning per-table counts", async () => {
-    const { sql, calls } = makeSqlSpy([rows(3), rows(2), rows(5), rows(4), rows(6)])
+  it("deletes from email_otps, anon_tokens, sessions, idempotency_keys, notifications and geocode_cache, returning per-table counts", async () => {
+    const { sql, calls } = makeSqlSpy([rows(3), rows(2), rows(5), rows(4), rows(6), rows(7)])
     const res = await runRetentionSweep({
       sql,
       now: () => new Date("2026-06-20T00:00:00Z"),
       log: () => {},
     })
 
-    expect(res).toEqual({ ...EMPTY, otps: 3, anonTokens: 2, sessions: 5, idempotencyKeys: 4, notifications: 6 })
-    expect(calls.length).toBe(5)
+    expect(res).toEqual({
+      ...EMPTY,
+      otps: 3,
+      anonTokens: 2,
+      sessions: 5,
+      idempotencyKeys: 4,
+      notifications: 6,
+      geocodeCache: 7,
+    })
+    expect(calls.length).toBe(6)
     expect(calls[0]).toContain("DELETE FROM email_otps")
     expect(calls[0]).toContain("consumed_at IS NOT NULL OR expires_at <")
     expect(calls[1]).toContain("DELETE FROM anon_tokens")
@@ -73,6 +84,19 @@ describe("retention.sweep", () => {
     expect(calls[3]).not.toContain("SELECT key FROM idempotency_keys")
     expect(calls[4]).toContain("DELETE FROM notifications")
     expect(calls[4]).toContain("created_at <")
+    expect(calls[5]).toContain("DELETE FROM geocode_cache")
+    expect(calls[5]).toContain("SELECT point_key FROM geocode_cache")
+    expect(calls[5]).toContain("resolved_at <")
+  })
+
+  it("bounds geocode_cache at the POSITIVE TTL - the table is written by an unauthenticated path", async () => {
+    const { sql, values } = makeSqlSpy([rows(0), rows(0), rows(0), rows(0), rows(0), rows(1)])
+    const now = new Date("2026-06-20T00:00:00Z")
+    const res = await runRetentionSweep({ sql, now: () => now, log: () => {} })
+
+    expect(res.geocodeCache).toBe(1)
+    expect(RETENTION_GEOCODE_CACHE_MS).toBe(GEOCODE_CACHE_TTL_MS)
+    expect(values[5]?.[0]).toEqual(new Date(now.getTime() - GEOCODE_CACHE_TTL_MS))
   })
 
   it("never throws: a per-table failure is counted + reported; the other tables still run", async () => {
@@ -326,6 +350,7 @@ describe("inbound_emails retention lane (H10)", () => {
   it("runs the lane through runRetentionSweep when a store IS wired", async () => {
     const storage = fakeInboundStorage()
     const { sql, calls } = makeSqlSpy([
+      rows(0),
       rows(0),
       rows(0),
       rows(0),

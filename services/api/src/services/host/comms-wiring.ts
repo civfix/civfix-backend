@@ -6,6 +6,14 @@ import { writeAudit } from "../admin/audit.js"
 import { makeRouteNotificationService } from "../route-notifier.js"
 import { makeDrizzleAnalyticsRepository } from "./analytics-repository.drizzle.js"
 import { makeAnalyticsService, type AnalyticsService } from "./analytics-service.js"
+import { makeDrizzleEventAnalyticsRepository } from "./event-analytics-repository.drizzle.js"
+import {
+  makeEventAnalyticsService,
+  type EventAnalyticsService,
+} from "./event-analytics-service.js"
+import { makeDrizzleAnnouncementIdentityRepository } from "./announcement-repository.drizzle.js"
+import { makeAnnouncementService, type AnnouncementService } from "./announcement-service.js"
+import { MEDIA_GET_URL_TTL_SEC } from "../media-intake-service.js"
 import { makeInsightsService, type InsightsService } from "./insights-service.js"
 import { makeDrizzleHostRegistrationRepository } from "./registration-repository.drizzle.js"
 import { makeHostAnalyticsCache } from "./host-analytics-cache.js"
@@ -39,10 +47,12 @@ export interface CommsRuntime {
   repo: BroadcastRepository
   metricsRepo: MetricsRepository
   broadcasts: BroadcastService
+  announcements: AnnouncementService
   pipeline: BroadcastPipeline
   lanes: BroadcastLanes
   metrics: MetricsService
   analytics: AnalyticsService
+  eventAnalytics: EventAnalyticsService
   insights: InsightsService
   exports: HostExportService
 }
@@ -122,6 +132,15 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     ...(logger !== undefined ? { logger } : {}),
   })
 
+  const announcements = makeAnnouncementService({
+    repo,
+    identities: makeDrizzleAnnouncementIdentityRepository(sql, (key) =>
+      container.storage.presignGet(key, MEDIA_GET_URL_TTL_SEC),
+    ),
+    broadcasts,
+    config,
+  })
+
   const pipeline = makeBroadcastPipeline({
     repo,
     service: broadcasts,
@@ -186,6 +205,13 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     cache: analyticsCache,
   })
 
+  const eventAnalytics = makeEventAnalyticsService({
+    analytics: analyticsRepo,
+    events: makeDrizzleEventAnalyticsRepository(sql),
+    metrics: metricsRepo,
+    cache: analyticsCache,
+  })
+
   const insights = makeInsightsService({
     analytics: analyticsRepo,
     registrations: makeDrizzleHostRegistrationRepository(sql),
@@ -207,5 +233,17 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     ...(logger !== undefined ? { logger } : {}),
   })
 
-  return { repo, metricsRepo, broadcasts, pipeline, lanes, metrics, analytics, insights, exports }
+  return {
+    repo,
+    metricsRepo,
+    broadcasts,
+    announcements,
+    pipeline,
+    lanes,
+    metrics,
+    analytics,
+    eventAnalytics,
+    insights,
+    exports,
+  }
 }

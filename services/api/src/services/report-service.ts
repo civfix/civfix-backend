@@ -31,6 +31,7 @@ import {
   type UnsignedReportPin,
 } from "./report-clustering.js"
 import { isPubliclyVisibleStatus } from "./report-visibility.js"
+import { addressProvenance, resolveAddressOrNull } from "./address-resolver.js"
 import {
   REPORT_AUTOFORWARD_JOB,
   REPORT_CREATE_SCOPE,
@@ -142,6 +143,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       ...(record.title !== null ? { title: record.title } : {}),
       ...(record.description !== null ? { description: record.description } : {}),
       ...(record.addr !== null ? { addr: record.addr } : {}),
+      ...(record.addrSource !== null ? { addrSource: record.addrSource } : {}),
+      ...(record.addrPrecision !== null ? { addrPrecision: record.addrPrecision } : {}),
       status: record.status,
       visibility: record.visibility,
       lat: record.lat,
@@ -209,6 +212,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
       assertNoSlur(input.title ?? null, "title")
       assertNoSlur(input.description ?? null, "description")
+      assertNoSlur(input.addr ?? null, "addr")
 
       const existing = await deps.repo.findIdempotentSnapshot(
         input.idempotencyKey,
@@ -219,10 +223,12 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
       const category = REPORT_TYPE_TO_CATEGORY[input.type]
 
-      const wantsReverse = !input.addr?.trim() && deps.reverseGeocode !== undefined
+      const suppliedAddr = input.addr?.trim() ?? ""
       const [jurisdictionGeoid, reversed] = await Promise.all([
         deps.resolveJurisdictionGeoid(input.lat, input.lng),
-        wantsReverse ? deps.reverseGeocode!(input.lat, input.lng) : Promise.resolve(null),
+        suppliedAddr.length > 0
+          ? Promise.resolve(null)
+          : resolveAddressOrNull(deps.resolveAddress, input.lat, input.lng),
       ])
       const jurCode =
         deps.resolveJurisdictionCode !== undefined
@@ -231,7 +237,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const h3Cell = reportH3Cell(input.lat, input.lng)
       const publishedAt = now()
       const reportId = newId()
-      const addr = input.addr?.trim() ? input.addr.trim() : reversed
+      const addressWrite = addressProvenance(suppliedAddr, reversed)
 
       const result = await deps.repo.createReportTx({
         reportId,
@@ -246,7 +252,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         type: input.type,
         title: input.title ?? null,
         description: input.description ?? null,
-        addr,
+        addr: addressWrite.addr,
+        addrSource: addressWrite.addrSource,
+        addrPrecision: addressWrite.addrPrecision,
         status: "published",
         visibility: "public",
         h3Cell,

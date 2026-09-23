@@ -1,3 +1,4 @@
+import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/shared"
 import type { BroadcastKind, DeliveryFailureKind, NotificationType } from "@civfix/shared"
 import type { BroadcastVarValues } from "@civfix/shared/host"
 import type { Mailer } from "@civfix/shared/interfaces"
@@ -61,6 +62,16 @@ export const KIND_NOTIFICATION_TYPE: Record<BroadcastKind, NotificationType> = {
   event_cancelled: "cleanup_cancelled",
   confirmation: "system",
   waitlist_promoted: "system",
+  announcement: "event_broadcast",
+}
+
+export const BUDGETED_KINDS: ReadonlySet<BroadcastKind> = new Set<BroadcastKind>([
+  "host_broadcast",
+  ANNOUNCEMENT_BROADCAST_KIND,
+])
+
+export function announcementPath(cleanupId: string, announcementId: string): string {
+  return `/cleanups/${cleanupId}/announcements/${announcementId}`
 }
 
 export const PER_RECIPIENT_VARS = ["first_name", "ticket_type"] as const
@@ -135,6 +146,15 @@ export interface PlanOutcome {
   kind: "planned" | "skipped" | "killed" | "too_many" | "over_budget" | "empty"
   recipients?: number
   chunks?: number
+}
+
+export function notificationLink(
+  record: Pick<BroadcastRecord, "id" | "kind" | "cleanupId">,
+  event: Pick<EventBroadcastContext, "pageSlug">,
+): string {
+  return record.kind === ANNOUNCEMENT_BROADCAST_KIND
+    ? announcementPath(record.cleanupId, record.id)
+    : eventPath(event.pageSlug, record.cleanupId)
 }
 
 export function usesVar(text: string, name: string): boolean {
@@ -266,7 +286,7 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
     }
 
     const reservedNow = await repo.markPlanned(record.id, { recipientCount, plannedAt: now() })
-    if (reservedNow && record.createdBy !== null && record.kind === "host_broadcast") {
+    if (reservedNow && record.createdBy !== null && BUDGETED_KINDS.has(record.kind)) {
       const withinBudget = await deps.service.reserveRecipientBudget(record.createdBy, recipientCount)
       if (!withinBudget) {
         await repo.suppressRemaining(record.id, "cap")
@@ -469,7 +489,7 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
           type,
           title: group.rendering.inAppTitle,
           body: group.rendering.inAppBody,
-          link: eventPath(event.pageSlug, record.cleanupId),
+          link: notificationLink(record, event),
           push: mode,
         })
       } catch (err) {

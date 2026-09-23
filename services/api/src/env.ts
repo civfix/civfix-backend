@@ -1,5 +1,7 @@
 
 import { z } from "zod"
+import { DEFAULT_FEED_RANKING, FeedRankingConfigSchema } from "@civfix/shared"
+import type { FeedRankingConfig } from "@civfix/shared"
 import type { Env } from "./env/types.js"
 import { assertOutboundSendPolicy } from "./services/admin/outbound-send-policy.js"
 import { loadCommsEnv } from "./env/comms-env.js"
@@ -161,6 +163,27 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     return fallback
   }
 
+  function reqFeedRanking(key: string): FeedRankingConfig {
+    const raw = (source[key] ?? "").trim()
+    if (raw.length === 0) return DEFAULT_FEED_RANKING
+    let decoded: unknown
+    try {
+      decoded = JSON.parse(raw)
+    } catch {
+      errors.push(`${key}: must be a JSON object of feed-ranking overrides`)
+      return DEFAULT_FEED_RANKING
+    }
+    const parsed = FeedRankingConfigSchema.safeParse(decoded)
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        const path = issue.path.length > 0 ? `.${issue.path.join(".")}` : ""
+        errors.push(`${key}${path}: ${issue.message}`)
+      }
+      return DEFAULT_FEED_RANKING
+    }
+    return parsed.data
+  }
+
   function reqCron(key: string, fallback: string): string {
     const value = (source[key] ?? "").trim() || fallback
     if (!isCronish(value)) {
@@ -248,6 +271,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     HOME_REGION_RADIUS_KM_DEFAULT,
     { min: 0, max: 20_000, exclusiveMin: true },
   )
+
+  const FEED_RANKING = reqFeedRanking("FEED_RANKING")
 
   const LOCAL_STORAGE_DIR = (source.LOCAL_STORAGE_DIR ?? "").trim()
   const usesLocalStorage = LOCAL_STORAGE_DIR.length > 0
@@ -385,6 +410,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     HOME_REGION_LAT,
     HOME_REGION_LNG,
     HOME_REGION_RADIUS_KM,
+
+    FEED_RANKING,
 
     CENSUS_GEOCODER_URL:
       (source.CENSUS_GEOCODER_URL ?? "").trim() ||

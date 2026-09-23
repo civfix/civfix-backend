@@ -291,8 +291,9 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         ON CONFLICT (platform, token) DO UPDATE SET
           user_id = EXCLUDED.user_id,
           device_id = EXCLUDED.device_id,
-          revoked_at = NULL
-        WHERE push_tokens.user_id = EXCLUDED.user_id
+          revoked_at = NULL,
+          created_at = now()
+        WHERE push_tokens.user_id = EXCLUDED.user_id OR push_tokens.revoked_at IS NOT NULL
         RETURNING id
       `
       if (rows.length === 0) return "conflict"
@@ -309,24 +310,6 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           )
       `
       return "stored"
-    },
-
-    async revokeDeviceTokensForOtherUsers(args: {
-      userId: string
-      token: string
-      platform: PushPlatform
-      deviceId: string | null
-    }): Promise<number> {
-      const rows = await sql<{ id: string }[]>`
-        UPDATE push_tokens
-        SET revoked_at = now()
-        WHERE user_id <> ${args.userId}
-          AND revoked_at IS NULL
-          AND platform = ${args.platform}
-          AND token = ${args.token}
-        RETURNING id
-      `
-      return rows.length
     },
 
     async revokeToken(userId: string, platform: PushPlatform, token: string): Promise<void> {

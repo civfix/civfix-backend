@@ -70,6 +70,10 @@ interface ReportRowSelect {
   lng: number
   confirmations: string
   has_photo: boolean
+  preview_id: string | null
+  preview_kind: "image" | "video" | null
+  preview_key: string | null
+  preview_thumb_key: string | null
   created_at: Date
   reference_code: string | null
   verification_verdict: "approved" | "rejected" | null
@@ -110,6 +114,15 @@ function toRecord(r: ReportRowSelect): AdminReportRecord {
     lat: r.lat,
     lng: r.lng,
     hasPhoto: r.has_photo,
+    previewMedia:
+      r.preview_id !== null && r.preview_kind !== null && r.preview_key !== null
+        ? {
+            id: r.preview_id,
+            kind: r.preview_kind,
+            r2Key: r.preview_key,
+            thumbKey: r.preview_thumb_key,
+          }
+        : null,
     createdAt: r.created_at,
     referenceCode: r.reference_code,
     verificationVerdict: r.verification_verdict,
@@ -139,7 +152,11 @@ function reportSelect(
       -- confirmations was the report_follows count; that table was dropped with the discussion system.
       -- Kept as a stable admin DTO field (always 0 now) so the admin UI neighbors-confirmed row still parses.
       '0'::text AS confirmations,
-      EXISTS (SELECT 1 FROM media_assets m WHERE m.report_id = r.id AND m.status = 'ready') AS has_photo,
+      EXISTS (SELECT 1 FROM media_assets m WHERE m.report_id = r.id AND m.status = 'ready' AND m.served_key IS NOT NULL) AS has_photo,
+      pm.id AS preview_id,
+      pm.kind AS preview_kind,
+      pm.served_key AS preview_key,
+      pm.thumb_key AS preview_thumb_key,
       r.created_at,
       r.reference_code,
       r.verification_verdict,
@@ -152,6 +169,13 @@ function reportSelect(
     LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
     LEFT JOIN users u ON u.id = r.reporter_user_id
     LEFT JOIN user_moderation um ON um.user_id = r.reporter_user_id
+    LEFT JOIN LATERAL (
+      SELECT pa.id, pa.kind, pa.served_key, pa.thumb_key
+      FROM media_assets pa
+      WHERE pa.report_id = r.id AND pa.status = 'ready' AND pa.served_key IS NOT NULL
+      ORDER BY (pa.kind = 'image') DESC, pa.created_at ASC, pa.id ASC
+      LIMIT 1
+    ) pm ON TRUE
     WHERE r.deleted_at IS NULL
     ${extraWhere}
     ${orderLimit}
@@ -431,7 +455,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
         SELECT id, kind, served_key AS r2_key, thumb_key
         FROM media_assets
         WHERE report_id = ${id} AND status = 'ready' AND served_key IS NOT NULL
-        ORDER BY created_at ASC
+        ORDER BY created_at ASC, id ASC
         LIMIT ${MEDIA_CAP}
       `
       return rows.map((m) => ({

@@ -14,15 +14,25 @@ const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const OTHER_EVENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 const ATTENDEE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 const STAFF = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+const GUEST = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+const GUEST_NAME = "Grace Hopper"
 const NOW = new Date("2026-01-01T12:00:00.000Z")
 
 const tokens = makeTicketTokenSigner("checkin-service-test-secret-long-enough")
+
+interface GuestTokenRecord {
+  id: string
+  cleanupId: string
+  cancelledAt: Date | null
+}
 
 interface Harness {
   repo: InMemoryHostRegistrationRepository
   service: CheckinService
   audits: string[]
   bumped: string[]
+  /** Raw manage token -> the guest row it resolves to, mirroring cleanup_guests.manage_token_hash. */
+  guestTokens: Map<string, GuestTokenRecord>
 }
 
 function seats(partySize: number, name: string | null = null): SeatDraft[] {
@@ -39,6 +49,9 @@ function build(): Harness {
   repo.seedEvent({ cleanupId: OTHER_EVENT })
   const audits: string[] = []
   const bumped: string[] = []
+  const guestTokens = new Map<string, GuestTokenRecord>([
+    ["guest-manage-token", { id: GUEST, cleanupId: EVENT, cancelledAt: null }],
+  ])
   const service = makeCheckinService({
     repo,
     tokens,
@@ -49,10 +62,10 @@ function build(): Harness {
       },
     },
     guestByManageToken: async (hash) => {
-      const known = await sha256Hex("guest-manage-token")
-      return hash === known
-        ? { id: "guest-1", cleanupId: EVENT, cancelledAt: null }
-        : null
+      for (const [raw, record] of guestTokens) {
+        if (hash === (await sha256Hex(raw))) return record
+      }
+      return null
     },
     audit: (input) => {
       audits.push(input.action)
@@ -60,7 +73,35 @@ function build(): Harness {
     },
     now: () => NOW,
   })
-  return { repo, service, audits, bumped }
+  return { repo, service, audits, bumped, guestTokens }
+}
+
+/** Seat a guest the way the guest RSVP bridge does: a cleanup_guests row plus a guest-subject registration. */
+async function registerGuest(
+  repo: InMemoryHostRegistrationRepository,
+  partySize = 1,
+  attendeeName: string | null = null,
+): Promise<{ registrationId: string; seatIds: string[] }> {
+  repo.guests.set(GUEST, { id: GUEST, cleanupId: EVENT, name: GUEST_NAME })
+  const outcome = await repo.registerTx({
+    cleanupId: EVENT,
+    subject: { kind: "guest", guestId: GUEST },
+    ticketTypeId: null,
+    seats: seats(partySize, attendeeName),
+    accessCodeHash: null,
+    answers: [],
+    consent: null,
+    slotId: null,
+    source: "self",
+    idempotencyKey: `guest:${GUEST}`,
+    waitlistId: null,
+    now: NOW,
+  })
+  if (outcome.kind !== "registered") throw new Error(`expected registered, got ${outcome.kind}`)
+  return {
+    registrationId: outcome.registration.id,
+    seatIds: outcome.registration.seats.map((seat) => seat.id),
+  }
 }
 
 async function register(
@@ -236,6 +277,118 @@ describe("check-in service", () => {
     await expect(
       h.service.guestTicket({ token: "x".repeat(32) }),
     ).rejects.toBeInstanceOf(AppError)
+  })
+
+  it("names a guest on a scanned seat that carries no attendee name of its own", async () => {
+    const { seatIds } = await registerGuest(h.repo)
+    const result = await h.service.scan(
+      { id: EVENT, token: tokens.tokenFor(seatIds[0] as string) },
+      STAFF,
+    )
+    expect(result.outcome).toBe("checked_in")
+    expect(result.attendeeName).toBe(GUEST_NAME)
+  })
+
+  it("names a guest on a MANUAL seat check-in too", async () => {
+    const { seatIds } = await registerGuest(h.repo)
+    const result = await h.service.checkIn(
+      { id: EVENT, seatId: seatIds[0] as string, method: "manual" },
+      STAFF,
+    )
+    expect(result.attendeeName).toBe(GUEST_NAME)
+  })
+
+  it("prefers a per-seat attendee name over the guest's own name", async () => {
+    const { seatIds } = await registerGuest(h.repo, 1, "Plus One")
+    const result = await h.service.scan(
+      { id: EVENT, token: tokens.tokenFor(seatIds[0] as string) },
+      STAFF,
+    )
+    expect(result.attendeeName).toBe("Plus One")
+  })
+})
+
+/**
+ * `getGuestEventTicket` is the guest's ONLY read of their own seat tokens: it is `auth: "public"` and
+ * secured solely by the bearer manage token in the POST body. These tests pin that the token is the
+ * whole authorisation - a cancelled RSVP, a rotated token and an unknown token are all refused with
+ * the same 404, so the endpoint cannot be used to probe whether an address ever RSVP'd.
+ */
+describe("guest ticket", () => {
+  let h: Harness
+
+  beforeEach(() => {
+    h = build()
+  })
+
+  it("hands a guest their live seat tokens behind a valid manage token", async () => {
+    const { registrationId, seatIds } = await registerGuest(h.repo, 2)
+
+    const ticket = await h.service.guestTicket({ token: "guest-manage-token" })
+
+    expect(ticket.cleanupId).toBe(EVENT)
+    expect(ticket.registrationId).toBe(registrationId)
+    expect(ticket.status).toBe("registered")
+    expect(ticket.seats.map((seat) => seat.ticketToken)).toEqual(
+      seatIds.map((seatId) => tokens.tokenFor(seatId)),
+    )
+    expect(ticket.canCancel).toBe(true)
+  })
+
+  it("hands back a token a host scan then accepts, closing the loop", async () => {
+    await registerGuest(h.repo)
+    const ticket = await h.service.guestTicket({ token: "guest-manage-token" })
+    const token = ticket.seats[0]?.ticketToken as string
+
+    expect((await h.service.scan({ id: EVENT, token }, STAFF)).outcome).toBe("checked_in")
+  })
+
+  it("refuses a guest whose RSVP was cancelled, even though the token still resolves", async () => {
+    await registerGuest(h.repo)
+    h.guestTokens.set("guest-manage-token", {
+      id: GUEST,
+      cleanupId: EVENT,
+      cancelledAt: NOW,
+    })
+
+    await expect(h.service.guestTicket({ token: "guest-manage-token" })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+  })
+
+  it("kills the OLD token once re-verifying rotated the manage token", async () => {
+    await registerGuest(h.repo)
+    await expect(h.service.guestTicket({ token: "guest-manage-token" })).resolves.toBeDefined()
+
+    h.guestTokens.delete("guest-manage-token")
+    h.guestTokens.set("guest-manage-token-rotated", {
+      id: GUEST,
+      cleanupId: EVENT,
+      cancelledAt: null,
+    })
+
+    await expect(h.service.guestTicket({ token: "guest-manage-token" })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    await expect(
+      h.service.guestTicket({ token: "guest-manage-token-rotated" }),
+    ).resolves.toBeDefined()
+  })
+
+  it("refuses a guest row that never got a registration (the swallowed-bridge case)", async () => {
+    await expect(h.service.guestTicket({ token: "guest-manage-token" })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+  })
+
+  it("refuses every failure mode with the SAME message, so it cannot enumerate RSVPs", async () => {
+    const messages: string[] = []
+    for (const token of ["guest-manage-token", "x".repeat(32)]) {
+      await h.service.guestTicket({ token }).catch((err: unknown) => {
+        messages.push((err as AppError).message)
+      })
+    }
+    expect(new Set(messages).size).toBe(1)
   })
 
   it("bumps the insights generation on every attendance change", async () => {

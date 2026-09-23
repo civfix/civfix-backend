@@ -349,8 +349,17 @@ class FlakyDelCache implements CacheClient {
   smembers(key: string): Promise<string[]> {
     return this.inner.smembers(key)
   }
+  smismember(key: string, members: readonly string[]): Promise<number[]> {
+    return this.inner.smismember(key, members)
+  }
+  scard(key: string): Promise<number> {
+    return this.inner.scard(key)
+  }
   expire(key: string, ttlSeconds: number): Promise<void> {
     return this.inner.expire(key, ttlSeconds)
+  }
+  expireNx(key: string, ttlSeconds: number): Promise<void> {
+    return this.inner.expireNx(key, ttlSeconds)
   }
   errors: unknown[] = []
   constructor(private readonly inner: InMemoryCacheClient) {}

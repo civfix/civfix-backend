@@ -184,7 +184,10 @@ export const CRITICAL_BROADCAST_KINDS: ReadonlySet<BroadcastKind> = new Set<Broa
   "event_cancelled",
 ])
 
+export const ANNOUNCEMENT_VISIBLE_STATUSES: readonly BroadcastStatus[] = ["sending", "sent"]
+
 export const HOST_COMPOSED_BROADCAST_KINDS: ReadonlySet<BroadcastKind> = new Set<BroadcastKind>([
   "host_broadcast",
   "thank_you",
+  "announcement",
 ])

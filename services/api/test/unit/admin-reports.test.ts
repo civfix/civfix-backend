@@ -207,6 +207,66 @@ describe("admin reports list", () => {
     expect(row.submitted.abs).toContain("2026")
   })
 
+  it("presigns a thumbnail for the first image, preferring the pipeline thumb over the full image", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({
+      id: "11111111-1111-1111-1111-111111111111",
+      hasPhoto: true,
+      media: [
+        { id: "m1", kind: "image", r2Key: "r2://photo.jpg", thumbKey: "r2://thumb.jpg" },
+        { id: "m2", kind: "image", r2Key: "r2://second.jpg", thumbKey: null },
+      ],
+    })
+
+    const page = await svc.list({})
+    expect(page.items[0]!.thumbnailUrl).toBe("https://media.test/r2://thumb.jpg")
+  })
+
+  it("falls back to the served image when the pipeline made no thumbnail", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({
+      id: "11111111-1111-1111-1111-111111111111",
+      hasPhoto: true,
+      media: [{ id: "m1", kind: "image", r2Key: "r2://photo.jpg", thumbKey: null }],
+    })
+
+    const page = await svc.list({})
+    expect(page.items[0]!.thumbnailUrl).toBe("https://media.test/r2://photo.jpg")
+  })
+
+  it("prefers an image over an earlier video, and leaves a poster-less video with no thumbnail", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({
+      id: "11111111-1111-1111-1111-111111111111",
+      hasPhoto: true,
+      media: [
+        { id: "m1", kind: "video", r2Key: "r2://clip.mp4", thumbKey: null },
+        { id: "m2", kind: "image", r2Key: "r2://photo.jpg", thumbKey: null },
+      ],
+    })
+    repo.seedReport({
+      id: "22222222-2222-2222-2222-222222222222",
+      hasPhoto: true,
+      createdAt: hoursAgo(1),
+      media: [{ id: "m3", kind: "video", r2Key: "r2://clip.mp4", thumbKey: null }],
+    })
+
+    const page = await svc.list({})
+    const byId = new Map(page.items.map((r) => [r.id, r.thumbnailUrl]))
+    expect(byId.get("11111111-1111-1111-1111-111111111111")).toBe(
+      "https://media.test/r2://photo.jpg",
+    )
+    expect(byId.get("22222222-2222-2222-2222-222222222222")).toBeNull()
+  })
+
+  it("leaves thumbnailUrl null for a report with no media", async () => {
+    const { repo, svc } = harness()
+    repo.seedReport({ id: "11111111-1111-1111-1111-111111111111", hasPhoto: false })
+
+    const page = await svc.list({})
+    expect(page.items[0]!.thumbnailUrl).toBeNull()
+  })
+
   it("projects a named reporter, and falls back to Anonymous for a report with no reporter", async () => {
     const { repo, svc } = harness()
     repo.seedReport({
@@ -427,6 +487,7 @@ describe("admin reports detail", () => {
         thumbUrl: "https://media.test/r2://thumb.jpg",
       },
     ])
+    expect(detail.thumbnailUrl).toBe("https://media.test/r2://thumb.jpg")
     expect(detail.timeline).toHaveLength(1)
     expect(detail.timeline[0]).toMatchObject({ what: "Report submitted", kind: "submit" })
   })

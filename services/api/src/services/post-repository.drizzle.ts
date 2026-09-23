@@ -35,6 +35,8 @@ export const POSTS_DEFAULT_LIMIT = 20
 
 export const NIL_VIEWER_ID = "00000000-0000-0000-0000-000000000000"
 
+export const FEED_NEARBY_INDEX = "posts_geom_gist"
+
 function postColumns(sql: Queryable): postgres.Fragment {
   return sql`
     p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
@@ -97,6 +99,55 @@ export interface HomeFeedArgs extends PostListArgs {
   filter: "all" | "events" | "fixes"
 }
 
+export type FeedFilter = "all" | "events" | "fixes"
+
+export const FEED_IN_NETWORK_POOL = 250
+export const FEED_NEARBY_POOL = 150
+export const FEED_RECENT_POOL = 150
+
+const KM_PER_DEGREE_LAT = 111.32
+
+const MIN_LATITUDE_COSINE = 0.25
+
+export function nearbyRadiusDegrees(radiusKm: number): number {
+  return Math.min(90, radiusKm / KM_PER_DEGREE_LAT / MIN_LATITUDE_COSINE)
+}
+
+export interface FeedCandidateArgs {
+  viewerId: string
+  filter: FeedFilter
+  fallbackLat: number | null
+  fallbackLng: number | null
+  windowDays: number
+  radiusKm: number
+  candidateCap: number
+}
+
+export interface FeedCandidateRow {
+  id: string
+  author_id: string
+  created_at: Date
+  like_count: number
+  reply_count: number
+  repost_count: number
+  has_report: boolean
+  has_live_event: boolean
+  has_media: boolean
+  author_followed: boolean
+  author_is_viewer: boolean
+  viewer_mentioned: boolean
+  author_org_verified: boolean
+  distance_km: number | null
+}
+
+export interface FeedCountsRow {
+  id: string
+  like_count: number
+  repost_count: number
+  reply_count: number
+  save_count: number
+}
+
 export interface PublicFeedArgs {
   filter: "all" | "events" | "fixes"
   cursor: string | null
@@ -121,8 +172,12 @@ export interface PostRepository {
   unrepost(postId: string, userId: string): Promise<{ targetId: string; removed: boolean }>
 
   getPostDTO(id: string, viewerId: string): Promise<PostDTO | null>
-  homeFeed(args: HomeFeedArgs): Promise<FeedPage>
+  homeFeedChronological(args: HomeFeedArgs): Promise<FeedPage>
   publicFeed(args: PublicFeedArgs): Promise<FeedPage>
+  feedCandidates(args: FeedCandidateArgs): Promise<FeedCandidateRow[]>
+  hydrateByIds(ids: readonly string[], viewerId: string): Promise<PostDTO[]>
+  followerIdsOf(authorId: string, limit: number): Promise<string[]>
+  readableCounts(postIds: readonly string[], viewerId: string): Promise<FeedCountsRow[]>
   listReplies(postId: string, args: ReplyListArgs): Promise<RepliesPage>
   listUserPosts(authorId: string, args: PostListArgs): Promise<FeedPage>
   listSaves(args: PostListArgs): Promise<FeedPage>
@@ -274,6 +329,161 @@ export async function tombstonePostInTx(tx: Queryable, postId: string): Promise<
     await tx`UPDATE posts SET repost_count = GREATEST(repost_count - 1, 0) WHERE id = ${row.repost_of_id}`
   }
   return true
+}
+
+function feedFilterClause(sql: Queryable, filter: FeedFilter): postgres.Fragment {
+  if (filter === "events") return sql`AND p.event_id IS NOT NULL`
+  if (filter === "fixes") {
+    return sql`AND EXISTS (SELECT 1 FROM reports fr WHERE fr.id = p.report_id AND fr.status = 'resolved')`
+  }
+  return sql``
+}
+
+function viewerBlockClause(sql: Queryable, viewerId: string): postgres.Fragment {
+  return sql`AND NOT EXISTS (
+      SELECT 1 FROM user_blocks b
+      WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = p.author_id)
+         OR (b.blocker_id = p.author_id AND b.blocked_id = ${viewerId})
+    )`
+}
+
+export function feedCandidatesStatement(
+  sql: Queryable,
+  args: FeedCandidateArgs,
+): postgres.Fragment {
+  const viewerId = args.viewerId
+  const filterClause = feedFilterClause(sql, args.filter)
+  const eligible = (): postgres.Fragment => sql`
+    p.deleted_at IS NULL
+    AND p.reply_to_id IS NULL
+    AND p.visibility = 'public'
+    AND p.created_at >= (SELECT since FROM eligible_window)
+    ${viewerBlockClause(sql, viewerId)}
+    ${filterClause}
+  `
+  return sql`
+    WITH viewer_point AS (
+      SELECT p.geom FROM (
+        SELECT r.geom, r.created_at FROM reports r
+          WHERE r.reporter_user_id = ${viewerId} AND r.deleted_at IS NULL
+        UNION ALL
+        SELECT c.geom, c.created_at FROM cleanups c
+          WHERE c.organizer_user_id = ${viewerId}
+        UNION ALL
+        SELECT c.geom, c.created_at
+          FROM cleanups c JOIN cleanup_members m ON m.cleanup_id = c.id
+          WHERE m.user_id = ${viewerId}
+      ) p
+      ORDER BY p.created_at DESC NULLS LAST
+      LIMIT 1
+    ),
+    point AS (
+      SELECT COALESCE(
+        (SELECT geom FROM viewer_point),
+        ST_SetSRID(
+          ST_MakePoint(${args.fallbackLng}::double precision, ${args.fallbackLat}::double precision),
+          4326
+        )
+      ) AS geom
+    ),
+    eligible_window AS (
+      SELECT (now() - ${args.windowDays}::int * interval '1 day') AS since
+    ),
+    in_network AS (
+      SELECT p.id
+      FROM posts p
+      WHERE ${eligible()}
+        AND (
+          p.author_id = ${viewerId}
+          OR p.author_id IN (SELECT followee_id FROM follows_people WHERE follower_id = ${viewerId})
+        )
+      ORDER BY p.created_at DESC, p.id DESC
+      LIMIT ${FEED_IN_NETWORK_POOL}
+    ),
+    nearby AS (
+      SELECT n.id
+      FROM point vp
+      CROSS JOIN LATERAL (
+        SELECT p.id
+        FROM posts p
+        WHERE ${eligible()}
+          AND p.geom IS NOT NULL
+          AND ST_DWithin(p.geom, vp.geom, ${nearbyRadiusDegrees(args.radiusKm)})
+        ORDER BY p.geom <-> vp.geom
+        LIMIT ${FEED_NEARBY_POOL}
+      ) n
+    ),
+    recent_public AS (
+      SELECT p.id
+      FROM posts p
+      WHERE ${eligible()}
+      ORDER BY p.created_at DESC, p.id DESC
+      LIMIT ${FEED_RECENT_POOL}
+    ),
+    pool AS (
+      SELECT DISTINCT ON (id) id, source FROM (
+        SELECT id, 0 AS source FROM in_network
+        UNION ALL SELECT id, 1 AS source FROM nearby
+        UNION ALL SELECT id, 2 AS source FROM recent_public
+      ) merged
+      ORDER BY id, source
+    )
+    SELECT
+      p.id,
+      p.author_id,
+      p.created_at,
+      p.like_count,
+      p.reply_count,
+      p.repost_count,
+      (p.report_id IS NOT NULL) AS has_report,
+      COALESCE(ev.status <> 'cancelled' AND ev.ends_at > now(), false) AS has_live_event,
+      EXISTS (
+        SELECT 1 FROM media_assets ma
+        WHERE ma.post_id = p.id AND ma.status = 'ready' AND ma.served_key IS NOT NULL
+      ) AS has_media,
+      EXISTS (
+        SELECT 1 FROM follows_people f
+        WHERE f.follower_id = ${viewerId} AND f.followee_id = p.author_id
+      ) AS author_followed,
+      (p.author_id = ${viewerId}) AS author_is_viewer,
+      EXISTS (
+        SELECT 1 FROM post_mentions pm
+        WHERE pm.post_id = p.id AND pm.mentioned_user_id = ${viewerId}
+      ) AS viewer_mentioned,
+      COALESCE(po.verified_status = 'verified', aff.verified, false) AS author_org_verified,
+      CASE WHEN p.geom IS NULL THEN NULL
+           ELSE ST_Distance(p.geom::geography, (SELECT geom FROM point)::geography) / 1000.0
+      END AS distance_km
+    FROM posts p
+    JOIN pool ON pool.id = p.id
+    LEFT JOIN cleanups ev ON ev.id = p.event_id
+    LEFT JOIN organizations po
+      ON po.id = p.organization_id AND po.deleted_at IS NULL AND po.suspended_at IS NULL
+    LEFT JOIN LATERAL (
+      SELECT (o.verified_status = 'verified') AS verified
+      FROM organization_members m
+      JOIN organizations o ON o.id = m.organization_id
+      JOIN users au ON au.id = m.user_id
+      WHERE m.user_id = p.author_id
+        AND au.deleted_at IS NULL
+        AND o.deleted_at IS NULL
+        AND o.suspended_at IS NULL
+      ORDER BY COALESCE(o.id = au.primary_organization_id, false) DESC, m.joined_at ASC, o.id ASC
+      LIMIT 1
+    ) aff ON true
+    ORDER BY pool.source, p.created_at DESC, p.id DESC
+    LIMIT ${args.candidateCap}
+  `
+}
+
+export async function explainFeedCandidates(
+  sql: Queryable,
+  args: FeedCandidateArgs,
+): Promise<string> {
+  const rows = await sql<Record<string, string>[]>`
+    EXPLAIN (COSTS OFF, VERBOSE) ${feedCandidatesStatement(sql, args)}
+  `
+  return rows.map((r) => Object.values(r)[0] ?? "").join("\n")
 }
 
 export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRepository {
@@ -848,11 +1058,15 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         const inserted = await tx<{ id: string }[]>`
           INSERT INTO posts (
             author_id, kind, body, reply_to_id, thread_root_id, repost_of_id, event_id, report_id,
-            organization_id
+            organization_id, geom
           )
           VALUES (
             ${args.authorId}, ${args.kind}, ${args.body}, ${replyToId}, ${threadRootId},
-            ${repostOfId}, ${args.eventId}, ${args.reportId}, ${args.organizationId ?? null}
+            ${repostOfId}, ${args.eventId}, ${args.reportId}, ${args.organizationId ?? null},
+            COALESCE(
+              (SELECT r.geom FROM reports r WHERE r.id = ${args.reportId}),
+              (SELECT c.geom FROM cleanups c WHERE c.id = ${args.eventId})
+            )
           )
           RETURNING id
         `
@@ -990,7 +1204,53 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       return hydrated[0] ?? null
     },
 
-    async homeFeed(args: HomeFeedArgs): Promise<FeedPage> {
+    async feedCandidates(args: FeedCandidateArgs): Promise<FeedCandidateRow[]> {
+      return sql<FeedCandidateRow[]>`${feedCandidatesStatement(sql, args)}`
+    },
+
+    async hydrateByIds(ids: readonly string[], viewerId: string): Promise<PostDTO[]> {
+      if (ids.length === 0) return []
+      const rows = await sql<PostRowSelect[]>`
+        SELECT ${postColumns(sql)}
+        FROM posts p
+        WHERE p.id = ANY(${[...ids]}::uuid[])
+          AND p.deleted_at IS NULL
+          AND p.visibility = 'public'
+          ${viewerBlockClause(sql, viewerId)}
+      `
+      const order = new Map(ids.map((id, index) => [id, index]))
+      rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
+      return hydrate(rows, viewerId)
+    },
+
+    async followerIdsOf(authorId: string, limit: number): Promise<string[]> {
+      if (limit <= 0) return []
+      const rows = await sql<{ follower_id: string }[]>`
+        SELECT f.follower_id FROM follows_people f
+        WHERE f.followee_id = ${authorId}
+          AND NOT EXISTS (
+            SELECT 1 FROM user_blocks b
+            WHERE (b.blocker_id = f.follower_id AND b.blocked_id = ${authorId})
+               OR (b.blocker_id = ${authorId} AND b.blocked_id = f.follower_id)
+          )
+        LIMIT ${limit}
+      `
+      return rows.map((r) => r.follower_id)
+    },
+
+    async readableCounts(postIds: readonly string[], viewerId: string): Promise<FeedCountsRow[]> {
+      if (postIds.length === 0) return []
+      return sql<FeedCountsRow[]>`
+        SELECT p.id, p.like_count, p.repost_count, p.reply_count, p.save_count
+        FROM posts p
+        WHERE p.id = ANY(${[...postIds]}::uuid[])
+          AND p.deleted_at IS NULL
+          AND p.visibility = 'public'
+          ${viewerBlockClause(sql, viewerId)}
+      `
+    },
+
+    async homeFeedChronological(args: HomeFeedArgs): Promise<FeedPage> {
       const cursor = parseTimeCursor(args.cursor)
       const cursorFilter =
         cursor !== null ? sql`AND (p.created_at, p.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``

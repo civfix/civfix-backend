@@ -7,6 +7,7 @@ import {
   makeDrizzleInboundRetentionRepository,
   type InboundRetentionRepository,
 } from "@civfix/api/inbound-retention-repo"
+import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
 import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 
@@ -15,6 +16,7 @@ export interface RetentionSweepDeps extends JobObsDeps {
   graceMs?: number
   idempotencyRetentionMs?: number
   notificationsRetentionMs?: number
+  geocodeCacheRetentionMs?: number
   inboundEmailsRetentionMs?: number
   batchSize?: number
   maxPages?: number
@@ -27,6 +29,7 @@ export interface RetentionSweepResult {
   sessions: number
   idempotencyKeys: number
   notifications: number
+  geocodeCache: number
   inboundEmails: number
   inboundEmailObjectsLeaked: number
   errors: number
@@ -36,6 +39,7 @@ export const RETENTION_GRACE_MS = 60 * 60 * 1000
 export const RETENTION_BATCH = 5000
 export const RETENTION_IDEMPOTENCY_MS = 48 * 60 * 60 * 1000
 export const RETENTION_NOTIFICATIONS_MS = 90 * 24 * 60 * 60 * 1000
+export const RETENTION_GEOCODE_CACHE_MS = GEOCODE_CACHE_TTL_MS
 export const RETENTION_INBOUND_EMAILS_MS = INBOUND_EMAIL_RETENTION_MS
 export const RETENTION_INBOUND_EMAILS_BATCH = INBOUND_EMAIL_RETENTION_BATCH
 export const RETENTION_MAX_PAGES = 20
@@ -53,6 +57,9 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
   const notificationsCutoff = new Date(
     now.getTime() - (deps.notificationsRetentionMs ?? RETENTION_NOTIFICATIONS_MS),
   )
+  const geocodeCacheCutoff = new Date(
+    now.getTime() - (deps.geocodeCacheRetentionMs ?? RETENTION_GEOCODE_CACHE_MS),
+  )
   const inboundEmailsCutoff = new Date(
     now.getTime() - (deps.inboundEmailsRetentionMs ?? RETENTION_INBOUND_EMAILS_MS),
   )
@@ -63,6 +70,7 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
     sessions: 0,
     idempotencyKeys: 0,
     notifications: 0,
+    geocodeCache: 0,
     inboundEmails: 0,
     inboundEmailObjectsLeaked: 0,
     errors: 0,
@@ -152,6 +160,20 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
     (n) => (result.notifications += n),
   )
 
+  await drainTable(
+    "geocode_cache",
+    (limit) => deps.sql<{ point_key: string }[]>`
+      DELETE FROM geocode_cache
+      WHERE point_key IN (
+        SELECT point_key FROM geocode_cache
+        WHERE resolved_at < ${geocodeCacheCutoff}
+        LIMIT ${limit}
+      )
+      RETURNING point_key
+    `,
+    (n) => (result.geocodeCache += n),
+  )
+
   await runInboundEmailRetentionLane(deps, result, {
     before: inboundEmailsCutoff,
     maxPages,
@@ -165,6 +187,7 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
     sessions: result.sessions,
     idempotencyKeys: result.idempotencyKeys,
     notifications: result.notifications,
+    geocodeCache: result.geocodeCache,
     inboundEmails: result.inboundEmails,
     inboundEmailObjectsLeaked: result.inboundEmailObjectsLeaked,
     errors: result.errors,

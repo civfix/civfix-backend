@@ -5,6 +5,7 @@ import {
   INSIGHTS_TREND_LIMIT,
   makeDrizzleAnalyticsRepository,
 } from "../../../src/services/host/analytics-repository.drizzle.js"
+import { makeDrizzleEventAnalyticsRepository } from "../../../src/services/host/event-analytics-repository.drizzle.js"
 import { MAX_INSIGHTS_TOP_VOLUNTEERS } from "@civfix/shared"
 import type { Sql } from "../../../src/db/client.js"
 
@@ -112,5 +113,49 @@ describe("#110 host hours SQL", () => {
     expect(await repo.topVolunteers([], MAX_INSIGHTS_TOP_VOLUNTEERS)).toEqual([])
     expect(await repo.hoursTotals([])).toEqual({ credited: 0, volunteersCredited: 0 })
     expect(fake.statements).toEqual([])
+  })
+})
+
+describe("event analytics comparison cohort SQL", () => {
+  const USER = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+  const ORG = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+
+  it("drives each membership branch from an indexed column instead of a correlated EXISTS", async () => {
+    const stmt = await emitted((sql) =>
+      makeDrizzleEventAnalyticsRepository(sql).previousCompletedEventIds({
+        userId: USER,
+        organizationId: null,
+        excludeCleanupId: EVENT,
+        limit: 12,
+      }),
+    )
+    const text = squash(stmt.sql)
+
+    expect(text).not.toContain("EXISTS")
+    expect(text).toContain("FROM cleanups c WHERE c.organizer_user_id = ?")
+    expect(text).toContain("FROM cleanup_members m JOIN cleanups c ON c.id = m.cleanup_id")
+    expect(text).toContain(
+      "FROM organization_members om JOIN cleanups c ON c.organization_id = om.organization_id",
+    )
+    expect(text.match(/UNION/g)).toHaveLength(2)
+    expect(text).toContain("SELECT id FROM hosted ORDER BY completed_at DESC LIMIT ?")
+    expect(stmt.values).toContain(12)
+  })
+
+  it("applies the organization filter to every branch", async () => {
+    const stmt = await emitted((sql) =>
+      makeDrizzleEventAnalyticsRepository(sql).previousCompletedEventIds({
+        userId: USER,
+        organizationId: ORG,
+        excludeCleanupId: EVENT,
+        limit: 12,
+      }),
+    )
+    const text = squash(stmt.sql)
+
+    expect(text.match(/AND c\.organization_id = \?/g)).toHaveLength(3)
+    expect(text.match(/AND c\.completed_at IS NOT NULL/g)).toHaveLength(3)
+    expect(text.match(/AND c\.id <> \?/g)).toHaveLength(3)
+    expect(stmt.values.filter((v) => v === ORG)).toHaveLength(3)
   })
 })

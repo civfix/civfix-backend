@@ -353,6 +353,20 @@ describe("registerPushToken", () => {
     expect(repo.pushTokens[0]).toMatchObject({ userId: U, deviceId: "shared-device", revokedAt: null })
   })
 
+  it("a DIFFERENT user CAN claim a (platform,token) row that is already revoked (device handoff)", async () => {
+    const { repo, push, service } = makeHarness()
+    await service.registerPushToken(U, { platform: "android", token: TOK_X, deviceId: "d1" })
+    await service.unregisterPushToken(U, { platform: "android", token: TOK_X })
+    expect(repo.pushTokens[0]?.revokedAt).not.toBeNull()
+
+    await expect(
+      service.registerPushToken(V, { platform: "android", token: TOK_X, deviceId: "d2" }),
+    ).resolves.toEqual({ ok: true })
+    expect(repo.pushTokens).toHaveLength(1)
+    expect(repo.pushTokens[0]).toMatchObject({ userId: V, deviceId: "d2", revokedAt: null })
+    expect(push.tokens.some((t) => t.userId === V && t.token === TOK_X)).toBe(true)
+  })
+
   it("H12: a self-declared device_id does NOT revoke another account's token (mass-revoke closed)", async () => {
     const { repo, service } = makeHarness()
     await service.registerPushToken(U, { platform: "ios", token: TOK_U, deviceId: "shared" })
@@ -630,6 +644,21 @@ describe("push token cap per user (F087)", () => {
     expect(active).toHaveLength(MAX_ACTIVE_PUSH_TOKENS_PER_USER)
     expect(repo.pushTokens.find((t) => t.token === capToken(0))?.revokedAt).not.toBeNull()
     expect(repo.pushTokens.find((t) => t.token === capToken(total - 1))?.revokedAt).toBeNull()
+  })
+
+  it("re-registering an existing token with a full cap of newer tokens leaves it ACTIVE", async () => {
+    const { repo, service } = makeHarness()
+    await service.registerPushToken(U, { platform: "ios", token: TOK_1 })
+    for (let i = 0; i < MAX_ACTIVE_PUSH_TOKENS_PER_USER; i++) {
+      await service.registerPushToken(U, { platform: "ios", token: capToken(i) })
+    }
+    expect(repo.pushTokens.find((t) => t.token === TOK_1)?.revokedAt).not.toBeNull()
+
+    await service.registerPushToken(U, { platform: "ios", token: TOK_1 })
+    expect(repo.pushTokens.find((t) => t.token === TOK_1)?.revokedAt).toBeNull()
+    expect(repo.pushTokens.filter((t) => t.userId === U && t.revokedAt === null)).toHaveLength(
+      MAX_ACTIVE_PUSH_TOKENS_PER_USER,
+    )
   })
 })
 

@@ -37,7 +37,9 @@ import {
   MAX_PACKET_ATTACHMENT_BYTES,
   MAX_PACKET_TOTAL_BYTES,
 } from "./mail-format.js"
+import { pickPreviewMedia, previewThumbnailUrl } from "./admin-report-types.js"
 import type {
+  AdminReportMediaRecord,
   AdminReportRecord,
   AdminReportService,
   AdminReportServiceDeps,
@@ -96,7 +98,20 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     await deps.reportChatEmitter.emit(event)
   }
 
-  function toListItem(record: AdminReportRecord, ref: Date): AdminReportListItemDTO {
+  async function toMediaDTO(m: AdminReportMediaRecord): Promise<ReportMedia> {
+    const { url, thumbUrl } = await presignMedia(m.r2Key, m.thumbKey)
+    return { id: m.id, kind: m.kind, url, thumbUrl: thumbUrl ?? null }
+  }
+
+  async function previewMediaDTO(record: AdminReportRecord): Promise<ReportMedia | null> {
+    return record.previewMedia === null ? null : toMediaDTO(record.previewMedia)
+  }
+
+  function toListItem(
+    record: AdminReportRecord,
+    ref: Date,
+    preview: ReportMedia | null,
+  ): AdminReportListItemDTO {
     return {
       id: record.id,
       category: record.category,
@@ -114,6 +129,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       coords: [record.lat, record.lng],
       address: record.address,
       hasPhoto: record.hasPhoto,
+      thumbnailUrl: previewThumbnailUrl(preview),
     }
   }
 
@@ -157,7 +173,10 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
               needsVerification: 0,
             }),
       ])
-      return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }
+      const items = await mapWithLimit(records, PRESIGN_CONCURRENCY, async (r) =>
+        toListItem(r, ref, await previewMediaDTO(r)),
+      )
+      return { items, nextCursor, counts }
     },
 
     async get(id: string): Promise<AdminReportDTO> {
@@ -173,17 +192,14 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           : Promise.resolve(new Map<string, LinkedEventView[]>()),
         deps.repo.getOutreach(id),
       ])
-      const base = toListItem(record, ref)
       const city: ReportRouting = {
         dept: routing?.dept ?? "",
         place: routing?.place ?? record.place,
         contact: routing?.contact ?? null,
         routed: routing?.routed ?? false,
       }
-      const mediaDtos: ReportMedia[] = await mapWithLimit(media, PRESIGN_CONCURRENCY, async (m) => {
-        const { url, thumbUrl } = await presignMedia(m.r2Key, m.thumbKey)
-        return { id: m.id, kind: m.kind, url, thumbUrl: thumbUrl ?? null }
-      })
+      const mediaDtos: ReportMedia[] = await mapWithLimit(media, PRESIGN_CONCURRENCY, toMediaDTO)
+      const base = toListItem(record, ref, pickPreviewMedia(mediaDtos))
       const linkedEvents: LinkedEventRef[] = (linkedEventsMap.get(id) ?? []).map(toLinkedEventRef)
       const outreachDTO: ReportOutreach = {
         status: outreach.status,

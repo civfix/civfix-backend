@@ -119,11 +119,22 @@ export const es: Partial<Record<MessageKey, string>> = {
 
   // ---- Guest event RSVP -------------------------------------------------------------------------
   "email.guest_otp.subject": "Tu código para confirmar tu asistencia a {{title}}",
-  "email.guest_otp.body":
-    "Tu código para confirmar tu asistencia a {{title}} es {{code}}. Caduca en {{minutes}} minutos. Si no lo solicitaste, puedes ignorar este correo.",
+  "email.guest_otp.html_intro": "Tu código para confirmar tu asistencia a {{title}} es:",
+  "email.guest_otp.body_expiry":
+    "Caduca en {{minutes}} minutos. Si no lo solicitaste, puedes ignorar este correo.",
   "email.guest_confirmed.subject": "Estás en la lista de {{title}}",
-  "email.guest_confirmed.body":
-    "Te has apuntado a {{title}}. ¿Cambiaste de opinión? Cancela tu asistencia aquí: {{link}}",
+  "email.guest_confirmed.checkin":
+    "Estás en la lista. Al llegar, regístrate con tu nombre; no hay ninguna entrada que imprimir.",
+  "email.guest_confirmed.cancel_hint":
+    "¿Cambiaron tus planes? Cancela tu asistencia para que otra persona pueda ocupar la plaza.",
+  "email.guest_confirmed.cancel_cta": "Cancelar asistencia",
+  "email.event.when": "Cuándo",
+  "email.event.where": "Dónde",
+  "email.guest_promoted.subject": "Se ha liberado una plaza para {{title}}",
+  "email.guest_promoted.intro":
+    "Se ha liberado una plaza para {{title}} el {{when}}. Estabas en la lista de espera y la organización te está reservando una plaza.",
+  "email.guest_promoted.cta": "Ver el evento",
+  "email.guest_promoted.ignore": "Si ya no quieres la plaza, no tienes que hacer nada.",
   "email.guest_updated.subject": "{{title}} tiene nuevos detalles",
   "email.guest_updated.body":
     "Los detalles de {{title}} han cambiado. Ahora empieza a las {{when}} en {{place}}. Usa el enlace de cancelación de tu mensaje de confirmación si ya no puedes asistir.",

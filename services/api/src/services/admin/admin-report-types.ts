@@ -6,6 +6,7 @@ import type {
   AdminReportListItemDTO,
   AdminReportStatus,
   ReportCategory,
+  ReportMedia,
   ReportOutreachStatus,
   ReportTimelineItem,
   ReportVisibility,
@@ -72,6 +73,7 @@ export interface AdminReportRecord {
   lat: number
   lng: number
   hasPhoto: boolean
+  previewMedia: AdminReportMediaRecord | null
   createdAt: Date
   referenceCode: string | null
   verificationVerdict: "approved" | "rejected" | null
@@ -146,6 +148,17 @@ export interface AdminReportRepository {
 }
 
 export const REPORT_VERIFIED_THRESHOLD = 2
+
+export function pickPreviewMedia<T extends { kind: "image" | "video" }>(
+  media: readonly T[],
+): T | null {
+  return media.find((m) => m.kind === "image") ?? media[0] ?? null
+}
+
+export function previewThumbnailUrl(media: ReportMedia | null): string | null {
+  if (media === null) return null
+  return media.kind === "image" ? (media.thumbUrl ?? media.url) : (media.thumbUrl ?? null)
+}
 
 export interface AdminReportServiceDeps {
   repo: AdminReportRepository

@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { makeHostRouteContext } from "./_host-routes.js"
 import { registerHostAnalyticsRoutes } from "./analytics.routes.js"
+import { registerHostAnnouncementRoutes } from "./announcements.routes.js"
 import { registerHostBroadcastRoutes } from "./broadcasts.routes.js"
 import { registerHostCheckinRoutes } from "./checkin.routes.js"
 import { registerHostExportRoutes } from "./exports.routes.js"
@@ -38,6 +39,7 @@ export async function registerHostCommsRoutes(
   container: Container,
 ): Promise<void> {
   await registerHostBroadcastRoutes(app, container)
+  await registerHostAnnouncementRoutes(app, container)
   await registerHostAnalyticsRoutes(app, container)
   await registerHostExportRoutes(app, container)
 }

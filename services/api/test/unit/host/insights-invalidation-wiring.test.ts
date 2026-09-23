@@ -43,6 +43,7 @@ function analyticsStub(): InsightsServiceDeps["analytics"] {
     eventClock: () =>
       Promise.resolve({
         status: "upcoming" as const,
+        createdAt: STARTS_AT,
         scheduledAt: STARTS_AT,
         endsAt: null,
         completedAt: null,

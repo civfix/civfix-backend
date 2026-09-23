@@ -13,6 +13,7 @@ export default defineConfig({
     "src/db/backfill-served-key.ts",
     "src/db/backfill-user-activity.ts",
     "src/db/backfill-signup-seats.ts",
+    "src/db/backfill-post-geom.ts",
     // db/seed-demo-la.ts: the LA demo-community seeder, emitted so an operator can run
     //   `node dist/db/seed-demo-la.js [--yes|--purge --yes]` INSIDE the api container (which already
     //   carries DATABASE_URL) WITHOUT tsx or handling credentials. NEVER wired into the deploy

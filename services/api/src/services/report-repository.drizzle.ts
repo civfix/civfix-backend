@@ -156,7 +156,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           await tx`
             INSERT INTO reports (
               id, reporter_user_id, idempotency_key, geom, geom_source, jurisdiction_geoid,
-              category, type, title, description, addr, status, visibility, h3_cell, reference_code,
+              category, type, title, description, addr, addr_source, addr_precision, status,
+              visibility, h3_cell, reference_code,
               published_at
             ) VALUES (
               ${args.reportId},
@@ -170,6 +171,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
               ${args.title},
               ${args.description},
               ${args.addr},
+              ${args.addrSource},
+              ${args.addrPrecision},
               ${args.status},
               ${args.visibility},
               ${args.h3Cell},

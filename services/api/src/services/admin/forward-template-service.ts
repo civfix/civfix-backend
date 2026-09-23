@@ -83,6 +83,7 @@ function sampleReport(): AdminReportRecord {
     lat: Number(sampleValue("lat")),
     lng: Number(sampleValue("lng")),
     hasPhoto: true,
+    previewMedia: null,
     createdAt: SAMPLE_CREATED_AT,
     referenceCode: sampleValue("referenceCode"),
     verificationVerdict: null,

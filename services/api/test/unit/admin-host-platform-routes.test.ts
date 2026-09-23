@@ -375,7 +375,7 @@ describe("admin org verification decision", () => {
       target: `organization:${id}`,
       meta: { reason: "no determination letter" },
     })
-    expect(String(h.mails[0]?.vars.message)).toContain("no determination letter")
+    expect(String(h.mails[0]?.vars.quote)).toContain("no determination letter")
     expect(h.notes).toEqual([{ userId: HOST, type: "system" }])
   })
 

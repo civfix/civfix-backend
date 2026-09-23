@@ -1,17 +1,30 @@
 
-import { HomeFeedQuerySchema, IdSchema, PaginationQuerySchema, PostComposeInputSchema } from "@civfix/shared"
+import {
+  FeedCountsRequestSchema,
+  HomeFeedQuerySchema,
+  IdSchema,
+  PaginationQuerySchema,
+  PostComposeInputSchema,
+} from "@civfix/shared"
 import { z } from "zod"
-import type { FastifyInstance } from "fastify"
+import type { FastifyInstance, FastifyRequest } from "fastify"
 import { perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
+import { cfGeoFromTrustedEdge } from "../abuse/gps-sanity.js"
+import { approximateLocationFor } from "../services/geo-approximate.js"
+import type { FeedViewerLocation } from "../services/post-service.js"
 import { NIL_VIEWER_ID } from "../services/post-repository.drizzle.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 
 const PostIdParamsSchema = z.object({ id: IdSchema }).strict()
 
-export const CREATE_POST_RATE_LIMIT = perIdentity({ max: 120, timeWindow: "1 minute" })
+export const FEED_COUNTS_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
+
+export const HOME_FEED_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
+
+export const CREATE_POST_RATE_LIMIT = perIdentity({ max: 12, timeWindow: "1 minute" })
 
 export const POST_INTERACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 
@@ -86,13 +99,38 @@ export async function registerPostRoutes(app: FastifyInstance, container: Contai
     reply.status(200).send(await service().unsavePost(id, userId))
   })
 
-  route(app, "homeFeed", async (request, reply) => {
+  const viewerLocationOf = (request: FastifyRequest): FeedViewerLocation => {
+    const env = container.env
+    const approximate = approximateLocationFor(
+      { headers: request.headers, trusted: cfGeoFromTrustedEdge(request) },
+      { lat: env.HOME_REGION_LAT, lng: env.HOME_REGION_LNG, radiusKm: env.HOME_REGION_RADIUS_KM },
+    )
+    return { lat: approximate.lat, lng: approximate.lng }
+  }
+
+  route(app, "homeFeed", { config: { rateLimit: HOME_FEED_RATE_LIMIT } }, async (request, reply) => {
     const userId = request.auth.userId
     const query = parse(HomeFeedQuerySchema, request.query)
+    const location = viewerLocationOf(request)
     reply
       .status(200)
-      .send(userId ? await service().homeFeed(userId, query) : await service().publicFeed(query))
+      .send(
+        userId
+          ? await service().homeFeed(userId, query, location)
+          : await service().publicFeed(query, location),
+      )
   })
+
+  route(
+    app,
+    "getFeedCounts",
+    { config: { rateLimit: FEED_COUNTS_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { postIds } = parse(FeedCountsRequestSchema, request.body)
+      reply.status(200).send(await service().getFeedCounts(postIds, userId))
+    },
+  )
 
   route(app, "listUserPosts", async (request, reply) => {
     const userId = request.auth.userId ?? NIL_VIEWER_ID

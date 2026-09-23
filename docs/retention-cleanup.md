@@ -12,7 +12,8 @@ previously accumulated forever (no existing path deleted them).
 A `retention.sweep` cron in the **media-worker** (the same process that runs
 `orphan.sweep` and `chat.partition.maintenance`) deletes expired rows from the
 tables below. Every lane but `inbound_emails` deletes already-expired rows only
-and needs no schema of its own.
+and needs no schema of its own (`geocode_cache` brings its own index, created
+with the table).
 
 | Table | Rows deleted | Source schema |
 |---|---|---|
@@ -21,6 +22,7 @@ and needs no schema of its own.
 | `sessions` | `expires_at < cutoff` | `services/api/src/db/schema/sessions.ts` |
 | `idempotency_keys` | `created_at < now - 48h` (`RETENTION_IDEMPOTENCY_MS`) | `services/api/src/db/schema/idempotency.ts` |
 | `notifications` | `created_at < now - 90d` (see F088 below) | `services/api/src/db/schema/notifications.ts` |
+| `geocode_cache` | `resolved_at < now - 180d` (`GEOCODE_CACHE_TTL_MS`, see below) | `services/api/src/db/schema/geocode_cache.ts` |
 | `inbound_emails` | `archived_at < now - 180d` (see H10 below) | `services/api/src/db/schema/inbound_emails.ts` |
 
 `cutoff = now - grace`, where `grace` defaults to **1 hour** past expiry (so a
@@ -138,6 +140,34 @@ inline exactly as before, and an enqueue that throws (queue not started) also
 falls back inline so bells are never silently dropped. The REST poll lane stays
 inline on purpose — a poll create is one event, not a burst. Wiring the WS send
 lane (`src/routes/chat-gateway-wiring.ts`) is the remaining step.
+
+---
+
+## `geocode_cache` — bounding the reverse-geocode cache (0179)
+
+`geocode_cache` (migration `0179_address_resolution.sql`) is written by the
+address ladder on every resolve, and the write path is reachable by an
+UNAUTHENTICATED caller (`POST /map/resolve-address`, 30/min/IP). Its TTLs are
+applied on READ — an expired row is served as a miss and OVERWRITTEN in place —
+so nothing in `services/api/src/services/geocode-cache.ts` ever deletes a row,
+and a point that is resolved once and never visited again stays forever. Rows are
+tiny and derived (a public coordinate → a public address line, no user, report or
+event reference, outside the erasure lane by construction), but "tiny × forever"
+is still unbounded, so the sweep owns the deletion side.
+
+| What | Value |
+|---|---|
+| Table | `geocode_cache` |
+| Predicate | `resolved_at < now() - 180 days` (`GEOCODE_CACHE_TTL_MS`, the POSITIVE TTL — imported from `@civfix/api/geocode-cache` so the two can never drift) |
+| Index | `geocode_cache_resolved_at_idx` (created by 0179) |
+| Cron | the existing `retention.sweep` (`37 4 * * *`, daily) |
+| Batching | `DELETE … WHERE point_key IN (SELECT point_key … LIMIT n)`, drained page-wise like the other lanes |
+| Tuning | `runRetentionSweep({ geocodeCacheRetentionMs })` |
+
+The cutoff is the POSITIVE TTL deliberately, even though a non-chain row (a chain
+miss) stops being SERVED after 15 minutes: once past 180 days a row cannot be
+served on any path, so deleting it loses nothing, and one cutoff keeps the lane a
+single index scan.
 
 ---
 

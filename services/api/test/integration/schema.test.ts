@@ -3,6 +3,11 @@ import { afterAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { getTableName, is } from "drizzle-orm"
 import { PgTable, getTableConfig } from "drizzle-orm/pg-core"
+import {
+  AddressPrecisionSchema,
+  EventAddressSourceSchema,
+  ReportAddressSourceSchema,
+} from "@civfix/shared"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import * as schema from "../../src/db/schema/index.js"
@@ -112,6 +117,7 @@ const EXPECTED_TABLES = [
   "stripe_events",
   "legal_documents",
   "consent_records",
+  "geocode_cache",
 ] as const
 
 const FOREIGN_TABLES = new Set([
@@ -732,6 +738,9 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   { table: "volunteer_hours", column: "source", mirror: ["report", "event", "manual"] },
   { table: "reports", column: "verification_verdict", mirror: ["approved", "rejected"] },
   { table: "broadcast_unsubscribes", column: "subject_kind", mirror: ["user", "guest"] },
+  { table: "cleanups", column: "address_source", mirror: EventAddressSourceSchema.options },
+  { table: "reports", column: "addr_source", mirror: ReportAddressSourceSchema.options },
+  { table: "reports", column: "addr_precision", mirror: AddressPrecisionSchema.options },
 ]
 
 const CONSTRAINT_QUALIFIERS = /(?:\s+NO INHERIT)?(?:\s+NOT VALID)?$/
