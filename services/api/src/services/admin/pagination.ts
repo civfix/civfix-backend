@@ -1,7 +1,7 @@
 import { encodeTimeCursor, parseKeysetCursor, type TimeCursor } from "../../db/cursor-helpers.js"
 import { clampPageLimit } from "../../lib/page-limit.js"
 
-export const ADMIN_DEFAULT_LIMIT = 25
+const ADMIN_DEFAULT_LIMIT = 25
 /** Mirrors the shared AdminListQuery limit ceiling. */
 const ADMIN_MAX_LIMIT = 100
 

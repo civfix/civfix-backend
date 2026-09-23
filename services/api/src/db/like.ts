@@ -1,5 +1,5 @@
 /**
- * LIKE/ILIKE escaping for operator search terms. Unescaped, `%` and `_` act as wildcards (and `\` as the
+ * LIKE/ILIKE escaping for search terms. Unescaped, `%` and `_` act as wildcards (and `\` as the
  * escape): a term can broaden a match arbitrarily and defeat the gin_trgm_ops indexes
  * (0014_search_trgm.sql), since a leading-wildcard `%%%` term forces an unindexed full scan, a cheap DoS
  * lever for any operator.

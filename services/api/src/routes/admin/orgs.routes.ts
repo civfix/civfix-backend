@@ -207,7 +207,7 @@ export async function registerAdminOrgRoutes(
     reply.status(200).send(payload)
   })
 
-  // Unlike broadcasts/pages, which call insertAuditRow in the route after the effect, this decision is
+  // Unlike pages, which call insertAuditRow in the route, this decision is
   // audited inside the repository transaction (decideVerificationTx), so the audit row and the state change
   // commit or roll back together. A route-level insertAuditRow here would double-write the row.
   route(app, "adminDecideOrgVerification", { preHandler: csrfProtect }, async (request, reply) => {
