@@ -43,3 +43,11 @@ export function publicAuthorIdentity(input: {
     deleted: false,
   }
 }
+
+export const FALLBACK_ACTOR_NAME = "Someone"
+
+export function actorDisplayName(displayName: string | null, handle: string | null): string {
+  if (displayName && displayName.trim() !== "") return displayName
+  if (handle) return `@${handle}`
+  return FALLBACK_ACTOR_NAME
+}

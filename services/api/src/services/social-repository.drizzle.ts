@@ -1,6 +1,7 @@
 import type postgres from "postgres"
 import type { Queryable, Sql } from "../db/client.js"
 import type {
+  PeoplePage,
   PersonView,
   ProfileEventsPage,
   ProfileEventsPageArgs,
@@ -85,10 +86,7 @@ export function toPersonView(r: PersonRowSelect): PersonView {
   }
 }
 
-function pagePeople(
-  rows: PersonRowSelectWithFollow[],
-  limit: number,
-): { items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null } {
+function pagePeople(rows: PersonRowSelectWithFollow[], limit: number): PeoplePage {
   const { items, nextCursor } = pageWith(rows, limit, (last) =>
     encodeNameCursor({ name: last.display_name, id: last.id }),
   )
@@ -236,10 +234,7 @@ function profileEventRows(
 
 type ConnectionRow = PersonRowSelectWithFollow & { cursor_at: string | null }
 
-function pageConnections(
-  rows: ConnectionRow[],
-  limit: number,
-): { items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null } {
+function pageConnections(rows: ConnectionRow[], limit: number): PeoplePage {
   const { items, nextCursor } = paginateKeyset(rows, limit, (last) => ({
     atText: last.cursor_at,
     id: last.id,
@@ -258,7 +253,7 @@ async function connectionsPage(
   sql: Sql,
   args: { viewerId: string | null; cursor: string | null; limit: number },
   joinPredicate: ReturnType<Sql>,
-): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }> {
+): Promise<PeoplePage> {
   const cursor = parseKeysetCursor(args.cursor)
   const viewerId = args.viewerId
   const cursorFilter =
@@ -480,15 +475,13 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
   }
 
   return {
-    async listPeople(args): Promise<{
-      items: Array<PersonView & { isFollowing: boolean }>
-      nextCursor: string | null
-    }> {
+    async listPeople(args): Promise<PeoplePage> {
       const cursor = parseNameCursor(args.cursor)
       const viewerId = args.viewerId
+      const term = args.q !== null ? "%" + escapeLike(args.q) + "%" : null
       const qFilter =
-        args.q !== null
-          ? sql`AND ((u.handle::text) ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\' OR u.display_name ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\')`
+        term !== null
+          ? sql`AND ((u.handle::text) ILIKE ${term} ESCAPE '\\' OR u.display_name ILIKE ${term} ESCAPE '\\')`
           : sql``
       const selfFilter = viewerId !== null ? sql`AND u.id <> ${viewerId}` : sql``
       const cursorFilter =
@@ -546,17 +539,11 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       `.then((rows) => rows.map((r) => ({ ...toPersonView(r), isFollowing: false })))
     },
 
-    async listFollowers(args): Promise<{
-      items: Array<PersonView & { isFollowing: boolean }>
-      nextCursor: string | null
-    }> {
+    async listFollowers(args): Promise<PeoplePage> {
       return connectionsPage(sql, args, sql`f.followee_id = ${args.id} AND f.follower_id = u.id`)
     },
 
-    async listFollowing(args): Promise<{
-      items: Array<PersonView & { isFollowing: boolean }>
-      nextCursor: string | null
-    }> {
+    async listFollowing(args): Promise<PeoplePage> {
       return connectionsPage(sql, args, sql`f.follower_id = ${args.id} AND f.followee_id = u.id`)
     },
 

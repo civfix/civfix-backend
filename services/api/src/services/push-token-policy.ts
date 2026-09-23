@@ -7,6 +7,12 @@ import { expandIpv6Hextets } from "../adapters/net-ipv6.js"
 export const PUSH_DNS_TIMEOUT_MS = 2_000
 export const PUSH_DNS_TRIES = 1
 
+const IPV6_BRACKETS_RE = /^\[|\]$/g
+const LOCALHOST = "localhost"
+const NON_PUBLIC_HOST_SUFFIXES = [".localhost", ".internal", ".local"] as const
+const IPV4_OCTET_MAX = 255
+const IPV6_HEXTET_RE = /^[0-9a-f]{1,4}$/
+
 export type PushAddressResolver = (host: string) => Promise<string[]>
 
 export const lookupAddresses: PushAddressResolver = async (host) => {
@@ -55,9 +61,10 @@ export async function resolveSafePushTarget(
     if (u.protocol !== "https:") return null
     host = u.hostname.toLowerCase()
     if (host.length === 0) return null
-    host = host.replace(/^\[|\]$/g, "")
-    if (host === "localhost" || host.endsWith(".localhost")) return null
-    if (host.endsWith(".internal") || host.endsWith(".local")) return null
+    host = host.replace(IPV6_BRACKETS_RE, "")
+    if (host === LOCALHOST || NON_PUBLIC_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
+      return null
+    }
   } catch {
     return null
   }
@@ -91,11 +98,15 @@ function isPublicAddress(addr: string): boolean {
   return false
 }
 
+function isOctet(n: number): boolean {
+  return Number.isInteger(n) && n >= 0 && n <= IPV4_OCTET_MAX
+}
+
 function isPublicIpv4(host: string): boolean {
   const parts = host.split(".")
   if (parts.length !== 4) return false
   const o = parts.map((p) => Number(p))
-  if (o.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false
+  if (!o.every(isOctet)) return false
   const [a, b] = o as [number, number, number, number]
   if (a === 0 || a === 127) return false
   if (a === 10) return false
@@ -116,7 +127,7 @@ function ipv6ToBytes(input: string): number[] | null {
     const quad = s.slice(cut + 1).split(".")
     if (quad.length !== 4) return null
     const nums = quad.map((p) => Number(p))
-    if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null
+    if (!nums.every(isOctet)) return null
     const hi = ((nums[0]! << 8) | nums[1]!).toString(16)
     const lo = ((nums[2]! << 8) | nums[3]!).toString(16)
     s = `${s.slice(0, cut + 1)}${hi}:${lo}`
@@ -127,7 +138,7 @@ function ipv6ToBytes(input: string): number[] | null {
   if (groups.length !== 8) return null
   const bytes: number[] = []
   for (const g of groups) {
-    if (!/^[0-9a-f]{1,4}$/.test(g)) return null
+    if (!IPV6_HEXTET_RE.test(g)) return null
     const v = parseInt(g, 16)
     bytes.push((v >> 8) & 0xff, v & 0xff)
   }
@@ -162,6 +173,7 @@ const WEB_PUSH_AUTH_BYTES = 16
 const BASE64URL_RE = /^[A-Za-z0-9_-]+={0,2}$/
 const APNS_TOKEN_RE = /^[0-9a-fA-F]{64,200}$/
 const FCM_TOKEN_RE = /^[A-Za-z0-9_:.~%+-]{64,2048}$/
+const EXPO_PUSH_TOKEN_MAX_LENGTH = 512
 
 function decodedByteLength(value: string): number | null {
   if (!BASE64URL_RE.test(value)) return null
@@ -179,54 +191,48 @@ export type PushTokenShape =
   | { ok: true; kind: "web"; endpoint: string }
   | { ok: false; field: string; reason: string }
 
+function invalidToken(reason: string): PushTokenShape {
+  return { ok: false, field: "token", reason }
+}
+
+function classifyWebSubscription(token: string): PushTokenShape {
+  const subscription = parseSubscription(token)
+  if (subscription === null) {
+    return invalidToken(
+      "web push tokens must be the subscription JSON: {endpoint, keys:{p256dh, auth}}",
+    )
+  }
+  let url: URL
+  try {
+    url = new URL(subscription.endpoint)
+  } catch {
+    return invalidToken("subscription endpoint is not a URL")
+  }
+  if (url.protocol !== "https:") return invalidToken("subscription endpoint must be https")
+  if (decodedByteLength(subscription.keys.p256dh) !== WEB_PUSH_P256DH_BYTES) {
+    return invalidToken(`keys.p256dh must be ${WEB_PUSH_P256DH_BYTES} base64url-encoded bytes`)
+  }
+  if (decodedByteLength(subscription.keys.auth) !== WEB_PUSH_AUTH_BYTES) {
+    return invalidToken(`keys.auth must be ${WEB_PUSH_AUTH_BYTES} base64url-encoded bytes`)
+  }
+  return { ok: true, kind: "web", endpoint: subscription.endpoint }
+}
+
 export function classifyPushToken(platform: PushPlatform, token: string): PushTokenShape {
   if (isExpoPushToken(token)) {
-    return token.endsWith("]") && token.length <= 512
+    return token.endsWith("]") && token.length <= EXPO_PUSH_TOKEN_MAX_LENGTH
       ? { ok: true, kind: "expo" }
-      : { ok: false, field: "token", reason: "malformed Expo push token" }
+      : invalidToken("malformed Expo push token")
   }
-  if (platform === "web") {
-    const subscription = parseSubscription(token)
-    if (subscription === null) {
-      return {
-        ok: false,
-        field: "token",
-        reason: "web push tokens must be the subscription JSON: {endpoint, keys:{p256dh, auth}}",
-      }
-    }
-    let url: URL
-    try {
-      url = new URL(subscription.endpoint)
-    } catch {
-      return { ok: false, field: "token", reason: "subscription endpoint is not a URL" }
-    }
-    if (url.protocol !== "https:") {
-      return { ok: false, field: "token", reason: "subscription endpoint must be https" }
-    }
-    if (decodedByteLength(subscription.keys.p256dh) !== WEB_PUSH_P256DH_BYTES) {
-      return {
-        ok: false,
-        field: "token",
-        reason: `keys.p256dh must be ${WEB_PUSH_P256DH_BYTES} base64url-encoded bytes`,
-      }
-    }
-    if (decodedByteLength(subscription.keys.auth) !== WEB_PUSH_AUTH_BYTES) {
-      return {
-        ok: false,
-        field: "token",
-        reason: `keys.auth must be ${WEB_PUSH_AUTH_BYTES} base64url-encoded bytes`,
-      }
-    }
-    return { ok: true, kind: "web", endpoint: subscription.endpoint }
-  }
+  if (platform === "web") return classifyWebSubscription(token)
   if (platform === "ios") {
     return APNS_TOKEN_RE.test(token) && token.length % 2 === 0
       ? { ok: true, kind: "apns" }
-      : { ok: false, field: "token", reason: "APNs device tokens are hex (64-200 characters)" }
+      : invalidToken("APNs device tokens are hex (64-200 characters)")
   }
   return FCM_TOKEN_RE.test(token)
     ? { ok: true, kind: "fcm" }
-    : { ok: false, field: "token", reason: "not a recognizable FCM registration token" }
+    : invalidToken("not a recognizable FCM registration token")
 }
 
 export function parseSubscription(

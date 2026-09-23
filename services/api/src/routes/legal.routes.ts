@@ -9,10 +9,8 @@ export const LEGAL_VERSIONS_RATE_LIMIT = perHost({ max: 120, timeWindow: "1 minu
 
 export async function registerLegalRoutes(
   app: FastifyInstance,
-  container: Container,
+  _container: Container,
 ): Promise<void> {
-  void container
-
   route(
     app,
     "getLegalVersions",

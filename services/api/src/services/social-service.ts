@@ -13,13 +13,16 @@ import type {
 import { toCleanupDTO, type CleanupRecord } from "./cleanup-service.js"
 import { attachAffiliations, type AffiliationLoader } from "./affiliation.js"
 
-export const PEOPLE_DEFAULT_LIMIT = 20
+const PEOPLE_DEFAULT_LIMIT = 20
 
-export const SUGGESTIONS_CACHE_LIMIT = 20
-export const SUGGESTIONS_CACHE_TTL_SEC = 5 * 60
+const SUGGESTIONS_CACHE_LIMIT = 20
+const SUGGESTIONS_CACHE_TTL_SEC = 5 * 60
+const SUGGESTIONS_CACHE_KEY_PREFIX = "social:suggest:v1:"
+
+export const PERSON_NOT_FOUND_MESSAGE = "Person not found"
 
 export function suggestionsCacheKey(viewerId: string): string {
-  return `social:suggest:v1:${viewerId}`
+  return `${SUGGESTIONS_CACHE_KEY_PREFIX}${viewerId}`
 }
 
 export async function dropSuggestionsFor(
@@ -39,7 +42,7 @@ export async function dropSuggestionsFor(
 
 export const PROFILE_PAST_EVENTS_LIMIT = 20
 
-export const PROFILE_UPCOMING_EVENTS_LIMIT = 20
+const PROFILE_UPCOMING_EVENTS_LIMIT = 20
 
 export type ProfileWithBlock = UserProfileDTO & { blockedByMe?: boolean }
 
@@ -78,27 +81,29 @@ export interface UpcomingEventsArgs {
   limit: number
 }
 
+export interface PeoplePage {
+  items: Array<PersonView & { isFollowing: boolean }>
+  nextCursor: string | null
+}
+
+export interface ConnectionsArgs {
+  id: string
+  viewerId: string | null
+  cursor: string | null
+  limit: number
+}
+
 export interface SocialRepository {
   listPeople(args: {
     viewerId: string | null
     q: string | null
     cursor: string | null
     limit: number
-  }): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }>
+  }): Promise<PeoplePage>
 
-  listFollowers(args: {
-    id: string
-    viewerId: string | null
-    cursor: string | null
-    limit: number
-  }): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }>
+  listFollowers(args: ConnectionsArgs): Promise<PeoplePage>
 
-  listFollowing(args: {
-    id: string
-    viewerId: string | null
-    cursor: string | null
-    limit: number
-  }): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }>
+  listFollowing(args: ConnectionsArgs): Promise<PeoplePage>
 
   suggestFollows(args: {
     viewerId: string
@@ -231,40 +236,28 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     }
   }
 
-  async function dropSuggestionsCache(viewerId: string): Promise<void> {
-    const cache = deps.suggestionsCache
-    if (cache === undefined) return
-    try {
-      await cache.del(suggestionsCacheKey(viewerId))
-    } catch (err) {
-      deps.logger?.warn({ err }, "follow suggestions cache invalidation failed (ignored)")
-    }
-  }
-
   async function viewerFollows(targetId: string, viewer: SocialViewer): Promise<boolean> {
     if (viewer.userId === null || viewer.userId === targetId) return false
     return deps.repo.isFollowing(viewer.userId, targetId)
   }
 
+  // A viewer who blocked the subject gets an empty listing; one the subject blocked gets the same
+  // not-found as a missing person, so the block is not disclosed.
+  async function listingHiddenByBlock(id: string, viewer: SocialViewer): Promise<boolean> {
+    if (viewer.userId === null || viewer.userId === id || !deps.blockState) return false
+    const { blockedByViewer, blockedByTarget } = await deps.blockState(viewer.userId, id)
+    if (blockedByViewer) return true
+    if (blockedByTarget) throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
+    return false
+  }
+
   async function pageConnections(
-    fn: (args: {
-      id: string
-      viewerId: string | null
-      cursor: string | null
-      limit: number
-    }) => Promise<{
-      items: Array<PersonView & { isFollowing: boolean }>
-      nextCursor: string | null
-    }>,
+    fn: (args: ConnectionsArgs) => Promise<PeoplePage>,
     id: string,
     viewer: SocialViewer,
     req: ConnectionsListQuery,
   ): Promise<ListPeopleResponse> {
-    if (viewer.userId !== null && viewer.userId !== id && deps.blockState) {
-      const { blockedByViewer, blockedByTarget } = await deps.blockState(viewer.userId, id)
-      if (blockedByViewer) return { items: [], nextCursor: null }
-      if (blockedByTarget) throw AppError.notFound("Person not found")
-    }
+    if (await listingHiddenByBlock(id, viewer)) return { items: [], nextCursor: null }
     const { items, nextCursor } = await fn({
       id,
       viewerId: viewer.userId,
@@ -357,7 +350,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     if (!isSelf && viewer.userId !== null && deps.blockState) {
       const { blockedByViewer, blockedByTarget } = await deps.blockState(viewer.userId, view.id)
       if (blockedByViewer) return blockedProfileShell(view)
-      if (blockedByTarget) throw AppError.notFound("Person not found")
+      if (blockedByTarget) throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
     }
     return buildProfile(view, viewer, isSelf)
   }
@@ -421,12 +414,12 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         throw AppError.validation({ targetId: "You cannot follow yourself." })
       }
       if (deps.isBlockedEitherWay && (await deps.isBlockedEitherWay(viewerId, targetId))) {
-        throw AppError.notFound("Person not found")
+        throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
       }
       const { exists, created } = await deps.repo.addFollow(viewerId, targetId)
-      if (!exists) throw AppError.notFound("Person not found")
+      if (!exists) throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
 
-      await dropSuggestionsCache(viewerId)
+      await dropSuggestionsFor(deps.suggestionsCache, [viewerId], deps.logger)
       const followers = await deps.repo.followerCount(targetId)
 
       if (created && deps.notifier) {
@@ -459,18 +452,18 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         throw AppError.validation({ targetId: "You cannot unfollow yourself." })
       }
       if (deps.blockState && (await deps.blockState(viewerId, targetId)).blockedByTarget) {
-        throw AppError.notFound("Person not found")
+        throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
       }
       const { exists } = await deps.repo.removeFollow(viewerId, targetId)
-      if (!exists) throw AppError.notFound("Person not found")
-      await dropSuggestionsCache(viewerId)
+      if (!exists) throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
+      await dropSuggestionsFor(deps.suggestionsCache, [viewerId], deps.logger)
       const followers = await deps.repo.followerCount(targetId)
       return { isFollowing: false, followers }
     },
 
     async getProfile(id: string, viewer: SocialViewer): Promise<{ profile: ProfileWithBlock }> {
       const view = await deps.repo.findPersonById(id)
-      if (!view) throw AppError.notFound("Person not found")
+      if (!view) throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
       return { profile: await resolveProfile(view, viewer) }
     },
 
@@ -479,13 +472,13 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       viewer: SocialViewer,
     ): Promise<{ profile: ProfileWithBlock }> {
       const view = await deps.repo.findPersonByHandle(handle)
-      if (!view) throw AppError.notFound("Person not found")
+      if (!view) throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
       return { profile: await resolveProfile(view, viewer) }
     },
 
     async getMyProfile(viewerId: string): Promise<{ profile: ProfileWithBlock }> {
       const view = await deps.repo.findPersonById(viewerId)
-      if (!view) throw AppError.notFound("Person not found")
+      if (!view) throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
       return { profile: await buildProfile(view, { userId: viewerId }, true) }
     },
 
@@ -494,11 +487,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       viewer: SocialViewer,
       req: PaginationQuery,
     ): Promise<ProfileEventsResponse> {
-      if (viewer.userId !== null && viewer.userId !== id && deps.blockState) {
-        const { blockedByViewer, blockedByTarget } = await deps.blockState(viewer.userId, id)
-        if (blockedByViewer) return { items: [], nextCursor: null }
-        if (blockedByTarget) throw AppError.notFound("Person not found")
-      }
+      if (await listingHiddenByBlock(id, viewer)) return { items: [], nextCursor: null }
       const { items, nextCursor } = await deps.repo.pastEventsPageFor(id, {
         cursor: req.cursor ?? null,
         limit: req.limit ?? PROFILE_PAST_EVENTS_LIMIT,
@@ -509,7 +498,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
 
     async resolveHandleToId(handle: string): Promise<string> {
       const view = await deps.repo.findPersonByHandle(handle)
-      if (!view) throw AppError.notFound("Person not found")
+      if (!view) throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
       return view.id
     },
   }

@@ -24,7 +24,7 @@ import { claimableAsAttachment, lockUploadsForClaim } from "./media-bindings.js"
 import { uploadersOf } from "./media-uploader.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
-import { publicAuthorIdentity } from "./public-author.js"
+import { actorDisplayName, FALLBACK_ACTOR_NAME, publicAuthorIdentity } from "./public-author.js"
 import { presentIds } from "./present-ids.js"
 import {
   NO_AFFILIATIONS,
@@ -42,6 +42,13 @@ export const POSTS_DEFAULT_LIMIT = 20
 export const NIL_VIEWER_ID = "00000000-0000-0000-0000-000000000000"
 
 export const FEED_NEARBY_INDEX = "posts_geom_gist"
+
+const POST_NOT_FOUND_MESSAGE = "Post not found"
+
+const POST_EXCERPT_MAX_CHARS = 140
+const SHARED_EVENT_EXCERPT = "Shared an event"
+const SHARED_REPORT_EXCERPT = "Shared a report"
+const UNTITLED_REPORT_TITLE = "Report"
 
 function postColumns(sql: Queryable): postgres.Fragment {
   return sql`
@@ -116,8 +123,10 @@ const KM_PER_DEGREE_LAT = 111.32
 
 const MIN_LATITUDE_COSINE = 0.25
 
+const MAX_RADIUS_DEGREES = 90
+
 export function nearbyRadiusDegrees(radiusKm: number): number {
-  return Math.min(90, radiusKm / KM_PER_DEGREE_LAT / MIN_LATITUDE_COSINE)
+  return Math.min(MAX_RADIUS_DEGREES, radiusKm / KM_PER_DEGREE_LAT / MIN_LATITUDE_COSINE)
 }
 
 export interface FeedCandidateArgs {
@@ -284,6 +293,24 @@ interface PostCounts {
   saves: number
 }
 
+interface PostCountColumns {
+  like_count: number
+  repost_count: number
+  reply_count: number
+  save_count: number
+}
+
+function countsOf(row: PostCountColumns): PostCounts {
+  return {
+    likes: Number(row.like_count),
+    reposts: Number(row.repost_count),
+    replies: Number(row.reply_count),
+    saves: Number(row.save_count),
+  }
+}
+
+const NO_COUNTS: Readonly<PostCounts> = { likes: 0, reposts: 0, replies: 0, saves: 0 }
+
 interface RefLink {
   eventId: string | null
   reportId: string | null
@@ -302,22 +329,118 @@ interface MediaRow {
   height: number | null
 }
 
+type LinkedEvent = Omit<LinkedEventRef, "linkedAt">
+type LinkedReport = Omit<LinkedReportRef, "linkedAt">
+
+interface LoadedRefs {
+  refs: Map<string, PostRefDTO>
+  counts: Map<string, PostCounts>
+  links: Map<string, RefLink>
+  orgIds: Map<string, string>
+  authorIds: string[]
+}
+
+interface ViewerFlags {
+  liked: Set<string>
+  saved: Set<string>
+  repostedTargets: Set<string>
+}
+
+interface RefLookups {
+  refMedia: Map<string, MediaDTO[]>
+  refAffiliations: PrimaryAffiliations
+  organizations: Map<string, OrganizationRefDTO>
+  events: Map<string, LinkedEvent>
+  reports: Map<string, LinkedReport>
+}
+
+interface PostLookups {
+  authors: Map<string, PersonDTO>
+  media: Map<string, MediaDTO[]>
+  mentions: Map<string, UserMentionDTO[]>
+  loadedRefs: LoadedRefs
+  flags: ViewerFlags
+  events: Map<string, LinkedEvent>
+  reports: Map<string, LinkedReport>
+  organizations: Map<string, OrganizationRefDTO>
+}
+
+function refAuthorOf(r: RefRow): PersonDTO | null {
+  if (r.author_id === null) return null
+  return {
+    id: r.author_id,
+    name: r.display_name ?? "",
+    handle: r.handle,
+    bio: r.bio,
+    avatar: avatarGradient(r.author_id),
+    ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
+    followers: 0,
+    following: 0,
+    isFollowing: false,
+  }
+}
+
+function completeRefs(loaded: LoadedRefs, lookups: RefLookups): void {
+  for (const ref of loaded.refs.values()) {
+    if (ref.deleted) continue
+    ref.media = lookups.refMedia.get(ref.id) ?? []
+    if (ref.author !== null) ref.author = withAffiliation(ref.author, lookups.refAffiliations)
+    ref.organization = organizationRefOf(lookups.organizations, loaded.orgIds.get(ref.id))
+    const link = loaded.links.get(ref.id)
+    if (!link) continue
+    const refEvent = link.eventId !== null ? lookups.events.get(link.eventId) : undefined
+    const refReport = link.reportId !== null ? lookups.reports.get(link.reportId) : undefined
+    ref.event = refEvent ? { ...refEvent, linkedAt: link.linkedAt } : null
+    ref.report = refReport ? { ...refReport, linkedAt: link.linkedAt } : null
+  }
+}
+
+function assemblePost(r: PostRowSelect, lookups: PostLookups): PostDTO | null {
+  const author = lookups.authors.get(r.author_id)
+  if (!author) return null
+  const { refs, counts: refCounts } = lookups.loadedRefs
+  const isRepost = r.kind === "repost" && r.repost_of_id !== null
+  const targetId = isRepost ? r.repost_of_id! : r.id
+  const editedAt =
+    r.updated_at.getTime() > r.created_at.getTime() ? r.updated_at.toISOString() : null
+  const eventBase = r.event_id !== null ? lookups.events.get(r.event_id) : undefined
+  const reportBase = r.report_id !== null ? lookups.reports.get(r.report_id) : undefined
+  const counts: PostCounts = isRepost ? (refCounts.get(targetId) ?? { ...NO_COUNTS }) : countsOf(r)
+  return {
+    id: r.id,
+    author,
+    organization: organizationRefOf(lookups.organizations, r.organization_id),
+    kind: r.kind,
+    body: r.body,
+    createdAt: r.created_at.toISOString(),
+    editedAt,
+    counts,
+    viewer: {
+      liked: lookups.flags.liked.has(targetId),
+      reposted: lookups.flags.repostedTargets.has(targetId),
+      saved: lookups.flags.saved.has(targetId),
+    },
+    media: lookups.media.get(r.id) ?? [],
+    mentions: lookups.mentions.get(r.id) ?? [],
+    event: eventBase ? { ...eventBase, linkedAt: r.created_at.toISOString() } : null,
+    report: reportBase ? { ...reportBase, linkedAt: r.created_at.toISOString() } : null,
+    repostOf: r.repost_of_id !== null ? (refs.get(r.repost_of_id) ?? null) : null,
+    replyToId: r.reply_to_id,
+    replyTo: r.reply_to_id !== null ? (refs.get(r.reply_to_id) ?? null) : null,
+    threadRootId: r.thread_root_id,
+  }
+}
+
 export interface PostRepoDeps {
   presignMedia: PresignMedia
   presignAvatar: (r2Key: string) => Promise<string>
   affiliations?: AffiliationLoader
 }
 
-function nameFrom(displayName: string | null, handle: string | null): string {
-  if (displayName && displayName.trim() !== "") return displayName
-  if (handle) return `@${handle}`
-  return "Someone"
-}
-
 function excerptOf(body: string | null, hasEvent: boolean, hasReport: boolean): string {
-  if (body && body.trim() !== "") return body.slice(0, 140)
-  if (hasEvent) return "Shared an event"
-  if (hasReport) return "Shared a report"
+  if (body && body.trim() !== "") return body.slice(0, POST_EXCERPT_MAX_CHARS)
+  if (hasEvent) return SHARED_EVENT_EXCERPT
+  if (hasReport) return SHARED_REPORT_EXCERPT
   return ""
 }
 
@@ -600,8 +723,8 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
-  async function loadEvents(ids: string[]): Promise<Map<string, Omit<LinkedEventRef, "linkedAt">>> {
-    const out = new Map<string, Omit<LinkedEventRef, "linkedAt">>()
+  async function loadEvents(ids: string[]): Promise<Map<string, LinkedEvent>> {
+    const out = new Map<string, LinkedEvent>()
     if (ids.length === 0) return out
     const rows = await sql<EventRow[]>`
       SELECT
@@ -656,10 +779,20 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
-  async function loadReports(
-    ids: string[],
-  ): Promise<Map<string, Omit<LinkedReportRef, "linkedAt">>> {
-    const out = new Map<string, Omit<LinkedReportRef, "linkedAt">>()
+  async function reportThumbUrl(r: ReportRow): Promise<string | null> {
+    if (r.thumb_key !== null) {
+      const { thumbUrl, url } = await deps.presignMedia(r.thumb_r2_key ?? "", r.thumb_key)
+      return thumbUrl ?? url
+    }
+    if (r.thumb_r2_key !== null) {
+      const { url } = await deps.presignMedia(r.thumb_r2_key, null)
+      return url
+    }
+    return null
+  }
+
+  async function loadReports(ids: string[]): Promise<Map<string, LinkedReport>> {
+    const out = new Map<string, LinkedReport>()
     if (ids.length === 0) return out
     const rows = await sql<ReportRow[]>`
       SELECT
@@ -678,19 +811,12 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       WHERE r.id = ANY(${ids}::uuid[]) AND ${publicReportFilter(sql)}
     `
     const resolved = await mapWithLimit(rows, PRESIGN_CONCURRENCY, async (r) => {
-      let thumbUrl: string | null = null
-      if (r.thumb_key !== null) {
-        const { thumbUrl: t, url } = await deps.presignMedia(r.thumb_r2_key ?? "", r.thumb_key)
-        thumbUrl = t ?? url
-      } else if (r.thumb_r2_key !== null) {
-        const { url } = await deps.presignMedia(r.thumb_r2_key, null)
-        thumbUrl = url
-      }
-      const ref: Omit<LinkedReportRef, "linkedAt"> = {
+      const thumbUrl = await reportThumbUrl(r)
+      const ref: LinkedReport = {
         id: r.id,
         category: r.category,
         ...(r.type !== null ? { type: r.type } : {}),
-        title: r.title ?? "Report",
+        title: r.title ?? UNTITLED_REPORT_TITLE,
         status: r.status,
         lat: r.lat,
         lng: r.lng,
@@ -703,16 +829,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
-  async function loadRefs(
-    ids: string[],
-    viewerId: string,
-  ): Promise<{
-    refs: Map<string, PostRefDTO>
-    counts: Map<string, PostCounts>
-    links: Map<string, RefLink>
-    orgIds: Map<string, string>
-    authorIds: string[]
-  }> {
+  async function loadRefs(ids: string[], viewerId: string): Promise<LoadedRefs> {
     const out = new Map<string, PostRefDTO>()
     const counts = new Map<string, PostCounts>()
     const links = new Map<string, RefLink>()
@@ -737,20 +854,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     `
     for (const r of rows) {
       const deleted = r.deleted_at !== null || r.visibility !== "public"
-      const author: PersonDTO | null =
-        r.author_id !== null && !deleted
-          ? {
-              id: r.author_id,
-              name: r.display_name ?? "",
-              handle: r.handle,
-              bio: r.bio,
-              avatar: avatarGradient(r.author_id),
-              ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
-              followers: 0,
-              following: 0,
-              isFollowing: false,
-            }
-          : null
+      const author = deleted ? null : refAuthorOf(r)
       if (author !== null) authorIds.push(author.id)
       if (!deleted && r.organization_id != null) orgIds.set(r.id, r.organization_id)
       out.set(r.id, {
@@ -765,12 +869,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         event: null,
         report: null,
       })
-      counts.set(r.id, {
-        likes: Number(r.like_count),
-        reposts: Number(r.repost_count),
-        replies: Number(r.reply_count),
-        saves: Number(r.save_count),
-      })
+      counts.set(r.id, countsOf(r))
       if (!deleted) {
         links.set(r.id, {
           eventId: r.event_id,
@@ -813,10 +912,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
-  async function loadViewerFlags(
-    rows: PostRowSelect[],
-    viewerId: string,
-  ): Promise<{ liked: Set<string>; saved: Set<string>; repostedTargets: Set<string> }> {
+  async function loadViewerFlags(rows: PostRowSelect[], viewerId: string): Promise<ViewerFlags> {
     const ids = rows.map((r) => r.id)
     const subjectIds = rows.map((r) =>
       r.kind === "repost" && r.repost_of_id ? r.repost_of_id : r.id,
@@ -849,18 +945,15 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     const postIds = rows.map((r) => r.id)
     const authorIds = [...new Set(rows.map((r) => r.author_id))]
     const refIds = presentIds(rows.flatMap((r) => [r.repost_of_id, r.reply_to_id]))
-    const [authors, media, mentions, refsResult, flags] = await Promise.all([
+    const [authors, media, mentions, loadedRefs, flags] = await Promise.all([
       loadAuthors(authorIds, viewerId),
       loadMedia(postIds),
       loadMentionsFor(sql, "post_mentions", postIds, "post_id"),
       loadRefs(refIds, viewerId),
       loadViewerFlags(rows, viewerId),
     ])
-    const refs = refsResult.refs
-    const refCounts = refsResult.counts
-    const refLinks = refsResult.links
 
-    const linkValues = [...refLinks.values()]
+    const linkValues = [...loadedRefs.links.values()]
     const eventIds = presentIds([
       ...rows.map((r) => r.event_id),
       ...linkValues.map((l) => l.eventId),
@@ -869,75 +962,31 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       ...rows.map((r) => r.report_id),
       ...linkValues.map((l) => l.reportId),
     ])
-    const readableRefIds = [...refs.values()].filter((r) => !r.deleted).map((r) => r.id)
-    const orgIds = [...rows.map((r) => r.organization_id), ...refsResult.orgIds.values()]
+    const readableRefIds = [...loadedRefs.refs.values()].filter((r) => !r.deleted).map((r) => r.id)
+    const orgIds = [...rows.map((r) => r.organization_id), ...loadedRefs.orgIds.values()]
     const [events, reports, refMedia, organizations, refAffiliations] = await Promise.all([
       loadEvents(eventIds),
       loadReports(reportIds),
       loadMedia(readableRefIds),
       loadOrganizations(orgIds),
-      loadAffiliations(refsResult.authorIds, viewerId),
+      loadAffiliations(loadedRefs.authorIds, viewerId),
     ])
 
-    for (const ref of refs.values()) {
-      if (ref.deleted) continue
-      ref.media = refMedia.get(ref.id) ?? []
-      if (ref.author !== null) ref.author = withAffiliation(ref.author, refAffiliations)
-      ref.organization = organizationRefOf(organizations, refsResult.orgIds.get(ref.id))
-      const link = refLinks.get(ref.id)
-      if (!link) continue
-      const refEvent = link.eventId !== null ? events.get(link.eventId) : undefined
-      const refReport = link.reportId !== null ? reports.get(link.reportId) : undefined
-      ref.event = refEvent ? { ...refEvent, linkedAt: link.linkedAt } : null
-      ref.report = refReport ? { ...refReport, linkedAt: link.linkedAt } : null
+    completeRefs(loadedRefs, { refMedia, refAffiliations, organizations, events, reports })
+    const lookups: PostLookups = {
+      authors,
+      media,
+      mentions,
+      loadedRefs,
+      flags,
+      events,
+      reports,
+      organizations,
     }
-
-    const out: PostDTO[] = []
-    for (const r of rows) {
-      const author = authors.get(r.author_id)
-      if (!author) continue
-      const isRepost = r.kind === "repost" && r.repost_of_id !== null
-      const targetId = isRepost ? r.repost_of_id! : r.id
-      const editedAt =
-        r.updated_at.getTime() > r.created_at.getTime() ? r.updated_at.toISOString() : null
-      const eventBase = r.event_id !== null ? events.get(r.event_id) : undefined
-      const reportBase = r.report_id !== null ? reports.get(r.report_id) : undefined
-      const repostOf = r.repost_of_id !== null ? (refs.get(r.repost_of_id) ?? null) : null
-      const postMentions: UserMentionDTO[] = mentions.get(r.id) ?? []
-      const counts: PostCounts = isRepost
-        ? (refCounts.get(targetId) ?? { likes: 0, reposts: 0, replies: 0, saves: 0 })
-        : {
-            likes: Number(r.like_count),
-            reposts: Number(r.repost_count),
-            replies: Number(r.reply_count),
-            saves: Number(r.save_count),
-          }
-      const dto: PostDTO = {
-        id: r.id,
-        author,
-        organization: organizationRefOf(organizations, r.organization_id),
-        kind: r.kind,
-        body: r.body,
-        createdAt: r.created_at.toISOString(),
-        editedAt,
-        counts,
-        viewer: {
-          liked: flags.liked.has(targetId),
-          reposted: flags.repostedTargets.has(targetId),
-          saved: flags.saved.has(targetId),
-        },
-        media: media.get(r.id) ?? [],
-        mentions: postMentions,
-        event: eventBase ? { ...eventBase, linkedAt: r.created_at.toISOString() } : null,
-        report: reportBase ? { ...reportBase, linkedAt: r.created_at.toISOString() } : null,
-        repostOf,
-        replyToId: r.reply_to_id,
-        replyTo: r.reply_to_id !== null ? (refs.get(r.reply_to_id) ?? null) : null,
-        threadRootId: r.thread_root_id,
-      }
-      out.push(dto)
-    }
-    return out
+    return rows.flatMap((r) => {
+      const dto = assemblePost(r, lookups)
+      return dto === null ? [] : [dto]
+    })
   }
 
   async function latestAnswersByAuthor(
@@ -976,7 +1025,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
 
   async function resolveLiveTarget(tx: Queryable, postId: string): Promise<string> {
     const targetId = await resolveOriginalTarget(tx, postId)
-    if (targetId === null) throw AppError.notFound("Post not found")
+    if (targetId === null) throw AppError.notFound(POST_NOT_FOUND_MESSAGE)
     return targetId
   }
 
@@ -1014,7 +1063,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         SELECT display_name, handle FROM users WHERE id = ${userId} LIMIT 1
       `
       const r = rows[0]
-      return r ? nameFrom(r.display_name, r.handle) : "Someone"
+      return r ? actorDisplayName(r.display_name, r.handle) : FALLBACK_ACTOR_NAME
     },
 
     async canPostAsOrganization(organizationId: string, userId: string): Promise<boolean> {
@@ -1121,7 +1170,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
             WHERE id = ${replyToId} AND deleted_at IS NULL
             RETURNING id
           `
-          if (bumped.length === 0) throw AppError.notFound("Post not found")
+          if (bumped.length === 0) throw AppError.notFound(POST_NOT_FOUND_MESSAGE)
         }
 
         return postId
@@ -1285,12 +1334,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         cursor !== null
           ? sql`AND ${keysetPredicate(sql, sql`p.created_at`, sql`p.id`, cursor)}`
           : sql``
-      const filterClause =
-        args.filter === "events"
-          ? sql`AND p.event_id IS NOT NULL`
-          : args.filter === "fixes"
-            ? sql`AND EXISTS (SELECT 1 FROM reports fr WHERE fr.id = p.report_id AND fr.status = 'resolved')`
-            : sql``
+      const filterClause = feedFilterClause(sql, args.filter)
       const rows = await sql<KeysetPostRow[]>`
         SELECT ${postColumns(sql)}, ${keysetInstant(sql, sql`p.created_at`)} AS cursor_at
         FROM posts p
@@ -1320,12 +1364,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         cursor !== null
           ? sql`AND ${keysetPredicate(sql, sql`p.created_at`, sql`p.id`, cursor)}`
           : sql``
-      const filterClause =
-        args.filter === "events"
-          ? sql`AND p.event_id IS NOT NULL`
-          : args.filter === "fixes"
-            ? sql`AND EXISTS (SELECT 1 FROM reports fr WHERE fr.id = p.report_id AND fr.status = 'resolved')`
-            : sql``
+      const filterClause = feedFilterClause(sql, args.filter)
       const rows = await sql<KeysetPostRow[]>`
         SELECT ${postColumns(sql)}, ${keysetInstant(sql, sql`p.created_at`)} AS cursor_at
         FROM posts p
