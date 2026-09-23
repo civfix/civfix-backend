@@ -14,8 +14,12 @@ export const REPORT_MENTION_BELL_CONCURRENCY = 4
 export type ReportChatMentionSeam = ChatMentionRecordSeam &
   Partial<Pick<GatewayChatMentions, "notifyChatMention">>
 
+export interface ReportChatPersistContext {
+  actingUserId: string
+}
+
 export interface ReportChatSendDeps {
-  persist(input: PersistChatInput): Promise<ChatMessageDTO>
+  persist(input: PersistChatInput, context: ReportChatPersistContext): Promise<ChatMessageDTO>
   broadcast(roomKey: string, message: ChatMessageDTO): Promise<void>
   mentions?: ReportChatMentionSeam | undefined
   notifyMembers?: ((reportId: string, message: ChatMessageDTO) => Promise<void>) | undefined
@@ -27,6 +31,7 @@ export interface ReportChatSendDeps {
 export interface ReportChatSendInput {
   reportId: string
   senderId: string
+  actingUserId: string
   body: string
   mentionedUserIds?: string[] | undefined
 }
@@ -35,12 +40,15 @@ export async function sendReportChatMessage(
   deps: ReportChatSendDeps,
   input: ReportChatSendInput,
 ): Promise<ChatMessageDTO> {
-  const persisted = await deps.persist({
-    cleanupId: input.reportId,
-    roomKind: "report",
-    userId: input.senderId,
-    body: input.body,
-  })
+  const persisted = await deps.persist(
+    {
+      cleanupId: input.reportId,
+      roomKind: "report",
+      userId: input.senderId,
+      body: input.body,
+    },
+    { actingUserId: input.actingUserId },
+  )
 
   const mentions: UserMentionDTO[] = await resolveAndRecordChatMentions(deps.mentions, {
     body: input.body,
@@ -58,7 +66,7 @@ export async function sendReportChatMessage(
   fireMentionBells(deps, input.reportId, input.senderId, mentions, message)
   if (deps.notifyMembers) void deps.notifyMembers(input.reportId, message).catch(() => {})
   if (deps.forwardCityMention) {
-    void deps.forwardCityMention(input.reportId, message, input.senderId).catch(() => {})
+    void deps.forwardCityMention(input.reportId, message, input.actingUserId).catch(() => {})
   }
 
   return message

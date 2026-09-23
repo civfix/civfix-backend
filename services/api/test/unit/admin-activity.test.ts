@@ -37,6 +37,7 @@ describe("describeAuditAction", () => {
   it("gives a human verb for known actions and echoes unknown ones", () => {
     expect(describeAuditAction("gov_claim.approved")).toBe("Approved a gov claim")
     expect(describeAuditAction("user.banned")).toBe("Banned an account")
+    expect(describeAuditAction("report.message_posted")).toBe("Posted in a report chat")
     expect(describeAuditAction("totally.unknown")).toBe("totally.unknown")
   })
 

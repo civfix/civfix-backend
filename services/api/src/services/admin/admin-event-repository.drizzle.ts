@@ -11,6 +11,7 @@ import {
 } from "./admin-event-sql.js"
 import { andAll, type SqlFragment } from "./sql-fragments.js"
 import { publicReportFilter } from "../report-sql.js"
+import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
 import type {
   AdminEventMessageRecord,
   AdminEventRecord,
@@ -220,9 +221,10 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       return sql.begin(async (tx) => {
         const exists = await tx<{ id: string }[]>`SELECT id FROM cleanups WHERE id = ${id} LIMIT 1`
         if (exists.length === 0) return null
-        await tx`
+        const [message] = await tx<{ id: string }[]>`
           INSERT INTO chat_messages (cleanup_id, sender_id, body, kind)
-          VALUES (${id}, ${input.actorId}, ${input.body}, 'text')
+          VALUES (${id}, ${CIVFIX_OFFICIAL_USER_ID}, ${input.body}, 'text')
+          RETURNING id
         `
         await tx`
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
@@ -239,7 +241,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           actorId: input.actorId,
           action: "event.message_posted",
           target: `cleanup:${id}`,
-          meta: { members: notified.length },
+          meta: { members: notified.length, messageId: message!.id },
         })
         return { notified: notified.length }
       })

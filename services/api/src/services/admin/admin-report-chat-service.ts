@@ -7,6 +7,7 @@ import {
 import { chatHistoryPayload, type ChatHistorySource } from "../../routes/chat-route-helpers.js"
 import { sendReportChatMessage, type ReportChatSendDeps } from "../report-chat-send.js"
 import type { AdminReportChatRepository } from "./admin-report-chat-repository.drizzle.js"
+import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
 
 export const ADMIN_REPORT_CHAT_HISTORY_DEFAULT = 30
 export const ADMIN_REPORT_CHAT_HISTORY_MAX = 50
@@ -57,7 +58,8 @@ export function makeAdminReportChatService(
       await assertReportExists(reportId)
       const message = await sendReportChatMessage(deps.send, {
         reportId,
-        senderId: input.actorId,
+        senderId: CIVFIX_OFFICIAL_USER_ID,
+        actingUserId: input.actorId,
         body,
       })
       return { message }
