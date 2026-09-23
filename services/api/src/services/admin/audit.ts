@@ -81,6 +81,7 @@ export type AdminAuditAction =
   | "org.invite_created"
   | "org.invite_revoked"
   | "org.invite_accepted"
+  | "org.invite_declined"
   | "org.list_viewed"
   | "org.members_viewed"
   | "org.events_viewed"
@@ -107,7 +108,6 @@ export type AdminAuditAction =
   | "event.roster_exported"
   | "host.messaging_suspended"
   | "host.messaging_restored"
-  | (string & {})
 
 export const AUDIT_READ_ACTIONS: readonly AdminAuditAction[] = [
   "user.detail_viewed",

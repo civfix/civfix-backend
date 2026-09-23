@@ -14,7 +14,7 @@ import { requireAuth } from "../../auth/context.js"
 import { route } from "../../versioning/route.js"
 import { parse } from "../_validate.js"
 import { writeAudit, type WriteAuditInput } from "../../services/admin/audit.js"
-import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
+import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import {
   makeDrizzleAdminEventPageRepository,
   type AdminEventPageRepository,
@@ -106,23 +106,18 @@ export async function registerAdminEventPageRoutes(
     requireAuth(request)
     const query = parse(AdminEventPageListQuerySchema, request.query)
     const limit = query.limit ?? ADMIN_EVENT_PAGE_DEFAULT_LIMIT
-    const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
     const rows = await repo().list({
       ...(query.q !== undefined ? { q: query.q } : {}),
       ...(query.status !== undefined ? { status: query.status } : {}),
       ...(query.flagged !== undefined ? { flagged: query.flagged } : {}),
-      cursor: cursor === null ? null : { at: cursor.at, id: cursor.id },
+      cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
       limit: limit + 1,
     })
-    const page = rows.slice(0, limit)
-    const last = page.at(-1)
-    const payload: AdminEventPageListResponse = {
-      items: page.map(toDTO),
-      nextCursor:
-        rows.length > limit && last !== undefined
-          ? encodeTimeCursor({ at: last.sortAt, id: last.pageId })
-          : null,
-    }
+    const { items, nextCursor } = paginateKeyset(rows, limit, (row) => ({
+      atText: row.cursorAt,
+      id: row.pageId,
+    }))
+    const payload: AdminEventPageListResponse = { items: items.map(toDTO), nextCursor }
     reply.status(200).send(payload)
   })
 

@@ -24,6 +24,7 @@ import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { eventEndedError, eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
 import { sha256Hex } from "../../auth/crypto.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
+import type { AdminAuditAction } from "../admin/audit.js"
 import { validateAnswers } from "./question-validation.js"
 import {
   REGISTRATION_ROSTER_DEFAULT_LIMIT,
@@ -81,7 +82,7 @@ export interface RegistrationNotifier {
 export interface RegistrationAudit {
   (input: {
     actorId: string | null
-    action: string
+    action: AdminAuditAction
     target: string
     meta?: Record<string, unknown>
   }): Promise<void>

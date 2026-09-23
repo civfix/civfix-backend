@@ -225,6 +225,7 @@ describe("hard-bounce suppression write failure", () => {
       service,
       notifications: {
         createNotifications: () => Promise.resolve(),
+        createNotificationsReportingFailures: () => Promise.resolve({ failed: [] }),
       } as unknown as NotificationService,
       mailer: bounces,
       cache: new InMemoryCacheClient(),
@@ -372,7 +373,7 @@ describe("in-memory broadcast repository matches the SQL semantics", () => {
     const last = first.at(-1)!
     const second = await repo.listDeliveries({
       broadcastId: id,
-      cursor: { createdAt: last.createdAt, id: last.id },
+      cursor: { at: last.createdAt, atText: last.cursorAt, id: last.id },
       limit: 2,
     })
     const seen = [...first, ...second].map((row) => row.id)

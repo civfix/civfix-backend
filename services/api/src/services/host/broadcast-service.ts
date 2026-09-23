@@ -18,7 +18,7 @@ import type { Mailer } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
-import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
+import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 import type {
   BroadcastDraftPatch,
@@ -239,7 +239,21 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       deps.logger?.warn({ err, kind }, "broadcast: cap counter unavailable; refusing (fail closed)")
       throw new BroadcastCapError("counter_unavailable", CAP_COPY.counter_unavailable)
     }
-    if (used > limit) throw new BroadcastCapError(kind, CAP_COPY[kind])
+    if (used > limit) {
+      await giveBack(key, kind)
+      throw new BroadcastCapError(kind, CAP_COPY[kind])
+    }
+  }
+
+  async function giveBack(key: string, kind: CapKind): Promise<void> {
+    try {
+      await deps.counters.decrBy(key, 1)
+    } catch (err) {
+      deps.logger?.warn(
+        { err, kind },
+        "broadcast: a refused send could not give its charge back; it stays spent until the window ends",
+      )
+    }
   }
 
   function linkPolicyText(bodyMd: string, ctaUrl: string | null | undefined): string {
@@ -253,13 +267,19 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
   }
 
   async function reserveSendCounters(cleanupId: string, actorId: string): Promise<void> {
-    await reserve(`bcast:cool:${actorId}:${cleanupId}`, config.cooldownSec, 1, "cooldown")
-    await reserve(
-      `bcast:event:${cleanupId}:${utcDayKey(now())}`,
-      DAY_SECONDS,
-      config.perEventPerDay,
-      "per_event_per_day",
-    )
+    const cooldownKey = `bcast:cool:${actorId}:${cleanupId}`
+    await reserve(cooldownKey, config.cooldownSec, 1, "cooldown")
+    try {
+      await reserve(
+        `bcast:event:${cleanupId}:${utcDayKey(now())}`,
+        DAY_SECONDS,
+        config.perEventPerDay,
+        "per_event_per_day",
+      )
+    } catch (err) {
+      await giveBack(cooldownKey, "cooldown")
+      throw err
+    }
   }
 
   async function reserveSendSlot(cleanupId: string, actorId: string): Promise<void> {
@@ -361,20 +381,17 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
   return {
     async list(cleanupId, query) {
       const limit = query.limit ?? BROADCAST_DEFAULT_LIMIT
-      const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
       const rows = await repo.list({
         cleanupId,
         ...(query.status !== undefined ? { status: query.status } : {}),
-        cursor: cursor === null ? null : { createdAt: cursor.at, id: cursor.id },
+        cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
         limit: limit + 1,
       })
-      const page = rows.slice(0, limit)
-      const last = page.at(-1)
-      const nextCursor =
-        rows.length > limit && last !== undefined
-          ? encodeTimeCursor({ at: last.createdAt, id: last.id })
-          : null
-      return { items: page.map(toBroadcastDTO), nextCursor }
+      const { items, nextCursor } = paginateKeyset(rows, limit, (row) => ({
+        atText: row.cursorAt,
+        id: row.id,
+      }))
+      return { items: items.map(toBroadcastDTO), nextCursor }
     },
 
     async get(cleanupId, broadcastId) {
@@ -576,22 +593,19 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       const record = await repo.findForEvent(cleanupId, query.broadcastId)
       if (record === null) throw notFound()
       const limit = query.limit ?? BROADCAST_DEFAULT_LIMIT
-      const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
       const rows = await repo.listDeliveries({
         broadcastId: query.broadcastId,
         ...(query.status !== undefined ? { status: query.status } : {}),
         ...(query.channel !== undefined ? { channel: query.channel } : {}),
-        cursor: cursor === null ? null : { createdAt: cursor.at, id: cursor.id },
+        cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
         limit: limit + 1,
       })
-      const page = rows.slice(0, limit)
-      const last = page.at(-1)
-      const nextCursor =
-        rows.length > limit && last !== undefined
-          ? encodeTimeCursor({ at: last.createdAt, id: last.id })
-          : null
+      const { items, nextCursor } = paginateKeyset(rows, limit, (row) => ({
+        atText: row.cursorAt,
+        id: row.id,
+      }))
       return {
-        items: page.map((row) => ({
+        items: items.map((row) => ({
           id: row.id,
           channel: row.channel as BroadcastChannel,
           recipientKind: row.recipientKind,

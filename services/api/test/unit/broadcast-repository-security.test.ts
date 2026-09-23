@@ -43,6 +43,22 @@ describe("in-memory host messaging suspension", () => {
     expect(await repo.hostMessagingState(UNKNOWN_USER)).toBeNull()
   })
 
+  it("answers not-found for a soft-deleted user, like an unknown one", async () => {
+    const repo = new InMemoryBroadcastRepository()
+    repo.seedHost(KNOWN_HOST)
+    repo.softDeleteHost(KNOWN_HOST)
+
+    const found = await repo.setHostMessagingSuspended(KNOWN_HOST, true, {
+      action: "host.messaging_suspended",
+      actorId: OPERATOR,
+      target: `user:${KNOWN_HOST}`,
+    })
+
+    expect(found).toBe(false)
+    expect(repo.audits).toHaveLength(0)
+    expect(await repo.hostMessagingState(KNOWN_HOST)).toBeNull()
+  })
+
   it("suspends a known host and records the audit row", async () => {
     const repo = new InMemoryBroadcastRepository()
     repo.seedHost(KNOWN_HOST)
@@ -56,5 +72,27 @@ describe("in-memory host messaging suspension", () => {
     expect(found).toBe(true)
     expect(repo.audits.map((a) => a.action)).toEqual(["host.messaging_suspended"])
     expect((await repo.hostMessagingState(KNOWN_HOST))?.suspended).toBe(true)
+  })
+})
+
+describe("host messaging suspension SQL", () => {
+  it("only upserts the flag for a user that is not soft-deleted", async () => {
+    const fake = makeFakeSql()
+    const repo = makeDrizzleBroadcastRepository(fake.sql as unknown as Sql)
+
+    const found = await repo.setHostMessagingSuspended(
+      "00000000-0000-0000-0000-0000000000aa",
+      true,
+      {
+        action: "host.messaging_suspended",
+        actorId: "00000000-0000-0000-0000-0000000000cc",
+        target: "user:00000000-0000-0000-0000-0000000000aa",
+      },
+    )
+
+    expect(found).toBe(false)
+    const upsert = fake.statements.find((s) => /INSERT INTO user_moderation/.test(s.sql))
+    expect(upsert?.sql).toMatch(/FROM users u WHERE u\.id = \? AND u\.deleted_at IS NULL/)
+    expect(fake.statements).toEqual([upsert])
   })
 })

@@ -126,12 +126,12 @@ describe("announcement listing SQL", () => {
 
     await makeDrizzleBroadcastRepository(fake.sql as unknown as Sql).listAnnouncements({
       cleanupId: EVENT,
-      cursor: { createdAt: at, id: ANNOUNCEMENT },
+      cursor: { at, atText: at.toISOString(), id: ANNOUNCEMENT },
       limit: 21,
     })
 
     const statement = fake.statements.at(-1)!
-    expect(statement.sql).toMatch(/\(created_at, id\) < \(\?, \?\)/)
+    expect(statement.sql).toMatch(/\(created_at, id\) < \(\?::timestamptz, \?::uuid\)/)
     expect(statement.values).toContain(ANNOUNCEMENT)
   })
 

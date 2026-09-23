@@ -7,6 +7,7 @@ import type {
   DeliveryStatus,
   DeliverySuppressionReason,
 } from "@civfix/shared"
+import type { KeysetCursor } from "../../db/cursor-helpers.js"
 
 export type BroadcastRecipientKind = "member" | "guest"
 
@@ -169,14 +170,13 @@ export interface AdminHostRow {
   suppressedCount: number
   eventsMessaged: number
   lastBroadcastAt: Date | null
-  sortAt: Date
 }
 
 export interface AdminHostListParams {
   q?: string
   suspended?: boolean
   windowStart: Date
-  cursor: { at: Date; id: string } | null
+  cursor: KeysetCursor | null
   limit: number
 }
 

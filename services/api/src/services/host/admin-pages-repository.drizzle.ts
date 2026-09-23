@@ -1,5 +1,6 @@
 import type { EventPageStatus, EventVisibility } from "@civfix/shared"
 import type { Queryable } from "../../db/client.js"
+import { keysetInstant, keysetPredicate, type KeysetCursor } from "../../db/cursor-helpers.js"
 import { likeContains } from "../admin/like.js"
 
 export interface AdminEventPageRow {
@@ -21,7 +22,8 @@ export interface AdminEventPageRow {
   flaggedByName: string | null
   flaggedByHandle: string | null
   flaggedByJoined: Date | null
-  sortAt: Date
+  /** COALESCE(published_at, updated_at) at microsecond precision, the list's keyset instant. */
+  cursorAt: string
   pageId: string
 }
 
@@ -29,7 +31,7 @@ export interface AdminEventPageListParams {
   q?: string
   status?: EventPageStatus
   flagged?: boolean
-  cursor: { at: Date; id: string } | null
+  cursor: KeysetCursor | null
   limit: number
 }
 
@@ -63,7 +65,7 @@ interface PageRowSelect {
   flagged_by_name: string | null
   flagged_by_handle: string | null
   flagged_by_joined: Date | null
-  sort_at: Date
+  cursor_at: string
 }
 
 function toRow(row: PageRowSelect): AdminEventPageRow {
@@ -87,11 +89,12 @@ function toRow(row: PageRowSelect): AdminEventPageRow {
     flaggedByName: row.flagged_by_name,
     flaggedByHandle: row.flagged_by_handle,
     flaggedByJoined: row.flagged_by_joined,
-    sortAt: row.sort_at,
+    cursorAt: row.cursor_at,
   }
 }
 
 export function makeDrizzleAdminEventPageRepository(sql: Queryable): AdminEventPageRepository {
+  const sortAt = sql`COALESCE(p.published_at, p.updated_at)`
   const selection = sql`
     p.id AS page_id, p.cleanup_id, c.page_slug AS slug, c.title, p.status, c.visibility,
     u.id AS organizer_id, u.display_name AS organizer_name, u.handle AS organizer_handle,
@@ -99,7 +102,7 @@ export function makeDrizzleAdminEventPageRepository(sql: Queryable): AdminEventP
     o.name AS org_name, p.view_count, p.published_at, p.flagged_at, p.flag_reason,
     f.id AS flagged_by_id, f.display_name AS flagged_by_name, f.handle AS flagged_by_handle,
     f.created_at AS flagged_by_joined,
-    COALESCE(p.published_at, p.updated_at) AS sort_at
+    ${keysetInstant(sql, sortAt)} AS cursor_at
   `
   const joins = sql`
     FROM cleanup_pages p
@@ -133,7 +136,7 @@ export function makeDrizzleAdminEventPageRepository(sql: Queryable): AdminEventP
           : sql``
       const cursorFilter =
         params.cursor !== null
-          ? sql`AND (COALESCE(p.published_at, p.updated_at), p.id) < (${params.cursor.at}, ${params.cursor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sortAt, sql`p.id`, params.cursor)}`
           : sql``
       const rows = await sql<PageRowSelect[]>`
         SELECT ${selection} ${joins}
@@ -142,7 +145,7 @@ export function makeDrizzleAdminEventPageRepository(sql: Queryable): AdminEventP
            ${flaggedFilter}
            ${search}
            ${cursorFilter}
-         ORDER BY COALESCE(p.published_at, p.updated_at) DESC, p.id DESC
+         ORDER BY ${sortAt} DESC, p.id DESC
          LIMIT ${params.limit}`
       return rows.map(toRow)
     },

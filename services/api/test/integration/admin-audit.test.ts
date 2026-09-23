@@ -11,7 +11,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleAuditRepository } from "../../src/services/admin/audit-repository.drizzle.js"
-import { writeAudit } from "../../src/services/admin/audit.js"
+import { writeAudit, type AdminAuditAction } from "../../src/services/admin/audit.js"
 import type { AuditRepository } from "../../src/services/admin/audit-service.js"
 
 const pg = await withPg()
@@ -85,8 +85,8 @@ describe.skipIf(!pg)("admin audit repository (integration: real schema)", () => 
   it("filters by actor name OR exact actor id", async () => {
     const alice = await insertUser(h, "Alice")
     const bob = await insertUser(h, "Bob")
-    await writeAudit(h.sql, { actorId: alice, action: "x", target: "t1" })
-    await writeAudit(h.sql, { actorId: bob, action: "y", target: "t2" })
+    await writeAudit(h.sql, { actorId: alice, action: "report.flagged", target: "t1" })
+    await writeAudit(h.sql, { actorId: bob, action: "event.flagged", target: "t2" })
 
     const byName = await repo.list({
       actor: "alice",
@@ -95,7 +95,7 @@ describe.skipIf(!pg)("admin audit repository (integration: real schema)", () => 
       cursor: null,
       limit: 25,
     })
-    expect(byName.records.map((r) => r.action)).toEqual(["x"])
+    expect(byName.records.map((r) => r.action)).toEqual(["report.flagged"])
 
     const byId = await repo.list({
       actor: bob,
@@ -104,12 +104,12 @@ describe.skipIf(!pg)("admin audit repository (integration: real schema)", () => 
       cursor: null,
       limit: 25,
     })
-    expect(byId.records.map((r) => r.action)).toEqual(["y"])
+    expect(byId.records.map((r) => r.action)).toEqual(["event.flagged"])
   })
 
   it("a non-uuid actor filter does not error (matches by name only)", async () => {
     const alice = await insertUser(h, "Alice")
-    await writeAudit(h.sql, { actorId: alice, action: "x", target: "t1" })
+    await writeAudit(h.sql, { actorId: alice, action: "report.flagged", target: "t1" })
     const page = await repo.list({
       actor: "not-a-uuid",
       action: null,
@@ -122,8 +122,15 @@ describe.skipIf(!pg)("admin audit repository (integration: real schema)", () => 
 
   it("paginates newest-first with the keyset cursor (no overlap)", async () => {
     const actor = await insertUser(h, "Op")
-    for (let i = 0; i < 5; i++) {
-      await writeAudit(h.sql, { actorId: actor, action: `a${i}`, target: `t${i}` })
+    const actions: AdminAuditAction[] = [
+      "report.flagged",
+      "report.unflagged",
+      "event.flagged",
+      "event.unflagged",
+      "user.flagged",
+    ]
+    for (const [i, action] of actions.entries()) {
+      await writeAudit(h.sql, { actorId: actor, action, target: `t${i}` })
     }
     const first = await repo.list({
       actor: null,
