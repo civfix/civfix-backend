@@ -30,7 +30,8 @@ import type {
   ReportVisibilityTimelineKind,
 } from "./report-service.types.js"
 import { servedKeyExpr, servableMediaFilter } from "./media-served-key.js"
-import { claimableAsReportMedia, lockUploadsForClaim } from "./media-bindings.js"
+import { claimableAsReportMedia } from "./media-bindings.js"
+import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
 import { uploadersOf } from "./media-uploader.js"
 import {
   reportColumns,
@@ -88,7 +89,7 @@ async function claimReportMedia(
   tx: postgres.TransactionSql,
   args: CreateReportTxArgs,
 ): Promise<void> {
-  await lockUploadsForClaim(tx, args.mediaUploadIds)
+  await lockUploadsForClaimIn(tx, args.mediaUploadIds)
   const claimed = await tx<{ upload_id: string }[]>`
               UPDATE media_assets
               SET report_id = ${args.reportId}
@@ -110,6 +111,19 @@ async function claimReportMedia(
       mediaUploadIds: "One or more media uploads are unavailable.",
     })
   }
+}
+
+export async function isReportOwnedBy(
+  sql: Queryable,
+  reportId: string,
+  userId: string,
+): Promise<boolean> {
+  const rows = await sql<{ reporter_user_id: string | null }[]>`
+    SELECT reporter_user_id FROM reports
+    WHERE id = ${reportId} AND deleted_at IS NULL
+    LIMIT 1
+  `
+  return rows[0]?.reporter_user_id === userId
 }
 
 export function makeDrizzleReportRepository(sql: Sql): ReportRepository {

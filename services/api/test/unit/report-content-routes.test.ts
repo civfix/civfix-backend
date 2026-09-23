@@ -156,7 +156,7 @@ describe("POST /content-reports", () => {
   })
 
   it("files a report-subject content report (owner check degrades to false with no DB)", async () => {
-    // With no DATABASE_URL (all-fakes harness), reportOwnedBy() short-circuits to false, so a `report`
+    // With no DATABASE_URL (all-fakes harness), the owner check short-circuits to false, so a `report`
     // subject is filed as an ordinary user_report (flag "User report"), never crashing on a DB query.
     const { app, mailer, repo } = await harness()
     const { token } = await signIn(app, mailer, "reporter@example.com")

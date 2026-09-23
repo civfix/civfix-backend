@@ -15,19 +15,6 @@ import type {
   ReportTimelineView,
 } from "./report-service.types.js"
 
-export async function reportOwnedBy(
-  sql: Queryable,
-  reportId: string,
-  userId: string,
-): Promise<boolean> {
-  const rows = await sql<{ reporter_user_id: string | null }[]>`
-    SELECT reporter_user_id FROM reports
-    WHERE id = ${reportId} AND deleted_at IS NULL
-    LIMIT 1
-  `
-  return rows[0]?.reporter_user_id === userId
-}
-
 export interface ReportRowSelect {
   id: string
   reporter_user_id: string | null
