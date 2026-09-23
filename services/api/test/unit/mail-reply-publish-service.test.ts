@@ -130,6 +130,27 @@ describe("makeMailReplyPublishService", () => {
     expect(h.emitted).toHaveLength(0)
   })
 
+  it("keeps the thread in review until its last withheld reply is published", async () => {
+    const h = harness()
+    const first = h.withheld({ reportId: REPORT_ID })
+    const second = h.repo.seedMessage({
+      threadId: first.threadId,
+      direction: "in",
+      fromAddr: "crew@pw.lacity.gov",
+      body: "Done.",
+      unaffiliated: true,
+      authVerdict: "fail",
+    })
+    const status = async () => (await h.repo.getThreadRecord(first.threadId))?.status
+
+    expect(await h.service.publish(first)).toEqual({ publication: "published" })
+    expect(await status()).toBe("needs_action")
+    expect(await h.service.publish({ ...first, messageId: second.id })).toEqual({
+      publication: "published",
+    })
+    expect(await status()).toBe("replied")
+  })
+
   it("adds a withheld event reply to the event timeline", async () => {
     const h = harness()
     const input = h.withheld({ cleanupId: "cleanup-1" })

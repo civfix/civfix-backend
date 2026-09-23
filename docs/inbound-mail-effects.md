@@ -1,7 +1,7 @@
 # Mail effects and the outbound send triad
 
 **Audience:** internal (engineering). Not served publicly.
-**Last updated:** 2026-09-23 (withheld replies flag their thread for review and an operator can publish one; a reply stripped to nothing is flagged too).
+**Last updated:** 2026-09-23 (a thread stays in review while it holds a withheld reply, whatever reply settles it; the stripped-reply audit row is written once).
 
 An inbound message that correlates to a mail thread can drive **public** effects: a report status
 transition, a public `report_timeline` row, a report-chat system message, and a push to the reporter.
@@ -59,6 +59,12 @@ A delivered outbound message clears a send failure's `needs_action` back to `sen
 thread still holds a withheld reply (`hasWithheldReply`): a resend, a follow-up or a resident's @city
 forward would otherwise drop the reply out of review. A thread with no report or event has nothing
 public to publish to, so an unaffiliated reply there is stored without the flag.
+
+A reply whose effects run, verified or published, settles the thread last (stage 4,
+`settleRepliedThread`): `needs_action` while the thread still holds a withheld reply, otherwise
+`replied`. The status is read from the thread's messages under a lock on the thread row, in the same
+transaction that records the stage, so a later verified reply, or publishing one of two withheld
+replies, leaves the thread in review.
 
 An operator publishes a withheld reply with `publishMailReply`
 (`POST /admin/mail/:id/messages/:messageId/publish`: operator only, CSRF, 20 a minute per operator).
@@ -135,7 +141,8 @@ If the result is empty (a reply that was nothing but quoted history), stage 2 fa
 behavior: the note only, with `body: null`. When the stored body had text and the strip removed all of
 it, for instance a one-line reply that mentions our reply address, the thread ends at `needs_action`
 instead of `replied` and a `mail.reply_published_without_text` audit row with no actor records it, so an
-operator can see that the city's words did not reach the chat and relay them. Like a send failure's, this
+operator can see that the city's words did not reach the chat and relay them. The row is written in the
+stage 4 transaction, so a re-drive after a crash never writes a second one. Like a send failure's, this
 flag clears on the thread's next delivered outbound message.
 
 The chat emitter is injectable (`InboundEffectDeps.chatEmitter`, plumbed through
@@ -153,7 +160,7 @@ The columns on `mail_messages` (migration `0100`) are a **lease**, not a flag:
 |---|---|
 | `effects_claimed_at` | A runner holds the message. **Reclaimable**: the sweep re-drives any claim older than `EFFECTS_LEASE_MS` (10 min). A process death between claim and completion — a deploy restart, OOM, the drain watchdog — must not strand the row, which is the exact failure the re-drive exists to prevent. |
 | `effects_applied_at` | Set **only** on completion. `IS NULL` is the "still owed" set the partial index serves; the lease comparison stays in the query because `now()` is not `IMMUTABLE`. |
-| `effects_stage` | How far the ordered pipeline got: `0` none, `1` timeline, `2` chat, `3` reporter notified. A re-drive resumes from here. |
+| `effects_stage` | How far the ordered pipeline got: `0` none, `1` timeline, `2` chat, `3` reporter notified, `4` thread settled. An event reply goes from `1` to `4`. A re-drive resumes from here. |
 
 `applyInboundEffects` (`services/api/src/services/admin/inbound-thread-correlation.ts`) claims, runs the
 stages it still owes, then calls `markMessageEffectsApplied`. On a throw it calls

@@ -37,6 +37,7 @@ import {
   type PendingEffectsQuery,
   type RecordEventInput,
   type RecordSendFailureInput,
+  type SettleRepliedThreadInput,
   type ThreadInit,
 } from "./mail-repository.js"
 import type {
@@ -89,6 +90,19 @@ function messageColumns(sql: Queryable): SqlFragment {
     kind, attachments, message_id, in_reply_to, unaffiliated, effects_claimed_at,
     effects_applied_at, effects_stage, auth_verdict, created_at
   `
+}
+
+function withheldReplyExpr(sql: Queryable, threadId: string): SqlFragment {
+  return sql`EXISTS (
+    SELECT 1
+    FROM mail_messages m
+    JOIN mail_threads t ON t.id = m.thread_id
+    WHERE m.thread_id = ${threadId}
+      AND m.direction = 'in'
+      AND m.unaffiliated = true
+      AND m.effects_applied_at IS NULL
+      AND (t.report_id IS NOT NULL OR t.cleanup_id IS NOT NULL)
+  )`
 }
 
 function threadColumns(sql: Queryable, alias?: string): SqlFragment {
@@ -595,6 +609,36 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       `
     },
 
+    async settleRepliedThread(input: SettleRepliedThreadInput): Promise<void> {
+      await sql.begin(async (tx) => {
+        const advanced = await tx<{ id: string }[]>`
+          UPDATE mail_messages
+          SET effects_stage = ${input.stage}
+          WHERE id = ${input.messageId} AND effects_stage < ${input.stage}
+          RETURNING id
+        `
+        if (advanced.length === 0) return
+        await tx`SELECT id FROM mail_threads WHERE id = ${input.threadId} FOR UPDATE`
+        const settled = await tx<{ id: string }[]>`
+          UPDATE mail_threads
+          SET status = CASE
+            WHEN ${input.flag !== undefined} OR ${withheldReplyExpr(tx, input.threadId)}
+              THEN 'needs_action'
+            ELSE 'replied'
+          END
+          WHERE id = ${input.threadId}
+          RETURNING id
+        `
+        if (settled.length === 0 || input.flag === undefined) return
+        await writeAudit(tx, {
+          actorId: input.flag.actorId,
+          action: input.flag.action,
+          target: input.flag.target,
+          meta: input.flag.meta ?? null,
+        })
+      })
+    },
+
     async findMessagesPendingEffects(input: PendingEffectsQuery): Promise<PendingEffects[]> {
       const rows = await sql<PendingEffectsRowSelect[]>`
         SELECT m.id, m.thread_id, m.direction, m.from_addr, m.to_addr, m.subject,
@@ -637,18 +681,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     },
 
     async hasWithheldReply(threadId: string): Promise<boolean> {
-      const rows = await sql<{ ok: boolean }[]>`
-        SELECT EXISTS (
-          SELECT 1
-          FROM mail_messages m
-          JOIN mail_threads t ON t.id = m.thread_id
-          WHERE m.thread_id = ${threadId}
-            AND m.direction = 'in'
-            AND m.unaffiliated = true
-            AND m.effects_applied_at IS NULL
-            AND (t.report_id IS NOT NULL OR t.cleanup_id IS NOT NULL)
-        ) AS ok
-      `
+      const rows = await sql<{ ok: boolean }[]>`SELECT ${withheldReplyExpr(sql, threadId)} AS ok`
       return rows[0]?.ok ?? false
     },
 
