@@ -26,7 +26,7 @@ import type {
   VolunteerHoursSource,
 } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
-import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
+import { parseKeysetCursor, type KeysetCursor } from "../db/cursor-helpers.js"
 import { MIN_EVENT_DURATION_MS, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
 import type { AffiliationLoader } from "./affiliation.js"
@@ -160,7 +160,7 @@ export const ITEMISED_SOURCES: readonly VolunteerHoursSource[] = ["event", "manu
 
 export interface ListEntriesArgs {
   userId: string
-  cursor: TimeCursor | null
+  cursor: KeysetCursor | null
   limit: number
   sources?: VolunteerHoursSource[]
 }
@@ -504,7 +504,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
     ): Promise<MyVolunteerHoursEntriesResponse> {
       const limit = clampEntriesLimit(query.limit)
       const [page, totalHours] = await Promise.all([
-        deps.repo.listEntries({ userId, cursor: parseTimeCursor(query.cursor), limit }),
+        deps.repo.listEntries({ userId, cursor: parseKeysetCursor(query.cursor), limit }),
         deps.repo.totalHoursFor(userId),
       ])
       return {
@@ -540,7 +540,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         visibility.items
           ? deps.repo.listEntries({
               userId,
-              cursor: parseTimeCursor(query.cursor),
+              cursor: parseKeysetCursor(query.cursor),
               limit,
               sources: ["event"],
             })

@@ -1,10 +1,15 @@
 import type { Queryable, Sql } from "../../db/client.js"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import {
+  clampLimit,
+  decodeCursor,
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+} from "./pagination.js"
 import { PREVIEW_SOURCE_CHARS } from "./mail-preview.js"
 import { writeAudit } from "./audit.js"
 import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import {
-  anchorOf,
   mintThreadToken,
   toMessageRecord,
   toOutreachRecord,
@@ -335,10 +340,9 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     async listThreads(input: ListThreadsInput): Promise<ListThreadsResult> {
       const limit = clampLimit(input.limit)
       const anchor = decodeCursor(input.cursor, true)
+      const activityAt = sql`COALESCE(t.last_message_at, t.created_at)`
       const cursorFilter =
-        anchor !== null
-          ? sql`AND (COALESCE(t.last_message_at, t.created_at), t.id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
-          : sql``
+        anchor !== null ? sql`AND ${keysetPredicate(sql, activityAt, sql`t.id`, anchor)}` : sql``
       const geoidFilter =
         input.jurisdictionGeoid !== undefined
           ? sql`AND t.jurisdiction_geoid = ${input.jurisdictionGeoid}`
@@ -358,11 +362,12 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
           lm_from_addr: string | null
           lm_to_addr: string | null
           lm_body: string | null
+          cursor_at: string
         })[]
       >`
         SELECT ${threadColumns(sql, "t")},
                lm.direction AS lm_direction, lm.from_addr AS lm_from_addr, lm.to_addr AS lm_to_addr,
-               lm.body AS lm_body
+               lm.body AS lm_body, ${keysetInstant(sql, activityAt)} AS cursor_at
         FROM mail_threads t
         LEFT JOIN LATERAL (
           -- Only a preview's worth of the latest body: a municipal reply can be tens of KB and this is a
@@ -382,8 +387,10 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
         ORDER BY COALESCE(t.last_message_at, t.created_at) DESC, t.id DESC
         LIMIT ${limit + 1}
       `
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
+      const { items: page, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       const items = page.map((r) => {
         const thread = toThreadRecord(r)
         const latest: MailMessageRecord | null =
@@ -410,8 +417,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
             : null
         return toThreadListItem(thread, latest)
       })
-      const last = page[page.length - 1]
-      const nextCursor = hasMore && last ? encodeCursor(anchorOf(toThreadRecord(last))) : null
       return { items, nextCursor }
     },
 

@@ -4,7 +4,7 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.drizzle.js"
 import { makeVolunteerHoursService } from "../../src/services/volunteer-hours-service.js"
-import { parseTimeCursor } from "../../src/db/cursor-helpers.js"
+import { parseKeysetCursor } from "../../src/db/cursor-helpers.js"
 import { CALIFORNIA, LA_CITY, LA_COUNTY } from "../../src/db/seed-fixtures.js"
 
 const GEOID = LA_CITY.geoid
@@ -417,7 +417,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(first.items.map((e) => e.id)).toEqual([ids[3], ids[2]])
     expect(first.nextCursor).not.toBeNull()
 
-    const parsed = parseTimeCursor(first.nextCursor)
+    const parsed = parseKeysetCursor(first.nextCursor)
     const second = await repo.listEntries({ userId: owner, cursor: parsed, limit: 2 })
     expect(second.items.map((e) => e.id)).toEqual([ids[1], ids[0]])
     expect(second.nextCursor).toBeNull()

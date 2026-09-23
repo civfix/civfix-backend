@@ -20,8 +20,11 @@ import type {
 import {
   encodeNameCursor,
   encodeTimeCursor,
+  keysetInstant,
+  keysetPredicate,
   pageWith,
-  paginate,
+  paginateKeyset,
+  parseKeysetCursor,
   parseNameCursor,
   parseTimeCursor,
 } from "../db/cursor-helpers.js"
@@ -231,14 +234,14 @@ function profileEventRows(
   `
 }
 
-type ConnectionRow = PersonRowSelectWithFollow & { edge_created_at: Date }
+type ConnectionRow = PersonRowSelectWithFollow & { cursor_at: string | null }
 
 function pageConnections(
   rows: ConnectionRow[],
   limit: number,
 ): { items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null } {
-  const { items, nextCursor } = paginate(rows, limit, (last) => ({
-    at: last.edge_created_at,
+  const { items, nextCursor } = paginateKeyset(rows, limit, (last) => ({
+    atText: last.cursor_at,
     id: last.id,
   }))
   const sorted = [...items].sort((a, b) => {
@@ -256,10 +259,10 @@ async function connectionsPage(
   args: { viewerId: string | null; cursor: string | null; limit: number },
   joinPredicate: ReturnType<Sql>,
 ): Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }> {
-  const cursor = parseTimeCursor(args.cursor)
+  const cursor = parseKeysetCursor(args.cursor)
   const viewerId = args.viewerId
   const cursorFilter =
-    cursor !== null ? sql`AND (f.created_at, u.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
+    cursor !== null ? sql`AND ${keysetPredicate(sql, sql`f.created_at`, sql`u.id`, cursor)}` : sql``
   const followingExpr =
     viewerId !== null
       ? sql`EXISTS (SELECT 1 FROM follows_people ff WHERE ff.follower_id = ${viewerId} AND ff.followee_id = u.id)`
@@ -284,14 +287,15 @@ async function connectionsPage(
       ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
       u.avatar_url,
       u.show_volunteer_hours,
-      u.edge_created_at,
+      u.cursor_at,
       ${followingExpr} AS is_following
     FROM (
       SELECT
         u.id, u.display_name, u.handle, u.bio, u.avatar_media_id, u.avatar_url,
         u.show_volunteer_hours,
         u.follower_count, u.following_count,
-        f.created_at AS edge_created_at
+        f.created_at AS edge_created_at,
+        ${keysetInstant(sql, sql`f.created_at`)} AS cursor_at
       FROM users u
       JOIN follows_people f ON ${joinPredicate}
       WHERE u.deleted_at IS NULL

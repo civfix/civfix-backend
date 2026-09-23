@@ -1,5 +1,10 @@
 import type { Sql } from "../db/client.js"
-import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../db/cursor-helpers.js"
 import type {
   NewNotificationArgs,
   NotificationPrefsPatch,
@@ -112,11 +117,12 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       cursor: string | null,
       limit: number,
     ): Promise<{ records: NotificationRecord[]; nextCursor: string | null }> {
-      const parsed = parseTimeCursor(cursor)
+      const parsed = parseKeysetCursor(cursor)
       const cursorFilter =
-        parsed !== null ? sql`AND (created_at, id) < (${parsed.at}, ${parsed.id}::uuid)` : sql``
-      const rows = await sql<NotificationRowSelect[]>`
-        SELECT id, user_id, type, title, body, link, read_at, created_at
+        parsed !== null ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, parsed)}` : sql``
+      const rows = await sql<(NotificationRowSelect & { cursor_at: string | null })[]>`
+        SELECT id, user_id, type, title, body, link, read_at, created_at,
+               ${keysetInstant(sql, sql`created_at`)} AS cursor_at
         FROM notifications
         WHERE user_id = ${userId}
           AND type <> ALL(${[...FEED_HIDDEN_NOTIFICATION_TYPES]}::text[])
@@ -124,7 +130,10 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         ORDER BY created_at DESC, id DESC
         LIMIT ${limit + 1}
       `
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       return { records: items.map(toRecord), nextCursor }
     },
 

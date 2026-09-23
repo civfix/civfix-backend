@@ -12,7 +12,12 @@ import type {
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../db/client.js"
 import type { POST_KIND_VALUES, REPORT_VISIBILITY_VALUES } from "../db/schema/types.js"
-import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../db/cursor-helpers.js"
 import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
 import { claimableAsAttachment } from "./media-bindings.js"
@@ -201,6 +206,8 @@ interface PostRowSelect {
   created_at: Date
   updated_at: Date
 }
+
+type KeysetPostRow = PostRowSelect & { cursor_at: string }
 
 interface AuthorRow {
   id: string
@@ -947,9 +954,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     `
   }
 
-  async function pageOf(rows: PostRowSelect[], limit: number, viewerId: string): Promise<FeedPage> {
-    const { items: pageRows, nextCursor } = paginate(rows, limit, (r) => ({
-      at: r.created_at,
+  async function pageOf(rows: KeysetPostRow[], limit: number, viewerId: string): Promise<FeedPage> {
+    const { items: pageRows, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+      atText: r.cursor_at,
       id: r.id,
     }))
     return { items: await hydrate(pageRows, viewerId), nextCursor }
@@ -1267,17 +1274,19 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     },
 
     async homeFeedChronological(args: HomeFeedArgs): Promise<FeedPage> {
-      const cursor = parseTimeCursor(args.cursor)
+      const cursor = parseKeysetCursor(args.cursor)
       const cursorFilter =
-        cursor !== null ? sql`AND (p.created_at, p.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
+        cursor !== null
+          ? sql`AND ${keysetPredicate(sql, sql`p.created_at`, sql`p.id`, cursor)}`
+          : sql``
       const filterClause =
         args.filter === "events"
           ? sql`AND p.event_id IS NOT NULL`
           : args.filter === "fixes"
             ? sql`AND EXISTS (SELECT 1 FROM reports fr WHERE fr.id = p.report_id AND fr.status = 'resolved')`
             : sql``
-      const rows = await sql<PostRowSelect[]>`
-        SELECT ${postColumns(sql)}
+      const rows = await sql<KeysetPostRow[]>`
+        SELECT ${postColumns(sql)}, ${keysetInstant(sql, sql`p.created_at`)} AS cursor_at
         FROM posts p
         WHERE p.deleted_at IS NULL
           AND p.reply_to_id IS NULL
@@ -1300,17 +1309,19 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     },
 
     async publicFeed(args: PublicFeedArgs): Promise<FeedPage> {
-      const cursor = parseTimeCursor(args.cursor)
+      const cursor = parseKeysetCursor(args.cursor)
       const cursorFilter =
-        cursor !== null ? sql`AND (p.created_at, p.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
+        cursor !== null
+          ? sql`AND ${keysetPredicate(sql, sql`p.created_at`, sql`p.id`, cursor)}`
+          : sql``
       const filterClause =
         args.filter === "events"
           ? sql`AND p.event_id IS NOT NULL`
           : args.filter === "fixes"
             ? sql`AND EXISTS (SELECT 1 FROM reports fr WHERE fr.id = p.report_id AND fr.status = 'resolved')`
             : sql``
-      const rows = await sql<PostRowSelect[]>`
-        SELECT ${postColumns(sql)}
+      const rows = await sql<KeysetPostRow[]>`
+        SELECT ${postColumns(sql)}, ${keysetInstant(sql, sql`p.created_at`)} AS cursor_at
         FROM posts p
         WHERE p.deleted_at IS NULL
           AND p.reply_to_id IS NULL
@@ -1324,11 +1335,13 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     },
 
     async listReplies(postId: string, args: ReplyListArgs): Promise<RepliesPage> {
-      const cursor = parseTimeCursor(args.cursor, { direction: "asc" })
+      const cursor = parseKeysetCursor(args.cursor, { direction: "asc" })
       const cursorFilter =
-        cursor !== null ? sql`AND (p.created_at, p.id) > (${cursor.at}, ${cursor.id}::uuid)` : sql``
-      const rows = await sql<PostRowSelect[]>`
-        SELECT ${postColumns(sql)}
+        cursor !== null
+          ? sql`AND ${keysetPredicate(sql, sql`p.created_at`, sql`p.id`, cursor, { direction: "asc" })}`
+          : sql``
+      const rows = await sql<KeysetPostRow[]>`
+        SELECT ${postColumns(sql)}, ${keysetInstant(sql, sql`p.created_at`)} AS cursor_at
         FROM posts p
         WHERE p.reply_to_id = ${postId} AND p.deleted_at IS NULL
           AND p.visibility = 'public'
@@ -1341,8 +1354,8 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         ORDER BY p.created_at ASC, p.id ASC
         LIMIT ${args.limit + 1}
       `
-      const { items: pageRows, nextCursor } = paginate(rows, args.limit, (r) => ({
-        at: r.created_at,
+      const { items: pageRows, nextCursor } = paginateKeyset(rows, args.limit, (r) => ({
+        atText: r.cursor_at,
         id: r.id,
       }))
       const answerRows = await latestAnswersByAuthor(
@@ -1359,11 +1372,13 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     },
 
     async listUserPosts(authorId: string, args: PostListArgs): Promise<FeedPage> {
-      const cursor = parseTimeCursor(args.cursor)
+      const cursor = parseKeysetCursor(args.cursor)
       const cursorFilter =
-        cursor !== null ? sql`AND (p.created_at, p.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
-      const rows = await sql<PostRowSelect[]>`
-        SELECT ${postColumns(sql)}
+        cursor !== null
+          ? sql`AND ${keysetPredicate(sql, sql`p.created_at`, sql`p.id`, cursor)}`
+          : sql``
+      const rows = await sql<KeysetPostRow[]>`
+        SELECT ${postColumns(sql)}, ${keysetInstant(sql, sql`p.created_at`)} AS cursor_at
         FROM posts p
         WHERE p.author_id = ${authorId} AND p.deleted_at IS NULL AND p.reply_to_id IS NULL
           AND p.visibility = 'public'
@@ -1375,13 +1390,13 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     },
 
     async listSaves(args: PostListArgs): Promise<FeedPage> {
-      const cursor = parseTimeCursor(args.cursor)
+      const cursor = parseKeysetCursor(args.cursor)
       const cursorFilter =
         cursor !== null
-          ? sql`AND (ps.created_at, ps.post_id) < (${cursor.at}, ${cursor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`ps.created_at`, sql`ps.post_id`, cursor)}`
           : sql``
-      const rows = await sql<(PostRowSelect & { saved_at: Date })[]>`
-        SELECT ${postColumns(sql)}, ps.created_at AS saved_at
+      const rows = await sql<KeysetPostRow[]>`
+        SELECT ${postColumns(sql)}, ${keysetInstant(sql, sql`ps.created_at`)} AS cursor_at
         FROM post_saves ps
         JOIN posts p ON p.id = ps.post_id
         WHERE ps.user_id = ${args.viewerId} AND p.deleted_at IS NULL
@@ -1395,8 +1410,8 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         ORDER BY ps.created_at DESC, ps.post_id DESC
         LIMIT ${args.limit + 1}
       `
-      const { items: pageRows, nextCursor } = paginate(rows, args.limit, (r) => ({
-        at: r.saved_at,
+      const { items: pageRows, nextCursor } = paginateKeyset(rows, args.limit, (r) => ({
+        atText: r.cursor_at,
         id: r.id,
       }))
       return { items: await hydrate(pageRows, args.viewerId), nextCursor }

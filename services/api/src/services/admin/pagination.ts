@@ -7,11 +7,15 @@
  * contract; these are the server-side encode/decode + limit clamp around them.
  */
 
-import type { Queryable } from "../../db/client.js"
-import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
-import type { SqlFragment } from "./sql-fragments.js"
+import { encodeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
 
-export { paginate } from "../../db/cursor-helpers.js"
+export {
+  encodeKeysetCursor,
+  keysetInstant,
+  keysetPredicate,
+  paginate,
+  paginateKeyset,
+} from "../../db/cursor-helpers.js"
 
 /** Default page size when the request omits `limit`. */
 export const ADMIN_DEFAULT_LIMIT = 25
@@ -24,12 +28,7 @@ export interface CursorAnchor {
   id: string
 }
 
-/**
- * A decoded anchor that also keeps the cursor's instant as TEXT. The Drizzle keysets bind `atText`, never
- * `createdAt`: postgres-js serializes a Date param with toISOString(), which drops the microseconds a
- * timestamptz column carries, so a Date-bound anchor skips (DESC) or repeats (ASC) every row sharing the
- * anchor's millisecond, including all rows written by one transaction's now().
- */
+/** A decoded anchor that also keeps the cursor's instant as text, which is what keysetPredicate binds. */
 export interface KeysetAnchor extends CursorAnchor {
   atText: string
 }
@@ -51,58 +50,9 @@ export function decodeCursor(
   cursor: string | null | undefined,
   requireUuidId = false,
 ): KeysetAnchor | null {
-  const parsed = parseTimeCursor(cursor, { requireUuid: requireUuidId })
-  if (parsed === null || cursor === null || cursor === undefined) return null
-  const bar = cursor.indexOf("|")
-  const atText = bar < 0 ? cursor : cursor.slice(0, bar)
-  return { createdAt: parsed.at, id: parsed.id, atText }
-}
-
-/** Encode a keyset cursor from the full-precision instant text a query selected via keysetInstant. */
-export function encodeKeysetCursor(atText: string, id: string): string {
-  return `${atText}|${id}`
-}
-
-/**
- * The column's instant rendered by Postgres at microsecond precision, in the same ISO shape the cursor
- * parser accepts. Select it next to the keyset column and encode the cursor from it (paginateKeyset).
- */
-export function keysetInstant(sql: Queryable, column: SqlFragment): SqlFragment {
-  return sql`to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`
-}
-
-/**
- * `(ts, id) < anchor` (or `>` for an ascending list), with the anchor instant cast from its full-precision
- * text so the comparison is exact. The bare column stays on the left so its (created_at, id) index still
- * serves the scan. A legacy millisecond cursor still parses and pages exactly as it did before.
- */
-export function keysetPredicate(
-  sql: Queryable,
-  ts: SqlFragment,
-  id: SqlFragment,
-  anchor: KeysetAnchor,
-  opts: { direction?: "asc" | "desc"; idType?: "uuid" | "text" } = {},
-): SqlFragment {
-  const anchorAt = sql`${anchor.atText}::timestamptz`
-  const anchorId = opts.idType === "text" ? sql`${anchor.id}::text` : sql`${anchor.id}::uuid`
-  return opts.direction === "asc"
-    ? sql`(${ts}, ${id}) > (${anchorAt}, ${anchorId})`
-    : sql`(${ts}, ${id}) < (${anchorAt}, ${anchorId})`
-}
-
-/**
- * paginate() for rows that carry the keysetInstant text. A row whose instant is null yields no cursor,
- * matching paginate() for a null Date.
- */
-export function paginateKeyset<T>(
-  rows: readonly T[],
-  limit: number,
-  pick: (row: T) => { atText: string | null; id: string },
-): { items: T[]; nextCursor: string | null } {
-  return pageWith(rows, limit, (last) => {
-    const anchor = pick(last)
-    return anchor.atText !== null ? encodeKeysetCursor(anchor.atText, anchor.id) : null
-  })
+  const parsed = parseKeysetCursor(cursor, { requireUuid: requireUuidId })
+  if (parsed === null) return null
+  return { createdAt: parsed.at, id: parsed.id, atText: parsed.atText }
 }
 
 /**
