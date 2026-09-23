@@ -401,11 +401,6 @@ works for this exact address, that address never accepts a mailed code, and a wr
 same per-IP verify throttle as any other failed sign-in. `@reviewer` is on the reserved-handle
 blocklist so no real user can take it.
 
-## Phase-1 acceptance
-
-`services/api/PHASE1-ACCEPTANCE.md` maps each Phase-1 done-criterion to the endpoint(s)/code that
-satisfy it and the test(s) that prove it, and marks which are proven locally vs Docker-gated/CI.
-
 ## License
 
 civfix-backend is free software, licensed under the
