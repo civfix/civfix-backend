@@ -17,7 +17,12 @@ export const cleanupTimeline = pgTable(
     actorId: uuid("actor_id").references(() => users.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("cleanup_timeline_cleanup_idx").on(t.cleanupId, t.createdAt)],
+  (t) => [
+    index("cleanup_timeline_cleanup_idx").on(t.cleanupId, t.createdAt),
+    index("cleanup_timeline_flag_state_idx")
+      .on(t.cleanupId, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.kind} in ('flag', 'unflag')`),
+  ],
 )
 
 export type CleanupTimelineRow = typeof cleanupTimeline.$inferSelect

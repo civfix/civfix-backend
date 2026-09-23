@@ -106,6 +106,9 @@ export const mailEvents = pgTable(
     index("mail_events_type_created_idx").on(t.type, t.createdAt.desc()),
     index("mail_events_thread_idx").on(t.threadId),
     index("mail_events_created_idx").on(t.createdAt.desc()),
+    index("mail_events_bounced_recipient_idx")
+      .on(sql`lower(${t.meta} ->> 'failedRecipient')`)
+      .where(sql`${t.type} = 'bounced'`),
   ],
 )
 

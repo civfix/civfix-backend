@@ -25,6 +25,9 @@ export const pushTokens = pgTable(
   (t) => [
     uniqueIndex("push_tokens_platform_token_key").on(t.platform, t.token),
     index("push_tokens_user_idx").on(t.userId),
+    index("push_tokens_active_token_idx")
+      .on(t.token)
+      .where(sql`${t.revokedAt} is null`),
   ],
 )
 
