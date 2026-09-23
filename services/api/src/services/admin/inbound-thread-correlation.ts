@@ -50,7 +50,6 @@ export function inboundEffectDeps(deps: {
 
 const QUOTED_ATTRIBUTION_RE =
   /^(?:On\s.+\swrote|El\s.+\sescribió|Am\s.+\sschrieb\s[^:]+|Le\s.+\sa\sécrit\s?|\d{4}(?:년|\.)\s.+작성):$/
-const ATTRIBUTION_LEAD_RE = /^(?:On|El|Am|Le|\d{4}(?:년|\.))\s/
 const ATTRIBUTION_MAX_CHARS = 400
 const ATTRIBUTION_MAX_LINES = 3
 const TRAILING_SEPARATOR_RE = /^[_-]{3,}$/
@@ -68,12 +67,12 @@ function hasReplyTextBefore(lines: string[], index: number): boolean {
   return false
 }
 
-function isQuotedAttributionAt(lines: string[], index: number): boolean {
+function isQuotedAttributionAt(lines: string[], index: number, nested = false): boolean {
   let candidate = ""
   for (let n = 0; n < ATTRIBUTION_MAX_LINES; n++) {
     const next = lines[index + n]?.trim()
     if (next === undefined || next === "") return false
-    if (n > 0 && ATTRIBUTION_LEAD_RE.test(next)) return false
+    if (n > 0 && !nested && isQuotedAttributionAt(lines, index + n, true)) return false
     candidate = n === 0 ? next : `${candidate} ${next}`
     if (candidate.length > ATTRIBUTION_MAX_CHARS) return false
     if ((n === 0 || candidate.includes("@")) && QUOTED_ATTRIBUTION_RE.test(candidate)) return true

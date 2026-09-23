@@ -15,6 +15,8 @@ describe("cityReplyChatBody: quoted history in every client's shape", () => {
   it.each([
     ["Gmail, wrapped", reply("On Tue, Sep 22, 2026 at 8:47 PM civfix Reports <", `${ADDR}> wrote:`)],
     ["Gmail, wrapped twice", reply("On Tue, Sep 22, 2026 at 8:47 PM", "civfix Reports", `<${ADDR}> wrote:`)],
+    ["Gmail reply-all, a sender named Le", reply("On Tue, Sep 22, 2026 at 8:47 PM", "Le Thi Nguyen <clerk@testville.gov> wrote:")],
+    ["Gmail, wrapped twice, a sender named El", reply("On Tue, Sep 22, 2026 at 8:47 PM", "El Segundo", "<pw@testville.gov> wrote:")],
     ["Apple Mail", reply(`On Sep 22, 2026, at 8:47 PM, civfix Reports <${ADDR}> wrote:`)],
     ["Gmail es", reply(`El mar, 22 sept 2026 a las 20:47, civfix Reports (<${ADDR}>) escribió:`)],
     ["Gmail de, wrapped", reply("Am Di., 22. Sept. 2026 um 20:47 Uhr schrieb civfix Reports <", `${ADDR}>:`)],

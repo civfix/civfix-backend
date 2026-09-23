@@ -87,8 +87,9 @@ A line is a cut point when it is:
 - an attribution — `On … wrote:`, `El … escribió:`, `Am … schrieb …:`, `Le … a écrit :` or
   `2026년 … 작성:` — anchored at the end so prose like "On Tuesday our crew wrote: see below" is not
   mistaken for one. Up to three lines are joined when the joined text holds an `@`, because Gmail
-  wraps a long attribution. The join stops at a line that itself opens an attribution, so a reply line
-  starting with `On`, `El`, `Am` or `Le` right above one is kept;
+  wraps a long attribution. The join stops only at a line where another attribution begins, so a reply
+  line starting with `On`, `El`, `Am` or `Le` right above one is kept, while a wrapped sender name that
+  starts with one of those words still joins;
 - an Outlook separator — `-----Original Message-----`, tolerant of the dash count;
 - an unquoted Outlook header block — `/^From:\s.+$/` followed within two lines by `Sent:`, `Date:` or
   `To:`;
