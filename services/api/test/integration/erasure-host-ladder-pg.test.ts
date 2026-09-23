@@ -431,6 +431,28 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     expect(await statusOf(h, doomed)).toBe("cancelled")
   })
 
+  it("audits an organization-owner move and a cohost move in the same erasure, one row each", async () => {
+    const h = pg!
+    const host = await user(h, "host-audited-both")
+    const orgOwner = await user(h, "org-owner-audited")
+    const cohost = await user(h, "cohost-audited-both")
+    const org = await organization(h, `audited-both-${Date.now()}`, orgOwner)
+    const orgEvent = await event(h, { organizerId: host, organizationId: org })
+    const cohostEvent = await event(h, { organizerId: host })
+    await addEventMember(h, cohostEvent, cohost, "cohost", 3)
+
+    await new PgUserStore(h.db).softDeleteAndAnonymize(host)
+
+    const rows = await h.sql<{ target: string; meta: Record<string, unknown> }[]>`
+      SELECT target, meta FROM audit_log
+       WHERE actor_id = ${host} AND action = 'event.host_transferred'
+    `
+    const byTarget = new Map(rows.map((row) => [row.target, row.meta.newOrganizerId]))
+    expect(rows).toHaveLength(2)
+    expect(byTarget.get(`cleanup:${orgEvent}`)).toBe(orgOwner)
+    expect(byTarget.get(`cleanup:${cohostEvent}`)).toBe(cohost)
+  })
+
   it("never hands the event to a coordinator - the successor ladder is org owner then cohost", async () => {
     const h = pg!
     const host = await user(h, "host-with-coordinator")
