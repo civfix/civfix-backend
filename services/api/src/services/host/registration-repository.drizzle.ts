@@ -102,14 +102,47 @@ const ACTIVE_REGISTRATION_CONSTRAINTS = [
   "cleanup_registrations_active_guest_uidx",
 ]
 
+const rosterCheckedInKey = (tag: Sql) => tag`COALESCE(ci.first_at, 'epoch'::timestamptz)`
+
 const ROSTER_SORTS = Object.freeze({
   registered_at_desc: (tag: Sql) => tag`r.registered_at DESC, r.id DESC`,
   registered_at_asc: (tag: Sql) => tag`r.registered_at ASC, r.id ASC`,
   name_asc: (tag: Sql) =>
     tag`lower(COALESCE(u.display_name, g.name, '')) ASC, r.registered_at DESC, r.id DESC`,
   checked_in_at_desc: (tag: Sql) =>
-    tag`COALESCE(ci.first_at, 'epoch'::timestamptz) DESC, r.registered_at DESC, r.id DESC`,
+    tag`${rosterCheckedInKey(tag)} DESC, r.registered_at DESC, r.id DESC`,
 }) satisfies Readonly<Record<RegistrationRosterSort, (tag: Sql) => unknown>>
+
+interface CheckedInRosterCursor {
+  checkedInAt: Date
+  registeredAt: Date | null
+  id: string
+}
+
+// Carries every ORDER BY key: everyone not yet checked in shares the epoch sort key, so a cursor
+// without registered_at cannot say where inside that tie the previous page stopped.
+function encodeCheckedInRosterCursor(row: {
+  checked_in_at: Date | null
+  registered_at: Date
+  id: string
+}): string {
+  const checkedInAt = (row.checked_in_at ?? new Date(0)).toISOString()
+  return `${checkedInAt}|${encodeTimeCursor({ at: row.registered_at, id: row.id })}`
+}
+
+function parseCheckedInRosterCursor(cursor: string): CheckedInRosterCursor | null {
+  const parts = cursor.split("|")
+  if (parts.length <= 2) {
+    const legacy = parseTimeCursor(cursor, { direction: "desc" })
+    return legacy === null ? null : { checkedInAt: legacy.at, registeredAt: null, id: legacy.id }
+  }
+  if (parts.length !== 3) return null
+  const [checkedInText, registeredText, id] = parts
+  const checkedIn = parseTimeCursor(`${checkedInText}|${id}`)
+  const registered = parseTimeCursor(`${registeredText}|${id}`)
+  if (checkedIn === null || registered === null) return null
+  return { checkedInAt: checkedIn.at, registeredAt: registered.at, id: registered.id }
+}
 
 async function isBannedIn(tag: Queryable, cleanupId: string, userId: string): Promise<boolean> {
   const banned = await tag<{ one: number }[]>`
@@ -1659,14 +1692,21 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
           if (cursor === null) return sql``
           return sql`AND (lower(COALESCE(u.display_name, g.name, '')), r.id) > (${cursor.name}, ${cursor.id}::uuid)`
         }
+        if (query.sort === "checked_in_at_desc") {
+          const cursor = parseCheckedInRosterCursor(query.cursor)
+          if (cursor === null) return sql``
+          if (cursor.registeredAt === null) {
+            // A cursor minted before it carried registered_at cannot place itself inside a tie, so it
+            // resumes at the start of that tie: a row may repeat once, none is skipped.
+            return sql`AND ${rosterCheckedInKey(sql)} <= ${cursor.checkedInAt}`
+          }
+          return sql`AND (${rosterCheckedInKey(sql)}, r.registered_at, r.id) < (${cursor.checkedInAt}, ${cursor.registeredAt}, ${cursor.id}::uuid)`
+        }
         const direction = query.sort === "registered_at_asc" ? "asc" : "desc"
         const cursor = parseTimeCursor(query.cursor, { direction })
         if (cursor === null) return sql``
         if (query.sort === "registered_at_asc") {
           return sql`AND (r.registered_at, r.id) > (${cursor.at}, ${cursor.id}::uuid)`
-        }
-        if (query.sort === "checked_in_at_desc") {
-          return sql`AND (COALESCE(ci.first_at, 'epoch'::timestamptz), r.id) < (${cursor.at}, ${cursor.id}::uuid)`
         }
         return sql`AND (r.registered_at, r.id) < (${cursor.at}, ${cursor.id}::uuid)`
       })()
@@ -1692,9 +1732,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
             id: last.id,
           })
         }
-        if (query.sort === "checked_in_at_desc") {
-          return encodeTimeCursor({ at: last.checked_in_at ?? new Date(0), id: last.id })
-        }
+        if (query.sort === "checked_in_at_desc") return encodeCheckedInRosterCursor(last)
         return encodeTimeCursor({ at: last.registered_at, id: last.id })
       })
 
