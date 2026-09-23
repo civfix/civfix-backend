@@ -89,6 +89,10 @@ function isLegacyTimeCursor(cursor: string | null | undefined): boolean {
 
 const FEED_FANOUT_CONCURRENCY = 16
 
+// Each mention bell is a locale read plus an insert on the create-post response path; 4 keeps a
+// 20-mention post from taking 20 pool connections at once.
+const MENTION_NOTIFY_CONCURRENCY = 4
+
 const FEED_DISTANCE_RESOLUTION_KM = 1
 
 const FEED_SEED_SPAN = 2 ** 31
@@ -121,6 +125,7 @@ export interface PostServiceDeps {
   sql: Sql
   notifier?: PostNotifier
   isBlockedEitherWay?: (a: string, b: string) => Promise<boolean>
+  blockedIdsAmong?: (actorId: string, candidateIds: string[]) => Promise<Set<string>>
   logger?: { warn(obj: unknown, msg: string): void }
   feedRanking?: FeedRankingConfig
   feedPresence?: FeedPresence
@@ -152,7 +157,21 @@ export interface PostService {
 }
 
 export function makePostService(deps: PostServiceDeps): PostService {
-  const isBlocked = deps.isBlockedEitherWay ?? (() => Promise.resolve(false))
+  const isBlockedEitherWay = deps.isBlockedEitherWay ?? (() => Promise.resolve(false))
+  // Without the batch lookup, fall back to the per-pair check: an empty-set default would bell every
+  // mentioned user who blocked the author.
+  const blockedIdsAmong =
+    deps.blockedIdsAmong ??
+    (async (actorId: string, candidateIds: string[]): Promise<Set<string>> => {
+      const blocked = new Set<string>()
+      for (const id of candidateIds) {
+        if (await isBlockedEitherWay(actorId, id)) blocked.add(id)
+      }
+      return blocked
+    })
+  // The nil viewer is the anonymous caller: user_blocks references users.id, so no edge can name it.
+  const isBlocked = (a: string, b: string): Promise<boolean> =>
+    a === NIL_VIEWER_ID || b === NIL_VIEWER_ID ? Promise.resolve(false) : isBlockedEitherWay(a, b)
   const feedConfig = deps.feedRanking ?? DEFAULT_FEED_RANKING
   const nowMs = deps.now ?? (() => Date.now())
   const mintSeed = deps.feedSeed ?? (() => randomInt(0, FEED_SEED_SPAN))
@@ -504,13 +523,13 @@ export function makePostService(deps: PostServiceDeps): PostService {
         deps.notifier!.onPostQuote({ recipientId: quoteTargetAuthor, actorName, postId }),
       )
     }
-    for (const m of mentions) {
-      if (await shouldNotify(authorId, m.id)) {
-        await safeNotify(() =>
-          deps.notifier!.onPostMention({ recipientId: m.id, actorName, postId }),
-        )
-      }
-    }
+    const recipients = mentions.map((m) => m.id).filter((id) => id !== authorId)
+    if (recipients.length === 0) return
+    const blocked = await blockedIdsAmong(authorId, recipients)
+    const unblocked = recipients.filter((id) => !blocked.has(id))
+    await mapWithLimit(unblocked, MENTION_NOTIFY_CONCURRENCY, (recipientId) =>
+      safeNotify(() => deps.notifier!.onPostMention({ recipientId, actorName, postId })),
+    )
   }
 
   return {

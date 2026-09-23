@@ -526,6 +526,19 @@ export class InMemoryBlocksRepository implements BlocksRepository {
     })
   }
 
+  blockedIdsAmong(actorId: string, candidateIds: string[]): Promise<Set<string>> {
+    const blocked = new Set<string>()
+    for (const id of candidateIds) {
+      if (
+        (this.edges.get(actorId)?.has(id) ?? false) ||
+        (this.edges.get(id)?.has(actorId) ?? false)
+      ) {
+        blocked.add(id)
+      }
+    }
+    return Promise.resolve(blocked)
+  }
+
   listBlocked(blockerId: string, args?: ListBlockedArgs): Promise<ListBlockedPage> {
     const limit = args?.limit ?? LIST_BLOCKS_DEFAULT_LIMIT
     const ids = [...(this.edges.get(blockerId) ?? [])].slice(0, limit)
