@@ -33,14 +33,15 @@
  *   4. INSERT the initial timeline rows: 'submitted' then 'held'.
  *   5. INSERT the response snapshot WITHOUT its claim code into idempotency_keys.response_snapshot,
  *      owner-scoped by user_or_anon = the anon token id (0078/0079).
- *   All five happen atomically. A UNIQUE(idempotency_key) (or unique-index) race rolls the tx back; we
- *   then replay the winner's stored snapshot - but only when the winner is the SAME anon session (F028),
- *   so a key squatted by a stranger never replays their report to somebody else.
+ *   All five happen atomically. A UNIQUE(idempotency_key) (or unique-index) race rolls the tx back and
+ *   answers the retryable 409: the winner's claim code is not at rest to hand back, and rotating it here
+ *   would kill the code the winner's response is carrying at that moment.
  *
  * REPLAY: the snapshot holds only { reportId, status }, so a replay mints a fresh claim code and rotates
  * that report's claim_code_hash onto it (the code the first response carried stops working). That keeps
  * the plaintext out of idempotency_keys and its backups while the replayed response still carries a
- * working code, and keeps exactly one live code per report.
+ * working code, and keeps exactly one live code per report. A replay is only ever a request that
+ * arrived after the winner committed, which is a client that lost the first response.
  */
 
 import type { Sql } from "../db/client.js"
@@ -313,18 +314,11 @@ export function makeDrizzleAnonReportRepository(
         return { kind: "created", snapshot }
       } catch (err) {
         if (isUniqueViolation(err)) {
-          const stored = await replaySnapshot(
-            args.idempotencyKey,
-            ANON_REPORT_CREATE_SCOPE,
-            args.anonSessionId,
-          )
-          if (stored) return { kind: "replayed", snapshot: stored }
-          // Nothing of OURS to replay: either the winner of the idempotency race has taken the key but
-          // not yet committed its snapshot, or the key belongs to a DIFFERENT anon session (reports'
-          // idempotency_key is globally unique, so a squatted key collides here). Both answer the
-          // retryable 409 the authenticated path answers (report-repository.createReportTx) instead of
-          // leaking the raw postgres error as a 500 - and, critically, instead of handing a stranger's
-          // snapshot + claim code to this caller (F028).
+          // The winner of the key race is still in flight to its client with the only live claim code,
+          // so this request must not rotate it, and the plaintext is not at rest to replay. A retry of
+          // the same key reaches findIdempotentSnapshot, which rotates for a client that lost that
+          // response. A key held by a different anon session lands here too (reports.idempotency_key is
+          // globally unique) and gets the same answer, never that session's report.
           throw AppError.conflict("Report submit is still settling; retry")
         }
         // A cap-reached AppError (or any other) propagates unchanged: the tx already rolled back, so no
