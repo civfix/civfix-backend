@@ -15,13 +15,17 @@ authentication to `pass`, `fail` or `unknown`. The email Worker applies no filte
 - Only the **top-most** `Authentication-Results` header is read, and only when its authserv-id is
   `mx.cloudflare.net` (`CLOUDFLARE_AUTHSERV_ID`), the stamp Cloudflare Email Routing prepends. Copies
   below it are sender-supplied and ignored. Any other top-most header, or none, is `unknown`.
-- Each result is read from its leading `method=result`. Comments and quoted text are dropped, so they
-  cannot inject a result.
+- The stamp repeats values the sender controls (the SMTP HELO and MAIL FROM, echoed in the SPF results
+  and their comments), so it is read fail-closed. It is `fail` when it holds a backslash, a `"` other
+  than a quoted `smtp.remote-ip`, a nested or unbalanced comment, a result that repeats a property, or
+  more than one dmarc result. Each result is read from its leading `method=result`; comments are dropped.
 - `dmarc=pass` counts only when its `header.from` equals the parsed From domain. `dmarc=fail`, and any
-  result other than the no-policy ones below, is `fail`.
+  result other than the no-policy ones below, is `fail`. A dmarc result written after an SPF result
+  that carries `smtp.helo` or `smtp.mailfrom` is `fail`: Cloudflare writes DKIM, then DMARC, then SPF.
 - With no DMARC policy (`dmarc=none`, `temperror`, `permerror`, or no dmarc result), a `dkim=pass` whose
-  `header.d` aligns with the From domain passes (every DKIM result is checked, not only the first), else
-  an `spf=pass` whose `smtp.mailfrom` domain aligns with it.
+  `header.d` aligns with the From domain passes, else an `spf=pass` whose `smtp.mailfrom` domain aligns
+  with it. Only the DKIM results the stamp opens with count, and SPF counts only when `smtp.mailfrom`
+  appears exactly once in the whole header, on that SPF result.
 - A message with more than one `From` header or address has no parsed From. It never threads and goes
   to the Inbox.
 
