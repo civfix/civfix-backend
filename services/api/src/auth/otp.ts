@@ -5,6 +5,7 @@ import { constantTimeStringEqual, generateNumericCode } from "./crypto.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import type { CacheClient } from "./cache.js"
 import type { OtpStore, UserStore } from "./stores.js"
+import { newAccountDisplayName } from "./official-account.js"
 import type { Mailer } from "@civfix/shared/interfaces"
 
 export const OTP_CODE_LENGTH = 6
@@ -19,6 +20,7 @@ export const OTP_VERIFY_CODE_FAIL_MAX = 5
 export const OTP_VERIFY_IP_FAIL_MAX = 30
 
 const ARGON2ID = 2
+const UNNAMED_CITIZEN_DISPLAY_NAME = "citizen"
 
 const ARGON_OPTS_FULL = {
   algorithm: ARGON2ID,
@@ -199,7 +201,10 @@ export class OtpService {
     const existing = await this.users.findByEmail(normalized)
     if (existing) return existing.id
     const created = await this.users.create(normalized, {
-      displayName: defaultDisplayName(normalized),
+      displayName: newAccountDisplayName(
+        defaultDisplayName(normalized),
+        UNNAMED_CITIZEN_DISPLAY_NAME,
+      ),
       role: "citizen",
       emailVerified: true,
     })
@@ -256,5 +261,5 @@ function ipFailKey(ip: string): string {
 function defaultDisplayName(email: string): string {
   const at = email.indexOf("@")
   const local = at > 0 ? email.slice(0, at) : email
-  return local.length > 0 ? local : "citizen"
+  return local.length > 0 ? local : UNNAMED_CITIZEN_DISPLAY_NAME
 }
