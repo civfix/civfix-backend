@@ -41,7 +41,9 @@ export function detectBounce(mail: ParsedMail): BounceDetection {
   const body = (mail.text ?? mail.html ?? "").slice(0, DSN_SCAN_PREFIX_BYTES)
   const failedRecipient =
     extractEmail(failedHeader) ??
-    extractEmail(matchLine(body, /^final-recipient:\s*(?:rfc822;)?\s*(.+)$/im)) ??
+    // Two adjacent \s* around an optional token split a whitespace run every possible way, so a
+    // run of newlines after the label backtracks quadratically; nesting the second \s* keeps it linear.
+    extractEmail(matchLine(body, /^final-recipient:\s*(?:rfc822;\s*)?(.+)$/im)) ??
     extractEmail(matchLine(body, /^to:\s*(.+)$/im))
   const originalMessageId =
     matchBracketId(matchLine(body, /^original-message-id:\s*(.+)$/im)) ??
@@ -167,7 +169,10 @@ export async function geoidForContact(sql: Sql, email: string): Promise<string |
 
 export function extractEmail(value: string | null): string | null {
   if (value === null) return null
-  const m = value.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/)
+  // A match found from inside a run of local-part characters is also found from the run's start,
+  // which is further left, so the lookbehind changes no first match; without it every position of a
+  // long run with no @ rescans the rest of the run (quadratic on an attacker-sized header).
+  const m = value.match(/(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/)
   return m ? m[0] : null
 }
 
@@ -178,6 +183,9 @@ export function matchLine(body: string, re: RegExp): string | null {
 
 export function matchBracketId(value: string | null): string | null {
   if (value === null) return null
-  const m = value.match(/<[^>]+>/)
+  // Every match ends at a ">", so text after the last one cannot change the result; cutting it off
+  // stops a long run of "<" with no ">" from rescanning itself at every position.
+  const lastClose = value.lastIndexOf(">")
+  const m = lastClose === -1 ? null : value.slice(0, lastClose + 1).match(/<[^>]+>/)
   return m ? m[0] : value.trim().length > 0 ? value.trim() : null
 }
