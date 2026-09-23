@@ -6,16 +6,10 @@ export interface Env {
 }
 
 const PENDING_PREFIX = "inbound/pending/"
-const REJECT_AUTH = "Rejected: message failed sender authentication (SPF/DKIM/DMARC)."
 const REJECT_STORE = "Temporary failure storing message; please retry."
 
 export default {
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
-    if (shouldReject(message.headers)) {
-      message.setReject(REJECT_AUTH)
-      return
-    }
-
     const rawBytes = await new Response(message.raw).arrayBuffer()
 
     const messageId = await deriveMessageId(message.headers, rawBytes)
@@ -43,16 +37,6 @@ export default {
 }
 
 
-export function shouldReject(headers: Headers): boolean {
-  const ar = (headers.get("authentication-results") ?? "").toLowerCase()
-  if (ar.length === 0) return false
-  const dmarcFail = /dmarc=(fail|reject)/.test(ar)
-  const spfFail = /spf=(fail|softfail|temperror|permerror)/.test(ar)
-  const dkimFail = /dkim=(fail|temperror|permerror)/.test(ar)
-  return dmarcFail || (spfFail && dkimFail)
-}
-
-
 export async function deriveMessageId(headers: Headers, raw: ArrayBuffer): Promise<string> {
   const slug = slugify(headers.get("message-id") ?? "")
   if (slug.length > 0) return slug
@@ -71,12 +55,12 @@ export function slugify(messageId: string): string {
 }
 
 
-async function nudgeBackend(env: Env, key: string): Promise<void> {
+export async function nudgeBackend(env: Env, key: string): Promise<void> {
   const body = JSON.stringify({ key })
   const ts = Math.floor(Date.now() / 1000).toString()
-  const signature = await hmacSha256Hex(env.CF_EMAIL_WEBHOOK_SECRET, `${ts}.${body}`)
   try {
-    await fetch(env.BACKEND_WEBHOOK_URL, {
+    const signature = await hmacSha256Hex(env.CF_EMAIL_WEBHOOK_SECRET, `${ts}.${body}`)
+    const res = await fetch(env.BACKEND_WEBHOOK_URL, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -85,7 +69,13 @@ async function nudgeBackend(env: Env, key: string): Promise<void> {
       },
       body,
     })
-  } catch {
+    if (!res.ok) {
+      console.error(
+        `inbound nudge rejected: HTTP ${res.status} for ${key}; the backend sweep will pick it up`,
+      )
+    }
+  } catch (err) {
+    console.error(`inbound nudge failed for ${key}; the backend sweep will pick it up`, err)
   }
 }
 

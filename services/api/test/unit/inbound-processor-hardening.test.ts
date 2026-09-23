@@ -24,7 +24,7 @@ function domainOf(address: string): string {
 function rfc822(opts: { from: string; to: string; body?: string; messageId?: string }): Buffer {
   const lines = [`From: ${opts.from}`, `To: ${opts.to}`]
   if (opts.messageId !== undefined) lines.push(`Message-ID: ${opts.messageId}`)
-  lines.push(`Authentication-Results: mx.civfix.org; dmarc=pass header.from=${domainOf(opts.from)}`)
+  lines.push(`Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=${domainOf(opts.from)}`)
   lines.push("", opts.body ?? "")
   return Buffer.from(lines.join("\n"), "utf8")
 }
@@ -122,7 +122,7 @@ describe("F104: body_text and the stored headers are bounded at write time", () 
         "Message-ID: <big@example.com>",
         `X-Spam-Report: ${"s".repeat(200)}`,
         `X-Mailer: ${"m".repeat(200)}`,
-        "Authentication-Results: mx.civfix.org; dmarc=pass header.from=example.com",
+        "Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=example.com",
         "Content-Type: text/plain; charset=utf-8",
         "",
         "a".repeat(bodyChars),

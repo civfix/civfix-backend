@@ -1,11 +1,12 @@
 import { createHmac } from "node:crypto"
-import { describe, expect, it } from "vitest"
-import Fastify, { type FastifyInstance } from "fastify"
+import { describe, expect, it, vi } from "vitest"
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify"
 import { FakeInboundMail, FakeStorage } from "@civfix/shared/fakes"
 import type { InboundMail, ParsedMail } from "@civfix/shared/interfaces"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
 import {
+  assertSignature,
   registerInboundMailWebhook,
   CF_WEBHOOK_SIGNATURE_HEADER,
   CF_WEBHOOK_TIMESTAMP_HEADER,
@@ -60,7 +61,7 @@ function rfc822(opts: {
   if (opts.messageId !== undefined) lines.push(`Message-ID: ${opts.messageId}`)
   if (opts.authenticated !== false) {
     const domain = opts.from.slice(opts.from.lastIndexOf("@") + 1)
-    lines.push(`Authentication-Results: mx.civfix.org; dmarc=pass header.from=${domain}`)
+    lines.push(`Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=${domain}`)
   }
   lines.push("", opts.body ?? "")
   return Buffer.from(lines.join("\n"), "utf8")
@@ -375,5 +376,24 @@ describe("inbound-mail webhook: signature replay window (L17)", () => {
     const bodyOnly = sign(JSON.stringify({ key }), SECRET)
     expect((await postSigned(h, key, ts, bodyOnly)).statusCode).toBe(401)
     await h.app.close()
+  })
+})
+
+describe("inbound-mail webhook: rejected nudges are logged", () => {
+  it("warns with the reason and a count at most once a minute, never the secret or the key", () => {
+    const warn = vi.fn()
+    const now = Math.floor(Date.now() / 1000) + 10_000
+    const body = Buffer.from(JSON.stringify({ key: `${INBOUND_PENDING_PREFIX}private-key.eml` }))
+    const request = {
+      headers: { [CF_WEBHOOK_SIGNATURE_HEADER]: "bad", [CF_WEBHOOK_TIMESTAMP_HEADER]: String(now) },
+      log: { warn },
+    } as unknown as FastifyRequest
+    for (const at of [now, now + 1, now + 59, now + 60]) {
+      expect(() => assertSignature(request, body, SECRET, at)).toThrow(/signature/)
+    }
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({ reason: "mismatch" })
+    expect(warn.mock.calls[1]?.[0]).toEqual({ reason: "mismatch", rejected: 3 })
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(new RegExp(`${SECRET}|private-key`))
   })
 })
