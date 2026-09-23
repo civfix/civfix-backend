@@ -228,6 +228,11 @@ export interface RegisterTxArgs {
   now: Date
 }
 
+export interface WalkupCheckIn {
+  actorId: string
+  method: CheckinMethod
+}
+
 export interface WalkupRegisterArgs {
   cleanupId: string
   name: string
@@ -237,6 +242,7 @@ export interface WalkupRegisterArgs {
   idempotencyKey: string
   idempotencyOwner: string
   now: Date
+  checkIn?: WalkupCheckIn | null
 }
 
 export interface RegisterSnapshot {
@@ -277,7 +283,7 @@ export type RemoveRegistrationOutcome = CancelRegistrationOutcome & {
 }
 
 export type TransferRegistrationOutcome =
-  | { kind: "transferred"; registration: RegistrationRecord }
+  | { kind: "transferred"; registration: RegistrationRecord; previousTicketTypeId: string | null }
   | { kind: "full" }
   | { kind: "party_too_large" }
   | { kind: "same_type" }
@@ -389,6 +395,11 @@ export type SavePageOutcome =
   | { kind: "slug_taken" }
   | { kind: "cover_not_found" }
   | { kind: "block_media_not_found" }
+  | { kind: "not_found" }
+
+export type PublishPageOutcome =
+  | { kind: "published"; record: PageRecord }
+  | { kind: "flagged" }
   | { kind: "not_found" }
 
 export interface PublicPageRecord {
@@ -542,7 +553,7 @@ export interface HostRegistrationRepository {
     published: boolean
     actorId: string
     now: Date
-  }): Promise<PageRecord | null>
+  }): Promise<PublishPageOutcome>
   slugTaken(cleanupId: string, slug: string): Promise<boolean>
   mediaKeysFor(cleanupId: string, mediaIds: readonly string[]): Promise<Map<string, string>>
   getPublicPage(slug: string): Promise<PublicPageRecord | null>

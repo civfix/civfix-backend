@@ -547,6 +547,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
       })
       switch (outcome.kind) {
         case "transferred":
+          await enqueueWaitlistPromotion(deps.jobs, [outcome.previousTicketTypeId], deps.logger)
           await eventChanged(input.id)
           await deps.audit?.({
             actorId,
@@ -604,6 +605,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
         idempotencyKey: walkupIdempotencyKey(actorId, name, input.partySize, at),
         idempotencyOwner: `user:${actorId}`,
         now: at,
+        checkIn: input.checkInNow ? { actorId, method: "walkup" } : null,
       })
 
       if (outcome.kind === "not_found") throw AppError.notFound("Cleanup not found")
@@ -612,18 +614,6 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
       }
       const registration = outcome.registration
       if (registration === null) return { outcome: "already_registered", registration: null }
-
-      if (input.checkInNow) {
-        for (const seat of registration.seats) {
-          await deps.repo.checkInSeat({
-            cleanupId: input.id,
-            seatId: seat.id,
-            actorId,
-            method: "walkup",
-            now: at,
-          })
-        }
-      }
 
       await deps.audit?.({
         actorId,

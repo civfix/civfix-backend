@@ -6,7 +6,7 @@ import type {
   OrgVerificationStatus,
   SocialLinks,
 } from "@civfix/shared"
-import { AppError } from "@civfix/shared"
+import { AppError, MAX_ORG_INVITES_PER_ORG } from "@civfix/shared"
 import type postgres from "postgres"
 import type { Queryable, Sql } from "../../db/client.js"
 import { encodeTimeCursor, isUuid, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
@@ -56,7 +56,10 @@ import type {
   UpdateOrganizationPatch,
   InviterRevocationReason,
 } from "./organization-repository.types.js"
-import { roleChangeWithdrawsInvites } from "./organization-repository.types.js"
+import {
+  ORG_INVITE_CAP_MESSAGE,
+  roleChangeWithdrawsInvites,
+} from "./organization-repository.types.js"
 
 const PG_UNIQUE_VIOLATION = "23505"
 
@@ -463,7 +466,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           return created
         })
       } catch (err) {
-        if (isUniqueViolation(err)) return "slug_taken"
+        if (isSlugTaken(err)) return "slug_taken"
         throw err
       }
     },
@@ -720,9 +723,9 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         if (inserted.length === 0) return "already_member"
         await writeHostAudit(tx, {
           actorId: args.actorId,
-          action: "org.member_role_changed",
+          action: "org.member_added",
           target: `organization:${args.organizationId}`,
-          meta: { targetUserId: args.userId, from: null, to: args.role },
+          meta: { targetUserId: args.userId, role: args.role, via: "handle" },
         })
         return "added"
       })
@@ -1251,6 +1254,18 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
     ): Promise<CreateOrganizationInviteOutcome> {
       return sql.begin(async (tx): Promise<CreateOrganizationInviteOutcome> => {
         await expireInvitesInTx(tx, args.organizationId, args.now)
+        // Serializes concurrent inviters on one org so the cap is counted, not raced. The cap is
+        // checked before the idempotent re-invite path on purpose: it must not depend on the address.
+        await tx`SELECT pg_advisory_xact_lock(hashtext('org_invites:' || ${args.organizationId}))`
+        const pending = await tx<{ count: number }[]>`
+          SELECT count(*)::int AS count FROM organization_invites
+          WHERE organization_id = ${args.organizationId}
+            AND status = 'pending'
+            AND expires_at > ${args.now}
+        `
+        if (Number(pending[0]?.count ?? 0) >= MAX_ORG_INVITES_PER_ORG) {
+          throw AppError.conflict(ORG_INVITE_CAP_MESSAGE)
+        }
         const inserted = await tx<{ id: string }[]>`
           INSERT INTO organization_invites (
             id, organization_id, email, user_id, role, token_hash, status, invited_by, created_at,

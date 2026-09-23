@@ -11,10 +11,12 @@ import type {
 } from "@civfix/shared"
 import { sha256Hex } from "../../auth/crypto.js"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
+import type { Jobs } from "@civfix/shared/interfaces"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import { toTicketTypeDTO } from "./registration-dto.js"
 import type { InsightsInvalidator } from "./host-analytics-cache.js"
 import type { HostRegistrationRepository } from "./registration-repository.types.js"
+import { enqueueWaitlistPromotion } from "./waitlist-promotion.js"
 
 export const HOST_TICKET_TYPE_COUNTER_KEY = "host:ticketTypes"
 
@@ -24,6 +26,7 @@ export const HOST_TICKET_TYPE_WINDOW_SECONDS = 60 * 60
 
 export interface TicketTypeServiceDeps {
   repo: HostRegistrationRepository
+  jobs?: Jobs
   counters?: CounterStore
   insightsInvalidator?: InsightsInvalidator
   now?: () => Date
@@ -47,6 +50,11 @@ function capacityExceededError(eventCapacity: number, used: number): AppError {
       `the ticket types on this event may hold at most ${eventCapacity} seats in total ` +
       `(${used} already allocated) — raise the event capacity first`,
   })
+}
+
+function capacityRaised(before: number | null, after: number | null): boolean {
+  if (before === null) return false
+  return after === null || after > before
 }
 
 function salesWindowError(): AppError {
@@ -199,6 +207,9 @@ export function makeTicketTypeService(deps: TicketTypeServiceDeps): TicketTypeSe
 
       switch (outcome.kind) {
         case "updated":
+          if (capacityRaised(current.capacity, outcome.record.capacity)) {
+            await enqueueWaitlistPromotion(deps.jobs, [input.ticketTypeId], deps.logger)
+          }
           await eventChanged(input.id)
           return toTicketTypeDTO(outcome.record, now())
         case "name_taken":

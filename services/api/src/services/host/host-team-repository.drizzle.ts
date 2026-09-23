@@ -1,5 +1,6 @@
 import {
   AppError,
+  MAX_TEAM_INVITES_PER_EVENT,
   type CleanupMemberRole,
   type CleanupStatus,
   type EventTeamInviteStatus,
@@ -26,6 +27,7 @@ import type {
   PendingInviteForUserRecord,
   RevokeTeamInviteOutcome,
 } from "./host-team-repository.types.js"
+import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.types.js"
 
 interface InviteRowSelect {
   id: string
@@ -390,6 +392,15 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           }
           const open = await reofferOpenInvite(tx, args)
           if (open !== null) return open
+          // Serializes concurrent inviters on one event so the cap is counted, not raced.
+          await tx`SELECT pg_advisory_xact_lock(hashtext('team_invites:' || ${args.cleanupId}))`
+          const pending = await tx<{ count: number }[]>`
+            SELECT count(*)::int AS count FROM cleanup_team_invites
+            WHERE cleanup_id = ${args.cleanupId} AND status = 'pending'
+          `
+          if ((pending[0]?.count ?? 0) >= MAX_TEAM_INVITES_PER_EVENT) {
+            throw AppError.conflict(TEAM_INVITE_CAP_MESSAGE)
+          }
           const inserted = await tx<InviteRowSelect[]>`
             WITH ins AS (
               INSERT INTO cleanup_team_invites (

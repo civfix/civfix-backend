@@ -9,7 +9,7 @@ import {
   parseNameCursor,
   parseTimeCursor,
 } from "../../db/cursor-helpers.js"
-import { eventWindowOfRow, hasEventEnded } from "../cleanup-rules.js"
+import { DEFAULT_EVENT_DURATION_MS, eventWindowOfRow, hasEventEnded } from "../cleanup-rules.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup } from "../media-bindings.js"
 import { likeContains } from "../admin/like.js"
@@ -59,6 +59,7 @@ import type {
   JoinWaitlistOutcome,
   PageRecord,
   PublicPageRecord,
+  PublishPageOutcome,
   QuestionRecord,
   RegisterSnapshot,
   RegisterTxArgs,
@@ -87,6 +88,12 @@ export const REGISTER_IDEMPOTENCY_SCOPE = "event.register"
 
 export const ARRIVAL_BUCKET_MINUTES = 15
 
+const DEFAULT_EVENT_DURATION_SEC = DEFAULT_EVENT_DURATION_MS / 1000
+
+export const SLOT_NOT_FOUND_MESSAGE = "That slot no longer exists."
+
+export const SLOT_FULL_MESSAGE = "That slot is already full."
+
 const ACTIVE_REGISTRATION_CONSTRAINTS = [
   "cleanup_registrations_active_user_uidx",
   "cleanup_registrations_active_guest_uidx",
@@ -110,11 +117,65 @@ async function isBannedIn(tag: Queryable, cleanupId: string, userId: string): Pr
   return banned.length > 0
 }
 
+/**
+ * Takes the slot row lock before counting, as the standalone slot claim in cleanup-repository does, so
+ * registrations on different ticket types (which share no other lock) cannot both fill the last place.
+ * A refusal throws so the whole registration rolls back rather than succeeding without the slot.
+ */
+async function claimSlotIn(
+  tx: TransactionSql,
+  args: { cleanupId: string; userId: string; slotId: string },
+): Promise<void> {
+  const slots = await tx<{ capacity: number | null }[]>`
+    SELECT capacity FROM cleanup_slots
+     WHERE id = ${args.slotId} AND cleanup_id = ${args.cleanupId}
+     LIMIT 1
+     FOR UPDATE
+  `
+  const slot = slots[0]
+  if (slot === undefined) throw AppError.notFound(SLOT_NOT_FOUND_MESSAGE)
+
+  const mine = await tx<{ slot_id: string }[]>`
+    SELECT slot_id FROM cleanup_slot_claims
+     WHERE cleanup_id = ${args.cleanupId} AND user_id = ${args.userId}
+     LIMIT 1
+  `
+  if (mine[0]?.slot_id === args.slotId) return
+
+  if (slot.capacity !== null) {
+    const counted = await tx<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM cleanup_slot_claims WHERE slot_id = ${args.slotId}
+    `
+    if ((counted[0]?.n ?? 0) >= slot.capacity) throw AppError.conflict(SLOT_FULL_MESSAGE)
+  }
+
+  await tx`
+    INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id)
+    VALUES (${args.cleanupId}, ${args.userId}, ${args.slotId})
+    ON CONFLICT (cleanup_id, user_id)
+    DO UPDATE SET slot_id = EXCLUDED.slot_id, claimed_at = now()
+  `
+}
+
 /** Backstop for a waiting row whose user was banned by a path that did not cancel it. */
 function waitlistEntryNotBanned(tag: Queryable) {
   return tag`NOT EXISTS (
     SELECT 1 FROM cleanup_bans b
      WHERE b.cleanup_id = w.cleanup_id AND b.user_id = w.user_id
+  )`
+}
+
+/**
+ * An EXISTS probe, not a join: a join under FOR UPDATE would also lock the cleanups row and invert the
+ * cleanups -> cleanup_ticket_types -> cleanup_waitlist lock order every writer takes. The end instant
+ * mirrors hasEventEnded (ends_at, else scheduled_at plus the default duration) on the DB clock.
+ */
+function waitlistEventStillLive(tag: Queryable) {
+  return tag`EXISTS (
+    SELECT 1 FROM cleanups c WHERE c.id = w.cleanup_id
+       AND c.status <> 'cancelled'
+       AND COALESCE(c.ends_at, c.scheduled_at + make_interval(secs => ${DEFAULT_EVENT_DURATION_SEC}))
+           > now()
   )`
 }
 
@@ -668,9 +729,10 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
   ): Promise<RegisterTxOutcome | null> {
     if (err instanceof RegistrationRefusal) return err.outcome
     if (isUniqueViolationOn(err, "idempotency_key_scope_owner_uk")) return replaySnapshot(sql, args)
-    if (isUniqueViolationOn(err, ...ACTIVE_REGISTRATION_CONSTRAINTS)) {
-      return { kind: "already_registered" }
-    }
+    // A concurrent twin carrying the same key blocks on the active-registration index and fails
+    // there before its idempotency insert can; once the winner commits its snapshot is readable.
+    if (isUniqueViolationOn(err, ...ACTIVE_REGISTRATION_CONSTRAINTS))
+      return replaySnapshot(sql, args)
     if (isReservedSeatsBackstopViolation(err)) {
       throw AppError.internal(
         "Registration could not be completed. The capacity guard rejected the write.",
@@ -698,6 +760,11 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     if (guestSelfRegistrationOnPrivateEvent(args, event.visibility)) {
       return { kind: "not_found" as const }
     }
+
+    // A retry of a committed registration replays it even when a gate below has closed since.
+    const replay = await findRegisterSnapshot(tx, args)
+    if (replay !== undefined) return replayOf(tx, args, replay)
+
     if (event.status === "cancelled") return { kind: "closed" as const }
     if (!withinSalesWindow(args.now, event.registration_opens_at, event.registration_closes_at)) {
       return { kind: "registration_closed" as const }
@@ -709,9 +776,6 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     ) {
       return { kind: "banned" as const }
     }
-
-    const replay = await findRegisterSnapshot(tx, args)
-    if (replay !== undefined) return replayOf(tx, args, replay)
 
     const active = await tx<{ id: string }[]>`
       SELECT id FROM cleanup_registrations
@@ -907,19 +971,11 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     }
 
     if (args.slotId !== null && args.subject.kind === "user") {
-      await tx`
-        INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id)
-        SELECT ${args.cleanupId}, ${args.subject.userId}, s.id
-          FROM cleanup_slots s
-         WHERE s.id = ${args.slotId}
-           AND s.cleanup_id = ${args.cleanupId}
-           AND (
-             s.capacity IS NULL
-             OR (SELECT count(*) FROM cleanup_slot_claims c WHERE c.slot_id = s.id) < s.capacity
-           )
-        ON CONFLICT (cleanup_id, user_id)
-        DO UPDATE SET slot_id = EXCLUDED.slot_id, claimed_at = now()
-      `
+      await claimSlotIn(tx, {
+        cleanupId: args.cleanupId,
+        userId: args.subject.userId,
+        slotId: args.slotId,
+      })
     }
 
     if (args.waitlistId !== null) {
@@ -1381,8 +1437,21 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
             now: args.now,
           }
           const outcome = await registerIn(tx, registerArgs)
-          if (outcome.kind === "registered") return outcome
-          throw new RegistrationRefusal(outcome)
+          if (outcome.kind !== "registered") throw new RegistrationRefusal(outcome)
+          if (args.checkIn === undefined || args.checkIn === null) return outcome
+          await tx`
+            UPDATE cleanup_registration_seats
+               SET checked_in_at  = ${args.now},
+                   checked_in_by  = ${args.checkIn.actorId},
+                   checkin_method = ${args.checkIn.method}
+             WHERE registration_id = ${outcome.registration.id}
+               AND cleanup_id = ${args.cleanupId}
+               AND status = 'active'
+               AND checked_in_at IS NULL
+          `
+          const checkedIn = await loadRegistrationById(tx, args.cleanupId, outcome.registration.id)
+          if (checkedIn === null) throw new Error("walk-up reload returned no row")
+          return { kind: "registered" as const, registration: checkedIn }
         })
       } catch (err) {
         if (registerArgs === null) throw err
@@ -1697,7 +1766,11 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
 
         const registration = await loadRegistrationById(tx, args.cleanupId, args.registrationId)
         if (registration === null) return { kind: "not_found" as const }
-        return { kind: "transferred" as const, registration }
+        return {
+          kind: "transferred" as const,
+          registration,
+          previousTicketTypeId: current.ticket_type_id,
+        }
       })
     },
 
@@ -1894,6 +1967,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
             FROM cleanup_waitlist w
            WHERE w.ticket_type_id = ${args.ticketTypeId} AND w.status = 'waiting'
              AND ${waitlistEntryNotBanned(tx)}
+             AND ${waitlistEventStillLive(tx)}
            ORDER BY w.created_at, w.id
            LIMIT 1
            FOR UPDATE SKIP LOCKED
@@ -1950,6 +2024,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
              AND w.cleanup_id = ${args.cleanupId}
              AND w.status = 'waiting'
              AND ${waitlistEntryNotBanned(tx)}
+             AND ${waitlistEventStillLive(tx)}
            LIMIT 1
            FOR UPDATE
         `
@@ -2046,7 +2121,18 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
 
       try {
         return await sql.begin(async (tx) => {
-          await tx`SELECT id FROM cleanups WHERE id = ${args.cleanupId} LIMIT 1 FOR SHARE`
+          const events = await tx<
+            {
+              status: EventRegistrationContext["status"]
+              scheduled_at: Date
+              ends_at: Date | null
+              now: Date
+            }[]
+          >`
+            SELECT status, scheduled_at, ends_at, now() AS now FROM cleanups
+             WHERE id = ${args.cleanupId} LIMIT 1 FOR SHARE
+          `
+          const event = events[0]
           const claimed = await tx<
             { party_size: number; user_id: string | null; guest_id: string | null }[]
           >`
@@ -2069,6 +2155,13 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
               ? row.user_id === subject.userId
               : row.guest_id === subject.guestId
           if (!owns) throw new ClaimRefusal({ kind: "not_found" })
+
+          // registerIn only gates self sign-ups on the event end, so an offer outliving its event
+          // would otherwise still turn into a seat.
+          if (event !== undefined && hasEventEnded(eventWindowOfRow(event), event.now.getTime())) {
+            await releaseWaitlistHold(tx, args.cleanupId, args.waitlistId, args.now)
+            return { kind: "not_offered" as const }
+          }
 
           const outcome = await registerIn(tx, registerArgs)
           if (outcome.kind === "registered") {
@@ -2470,7 +2563,8 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       published: boolean
       actorId: string
       now: Date
-    }): Promise<PageRecord | null> {
+    }): Promise<PublishPageOutcome> {
+      // The flag is re-checked in the write: an operator may flag the page after the service read it.
       const rows = await sql<{ cleanup_id: string }[]>`
         UPDATE cleanup_pages
            SET status = ${args.published ? "published" : "unpublished"},
@@ -2478,10 +2572,21 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
                published_by = ${args.published ? args.actorId : sql`published_by`},
                updated_at = ${args.now}
          WHERE cleanup_id = ${args.cleanupId}
+           AND (NOT ${args.published} OR flagged_at IS NULL)
         RETURNING cleanup_id
       `
-      if (rows.length === 0) return null
-      return loadPage(sql, args.cleanupId)
+      if (rows.length === 0) {
+        if (!args.published) return { kind: "not_found" }
+        const flagged = await sql<{ flagged_at: Date | null }[]>`
+          SELECT flagged_at FROM cleanup_pages WHERE cleanup_id = ${args.cleanupId} LIMIT 1
+        `
+        const row = flagged[0]
+        return row !== undefined && row.flagged_at !== null
+          ? { kind: "flagged" }
+          : { kind: "not_found" }
+      }
+      const record = await loadPage(sql, args.cleanupId)
+      return record === null ? { kind: "not_found" } : { kind: "published", record }
     },
 
     async slugTaken(cleanupId: string, slug: string): Promise<boolean> {

@@ -15,6 +15,9 @@ export type InviterRevocationReason = "inviter_removed" | "inviter_demoted"
  * An accepted invite seats `invite.role` without re-checking the inviter, so a role change that takes
  * away the power to invite must also withdraw the invites already sent with it.
  */
+export const ORG_INVITE_CAP_MESSAGE =
+  "This organization already has the maximum number of open invitations."
+
 export function roleChangeWithdrawsInvites(
   from: OrganizationMemberRole,
   to: OrganizationMemberRole,

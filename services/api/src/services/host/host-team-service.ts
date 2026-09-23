@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto"
 import {
   AppError,
-  MAX_TEAM_INVITES_PER_EVENT,
   type AcceptEventTeamInviteResponse,
   type AcceptMyEventInviteResponse,
   type CleanupDTO,
@@ -317,10 +316,6 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
           throw AppError.rateLimited(
             "This event has sent too many team invitations today. Please try again tomorrow.",
           )
-        }
-        const pending = await deps.repo.countPendingInvites(cleanupId)
-        if (pending >= MAX_TEAM_INVITES_PER_EVENT) {
-          throw AppError.conflict("This event already has the maximum number of open invitations.")
         }
       }
       const token = newToken()

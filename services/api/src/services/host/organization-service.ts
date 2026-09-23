@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto"
 import {
   AppError,
-  MAX_ORG_INVITES_PER_ORG,
   MAX_ORG_VERIFICATION_DOCUMENTS,
   type AcceptOrganizationInviteResponse,
   type AdminActorRef,
@@ -823,12 +822,6 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       // that already belongs to a member gets the same pending row; accepting closes it as a no-op.
       if (input.identifierKind === "email") {
         const email = input.identifier.toLowerCase()
-        const pending = await deps.repo.countPendingInvites(id, now())
-        if (pending >= MAX_ORG_INVITES_PER_ORG) {
-          throw AppError.conflict(
-            "This organization already has the maximum number of open invitations.",
-          )
-        }
         const token = newToken()
         const at = now()
         const outcome = await deps.repo.createInviteTx({

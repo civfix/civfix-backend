@@ -30,6 +30,7 @@ function record(over: Partial<HostedEventRecord> & { id: string }): HostedEventR
     orgId: null,
     orgName: null,
     pageSlug: null,
+    pageStatus: null,
     ...over,
   }
 }
@@ -45,6 +46,7 @@ function build(counts: Map<string, HostedEventCounts>) {
       kpisFor: () => Promise.resolve({ eventsHosted: 2, upcomingEvents: 0 }),
     },
     counts: () => Promise.resolve(counts),
+    totals: () => Promise.resolve({ totalRegistrations: 0, totalCheckedIn: 0 }),
     now: () => NOW,
   })
 }
@@ -139,8 +141,19 @@ function scopedRepo(records: readonly HostedEventRecord[]): HostPortfolioReposit
 }
 
 function portfolioService(counts: Map<string, HostedEventCounts>) {
+  const inScope = (organizationId: string | null) =>
+    organizationId === null ? PORTFOLIO : PORTFOLIO.filter((row) => row.orgId === organizationId)
   return makeHostPortfolioService({
     repo: scopedRepo(PORTFOLIO),
+    totals: (args) => {
+      const rows = inScope(args.organizationId).map(
+        (row) => counts.get(row.id) ?? { registered: 0, checkedIn: 0 },
+      )
+      return Promise.resolve({
+        totalRegistrations: rows.reduce((sum, row) => sum + row.registered, 0),
+        totalCheckedIn: rows.reduce((sum, row) => sum + row.checkedIn, 0),
+      })
+    },
     counts: (ids) =>
       Promise.resolve(
         new Map(
@@ -215,6 +228,7 @@ describe("F4: the portfolio KPIs obey the same org scope as the items", () => {
         },
       },
       counts: () => Promise.resolve(new Map()),
+      totals: () => Promise.resolve({ totalRegistrations: 0, totalCheckedIn: 0 }),
       now: () => NOW,
     })
 

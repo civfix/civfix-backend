@@ -1,10 +1,11 @@
 import type {
   CleanupMemberRole,
   CleanupStatus,
+  EventPageStatus,
   EventVisibility,
   OrganizationMemberRole,
 } from "@civfix/shared"
-import type { Sql } from "../../db/client.js"
+import type { Queryable, Sql } from "../../db/client.js"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
@@ -25,11 +26,22 @@ export interface HostedEventRecord {
   orgId: string | null
   orgName: string | null
   pageSlug: string | null
+  pageStatus: EventPageStatus | null
 }
 
 export interface HostPortfolioKpiRecord {
   eventsHosted: number
   upcomingEvents: number
+}
+
+export interface HostPortfolioTotals {
+  totalRegistrations: number
+  totalCheckedIn: number
+}
+
+export interface HostPortfolioTotalsArgs {
+  userId: string
+  organizationId: string | null
 }
 
 export interface ListHostedEventsArgs {
@@ -69,6 +81,7 @@ interface HostedEventRowSelect {
   org_id: string | null
   org_name: string | null
   page_slug: string | null
+  page_status: EventPageStatus | null
 }
 
 function toRecord(row: HostedEventRowSelect): HostedEventRecord {
@@ -88,11 +101,12 @@ function toRecord(row: HostedEventRowSelect): HostedEventRecord {
     orgId: row.org_id,
     orgName: row.org_name,
     pageSlug: row.page_slug,
+    pageStatus: row.page_status,
   }
 }
 
-export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepository {
-  const hostedIds = (userId: string) => sql`(
+function hostedIds(sql: Queryable, userId: string) {
+  return sql`(
     SELECT m.cleanup_id AS id
     FROM cleanup_members m
     WHERE m.user_id = ${userId} AND m.role <> 'member'
@@ -103,10 +117,45 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
     JOIN cleanups oc ON oc.organization_id = om.organization_id
     WHERE om.user_id = ${userId} AND om.role <> 'member'
   )`
+}
 
-  const orgFilter = (organizationId: string | null) =>
-    organizationId !== null ? sql`AND c.organization_id = ${organizationId}` : sql``
+function orgFilter(sql: Queryable, organizationId: string | null) {
+  return organizationId !== null ? sql`AND c.organization_id = ${organizationId}` : sql``
+}
 
+/**
+ * Portfolio-wide like eventsHosted (no `when` tab, no page bound), with the same registered and
+ * checked-in definitions hostedEventCounts uses per row.
+ */
+export async function hostedRegistrationTotals(
+  sql: Queryable,
+  args: HostPortfolioTotalsArgs,
+): Promise<HostPortfolioTotals> {
+  const rows = await sql<{ total_registrations: number; total_checked_in: number }[]>`
+    WITH hosted AS ${hostedIds(sql, args.userId)},
+    scoped AS (
+      SELECT c.id FROM hosted h JOIN cleanups c ON c.id = h.id
+      WHERE TRUE ${orgFilter(sql, args.organizationId)}
+    )
+    SELECT
+      COALESCE((
+        SELECT sum(r.party_size)::int FROM cleanup_registrations r
+        WHERE r.cleanup_id IN (SELECT id FROM scoped) AND r.status = 'registered'
+      ), 0) AS total_registrations,
+      COALESCE((
+        SELECT count(*)::int FROM cleanup_registration_seats s
+        WHERE s.cleanup_id IN (SELECT id FROM scoped)
+          AND s.status = 'active' AND s.checked_in_at IS NOT NULL
+      ), 0) AS total_checked_in
+  `
+  const row = rows[0]
+  return {
+    totalRegistrations: row?.total_registrations ?? 0,
+    totalCheckedIn: row?.total_checked_in ?? 0,
+  }
+}
+
+export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepository {
   return {
     async listHostedEvents(
       args: ListHostedEventsArgs,
@@ -129,7 +178,7 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
         ? sql`ORDER BY c.scheduled_at DESC, c.id DESC`
         : sql`ORDER BY c.scheduled_at ASC, c.id ASC`
       const rows = await sql<HostedEventRowSelect[]>`
-        WITH hosted AS ${hostedIds(args.userId)}
+        WITH hosted AS ${hostedIds(sql, args.userId)}
         SELECT
           c.id,
           c.reference_code,
@@ -142,6 +191,7 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
           ${publicServedKeyExpr(sql, "ma")} AS cover_key,
           c.capacity,
           c.page_slug,
+          p.status AS page_status,
           (
             SELECT m.role FROM cleanup_members m
             WHERE m.cleanup_id = c.id AND m.user_id = ${args.userId}
@@ -149,6 +199,7 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
           ) AS event_role,
           (
             SELECT om.role FROM organization_members om
+            JOIN organizations oo ON oo.id = om.organization_id AND oo.deleted_at IS NULL
             WHERE om.organization_id = c.organization_id AND om.user_id = ${args.userId}
             LIMIT 1
           ) AS org_role,
@@ -157,10 +208,11 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
         FROM hosted h
         JOIN cleanups c ON c.id = h.id
         LEFT JOIN media_assets ma ON ma.id = c.cover_media_id
+        LEFT JOIN cleanup_pages p ON p.cleanup_id = c.id
         LEFT JOIN organizations o ON o.id = c.organization_id AND o.deleted_at IS NULL
         WHERE TRUE
           ${whenFilter}
-          ${orgFilter(args.organizationId)}
+          ${orgFilter(sql, args.organizationId)}
           ${cursorFilter}
         ${order}
         LIMIT ${args.limit + 1}
@@ -172,7 +224,7 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
 
     async kpisFor(args: HostPortfolioKpisArgs): Promise<HostPortfolioKpiRecord> {
       const rows = await sql<{ events_hosted: number; upcoming_events: number }[]>`
-        WITH hosted AS ${hostedIds(args.userId)}
+        WITH hosted AS ${hostedIds(sql, args.userId)}
         SELECT
           count(*)::int AS events_hosted,
           count(*) FILTER (
@@ -181,7 +233,7 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
         FROM hosted h
         JOIN cleanups c ON c.id = h.id
         WHERE TRUE
-          ${orgFilter(args.organizationId)}
+          ${orgFilter(sql, args.organizationId)}
       `
       const row = rows[0]
       return {
