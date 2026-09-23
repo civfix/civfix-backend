@@ -22,6 +22,8 @@ export function makeBoundedAddressResolver(
     tries: opts.tries ?? PUSH_DNS_TRIES,
   })
   return async (host) => {
+    // A host with no record of one family answers that lookup with an error (ENODATA), which is
+    // normal; if both come back empty the caller refuses the endpoint.
     const [v4, v6] = await Promise.all([
       resolver.resolve4(host).catch(() => [] as string[]),
       resolver.resolve6(host).catch(() => [] as string[]),
@@ -70,6 +72,7 @@ export async function resolveSafePushTarget(
   try {
     addresses = await resolve(host)
   } catch {
+    // Fail closed: an endpoint whose addresses cannot be checked is never contacted.
     return null
   }
   if (addresses.length === 0) return null

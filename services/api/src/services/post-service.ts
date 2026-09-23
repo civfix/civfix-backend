@@ -211,10 +211,15 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
     const presence = presenceFor(viewerId)
     if (presence !== undefined) {
+      // A repost card shows the original's counts, and count changes are announced under the
+      // original's id, so the viewer index needs it too or the card never hears about them.
       void presence
         .recordServed(
           viewerId,
-          items.map((item) => item.id),
+          items.flatMap((item) => {
+            const originalId = item.kind === "repost" ? item.repostOf?.id : undefined
+            return originalId === undefined ? [item.id] : [item.id, originalId]
+          }),
         )
         .catch((err: unknown) => {
           deps.logger?.warn({ err }, "post: feed served-set write failed (suppressed)")
@@ -303,6 +308,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
     try {
       return await presence.writeSnapshot(viewerId, filter, ranked)
     } catch {
+      // An unstored snapshot means the page-1 cursor cannot resolve, so the caller serves the
+      // reproducible bucket order instead and logs that fallback.
       return false
     }
   }
@@ -573,7 +580,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
     },
 
     async unrepostPost(id: string, viewerId: string): Promise<PostDTO> {
-      await requireReadable(id, viewerId)
+      // No readability gate: the repository only ever removes the caller's own repost, and a reposter
+      // must be able to take one back after the original went hidden or its author blocked them.
       const { targetId, removed } = await deps.repo.unrepost(id, viewerId)
       if (removed) await announceCountChange(targetId, viewerId)
       return hydrateOrThrow(targetId, viewerId)

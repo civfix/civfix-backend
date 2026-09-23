@@ -434,8 +434,11 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         if (follower) {
           try {
             await deps.notifier.onNewFollower({ followeeId: targetId, follower })
-          } catch {
-            void 0
+          } catch (err) {
+            deps.logger?.warn(
+              { err, viewerId, targetId },
+              "social: new-follower notification failed (suppressed; the follow stands)",
+            )
           }
         } else {
           deps.logger?.warn(

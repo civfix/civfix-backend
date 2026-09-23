@@ -354,6 +354,13 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       args: RefreshUnreadArgs,
     ): Promise<{ record: NotificationRecord; coalesced: boolean }> {
       return sql.begin(async (tx) => {
+        // FOR UPDATE in the refresh locks nothing when no unread row exists yet, so two concurrent
+        // fan-outs would each insert one; this key lock makes the second see the first's row.
+        await tx`
+          SELECT pg_advisory_xact_lock(
+            hashtext('notification_coalesce:' || ${args.userId} || ':' || ${args.type} || ':' || ${args.link})
+          )
+        `
         const refreshed = await refreshUnreadWith(tx as unknown as Sql, args)
         if (refreshed) return { record: refreshed, coalesced: true }
         const rows = await tx<NotificationRowSelect[]>`

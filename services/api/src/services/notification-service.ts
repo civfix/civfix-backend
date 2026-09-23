@@ -189,6 +189,15 @@ export interface PostNotifier {
   onPostMention(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
 }
 
+export interface FanOutNotificationResult {
+  /**
+   * Recipients whose in-app row was never written. A partial failure still resolves, because the
+   * chat fan-outs treat a rejection as total failure; a caller that tracks delivery per recipient
+   * (the broadcast pipeline) retries exactly these.
+   */
+  failed: string[]
+}
+
 export interface NotificationService extends SocialNotifier, PostNotifier {
   listNotifications(userId: string, pagination: PaginationQuery): Promise<ListNotificationsResponse>
   markRead(userId: string, ids: string[]): Promise<{ ok: true }>
@@ -198,6 +207,10 @@ export interface NotificationService extends SocialNotifier, PostNotifier {
   unregisterPushToken(userId: string, req: UnregisterPushTokenRequest): Promise<{ ok: true }>
   createNotification(userId: string, input: CreateNotificationInput): Promise<NotificationDTO>
   createNotifications(userIds: string[], input: CreateNotificationInput): Promise<void>
+  createNotificationsReportingFailures(
+    userIds: string[],
+    input: CreateNotificationInput,
+  ): Promise<FanOutNotificationResult>
   clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void>
 }
 
@@ -465,18 +478,20 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   async function doCreateNotifications(
     userIds: string[],
     input: CreateNotificationInput,
-  ): Promise<void> {
+  ): Promise<FanOutNotificationResult> {
     const unique = [...new Set(userIds)]
-    if (unique.length === 0) return
+    if (unique.length === 0) return { failed: [] }
     const locales = await localesForMany(unique, input)
+    const failed: string[] = []
     const persisted = await mapWithLimit(unique, BULK_NOTIFY_CONCURRENCY, async (userId) => {
       try {
         const { record, deduped } = await persistNotification(userId, input, locales)
         return deduped ? null : { userId, record }
       } catch (err) {
+        failed.push(userId)
         deps.logger?.warn(
           { err, userId, type: input.type },
-          "fan-out notification insert failed (suppressed)",
+          "fan-out notification insert failed; reported to the caller",
         )
         return null
       }
@@ -484,7 +499,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     const created = persisted.filter(
       (p): p is { userId: string; record: NotificationRecord } => p !== null,
     )
-    if (created.length === 0) return
+    if (created.length === 0) return { failed }
     void sendBatchedPush(created, input.push ?? "auto").catch((err: unknown) => {
       deps.logger?.error(
         { err, count: created.length },
@@ -492,6 +507,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       )
     })
     void signalMany(created.map((c) => c.userId))
+    return { failed }
   }
 
   return {
@@ -585,7 +601,14 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return doCreateNotification(userId, input)
     },
 
-    createNotifications(userIds: string[], input: CreateNotificationInput): Promise<void> {
+    async createNotifications(userIds: string[], input: CreateNotificationInput): Promise<void> {
+      await doCreateNotifications(userIds, input)
+    },
+
+    createNotificationsReportingFailures(
+      userIds: string[],
+      input: CreateNotificationInput,
+    ): Promise<FanOutNotificationResult> {
       return doCreateNotifications(userIds, input)
     },
 

@@ -965,6 +965,12 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return row.id
   }
 
+  async function resolveLiveTarget(tx: Queryable, postId: string): Promise<string> {
+    const targetId = await resolveOriginalTarget(tx, postId)
+    if (targetId === null) throw AppError.notFound("Post not found")
+    return targetId
+  }
+
   return {
     async getPostBrief(id: string): Promise<PostBrief | null> {
       const rows = await sql<
@@ -1041,13 +1047,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     async createPost(args: CreatePostArgs): Promise<string> {
       return sql.begin(async (tx) => {
         const replyToId =
-          args.replyToId !== null
-            ? ((await resolveOriginalTarget(tx, args.replyToId)) ?? args.replyToId)
-            : null
+          args.replyToId !== null ? await resolveLiveTarget(tx, args.replyToId) : null
         const repostOfId =
-          args.repostOfId !== null
-            ? ((await resolveOriginalTarget(tx, args.repostOfId)) ?? args.repostOfId)
-            : null
+          args.repostOfId !== null ? await resolveLiveTarget(tx, args.repostOfId) : null
         let threadRootId: string | null = null
         if (replyToId !== null) {
           const parentRows = await tx<{ id: string; thread_root_id: string | null }[]>`
@@ -1099,7 +1101,14 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         }
 
         if (replyToId !== null) {
-          await tx`UPDATE posts SET reply_count = reply_count + 1 WHERE id = ${replyToId}`
+          // The row lock re-reads deleted_at, so a parent tombstoned after the lookup above rolls
+          // the reply back instead of counting it on a deleted post.
+          const bumped = await tx<{ id: string }[]>`
+            UPDATE posts SET reply_count = reply_count + 1
+            WHERE id = ${replyToId} AND deleted_at IS NULL
+            RETURNING id
+          `
+          if (bumped.length === 0) throw AppError.notFound("Post not found")
         }
 
         return postId
@@ -1163,7 +1172,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         const targetId = await resolveOriginalTarget(tx, postId)
         if (targetId === null) return { targetId: postId, created: false }
         const revived = await tx<{ id: string }[]>`
-          UPDATE posts SET deleted_at = NULL, updated_at = now()
+          UPDATE posts SET deleted_at = NULL, created_at = now(), updated_at = now()
           WHERE author_id = ${userId} AND kind = 'repost' AND repost_of_id = ${targetId}
             AND deleted_at IS NOT NULL
           RETURNING id
