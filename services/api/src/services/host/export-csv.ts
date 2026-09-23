@@ -1,12 +1,20 @@
-const INJECTION_PREFIX_RE = /^[=+\-@\t\r]/
+const FORMULA_ESCAPE = "'"
+const LEADING_TRIGGER_RE = /^[=+\-@\t\r]/
+// Excel in a ';'-separator locale (de, es) splits a quoted value on ';' and evaluates a formula at the
+// start of the resulting field, so quoting alone does not help. The lookbehind (rather than a
+// consuming match) also catches a trigger that follows a tab or CR which was itself a trigger.
+const SEPARATED_TRIGGER_RE = /(?<=[;,\t\r\n] *)(?=[=+\-@\t\r])/g
+
+function neutralizeFormulas(value: string): string {
+  const separated = value.replace(SEPARATED_TRIGGER_RE, FORMULA_ESCAPE)
+  return LEADING_TRIGGER_RE.test(separated) ? `${FORMULA_ESCAPE}${separated}` : separated
+}
 
 export function csvCell(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return ""
-  const raw = typeof value === "number" ? String(value) : value
-  const guarded = INJECTION_PREFIX_RE.test(raw) ? `'${raw}` : raw
-  // Quoting every cell, not only those holding a comma, keeps a ';' inside the value from opening a
-  // new field (and a formula) when a list-separator ';' locale of Excel opens the file.
-  return `"${guarded.replace(/"/g, '""')}"`
+  // A number cannot carry a formula, and prefixing a negative one would turn it into text.
+  const text = typeof value === "number" ? String(value) : neutralizeFormulas(value)
+  return `"${text.replace(/"/g, '""')}"`
 }
 
 export function csvRow(cells: readonly (string | number | null | undefined)[]): string {

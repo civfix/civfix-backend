@@ -29,6 +29,11 @@ describe("csv cells", () => {
     expect(csvCell("\tx")).toBe(`"'\tx"`)
   })
 
+  it("prefixes a string minus sign but leaves a negative number numeric", () => {
+    expect(csvCell("-1")).toBe(`"'-1"`)
+    expect(csvCell(-1)).toBe(`"-1"`)
+  })
+
   it("renders empty for null and undefined", () => {
     expect(csvCell(null)).toBe("")
     expect(csvCell(undefined)).toBe("")
@@ -198,6 +203,12 @@ describe("host export build", () => {
     const h = harness([["1", '=HYPERLINK("https://evil.example","x")']])
     await h.service.run(EXPORT_ID)
     expect(h.puts[0]!.body.toString("utf8")).toContain("'=HYPERLINK")
+  })
+
+  it("escapes a formula hidden behind an in-value separator", async () => {
+    const h = harness([["1", "Alex;=cmd|' /C calc'!A0"]])
+    await h.service.run(EXPORT_ID)
+    expect(h.puts[0]!.body.toString("utf8")).toContain("\"Alex;'=cmd|' /C calc'!A0\"")
   })
 
   it("is idempotent: a second run does not re-claim", async () => {
