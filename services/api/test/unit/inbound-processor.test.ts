@@ -604,9 +604,18 @@ describe("cityReplyChatBody (what a city reply publishes into the report chat)",
 })
 
 describe("processInboundObject: unaffiliated thread joiners (H5)", () => {
+  const WITHHELD_WARNING = "inbound: reply withheld from public effects pending operator review"
+
+  function captureWarns(c: Ctx): { obj: unknown; msg?: string }[] {
+    const warns: { obj: unknown; msg?: string }[] = []
+    c.deps.logger = { warn: (obj, msg) => warns.push({ obj, msg }), error: () => {} }
+    return warns
+  }
+
   it("stores a vendor-domain reply echoing a valid In-Reply-To as UNAFFILIATED, with no side effects", async () => {
     const reportId = "report-vendor"
     const c = ctx()
+    const warns = captureWarns(c)
     c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
     const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
     c.mailRepo.seedMessage({
@@ -633,11 +642,16 @@ describe("processInboundObject: unaffiliated thread joiners (H5)", () => {
     const stored = c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")
     expect(stored).toHaveLength(1)
     expect(stored[0]?.unaffiliated).toBe(true)
+    expect(stored[0]?.authVerdict).toBe("pass")
     expect(stored[0]?.effectsAppliedAt).toBeNull()
 
     expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("published")
     expect(c.adminReportRepo.timeline.get(reportId) ?? []).toHaveLength(0)
-    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).not.toBe("replied")
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("needs_action")
+    expect(warns).toHaveLength(1)
+    expect(warns[0]?.msg).toBe(WITHHELD_WARNING)
+    expect(warns[0]?.obj).toMatchObject({ fromDomain: "vendor.example", authVerdict: "pass" })
+    expect(JSON.stringify(warns[0]?.obj)).not.toContain("@")
 
     expect(await c.mailRepo.getLastOutboundRecipient(thread.id)).toBe("publicworks@lacity.gov")
   })
@@ -659,8 +673,50 @@ describe("processInboundObject: unaffiliated thread joiners (H5)", () => {
 
     const stored = c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")
     expect(stored?.unaffiliated).toBe(false)
+    expect(stored?.authVerdict).toBe("pass")
     expect(stored?.effectsAppliedAt).not.toBeNull()
     expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("replied")
+  })
+
+  it("files an unaffiliated reply on a thread with no report or event without flagging it", async () => {
+    const c = ctx()
+    const warns = captureWarns(c)
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const key = `${INBOUND_PENDING_PREFIX}compose-vendor.eml`
+    await put(c, key, rfc822({ from: "sales@vendor.example", to: `reply+${TOKEN}@civfix.org` }))
+
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    const stored = c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")
+    expect(stored?.unaffiliated).toBe(true)
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("sent")
+    expect(warns).toHaveLength(0)
+  })
+
+  it("flags the thread when the reply's public text was stripped to nothing", async () => {
+    const reportId = "report-emptied"
+    const c = ctx()
+    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const key = `${INBOUND_PENDING_PREFIX}emptied.eml`
+    const body = `Please write to report-${TOKEN}@civfix.org instead.`
+    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body }))
+
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    expect(c.chatEvents.map((e) => e.body)).toEqual([null])
+    const stored = c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")
+    expect(stored?.effectsAppliedAt).not.toBeNull()
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("needs_action")
+    expect(c.mailRepo.audits).toEqual([
+      {
+        actorId: null,
+        action: "mail.reply_published_without_text",
+        target: `mail:${thread.id}`,
+        meta: { messageId: expect.any(String), reportId },
+      },
+    ])
   })
 })
 
@@ -1018,6 +1074,8 @@ describe("processInboundObject: message authentication gate (M7)", () => {
     const stored = c.mailRepo.messagesOf(thread.id).filter((m) => m.direction === "in")
     expect(stored).toHaveLength(1)
     expect(stored[0]?.unaffiliated).toBe(true)
+    expect(stored[0]?.authVerdict).toBe("unknown")
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("needs_action")
     expect(c.mailRepo.events.at(-1)?.meta).toMatchObject({ authVerdict: "unknown", unaffiliated: true })
     expect(c.inboundRepo.rows).toHaveLength(0)
     expect(c.adminReportRepo.reports.get("report-auth")?.record.status).toBe("published")
@@ -1043,7 +1101,10 @@ describe("processInboundObject: message authentication gate (M7)", () => {
     )
 
     expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
-    expect(c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")?.unaffiliated).toBe(true)
+    expect(c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")).toMatchObject({
+      unaffiliated: true,
+      authVerdict: "fail",
+    })
     expect(c.mailRepo.events.at(-1)?.meta).toMatchObject({ authVerdict: "fail" })
     expect(c.adminReportRepo.reports.get("report-fail")?.record.status).toBe("published")
     expect(c.chatEvents).toHaveLength(0)

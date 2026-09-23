@@ -80,6 +80,13 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     expect(onlySupport.items).toHaveLength(2)
   })
 
+  it("reads the stored auth verdict onto list rows and the detail", async () => {
+    const headers = { "x-civfix-auth-verdict": "fail" }
+    const r = await repo.insertIdempotent(insert({ messageId: "<verdict@x>", headers }))
+    expect((await repo.list({})).items.map((i) => i.authVerdict)).toEqual(["fail"])
+    expect((await repo.get(r.id))?.authVerdict).toBe("fail")
+  })
+
   it("setStatus transitions the triage state and filters reflect it", async () => {
     const r = await repo.insertIdempotent(insert({ messageId: "<s@x>" }))
     expect((await repo.get(r.id))?.status).toBe("unread")

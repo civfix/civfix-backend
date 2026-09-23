@@ -9,6 +9,7 @@ import {
 import type { PresignMedia } from "./media-presign.js"
 import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
 import { publicAuthorIdentity } from "./public-author.js"
+import { officialPersonFlag } from "../auth/official-account.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 
 export type ChatSystemPayload = NonNullable<NonNullable<ChatMessageDTO["system"]>>
@@ -57,6 +58,7 @@ export function toReportParticipantDTO(r: ReportMemberRowSelect): ReportChatPart
     following: 0,
     isFollowing: r.is_following,
     ...(author.deleted ? { deleted: true } : {}),
+    ...(author.deleted || hidden !== null ? {} : officialPersonFlag(r.user_id)),
   }
   return { user, role: r.role, joinedAt: r.joined_at }
 }

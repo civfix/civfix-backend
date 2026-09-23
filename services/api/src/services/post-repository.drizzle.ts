@@ -19,6 +19,7 @@ import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
 import { servedKeyExpr } from "./media-served-key.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
+import { officialPersonFlag } from "../auth/official-account.js"
 import { presentIds } from "./present-ids.js"
 import {
   NO_AFFILIATIONS,
@@ -583,7 +584,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         followers: identity.deleted ? 0 : Number(r.followers),
         following: identity.deleted ? 0 : Number(r.following),
         isFollowing: identity.deleted ? false : r.is_following,
-        ...(identity.deleted ? { deleted: true } : {}),
+        ...(identity.deleted ? { deleted: true } : officialPersonFlag(r.id)),
       }
       return dto
     })
@@ -633,6 +634,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         following: 0,
         isFollowing: false,
         ...(r.org_donation_url !== null ? { donationUrl: r.org_donation_url } : {}),
+        ...officialPersonFlag(r.org_id),
       }
       out.set(r.id, {
         id: r.id,
@@ -742,6 +744,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
               followers: 0,
               following: 0,
               isFollowing: false,
+              ...officialPersonFlag(r.author_id),
             }
           : null
       if (author !== null) authorIds.push(author.id)

@@ -183,6 +183,8 @@ export const MAIL_THREAD_STATUS_VALUES = [
 
 export const MAIL_DIRECTION_VALUES = ["in", "out"] as const
 
+export const MAIL_AUTH_VERDICT_VALUES = ["pass", "fail", "unknown"] as const
+
 export const MAIL_EVENT_TYPE_VALUES = [
   "sent",
   "delivered",

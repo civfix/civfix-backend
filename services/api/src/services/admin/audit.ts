@@ -41,6 +41,8 @@ export type AdminAuditAction =
   | "mail.send_failed"
   | "mail.status_changed"
   | "mail.forward_template_set"
+  | "mail.reply_published_without_text"
+  | "mail.reply_published"
   | "outreach.digest_sent"
   | "inbox.status_changed"
   | "user.detail_viewed"

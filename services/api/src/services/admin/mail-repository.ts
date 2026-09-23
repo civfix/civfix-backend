@@ -1,5 +1,6 @@
 
 import type { AdminAuditAction } from "./audit.js"
+import type { MailAuthVerdict } from "../../adapters/inbound-mail.cf.js"
 import type {
   MailAttachment,
   MailDelivery,
@@ -54,6 +55,7 @@ export interface MailMessageRecord {
   effectsClaimedAt: Date | null
   effectsAppliedAt: Date | null
   effectsStage: number
+  authVerdict: MailAuthVerdict | null
   createdAt: Date
   truncated?: boolean
   delivery?: MailDelivery | null
@@ -108,6 +110,8 @@ export interface InsertMessageInput {
   messageId?: string | null
   inReplyTo?: string | null
   unaffiliated?: boolean
+  authVerdict?: MailAuthVerdict | null
+  threadStatus?: MailStatus
   audit?: MailAuditInput
 }
 
@@ -187,6 +191,9 @@ export interface MailRepository {
   markMessageEffectsApplied(id: string): Promise<void>
   releaseMessageEffects(id: string): Promise<void>
   findMessagesPendingEffects(input: PendingEffectsQuery): Promise<PendingEffects[]>
+  hasWithheldReply(threadId: string): Promise<boolean>
+  findInboundMessage(threadId: string, messageId: string): Promise<MailMessageRecord | null>
+  approveWithheldReply(messageId: string, audit: MailAuditInput): Promise<MailMessageRecord | null>
 }
 
 export interface ClaimEffectsInput {

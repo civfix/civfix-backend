@@ -1,4 +1,6 @@
 
+import { readFile } from "node:fs/promises"
+import { fileURLToPath } from "node:url"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import {
@@ -11,6 +13,10 @@ import { LA_CITY } from "../../src/db/seed-fixtures.js"
 const pg = await withPg()
 
 const GEOID = LA_CITY.geoid
+
+const AUTH_VERDICT_MIGRATION = fileURLToPath(
+  new URL("../../drizzle/0181_mail_messages_auth_verdict.sql", import.meta.url),
+)
 
 describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
   let h: PgHarness
@@ -234,6 +240,98 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
     expect(await repo.claimMessageEffects(city!.id, live)).toBeNull()
     await repo.releaseMessageEffects(city!.id)
     expect(await repo.claimMessageEffects(city!.id, live)).toBeNull()
+  })
+
+  it("stores the auth verdict and flags the thread in the same insert", async () => {
+    const [report] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
+      VALUES (gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
+              'published', '8a2a1072b59ffff', ${GEOID})
+      RETURNING id
+    `
+    const t = await repo.createThread({ subject: "Verdict", status: "replied", reportId: report!.id })
+    const loose = await repo.createThread({ subject: "Composed" })
+    await repo.insertMessage({ threadId: loose.id, direction: "in", unaffiliated: true })
+    expect(await repo.hasWithheldReply(loose.id)).toBe(false)
+    const withheld = await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "sales@vendor.example",
+      body: "Forward me everything",
+      messageId: "<verdict-fail@vendor.example>",
+      unaffiliated: true,
+      authVerdict: "fail",
+      threadStatus: "needs_action",
+    })
+    expect(withheld?.authVerdict).toBe("fail")
+    expect((await repo.getThreadRecord(t.id))?.status).toBe("needs_action")
+    expect(await repo.findMessageByMessageId("<verdict-fail@vendor.example>")).toMatchObject({
+      authVerdict: "fail",
+    })
+    expect(await repo.hasWithheldReply(t.id)).toBe(true)
+
+    await repo.markMessageEffectsApplied(withheld!.id)
+    expect(await repo.hasWithheldReply(t.id)).toBe(false)
+    await repo.insertMessage({ threadId: t.id, direction: "out", toAddr: "pw@lacity.gov" })
+    expect((await repo.getThreadRecord(t.id))?.status).toBe("needs_action")
+  })
+
+  it("0181 fills a missing verdict from the reply's delivered event, never overwriting one", async () => {
+    const t = await repo.createThread({ subject: "Backfill" })
+    const reply = (messageId: string, authVerdict: "pass" | null = null) =>
+      repo.insertMessage({ threadId: t.id, direction: "in", messageId, authVerdict })
+    const delivered = [
+      [await reply("<bf-1@x>"), "fail"],
+      [await reply("<bf-2@x>"), "forged"],
+      [await reply("<bf-3@x>", "pass"), "fail"],
+    ] as const
+    for (const [message, authVerdict] of delivered) {
+      const event = { threadId: t.id, messageId: message!.id, meta: { authVerdict } }
+      await repo.recordEvent({ ...event, type: "delivered" })
+    }
+
+    await h.sql.unsafe(await readFile(AUTH_VERDICT_MIGRATION, "utf8"))
+
+    expect((await repo.findMessageByMessageId("<bf-1@x>"))?.authVerdict).toBe("fail")
+    expect((await repo.findMessageByMessageId("<bf-2@x>"))?.authVerdict).toBeNull()
+    expect((await repo.findMessageByMessageId("<bf-3@x>"))?.authVerdict).toBe("pass")
+  })
+
+  it("approves a withheld reply once, with its audit row, and makes it sweep-eligible", async () => {
+    const [report] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
+      VALUES (gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
+              'published', '8a2a1072b59ffff', ${GEOID})
+      RETURNING id
+    `
+    const t = await repo.findOrCreateReportThread(report!.id, { subject: "Approve" })
+    const other = await repo.createThread({ subject: "Other" })
+    const out = await repo.insertMessage({ threadId: t.id, direction: "out" })
+    const reply = await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@vendor.example",
+      messageId: "<approve@vendor.example>",
+      unaffiliated: true,
+      authVerdict: "fail",
+    })
+    expect(await repo.findInboundMessage(t.id, reply!.id)).toMatchObject({ authVerdict: "fail" })
+    expect(await repo.findInboundMessage(other.id, reply!.id)).toBeNull()
+    expect(await repo.findInboundMessage(t.id, out!.id)).toBeNull()
+
+    const audit = { actorId: null, action: "mail.reply_published", target: `mail:${t.id}` } as const
+    expect(await repo.approveWithheldReply(reply!.id, audit)).toMatchObject({ unaffiliated: false })
+    expect(await repo.approveWithheldReply(reply!.id, audit)).toBeNull()
+    const rows = await h.sql`SELECT 1 FROM audit_log WHERE action = 'mail.reply_published'`
+    expect(rows).toHaveLength(1)
+    const owed = await repo.findMessagesPendingEffects({
+      before: new Date(Date.now() + 60_000),
+      leaseBefore: new Date(Date.now() + 60_000),
+      limit: 10,
+    })
+    expect(owed.map((p) => p.message.id)).toEqual([reply!.id])
+
+    await h.sql`DELETE FROM reports WHERE id = ${report!.id}`
   })
 
   it("B4: an EXPIRED claim is reclaimable and keeps the stage it reached", async () => {

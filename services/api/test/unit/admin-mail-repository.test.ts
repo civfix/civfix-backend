@@ -8,8 +8,10 @@ import {
   mintThreadToken,
   toThreadDTO,
   deriveWho,
+  type MailMessageRecord,
   type MailThreadRecord,
 } from "../../src/services/admin/mail-repository.drizzle.js"
+import { normalizeAuthVerdict } from "../../src/services/admin/mail-mappers.js"
 
 
 describe("mintThreadToken", () => {
@@ -70,6 +72,7 @@ describe("toThreadDTO", () => {
         effectsClaimedAt: null,
         effectsAppliedAt: null,
         effectsStage: 0,
+        authVerdict: null,
         createdAt: new Date("2026-02-01T00:00:01.000Z"),
       },
       {
@@ -89,6 +92,7 @@ describe("toThreadDTO", () => {
         effectsClaimedAt: null,
         effectsAppliedAt: null,
         effectsStage: 0,
+        authVerdict: "pass",
         createdAt: new Date("2026-02-01T00:00:02.000Z"),
       },
     ])
@@ -102,6 +106,26 @@ describe("toThreadDTO", () => {
     expect(dto.messages[0]?.who).toBe("outreach@civfix.org")
     expect(dto.messages[0]?.delivery).toBe("pending")
     expect(dto.messages[1]?.delivery).toBeNull()
+    expect(dto.messages[0]).toMatchObject({ authVerdict: null, publication: null })
+    expect(dto.messages[1]).toMatchObject({ authVerdict: "pass", publication: null })
+  })
+
+  it("carries the verdict and publication state on a linked thread's inbound messages", async () => {
+    const repo = new InMemoryMailRepository()
+    const thread = repo.seedThread({ reportId: "r1" })
+    const seed = (over: Partial<MailMessageRecord>) =>
+      repo.seedMessage({ threadId: thread.id, direction: "in", ...over })
+    seed({ direction: "out" })
+    seed({ unaffiliated: true, authVerdict: "fail" })
+    seed({ authVerdict: "pass" })
+    seed({ effectsAppliedAt: new Date() })
+    const messages = (await repo.getThread(thread.id))?.messages ?? []
+    expect(messages.map((m) => [m.authVerdict, m.publication])).toEqual([
+      [null, null],
+      ["fail", "withheld"],
+      ["pass", "pending"],
+      [null, "published"],
+    ])
   })
 
   it("derives delivery from the message's latest sent/failed mail event", async () => {
@@ -182,6 +206,61 @@ describe("InMemoryMailRepository: insertMessage side effects", () => {
     const after2 = await repo.getThreadRecord(t.id)
     expect(after2?.lastMessageAt?.getTime()).toBe(newest!.createdAt.getTime())
     expect(after2!.lastMessageAt!.getTime()).toBeGreaterThan(after1!.lastMessageAt!.getTime())
+  })
+})
+
+describe("normalizeAuthVerdict", () => {
+  it("keeps a known verdict, reads an unknown value as unknown and a missing one as null", () => {
+    expect(normalizeAuthVerdict("pass")).toBe("pass")
+    expect(normalizeAuthVerdict("fail")).toBe("fail")
+    expect(normalizeAuthVerdict("unknown")).toBe("unknown")
+    expect(normalizeAuthVerdict("garbage")).toBe("unknown")
+    expect(normalizeAuthVerdict(null)).toBeNull()
+    expect(normalizeAuthVerdict(undefined)).toBeNull()
+  })
+})
+
+describe("InMemoryMailRepository: withheld replies", () => {
+  it("stores the verdict and flags the thread in the same insert", async () => {
+    const repo = new InMemoryMailRepository()
+    const thread = await repo.createThread({ reportId: "r1", status: "replied" })
+    const message = await repo.insertMessage({
+      threadId: thread.id,
+      direction: "in",
+      fromAddr: "sales@vendor.example",
+      unaffiliated: true,
+      authVerdict: "fail",
+      threadStatus: "needs_action",
+    })
+    expect(message?.authVerdict).toBe("fail")
+    expect((await repo.getThreadRecord(thread.id))?.status).toBe("needs_action")
+  })
+
+  it("leaves the thread status alone when the insert carries none", async () => {
+    const repo = new InMemoryMailRepository()
+    const thread = await repo.createThread({ status: "replied" })
+    await repo.insertMessage({ threadId: thread.id, direction: "in", authVerdict: "pass" })
+    expect((await repo.getThreadRecord(thread.id))?.status).toBe("replied")
+  })
+
+  it("reports a withheld reply only while it is unaffiliated and unapplied", async () => {
+    const repo = new InMemoryMailRepository()
+    const thread = repo.seedThread({ reportId: "r1" })
+    repo.seedMessage({ threadId: thread.id, direction: "out", unaffiliated: true })
+    repo.seedMessage({ threadId: thread.id, direction: "in" })
+    expect(await repo.hasWithheldReply(thread.id)).toBe(false)
+    const withheld = repo.seedMessage({ threadId: thread.id, direction: "in", unaffiliated: true })
+    expect(await repo.hasWithheldReply(thread.id)).toBe(true)
+    withheld.effectsAppliedAt = new Date()
+    expect(await repo.hasWithheldReply(thread.id)).toBe(false)
+  })
+
+  it("withholds nothing on a thread with no report or event", async () => {
+    const repo = new InMemoryMailRepository()
+    const thread = repo.seedThread()
+    repo.seedMessage({ threadId: thread.id, direction: "in", unaffiliated: true })
+    expect(await repo.hasWithheldReply(thread.id)).toBe(false)
+    expect(await repo.hasWithheldReply("missing-thread")).toBe(false)
   })
 })
 

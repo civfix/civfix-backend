@@ -13,6 +13,7 @@ import type {
 } from "@civfix/shared"
 import { toCleanupDTO, type CleanupRecord } from "./cleanup-service.js"
 import { attachAffiliations, type AffiliationLoader } from "./affiliation.js"
+import { officialPersonFlag } from "../auth/official-account.js"
 
 export const PEOPLE_DEFAULT_LIMIT = 20
 
@@ -204,6 +205,7 @@ export function toPersonDTO(view: PersonView, isFollowing: boolean): PersonDTO {
     following: view.following,
     isFollowing,
     ...(view.donationUrl !== null ? { donationUrl: view.donationUrl } : {}),
+    ...officialPersonFlag(view.id),
   }
 }
 
@@ -326,6 +328,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       following: view.following,
       isFollowing,
       organization,
+      ...officialPersonFlag(view.id),
       ...(view.socialLinks ? { socialLinks: view.socialLinks } : {}),
       ...(view.donationUrl !== null ? { donationUrl: view.donationUrl } : {}),
       pastEvents,
@@ -351,6 +354,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       followers: 0,
       following: 0,
       isFollowing: false,
+      ...officialPersonFlag(view.id),
       pastEvents: [],
       upcomingEvents: [],
       stats: { reports: 0, fixed: 0, cleanups: 0 },

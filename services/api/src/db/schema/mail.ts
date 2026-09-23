@@ -15,6 +15,7 @@ import { cleanups } from "./cleanups.js"
 import { jurisdictions } from "./jurisdictions.js"
 import { reports } from "./reports.js"
 import type {
+  MAIL_AUTH_VERDICT_VALUES,
   MAIL_DIRECTION_VALUES,
   MAIL_EVENT_TYPE_VALUES,
   MAIL_THREAD_STATUS_VALUES,
@@ -23,6 +24,7 @@ import type {
 type MailThreadStatus = (typeof MAIL_THREAD_STATUS_VALUES)[number]
 type MailDirection = (typeof MAIL_DIRECTION_VALUES)[number]
 type MailEventType = (typeof MAIL_EVENT_TYPE_VALUES)[number]
+type MailAuthVerdict = (typeof MAIL_AUTH_VERDICT_VALUES)[number]
 
 export const mailThreads = pgTable(
   "mail_threads",
@@ -75,6 +77,7 @@ export const mailMessages = pgTable(
     effectsClaimedAt: timestamp("effects_claimed_at", { withTimezone: true }),
     effectsAppliedAt: timestamp("effects_applied_at", { withTimezone: true }),
     effectsStage: integer("effects_stage").notNull().default(0),
+    authVerdict: text("auth_verdict").$type<MailAuthVerdict>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -84,6 +87,9 @@ export const mailMessages = pgTable(
       .where(
         sql`direction = 'in' AND unaffiliated = false AND effects_applied_at IS NULL`,
       ),
+    index("mail_messages_inbound_created_idx")
+      .on(t.createdAt.desc(), t.id.desc())
+      .where(sql`direction = 'in'`),
     index("mail_messages_message_id_idx")
       .on(t.messageId)
       .where(sql`message_id IS NOT NULL`),

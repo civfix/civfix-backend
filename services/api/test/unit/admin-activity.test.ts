@@ -48,6 +48,13 @@ describe("describeAuditAction", () => {
     expect(describeAuditAction("event.report_unlinked")).toBe("Unlinked a report from an event")
     expect(describeAuditAction("report.verdict_set")).toBe("Set a report verdict")
   })
+
+  it("labels the city reply review actions", () => {
+    expect(describeAuditAction("mail.reply_published_without_text")).toBe(
+      "A city reply was posted without its text",
+    )
+    expect(describeAuditAction("mail.reply_published")).toBe("Published a withheld city reply")
+  })
 })
 
 describe("classifyActivity (per source)", () => {
