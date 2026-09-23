@@ -6,7 +6,7 @@ import {
   type ChatHistoryResponse,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
-import { perIdentity } from "../../plugins/rate-limit.js"
+import { perIdentity, type RouteRateLimitSpec } from "../../plugins/rate-limit.js"
 import type { Container } from "../../di.js"
 import { route } from "../../versioning/route.js"
 import {
@@ -48,17 +48,15 @@ declare module "fastify" {
   }
 }
 
-export const ADMIN_REPORT_CHAT_SEND_RATE_LIMIT = perIdentity({
+const OPERATOR_CHAT_WRITE_LIMIT: RouteRateLimitSpec = {
   max: 60,
   timeWindow: "1 minute",
   skipOnError: false,
-})
+}
 
-export const ADMIN_REPORT_CHAT_REMOVE_RATE_LIMIT = perIdentity({
-  max: 60,
-  timeWindow: "1 minute",
-  skipOnError: false,
-})
+export const ADMIN_REPORT_CHAT_SEND_RATE_LIMIT = perIdentity(OPERATOR_CHAT_WRITE_LIMIT)
+
+export const ADMIN_REPORT_CHAT_REMOVE_RATE_LIMIT = perIdentity(OPERATOR_CHAT_WRITE_LIMIT)
 
 export async function registerAdminReportChatRoutes(
   app: FastifyInstance,

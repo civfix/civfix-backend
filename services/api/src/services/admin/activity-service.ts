@@ -12,7 +12,7 @@ import type {
   ActivityListQuery,
   ActivityListResponse,
 } from "@civfix/shared"
-import { clampLimit } from "./pagination.js"
+import { ADMIN_DEFAULT_LIMIT, clampLimit } from "./pagination.js"
 
 export type ActivitySource = "audit" | "report" | "cleanup" | "mail_event"
 
@@ -26,8 +26,6 @@ export interface ActivitySourceRecord {
   eventType?: string | null
   subject?: string | null
 }
-
-export const ACTIVITY_DEFAULT_LIMIT = 25
 
 export type ActivityFilter = "all" | ActivityKind
 
@@ -51,13 +49,13 @@ export interface ActivityRepository {
  * `filter` / `sort` are free-form strings on the wire (ActivityListQuerySchema), so an unrecognized value
  * degrades to the default rather than 422 or reach SQL: the server owns this vocabulary.
  */
-export function parseActivityFilter(filter: string | undefined): ActivityFilter {
+function parseActivityFilter(filter: string | undefined): ActivityFilter {
   if (filter === undefined || filter === "" || filter === "all") return "all"
   const parsed = ActivityKindSchema.safeParse(filter)
   return parsed.success ? parsed.data : "all"
 }
 
-export function parseActivitySort(sort: string | undefined): ActivitySort {
+function parseActivitySort(sort: string | undefined): ActivitySort {
   return sort === "oldest" ? "oldest" : "newest"
 }
 
@@ -94,7 +92,7 @@ export const AUDIT_FALLBACK_KIND: ActivityKind = "mod_action"
 
 export const MAIL_BOUNCE_EVENT_TYPES = ["bounced", "failed"] as const
 
-export function isMailBounceEventType(type: string): boolean {
+function isMailBounceEventType(type: string): boolean {
   return (MAIL_BOUNCE_EVENT_TYPES as readonly string[]).includes(type)
 }
 
@@ -143,100 +141,110 @@ export function classifyAuditAction(action: string): ActivityKind {
  * Keep this covering every AdminAuditAction (audit.ts): an unlabelled action renders as its raw dotted
  * string in the operator's feed. An unknown action still falls back to that rather than failing.
  */
+const AUDIT_ACTION_LABELS: Record<string, string> = {
+  "operator.login": "Operator signed in",
+  "operator.logout": "Operator signed out",
+  "operator.login_denied": "An operator sign-in was denied",
+  "account.deleted": "An account was deleted",
+  "data_export.undeliverable": "A data export could not be delivered",
+  "discovery.contacts_saved": "Saved routing contacts",
+  "discovery.draft_saved": "Saved a routing draft",
+  "discovery.note_added": "Added a discovery note",
+  "discovery.flagged": "Flagged a jurisdiction",
+  // Written by the public suggest-contact endpoint, not an operator (the feed's `who` is the row's actor).
+  "discovery.contact_suggested": "Suggested a routing contact",
+  "jurisdiction.patched": "Updated a jurisdiction",
+  "report.status_changed": "Changed a report status",
+  "report.flagged": "Flagged a report",
+  "report.unflagged": "Unflagged a report",
+  "report.removed": "Removed a report",
+  "report.followup_sent": "Sent a report follow-up",
+  "report.message_posted": "Posted in a report chat",
+  "report.verdict_set": "Set a report verdict",
+  "report.routed": "Forwarded a report to the city",
+  "report.takedown_requested": "Requested a takedown of their report",
+  "report_message.removed": "Removed a report chat message",
+  "event.status_changed": "Changed an event status",
+  "event.flagged": "Flagged an event",
+  "event.unflagged": "Unflagged an event",
+  "event.cancelled": "Cancelled an event",
+  "event.message_posted": "Messaged event attendees",
+  "event.outcome_logged": "Logged an event outcome",
+  "event.reports_linked": "Linked reports to an event",
+  "event.report_unlinked": "Unlinked a report from an event",
+  "event.announcement_sent": "Sent an event announcement",
+  "user.flagged": "Flagged an account",
+  "user.unflagged": "Unflagged an account",
+  "user.status_changed": "Changed an account status",
+  "user.banned": "Banned an account",
+  "user.role_changed": "Changed an account role",
+  "user.verified": "Verified an account",
+  "user.unverified": "Removed an account's verification",
+  "user.report_verified": "Granted report-verified status",
+  "user.report_unverified": "Revoked report-verified status",
+  "message.removed": "Removed a message",
+  "gov_claim.verified": "Verified a gov claim check",
+  "gov_claim.approved": "Approved a gov claim",
+  "gov_claim.rejected": "Rejected a gov claim",
+  "moderation.approved": "Approved a held item",
+  "moderation.removed": "Removed a flagged item",
+  "moderation.held": "Extended a hold",
+  "moderation.appeal_decided": "Decided an appeal",
+  "mail.sent": "Sent outreach mail",
+  "mail.replied": "Replied to a thread",
+  "mail.resent": "Resent a message",
+  "mail.send_failed": "A send to a jurisdiction failed",
+  "mail.status_changed": "Updated a mail thread",
+  "mail.forward_template_set": "Updated the default forwarding template",
+  "outreach.digest_sent": "Sent an outreach digest",
+  "inbox.status_changed": "Updated an inbox message",
+  // Read audits are filtered out of the feed at the repo (AUDIT_READ_ACTIONS), so these labels only
+  // matter if a row reaches the classifier another way (a fake, or a future feed that includes them).
+  "user.detail_viewed": "Viewed an account",
+  "user.messages_viewed": "Viewed an account's messages",
+  "inbox.message_viewed": "Viewed an inbox message",
+  "mail.thread_viewed": "Viewed a mail thread",
+}
+
 export function describeAuditAction(action: string): string {
-  const map: Record<string, string> = {
-    "operator.login": "Operator signed in",
-    "operator.logout": "Operator signed out",
-    "operator.login_denied": "An operator sign-in was denied",
-    "account.deleted": "An account was deleted",
-    "data_export.undeliverable": "A data export could not be delivered",
-    "discovery.contacts_saved": "Saved routing contacts",
-    "discovery.draft_saved": "Saved a routing draft",
-    "discovery.note_added": "Added a discovery note",
-    "discovery.flagged": "Flagged a jurisdiction",
-    // Written by the public suggest-contact endpoint, not an operator (the feed's `who` is the row's actor).
-    "discovery.contact_suggested": "Suggested a routing contact",
-    "jurisdiction.patched": "Updated a jurisdiction",
-    "report.status_changed": "Changed a report status",
-    "report.flagged": "Flagged a report",
-    "report.unflagged": "Unflagged a report",
-    "report.removed": "Removed a report",
-    "report.followup_sent": "Sent a report follow-up",
-    "report.message_posted": "Posted in a report chat",
-    "report.verdict_set": "Set a report verdict",
-    "report.routed": "Forwarded a report to the city",
-    "report.takedown_requested": "Requested a takedown of their report",
-    "report_message.removed": "Removed a report chat message",
-    "event.status_changed": "Changed an event status",
-    "event.flagged": "Flagged an event",
-    "event.unflagged": "Unflagged an event",
-    "event.cancelled": "Cancelled an event",
-    "event.message_posted": "Messaged event attendees",
-    "event.outcome_logged": "Logged an event outcome",
-    "event.reports_linked": "Linked reports to an event",
-    "event.report_unlinked": "Unlinked a report from an event",
-    "event.announcement_sent": "Sent an event announcement",
-    "user.flagged": "Flagged an account",
-    "user.unflagged": "Unflagged an account",
-    "user.status_changed": "Changed an account status",
-    "user.banned": "Banned an account",
-    "user.role_changed": "Changed an account role",
-    "user.verified": "Verified an account",
-    "user.unverified": "Removed an account's verification",
-    "user.report_verified": "Granted report-verified status",
-    "user.report_unverified": "Revoked report-verified status",
-    "message.removed": "Removed a message",
-    "gov_claim.verified": "Verified a gov claim check",
-    "gov_claim.approved": "Approved a gov claim",
-    "gov_claim.rejected": "Rejected a gov claim",
-    "moderation.approved": "Approved a held item",
-    "moderation.removed": "Removed a flagged item",
-    "moderation.held": "Extended a hold",
-    "moderation.appeal_decided": "Decided an appeal",
-    "mail.sent": "Sent outreach mail",
-    "mail.replied": "Replied to a thread",
-    "mail.resent": "Resent a message",
-    "mail.send_failed": "A send to a jurisdiction failed",
-    "mail.status_changed": "Updated a mail thread",
-    "mail.forward_template_set": "Updated the default forwarding template",
-    "outreach.digest_sent": "Sent an outreach digest",
-    "inbox.status_changed": "Updated an inbox message",
-    // Read audits are filtered out of the feed at the repo (AUDIT_READ_ACTIONS), so these labels only
-    // matter if a row reaches the classifier another way (a fake, or a future feed that includes them).
-    "user.detail_viewed": "Viewed an account",
-    "user.messages_viewed": "Viewed an account's messages",
-    "inbox.message_viewed": "Viewed an inbox message",
-    "mail.thread_viewed": "Viewed a mail thread",
-  }
-  return map[action] ?? action
+  return AUDIT_ACTION_LABELS[action] ?? action
+}
+
+const NEIGHBOR_ACTOR = "A neighbor"
+const MAIL_ACTOR = "Mail"
+const OPERATOR_ACTOR = "Operator"
+
+function nonBlankOr(value: string | null | undefined, fallback: string): string {
+  return value && value.trim() !== "" ? value : fallback
 }
 
 export function classifyActivity(record: ActivitySourceRecord, ref: Date): ActivityItemDTO {
   const ts = relativeAgo(record.ts, ref)
   if (record.source === "report") {
-    const cat = record.subject && record.subject.trim() !== "" ? record.subject : "issue"
-    return item("pin", record.who || "A neighbor", `New ${cat} report`, record.where, ts)
+    const cat = nonBlankOr(record.subject, "issue")
+    return item("pin", record.who || NEIGHBOR_ACTOR, `New ${cat} report`, record.where, ts)
   }
   if (record.source === "cleanup") {
-    const title = record.subject && record.subject.trim() !== "" ? record.subject : "cleanup"
-    return item("cleanup_plan", record.who || "A neighbor", `Planned: ${title}`, record.where, ts)
+    const title = nonBlankOr(record.subject, "cleanup")
+    return item("cleanup_plan", record.who || NEIGHBOR_ACTOR, `Planned: ${title}`, record.where, ts)
   }
-  if (record.source === "mail_event") {
-    const type = record.eventType ?? ""
-    // The kind comes from the same list the repo's outreach_bounce filter uses; only the label
-    // distinguishes the two members.
-    if (isMailBounceEventType(type)) {
-      const what = type === "failed" ? "Outreach failed" : "Outreach bounced"
-      return item("outreach_bounce", record.who || "Mail", what, record.where, ts)
-    }
-    if (type === "delivered") {
-      return item("outreach_open", record.who || "Mail", "City replied", record.where, ts)
-    }
-    return item("outreach_open", record.who || "Mail", "Outreach sent", record.where, ts)
-  }
+  if (record.source === "mail_event") return classifyMailEvent(record, ts)
   const action = record.action ?? ""
   const kind = classifyAuditAction(action)
-  return item(kind, record.who || "Operator", describeAuditAction(action), record.where, ts)
+  return item(kind, record.who || OPERATOR_ACTOR, describeAuditAction(action), record.where, ts)
+}
+
+function classifyMailEvent(record: ActivitySourceRecord, ts: string): ActivityItemDTO {
+  const type = record.eventType ?? ""
+  const who = record.who || MAIL_ACTOR
+  // The kind comes from the same list the repo's outreach_bounce filter uses; only the label
+  // distinguishes the two members.
+  if (isMailBounceEventType(type)) {
+    const what = type === "failed" ? "Outreach failed" : "Outreach bounced"
+    return item("outreach_bounce", who, what, record.where, ts)
+  }
+  if (type === "delivered") return item("outreach_open", who, "City replied", record.where, ts)
+  return item("outreach_open", who, "Outreach sent", record.where, ts)
 }
 
 function item(
@@ -268,7 +276,7 @@ export function makeActivityService(deps: ActivityServiceDeps): ActivityService 
         filter: parseActivityFilter(query.filter),
         sort: parseActivitySort(query.sort),
         cursor: query.cursor ?? null,
-        limit: clampLimit(query.limit ?? ACTIVITY_DEFAULT_LIMIT),
+        limit: clampLimit(query.limit ?? ADMIN_DEFAULT_LIMIT),
       }
       const { records, nextCursor } = await deps.repo.list(args)
       return { items: records.map((r) => classifyActivity(r, ref)), nextCursor }

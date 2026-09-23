@@ -55,11 +55,7 @@ export function parseCategoryCounts(
 }
 
 function joinColumns(sql: Queryable, parts: SqlFragment[]): SqlFragment {
-  let out = sql``
-  let first = true
-  for (const part of parts) {
-    out = first ? part : sql`${out}, ${part}`
-    first = false
-  }
-  return out
+  const [first, ...rest] = parts
+  if (first === undefined) return sql``
+  return rest.reduce<SqlFragment>((acc, part) => sql`${acc}, ${part}`, first)
 }

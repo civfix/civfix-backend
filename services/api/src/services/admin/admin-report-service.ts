@@ -21,8 +21,9 @@ import type { PacketAttachment } from "./outbound-mail-service.js"
 import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignPacketMedia } from "../media-presign.js"
 import { isPubliclyVisibleStatus } from "../report-visibility.js"
+import { ADMIN_DEFAULT_LIMIT } from "./pagination.js"
 import {
   JURISDICTION_REPLY_NOTE,
   resolveListFilter,
@@ -52,17 +53,10 @@ import type {
 
 export * from "./admin-report-types.js"
 export * from "./admin-report-status.js"
-export {
-  buildReportPacket,
-  attachmentFilename,
-  MAX_PACKET_ATTACHMENTS,
-  MAX_PACKET_ATTACHMENT_BYTES,
-  type ReportPacket,
-} from "./mail-format.js"
 
 const ROUTABLE_FROM_STATUSES: readonly AdminReportStatus[] = ["submitted", "held", "published"]
 
-export const ALREADY_ROUTED_CONFLICT = "This report has already been sent to its jurisdiction"
+const ALREADY_ROUTED_CONFLICT = "This report has already been sent to its jurisdiction"
 
 export const SEND_IN_FLIGHT_CONFLICT =
   "A send to this jurisdiction is still in progress. Check back shortly to see the outcome on the outreach trail."
@@ -74,6 +68,33 @@ export function isAlreadyRoutedConflict(err: unknown): boolean {
     err.message === ALREADY_ROUTED_CONFLICT
   )
 }
+
+const REPORT_NOT_FOUND = "Report not found"
+
+const REPORTER_FOLLOWUP_NOTE = "Follow-up sent to the reporter"
+
+const ANONYMOUS_REPORTER = { id: null, name: "Anonymous", handle: "anonymous" } as const
+
+const EMPTY_REPORT_COUNTS: AdminReportCounts = {
+  all: 0,
+  submitted: 0,
+  in_progress: 0,
+  completed: 0,
+  flagged: 0,
+  needsVerification: 0,
+}
+
+const FALLBACK_ATTACHMENT_MIME = "image/jpeg"
+
+const JPEG_SIGNATURE = [0xff, 0xd8, 0xff]
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+// A WebP file is a RIFF container: "RIFF", a 4-byte size, then "WEBP".
+const RIFF_SIGNATURE = [0x52, 0x49, 0x46, 0x46]
+const WEBP_FORM_TYPE = [0x57, 0x45, 0x42, 0x50]
+const WEBP_FORM_TYPE_OFFSET = 8
+
+const PG_SERIALIZATION_FAILURE = "40001"
+const PG_DEADLOCK_DETECTED = "40P01"
 
 function firstTemplate(...candidates: (string | null | undefined)[]): string | null {
   for (const candidate of candidates) {
@@ -90,17 +111,6 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       thumbKey === null ? { url: r2Key } : { url: r2Key, thumbUrl: thumbKey })
   const presignPacketMedia =
     deps.presignPacketMedia ?? (async (r2Key: string) => (await presignMedia(r2Key, null)).url)
-
-  async function emitTimeline(event: {
-    reportId: string
-    status: AdminReportStatus
-    kind?: ReportTimelineItem["kind"]
-    note?: string | null
-    body?: string | null
-  }): Promise<void> {
-    if (deps.reportChatEmitter === undefined) return
-    await deps.reportChatEmitter.emit(event)
-  }
 
   async function toMediaDTO(m: AdminReportMediaRecord): Promise<ReportMedia> {
     const { url, thumbUrl } = await presignMedia(m.r2Key, m.thumbKey)
@@ -123,11 +133,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       flagged: record.flagged,
       title: record.title,
       place: record.place,
-      reporter: toPersonDTO(record.reporter, ref, {
-        id: null,
-        name: "Anonymous",
-        handle: "anonymous",
-      }),
+      reporter: toPersonDTO(record.reporter, ref, ANONYMOUS_REPORTER),
       confirmations: record.confirmations,
       submitted: toRelAbs(record.createdAt, ref),
       coords: [record.lat, record.lng],
@@ -138,17 +144,11 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
   }
 
   function toTimelineDTO(record: AdminReportTimelineRecord, ref: Date): ReportTimelineItem {
-    const kind: ReportTimelineItem["kind"] =
-      (record.kind ?? null) !== null
-        ? (record.kind as ReportTimelineItem["kind"])
-        : record.note?.startsWith(JURISDICTION_REPLY_NOTE) === true
-          ? "reply"
-          : timelineKindForStatus(record.status)
     return {
       who: record.who,
       what: record.note ?? statusChangeNote(record.status),
       when: toRelAbs(record.createdAt, ref).rel,
-      kind,
+      kind: timelineRecordKind(record),
     }
   }
 
@@ -162,20 +162,13 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         flaggedOnly,
         needsVerificationOnly,
         cursor: query.cursor ?? null,
-        limit: query.limit ?? 25,
+        limit: query.limit ?? ADMIN_DEFAULT_LIMIT,
       }
       const [{ records, nextCursor }, counts] = await Promise.all([
         deps.repo.listReports(args),
         args.cursor === null
           ? deps.repo.countByBucket({ q: args.q })
-          : Promise.resolve<AdminReportCounts>({
-              all: 0,
-              submitted: 0,
-              in_progress: 0,
-              completed: 0,
-              flagged: 0,
-              needsVerification: 0,
-            }),
+          : Promise.resolve<AdminReportCounts>({ ...EMPTY_REPORT_COUNTS }),
       ])
       const items = await mapWithLimit(records, PRESIGN_CONCURRENCY, async (r) =>
         toListItem(r, ref, await previewMediaDTO(r)),
@@ -186,7 +179,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     async get(id: string): Promise<AdminReportDTO> {
       const ref = now()
       const record = await deps.repo.getReport(id)
-      if (!record) throw AppError.notFound("Report not found")
+      if (!record) throw AppError.notFound(REPORT_NOT_FOUND)
       const [timeline, routing, media, linkedEventsMap, outreach] = await Promise.all([
         deps.repo.listTimeline(id),
         deps.repo.getRouting(id),
@@ -237,7 +230,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       input: { status: AdminReportStatus; actorId: string | null },
     ): Promise<void> {
       const record = await deps.repo.getReport(id)
-      if (!record) throw AppError.notFound("Report not found")
+      if (!record) throw AppError.notFound(REPORT_NOT_FOUND)
       if (input.status === "rejected") {
         throw AppError.validation({ status: "use_remove" }, "Use Remove to reject a report")
       }
@@ -265,7 +258,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         )
       }
       await notifyReporterOfStatus(deps, id, record.reporter?.id ?? null, input.status)
-      await emitTimeline({
+      await emitTimeline(deps, {
         reportId: id,
         status: input.status,
         kind: timelineKindForStatus(input.status),
@@ -278,12 +271,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       input: { reason: string | null; actorId: string | null },
     ): Promise<boolean> {
       const flagged = await deps.repo.toggleFlag(id, input)
-      if (flagged === null) throw AppError.notFound("Report not found")
+      if (flagged === null) throw AppError.notFound(REPORT_NOT_FOUND)
       // The toggle is committed; failing the request would invite a retry, and a retried toggle unflags.
       try {
         const record = await deps.repo.getReport(id)
         if (record) {
-          await emitTimeline({
+          await emitTimeline(deps, {
             reportId: id,
             status: record.status,
             kind: "status",
@@ -305,8 +298,8 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           ? `Report removed: ${input.reason.trim()}`
           : statusChangeNote("rejected")
       const ok = await deps.repo.remove(id, { note, actorId: input.actorId })
-      if (!ok) throw AppError.notFound("Report not found")
-      await emitTimeline({
+      if (!ok) throw AppError.notFound(REPORT_NOT_FOUND)
+      await emitTimeline(deps, {
         reportId: id,
         status: "rejected",
         kind: timelineKindForStatus("rejected"),
@@ -319,74 +312,11 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       input: { to: "reporter" | "city"; body: string; actorId: string | null },
     ): Promise<FollowupResult> {
       const record = await deps.repo.getReport(id)
-      if (!record) throw AppError.notFound("Report not found")
+      if (!record) throw AppError.notFound(REPORT_NOT_FOUND)
 
-      if (input.to === "reporter") {
-        const reporterId = record.reporter?.id
-        if (!reporterId || reporterId === "") {
-          throw AppError.validation({ to: "report has no reporter account to notify" })
-        }
-        const notifications = deps.notifications
-        if (notifications === undefined) {
-          throw AppError.internal("Reporter notifications are not wired on this instance")
-        }
-        // Audit before the citizen is messaged, so no operator message ever reaches a reporter unrecorded.
-        await recordFollowup(deps, id, {
-          note: "Follow-up sent to the reporter",
-          actorId: input.actorId,
-          to: "reporter",
-          destination: reporterId,
-        })
-        await notifications.createNotification(reporterId, {
-          type: "report_update",
-          title: "Update on your report",
-          body: input.body,
-          link: `/reports/${id}`,
-        })
-        await emitTimeline({
-          reportId: id,
-          status: record.status,
-          kind: "status",
-          note: "Follow-up sent to the reporter",
-        })
-        return { to: "reporter", destination: reporterId }
-      }
-
-      const routing = await deps.repo.getRouting(id)
-      const outreach = await deps.repo.getOutreach(id)
-      assertNoSendInFlight(outreach)
-      if (outreach.threadId === null) {
-        throw AppError.validation(
-          { to: "not_routed" },
-          "Send the report to the jurisdiction first; follow-ups go on that conversation",
-        )
-      }
-      const destination = outreach.routedTo ?? routing?.contact ?? null
-      if (destination === null || destination === "") {
-        throw AppError.validation({ to: "no city contact on file for this report" })
-      }
-      await deps.outboundMail.appendOutbound(outreach.threadId, {
-        body: input.body,
-        toAddr: destination,
-        audit: {
-          actorId: input.actorId,
-          action: "mail.replied",
-          meta: { reportId: id, to: destination },
-        },
-      })
-      await recordFollowup(deps, id, {
-        note: `Follow-up sent to ${destination}`,
-        actorId: input.actorId,
-        to: "city",
-        destination,
-      })
-      await emitTimeline({
-        reportId: id,
-        status: record.status,
-        kind: "status",
-        note: `Follow-up sent to ${destination}`,
-      })
-      return { to: "city", destination }
+      return input.to === "reporter"
+        ? followupToReporter(deps, id, record, input)
+        : followupToCity(deps, id, record, input)
     },
 
     async routeToJurisdiction(
@@ -394,7 +324,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       input: { note: string | null; actorId: string | null },
     ): Promise<RouteToJurisdictionResult> {
       const record = await deps.repo.getReport(id)
-      if (!record) throw AppError.notFound("Report not found")
+      if (!record) throw AppError.notFound(REPORT_NOT_FOUND)
 
       const routing = await deps.repo.getRouting(id)
       const toAddr = routing?.contact ?? null
@@ -406,27 +336,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
 
       assertRoutable(await deps.repo.getOutreach(id), toAddr)
 
-      const media = await deps.repo.listMedia(id)
-      const publiclyVisible =
-        isPubliclyVisibleStatus(record.status) && record.visibility === "public"
-      const packetMedia: PacketMediaLink[] = []
-      const attachments: PacketAttachment[] = []
-      let attachedBytesTotal = 0
-      for (const m of media) {
-        packetMedia.push({ kind: m.kind, url: await presignPacketMedia(m.r2Key, publiclyVisible) })
-        if (m.kind !== "image" || attachments.length >= MAX_PACKET_ATTACHMENTS) continue
-        const bytes = deps.loadMediaBytes ? await deps.loadMediaBytes(m.r2Key) : null
-        if (bytes === null || bytes.byteLength > MAX_PACKET_ATTACHMENT_BYTES) continue
-        if (attachedBytesTotal + bytes.byteLength > MAX_PACKET_TOTAL_BYTES) continue
-        attachedBytesTotal += bytes.byteLength
-        const contentType = attachmentContentType(m.contentType, bytes)
-        attachments.push({
-          key: m.r2Key,
-          filename: attachmentFilename(m.r2Key, attachments.length, contentType),
-          contentType,
-          content: bytes,
-        })
-      }
+      const { packetMedia, attachments } = await collectPacketMedia(
+        await deps.repo.listMedia(id),
+        isPubliclyVisibleStatus(record.status) && record.visibility === "public",
+        presignPacketMedia,
+        deps.loadMediaBytes,
+      )
 
       const defaults =
         deps.forwardTemplates !== undefined ? await deps.forwardTemplates.get() : null
@@ -455,31 +370,17 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         })
       })
 
-      const recordRouteOutcome = async (): Promise<void> => {
-        let advanced = false
-        await retryOnce(async () => {
-          advanced = await deps.repo.advanceStatusIfIn(id, {
-            from: ROUTABLE_FROM_STATUSES,
-            to: "acknowledged",
-            note: routeNote,
-            actorId: input.actorId,
-            kind: "route",
-          })
-          if (!advanced) {
-            await deps.repo.appendSystemTimeline(id, { note: routeNote, kind: "route" })
-          }
-        })
-        const current = advanced
-          ? "acknowledged"
-          : ((await deps.repo.getReport(id))?.status ?? record.status)
-        await emitTimeline({ reportId: id, status: current, kind: "route", note: routeNote })
+      const outcome: RouteOutcome = {
+        reportId: id,
+        note: routeNote,
+        actorId: input.actorId,
+        statusBefore: record.status,
       }
-
-      await prepared.deliver({ onLateSuccess: recordRouteOutcome })
+      await prepared.deliver({ onLateSuccess: () => recordRouteOutcome(deps, outcome) })
 
       const threadId = prepared.thread.id
 
-      await recordRouteOutcome()
+      await recordRouteOutcome(deps, outcome)
 
       return { threadId, routedTo: toAddr }
     },
@@ -496,9 +397,9 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         actorId: input.actorId,
         note,
       })
-      if (!ok) throw AppError.notFound("Report not found")
+      if (!ok) throw AppError.notFound(REPORT_NOT_FOUND)
       const record = await deps.repo.getReport(input.id)
-      await emitTimeline({
+      await emitTimeline(deps, {
         reportId: input.id,
         status: record?.status ?? "submitted",
         kind: "status",
@@ -508,30 +409,108 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
   }
 }
 
+function timelineRecordKind(record: AdminReportTimelineRecord): ReportTimelineItem["kind"] {
+  if ((record.kind ?? null) !== null) return record.kind as ReportTimelineItem["kind"]
+  if (record.note?.startsWith(JURISDICTION_REPLY_NOTE) === true) return "reply"
+  return timelineKindForStatus(record.status)
+}
+
+async function emitTimeline(
+  deps: AdminReportServiceDeps,
+  event: {
+    reportId: string
+    status: AdminReportStatus
+    kind?: ReportTimelineItem["kind"]
+    note?: string | null
+    body?: string | null
+  },
+): Promise<void> {
+  if (deps.reportChatEmitter === undefined) return
+  await deps.reportChatEmitter.emit(event)
+}
+
+/**
+ * Every media item gets a link; only images within the per-file, count and total byte caps are also
+ * attached. Presigning and loading stay sequential, in media order, so attachment filenames are stable.
+ */
+async function collectPacketMedia(
+  media: readonly AdminReportMediaRecord[],
+  publiclyVisible: boolean,
+  presignPacketMedia: PresignPacketMedia,
+  loadMediaBytes: AdminReportServiceDeps["loadMediaBytes"],
+): Promise<{ packetMedia: PacketMediaLink[]; attachments: PacketAttachment[] }> {
+  const packetMedia: PacketMediaLink[] = []
+  const attachments: PacketAttachment[] = []
+  let attachedBytesTotal = 0
+  for (const m of media) {
+    packetMedia.push({ kind: m.kind, url: await presignPacketMedia(m.r2Key, publiclyVisible) })
+    if (m.kind !== "image" || attachments.length >= MAX_PACKET_ATTACHMENTS) continue
+    const bytes = loadMediaBytes ? await loadMediaBytes(m.r2Key) : null
+    if (bytes === null || bytes.byteLength > MAX_PACKET_ATTACHMENT_BYTES) continue
+    if (attachedBytesTotal + bytes.byteLength > MAX_PACKET_TOTAL_BYTES) continue
+    attachedBytesTotal += bytes.byteLength
+    const contentType = attachmentContentType(m.contentType, bytes)
+    attachments.push({
+      key: m.r2Key,
+      filename: attachmentFilename(m.r2Key, attachments.length, contentType),
+      contentType,
+      content: bytes,
+    })
+  }
+  return { packetMedia, attachments }
+}
+
+interface RouteOutcome {
+  reportId: string
+  note: string
+  actorId: string | null
+  statusBefore: AdminReportStatus
+}
+
+async function recordRouteOutcome(
+  deps: AdminReportServiceDeps,
+  outcome: RouteOutcome,
+): Promise<void> {
+  const { reportId, note, actorId } = outcome
+  let advanced = false
+  await retryOnce(async () => {
+    advanced = await deps.repo.advanceStatusIfIn(reportId, {
+      from: ROUTABLE_FROM_STATUSES,
+      to: "acknowledged",
+      note,
+      actorId,
+      kind: "route",
+    })
+    if (!advanced) {
+      await deps.repo.appendSystemTimeline(reportId, { note, kind: "route" })
+    }
+  })
+  const current = advanced
+    ? "acknowledged"
+    : ((await deps.repo.getReport(reportId))?.status ?? outcome.statusBefore)
+  await emitTimeline(deps, { reportId, status: current, kind: "route", note })
+}
+
 export function attachmentContentType(
   stored: string | null | undefined,
   bytes: Uint8Array,
 ): string {
   if (stored !== null && stored !== undefined && stored.trim() !== "") return stored
-  return sniffImageMime(bytes) ?? "image/jpeg"
+  return sniffImageMime(bytes) ?? FALLBACK_ATTACHMENT_MIME
+}
+
+function hasBytesAt(bytes: Uint8Array, offset: number, expected: readonly number[]): boolean {
+  return (
+    bytes.length >= offset + expected.length && expected.every((b, i) => bytes[offset + i] === b)
+  )
 }
 
 function sniffImageMime(bytes: Uint8Array): string | null {
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return "image/jpeg"
-  }
-  const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
-  if (bytes.length >= PNG.length && PNG.every((b, i) => bytes[i] === b)) return "image/png"
+  if (hasBytesAt(bytes, 0, JPEG_SIGNATURE)) return "image/jpeg"
+  if (hasBytesAt(bytes, 0, PNG_SIGNATURE)) return "image/png"
   if (
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x45 &&
-    bytes[10] === 0x42 &&
-    bytes[11] === 0x50
+    hasBytesAt(bytes, 0, RIFF_SIGNATURE) &&
+    hasBytesAt(bytes, WEBP_FORM_TYPE_OFFSET, WEBP_FORM_TYPE)
   ) {
     return "image/webp"
   }
@@ -594,6 +573,90 @@ async function notifyReporterOfStatus(
   }
 }
 
+interface FollowupInput {
+  body: string
+  actorId: string | null
+}
+
+async function followupToReporter(
+  deps: AdminReportServiceDeps,
+  id: string,
+  record: AdminReportRecord,
+  input: FollowupInput,
+): Promise<FollowupResult> {
+  const reporterId = record.reporter?.id
+  if (!reporterId || reporterId === "") {
+    throw AppError.validation({ to: "report has no reporter account to notify" })
+  }
+  const notifications = deps.notifications
+  if (notifications === undefined) {
+    throw AppError.internal("Reporter notifications are not wired on this instance")
+  }
+  // Audit before the citizen is messaged, so no operator message ever reaches a reporter unrecorded.
+  await recordFollowup(deps, id, {
+    note: REPORTER_FOLLOWUP_NOTE,
+    actorId: input.actorId,
+    to: "reporter",
+    destination: reporterId,
+  })
+  await notifications.createNotification(reporterId, {
+    type: "report_update",
+    title: "Update on your report",
+    body: input.body,
+    link: `/reports/${id}`,
+  })
+  await emitTimeline(deps, {
+    reportId: id,
+    status: record.status,
+    kind: "status",
+    note: REPORTER_FOLLOWUP_NOTE,
+  })
+  return { to: "reporter", destination: reporterId }
+}
+
+async function followupToCity(
+  deps: AdminReportServiceDeps,
+  id: string,
+  record: AdminReportRecord,
+  input: FollowupInput,
+): Promise<FollowupResult> {
+  const routing = await deps.repo.getRouting(id)
+  const outreach = await deps.repo.getOutreach(id)
+  assertNoSendInFlight(outreach)
+  if (outreach.threadId === null) {
+    throw AppError.validation(
+      { to: "not_routed" },
+      "Send the report to the jurisdiction first; follow-ups go on that conversation",
+    )
+  }
+  const destination = outreach.routedTo ?? routing?.contact ?? null
+  if (destination === null || destination === "") {
+    throw AppError.validation({ to: "no city contact on file for this report" })
+  }
+  await deps.outboundMail.appendOutbound(outreach.threadId, {
+    body: input.body,
+    toAddr: destination,
+    audit: {
+      actorId: input.actorId,
+      action: "mail.replied",
+      meta: { reportId: id, to: destination },
+    },
+  })
+  await recordFollowup(deps, id, {
+    note: `Follow-up sent to ${destination}`,
+    actorId: input.actorId,
+    to: "city",
+    destination,
+  })
+  await emitTimeline(deps, {
+    reportId: id,
+    status: record.status,
+    kind: "status",
+    note: `Follow-up sent to ${destination}`,
+  })
+  return { to: "city", destination }
+}
+
 async function recordFollowup(
   deps: AdminReportServiceDeps,
   id: string,
@@ -613,5 +676,5 @@ async function retryOnce(fn: () => Promise<void>): Promise<void> {
 
 function isRetryableSerializationFailure(err: unknown): boolean {
   const code = (err as { code?: unknown } | null | undefined)?.code
-  return code === "40001" || code === "40P01"
+  return code === PG_SERIALIZATION_FAILURE || code === PG_DEADLOCK_DETECTED
 }

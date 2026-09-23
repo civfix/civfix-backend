@@ -31,11 +31,35 @@ import type {
 } from "@civfix/shared"
 import { likeContains } from "./like.js"
 
-export const ADMIN_USER_ORGANIZATIONS_LIMIT = 25
+const ADMIN_USER_ORGANIZATIONS_LIMIT = 25
 
 const EPOCH = new Date(0)
 
 const CITY_MATCH_USER_CAP = 5000
+
+const UNNAMED_USER_NAME = "Neighbor"
+const UNTITLED_REPORT_TITLE = "Untitled report"
+const UNTITLED_CLEANUP_TITLE = "Cleanup"
+
+interface FacetCountRow {
+  all: string
+  active: string
+  suspended: string
+  flagged: string
+  deleted: string
+  banned: string
+}
+
+function toFacetCounts(row: FacetCountRow | undefined): AdminUserCounts {
+  return {
+    all: Number(row?.all ?? "0"),
+    active: Number(row?.active ?? "0"),
+    suspended: Number(row?.suspended ?? "0"),
+    flagged: Number(row?.flagged ?? "0"),
+    deleted: Number(row?.deleted ?? "0"),
+    banned: Number(row?.banned ?? "0"),
+  }
+}
 
 function searchUsersFragment(
   sql: Queryable,
@@ -86,7 +110,7 @@ interface UserRowSelect {
 function toRecord(r: UserRowSelect): AdminUserRecord {
   return {
     id: r.id,
-    name: r.name ?? "Neighbor",
+    name: r.name ?? UNNAMED_USER_NAME,
     handle: r.handle,
     emailVerified: r.email_verified,
     city: r.city ?? "",
@@ -195,16 +219,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
 
     async countByFacet(args: { q: string | null }): Promise<AdminUserCounts> {
       if (args.q === null) {
-        const rows = await sql<
-          {
-            all: string
-            active: string
-            suspended: string
-            flagged: string
-            deleted: string
-            banned: string
-          }[]
-        >`
+        const rows = await sql<FacetCountRow[]>`
           SELECT
             COUNT(*)::text AS all,
             COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'active')::text AS active,
@@ -215,29 +230,12 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           FROM users u
           LEFT JOIN user_moderation um ON um.user_id = u.id
         `
-        const exact = rows[0]
-        return {
-          all: Number(exact?.all ?? "0"),
-          active: Number(exact?.active ?? "0"),
-          suspended: Number(exact?.suspended ?? "0"),
-          flagged: Number(exact?.flagged ?? "0"),
-          deleted: Number(exact?.deleted ?? "0"),
-          banned: Number(exact?.banned ?? "0"),
-        }
+        return toFacetCounts(rows[0])
       }
 
       const cityUserIds = await resolveCityMatchUserIds(sql, args.q)
       const search = searchUsersFragment(sql, args.q, cityUserIds)
-      const rows = await sql<
-        {
-          all: string
-          active: string
-          suspended: string
-          flagged: string
-          deleted: string
-          banned: string
-        }[]
-      >`
+      const rows = await sql<FacetCountRow[]>`
         SELECT
           COUNT(*)::text AS all,
           COUNT(*) FILTER (WHERE COALESCE(um.account_status, 'active') = 'active')::text AS active,
@@ -250,15 +248,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         WHERE TRUE
         ${search}
       `
-      const r = rows[0]
-      return {
-        all: Number(r?.all ?? "0"),
-        active: Number(r?.active ?? "0"),
-        suspended: Number(r?.suspended ?? "0"),
-        flagged: Number(r?.flagged ?? "0"),
-        deleted: Number(r?.deleted ?? "0"),
-        banned: Number(r?.banned ?? "0"),
-      }
+      return toFacetCounts(rows[0])
     },
 
     async userExists(id: string): Promise<boolean> {
@@ -315,7 +305,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         records: items.map((r) => ({
           id: r.id,
           category: r.category,
-          title: r.title ?? "Untitled report",
+          title: r.title ?? UNTITLED_REPORT_TITLE,
           place: r.place ?? "",
           status: r.status,
           createdAt: r.created_at,
@@ -368,7 +358,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       return {
         records: items.map((r) => ({
           id: r.id,
-          title: r.title ?? "Cleanup",
+          title: r.title ?? UNTITLED_CLEANUP_TITLE,
           place: r.place ?? "",
           role: r.role,
           attendees: Number(r.attendees ?? "0"),

@@ -21,40 +21,37 @@ export const STATUS_BUCKETS: Record<
   completed: ["resolved"],
 }
 
-export function resolveListFilter(filter: string | undefined): {
+export interface ReportListFilter {
   statuses: AdminReportStatus[] | null
   flaggedOnly: boolean
   needsVerificationOnly: boolean
-} {
+}
+
+function listFilter(
+  statuses: AdminReportStatus[] | null,
+  flags: { flaggedOnly?: boolean; needsVerificationOnly?: boolean } = {},
+): ReportListFilter {
+  return {
+    statuses,
+    flaggedOnly: flags.flaggedOnly ?? false,
+    needsVerificationOnly: flags.needsVerificationOnly ?? false,
+  }
+}
+
+export function resolveListFilter(filter: string | undefined): ReportListFilter {
   switch (filter) {
     case "submitted":
-      return {
-        statuses: STATUS_BUCKETS.submitted,
-        flaggedOnly: false,
-        needsVerificationOnly: false,
-      }
+      return listFilter(STATUS_BUCKETS.submitted)
     case "in_progress":
-      return {
-        statuses: STATUS_BUCKETS.in_progress,
-        flaggedOnly: false,
-        needsVerificationOnly: false,
-      }
+      return listFilter(STATUS_BUCKETS.in_progress)
     case "completed":
-      return {
-        statuses: STATUS_BUCKETS.completed,
-        flaggedOnly: false,
-        needsVerificationOnly: false,
-      }
+      return listFilter(STATUS_BUCKETS.completed)
     case "flagged":
-      return { statuses: null, flaggedOnly: true, needsVerificationOnly: false }
+      return listFilter(null, { flaggedOnly: true })
     case "needs_verification":
-      return {
-        statuses: STATUS_BUCKETS.submitted,
-        flaggedOnly: false,
-        needsVerificationOnly: true,
-      }
+      return listFilter(STATUS_BUCKETS.submitted, { needsVerificationOnly: true })
     default:
-      return { statuses: null, flaggedOnly: false, needsVerificationOnly: false }
+      return listFilter(null)
   }
 }
 

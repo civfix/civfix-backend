@@ -3,7 +3,6 @@ import type {
   AdminReportDTO,
   AdminReportListQuery,
   AdminReportListResponse,
-  AdminReportListItemDTO,
   AdminReportStatus,
   ReportCategory,
   ReportMedia,
@@ -207,5 +206,3 @@ export interface AdminReportService {
     actorId: string | null
   }): Promise<void>
 }
-
-export type { AdminReportListItemDTO }

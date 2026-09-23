@@ -17,6 +17,20 @@ export interface RecordedUserAudit {
   meta: Record<string, unknown>
 }
 
+function appendTo<T>(map: Map<string, T[]>, key: string, row: T): void {
+  const list = map.get(key) ?? []
+  list.push(row)
+  map.set(key, list)
+}
+
+function userSearchMatcher(q: string): (record: AdminUserRecord) => boolean {
+  const needle = q.toLowerCase()
+  return (r) =>
+    r.name.toLowerCase().includes(needle) ||
+    (r.handle?.toLowerCase().includes(needle) ?? false) ||
+    r.city.toLowerCase().includes(needle)
+}
+
 export class InMemoryAdminUserRepository implements AdminUserRepository {
   readonly users = new Map<string, AdminUserRecord>()
   readonly reports = new Map<string, UserReportRecord[]>()
@@ -76,15 +90,11 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
   }
 
   seedReport(userId: string, row: UserReportRecord): void {
-    const list = this.reports.get(userId) ?? []
-    list.push(row)
-    this.reports.set(userId, list)
+    appendTo(this.reports, userId, row)
   }
 
   seedEvent(userId: string, row: UserEventRecord): void {
-    const list = this.events.get(userId) ?? []
-    list.push(row)
-    this.events.set(userId, list)
+    appendTo(this.events, userId, row)
   }
 
   seedMessage(
@@ -95,14 +105,12 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       sourceId?: string | null
     },
   ): void {
-    const list = this.messages.get(userId) ?? []
-    list.push({
+    appendTo(this.messages, userId, {
       ...row,
       deletedAt: row.deletedAt ?? null,
       source: row.source ?? "chat",
       sourceId: row.sourceId ?? null,
     })
-    this.messages.set(userId, list)
   }
 
   async listUsers(
@@ -110,15 +118,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
   ): Promise<{ records: AdminUserRecord[]; nextCursor: string | null }> {
     let rows = [...this.users.values()]
 
-    if (args.q !== null) {
-      const needle = args.q.toLowerCase()
-      rows = rows.filter(
-        (r) =>
-          r.name.toLowerCase().includes(needle) ||
-          (r.handle?.toLowerCase().includes(needle) ?? false) ||
-          r.city.toLowerCase().includes(needle),
-      )
-    }
+    if (args.q !== null) rows = rows.filter(userSearchMatcher(args.q))
     if (args.status !== null) rows = rows.filter((r) => r.accountStatus === args.status)
     if (args.flaggedOnly) rows = rows.filter((r) => r.flagged)
     if (args.deletedOnly) rows = rows.filter((r) => r.deletedAt !== null)
@@ -151,15 +151,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
 
   async countByFacet(args: { q: string | null }): Promise<AdminUserCounts> {
     let rows = [...this.users.values()]
-    if (args.q !== null) {
-      const needle = args.q.toLowerCase()
-      rows = rows.filter(
-        (r) =>
-          r.name.toLowerCase().includes(needle) ||
-          (r.handle?.toLowerCase().includes(needle) ?? false) ||
-          r.city.toLowerCase().includes(needle),
-      )
-    }
+    if (args.q !== null) rows = rows.filter(userSearchMatcher(args.q))
     let active = 0
     let suspended = 0
     let flagged = 0

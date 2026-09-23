@@ -10,7 +10,7 @@ import type {
   AdminReportTimelineRecord,
   ListReportsArgs,
   ReportOutreachState,
-} from "./admin-report-service.js"
+} from "./admin-report-types.js"
 import type {
   AdminReportCounts,
   AdminReportStatus,
@@ -20,7 +20,7 @@ import type {
 } from "@civfix/shared"
 import { mapOutreachStatus } from "./admin-report-repository.drizzle.js"
 import { isPacketKind, type MailMessageKind } from "./mail-repository.js"
-import { pickPreviewMedia, REPORT_VERIFIED_THRESHOLD } from "./admin-report-service.js"
+import { pickPreviewMedia, REPORT_VERIFIED_THRESHOLD } from "./admin-report-types.js"
 import { STATUS_BUCKETS } from "./admin-report-status.js"
 
 export interface RecordedAudit {
@@ -278,7 +278,6 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
   ): Promise<void> {
     const seeded = this.reports.get(id)
     if (!seeded) return
-    void input.body
     this.appendTimeline(id, {
       status: seeded.record.status,
       note: input.note,
@@ -304,7 +303,6 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
   ): Promise<boolean> {
     const seeded = this.reports.get(id)
     if (!seeded || seeded.deletedAt !== null) return false
-    void input.body
     seeded.record.status = input.status
     if (input.status === "rejected") seeded.deletedAt = seeded.deletedAt ?? this.nextDate()
     this.appendTimeline(id, {

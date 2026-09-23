@@ -21,6 +21,7 @@ import type {
   CleanupMemberRole,
 } from "@civfix/shared"
 import { toRelAbs } from "./admin-format.js"
+import { ADMIN_DEFAULT_LIMIT } from "./pagination.js"
 import { applyRoleChange } from "./role-change.js"
 import type { MessageUpdateAnnouncer } from "./admin-report-chat-service.js"
 import {
@@ -141,6 +142,19 @@ export interface SessionControl {
 
 const GRANTABLE_ROLES: ReadonlySet<Role> = new Set<Role>(["citizen", "gov_user", "gov_admin"])
 
+const USER_SUBLIST_DEFAULT_LIMIT = 20
+
+const USER_NOT_FOUND = "User not found"
+
+const EMPTY_USER_COUNTS: AdminUserCounts = {
+  all: 0,
+  active: 0,
+  suspended: 0,
+  flagged: 0,
+  deleted: 0,
+  banned: 0,
+}
+
 export function resolveUserFilter(filter: string | undefined): {
   status: UserStatus | null
   flaggedOnly: boolean
@@ -148,11 +162,9 @@ export function resolveUserFilter(filter: string | undefined): {
 } {
   switch (filter) {
     case "active":
-      return { status: "active", flaggedOnly: false, deletedOnly: false }
     case "suspended":
-      return { status: "suspended", flaggedOnly: false, deletedOnly: false }
     case "banned":
-      return { status: "banned", flaggedOnly: false, deletedOnly: false }
+      return { status: filter, flaggedOnly: false, deletedOnly: false }
     case "flagged":
       return { status: null, flaggedOnly: true, deletedOnly: false }
     case "deleted":
@@ -168,8 +180,6 @@ export interface AdminUserServiceDeps {
   now?: () => Date
   announceMessageUpdate?: MessageUpdateAnnouncer
 }
-
-export const USER_SUBLIST_DEFAULT_LIMIT = 20
 
 export interface AdminUserService {
   list(query: AdminUserListQuery): Promise<AdminUserListResponse>
@@ -226,20 +236,13 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         flaggedOnly,
         deletedOnly,
         cursor: query.cursor ?? null,
-        limit: query.limit ?? 25,
+        limit: query.limit ?? ADMIN_DEFAULT_LIMIT,
       }
       const [{ records, nextCursor }, counts] = await Promise.all([
         deps.repo.listUsers(args),
         args.cursor === null
           ? deps.repo.countByFacet({ q: args.q })
-          : Promise.resolve<AdminUserCounts>({
-              all: 0,
-              active: 0,
-              suspended: 0,
-              flagged: 0,
-              deleted: 0,
-              banned: 0,
-            }),
+          : Promise.resolve<AdminUserCounts>({ ...EMPTY_USER_COUNTS }),
       ])
       return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }
     },
@@ -247,7 +250,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
     async get(id: string): Promise<AdminUserDTO> {
       const ref = now()
       const record = await deps.repo.getUser(id)
-      if (!record) throw AppError.notFound("User not found")
+      if (!record) throw AppError.notFound(USER_NOT_FOUND)
       const organizations = await deps.repo.listUserOrganizations(id)
       return {
         ...toListItem(record, ref),
@@ -322,7 +325,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
     ): Promise<boolean> {
       assertTargetIsNotOfficialAccount(id, "flag")
       const flagged = await deps.repo.toggleFlag(id, input)
-      if (flagged === null) throw AppError.notFound("User not found")
+      if (flagged === null) throw AppError.notFound(USER_NOT_FOUND)
       return flagged
     },
 
@@ -332,7 +335,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
     ): Promise<{ revokedSessions: number }> {
       await assertTargetIsNotOperator(deps.repo, id, "ban or change the status of")
       const ok = await deps.repo.setStatus(id, input)
-      if (!ok) throw AppError.notFound("User not found")
+      if (!ok) throw AppError.notFound(USER_NOT_FOUND)
       const revokedSessions = await deps.sessions.applyStatus(id, input.status)
       return { revokedSessions }
     },
@@ -348,7 +351,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         throw AppError.forbidden("You cannot change your own role.")
       }
       const target = await deps.repo.getUser(id)
-      if (!target) throw AppError.notFound("User not found")
+      if (!target) throw AppError.notFound(USER_NOT_FOUND)
       if (target.role === "operator") {
         throw AppError.forbidden(
           "Operator accounts are managed through ADMIN_EMAILS; they cannot be changed from the console.",
@@ -359,7 +362,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         {
           write: async (userId, role) => {
             const ok = await deps.repo.applyRole(userId, { role, actorId: input.actorId })
-            if (!ok) throw AppError.notFound("User not found")
+            if (!ok) throw AppError.notFound(USER_NOT_FOUND)
           },
           revokeAll: deps.sessions.revokeAll.bind(deps.sessions),
         },
@@ -374,7 +377,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
     ): Promise<void> {
       assertTargetIsNotOfficialAccount(id, "verify")
       const ok = await deps.repo.setReportVerified(id, input)
-      if (!ok) throw AppError.notFound("User not found")
+      if (!ok) throw AppError.notFound(USER_NOT_FOUND)
     },
 
     async removeMessage(
@@ -390,7 +393,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
 }
 
 async function assertUserExists(repo: AdminUserRepository, id: string): Promise<void> {
-  if (!(await repo.userExists(id))) throw AppError.notFound("User not found")
+  if (!(await repo.userExists(id))) throw AppError.notFound(USER_NOT_FOUND)
 }
 
 async function assertTargetIsNotOperator(
@@ -400,6 +403,6 @@ async function assertTargetIsNotOperator(
 ): Promise<void> {
   assertTargetIsNotOfficialAccount(id, verb)
   const target = await repo.getUser(id)
-  if (!target) throw AppError.notFound("User not found")
+  if (!target) throw AppError.notFound(USER_NOT_FOUND)
   assertTargetIsNotOperatorRole(target.role, verb)
 }

@@ -1,4 +1,4 @@
-import { AppError, IdSchema, type AdminOkResponse } from "@civfix/shared"
+import { AppError, IdSchema, type AdminOkResponse, type RoomKind } from "@civfix/shared"
 import type { FastifyBaseLogger, FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { ZodTypeAny, z } from "zod"
 import { parse } from "../_validate.js"
@@ -14,6 +14,9 @@ import {
 } from "../../services/admin/admin-report-chat-service.js"
 
 export { parse }
+
+// A one-message page around the target is the smallest read that still returns a tombstoned message.
+const TARGET_ONLY = 1
 
 // The columns these feed are `uuid`: a malformed id must be a 422 here rather than reach SQL, where
 // `invalid input syntax for type uuid` becomes a hidden 500 and a GlitchTip capture.
@@ -90,18 +93,22 @@ export function makeContainerMessageUpdateAnnouncer(
   const presign = makePrivateMediaPresigner(container.storage)
   const chatRepo = makeDrizzleChatRepository(sql, presign)
   const dmRepo = makeDrizzleDmRepository(sql, presign)
-  const TARGET_ONLY = 1
+  const historyAround = (kind: RoomKind, roomId: string, messageId: string) => {
+    switch (kind) {
+      case "dm":
+        return dmRepo.history(roomId, undefined, TARGET_ONLY, null, messageId)
+      case "report":
+        return chatRepo.reportHistory(roomId, undefined, TARGET_ONLY, null, messageId)
+      case "group":
+        return chatRepo.groupHistory(roomId, undefined, TARGET_ONLY, null, messageId)
+      default:
+        return chatRepo.history(roomId, undefined, TARGET_ONLY, null, messageId)
+    }
+  }
   return makeMessageUpdateAnnouncer({
     findRoom: (messageId) => findMessageRoom(sql, messageId),
     loadMessage: async (kind, roomId, messageId) => {
-      const page =
-        kind === "dm"
-          ? await dmRepo.history(roomId, undefined, TARGET_ONLY, null, messageId)
-          : kind === "report"
-            ? await chatRepo.reportHistory(roomId, undefined, TARGET_ONLY, null, messageId)
-            : kind === "group"
-              ? await chatRepo.groupHistory(roomId, undefined, TARGET_ONLY, null, messageId)
-              : await chatRepo.history(roomId, undefined, TARGET_ONLY, null, messageId)
+      const page = await historyAround(kind, roomId, messageId)
       return page.items.find((m) => m.id === messageId) ?? null
     },
     broadcast: (kind, roomId, message) =>

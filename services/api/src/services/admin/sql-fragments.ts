@@ -15,6 +15,11 @@ export function ilikeAnyOf(
     ...columns.map((col) => sql`${col} ILIKE ${like} ESCAPE '\\'`),
     ...extraBranches,
   ]
+  return anyOf(sql, branches)
+}
+
+// An empty branch list matches nothing rather than rendering the invalid `()`.
+export function anyOf(sql: Queryable, branches: readonly SqlFragment[]): SqlFragment {
   const first = branches[0]
   if (first === undefined) return sql`(false)`
   const ored = branches
