@@ -20,6 +20,7 @@ import { isUuid } from "../db/cursor-helpers.js"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { toLinkedEventRef, type LinkedEventView } from "./cleanup-service.js"
 import { mapWithLimit } from "../lib/concurrency.js"
+import { REPORT_AUTOFORWARD_JOB } from "../lib/queue-names.js"
 import { PRESIGN_CONCURRENCY } from "./media-presign.js"
 import {
   clusterByZoom,
@@ -37,7 +38,6 @@ import {
   type ResolvedAddress,
 } from "./address-resolver.js"
 import {
-  REPORT_AUTOFORWARD_JOB,
   REPORT_CREATE_SCOPE,
   REPORT_VISIBILITY_TIMELINE_KIND,
   REPORTS_DEFAULT_LIMIT,

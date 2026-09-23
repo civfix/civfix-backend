@@ -1,7 +1,7 @@
 import { AppError, type OrgVerificationKind, type OrgVerificationStatus } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
-import { likeContains } from "../admin/like.js"
+import { likeContains } from "../../db/like.js"
 import { mediaBoundElsewhere, uploadedByClaimant } from "../media-bindings.js"
 import { userUploader } from "../media-uploader.js"
 import { writeHostAudit } from "./host-audit.js"

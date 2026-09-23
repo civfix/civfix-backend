@@ -6,9 +6,11 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import { makeDrizzleAuditRepository } from "../../src/services/admin/audit-repository.drizzle.js"
+import {
+  insertAuditRow,
+  makeDrizzleAuditRepository,
+} from "../../src/services/admin/audit-repository.drizzle.js"
 import { makeDrizzleActivityRepository } from "../../src/services/admin/activity-repository.drizzle.js"
-import { writeAudit } from "../../src/services/admin/audit.js"
 
 const pg = await withPg()
 
@@ -18,7 +20,7 @@ const PAGE_GUARD = 10
 async function writeBurst(h: PgHarness): Promise<void> {
   await h.sql.begin(async (tx) => {
     for (let i = 0; i < ROWS_IN_ONE_TX; i++) {
-      await writeAudit(tx, { actorId: null, action: "user.banned", target: `user:${i}` })
+      await insertAuditRow(tx, { actorId: null, action: "user.banned", target: `user:${i}` })
     }
   })
 }

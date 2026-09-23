@@ -2,7 +2,7 @@ import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { clampLimit } from "./pagination.js"
 import { paginate, parseKeysetCursor } from "../../db/cursor-helpers.js"
-import { writeAudit } from "./audit.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { andAll, ilikeAnyOf, legacyContactEmailUsable } from "./sql-fragments.js"
 import {
   ADMIN_CATEGORIES,
@@ -274,7 +274,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       id: string,
       input: { text: string; actorId: string | null; who: string },
     ): Promise<DiscoveryNoteRecord> {
-      const auditId = await writeAudit(sql, {
+      const auditId = await insertAuditRow(sql, {
         actorId: input.actorId,
         action: "discovery.note_added",
         target: `discovery:${id}`,
@@ -315,7 +315,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
           UPDATE jurisdiction_discovery_tasks SET status = 'in_progress'
           WHERE id = ${id} AND status <> 'done'
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "discovery.flagged",
           target: `discovery:${id}`,
@@ -349,7 +349,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
           input.defaultEmails,
           input.formUrl,
         )
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "discovery.draft_saved",
           target: `discovery:${id}`,

@@ -10,8 +10,7 @@ import {
   makeDrizzleJurisdictionRepository,
   type JurisdictionRepository,
 } from "./jurisdiction-repository.drizzle.js"
-
-export const JURISDICTION_DISCOVERY_JOB = "jurisdiction.discovery"
+import { JURISDICTION_DISCOVERY_JOB } from "../lib/queue-names.js"
 
 const CONTACT_STALE_MONTHS = 18
 

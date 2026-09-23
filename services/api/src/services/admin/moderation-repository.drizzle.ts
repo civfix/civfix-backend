@@ -1,6 +1,6 @@
 import type { ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
-import { writeAudit } from "./audit.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { clampLimit } from "./pagination.js"
 import {
   keysetInstant,
@@ -358,7 +358,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             `
           }
         }
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "moderation.approved",
           target: `moderation:${id}`,
@@ -403,7 +403,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
           )
           if (authorId != null) await incrementUserModeration(tx, authorId)
         }
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "moderation.removed",
           target: `moderation:${id}`,
@@ -428,7 +428,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       return sql.begin(async (tx) => {
         const resolved = await resolveItem(tx, id, "held", input.actorId)
         if (!resolved) return null
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "moderation.held",
           target: `moderation:${id}`,
@@ -467,7 +467,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
               AND resolved_at IS NULL
           `
         }
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "moderation.appeal_decided",
           target: `moderation:${id}`,

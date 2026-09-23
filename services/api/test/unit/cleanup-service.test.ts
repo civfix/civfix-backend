@@ -3,7 +3,6 @@ import { describe, it, expect, beforeEach } from "vitest"
 import { FakeJobs } from "@civfix/shared/fakes"
 import {
   makeCleanupService,
-  CLEANUP_CANCEL_FANOUT_JOB,
   ATTENDEES_DEFAULT_LIMIT,
   MAX_BRING_ITEMS,
   RESOURCE_REQUEST_PER_HOST_PER_DAY,
@@ -12,7 +11,10 @@ import {
   MEMBERSHIP_FLIPS_PER_EVENT_PER_WINDOW,
   type CleanupService,
 } from "../../src/services/cleanup-service.js"
-import { CLEANUP_GUEST_UPDATE_FANOUT_JOB } from "../../src/services/guest-rsvp-service.js"
+import {
+  CLEANUP_CANCEL_FANOUT_JOB,
+  CLEANUP_GUEST_UPDATE_FANOUT_JOB,
+} from "../../src/lib/queue-names.js"
 import { DEFAULT_EVENT_DURATION_MS } from "../../src/services/cleanup-rules.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"

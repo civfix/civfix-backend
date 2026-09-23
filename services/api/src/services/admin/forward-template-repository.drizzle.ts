@@ -1,5 +1,5 @@
 import type { Sql } from "../../db/client.js"
-import { writeAudit } from "./audit.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import type {
   ForwardTemplateRepository,
   ForwardTemplateSettingsRecord,
@@ -51,7 +51,7 @@ export function makeDrizzleForwardTemplateRepository(sql: Sql): ForwardTemplateR
         `
         const row = rows[0]
         if (row === undefined) throw new Error("forward_template_settings upsert returned no row")
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "mail.forward_template_set",
           target: FORWARD_TEMPLATE_AUDIT_TARGET,

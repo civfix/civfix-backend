@@ -30,7 +30,7 @@ import {
   type KeysetCursor,
 } from "../../db/cursor-helpers.js"
 import { AUDIT_READ_ACTIONS } from "./audit.js"
-import { likePrefix } from "./like.js"
+import { likePrefix } from "../../db/like.js"
 import { anyOf, ilikeAnyOf } from "./sql-fragments.js"
 import {
   AUDIT_ACTION_RULES,

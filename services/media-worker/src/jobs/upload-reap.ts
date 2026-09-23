@@ -1,9 +1,8 @@
 import type { Storage } from "@civfix/shared/interfaces"
 import type { MediaWorkerRepo } from "@civfix/api/media-repo"
 import { R2_PUT_TTL_SEC } from "@civfix/api/adapters/storage"
+import { MEDIA_UPLOAD_REAP_JOB } from "@civfix/api/queue-names"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
-
-export const MEDIA_UPLOAD_REAP_JOB = "media.upload.reap"
 
 const UPLOAD_REAP_SLACK_SEC = 5 * 60
 

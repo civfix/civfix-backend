@@ -1,6 +1,7 @@
 import type { HostExportKind, HostExportStatus } from "@civfix/shared"
 import type { Sql } from "../../db/client.js"
-import { writeAudit, type WriteAuditInput } from "../admin/audit.js"
+import type { WriteAuditInput } from "../admin/audit.js"
+import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
 
 export interface HostExportRecord {
   id: string
@@ -124,7 +125,7 @@ export function makeDrizzleHostExportRepository(sql: Sql): HostExportRepository 
                     row_count, byte_size, truncated, error_code, run_token, requested_at,
                     started_at, completed_at, expires_at`
         const record = toRecord(rows[0]!)
-        if (audit !== undefined) await writeAudit(tx, audit(record.id))
+        if (audit !== undefined) await insertAuditRow(tx, audit(record.id))
         return record
       }) as Promise<HostExportRecord>
     },

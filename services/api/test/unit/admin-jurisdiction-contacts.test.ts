@@ -12,10 +12,10 @@ import {
   directoryMethod,
   directoryStatus,
   hasAnyContact,
-  OUTREACH_DIGEST_JOB,
   type JurisdictionContactsService,
   type JurisdictionDirectoryRecord,
 } from "../../src/services/admin/jurisdiction-contacts-service.js"
+import { OUTREACH_DIGEST_JOB } from "../../src/lib/queue-names.js"
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 const THROTTLE_DAYS = 7

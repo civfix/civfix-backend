@@ -17,7 +17,7 @@ import {
 import { publicServedKeyExpr } from "../media-served-key.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { writeHostAudit } from "./host-audit.js"
-import { isUniqueViolationOn } from "./registration-sql.js"
+import { isUniqueViolationOn } from "../../db/pg-errors.js"
 import type {
   AcceptTeamInviteByIdOutcome,
   AcceptTeamInviteOutcome,
@@ -33,9 +33,7 @@ import type {
   RevokeTeamInviteOutcome,
 } from "./host-team-repository.types.js"
 import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.types.js"
-import type { CleanupPersonView } from "../cleanup-repository.types.js"
-
-const UNKNOWN_PERSON_NAME = "Unknown"
+import { personViewOf, UNKNOWN_PERSON_NAME } from "./organization-rows.drizzle.js"
 
 const TEAM_INVITE_PENDING_CONSTRAINTS = [
   "cleanup_team_invites_pending_user_uidx",
@@ -82,16 +80,6 @@ function inviteColumns(sql: Queryable) {
   `
 }
 
-function personViewOf(
-  id: string | null,
-  name: string | null,
-  handle: string | null,
-  avatarUrl: string | null,
-): CleanupPersonView | null {
-  if (id === null) return null
-  return { id, displayName: name ?? UNKNOWN_PERSON_NAME, handle, bio: null, avatarUrl }
-}
-
 function toInviteRecord(row: InviteRowSelect): EventTeamInviteRecord {
   return {
     id: row.id,
@@ -99,17 +87,25 @@ function toInviteRecord(row: InviteRowSelect): EventTeamInviteRecord {
     role: row.role,
     status: row.status,
     invitee: personViewOf(
-      row.invitee_id,
-      row.invitee_name,
-      row.invitee_handle,
-      row.invitee_avatar_url,
+      {
+        id: row.invitee_id,
+        name: row.invitee_name,
+        handle: row.invitee_handle,
+        bio: null,
+        avatarUrl: row.invitee_avatar_url,
+      },
+      UNKNOWN_PERSON_NAME,
     ),
     invitedEmail: row.invited_email,
     invitedBy: personViewOf(
-      row.inviter_id,
-      row.inviter_name,
-      row.inviter_handle,
-      row.inviter_avatar_url,
+      {
+        id: row.inviter_id,
+        name: row.inviter_name,
+        handle: row.inviter_handle,
+        bio: null,
+        avatarUrl: row.inviter_avatar_url,
+      },
+      UNKNOWN_PERSON_NAME,
     ),
     createdAt: row.created_at,
     expiresAt: row.expires_at,
@@ -151,10 +147,14 @@ function toPendingInviteForUser(row: PendingInviteForUserRowSelect): PendingInvi
       address: row.address,
     },
     invitedBy: personViewOf(
-      row.inviter_id,
-      row.inviter_name,
-      row.inviter_handle,
-      row.inviter_avatar_url,
+      {
+        id: row.inviter_id,
+        name: row.inviter_name,
+        handle: row.inviter_handle,
+        bio: null,
+        avatarUrl: row.inviter_avatar_url,
+      },
+      UNKNOWN_PERSON_NAME,
     ),
     createdAt: row.created_at,
     expiresAt: row.expires_at,

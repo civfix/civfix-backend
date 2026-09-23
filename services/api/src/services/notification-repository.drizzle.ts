@@ -1,4 +1,4 @@
-import type { Sql } from "../db/client.js"
+import type { Sql, SqlFragment } from "../db/client.js"
 import {
   keysetInstant,
   keysetPredicate,
@@ -384,8 +384,8 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
   }
 }
 
-function prefsSetFragments(sql: Sql, patch: NotificationPrefsPatch): Array<ReturnType<Sql>> {
-  const setFragments: Array<ReturnType<Sql>> = []
+function prefsSetFragments(sql: Sql, patch: NotificationPrefsPatch): SqlFragment[] {
+  const setFragments: SqlFragment[] = []
   if (patch.push !== undefined) setFragments.push(sql`push = ${patch.push}`)
   if (patch.cleanupChat !== undefined) setFragments.push(sql`cleanup_chat = ${patch.cleanupChat}`)
   if (patch.reportUpdates !== undefined)
@@ -426,6 +426,6 @@ function isEmptyPatch(patch: NotificationPrefsPatch): boolean {
   )
 }
 
-function joinSet(sql: Sql, fragments: Array<ReturnType<Sql>>): ReturnType<Sql> {
+function joinSet(sql: Sql, fragments: SqlFragment[]): SqlFragment {
   return fragments.reduce((acc, frag, i) => (i === 0 ? frag : sql`${acc}, ${frag}`))
 }

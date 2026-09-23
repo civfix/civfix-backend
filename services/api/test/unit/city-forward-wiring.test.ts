@@ -84,8 +84,8 @@ vi.mock("../../src/services/admin/outbound-mail-service.js", async (importOrigin
   }
 })
 
-vi.mock("../../src/services/report-forward-audit.drizzle.js", () => ({
-  makeReportForwardAudit: () => ({
+vi.mock("../../src/services/report-forward-audit-repository.drizzle.js", () => ({
+  makeDrizzleReportForwardAuditRepository: () => ({
     recordMention: () => Promise.resolve(),
     markForwarded: () => Promise.resolve(),
   }),

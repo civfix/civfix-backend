@@ -149,7 +149,7 @@ export interface GovClaimsServiceDeps {
 
 /**
  * `actorId` is non-null here because each of these writes an audit row for a privilege decision that must
- * be attributable. The repository keeps a nullable slot because `writeAudit` accepts a system actor.
+ * be attributable. The repository keeps a nullable slot because `insertAuditRow` accepts a system actor.
  */
 export interface GovClaimsService {
   list(query: GovClaimListQuery): Promise<GovClaimListResponse>

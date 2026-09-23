@@ -4,7 +4,8 @@ import type { Container } from "../../di.js"
 import type { Queryable } from "../../db/client.js"
 import { domainOf } from "../../adapters/mail-text.js"
 import { apiBaseUrlOf, webBaseUrlOf } from "../../lib/base-url.js"
-import { writeAudit, type WriteAuditInput } from "../admin/audit.js"
+import type { WriteAuditInput } from "../admin/audit.js"
+import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
 import { makeRouteNotificationService } from "../route-notifier.js"
 import { makeDrizzleAnalyticsRepository } from "./analytics-repository.drizzle.js"
 import { makeAnalyticsService, type AnalyticsService } from "./analytics-service.js"
@@ -25,7 +26,7 @@ import {
 } from "./broadcast-service.js"
 import { makeBroadcastPipeline, type BroadcastPipeline } from "./broadcast-pipeline.js"
 import { makeBroadcastLanes, type BroadcastLanes } from "./broadcast-lanes.js"
-import { BROADCAST_CHUNK_JOB, BROADCAST_PLAN_JOB } from "./broadcast-queues.js"
+import { BROADCAST_CHUNK_JOB, BROADCAST_PLAN_JOB } from "../../lib/queue-names.js"
 import {
   makeDrizzleMetricsRepository,
   type MetricsRepository,
@@ -72,7 +73,7 @@ export async function auditBestEffort(
   logger: Pick<CommsLogger, "warn"> | undefined,
 ): Promise<void> {
   try {
-    await writeAudit(sql, entry)
+    await insertAuditRow(sql, entry)
   } catch (err) {
     logger?.warn(
       { err, action: entry.action, target: entry.target ?? null },

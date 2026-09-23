@@ -12,7 +12,8 @@ import {
   type JobLogFn,
   type JobReportFn,
 } from "./obs.js"
-import { MEDIA_CHECKS_JOB, readEtag } from "@civfix/api/media-repo"
+import { readEtag } from "@civfix/api/media-repo"
+import { MEDIA_CHECKS_JOB } from "@civfix/api/queue-names"
 import { SandboxSpawnError } from "../sandbox/exec.js"
 import { ScratchSetupError } from "../sandbox/tmp.js"
 import { servedKey, thumbnailKey } from "./media-keys.js"

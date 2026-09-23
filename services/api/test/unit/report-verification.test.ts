@@ -21,7 +21,8 @@ import {
   type OutboundMailService,
 } from "../../src/services/admin/outbound-mail-service.js"
 import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js"
-import { makeReportService, REPORT_AUTOFORWARD_JOB } from "../../src/services/report-service.js"
+import { makeReportService } from "../../src/services/report-service.js"
+import { REPORT_AUTOFORWARD_JOB } from "../../src/lib/queue-names.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 
 const NOW = new Date("2026-06-22T00:00:00.000Z")

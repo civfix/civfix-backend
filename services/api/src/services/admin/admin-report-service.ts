@@ -25,6 +25,7 @@ import { mapWithLimit } from "../../lib/concurrency.js"
 import { PRESIGN_CONCURRENCY, type PresignPacketMedia } from "../media-presign.js"
 import { isPubliclyVisibleStatus } from "../report-visibility.js"
 import { clampLimit } from "./pagination.js"
+import { PG_DEADLOCK_DETECTED, PG_SERIALIZATION_FAILURE } from "../../db/pg-errors.js"
 import {
   JURISDICTION_REPLY_NOTE,
   resolveListFilter,
@@ -93,9 +94,6 @@ const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 const RIFF_SIGNATURE = [0x52, 0x49, 0x46, 0x46]
 const WEBP_FORM_TYPE = [0x57, 0x45, 0x42, 0x50]
 const WEBP_FORM_TYPE_OFFSET = 8
-
-const PG_SERIALIZATION_FAILURE = "40001"
-const PG_DEADLOCK_DETECTED = "40P01"
 
 function firstTemplate(...candidates: (string | null | undefined)[]): string | null {
   for (const candidate of candidates) {

@@ -1,7 +1,8 @@
 import { AppError } from "@civfix/shared"
 import type { Queryable } from "../db/client.js"
 import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/shared"
-import { claimableAsAttachment, lockUploadsForClaim } from "./media-bindings.js"
+import { claimableAsAttachment } from "./media-bindings.js"
+import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
 import { mapWithLimit } from "../lib/concurrency.js"
 import { PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { uploaderServableFilter, uploaderServedKeyExpr } from "./media-served-key.js"
@@ -41,7 +42,7 @@ export function makeAttachmentRepo(column: MessageMediaColumn): MessageAttachmen
         (acc, c) => tx`${acc} AND ${tx(c)} IS NULL`,
         tx``,
       )
-      await lockUploadsForClaim(tx, uploadIds)
+      await lockUploadsForClaimIn(tx, uploadIds)
       const claimed = await tx<{ upload_id: string }[]>`
         UPDATE media_assets
         SET ${tx(column)} = ${messageId}, chat_message_created_at = ${messageCreatedAt}

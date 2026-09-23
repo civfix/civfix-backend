@@ -7,7 +7,7 @@ import { makeRegistrationService } from "../../../src/services/host/registration
 import { makeTicketTypeService } from "../../../src/services/host/ticket-type-service.js"
 import { makeQuestionService } from "../../../src/services/host/question-service.js"
 import { makeWaitlistService } from "../../../src/services/host/waitlist-service.js"
-import { WAITLIST_PROMOTE_JOB } from "../../../src/services/host/registration-queues.js"
+import { WAITLIST_PROMOTE_JOB } from "../../../src/lib/queue-names.js"
 import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
 import type { SeatDraft } from "../../../src/services/host/registration-repository.types.js"
 

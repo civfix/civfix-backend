@@ -126,9 +126,10 @@ postgres-js client, the R2 adapter, or the GlitchTip reporter. It depends on `@c
 
 - `@civfix/api/db` - the schema barrel + `makeDb` + `Db`/`Sql` types.
 - `@civfix/api/media-repo` - the richer media-worker persistence seam (`MediaWorkerRepo`:
-  find / applyResult / insertAbuseFlag / findOrphans / deleteById), its Drizzle impl, the
-  `MEDIA_CHECKS_JOB` name, and `ensureNextMonthChatPartition` (so partition bounds/naming have one
-  source shared with the migrations).
+  find / applyResult / insertAbuseFlag / findOrphans / deleteById), its Drizzle impl, and
+  `ensureNextMonthChatPartition` (so partition bounds/naming have one source shared with the
+  migrations).
+- `@civfix/api/queue-names` - every pg-boss queue name and the shared queue policy.
 - `@civfix/api/adapters/storage`, `@civfix/api/adapters/abuse-checks`, `@civfix/api/errors`,
   `@civfix/api/migrate` - the R2 adapter, the real AbuseChecks adapter, the GlitchTip helper, and the
   migration runner (the last reused only by the Docker-gated worker integration harness).

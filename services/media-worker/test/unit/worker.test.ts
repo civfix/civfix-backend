@@ -1,15 +1,16 @@
 import { describe, it, expect } from "vitest"
+import { buildWorker } from "../../src/worker.js"
 import {
-  buildWorker,
-  ORPHAN_SWEEP_JOB,
-  CHAT_PARTITION_JOB,
   ANON_HOLD_RELEASE_JOB,
   ANON_HOLD_RELEASE_SWEEP_JOB,
-  RETENTION_SWEEP_JOB,
+  CHAT_PARTITION_JOB,
+  MEDIA_CHECKS_JOB,
   MEDIA_STUCK_SWEEP_JOB,
-} from "../../src/worker.js"
+  MEDIA_UPLOAD_REAP_JOB,
+  ORPHAN_SWEEP_JOB,
+  RETENTION_SWEEP_JOB,
+} from "@civfix/api/queue-names"
 import { buildJobs, type ScheduleOptions } from "../../src/jobs.js"
-import { MEDIA_UPLOAD_REAP_JOB } from "../../src/jobs/upload-reap.js"
 import { buildSeams, type WorkerSeams } from "../../src/seams.js"
 import {
   CHAT_PARTITION_CRON,
@@ -20,7 +21,6 @@ import {
   loadLimits,
 } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
-import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
 import type { AnonHoldReleaseRepo, HeldReportView } from "@civfix/api/anon-hold-release"
 import { FakeJobs, FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"

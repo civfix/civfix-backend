@@ -25,7 +25,8 @@
     "./concurrency": "./src/lib/concurrency.ts",
     "./time": "./src/lib/time.ts",
     "./capped-body": "./src/lib/capped-body.ts",
-    "./timeout": "./src/lib/timeout.ts"
+    "./timeout": "./src/lib/timeout.ts",
+    "./queue-names": "./src/lib/queue-names.ts"
   },
   "scripts": {
     "build": "tsup",

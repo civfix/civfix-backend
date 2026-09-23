@@ -1,5 +1,4 @@
-import type postgres from "postgres"
-import type { Queryable, Sql, TransactionSql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment, TransactionSql } from "../../db/client.js"
 import { constantTimeStringEqual } from "../../auth/crypto.js"
 import {
   keysetInstant,
@@ -8,8 +7,8 @@ import {
   parseKeysetCursor,
 } from "../../db/cursor-helpers.js"
 import { DEFAULT_EVENT_DURATION_MS, eventWindowOfRow, hasEventEnded } from "../cleanup-rules.js"
+import { isUniqueViolationOn } from "../../db/pg-errors.js"
 import {
-  isUniqueViolationOn,
   toWaitlistRecord,
   waitlistColumns,
   waitlistEntryNotBanned,
@@ -382,7 +381,7 @@ async function joinWaitlistIn(
 async function reserveAndOffer(
   tx: TransactionSql,
   candidate: OfferCandidate,
-  cleanupScope: postgres.Fragment,
+  cleanupScope: SqlFragment,
   now: Date,
   claimExpiresAt: Date,
 ): Promise<WaitlistOffer | null> {

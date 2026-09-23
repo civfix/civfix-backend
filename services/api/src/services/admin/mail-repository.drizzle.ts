@@ -7,7 +7,7 @@ import {
   parseKeysetCursor,
 } from "../../db/cursor-helpers.js"
 import { PREVIEW_SOURCE_CHARS } from "./mail-preview.js"
-import { writeAudit } from "./audit.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { ilikeAnyOf } from "./sql-fragments.js"
 import {
   mintThreadToken,
@@ -183,7 +183,7 @@ function latestPreviewMessage(
 
 async function writeMailAudit(tx: Queryable, audit: MailAuditInput | undefined): Promise<void> {
   if (!audit) return
-  await writeAudit(tx, {
+  await insertAuditRow(tx, {
     actorId: audit.actorId,
     action: audit.action,
     target: audit.target,

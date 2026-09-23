@@ -18,7 +18,7 @@ import { roomKeyFor } from "../ws/gateway.js"
 import type { ChatMentionRecordSeam } from "./chat-mention-resolver.js"
 import type { ReportChatSendDeps } from "./report-chat-send.js"
 import type { ChatRepository } from "./chat-repository.drizzle.js"
-import { writeAudit } from "./admin/audit.js"
+import { insertAuditRow } from "./admin/audit-repository.drizzle.js"
 
 const REPORT_MESSAGE_POSTED_AUDIT_ACTION = "report.message_posted"
 
@@ -34,7 +34,7 @@ export function makeAuditedReportChatPersist(
   return (input, { actingUserId }) =>
     chatRepo().insertMessage(input, randomUUID(), {
       inTx: async (tx, row) => {
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: actingUserId,
           action: REPORT_MESSAGE_POSTED_AUDIT_ACTION,
           target: `report:${input.cleanupId}`,

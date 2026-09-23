@@ -7,11 +7,11 @@ import {
   type AdminHostListResponse,
   type SetHostMessagingSuspendedResponse,
 } from "@civfix/shared"
-import type { FastifyInstance, FastifyRequest } from "fastify"
+import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"
 import { route } from "../../versioning/route.js"
-import { parse } from "../_validate.js"
+import { parse, paramsOverBody } from "../_validate.js"
 import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import { makeDrizzleBroadcastRepository } from "../../services/host/broadcast-repository.drizzle.js"
 import type { BroadcastRepository } from "../../services/host/broadcast-repository.js"
@@ -39,12 +39,6 @@ const SUBJECT_HASH_HEX_LENGTH = 16
 
 function hashSubject(subject: string): string {
   return sha256HexSync(subject).slice(0, SUBJECT_HASH_HEX_LENGTH)
-}
-
-function mergeParams(request: FastifyRequest): Record<string, unknown> {
-  const params = (request.params ?? {}) as Record<string, unknown>
-  const body = (request.body ?? {}) as Record<string, unknown>
-  return { ...body, ...params }
 }
 
 export async function registerAdminBroadcastRoutes(
@@ -152,7 +146,7 @@ export async function registerAdminBroadcastRoutes(
     { preHandler: csrfProtect },
     async (request, reply) => {
       const operatorId = requireAuth(request)
-      const body = parse(SetHostMessagingSuspendedRequestSchema, mergeParams(request))
+      const body = parse(SetHostMessagingSuspendedRequestSchema, paramsOverBody(request))
       const found = await broadcastRepo().setHostMessagingSuspended(body.id, body.suspended, {
         action: body.suspended ? "host.messaging_suspended" : "host.messaging_restored",
         actorId: operatorId,

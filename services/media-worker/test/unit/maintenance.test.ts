@@ -8,9 +8,9 @@ import {
 } from "../../src/jobs/orphan-sweep.js"
 import { runPartitionMaintenance } from "../../src/jobs/partition-maintenance.js"
 import { runStuckSweep } from "../../src/jobs/stuck-sweep.js"
-import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
+import { MEDIA_CHECKS_JOB, MEDIA_UPLOAD_REAP_JOB } from "@civfix/api/queue-names"
 import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
-import { MEDIA_UPLOAD_REAP_JOB, uploadReapDelaySec } from "../../src/jobs/upload-reap.js"
+import { uploadReapDelaySec } from "../../src/jobs/upload-reap.js"
 
 const limits = loadLimits({})
 

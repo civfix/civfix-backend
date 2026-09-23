@@ -1,7 +1,6 @@
 import type { Container } from "../../di.js"
 import { runInboundSweep } from "./inbound-sweep.js"
-
-export const INBOUND_SWEEP_JOB = "inbound.sweep"
+import { INBOUND_SWEEP_JOB } from "../../lib/queue-names.js"
 
 export async function registerInboundJobs(container: Container): Promise<void> {
   await container.jobs.schedule(INBOUND_SWEEP_JOB, container.env.INBOUND_SWEEP_CRON)

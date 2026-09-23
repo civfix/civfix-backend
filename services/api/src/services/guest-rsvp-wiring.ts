@@ -1,6 +1,6 @@
 import type { Container } from "../di.js"
 import { REVIEWER_OTP_EMAIL } from "../auth/otp.js"
-import { writeAudit } from "./admin/audit.js"
+import { insertAuditRow } from "./admin/audit-repository.drizzle.js"
 import { requireCapability } from "./host/authz.js"
 import { makeContainerRegistrationServices } from "./host/registration-wiring.js"
 import { webBaseUrlOf } from "../lib/base-url.js"
@@ -97,7 +97,7 @@ export function makeContainerGuestRsvpService(
   const audit: GuestRsvpServiceDeps["audit"] =
     overrides?.audit ??
     (async (input) => {
-      await writeAudit(container.getDb().sql, {
+      await insertAuditRow(container.getDb().sql, {
         actorId: input.actorId,
         action: input.action,
         target: input.target,

@@ -5,7 +5,7 @@ import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
-import { MEDIA_CHECKS_JOB } from "../../src/services/media-intake-service.js"
+import { MEDIA_CHECKS_JOB } from "../../src/lib/queue-names.js"
 import type { FakeStorage, FakeJobs } from "@civfix/shared/fakes"
 
 const SHA = "b".repeat(64)

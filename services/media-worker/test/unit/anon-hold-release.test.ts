@@ -7,7 +7,7 @@ import { loadLimits } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
 import type { WorkerSeams } from "../../src/seams.js"
 import { runHoldReleaseSweep } from "../../src/jobs/hold-release-sweep.js"
-import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
+import { MEDIA_CHECKS_JOB } from "@civfix/api/queue-names"
 import type {
   AnonHoldReleaseRepo,
   HeldReportView,

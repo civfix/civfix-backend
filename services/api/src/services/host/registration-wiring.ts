@@ -5,7 +5,7 @@ import { makeMediaPresigner } from "../media-presign.js"
 import { makeGuestPromotionNotifier, type GuestPromotionNotifier } from "../guest-notify.js"
 import { stripTrailingSlashes, webBaseUrlOf } from "../../lib/base-url.js"
 import { makeDrizzleGuestRsvpRepository } from "../guest-rsvp-repository.drizzle.js"
-import { writeAudit } from "../admin/audit.js"
+import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
 import type { HostCapability } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
 import { makeDrizzleHostStandingRepository } from "./host-standing-repository.drizzle.js"
@@ -92,7 +92,7 @@ function lazyNotifier(container: Container, logger?: HostServiceLogger): Registr
 function auditWriter(sql: Sql, logger?: HostServiceLogger): RegistrationAudit {
   return async (input) => {
     try {
-      await writeAudit(sql, {
+      await insertAuditRow(sql, {
         actorId: input.actorId,
         action: input.action,
         target: input.target,

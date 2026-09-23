@@ -9,7 +9,7 @@ import {
   parseKeysetCursor,
   parseNameCursor,
 } from "../../db/cursor-helpers.js"
-import { likeContains } from "../admin/like.js"
+import { likeContains } from "../../db/like.js"
 import {
   registrationColumns,
   registrationJoins,

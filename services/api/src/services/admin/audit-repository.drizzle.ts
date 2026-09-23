@@ -9,7 +9,7 @@ import {
 } from "../../db/cursor-helpers.js"
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
 import type { WriteAuditInput } from "./audit.js"
-import { likeContains } from "./like.js"
+import { likeContains } from "../../db/like.js"
 
 interface AuditRowSelect {
   id: string

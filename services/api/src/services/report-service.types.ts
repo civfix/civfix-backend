@@ -20,7 +20,6 @@ import type { AddressResolver } from "./address-resolver.js"
 
 export const REPORT_CREATE_SCOPE = "report_create"
 
-export const REPORT_AUTOFORWARD_JOB = "report.autoforward"
 export interface ReportAutoForwardJob {
   reportId: string
 }

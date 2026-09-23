@@ -21,7 +21,7 @@ import {
 import { PgAuthStores } from "./pg-stores.js"
 import { REVIEWER_OTP_CODE_MIN_LENGTH } from "../env.js"
 import { resolveLocale } from "../i18n/locales.js"
-import { writeAudit } from "../services/admin/audit.js"
+import { insertAuditRow } from "../services/admin/audit-repository.drizzle.js"
 import { dataExportSupportEmail } from "../services/data-export-jobs.js"
 
 export interface AuthServices {
@@ -110,7 +110,7 @@ export function buildAuthServicesFromContainer(
     oauthConfig: oauthConfigFromEnv(container.env),
     supportEmail: dataExportSupportEmail(container.env),
     audit: async (input) => {
-      await writeAudit(container.getDb().sql, input)
+      await insertAuditRow(container.getDb().sql, input)
     },
     ...(opts.logger ? { logger: opts.logger } : {}),
     ...(reviewerConfig !== null ? { reviewer: reviewerConfig } : {}),

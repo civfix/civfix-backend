@@ -2,12 +2,12 @@ import { describe, it, expect } from "vitest"
 import { FakePushSender } from "@civfix/shared/fakes"
 import type { ChatMessageDTO, PersonDTO } from "@civfix/shared"
 import {
-  CHAT_ROOM_FANOUT_JOB,
   makeRoomFanoutDispatcher,
   parseChatRoomFanoutJob,
   roomFanoutSingletonKey,
   runChatRoomFanout,
 } from "../../src/services/chat-fanout-jobs.js"
+import { CHAT_ROOM_FANOUT_JOB } from "../../src/lib/queue-names.js"
 import {
   makeRoomFanoutNotifier,
   runRoomFanout,

@@ -7,7 +7,7 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores, type InMemoryUserStore } from "../../src/auth/stores.js"
 import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { DATA_EXPORT_JOB } from "../../src/services/data-export-jobs.js"
+import { DATA_EXPORT_JOB } from "../../src/lib/queue-names.js"
 
 let current: FastifyInstance | undefined
 afterEach(async () => {

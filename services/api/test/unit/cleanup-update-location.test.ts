@@ -4,7 +4,7 @@ import { FakeJobs } from "@civfix/shared/fakes"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { makeCleanupService, type CleanupService } from "../../src/services/cleanup-service.js"
-import { CLEANUP_GUEST_UPDATE_FANOUT_JOB } from "../../src/services/guest-rsvp-service.js"
+import { CLEANUP_GUEST_UPDATE_FANOUT_JOB } from "../../src/lib/queue-names.js"
 
 const ORG = "11111111-1111-1111-1111-111111111111"
 

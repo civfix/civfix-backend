@@ -1,8 +1,5 @@
-import type postgres from "postgres"
 import type { KeyCount } from "@civfix/shared/host"
-import type { Sql } from "../../db/client.js"
-
-type Fragment = postgres.Fragment
+import type { Sql, SqlFragment } from "../../db/client.js"
 
 const EVENT_ANALYTICS_SLOT_ROW_LIMIT = 50
 
@@ -57,7 +54,7 @@ function keyCounts(rows: { key: string; n: number }[]): KeyCount[] {
 export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRepository {
   return {
     async previousCompletedEventIds(args) {
-      const orgFilter = (): Fragment =>
+      const orgFilter = (): SqlFragment =>
         args.organizationId !== null ? sql`AND c.organization_id = ${args.organizationId}` : sql``
       const rows = await sql<{ id: string }[]>`
         WITH hosted AS (

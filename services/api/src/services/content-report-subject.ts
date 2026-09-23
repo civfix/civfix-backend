@@ -13,7 +13,7 @@ import {
 import { makeDrizzleMediaRepository } from "./media-repository.drizzle.js"
 import { isPubliclyVisibleStatus } from "./report-visibility.js"
 import { hasHostStanding, isEventPubliclyVisible } from "./host/authz.js"
-import { hostStandingOf } from "./host/host-standing.js"
+import { hostStandingOf } from "./host/host-standing-repository.drizzle.js"
 
 export interface ContentSubjectGate {
   assertReportable(

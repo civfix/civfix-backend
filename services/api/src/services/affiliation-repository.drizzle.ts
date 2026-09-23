@@ -1,6 +1,6 @@
 import type { OrganizationRefDTO } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
-import { blockedPairExpr } from "./hidden-identity.js"
+import { blockedPairExpr } from "./blocks-sql.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 
 export interface AffiliationRow {

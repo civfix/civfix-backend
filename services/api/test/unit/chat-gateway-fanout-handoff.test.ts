@@ -12,10 +12,10 @@ import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
 import { makeGroupChatNotifier } from "../../src/services/group-chat-notifier.js"
 import { makeReportChatNotifier } from "../../src/services/report-chat-notifier.js"
 import {
-  CHAT_ROOM_FANOUT_JOB,
   makeRoomFanoutDispatcher,
   roomFanoutSingletonKey,
 } from "../../src/services/chat-fanout-jobs.js"
+import { CHAT_ROOM_FANOUT_JOB } from "../../src/lib/queue-names.js"
 import { ROOM_FANOUT_THROTTLE_MS } from "../../src/services/chat-room-fanout-notifier.js"
 import { roomKeyFor } from "../../src/ws/gateway.js"
 import { roomFanoutMode } from "../../src/routes/chat-gateway-wiring.js"

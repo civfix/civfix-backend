@@ -23,11 +23,11 @@ import {
 } from "@civfix/shared"
 import type { Jobs } from "@civfix/shared/interfaces"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
+import { avatarMediaRefOrThrow } from "../services/avatar-media.js"
 import {
   avatarClaimQuery,
-  avatarMediaRefOrThrow,
   type AvatarMediaRow,
-} from "../services/avatar-media.js"
+} from "../services/media-claim-repository.drizzle.js"
 import { userUploader } from "../services/media-uploader.js"
 import { enqueueWaitlistPromotion } from "../services/host/waitlist-promotion.js"
 import {

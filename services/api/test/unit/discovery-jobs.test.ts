@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { FakeJobs } from "@civfix/shared/fakes"
 import { registerDiscoveryJobs } from "../../src/services/admin/discovery-jobs.js"
-import { JURISDICTION_DISCOVERY_JOB } from "../../src/services/jurisdiction-service.js"
+import { JURISDICTION_DISCOVERY_JOB } from "../../src/lib/queue-names.js"
 import type { Container } from "../../src/di.js"
 import { makeFakeSql, type SqlHandler } from "../helpers/fake-sql.js"
 

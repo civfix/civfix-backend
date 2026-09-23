@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { FakeStorage } from "@civfix/shared/fakes"
-import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
+import { MEDIA_CHECKS_JOB } from "@civfix/api/queue-names"
 import { loadLimits } from "../../src/config.js"
 import { parsePayload } from "../../src/jobs/media-checks.js"
 import { runStuckSweep } from "../../src/jobs/stuck-sweep.js"

@@ -1,6 +1,6 @@
 /**
  * Government provisioning queue: approving a claim sets the linked user's role to gov_admin and links the
- * jurisdiction, so every transition is audited via writeAudit.
+ * jurisdiction, so every transition is audited via insertAuditRow.
  *
  * `checks` jsonb shape: { linkedin|directory|callback: { status:'verified'|'pending',
  * evidence?:string, note?:string, at?:timestamp } }.

@@ -1,5 +1,6 @@
 import type { Storage } from "@civfix/shared/interfaces"
-import { MEDIA_CHECKS_JOB, type MediaWorkerRepo } from "@civfix/api/media-repo"
+import type { MediaWorkerRepo } from "@civfix/api/media-repo"
+import { MEDIA_CHECKS_JOB } from "@civfix/api/queue-names"
 import type { JobLogFn, JobReportFn } from "./obs.js"
 import { servedKey, thumbnailKey } from "./media-keys.js"
 

@@ -42,7 +42,8 @@ import type { ClaimRepository, PendingAnonReport } from "./claim-service.js"
 import { AppError } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
 import { insertModerationItem } from "./admin/moderation-repository.drizzle.js"
-import { claimableAsReportMedia, lockUploadsForClaim } from "./media-bindings.js"
+import { claimableAsReportMedia } from "./media-bindings.js"
+import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
 import { isUniqueViolation } from "../db/pg-errors.js"
 
 const HELD_REVIEW_NOTE = "Awaiting automated review"
@@ -307,7 +308,7 @@ async function insertHeldReport(
 // token row locks; skipped with no ids because `IN ()` is invalid SQL.
 async function attachReportMedia(tx: TransactionSql, args: CreateAnonReportTxArgs): Promise<void> {
   if (args.mediaUploadIds.length === 0) return
-  await lockUploadsForClaim(tx, args.mediaUploadIds)
+  await lockUploadsForClaimIn(tx, args.mediaUploadIds)
   const claimed = await tx<{ upload_id: string }[]>`
               UPDATE media_assets
               SET report_id = ${args.reportId}

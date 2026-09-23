@@ -1,5 +1,4 @@
-import type postgres from "postgres"
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import {
   isUuid,
   keysetInstant,
@@ -7,7 +6,7 @@ import {
   paginateKeyset,
   parseKeysetCursor,
 } from "../../db/cursor-helpers.js"
-import { likeContains } from "../admin/like.js"
+import { likeContains } from "../../db/like.js"
 import { writeHostAudit } from "./host-audit.js"
 import {
   adminActorOf,
@@ -94,7 +93,7 @@ export function makeOrganizationAdminMethods(
    * Facet counts span the SEARCHED set but ignore the facets, and only on page one (the shared
    * admin-list policy: the console reads the chip numbers off the first page).
    */
-  async function facetCounts(search: postgres.Fragment): Promise<AdminOrganizationCounts> {
+  async function facetCounts(search: SqlFragment): Promise<AdminOrganizationCounts> {
     const totals = await sql<AdminOrganizationCountsRow[]>`
       SELECT
         count(*)::int AS all,

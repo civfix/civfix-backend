@@ -1,5 +1,5 @@
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
-import { writeAudit } from "./audit.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { assertTargetIsNotOperatorRole } from "../../auth/operator-target.js"
 import { clampLimit } from "./pagination.js"
 import {
@@ -28,7 +28,7 @@ import type {
   Role,
   UserStatus,
 } from "@civfix/shared"
-import { likeContains } from "./like.js"
+import { likeContains } from "../../db/like.js"
 
 const ADMIN_USER_ORGANIZATIONS_LIMIT = 25
 
@@ -487,7 +487,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
             WHERE subject_type = 'user' AND subject_id = ${id} AND resolved_at IS NULL
           `
         }
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: nowFlagged ? "user.flagged" : "user.unflagged",
           target: `user:${id}`,
@@ -516,7 +516,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           ON CONFLICT (user_id)
           DO UPDATE SET account_status = EXCLUDED.account_status, updated_at = now()
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: input.status === "banned" ? "user.banned" : "user.status_changed",
           target: `user:${id}`,
@@ -535,7 +535,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         if (priorRole === undefined) return false
         assertTargetIsNotOperatorRole(priorRole, "change the role of")
         await tx`UPDATE users SET role = ${input.role} WHERE id = ${id}`
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "user.role_changed",
           target: `user:${id}`,
@@ -579,7 +579,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
             report_verified_by = ${stampedBy},
             updated_at = now()
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: input.value ? "user.report_verified" : "user.report_unverified",
           target: `user:${id}`,
@@ -611,7 +611,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
                 RETURNING id
               `
         if (chat.length === 0 && dm.length === 0) return false
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "message.removed",
           target: `message:${messageId}`,

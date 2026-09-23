@@ -14,8 +14,7 @@ import {
   type ContainerRoomFanoutDeps,
   type RoomFanoutLogger,
 } from "./chat-room-notifier-wiring.js"
-
-export const CHAT_ROOM_FANOUT_JOB = "chat.room.fanout"
+import { CHAT_ROOM_FANOUT_JOB } from "../lib/queue-names.js"
 
 export interface ChatRoomFanoutJob {
   kind: RoomFanoutKind

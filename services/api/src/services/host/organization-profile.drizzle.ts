@@ -1,6 +1,5 @@
 import { AppError } from "@civfix/shared"
-import type postgres from "postgres"
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { uploadedByClaimant } from "../media-bindings.js"
 import { userUploader } from "../media-uploader.js"
 import { writeHostAudit } from "./host-audit.js"
@@ -18,7 +17,7 @@ import type {
   UpdateOrganizationOutcome,
   UpdateOrganizationPatch,
 } from "./organization-repository.types.js"
-import { isUniqueViolation } from "../../db/pg-errors.js"
+import { isUniqueViolationOn } from "../../db/pg-errors.js"
 
 /** The citext unique index on organizations.slug (0105). */
 const ORG_SLUG_INDEX = "organizations_slug_uidx"
@@ -29,9 +28,7 @@ const ORG_SLUG_INDEX = "organizations_slug_uidx"
  * partial index, a media claim, ...) is a bug to surface, not a 409 to hand the caller.
  */
 function isSlugTaken(err: unknown): boolean {
-  if (!isUniqueViolation(err)) return false
-  const e = err as { constraint_name?: unknown }
-  return typeof e.constraint_name === "string" && e.constraint_name === ORG_SLUG_INDEX
+  return isUniqueViolationOn(err, ORG_SLUG_INDEX)
 }
 
 async function claimOrgLogoInTx(
@@ -124,7 +121,7 @@ async function recordOperatorVerificationInTx(
 }
 
 function organizationPatchSet(sql: Sql, patch: UpdateOrganizationPatch, now: Date) {
-  const sets: postgres.Fragment[] = [sql`updated_at = ${now}`]
+  const sets: SqlFragment[] = [sql`updated_at = ${now}`]
   if (patch.name !== undefined) sets.push(sql`name = ${patch.name}`)
   if (patch.slug !== undefined) sets.push(sql`slug = ${patch.slug}`)
   if (patch.description !== undefined) sets.push(sql`description = ${patch.description}`)

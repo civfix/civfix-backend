@@ -28,7 +28,8 @@ import { SUSPENDED_MESSAGE } from "../auth/account-status.js"
 import { makeWsTicketStore } from "../auth/ws-ticket.js"
 import { sha256Hex } from "../auth/crypto.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
-import { isReservedHandle, handleCollidesWithJurisdiction } from "../auth/reserved-handles.js"
+import { isReservedHandle } from "../auth/reserved-handles.js"
+import { makeDrizzleJurisdictionRepository } from "../services/jurisdiction-repository.drizzle.js"
 import { handleChanged } from "../auth/handle-policy.js"
 import { impersonatesOfficialName } from "../auth/official-account.js"
 import { isProd } from "../env.js"
@@ -311,7 +312,7 @@ function registerProfileRoutes(app: FastifyInstance, ctx: AuthRouteContext): voi
   async function isReservedOrJurisdiction(handle: string): Promise<boolean> {
     if (isReservedHandle(handle)) return true
     if (!container.env.DATABASE_URL) return false
-    return handleCollidesWithJurisdiction(container.getDb().sql, handle)
+    return makeDrizzleJurisdictionRepository(container.getDb().sql).handleExists(handle)
   }
 
   async function handleAvailability(

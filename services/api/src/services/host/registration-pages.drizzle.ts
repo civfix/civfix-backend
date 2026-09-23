@@ -2,13 +2,8 @@ import type { Queryable, Sql, TransactionSql } from "../../db/client.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup, uploadedByClaimant } from "../media-bindings.js"
 import { userUploader } from "../media-uploader.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
-import {
-  isUniqueViolationOn,
-  pageColumns,
-  pageJoins,
-  toPageRecord,
-  type PageRowSelect,
-} from "./registration-sql.js"
+import { isUniqueViolationOn } from "../../db/pg-errors.js"
+import { pageColumns, pageJoins, toPageRecord, type PageRowSelect } from "./registration-sql.js"
 import {
   eventContextIn,
   loadLiveQuestions,

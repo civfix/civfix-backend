@@ -21,7 +21,8 @@ import {
   type AccessIdentity,
   type VerifyAccessJwt,
 } from "../../auth/cf-access.js"
-import { writeAudit, type WriteAuditInput } from "../../services/admin/audit.js"
+import type { WriteAuditInput } from "../../services/admin/audit.js"
+import { insertAuditRow } from "../../services/admin/audit-repository.drizzle.js"
 import { generateCsrfToken, setCsrfCookie, clearCsrfCookie, type Csrf } from "../../auth/csrf.js"
 import {
   presentedSessionToken,
@@ -195,7 +196,7 @@ async function auditOperatorAuth(
     await overrides.auditSink(input)
     return
   }
-  await writeAudit(container.getDb().sql, input)
+  await insertAuditRow(container.getDb().sql, input)
 }
 
 function restrictedAccountRefusal(accountStatus: AccountStatus): AppError | null {

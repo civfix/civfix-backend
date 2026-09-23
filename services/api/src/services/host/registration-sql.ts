@@ -25,49 +25,16 @@ import type {
   TicketTypeRecord,
   WaitlistRecord,
 } from "./registration-repository.types.js"
-import { PG_UNIQUE_VIOLATION } from "../../db/pg-errors.js"
-
-const PG_CHECK_VIOLATION = "23514"
+import { isCheckViolationOn } from "../../db/pg-errors.js"
 
 const RESERVED_SEATS_BACKSTOP_CONSTRAINT = "cleanup_ticket_types_reserved_bounds"
 
 const ANSWER_PREVIEW_MAX = 120
 
-interface PgErrorShape {
-  code?: unknown
-  constraint_name?: unknown
-}
-
-function pgErrorConstraint(err: unknown): { code: string; constraint: string } | null {
-  if (typeof err !== "object" || err === null) return null
-  const e = err as PgErrorShape
-  if (typeof e.code !== "string") return null
-  return {
-    code: e.code,
-    constraint: typeof e.constraint_name === "string" ? e.constraint_name : "",
-  }
-}
-
-export function isUniqueViolationOn(err: unknown, ...constraints: string[]): boolean {
-  const parsed = pgErrorConstraint(err)
-  if (parsed === null || parsed.code !== PG_UNIQUE_VIOLATION) return false
-  return constraints.length === 0 || constraints.includes(parsed.constraint)
-}
-
 export const SALES_WINDOW_CONSTRAINT = "cleanup_ticket_types_sales_window"
 
-export function isCheckViolationOn(err: unknown, constraint: string): boolean {
-  const parsed = pgErrorConstraint(err)
-  return parsed !== null && parsed.code === PG_CHECK_VIOLATION && parsed.constraint === constraint
-}
-
 export function isReservedSeatsBackstopViolation(err: unknown): boolean {
-  const parsed = pgErrorConstraint(err)
-  return (
-    parsed !== null &&
-    parsed.code === PG_CHECK_VIOLATION &&
-    parsed.constraint === RESERVED_SEATS_BACKSTOP_CONSTRAINT
-  )
+  return isCheckViolationOn(err, RESERVED_SEATS_BACKSTOP_CONSTRAINT)
 }
 
 export interface TicketTypeRowSelect {

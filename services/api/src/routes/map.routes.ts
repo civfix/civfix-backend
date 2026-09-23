@@ -23,7 +23,7 @@ import {
   makeRouteJurisdictionService,
 } from "../services/route-geo-helpers.js"
 import { makeCleanupMapRepository, MAP_CLEANUPS_LIMIT } from "../services/cleanup-map-repository.js"
-import { writeAudit } from "../services/admin/audit.js"
+import { insertAuditRow } from "../services/admin/audit-repository.drizzle.js"
 import { CappedBBoxQueryParam } from "./query-encoding.js"
 import { parse, trimTextFields } from "./_validate.js"
 import { route } from "../versioning/route.js"
@@ -224,7 +224,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
         throw AppError.notFound("Jurisdiction not found")
       }
 
-      await writeAudit(container.getDb().sql, {
+      await insertAuditRow(container.getDb().sql, {
         actorId: null,
         action: CONTACT_SUGGESTED_AUDIT_ACTION,
         target: `jurisdiction:${geoid}`,

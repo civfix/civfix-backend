@@ -11,6 +11,7 @@ import { makeDrizzleRetentionRepository } from "@civfix/api/retention-repo"
 import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 import { MS_PER_DAY, MS_PER_HOUR } from "@civfix/api/time"
+import { RETENTION_SWEEP_JOB } from "@civfix/api/queue-names"
 
 export interface RetentionSweepDeps extends JobObsDeps {
   sql: Sql
@@ -35,8 +36,6 @@ export interface RetentionSweepResult {
   inboundEmailObjectsLeaked: number
   errors: number
 }
-
-const RETENTION_SWEEP = "retention.sweep"
 
 export const RETENTION_GRACE_MS = MS_PER_HOUR
 const RETENTION_BATCH = 5000
@@ -87,7 +86,7 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
       await drainPages(deletePage, (rows) => onDeleted(rows.length), { pageSize, maxPages })
     } catch (err) {
       result.errors++
-      report(err, { job: RETENTION_SWEEP, table })
+      report(err, { job: RETENTION_SWEEP_JOB, table })
       log(`retention.sweep: ${table} failed`, { err: String(err) })
     }
   }
@@ -192,7 +191,7 @@ export async function runInboundEmailRetentionLane(
     )
   } catch (err) {
     result.errors++
-    opts.report(err, { job: RETENTION_SWEEP, table: "inbound_emails" })
+    opts.report(err, { job: RETENTION_SWEEP_JOB, table: "inbound_emails" })
     opts.log("retention.sweep: inbound_emails failed", { err: String(err) })
   }
 }
@@ -211,7 +210,7 @@ async function deleteAttachments(
       objectsGone = false
       result.inboundEmailObjectsLeaked += 1
       opts.report(err, {
-        job: RETENTION_SWEEP,
+        job: RETENTION_SWEEP_JOB,
         table: "inbound_emails",
         phase: "attachment",
       })

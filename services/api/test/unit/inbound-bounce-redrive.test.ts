@@ -12,7 +12,7 @@ import type { Container } from "../../src/di.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleMailRepository } from "../../src/services/admin/mail-repository.drizzle.js"
-import { JURISDICTION_DISCOVERY_JOB } from "../../src/services/jurisdiction-service.js"
+import { JURISDICTION_DISCOVERY_JOB } from "../../src/lib/queue-names.js"
 
 const GEOID = "0644000"
 const FAILED = "clerk@lacity.gov"

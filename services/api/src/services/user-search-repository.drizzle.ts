@@ -1,7 +1,7 @@
 import type { Sql } from "../db/client.js"
 import { avatarGradient } from "@civfix/shared"
 import type { UserSearchResultDTO } from "@civfix/shared"
-import { escapeLike } from "./admin/like.js"
+import { likeContains, likePrefix } from "../db/like.js"
 
 interface UserSearchRow {
   id: string
@@ -35,7 +35,7 @@ export function makeDrizzleUserSearchRepository(sql: Sql): UserSearchRepository 
       viewerId: string,
       limit: number,
     ): Promise<UserSearchResultDTO[]> {
-      const prefix = escapeLike(q) + "%"
+      const prefix = likePrefix(q)
       const rows = await sql<UserSearchRow[]>`
         SELECT u.id, u.handle, u.display_name, u.avatar_url
         FROM users u
@@ -65,7 +65,7 @@ export function makeDrizzleUserSearchRepository(sql: Sql): UserSearchRepository 
       viewerId: string,
       limit: number,
     ): Promise<UserSearchResultDTO[]> {
-      const term = "%" + escapeLike(q) + "%"
+      const term = likeContains(q)
       const rows = await sql<UserSearchRow[]>`
         SELECT u.id, u.handle, u.display_name, u.avatar_url
         FROM users u

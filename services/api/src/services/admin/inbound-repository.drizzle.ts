@@ -6,8 +6,8 @@ import {
   paginateKeyset,
   parseKeysetCursor,
 } from "../../db/cursor-helpers.js"
-import { likeContains } from "./like.js"
-import { writeAudit } from "./audit.js"
+import { likeContains } from "../../db/like.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { HTML_PREVIEW_SOURCE_CHARS, PREVIEW_SOURCE_CHARS, toPreview } from "./mail-preview.js"
 import type {
   InboundEmailDTO,
@@ -200,7 +200,7 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
               archived_at = CASE WHEN ${status === "archived"} THEN COALESCE(archived_at, now()) ELSE NULL END
           WHERE id = ${id}
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId,
           action: "inbox.status_changed",
           target: `inbound_email:${id}`,

@@ -4,7 +4,7 @@
 // membership table.
 
 import type { Sql } from "../../db/client.js"
-import { writeAudit } from "./audit.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { clampLimit } from "./pagination.js"
 import {
   keysetInstant,
@@ -164,7 +164,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
         `
         const row = rows[0]
         if (!row) return null
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "gov_claim.verified",
           target: claimAuditTarget(id),
@@ -188,7 +188,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
         `
         const row = rows[0]
         if (!row) return null
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "gov_claim.approved",
           target: claimAuditTarget(id),
@@ -216,7 +216,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
         `
         const row = rows[0]
         if (!row) return null
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "gov_claim.rejected",
           target: claimAuditTarget(id),

@@ -325,7 +325,7 @@ describe("admin legal versions", () => {
 
 describe("admin org verification decision", () => {
   // The operator audit is written inside the repository transaction, not by the route like sibling admin
-  // mutations, so the route's missing writeAudit call is a deliberate no-double-write, not a gap.
+  // mutations, so the route's missing insertAuditRow call is a deliberate no-double-write, not a gap.
   it("approves, audits the operator + decision, and notifies the owner", async () => {
     const h = await harness()
     const id = await seedPendingOrg(h.orgs)

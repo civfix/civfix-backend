@@ -93,7 +93,7 @@ import { assertKnownSlotIds, assertTimedSlotsFitWindow, toDesiredSlots } from ".
 import { makeCleanupNotifications, type CleanupCancelFanoutJob } from "./cleanup-notifications.js"
 
 export * from "./cleanup-repository.types.js"
-export { CANCEL_FANOUT_MEMBER_CAP, CLEANUP_CANCEL_FANOUT_JOB } from "./cleanup-notifications.js"
+export { CANCEL_FANOUT_MEMBER_CAP } from "./cleanup-notifications.js"
 export {
   CLEANUPS_DEFAULT_LIMIT,
   ATTENDEES_DEFAULT_LIMIT,

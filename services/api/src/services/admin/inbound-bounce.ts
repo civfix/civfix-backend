@@ -3,10 +3,8 @@ import type { ParsedMail } from "@civfix/shared/interfaces"
 import { threadSentTo, type MailRepository } from "./mail-repository.drizzle.js"
 import { BOUNCE_DISCOVERY_PENDING_META_KEY } from "./mail-repository.js"
 import { geoidForContact, markBouncedContact } from "./jurisdiction-contacts-repository.drizzle.js"
-import {
-  JURISDICTION_DISCOVERY_JOB,
-  type JurisdictionDiscoveryJob,
-} from "../../services/jurisdiction-service.js"
+import type { JurisdictionDiscoveryJob } from "../../services/jurisdiction-service.js"
+import { JURISDICTION_DISCOVERY_JOB } from "../../lib/queue-names.js"
 import { domainOf, domainsAligned, type MailAuthVerdict } from "../../adapters/inbound-mail.cf.js"
 
 function ourMailDomains(container: Container): string[] {

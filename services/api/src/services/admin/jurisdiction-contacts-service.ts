@@ -8,14 +8,14 @@ import type { DirectoryFilter, DirectorySort } from "./jurisdiction-contacts-typ
 import { isReservedHandle } from "../../auth/reserved-handles.js"
 import { clampLimit } from "./pagination.js"
 import { isThrottled } from "./outreach-service.js"
-import {
-  OUTREACH_DIGEST_JOB,
-  type JurisdictionContactsService,
-  type JurisdictionContactsServiceDeps,
-  type PatchContactsInput,
-  type SaveAndRouteResult,
-  type SaveContactsInput,
+import type {
+  JurisdictionContactsService,
+  JurisdictionContactsServiceDeps,
+  PatchContactsInput,
+  SaveAndRouteResult,
+  SaveContactsInput,
 } from "./jurisdiction-contacts-types.js"
+import { OUTREACH_DIGEST_JOB } from "../../lib/queue-names.js"
 
 export * from "./jurisdiction-contacts-types.js"
 export * from "./jurisdiction-directory-projection.js"

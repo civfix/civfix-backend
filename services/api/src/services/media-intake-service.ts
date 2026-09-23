@@ -21,14 +21,13 @@ import {
   type MediaViewAuthorizer,
 } from "./media-authorization.js"
 import { MS_PER_SECOND } from "../lib/time.js"
+import { MEDIA_CHECKS_JOB } from "../lib/queue-names.js"
 
 type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
 
 interface IntakeLogger {
   warn(obj: unknown, msg?: string): void
 }
-
-export const MEDIA_CHECKS_JOB = "media.checks"
 
 export const MEDIA_GET_URL_TTL_SEC = 15 * 60
 

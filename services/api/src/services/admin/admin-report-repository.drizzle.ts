@@ -8,7 +8,7 @@ import {
   paginateKeyset,
   parseKeysetCursor,
 } from "../../db/cursor-helpers.js"
-import { writeAudit } from "./audit.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import {
   andAll,
   firstUsableLegacyContactExpr,
@@ -448,7 +448,7 @@ export function makeDrizzleAdminReportRepository(
           INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
           VALUES (${id}, ${input.to}, ${input.note}, ${input.kind ?? null}, ${input.actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report.status_changed",
           target: `report:${id}`,
@@ -511,7 +511,7 @@ export function makeDrizzleAdminReportRepository(
           INSERT INTO report_timeline (report_id, status, note, kind, body, actor_id)
           VALUES (${id}, ${input.status}, ${input.note}, ${input.kind ?? null}, ${input.body ?? null}, ${input.actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report.status_changed",
           target: `report:${id}`,
@@ -559,7 +559,7 @@ export function makeDrizzleAdminReportRepository(
             ${input.actorId}
           )
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: nowFlagged ? "report.flagged" : "report.unflagged",
           target: `report:${id}`,
@@ -581,7 +581,7 @@ export function makeDrizzleAdminReportRepository(
           INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
           VALUES (${id}, 'rejected', ${input.note}, 'remove', ${input.actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report.removed",
           target: `report:${id}`,
@@ -606,7 +606,7 @@ export function makeDrizzleAdminReportRepository(
           SELECT ${id}, r.status, ${input.note}, 'followup', ${input.actorId}
           FROM reports r WHERE r.id = ${id}
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report.followup_sent",
           target: `report:${id}`,
@@ -634,7 +634,7 @@ export function makeDrizzleAdminReportRepository(
           INSERT INTO report_timeline (report_id, status, note, kind, actor_id)
           VALUES (${id}, ${row.status}, ${input.note}, 'status', ${input.actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report.verdict_set",
           target: `report:${id}`,

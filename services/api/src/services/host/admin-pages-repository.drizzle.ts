@@ -1,7 +1,7 @@
 import type { EventPageStatus, EventVisibility } from "@civfix/shared"
 import type { Queryable } from "../../db/client.js"
 import { keysetInstant, keysetPredicate, type KeysetCursor } from "../../db/cursor-helpers.js"
-import { likeContains } from "../admin/like.js"
+import { likeContains } from "../../db/like.js"
 
 export interface AdminEventPageRow {
   cleanupId: string

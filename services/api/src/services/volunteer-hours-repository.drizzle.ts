@@ -7,7 +7,8 @@ import type {
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../db/client.js"
 import { keysetInstant, keysetPredicate, pageWith, paginateKeyset } from "../db/cursor-helpers.js"
-import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
+import { hiddenIdentity } from "./hidden-identity.js"
+import { blockedPairExpr } from "./blocks-sql.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
 import {

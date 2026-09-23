@@ -2,7 +2,10 @@ import type { ChatMessageDTO } from "@civfix/shared"
 import type { Container } from "../di.js"
 import { makeOutboundMailService, type OutboundMailService } from "./admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "./admin/mail-repository.drizzle.js"
-import { makeReportForwardAudit, type ReportForwardAudit } from "./report-forward-audit.drizzle.js"
+import {
+  makeDrizzleReportForwardAuditRepository,
+  type ReportForwardAuditRepository,
+} from "./report-forward-audit-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "./discussion-repository.drizzle.js"
 import type { DiscussionRepository } from "./discussion-types.js"
 import {
@@ -40,7 +43,7 @@ export function makeContainerReportCityForward(
   overrides: ReportCityForwardWiringOverrides = {},
 ): ReportCityForwardEffect {
   let outboundMail: OutboundMailService | undefined
-  let audit: ReportForwardAudit | undefined
+  let audit: ReportForwardAuditRepository | undefined
   let reportRepo: DiscussionRepository | undefined
   let throttle: CityForwardGate | undefined
 
@@ -54,7 +57,7 @@ export function makeContainerReportCityForward(
 
   return async (reportId, message, actorUserId) => {
     outboundMail ??= makeContainerOutboundMail(container)
-    audit ??= makeReportForwardAudit(container.getDb().sql)
+    audit ??= makeDrizzleReportForwardAuditRepository(container.getDb().sql)
     const report = await getReportRepo().findReportForDiscussion(reportId)
     if (report === null) return
     const body = typeof message.body === "string" ? message.body : ""

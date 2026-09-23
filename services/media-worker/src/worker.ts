@@ -1,5 +1,15 @@
 import type { JobHandler } from "@civfix/shared/interfaces"
-import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
+import {
+  ANON_HOLD_RELEASE_JOB,
+  ANON_HOLD_RELEASE_SWEEP_JOB,
+  CHAT_PARTITION_JOB,
+  MEDIA_CHECKS_JOB,
+  MEDIA_STUCK_SWEEP_JOB,
+  MEDIA_UPLOAD_REAP_JOB,
+  ORPHAN_SWEEP_JOB,
+  RETENTION_SWEEP_JOB,
+  SHARED_QUEUE_POLICY,
+} from "@civfix/api/queue-names"
 import { releaseAnonHoldIfReady, type HeldReportView } from "@civfix/api/anon-hold-release"
 import {
   buildJobs,
@@ -28,23 +38,11 @@ import { runHoldReleaseSweep } from "./jobs/hold-release-sweep.js"
 import { runPartitionMaintenance } from "./jobs/partition-maintenance.js"
 import { runRetentionSweep } from "./jobs/retention-sweep.js"
 import { runStuckSweep } from "./jobs/stuck-sweep.js"
-import {
-  MEDIA_UPLOAD_REAP_JOB,
-  parseUploadReapPayload,
-  runUploadReapJob,
-  uploadReapDelaySec,
-} from "./jobs/upload-reap.js"
+import { parseUploadReapPayload, runUploadReapJob, uploadReapDelaySec } from "./jobs/upload-reap.js"
 import { sweepStaleScratchDirs } from "./sandbox/tmp.js"
 import { assertSandboxPreflight } from "./sandbox/preflight.js"
 import { killAllSandboxChildren } from "./sandbox/exec.js"
 import { MS_PER_SECOND } from "@civfix/api/time"
-
-export const ORPHAN_SWEEP_JOB = "orphan.sweep"
-export const CHAT_PARTITION_JOB = "chat.partition.maintenance"
-export const ANON_HOLD_RELEASE_JOB = "anon.hold.release"
-export const ANON_HOLD_RELEASE_SWEEP_JOB = "anon.hold.release.sweep"
-export const RETENTION_SWEEP_JOB = "retention.sweep"
-export const MEDIA_STUCK_SWEEP_JOB = "media.stuck.sweep"
 
 const CRON_EXPIRE_SECONDS = 25 * 60
 const MEDIA_CHECKS_RETRY_LIMIT = 5
@@ -52,10 +50,13 @@ const UPLOAD_REAP_RETRY_LIMIT = 3
 const COMPOSE_STOP_GRACE_HEADROOM_SEC = 15
 
 const QUEUES: readonly [name: string, options: QueueOptions][] = [
-  [MEDIA_CHECKS_JOB, { policy: "short", retryLimit: MEDIA_CHECKS_RETRY_LIMIT, retryBackoff: true }],
+  [
+    MEDIA_CHECKS_JOB,
+    { policy: SHARED_QUEUE_POLICY, retryLimit: MEDIA_CHECKS_RETRY_LIMIT, retryBackoff: true },
+  ],
   [ORPHAN_SWEEP_JOB, { policy: "singleton" }],
   [CHAT_PARTITION_JOB, { policy: "singleton" }],
-  [ANON_HOLD_RELEASE_JOB, { policy: "short" }],
+  [ANON_HOLD_RELEASE_JOB, { policy: SHARED_QUEUE_POLICY }],
   [ANON_HOLD_RELEASE_SWEEP_JOB, { policy: "singleton" }],
   [RETENTION_SWEEP_JOB, { policy: "singleton" }],
   [MEDIA_STUCK_SWEEP_JOB, { policy: "singleton" }],

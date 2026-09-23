@@ -8,12 +8,13 @@ import {
   type AdminEventPageListResponse,
   type AdminGetEventPageResponse,
 } from "@civfix/shared"
-import type { FastifyInstance, FastifyRequest } from "fastify"
+import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"
 import { route } from "../../versioning/route.js"
-import { parse } from "../_validate.js"
-import { writeAudit, type WriteAuditInput } from "../../services/admin/audit.js"
+import { parse, paramsOverBody } from "../_validate.js"
+import type { WriteAuditInput } from "../../services/admin/audit.js"
+import { insertAuditRow } from "../../services/admin/audit-repository.drizzle.js"
 import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import {
   makeDrizzleAdminEventPageRepository,
@@ -37,12 +38,6 @@ declare module "fastify" {
   interface FastifyInstance {
     adminEventPageOverrides?: AdminEventPageOverrides
   }
-}
-
-function mergeParams(request: FastifyRequest): Record<string, unknown> {
-  const params = (request.params ?? {}) as Record<string, unknown>
-  const body = (request.body ?? {}) as Record<string, unknown>
-  return { ...body, ...params }
 }
 
 function toDTO(row: AdminEventPageRow): AdminEventPageListItemDTO {
@@ -98,7 +93,7 @@ export async function registerAdminEventPageRoutes(
     return container
       .getDb()
       .sql.begin((tx) =>
-        fn(makeDrizzleAdminEventPageRepository(tx), (entry) => writeAudit(tx, entry)),
+        fn(makeDrizzleAdminEventPageRepository(tx), (entry) => insertAuditRow(tx, entry)),
       ) as Promise<T>
   }
 
@@ -136,7 +131,7 @@ export async function registerAdminEventPageRoutes(
 
   route(app, "adminFlagEventPage", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireAuth(request)
-    const body = parse(FlagEventPageRequestSchema, mergeParams(request))
+    const body = parse(FlagEventPageRequestSchema, paramsOverBody(request))
     const row = await moderate(async (pages, recordAudit) => {
       const flagged = await pages.setFlagged(body.id, {
         flagged: body.flagged,
@@ -158,7 +153,7 @@ export async function registerAdminEventPageRoutes(
 
   route(app, "adminUnpublishEventPage", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireAuth(request)
-    const body = parse(UnpublishEventPageRequestSchema, mergeParams(request))
+    const body = parse(UnpublishEventPageRequestSchema, paramsOverBody(request))
     const row = await moderate(async (pages, recordAudit) => {
       const unpublished = await pages.unpublish(body.id)
       if (unpublished === null) return null

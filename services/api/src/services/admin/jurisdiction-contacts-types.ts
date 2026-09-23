@@ -6,9 +6,6 @@ import type {
   ReportCategory,
 } from "@civfix/shared"
 
-/** Lives in this zero-runtime module so the service and the job registration share one literal. */
-export const OUTREACH_DIGEST_JOB = "outreach.digest"
-
 /**
  * Sentinel geoid for the synthetic directory row that aggregates waiting reports with no jurisdiction or
  * an orphaned geoid. The directory is sourced from jurisdictions, so without it those reports would be

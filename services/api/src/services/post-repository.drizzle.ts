@@ -1,4 +1,3 @@
-import type postgres from "postgres"
 import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   LinkedEventRef,
@@ -10,7 +9,7 @@ import type {
   PostRefDTO,
   UserMentionDTO,
 } from "@civfix/shared"
-import type { Queryable, Sql } from "../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../db/client.js"
 import type { POST_KIND_VALUES, REPORT_VISIBILITY_VALUES } from "../db/schema/types.js"
 import {
   keysetInstant,
@@ -18,9 +17,10 @@ import {
   paginateKeyset,
   parseKeysetCursor,
 } from "../db/cursor-helpers.js"
-import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
+import { loadMentionsFor, makeMentionRepo } from "./message-mentions-repository.drizzle.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
-import { claimableAsAttachment, lockUploadsForClaim } from "./media-bindings.js"
+import { claimableAsAttachment } from "./media-bindings.js"
+import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
 import { uploadersOf } from "./media-uploader.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { mapWithLimit } from "../lib/concurrency.js"
@@ -51,7 +51,7 @@ const SHARED_EVENT_EXCERPT = "Shared an event"
 const SHARED_REPORT_EXCERPT = "Shared a report"
 const UNTITLED_REPORT_TITLE = "Report"
 
-function postColumns(sql: Queryable): postgres.Fragment {
+function postColumns(sql: Queryable): SqlFragment {
   return sql`
     p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
     p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
@@ -463,7 +463,7 @@ export async function tombstonePostInTx(tx: Queryable, postId: string): Promise<
   return true
 }
 
-function feedFilterClause(sql: Queryable, filter: FeedFilter): postgres.Fragment {
+function feedFilterClause(sql: Queryable, filter: FeedFilter): SqlFragment {
   if (filter === "events") return sql`AND p.event_id IS NOT NULL`
   if (filter === "fixes") {
     return sql`AND EXISTS (SELECT 1 FROM reports fr WHERE fr.id = p.report_id AND fr.status = 'resolved')`
@@ -471,7 +471,7 @@ function feedFilterClause(sql: Queryable, filter: FeedFilter): postgres.Fragment
   return sql``
 }
 
-function viewerBlockClause(sql: Queryable, viewerId: string): postgres.Fragment {
+function viewerBlockClause(sql: Queryable, viewerId: string): SqlFragment {
   return sql`AND NOT EXISTS (
       SELECT 1 FROM user_blocks b
       WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = p.author_id)
@@ -479,13 +479,10 @@ function viewerBlockClause(sql: Queryable, viewerId: string): postgres.Fragment 
     )`
 }
 
-export function feedCandidatesStatement(
-  sql: Queryable,
-  args: FeedCandidateArgs,
-): postgres.Fragment {
+export function feedCandidatesStatement(sql: Queryable, args: FeedCandidateArgs): SqlFragment {
   const viewerId = args.viewerId
   const filterClause = feedFilterClause(sql, args.filter)
-  const eligible = (): postgres.Fragment => sql`
+  const eligible = (): SqlFragment => sql`
     p.deleted_at IS NULL
     AND p.reply_to_id IS NULL
     AND p.visibility = 'public'
@@ -1135,7 +1132,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         const postId = inserted[0]!.id
 
         if (args.mediaUploadIds.length > 0) {
-          await lockUploadsForClaim(tx, args.mediaUploadIds)
+          await lockUploadsForClaimIn(tx, args.mediaUploadIds)
           const claimed = await tx<{ upload_id: string }[]>`
             UPDATE media_assets
             SET post_id = ${postId}, purpose = 'post'

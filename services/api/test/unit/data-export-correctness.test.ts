@@ -11,11 +11,8 @@ import {
 } from "../../src/services/data-export-service.js"
 import type { JobHandler } from "@civfix/shared/interfaces"
 import type { Container } from "../../src/di.js"
-import {
-  DATA_EXPORT_JOB,
-  registerDataExportJobs,
-  runDataExport,
-} from "../../src/services/data-export-jobs.js"
+import { registerDataExportJobs, runDataExport } from "../../src/services/data-export-jobs.js"
+import { DATA_EXPORT_JOB } from "../../src/lib/queue-names.js"
 
 const FROM = "no-reply@civfix.org"
 const SUPPORT = "support@civfix.org"

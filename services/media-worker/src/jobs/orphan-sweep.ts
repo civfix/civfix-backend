@@ -7,8 +7,8 @@ import { R2_PUT_TTL_SEC } from "@civfix/api/adapters/storage"
 import { servedKey, thumbnailKey } from "./media-keys.js"
 import { mapWithLimit } from "@civfix/api/concurrency"
 import { MS_PER_SECOND } from "@civfix/api/time"
+import { ORPHAN_SWEEP_JOB } from "@civfix/api/queue-names"
 
-const ORPHAN_SWEEP = "orphan.sweep"
 const ORPHAN_CONCURRENCY = 8
 const LEGACY_PROCESSED_SUFFIXES = [".img", ".mp4"]
 
@@ -71,7 +71,7 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
           onBoundMeanwhile: () => boundMeanwhile++,
           onError: (err, id) => {
             errors++
-            report(err, { job: ORPHAN_SWEEP, phase: "delete", mediaId: id })
+            report(err, { job: ORPHAN_SWEEP_JOB, phase: "delete", mediaId: id })
             log("orphan.sweep: row failed", { mediaId: id, err: String(err) })
           },
           onLeak: (keys, id) => {
@@ -81,7 +81,7 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
               new Error(
                 `orphan.sweep leaked ${keys.length} R2 object(s) (row already deleted, tombstoned for retry)`,
               ),
-              { job: ORPHAN_SWEEP, phase: "object-delete", mediaId: id, keys },
+              { job: ORPHAN_SWEEP_JOB, phase: "object-delete", mediaId: id, keys },
             )
           },
         })
@@ -89,7 +89,7 @@ export async function runOrphanSweep(deps: OrphanSweepDeps): Promise<OrphanSweep
       { pageSize: deps.limits.orphanSweepBatch, maxPages: deps.limits.orphanSweepMaxPages },
     )
   } catch (err) {
-    report(err, { job: ORPHAN_SWEEP, phase: "find" })
+    report(err, { job: ORPHAN_SWEEP_JOB, phase: "find" })
     log("orphan.sweep: find failed", { err: String(err) })
     errors++
   }
@@ -130,7 +130,7 @@ async function retryTombstonedLeaks(
   try {
     rows = await repo.listLeakedObjects(LEAK_RETRY_LIMIT, LEAK_RETRY_MAX_ATTEMPTS)
   } catch (err) {
-    report(err, { job: ORPHAN_SWEEP, phase: "leak-list" })
+    report(err, { job: ORPHAN_SWEEP_JOB, phase: "leak-list" })
     log("orphan.sweep: tombstone list failed", { err: String(err) })
     return { retried: 0, reclaimed: 0, errors: 1 }
   }
@@ -173,7 +173,7 @@ async function recordLeakRetryFailure(
   })
   if (attempts >= LEAK_RETRY_MAX_ATTEMPTS) {
     report(new Error(`orphan.sweep gave up on a leaked R2 object after ${attempts} attempts`), {
-      job: ORPHAN_SWEEP,
+      job: ORPHAN_SWEEP_JOB,
       phase: "leak-retry",
       key: row.r2Key,
       mediaId: row.mediaId,
@@ -209,7 +209,7 @@ async function adoptLegacyServedKeys(
     }
     return adopted
   } catch (err) {
-    report(err, { job: ORPHAN_SWEEP, phase: "adopt-legacy-served-keys" })
+    report(err, { job: ORPHAN_SWEEP_JOB, phase: "adopt-legacy-served-keys" })
     log("orphan.sweep: legacy served-key adoption failed", { err: String(err) })
     return 0
   }

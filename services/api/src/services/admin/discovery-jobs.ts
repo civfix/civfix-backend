@@ -3,10 +3,8 @@
 // unknown or already-onboarded geoid as a no-op, so a retry-on-throw is safe.
 
 import type { Container } from "../../di.js"
-import {
-  JURISDICTION_DISCOVERY_JOB,
-  type JurisdictionDiscoveryJob,
-} from "../../services/jurisdiction-service.js"
+import type { JurisdictionDiscoveryJob } from "../../services/jurisdiction-service.js"
+import { JURISDICTION_DISCOVERY_JOB } from "../../lib/queue-names.js"
 import {
   hasUsableRoutingContact,
   makeDrizzleDiscoveryRepository,

@@ -3,15 +3,18 @@
  * (makeDrizzleAuditRepository) against a live Postgres/PostGIS container via withPg (canonical migrations +
  * the jurisdiction seed), so the audit_log read (LEFT JOIN users for the actor name + the actor/action/
  * target filters + the keyset cursor + the jsonb meta round-trip) runs against the real schema. Rows are
- * written through the production writeAudit helper so the read is proven end-to-end with the writer.
+ * written through the production insertAuditRow helper so the read is proven end-to-end with the writer.
  *
  * When Docker is unavailable the whole describe block SKIPS, so the local suite stays green; CI runs it.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import { makeDrizzleAuditRepository } from "../../src/services/admin/audit-repository.drizzle.js"
-import { writeAudit, type AdminAuditAction } from "../../src/services/admin/audit.js"
+import {
+  insertAuditRow,
+  makeDrizzleAuditRepository,
+} from "../../src/services/admin/audit-repository.drizzle.js"
+import type { AdminAuditAction } from "../../src/services/admin/audit.js"
 import type { AuditRepository } from "../../src/services/admin/audit-service.js"
 
 const pg = await withPg()
@@ -43,13 +46,13 @@ describe.skipIf(!pg)("admin audit repository (integration: real schema)", () => 
 
   it("reads rows newest-first, joining the actor display name + the jsonb meta", async () => {
     const actor = await insertUser(h, "Alice Operator")
-    await writeAudit(h.sql, {
+    await insertAuditRow(h.sql, {
       actorId: actor,
       action: "report.status_changed",
       target: "report:111",
       meta: { from: "submitted", to: "in_progress" },
     })
-    await writeAudit(h.sql, { actorId: actor, action: "user.banned", target: "user:222" })
+    await insertAuditRow(h.sql, { actorId: actor, action: "user.banned", target: "user:222" })
 
     const page = await repo.list({
       actor: null,
@@ -69,8 +72,8 @@ describe.skipIf(!pg)("admin audit repository (integration: real schema)", () => 
 
   it("filters by action (ILIKE substring)", async () => {
     const actor = await insertUser(h, "Op")
-    await writeAudit(h.sql, { actorId: actor, action: "report.flagged", target: "report:1" })
-    await writeAudit(h.sql, { actorId: actor, action: "user.banned", target: "user:1" })
+    await insertAuditRow(h.sql, { actorId: actor, action: "report.flagged", target: "report:1" })
+    await insertAuditRow(h.sql, { actorId: actor, action: "user.banned", target: "user:1" })
 
     const page = await repo.list({
       actor: null,
@@ -85,8 +88,8 @@ describe.skipIf(!pg)("admin audit repository (integration: real schema)", () => 
   it("filters by actor name OR exact actor id", async () => {
     const alice = await insertUser(h, "Alice")
     const bob = await insertUser(h, "Bob")
-    await writeAudit(h.sql, { actorId: alice, action: "report.flagged", target: "t1" })
-    await writeAudit(h.sql, { actorId: bob, action: "event.flagged", target: "t2" })
+    await insertAuditRow(h.sql, { actorId: alice, action: "report.flagged", target: "t1" })
+    await insertAuditRow(h.sql, { actorId: bob, action: "event.flagged", target: "t2" })
 
     const byName = await repo.list({
       actor: "alice",
@@ -109,7 +112,7 @@ describe.skipIf(!pg)("admin audit repository (integration: real schema)", () => 
 
   it("a non-uuid actor filter does not error (matches by name only)", async () => {
     const alice = await insertUser(h, "Alice")
-    await writeAudit(h.sql, { actorId: alice, action: "report.flagged", target: "t1" })
+    await insertAuditRow(h.sql, { actorId: alice, action: "report.flagged", target: "t1" })
     const page = await repo.list({
       actor: "not-a-uuid",
       action: null,
@@ -130,7 +133,7 @@ describe.skipIf(!pg)("admin audit repository (integration: real schema)", () => 
       "user.flagged",
     ]
     for (const [i, action] of actions.entries()) {
-      await writeAudit(h.sql, { actorId: actor, action, target: `t${i}` })
+      await insertAuditRow(h.sql, { actorId: actor, action, target: `t${i}` })
     }
     const first = await repo.list({
       actor: null,

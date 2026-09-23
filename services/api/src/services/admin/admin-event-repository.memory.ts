@@ -66,7 +66,7 @@ export interface RecordedMemberNotification {
   link: string | null
 }
 
-/** Mirrors the Drizzle repo's in-transaction writeAudit. */
+/** Mirrors the Drizzle repo's in-transaction insertAuditRow. */
 export interface RecordedEventAudit {
   action: string
   target: string

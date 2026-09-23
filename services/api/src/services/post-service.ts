@@ -17,7 +17,7 @@ import type { UserChannel } from "@civfix/shared/interfaces"
 import { randomInt } from "node:crypto"
 import type { Sql } from "../db/client.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
-import { resolveMentionTargets } from "./mention-resolver.drizzle.js"
+import { resolveMentionTargets } from "./mention-targets-repository.drizzle.js"
 import { parseTimeCursor } from "../db/cursor-helpers.js"
 import {
   NIL_VIEWER_ID,

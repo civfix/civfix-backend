@@ -280,10 +280,6 @@ export interface GuestUpdateFanoutJob {
   cleanupId: string
 }
 
-export const CLEANUP_GUEST_UPDATE_FANOUT_JOB = "cleanup.guest.update.fanout"
-
-export const GUEST_RETENTION_SWEEP_JOB = "guest.retention.sweep"
-
 export interface GuestRsvpService {
   requestCode(
     input: GuestRsvpRequestRequest,

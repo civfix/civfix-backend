@@ -9,6 +9,8 @@ import {
   HOST_EXPORT_JOB,
   HOST_EXPORT_REAP_JOB,
   HOST_RETENTION_SWEEP_JOB,
+} from "../../lib/queue-names.js"
+import {
   parseBroadcastChunkJob,
   parseBroadcastPlanJob,
   parseHostExportJob,
