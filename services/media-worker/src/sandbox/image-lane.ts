@@ -13,6 +13,14 @@ export interface ImageLaneResult extends ProcessedImage {
 
 const SPAWN_OVERHEAD_MS = 5_000
 
+// The child bounds metadata, strip + thumbnail, and the perceptual hash by imageTimeoutMs EACH and runs them
+// in sequence, so killing it at a single imageTimeoutMs rejected (and deleted) slow but legitimate photos.
+const CHILD_TIMED_PHASES = 3
+
+export function imageLaneTimeoutMs(limits: WorkerLimits): number {
+  return CHILD_TIMED_PHASES * limits.imageTimeoutMs + SPAWN_OVERHEAD_MS
+}
+
 export const ALLOWED_OUTPUT_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp"] as const
 
 const PHASH_RE = /^[0-9a-f]{16}$/
@@ -70,7 +78,7 @@ export async function processImageLane(
       )
     }
     const res = await runTool("image-lane", process.execPath, [entry, RUN_FLAG, request], {
-      timeoutMs: limits.imageTimeoutMs + SPAWN_OVERHEAD_MS,
+      timeoutMs: imageLaneTimeoutMs(limits),
       maxStdoutBytes: limits.maxToolStdoutBytes,
       cwd: scratch.dir,
     })
@@ -115,6 +123,7 @@ async function processInProcess(bytes: Uint8Array, limits: WorkerLimits): Promis
   try {
     phash = await perceptualHash(bytes, limits)
   } catch {
+    // The hash only feeds the non-blocking near-duplicate note; an image that decoded above still ships.
     phash = null
   }
   return { ...processed, phash }

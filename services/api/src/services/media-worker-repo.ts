@@ -6,6 +6,7 @@ import { abuseFlags } from "../db/schema/moderation.js"
 import { moderationItems } from "../db/schema/moderation_items.js"
 import { reports } from "../db/schema/reports.js"
 import { jurisdictions } from "../db/schema/jurisdictions.js"
+import { users } from "../db/schema/users.js"
 import type { Db, Queryable, Sql } from "../db/client.js"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 
@@ -13,6 +14,8 @@ export { normalizeEtag, readEtag } from "./media-etag.js"
 export type { StorageHeadWithEtag } from "./media-etag.js"
 
 export type WorkerAbuseReason = "nsfw" | "phash_dup" | "gps"
+
+const ANONYMOUS_REPORTER = "Anonymous"
 
 export interface MediaWorkerAsset {
   id: string
@@ -320,9 +323,12 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
           category: reports.category,
           description: reports.description,
           place: jurisdictions.name,
+          reporterName: users.displayName,
+          reporterUserId: users.id,
         })
         .from(reports)
         .leftJoin(jurisdictions, eq(jurisdictions.geoid, reports.jurisdictionGeoid))
+        .leftJoin(users, eq(users.id, reports.reporterUserId))
         .where(eq(reports.id, input.reportId))
         .limit(1)
       const row = ctx[0]
@@ -342,7 +348,12 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
           priority: "high",
           autoAction: "Hidden pending review",
           status: "open",
-          meta: { reporter: "Anonymous", desc: row.description ?? "", note: input.note ?? null },
+          meta: {
+            reporter: row.reporterName ?? ANONYMOUS_REPORTER,
+            reporterUserId: row.reporterUserId ?? null,
+            desc: row.description ?? "",
+            note: input.note ?? null,
+          },
         })
         .onConflictDoNothing({
           target: [moderationItems.subjectType, moderationItems.subjectId],

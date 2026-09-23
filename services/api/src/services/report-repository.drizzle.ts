@@ -9,13 +9,14 @@ import type {
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../db/client.js"
 import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
-import { isPubliclyVisibleStatus } from "./report-visibility.js"
+import { isPubliclyVisibleStatus, ownerStatusTransition } from "./report-visibility.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
 import { escapeLike } from "./admin/like.js"
 import type {
   BBox,
   CreateReportTxArgs,
   CreateReportTxResult,
+  OwnerToggleStatus,
   ReportMapPoint,
   ReportMediaView,
   ReportRecord,
@@ -389,8 +390,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     async resolveByOwner(
       reportId: string,
       userId: string,
-      input: { status: ReportStatus; note: string },
-    ): Promise<"updated" | "not_found" | "forbidden" | "invalid_state"> {
+      input: { status: OwnerToggleStatus; note: string },
+    ): Promise<"updated" | "unchanged" | "not_found" | "forbidden" | "invalid_state"> {
       return sql.begin(async (tx) => {
         const rows = await tx<
           {
@@ -409,7 +410,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         const row = rows[0]
         if (!row || row.deleted_at !== null) return "not_found"
         if (row.reporter_user_id !== userId) return notOwnerOutcome(row)
-        if (!isPubliclyVisibleStatus(row.status)) return "invalid_state"
+        const transition = ownerStatusTransition(row.status, input.status)
+        if (transition !== "apply") return transition
 
         await tx`UPDATE reports SET status = ${input.status} WHERE id = ${reportId}`
         await tx`

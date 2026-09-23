@@ -8,6 +8,7 @@ import { settleWithin } from "../timeout.js"
 import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from "./obs.js"
 import { readEtag } from "@civfix/api/media-repo"
 import { SandboxSpawnError } from "../sandbox/exec.js"
+import { ScratchSetupError } from "../sandbox/tmp.js"
 import { servedKey, thumbnailKey } from "./media-keys.js"
 import { deleteRejectedObjects, deleteSupersededUpload } from "./reject-cleanup.js"
 import { processMedia, errNote, type MediaProcessResult } from "./media-pipeline.js"
@@ -190,6 +191,14 @@ async function processAsset(
         err: String(err),
       })
       throw new MediaInfraError("sandbox-spawn", err)
+    }
+    if (err instanceof ScratchSetupError) {
+      report(err, { job: "media.checks", phase: "scratch", mediaId: asset.id })
+      log("media.checks: the sandbox scratch dir could not be prepared, will retry", {
+        mediaId: asset.id,
+        err: String(err),
+      })
+      throw new MediaInfraError("scratch", err)
     }
     return persistRejection(asset, deps, errNote("process failed", err))
   }

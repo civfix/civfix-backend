@@ -1,4 +1,5 @@
 import { accessSync, constants } from "node:fs"
+import { SandboxSpawnError } from "./exec.js"
 
 export type MediaTool = "ffmpeg" | "ffprobe"
 
@@ -19,7 +20,11 @@ export function resetMediaToolPaths(): void {
 }
 
 export async function mediaToolPath(tool: MediaTool): Promise<string> {
-  cached ??= await resolveMediaToolPaths(process.env)
+  try {
+    cached ??= await resolveMediaToolPaths(process.env)
+  } catch (err) {
+    throw new SandboxSpawnError(tool, err)
+  }
   return cached[tool]
 }
 

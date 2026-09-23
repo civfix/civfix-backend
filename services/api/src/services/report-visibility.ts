@@ -1,5 +1,6 @@
 import type { ReportStatus } from "@civfix/shared"
 import type { DiscussionReportView } from "./discussion-types.js"
+import type { OwnerToggleStatus } from "./report-service.types.js"
 
 /**
  * The statuses at which a report is PUBLICLY readable.
@@ -28,6 +29,20 @@ export const PUBLIC_REPORT_STATUSES = [
 /** Whether a raw `reports.status` value is one of PUBLIC_REPORT_STATUSES. */
 export function isPubliclyVisibleStatus(status: string): boolean {
   return (PUBLIC_REPORT_STATUSES as readonly string[]).includes(status)
+}
+
+export type OwnerStatusTransition = "apply" | "unchanged" | "invalid_state"
+
+// The owner may only toggle resolved <-> open. Reopening a report that is not resolved is a no-op so it can
+// never regress the city's acknowledged / in_progress progress back to published, and repeating the current
+// state writes no timeline row and announces nothing.
+export function ownerStatusTransition(
+  current: string,
+  target: OwnerToggleStatus,
+): OwnerStatusTransition {
+  if (!isPubliclyVisibleStatus(current)) return "invalid_state"
+  const isResolved = current === "resolved"
+  return isResolved === (target === "resolved") ? "unchanged" : "apply"
 }
 
 /**

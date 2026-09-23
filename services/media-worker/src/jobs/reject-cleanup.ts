@@ -37,8 +37,12 @@ export async function deleteSupersededUpload(
   try {
     await deps.storage.delete(asset.r2Key)
     return
-  } catch (ignored) {
-    void ignored
+  } catch (err) {
+    log("media.checks: superseded-upload delete failed, tombstoning for retry", {
+      mediaId: asset.id,
+      key: asset.r2Key,
+      err: String(err),
+    })
   }
 
   await deps.repo
@@ -89,8 +93,13 @@ export async function deleteRejectedObjects(
   for (const key of keys) {
     try {
       await deps.storage.delete(key)
-    } catch {
+    } catch (err) {
       leaked.push(key)
+      log("media.checks: rejected-media delete failed, tombstoning for retry", {
+        mediaId: asset.id,
+        key,
+        err: String(err),
+      })
     }
   }
   if (leaked.length === 0) return

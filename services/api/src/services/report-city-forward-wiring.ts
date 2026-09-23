@@ -9,6 +9,7 @@ import {
   forwardReportCityMention,
   makeCityForwardThrottle,
   type CityForwardGate,
+  type CityForwardLogger,
 } from "./report-city-forward.js"
 
 export type ReportCityForwardEffect = (
@@ -20,6 +21,7 @@ export type ReportCityForwardEffect = (
 export interface ReportCityForwardWiringOverrides {
   getReportRepo?: () => DiscussionRepository
   canForward?: CityForwardGate
+  logger?: CityForwardLogger
 }
 
 export const NOOP_REPORT_CITY_FORWARD: ReportCityForwardEffect = () => Promise.resolve()
@@ -34,7 +36,8 @@ export function makeContainerReportCityForward(
   let throttle: CityForwardGate | undefined
 
   const canForward = (): CityForwardGate =>
-    overrides.canForward ?? (throttle ??= makeCityForwardThrottle(container.getCounterStore()))
+    overrides.canForward ??
+    (throttle ??= makeCityForwardThrottle(container.getCounterStore(), overrides.logger))
 
   const getReportRepo = (): DiscussionRepository =>
     overrides.getReportRepo?.() ??
@@ -69,6 +72,7 @@ export function makeContainerReportCityForward(
         canForward: canForward(),
         audit,
         messageId: message.id,
+        ...(overrides.logger !== undefined ? { logger: overrides.logger } : {}),
       },
     )
   }

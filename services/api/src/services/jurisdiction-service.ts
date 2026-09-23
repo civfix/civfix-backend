@@ -124,6 +124,8 @@ async function resolveViaLookup(
   try {
     hit = await lookup.lookup(lat, lng)
   } catch {
+    // Census is only the fallback after a local miss: its outage leaves the point unmapped and must never
+    // fail the report, anon report or cleanup being filed.
     return null
   }
   if (!hit) return null

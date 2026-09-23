@@ -68,6 +68,7 @@ export async function runImageLane(req: ImageLaneRequest): Promise<ImageLaneResp
   try {
     phash = await perceptualHash(bytes, req.limits)
   } catch {
+    // The hash only feeds the non-blocking near-duplicate note; an image that decoded above still ships.
     phash = null
   }
 

@@ -11,7 +11,6 @@ import type {
   ReportClusterResponse,
   ReportDTO,
   ReportPinDTO,
-  ReportStatus,
   ReportTimelineEntryDTO,
   ReportType,
   ReportVisibility,
@@ -38,6 +37,7 @@ import {
   REPORTS_DEFAULT_LIMIT,
   REPORTS_SEARCH_DEFAULT_LIMIT,
   type BBox,
+  type OwnerToggleStatus,
   type ReportAutoForwardJob,
   type ReportChatMeta,
   type ReportDiscussionMeta,
@@ -188,7 +188,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     if (deps.loadDiscussionMeta === undefined) return null
     try {
       return await deps.loadDiscussionMeta(reportId)
-    } catch {
+    } catch (err) {
+      deps.logger?.warn({ err, reportId }, "report: discussion meta failed to load; omitted")
       return null
     }
   }
@@ -200,9 +201,48 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     if (deps.loadReportChatMeta === undefined) return null
     try {
       return await deps.loadReportChatMeta(reportId, viewerId)
-    } catch {
+    } catch (err) {
+      deps.logger?.warn({ err, reportId }, "report: chat meta failed to load; omitted")
       return null
     }
+  }
+
+  async function viewReport(
+    record: ReportRecord,
+    viewerId: string | null,
+  ): Promise<ReportDTO | null> {
+    if (record.deletedAt !== null) return null
+    const mine = viewerId !== null && record.reporterUserId === viewerId
+    const isPublic = isPubliclyVisibleStatus(record.status) && record.visibility === "public"
+    if (!isPublic && !mine) return null
+
+    const [media, timeline, validatingCount, linkedEvents, discussionMeta, chatMeta] =
+      await Promise.all([
+        deps.repo.findMediaForReport(record.id, mine),
+        deps.repo.findTimelineForReport(record.id),
+        deps.repo.countValidatingMediaForReport(record.id),
+        linkedEventsFor(record.id),
+        discussionMetaFor(record.id),
+        chatMetaFor(record.id, viewerId),
+      ])
+
+    const validatingShown = media.reduce((n, m) => (m.status === "validating" ? n + 1 : n), 0)
+    const mediaPending = Math.max(0, validatingCount - validatingShown)
+
+    return toReportDTO(record, media, timeline, {
+      mine,
+      mediaPending,
+      linkedEvents,
+      discussionMeta,
+      chatMeta,
+    })
+  }
+
+  // The stored snapshot proves the key was already used, but its presigned media URLs expired minutes after
+  // the create while the key lives for days, so a replay answers with the live report whenever it exists.
+  async function replayedReport(snapshot: ReportDTO, ownerId: string): Promise<ReportDTO> {
+    const record = await deps.repo.findReportById(snapshot.id)
+    return (record ? await viewReport(record, ownerId) : null) ?? snapshot
   }
 
   const service: ReportService = {
@@ -220,7 +260,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         REPORT_CREATE_SCOPE,
         owner.userId,
       )
-      if (existing) return existing
+      if (existing) return replayedReport(existing, owner.userId)
 
       const category = REPORT_TYPE_TO_CATEGORY[input.type]
 
@@ -271,7 +311,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
           toReportDTO(record, media, timeline, { mine: true }),
       })
 
-      if (result.kind === "replayed") return result.snapshot
+      if (result.kind === "replayed") return replayedReport(result.snapshot, owner.userId)
 
       await maybeJoinReportChatAsOwner(deps, result.snapshot.id, owner.userId)
 
@@ -284,38 +324,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const record = isUuid(id)
         ? await deps.repo.findReportById(id)
         : await deps.repo.findReportByReferenceCode(id)
-      if (!record || record.deletedAt !== null) {
-        throw AppError.notFound("Report not found")
-      }
-
-      const viewerId = viewer.userId ?? null
-      const mine = viewerId !== null && record.reporterUserId === viewerId
-
-      const isPublic = isPubliclyVisibleStatus(record.status) && record.visibility === "public"
-      if (!isPublic && !mine) {
-        throw AppError.notFound("Report not found")
-      }
-
-      const [media, timeline, validatingCount, linkedEvents, discussionMeta, chatMeta] =
-        await Promise.all([
-          deps.repo.findMediaForReport(record.id, mine),
-          deps.repo.findTimelineForReport(record.id),
-          deps.repo.countValidatingMediaForReport(record.id),
-          linkedEventsFor(record.id),
-          discussionMetaFor(record.id),
-          chatMetaFor(record.id, viewerId),
-        ])
-
-      const validatingShown = media.reduce((n, m) => (m.status === "validating" ? n + 1 : n), 0)
-      const mediaPending = Math.max(0, validatingCount - validatingShown)
-
-      return toReportDTO(record, media, timeline, {
-        mine,
-        mediaPending,
-        linkedEvents,
-        discussionMeta,
-        chatMeta,
-      })
+      const dto = record ? await viewReport(record, viewer.userId ?? null) : null
+      if (dto === null) throw AppError.notFound("Report not found")
+      return dto
     },
 
     async listMyReports(
@@ -399,7 +410,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     },
 
     async resolveReport(userId: string, reportId: string, resolved: boolean): Promise<ReportDTO> {
-      const status: ReportStatus = resolved ? "resolved" : "published"
+      const status: OwnerToggleStatus = resolved ? "resolved" : "published"
       const note = resolved ? "Marked resolved by the reporter" : "Reopened by the reporter"
       const outcome = await deps.repo.resolveByOwner(reportId, userId, { status, note })
       if (outcome === "not_found") throw AppError.notFound("Report not found")
@@ -409,6 +420,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       if (outcome === "invalid_state") {
         throw AppError.conflict("This report cannot be resolved or reopened from its current state")
       }
+      if (outcome === "unchanged") return service.getReport(reportId, { userId })
       await maybeEmitTimeline(deps, { reportId, status, kind: resolved ? "done" : "status", note })
       return service.getReport(reportId, { userId })
     },

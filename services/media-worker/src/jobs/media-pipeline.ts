@@ -7,6 +7,7 @@ import { ALLOWED_VIDEO_CODECS } from "../config.js"
 import type { ExifGps } from "../sandbox/image.js"
 import { processImageLane } from "../sandbox/image-lane.js"
 import { SandboxSpawnError } from "../sandbox/exec.js"
+import { ScratchSetupError } from "../sandbox/tmp.js"
 import { probeBytes } from "../sandbox/ffprobe.js"
 import { grabFrameJpeg, remuxStripMetadata } from "../sandbox/ffmpeg-remux.js"
 
@@ -40,6 +41,12 @@ export interface ProcessDeps {
   abuseChecks: AbuseChecks
   limits: WorkerLimits
   findPhashDuplicate?: FindPhashDuplicateFn
+}
+
+// A decoder that could not start or a scratch dir the worker could not build says nothing about the
+// bytes: these escape so media.checks retries them as infrastructure instead of rejecting the upload.
+export function isSandboxInfraFailure(err: unknown): err is SandboxSpawnError | ScratchSetupError {
+  return err instanceof SandboxSpawnError || err instanceof ScratchSetupError
 }
 
 export function rejected(note: string): MediaProcessResult {
@@ -131,7 +138,7 @@ async function processImageBytes(
   try {
     img = await processImageLane(bytes, deps.limits)
   } catch (err) {
-    if (err instanceof SandboxSpawnError) throw err
+    if (isSandboxInfraFailure(err)) throw err
     return rejected(errNote("image decode/guard failed", err))
   }
   const phash = img.phash
@@ -188,7 +195,7 @@ async function processVideoBytes(
   try {
     probe = await probeBytes(bytes, deps.limits)
   } catch (err) {
-    if (err instanceof SandboxSpawnError) throw err
+    if (isSandboxInfraFailure(err)) throw err
     return rejected(errNote("ffprobe failed", err))
   }
   if (!probe.isVideo) {
@@ -211,7 +218,7 @@ async function processVideoBytes(
   try {
     remuxed = await remuxStripMetadata(bytes, deps.limits)
   } catch (err) {
-    if (err instanceof SandboxSpawnError) throw err
+    if (isSandboxInfraFailure(err)) throw err
     return rejected(errNote("remux failed", err))
   }
 
@@ -220,7 +227,7 @@ async function processVideoBytes(
     const at = Math.min(1, probe.durationSec / 2)
     frameJpeg = await grabFrameJpeg(bytes, at, deps.limits)
   } catch (err) {
-    if (err instanceof SandboxSpawnError) throw err
+    if (isSandboxInfraFailure(err)) throw err
     frameJpeg = null
   }
 
@@ -232,7 +239,7 @@ async function processVideoBytes(
       thumbnailBytes = thumb.thumbnailBytes
       thumbnailContentType = thumb.thumbnailContentType
     } catch (err) {
-      if (err instanceof SandboxSpawnError) throw err
+      if (isSandboxInfraFailure(err)) throw err
       thumbnailBytes = null
       thumbnailContentType = null
     }
@@ -280,7 +287,7 @@ export async function processMedia(
     }
     return await processVideoBytes(input.bytes, deps)
   } catch (err) {
-    if (err instanceof SandboxSpawnError) throw err
+    if (isSandboxInfraFailure(err)) throw err
     return rejected(errNote("unexpected processing error", err))
   }
 }
