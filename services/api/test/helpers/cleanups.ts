@@ -267,7 +267,7 @@ interface StoredSlotClaim {
   slotId: string
 }
 
-export function haversineMeters(a: NearPoint, b: NearPoint): number {
+function haversineMeters(a: NearPoint, b: NearPoint): number {
   const R = 6371008.8
   const toRad = (d: number): number => (d * Math.PI) / 180
   const dLat = toRad(b.lat - a.lat)

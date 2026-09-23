@@ -44,6 +44,7 @@ export const WS_MAX_QUEUED_FRAMES = Math.max(WS_FRAME_LIMIT.capacity, WS_MAX_JOI
 
 // A reconnecting client pipelines the same burst before its handshake settles. A frame over this cap is
 // dropped without any reply, so it must not be smaller than what the live socket would queue and answer.
+/** @alias */
 export const WS_HANDSHAKE_FRAME_BUFFER = WS_MAX_QUEUED_FRAMES
 
 export const WS_HANDSHAKE_BUFFER_BYTES = 64 * 1024

@@ -1,7 +1,7 @@
 import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 
-export const AUDIENCE_PAGE_SIZE = 1000
+const AUDIENCE_PAGE_SIZE = 1000
 const AUDIENCE_MAX_PAGES = 100
 // Sorts after every real id, so a side that is already exhausted pages to an empty result.
 const LAST_UUID = "ffffffff-ffff-ffff-ffff-ffffffffffff"

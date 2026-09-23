@@ -24,7 +24,7 @@ import { applyMigrations } from "../../src/db/migrate.js"
 import { seedJurisdictions } from "../../src/db/seed.js"
 
 /** The PostGIS image we run. Pinned so spatial behavior is reproducible. */
-export const POSTGIS_IMAGE = "postgis/postgis:16-3.4"
+const POSTGIS_IMAGE = "postgis/postgis:16-3.4"
 
 /**
  * The migrated+seeded database every test database is cloned from. Never connected to by a test: a

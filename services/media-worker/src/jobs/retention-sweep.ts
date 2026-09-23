@@ -43,7 +43,7 @@ const RETENTION_IDEMPOTENCY_MS = 48 * MS_PER_HOUR
 const RETENTION_NOTIFICATIONS_MS = 90 * MS_PER_DAY
 export const RETENTION_GEOCODE_CACHE_MS = GEOCODE_CACHE_TTL_MS
 export const RETENTION_INBOUND_EMAILS_MS = INBOUND_EMAIL_RETENTION_MS
-export const RETENTION_MAX_PAGES = 20
+const RETENTION_MAX_PAGES = 20
 
 export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<RetentionSweepResult> {
   const { log, report, now: clock } = resolveJobObs(deps)

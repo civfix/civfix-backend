@@ -8,7 +8,7 @@ import {
 } from "./cleanup-sql.js"
 import type { CleanupMapRepository } from "./cleanup-map-repository.js"
 
-export const MAP_CLEANUPS_LIMIT = 500
+const MAP_CLEANUPS_LIMIT = 500
 
 export function makeDrizzleCleanupMapRepository(sql: Sql): CleanupMapRepository {
   return {

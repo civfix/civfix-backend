@@ -29,7 +29,7 @@ import { drizzle } from "drizzle-orm/postgres-js"
 import { schema, type Db, type Sql } from "@civfix/api/db"
 import { applyMigrations } from "@civfix/api/migrate"
 
-export const POSTGIS_IMAGE = "postgis/postgis:16-3.4"
+const POSTGIS_IMAGE = "postgis/postgis:16-3.4"
 
 /**
  * Server knobs for a THROWAWAY database, matching the API harness's POSTGRES_TUNING: durability is

@@ -36,7 +36,7 @@ const WORDMARK_HTML = WORDMARK.map(
   ([letter, color]) => `<span style="color:${color};">${letter}</span>`,
 ).join("")
 
-export const DEFAULT_FOOTER =
+const DEFAULT_FOOTER =
   "civfix is a civic reporting platform that connects residents with their local government.\n" +
   "This mailbox is not monitored. civfix.org"
 

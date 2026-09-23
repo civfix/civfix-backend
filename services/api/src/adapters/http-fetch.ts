@@ -6,7 +6,7 @@ export type FetchJsonResult<T> =
   | { ok: false; kind: "transport"; error: unknown }
   | { ok: false; kind: "body"; status: number; error: unknown }
 
-export const DEFAULT_MAX_JSON_BYTES = 1024 * 1024
+const DEFAULT_MAX_JSON_BYTES = 1024 * 1024
 
 export class JsonBodyTooLargeError extends Error {
   constructor(public readonly maxBytes: number) {

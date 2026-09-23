@@ -1516,7 +1516,7 @@ export async function ensureSignupRegistrationIn(
   return registrationId
 }
 
-export async function cancelSignupRegistrationIn(
+async function cancelSignupRegistrationIn(
   tx: Queryable,
   args: { cleanupId: string; userId: string; actorId: string | null; now: Date },
 ): Promise<boolean> {

@@ -48,7 +48,7 @@ export function flaggedEventExpr(sql: Queryable): SqlFragment {
 }
 
 // Assumes the query selects `cleanups c` LEFT JOIN `users u`.
-export function searchEventsFragment(sql: Queryable, q: string | null): SqlFragment {
+function searchEventsFragment(sql: Queryable, q: string | null): SqlFragment {
   if (q === null) return sql``
   // ilikeAnyOf escapes the LIKE metacharacters so %/_ in q match literally (wildcard injection/trigram DoS).
   return sql`AND ${ilikeAnyOf(
@@ -83,7 +83,7 @@ export interface EventRowSelect {
   organizer_joined: Date | null
 }
 
-export function toRecord(r: EventRowSelect): AdminEventRecord {
+function toRecord(r: EventRowSelect): AdminEventRecord {
   const organizer: AdminOrganizerRecord | null = toPersonRecord(
     {
       id: r.organizer_id,
@@ -115,7 +115,7 @@ export function toRecord(r: EventRowSelect): AdminEventRecord {
 }
 
 // Cleanups carry only a free-text address and no jurisdiction, so the place label is that address.
-export function eventSelect(
+function eventSelect(
   sql: Queryable,
   extraWhere: SqlFragment,
   orderLimit: SqlFragment,

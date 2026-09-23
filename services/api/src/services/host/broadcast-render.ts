@@ -111,17 +111,13 @@ export function formatEventWhen(scheduledAt: Date, timezone: string | null): str
   }
 }
 
-export function eventPath(pageSlug: string | null, cleanupId: string): string {
+function eventPath(pageSlug: string | null, cleanupId: string): string {
   return pageSlug !== null && pageSlug.length > 0
     ? `/e/${encodeURIComponent(pageSlug)}`
     : `/cleanups/${cleanupId}`
 }
 
-export function eventManageUrl(
-  webBaseUrl: string,
-  pageSlug: string | null,
-  cleanupId: string,
-): string {
+function eventManageUrl(webBaseUrl: string, pageSlug: string | null, cleanupId: string): string {
   return `${webBaseUrl}${eventPath(pageSlug, cleanupId)}`
 }
 

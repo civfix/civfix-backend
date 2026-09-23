@@ -200,7 +200,7 @@ function bounceEventMatch(sql: Queryable, input: BounceEventKey): SqlFragment {
   `
 }
 
-export function latestOutboundAttempt(sql: Queryable, threadRef: SqlFragment): SqlFragment {
+function latestOutboundAttempt(sql: Queryable, threadRef: SqlFragment): SqlFragment {
   return sql`
     SELECT m.id, m.created_at
     FROM mail_messages m
@@ -210,7 +210,7 @@ export function latestOutboundAttempt(sql: Queryable, threadRef: SqlFragment): S
   `
 }
 
-export function attemptEventExists(
+function attemptEventExists(
   sql: Queryable,
   threadRef: SqlFragment,
   type: "sent" | "failed",

@@ -245,7 +245,7 @@ function loadedEnv(): Env {
   return cached
 }
 
-export const env: Env = new Proxy({} as Env, {
+const env: Env = new Proxy({} as Env, {
   get(_target, prop: string) {
     if (prop === "toJSON") return () => "[civfix env: redacted]"
     return loadedEnv()[prop as keyof Env]

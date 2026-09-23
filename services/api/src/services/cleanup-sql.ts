@@ -214,11 +214,11 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
   `
 }
 
-export function memberCountScalar(sql: Queryable) {
+function memberCountScalar(sql: Queryable) {
   return sql`(SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id)`
 }
 
-export function activeGuestCountScalar(sql: Queryable) {
+function activeGuestCountScalar(sql: Queryable) {
   return sql`(
     SELECT count(*)::int FROM cleanup_guests cg
     WHERE cg.cleanup_id = c.id AND cg.cancelled_at IS NULL

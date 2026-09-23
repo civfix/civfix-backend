@@ -121,7 +121,7 @@ export function emailHashOf(email: string): string {
   return sha256HexSync(email.trim().toLowerCase())
 }
 
-export function utcDayKey(at: Date): string {
+function utcDayKey(at: Date): string {
   return at.toISOString().slice(0, ISO_DAY_LENGTH)
 }
 
