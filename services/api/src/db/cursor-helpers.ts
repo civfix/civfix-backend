@@ -68,9 +68,56 @@ export interface KeysetCursor extends TimeCursor {
   atText: string
 }
 
+const CURSOR_INSTANT_PARTS_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(?:Z|([+-])(\d{2}):(\d{2}))$/
+
+// Postgres refuses a timestamptz input whose UTC offset is past 15:59 (22009), while JS Date takes
+// anything up to 23:59.
+const MAX_CURSOR_OFFSET_MINUTES = 15 * 60 + 59
+const MINUTE_MS = 60_000
+
+function pad(n: number, width = 2): string {
+  return String(n).padStart(width, "0")
+}
+
 /**
- * parseTimeCursor, keeping the validated instant text. A legacy millisecond cursor still parses, and
- * binds as the same instant it always meant.
+ * The cursor instant respelled in UTC from the parsed Date, keeping the input's fraction digits so a
+ * microsecond anchor survives. Null when the text is not a real wall-clock time: JS Date rolls
+ * impossible fields forward (Feb 30 becomes Mar 2, hour 24 the next day) where Postgres raises 22008,
+ * so the text fields must match the Date they produced.
+ */
+function canonicalCursorInstant(text: string, at: Date): string | null {
+  const parts = CURSOR_INSTANT_PARTS_RE.exec(text)
+  if (parts === null) return null
+  const [, year, month, day, hour, minute, second, fraction, sign, offsetH, offsetM] = parts
+  let offsetMinutes = 0
+  if (sign !== undefined) {
+    const offsetMinutePart = Number(offsetM)
+    if (offsetMinutePart > 59) return null
+    offsetMinutes = (Number(offsetH) * 60 + offsetMinutePart) * (sign === "-" ? -1 : 1)
+    if (Math.abs(offsetMinutes) > MAX_CURSOR_OFFSET_MINUTES) return null
+  }
+  const wall = new Date(at.getTime() + offsetMinutes * MINUTE_MS)
+  if (
+    wall.getUTCFullYear() !== Number(year) ||
+    wall.getUTCMonth() + 1 !== Number(month) ||
+    wall.getUTCDate() !== Number(day) ||
+    wall.getUTCHours() !== Number(hour) ||
+    wall.getUTCMinutes() !== Number(minute) ||
+    wall.getUTCSeconds() !== Number(second)
+  ) {
+    return null
+  }
+  const date = `${pad(at.getUTCFullYear(), 4)}-${pad(at.getUTCMonth() + 1)}-${pad(at.getUTCDate())}`
+  const time = `${pad(at.getUTCHours())}:${pad(at.getUTCMinutes())}:${pad(at.getUTCSeconds())}`
+  return `${date}T${time}${fraction !== undefined ? `.${fraction}` : ""}Z`
+}
+
+/**
+ * parseTimeCursor, plus the instant as text for keysetPredicate to bind. The text is rebuilt from the
+ * validated instant, never passed through: it reaches Postgres as `::timestamptz`, and a forged value
+ * Postgres refuses would surface as a 500 instead of the first page. A legacy millisecond cursor
+ * rebuilds to the same text and binds the instant it always meant.
  */
 export function parseKeysetCursor(
   cursor: string | null | undefined,
@@ -79,7 +126,9 @@ export function parseKeysetCursor(
   const parsed = parseTimeCursor(cursor, opts)
   if (parsed === null || cursor === null || cursor === undefined) return null
   const bar = cursor.indexOf("|")
-  return { ...parsed, atText: bar < 0 ? cursor : cursor.slice(0, bar) }
+  const atText = canonicalCursorInstant(bar < 0 ? cursor : cursor.slice(0, bar), parsed.at)
+  if (atText === null) return null
+  return { ...parsed, atText }
 }
 
 export function encodeKeysetCursor(atText: string, id: string): string {
