@@ -1,3 +1,5 @@
+import type postgres from "postgres"
+import type { Queryable } from "./client.js"
 
 export const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -10,6 +12,10 @@ export interface TimeCursor {
   id: string
 }
 
+export interface DecodedTimeCursor extends TimeCursor {
+  instant: string
+}
+
 export const MIN_UUID = "00000000-0000-0000-0000-000000000000"
 export const MAX_UUID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
@@ -19,37 +25,48 @@ export const CURSOR_ISO_RE =
 export const CURSOR_MIN_MS = Date.UTC(1970, 0, 1)
 export const CURSOR_MAX_MS = Date.UTC(2100, 0, 1)
 
-function parseCursorInstant(iso: string): Date | null {
+const CURSOR_FRACTION_RE = /\.(\d{1,6})/
+
+function parseCursorInstant(iso: string): { at: Date; instant: string } | null {
   if (!CURSOR_ISO_RE.test(iso)) return null
   const at = new Date(iso)
   const ms = at.getTime()
   if (!Number.isFinite(ms) || ms < CURSOR_MIN_MS || ms > CURSOR_MAX_MS) return null
-  return at
+  const micros = (CURSOR_FRACTION_RE.exec(iso)?.[1] ?? "").padEnd(6, "0").slice(3)
+  return { at, instant: at.toISOString().replace(/Z$/, `${micros}Z`) }
 }
 
 export function parseTimeCursor(
   cursor: string | null | undefined,
   opts?: { requireUuid?: boolean; direction?: "asc" | "desc" },
-): TimeCursor | null {
+): DecodedTimeCursor | null {
   if (cursor === null || cursor === undefined || cursor === "") return null
   const requireUuid = opts?.requireUuid ?? true
   const idx = cursor.indexOf("|")
   if (idx === 0) return null
   if (idx < 0) {
-    const at = parseCursorInstant(cursor)
-    if (at === null) return null
-    return { at, id: opts?.direction === "asc" ? MIN_UUID : MAX_UUID }
+    const parsed = parseCursorInstant(cursor)
+    if (parsed === null) return null
+    return { ...parsed, id: opts?.direction === "asc" ? MIN_UUID : MAX_UUID }
   }
   const id = cursor.slice(idx + 1)
-  const at = parseCursorInstant(cursor.slice(0, idx))
-  if (at === null) return null
+  const parsed = parseCursorInstant(cursor.slice(0, idx))
+  if (parsed === null) return null
   if (requireUuid && !CURSOR_UUID_RE.test(id)) return null
   if (id.length === 0) return null
-  return { at, id }
+  return { ...parsed, id }
 }
 
-export function encodeTimeCursor(c: TimeCursor): string {
-  return `${c.at.toISOString()}|${c.id}`
+export function encodeTimeCursor(c: { at: Date | string; id: string }): string {
+  return `${typeof c.at === "string" ? c.at : c.at.toISOString()}|${c.id}`
+}
+
+export function cursorInstantSql(sql: Queryable, column: postgres.Fragment): postgres.Fragment {
+  return sql`to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`
+}
+
+export function cursorAtSql(sql: Queryable, cursor: { instant: string }): postgres.Fragment {
+  return sql`${cursor.instant}::text::timestamptz`
 }
 
 export interface NameCursor {

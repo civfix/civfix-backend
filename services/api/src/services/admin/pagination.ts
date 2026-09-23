@@ -22,8 +22,12 @@ export interface CursorAnchor {
   id: string
 }
 
+export interface DecodedCursorAnchor extends CursorAnchor {
+  instant: string
+}
+
 /** Encode a keyset anchor into the opaque "<iso>|<id>" cursor string. */
-export function encodeCursor(anchor: CursorAnchor): string {
+export function encodeCursor(anchor: { createdAt: Date | string; id: string }): string {
   return encodeTimeCursor({ at: anchor.createdAt, id: anchor.id })
 }
 
@@ -38,10 +42,10 @@ export function encodeCursor(anchor: CursorAnchor): string {
 export function decodeCursor(
   cursor: string | null | undefined,
   requireUuidId = false,
-): CursorAnchor | null {
+): DecodedCursorAnchor | null {
   const parsed = parseTimeCursor(cursor, { requireUuid: requireUuidId })
   if (parsed === null) return null
-  return { createdAt: parsed.at, id: parsed.id }
+  return { createdAt: parsed.at, id: parsed.id, instant: parsed.instant }
 }
 
 /**

@@ -1,4 +1,5 @@
 import type { Sql } from "../../db/client.js"
+import { cursorAtSql, cursorInstantSql } from "../../db/cursor-helpers.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import { HTML_PREVIEW_SOURCE_CHARS, PREVIEW_SOURCE_CHARS, toPreview } from "./mail-preview.js"
 import { normalizeAuthVerdict, replyPublication } from "./mail-mappers.js"
@@ -37,12 +38,14 @@ export const INBOX_FEED_REPLY_FILTERS: ReadonlySet<InboxFeedFilter> = new Set([
 export interface InboxFeedEmailRow extends Omit<InboundListRowSelect, "received_at"> {
   source: "email"
   ts: Date
+  cursor_at: string
 }
 
 export interface InboxFeedReplyRow {
   source: "reply"
   id: string
   ts: Date
+  cursor_at: string
   from_addr: string | null
   subject: string | null
   preview_text: string | null
@@ -92,7 +95,7 @@ export function toInboxFeedPage(rows: readonly InboxFeedRow[], limit: number): I
   const hasMore = rows.length > limit && last !== undefined
   return {
     items: page.map(toInboxFeedItem),
-    nextCursor: hasMore ? encodeCursor({ createdAt: last.ts, id: last.id }) : null,
+    nextCursor: hasMore ? encodeCursor({ createdAt: last.cursor_at, id: last.id }) : null,
   }
 }
 
@@ -108,7 +111,7 @@ export function makeDrizzleInboxFeedRepository(sql: Sql): InboxFeedRepository {
       const before = (ts: SqlFragment, id: SqlFragment): SqlFragment =>
         anchor === null
           ? sql``
-          : sql`AND (${ts}, ${id}) < (${anchor.createdAt}, ${anchor.id}::uuid)`
+          : sql`AND (${ts}, ${id}) < (${cursorAtSql(sql, anchor)}, ${anchor.id}::uuid)`
 
       const branches: SqlFragment[] = []
       if (INBOX_FEED_EMAIL_FILTERS.has(filter)) {
@@ -162,7 +165,8 @@ export function makeDrizzleInboxFeedRepository(sql: Sql): InboxFeedRepository {
 
       const union = branches.reduce((acc, branch) => sql`${acc} UNION ALL ${branch}`)
       const rows = await sql<InboxFeedRow[]>`
-        SELECT * FROM (${union}) feed
+        SELECT feed.*, ${cursorInstantSql(sql, sql`feed.ts`)} AS cursor_at
+        FROM (${union}) feed
         ORDER BY ts DESC, id DESC
         LIMIT ${limit + 1}
       `

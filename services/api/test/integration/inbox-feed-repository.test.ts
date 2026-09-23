@@ -153,4 +153,24 @@ describe.skipIf(!pg)("inbox feed repository (integration: real schema)", () => {
     expect(all).toHaveLength(6)
     expect(all.slice(0, 2).sort().reverse()).toEqual(all.slice(0, 2))
   })
+
+  it("walks rows that share a millisecond by their microseconds, skipping none", async () => {
+    const s = await mailbox()
+    const microsecond = (micros: string) => `2027-01-01T00:00:00.${micros}Z`
+    await h.sql`UPDATE inbound_emails SET received_at = ${microsecond("123100")}::text::timestamptz`
+    await h.sql`
+      UPDATE mail_messages SET created_at = ${microsecond("123500")}::text::timestamptz
+      WHERE id IN (${s.withheld!}, ${s.published!})
+    `
+    const all = await ids({})
+    const walked: string[] = []
+    let cursor: string | null = null
+    do {
+      const page = await feed.list({ limit: 1, ...(cursor === null ? {} : { cursor }) })
+      walked.push(...page.items.map((i) => i.id))
+      cursor = page.nextCursor
+    } while (cursor !== null)
+    expect(walked).toEqual(all)
+    expect(all).toHaveLength(5)
+  })
 })
