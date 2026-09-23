@@ -285,9 +285,11 @@ export function makeTicketTypeMethods(sql: Sql): TicketTypeMethods {
 
         const referenced = await tx<{ one: number }[]>`
           SELECT 1 AS one WHERE EXISTS (
-            SELECT 1 FROM cleanup_registrations WHERE ticket_type_id = ${ticketTypeId}
+            SELECT 1 FROM cleanup_registrations
+             WHERE cleanup_id = ${cleanupId} AND ticket_type_id = ${ticketTypeId}
           ) OR EXISTS (
-            SELECT 1 FROM cleanup_waitlist WHERE ticket_type_id = ${ticketTypeId}
+            SELECT 1 FROM cleanup_waitlist
+             WHERE cleanup_id = ${cleanupId} AND ticket_type_id = ${ticketTypeId}
           )
         `
         if (referenced.length > 0) return { kind: "in_use" as const }
@@ -318,12 +320,17 @@ export function makeTicketTypeMethods(sql: Sql): TicketTypeMethods {
         if (have.size !== want.size || [...want].some((id) => !have.has(id))) {
           return { kind: "mismatch" as const }
         }
-        for (const [index, id] of ticketTypeIds.entries()) {
-          await tx`
-            UPDATE cleanup_ticket_types SET sort_order = ${index}, updated_at = ${now}
-             WHERE id = ${id} AND cleanup_id = ${cleanupId}
-          `
-        }
+        // The contract admits a repeated id and its last position wins; UPDATE ... FROM applies an
+        // arbitrary one of several source rows for a target, so each id goes in exactly once.
+        const position = new Map<string, number>()
+        ticketTypeIds.forEach((id, index) => position.set(id, index))
+        await tx`
+          UPDATE cleanup_ticket_types t
+             SET sort_order = u.sort_order, updated_at = ${now}
+            FROM unnest(${[...position.keys()]}::uuid[], ${[...position.values()]}::int[])
+                 AS u(id, sort_order)
+           WHERE t.id = u.id AND t.cleanup_id = ${cleanupId}
+        `
         return { kind: "reordered" as const, items: await loadTicketTypes(tx, [cleanupId]) }
       })
     },
