@@ -19,6 +19,8 @@ import {
 } from "../../services/host/host-portfolio-service.js"
 import { hostedEventCounts } from "../../services/host/portfolio-counts.js"
 
+const ONE_MINUTE = "1 minute"
+
 export interface HostPortfolioOverrides {
   repo: HostPortfolioServiceDeps["repo"]
   counts?: HostPortfolioServiceDeps["counts"]
@@ -42,7 +44,7 @@ const HostedEventsQuerySchema = z
   })
   .strict()
 
-export const HOSTED_EVENTS_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
+export const HOSTED_EVENTS_RATE_LIMIT = perIdentity({ max: 60, timeWindow: ONE_MINUTE })
 
 export async function registerHostPortfolioRoutes(
   app: FastifyInstance,

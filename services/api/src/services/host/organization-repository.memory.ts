@@ -55,6 +55,12 @@ import {
 } from "./organization-repository.types.js"
 import { ORG_INVITE_CAP_MESSAGE } from "./organization-repository.types.js"
 
+const SEED_DISPLAY_NAME = "Member"
+
+const SEED_CREATED_AT = "2025-01-01T00:00:00.000Z"
+
+const OPERATOR_VERIFIED_NOTE = "Created verified by an operator."
+
 interface StoredOrganization {
   id: string
   slug: string
@@ -126,6 +132,23 @@ interface StoredPerson {
   deletedAt: Date | null
 }
 
+/** Cursors here are `<ISO instant>|<id>` of the last row served; the page resumes right after it. */
+function pageAfterCursor<T>(
+  rows: readonly T[],
+  cursor: string | null,
+  limit: number,
+  keyOf: (row: T) => string,
+): { page: T[]; nextCursor: string | null } {
+  const start = cursor === null ? 0 : rows.findIndex((row) => keyOf(row) === cursor) + 1
+  const page = rows.slice(start, start + limit)
+  const next = rows.length > start + limit ? page[page.length - 1] : undefined
+  return { page, nextCursor: next === undefined ? null : keyOf(next) }
+}
+
+function memberCursorKey(member: StoredMember): string {
+  return `${member.joinedAt.toISOString()}|${member.userId}`
+}
+
 export class InMemoryOrganizationRepository implements OrganizationRepository {
   readonly organizations = new Map<string, StoredOrganization>()
   readonly members: StoredMember[] = []
@@ -144,13 +167,13 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
   seedUser(over: Partial<StoredPerson> = {}): StoredPerson {
     const person: StoredPerson = {
       id: over.id ?? randomUUID(),
-      displayName: over.displayName ?? "Member",
+      displayName: over.displayName ?? SEED_DISPLAY_NAME,
       handle: over.handle ?? null,
       email: over.email ?? null,
       emailVerified: over.emailVerified ?? true,
       bio: over.bio ?? null,
       avatarUrl: over.avatarUrl ?? null,
-      createdAt: over.createdAt ?? new Date("2025-01-01T00:00:00.000Z"),
+      createdAt: over.createdAt ?? new Date(SEED_CREATED_AT),
       deletedAt: over.deletedAt ?? null,
     }
     this.users.set(person.id, person)
@@ -261,7 +284,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
         einNumber: null,
         einScrubbedAt: null,
         documentMediaIds: [],
-        note: "Created verified by an operator.",
+        note: OPERATOR_VERIFIED_NOTE,
         rejectionReason: null,
         submittedBy: args.createdBy,
         submittedAt: args.now,
@@ -354,48 +377,17 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     return Promise.resolve(member?.role ?? null)
   }
 
-  listMembers(args: {
-    organizationId: string
-    cursor: string | null
-    limit: number
-  }): Promise<{ items: OrganizationMemberRecord[]; nextCursor: string | null }> {
-    const all = this.members
-      .filter((m) => m.organizationId === args.organizationId)
+  private membersByJoinOrder(organizationId: string): StoredMember[] {
+    return this.members
+      .filter((m) => m.organizationId === organizationId)
       .sort(
         (a, b) => a.joinedAt.getTime() - b.joinedAt.getTime() || a.userId.localeCompare(b.userId),
       )
-    const start =
-      args.cursor === null
-        ? 0
-        : all.findIndex((m) => `${m.joinedAt.toISOString()}|${m.userId}` === args.cursor) + 1
-    const page = all.slice(start, start + args.limit)
-    const next = all.length > start + args.limit ? page[page.length - 1] : undefined
-    return Promise.resolve({
-      items: page.map((m) => {
-        const person = this.personOf(m.userId)
-        return {
-          person: {
-            id: person.id,
-            displayName: person.displayName,
-            handle: person.handle,
-            bio: person.bio,
-            avatarUrl: person.avatarUrl,
-          },
-          role: m.role,
-          joinedAt: m.joinedAt,
-        }
-      }),
-      nextCursor: next === undefined ? null : `${next.joinedAt.toISOString()}|${next.userId}`,
-    })
   }
 
-  findMember(organizationId: string, userId: string): Promise<OrganizationMemberRecord | null> {
-    const member = this.members.find(
-      (m) => m.organizationId === organizationId && m.userId === userId,
-    )
-    if (member === undefined) return Promise.resolve(null)
+  private toMemberRecord(member: StoredMember): OrganizationMemberRecord {
     const person = this.personOf(member.userId)
-    return Promise.resolve({
+    return {
       person: {
         id: person.id,
         displayName: person.displayName,
@@ -405,7 +397,28 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       },
       role: member.role,
       joinedAt: member.joinedAt,
-    })
+    }
+  }
+
+  listMembers(args: {
+    organizationId: string
+    cursor: string | null
+    limit: number
+  }): Promise<{ items: OrganizationMemberRecord[]; nextCursor: string | null }> {
+    const { page, nextCursor } = pageAfterCursor(
+      this.membersByJoinOrder(args.organizationId),
+      args.cursor,
+      args.limit,
+      memberCursorKey,
+    )
+    return Promise.resolve({ items: page.map((m) => this.toMemberRecord(m)), nextCursor })
+  }
+
+  findMember(organizationId: string, userId: string): Promise<OrganizationMemberRecord | null> {
+    const member = this.members.find(
+      (m) => m.organizationId === organizationId && m.userId === userId,
+    )
+    return Promise.resolve(member === undefined ? null : this.toMemberRecord(member))
   }
 
   findOwner(organizationId: string): Promise<OrganizationOwnerRecord | null> {
@@ -631,8 +644,6 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
 
   private toAdminRecord(row: StoredVerification): AdminOrgVerificationRecord {
     const org = this.organizations.get(row.organizationId)
-    const submitter = row.submittedBy === null ? null : this.personOf(row.submittedBy)
-    const reviewer = row.reviewedBy === null ? null : this.personOf(row.reviewedBy)
     return {
       id: row.id,
       organizationId: row.organizationId,
@@ -646,24 +657,8 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       submittedAt: row.submittedAt,
       reviewedAt: row.reviewedAt,
       rejectionReason: row.rejectionReason,
-      submittedBy:
-        submitter === null
-          ? null
-          : {
-              id: submitter.id,
-              name: submitter.displayName,
-              handle: submitter.handle ?? "",
-              joined: submitter.createdAt,
-            },
-      reviewedBy:
-        reviewer === null
-          ? null
-          : {
-              id: reviewer.id,
-              name: reviewer.displayName,
-              handle: reviewer.handle ?? "",
-              joined: reviewer.createdAt,
-            },
+      submittedBy: row.submittedBy === null ? null : this.actorOf(row.submittedBy),
+      reviewedBy: row.reviewedBy === null ? null : this.actorOf(row.reviewedBy),
     }
   }
 
@@ -676,15 +671,15 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       .filter((v) => query.status === undefined || v.status === query.status)
       .filter((v) => query.kind === undefined || v.kind === query.kind)
       .sort((a, b) => b.submittedAt.getTime() - a.submittedAt.getTime())
-    const start =
-      query.cursor === null
-        ? 0
-        : rows.findIndex((v) => `${v.submittedAt.toISOString()}|${v.id}` === query.cursor) + 1
-    const page = rows.slice(start, start + query.limit)
-    const next = rows.length > start + query.limit ? page[page.length - 1] : undefined
+    const { page, nextCursor } = pageAfterCursor(
+      rows,
+      query.cursor,
+      query.limit,
+      (v) => `${v.submittedAt.toISOString()}|${v.id}`,
+    )
     return Promise.resolve({
       items: page.map((row) => this.toAdminRecord(row)),
-      nextCursor: next === undefined ? null : `${next.submittedAt.toISOString()}|${next.id}`,
+      nextCursor,
       pendingCount: this.verifications.filter((v) => v.status === "pending").length,
     })
   }
@@ -739,12 +734,12 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       .filter((o) => query.kind === undefined || o.verifiedKind === query.kind)
       .filter((o) => query.suspended === undefined || (o.suspendedAt !== null) === query.suspended)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
-    const start =
-      query.cursor === null
-        ? 0
-        : rows.findIndex((o) => `${o.createdAt.toISOString()}|${o.id}` === query.cursor) + 1
-    const page = rows.slice(start, start + query.limit)
-    const next = rows.length > start + query.limit ? page[page.length - 1] : undefined
+    const { page, nextCursor } = pageAfterCursor(
+      rows,
+      query.cursor,
+      query.limit,
+      (o) => `${o.createdAt.toISOString()}|${o.id}`,
+    )
     const counts: AdminOrganizationCounts | null =
       query.cursor === null
         ? {
@@ -756,7 +751,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
         : null
     return Promise.resolve({
       items: page.map((o) => this.toAdminOrganizationRecord(o)),
-      nextCursor: next === undefined ? null : `${next.createdAt.toISOString()}|${next.id}`,
+      nextCursor,
       counts,
     })
   }
@@ -781,24 +776,19 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     cursor: string | null
     limit: number
   }): Promise<{ items: AdminOrgMemberRecord[]; nextCursor: string | null }> {
-    const all = this.members
-      .filter((m) => m.organizationId === args.organizationId)
-      .sort(
-        (a, b) => a.joinedAt.getTime() - b.joinedAt.getTime() || a.userId.localeCompare(b.userId),
-      )
-    const start =
-      args.cursor === null
-        ? 0
-        : all.findIndex((m) => `${m.joinedAt.toISOString()}|${m.userId}` === args.cursor) + 1
-    const page = all.slice(start, start + args.limit)
-    const next = all.length > start + args.limit ? page[page.length - 1] : undefined
+    const { page, nextCursor } = pageAfterCursor(
+      this.membersByJoinOrder(args.organizationId),
+      args.cursor,
+      args.limit,
+      memberCursorKey,
+    )
     return Promise.resolve({
       items: page.map((m) => ({
         user: this.actorOf(m.userId),
         role: m.role,
         joinedAt: m.joinedAt,
       })),
-      nextCursor: next === undefined ? null : `${next.joinedAt.toISOString()}|${next.userId}`,
+      nextCursor,
     })
   }
 
@@ -809,6 +799,18 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     if (owner === undefined) return null
     owner.role = "admin"
     return owner.userId
+  }
+
+  private auditOwnershipTransfer(
+    args: { organizationId: string; userId: string; actorId: string; reason: string },
+    previousOwner: string | null,
+  ): void {
+    this.audits.push({
+      actorId: args.actorId,
+      action: "org.ownership_transferred",
+      target: `organization:${args.organizationId}`,
+      meta: { from: previousOwner, to: args.userId, reason: args.reason },
+    })
   }
 
   adminAddMemberTx(args: AdminAddMemberArgs): Promise<AdminAddMemberOutcome> {
@@ -833,14 +835,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       target: `organization:${args.organizationId}`,
       meta: { targetUserId: args.userId, role: args.role, reason: args.reason },
     })
-    if (args.role === "owner") {
-      this.audits.push({
-        actorId: args.actorId,
-        action: "org.ownership_transferred",
-        target: `organization:${args.organizationId}`,
-        meta: { from: previousOwner, to: args.userId, reason: args.reason },
-      })
-    }
+    if (args.role === "owner") this.auditOwnershipTransfer(args, previousOwner)
     return Promise.resolve("added")
   }
 
@@ -863,14 +858,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     if (roleChangeWithdrawsInvites(from, args.role)) {
       this.revokeInvitesByInviter(args.organizationId, args.userId, args.actorId, "inviter_demoted")
     }
-    if (args.role === "owner") {
-      this.audits.push({
-        actorId: args.actorId,
-        action: "org.ownership_transferred",
-        target: `organization:${args.organizationId}`,
-        meta: { from: previousOwner, to: args.userId, reason: args.reason },
-      })
-    }
+    if (args.role === "owner") this.auditOwnershipTransfer(args, previousOwner)
     return Promise.resolve("updated")
   }
 
@@ -937,15 +925,17 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     }
   }
 
+  private openInviteCount(organizationId: string, now: Date): number {
+    return this.invites.filter(
+      (i) =>
+        i.organizationId === organizationId &&
+        i.status === "pending" &&
+        i.expiresAt.getTime() > now.getTime(),
+    ).length
+  }
+
   countPendingInvites(organizationId: string, now: Date): Promise<number> {
-    return Promise.resolve(
-      this.invites.filter(
-        (i) =>
-          i.organizationId === organizationId &&
-          i.status === "pending" &&
-          i.expiresAt.getTime() > now.getTime(),
-      ).length,
-    )
+    return Promise.resolve(this.openInviteCount(organizationId, now))
   }
 
   createInviteTx(args: CreateOrganizationInviteArgs): Promise<CreateOrganizationInviteOutcome> {
@@ -953,13 +943,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       return Promise.resolve({ kind: "forbidden" })
     }
     this.expireInvites(args.organizationId, args.now)
-    const pending = this.invites.filter(
-      (i) =>
-        i.organizationId === args.organizationId &&
-        i.status === "pending" &&
-        i.expiresAt.getTime() > args.now.getTime(),
-    ).length
-    if (pending >= MAX_ORG_INVITES_PER_ORG) {
+    if (this.openInviteCount(args.organizationId, args.now) >= MAX_ORG_INVITES_PER_ORG) {
       return Promise.reject(AppError.conflict(ORG_INVITE_CAP_MESSAGE))
     }
     const email = args.email.toLowerCase()
@@ -1122,10 +1106,11 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     userId: string
     now: Date
   }): Promise<AcceptOrganizationInviteOutcome> {
-    const byToken = "tokenHash" in args.by
+    const by = args.by
+    const byToken = "tokenHash" in by
     const invite = byToken
-      ? this.invites.find((i) => i.tokenHash === (args.by as { tokenHash: string }).tokenHash)
-      : this.invites.find((i) => i.id === (args.by as { inviteId: string }).inviteId)
+      ? this.invites.find((i) => i.tokenHash === by.tokenHash)
+      : this.invites.find((i) => i.id === by.inviteId)
     if (invite === undefined || invite.status !== "pending")
       return Promise.resolve({ kind: "invalid" })
     const org = this.organizations.get(invite.organizationId)

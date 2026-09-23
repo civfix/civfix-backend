@@ -33,6 +33,14 @@ import type {
   RevokeTeamInviteOutcome,
 } from "./host-team-repository.types.js"
 import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.types.js"
+import type { CleanupPersonView } from "../cleanup-repository.types.js"
+
+const UNKNOWN_PERSON_NAME = "Unknown"
+
+const TEAM_INVITE_PENDING_CONSTRAINTS = [
+  "cleanup_team_invites_pending_user_uidx",
+  "cleanup_team_invites_pending_email_uidx",
+]
 
 interface InviteRowSelect {
   id: string
@@ -74,33 +82,35 @@ function inviteColumns(sql: Queryable) {
   `
 }
 
+function personViewOf(
+  id: string | null,
+  name: string | null,
+  handle: string | null,
+  avatarUrl: string | null,
+): CleanupPersonView | null {
+  if (id === null) return null
+  return { id, displayName: name ?? UNKNOWN_PERSON_NAME, handle, bio: null, avatarUrl }
+}
+
 function toInviteRecord(row: InviteRowSelect): EventTeamInviteRecord {
   return {
     id: row.id,
     cleanupId: row.cleanup_id,
     role: row.role,
     status: row.status,
-    invitee:
-      row.invitee_id === null
-        ? null
-        : {
-            id: row.invitee_id,
-            displayName: row.invitee_name ?? "Unknown",
-            handle: row.invitee_handle,
-            bio: null,
-            avatarUrl: row.invitee_avatar_url,
-          },
+    invitee: personViewOf(
+      row.invitee_id,
+      row.invitee_name,
+      row.invitee_handle,
+      row.invitee_avatar_url,
+    ),
     invitedEmail: row.invited_email,
-    invitedBy:
-      row.inviter_id === null
-        ? null
-        : {
-            id: row.inviter_id,
-            displayName: row.inviter_name ?? "Unknown",
-            handle: row.inviter_handle,
-            bio: null,
-            avatarUrl: row.inviter_avatar_url,
-          },
+    invitedBy: personViewOf(
+      row.inviter_id,
+      row.inviter_name,
+      row.inviter_handle,
+      row.inviter_avatar_url,
+    ),
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     acceptedAt: row.accepted_at,
@@ -140,25 +150,16 @@ function toPendingInviteForUser(row: PendingInviteForUserRowSelect): PendingInvi
       coverKey: row.cover_key,
       address: row.address,
     },
-    invitedBy:
-      row.inviter_id === null
-        ? null
-        : {
-            id: row.inviter_id,
-            displayName: row.inviter_name ?? "Unknown",
-            handle: row.inviter_handle,
-            bio: null,
-            avatarUrl: row.inviter_avatar_url,
-          },
+    invitedBy: personViewOf(
+      row.inviter_id,
+      row.inviter_name,
+      row.inviter_handle,
+      row.inviter_avatar_url,
+    ),
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   }
 }
-
-const TEAM_INVITE_PENDING_CONSTRAINTS = [
-  "cleanup_team_invites_pending_user_uidx",
-  "cleanup_team_invites_pending_email_uidx",
-]
 
 async function readOpenInvite(
   tag: Queryable,
@@ -271,6 +272,14 @@ async function seatTeamMemberInTx(
   return (await heldRoleInTx(tx, args.cleanupId, args.userId)) ?? args.role
 }
 
+async function expireTeamInviteInTx(tx: Queryable, inviteId: string): Promise<void> {
+  await tx`
+    UPDATE cleanup_team_invites
+    SET status = 'expired', invited_email = NULL, email_scrubbed_at = now()
+    WHERE id = ${inviteId}
+  `
+}
+
 async function closeAcceptedInviteInTx(
   tx: Queryable,
   args: {
@@ -302,6 +311,18 @@ async function closeAcceptedInviteInTx(
       to: args.role,
     },
   })
+}
+
+/** The shared tail of both accept paths: a banned account is refused, anyone else is seated. */
+async function seatFromInviteInTx(
+  tx: Queryable,
+  args: { inviteId: string; cleanupId: string; userId: string; role: EventTeamRole; now: Date },
+): Promise<CleanupMemberRole | "banned"> {
+  if (await isBannedInTx(tx, args.cleanupId, args.userId)) return "banned"
+  const held = await heldRoleInTx(tx, args.cleanupId, args.userId)
+  const role = await seatTeamMemberInTx(tx, args)
+  await closeAcceptedInviteInTx(tx, { ...args, from: held })
+  return role
 }
 
 export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
@@ -509,11 +530,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         if (invite === undefined || invite.status !== "pending") return { kind: "invalid" }
         if (invite.invited_by === args.userId) return { kind: "wrong_recipient" }
         if (invite.expires_at.getTime() <= args.now.getTime()) {
-          await tx`
-            UPDATE cleanup_team_invites
-            SET status = 'expired', invited_email = NULL, email_scrubbed_at = now()
-            WHERE id = ${invite.id}
-          `
+          await expireTeamInviteInTx(tx, invite.id)
           return { kind: "expired" }
         }
         if (invite.invited_user_id !== null && invite.invited_user_id !== args.userId) {
@@ -530,23 +547,14 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           `
           if (match.length === 0) return { kind: "wrong_recipient" }
         }
-        if (await isBannedInTx(tx, args.cleanupId, args.userId)) return { kind: "banned" }
-        const held = await heldRoleInTx(tx, args.cleanupId, args.userId)
-        const role = await seatTeamMemberInTx(tx, {
-          cleanupId: args.cleanupId,
-          userId: args.userId,
-          role: invite.role,
-          now: args.now,
-        })
-        await closeAcceptedInviteInTx(tx, {
+        const role = await seatFromInviteInTx(tx, {
           inviteId: invite.id,
           cleanupId: args.cleanupId,
           userId: args.userId,
           role: invite.role,
           now: args.now,
-          from: held,
         })
-        return { kind: "accepted", role }
+        return role === "banned" ? { kind: "banned" } : { kind: "accepted", role }
       })
     },
 
@@ -629,30 +637,17 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         if (invite.status === "accepted") return alreadySeatedOutcome(tx, cleanupId, args.userId)
         if (invite.status !== "pending") return { kind: "not_open" }
         if (invite.expires_at.getTime() <= args.now.getTime()) {
-          await tx`
-            UPDATE cleanup_team_invites
-            SET status = 'expired', invited_email = NULL, email_scrubbed_at = now()
-            WHERE id = ${invite.id}
-          `
+          await expireTeamInviteInTx(tx, invite.id)
           return { kind: "expired" }
         }
-        if (await isBannedInTx(tx, cleanupId, args.userId)) return { kind: "banned" }
-        const held = await heldRoleInTx(tx, cleanupId, args.userId)
-        const role = await seatTeamMemberInTx(tx, {
-          cleanupId,
-          userId: args.userId,
-          role: invite.role,
-          now: args.now,
-        })
-        await closeAcceptedInviteInTx(tx, {
+        const role = await seatFromInviteInTx(tx, {
           inviteId: invite.id,
           cleanupId,
           userId: args.userId,
           role: invite.role,
           now: args.now,
-          from: held,
         })
-        return { kind: "accepted", cleanupId, role }
+        return role === "banned" ? { kind: "banned" } : { kind: "accepted", cleanupId, role }
       })
     },
 

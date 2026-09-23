@@ -15,17 +15,21 @@ import { parseMarkdownSubset, MARKDOWN_SUBSET_MAX_CHARS } from "@civfix/shared/m
 import { can, type HostStanding } from "@civfix/shared/host"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
-import { RESERVED_SLUGS } from "./slugs.js"
+import { assertSlugAllowed, RESERVED_SLUGS } from "./slugs.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import { toEventPageDTO, toEventQuestionDTO, toPublicTicketType } from "./registration-dto.js"
 import type { HostRegistrationRepository, PageRecord } from "./registration-repository.types.js"
 import type { RegistrationAudit } from "./registration-service.js"
 
-export const HOST_PAGE_PUBLISH_COUNTER_KEY = "host:pagePublish"
+const HOST_PAGE_PUBLISH_COUNTER_KEY = "host:pagePublish"
 
 export const HOST_PAGE_PUBLISH_PER_DAY = 20
 
-export const DAY_SECONDS = 24 * 60 * 60
+const DAY_SECONDS = 24 * 60 * 60
+
+const EXTERNAL_LINK_SCHEME = "https://"
+
+const RESERVED_PAGE_ADDRESS_MESSAGE = "that address is reserved"
 
 const RESERVED_SLUG_SUFFIXES = ["-event", "-2", "-3"] as const
 
@@ -88,7 +92,7 @@ function markdownFields(block: EventPageBlock): string[] {
   }
 }
 
-export function blockMediaIds(blocks: readonly EventPageBlock[]): string[] {
+function blockMediaIds(blocks: readonly EventPageBlock[]): string[] {
   const ids: string[] = []
   for (const block of blocks) {
     if (block.kind === "hero" && block.mediaId != null) ids.push(block.mediaId)
@@ -147,7 +151,7 @@ function mediaUrlFields(block: EventPageBlock): BlockMediaUrl[] {
   return []
 }
 
-export function stripResolvedMediaUrls(blocks: readonly EventPageBlock[]): EventPageBlock[] {
+function stripResolvedMediaUrls(blocks: readonly EventPageBlock[]): EventPageBlock[] {
   return blocks.map((block) => {
     if (block.kind === "hero" && block.mediaId != null && block.imageUrl != null) {
       const { imageUrl: _dropped, ...rest } = block
@@ -219,7 +223,7 @@ export function validatePageBlocks(
     }
 
     for (const link of externalUrls(block)) {
-      if (!link.url.startsWith("https://")) {
+      if (!link.url.startsWith(EXTERNAL_LINK_SCHEME)) {
         throw AppError.validation({
           [`blocks.${index}.${link.field}`]: "must be an https:// link",
         })
@@ -256,15 +260,13 @@ export function makePageService(deps: PageServiceDeps): PageService {
     blocks: readonly EventPageBlock[],
   ): Promise<EventPageBlock[]> {
     const ids = blockMediaIds(blocks)
-    if (ids.length === 0 || deps.presignCover === undefined) return [...blocks]
+    const presign = deps.presignCover
+    if (ids.length === 0 || presign === undefined) return [...blocks]
     const keys = await deps.repo.mediaKeysFor(cleanupId, ids)
     const urls = new Map<string, string>()
     await mapWithLimit([...keys.entries()], PRESIGN_CONCURRENCY, async ([id, key]) => {
       try {
-        urls.set(
-          id,
-          (await (deps.presignCover as (k: string) => Promise<{ url: string }>)(key)).url,
-        )
+        urls.set(id, (await presign(key)).url)
       } catch (err) {
         deps.logger?.warn({ err }, "event page: block media presign failed (suppressed)")
       }
@@ -340,9 +342,7 @@ export function makePageService(deps: PageServiceDeps): PageService {
 
     async save(input, actorId): Promise<EventPageDTO> {
       validatePageBlocks(input.blocks, deps.mediaUrlPrefixes ?? [])
-      if (input.slug != null && RESERVED_SLUGS.has(input.slug)) {
-        throw AppError.validation({ slug: "that address is reserved" })
-      }
+      if (input.slug != null) assertSlugAllowed(input.slug, "slug", RESERVED_PAGE_ADDRESS_MESSAGE)
 
       const blocks = stripResolvedMediaUrls(input.blocks)
       const outcome = await deps.repo.savePage({
