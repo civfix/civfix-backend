@@ -11,6 +11,7 @@
 
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
+import { pingDb } from "../db/client.js"
 import { route } from "../versioning/route.js"
 import { SERVICE_NAME } from "../version.js"
 
@@ -82,7 +83,7 @@ export async function registerHealthRoutes(
     if (realDbConsumer || container.dbHandle) {
       try {
         const handle = container.getDb()
-        await handle.sql`select 1`
+        await pingDb(handle)
         body.checks.db = "ok"
       } catch (err) {
         app.log.error({ err }, "readyz: db ping failed")

@@ -14,7 +14,10 @@
 import { AppError } from "@civfix/shared"
 import type { Geocoder } from "@civfix/shared/interfaces"
 import type { Sql } from "../db/client.js"
-import { resolveJurisdiction } from "../db/sql/jurisdiction.js"
+import {
+  makeDrizzleJurisdictionRepository,
+  type JurisdictionRepository,
+} from "../services/jurisdiction-repository.drizzle.js"
 
 /** A fixed public Census code list, so it lives in-process rather than in a lookup table. */
 const STATE_FIPS_TO_USPS: Readonly<Record<string, string>> = {
@@ -105,29 +108,28 @@ export class TigerGeocoder implements Geocoder {
     this.getSql = options.getSql
   }
 
-  /** Note the argument order flip: this takes (lat, lng) but resolveJurisdiction takes (lng, lat). */
+  /** Note the argument order flip: this takes (lat, lng) but the jurisdiction repository takes (lng, lat). */
   async cityStateLabel(lat: number, lng: number): Promise<string | null> {
-    const sql = this.getSql()
+    const jurisdictions = makeDrizzleJurisdictionRepository(this.getSql())
 
-    const resolved = await resolveJurisdiction(sql, lng, lat)
+    const resolved = await jurisdictions.resolveContaining(lng, lat)
     if (!resolved) return null
 
     // The geoid prefix is trusted only on FIPS-hierarchical layers; a federal/tribal numeric id (e.g. a
     // BIA/ArcGIS OBJECTID) would yield a valid-but-WRONG state (see file header).
     const fipsLayer = FIPS_HIERARCHICAL_LAYERS.has(resolved.layer)
     const usps =
-      (fipsLayer ? uspsFromGeoid(resolved.geoid) : null) ?? (await this.stateAbbrFor(sql, lng, lat))
+      (fipsLayer ? uspsFromGeoid(resolved.geoid) : null) ??
+      (await this.stateAbbrFor(jurisdictions, lng, lat))
     return formatCityStateLabel(resolved.name, usps)
   }
 
-  private async stateAbbrFor(sql: Sql, lng: number, lat: number): Promise<string | null> {
-    const rows = await sql<{ geoid: string }[]>`
-      SELECT geoid
-      FROM jurisdictions
-      WHERE layer = 'state'
-        AND ST_Contains(geom, ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326))
-      LIMIT 1
-    `
-    return uspsFromGeoid(rows[0]?.geoid ?? "") ?? null
+  private async stateAbbrFor(
+    jurisdictions: JurisdictionRepository,
+    lng: number,
+    lat: number,
+  ): Promise<string | null> {
+    const geoid = await jurisdictions.containingStateGeoid(lng, lat)
+    return uspsFromGeoid(geoid ?? "") ?? null
   }
 }

@@ -25,6 +25,7 @@
 import type { Sql, TransactionSql } from "../db/client.js"
 import { generateToken, sha256Hex } from "../auth/crypto.js"
 import type {
+  AnonAbuseReason,
   AnonReportRepository,
   AnonReportStatusRow,
   CreateAnonReportTxArgs,
@@ -102,10 +103,18 @@ export interface DrizzleAnonReportRepositoryOptions {
   newClaimCode?: () => string
 }
 
+export interface DrizzleAnonReportRepository extends AnonReportRepository {
+  raiseAbuseFlag(
+    subjectType: "report" | "anon_token",
+    subjectId: string,
+    reason: AnonAbuseReason,
+  ): Promise<void>
+}
+
 export function makeDrizzleAnonReportRepository(
   sql: Sql,
   opts: DrizzleAnonReportRepositoryOptions = {},
-): AnonReportRepository {
+): DrizzleAnonReportRepository {
   const tokens = anonTokenStore(sql)
   const newClaimCode = opts.newClaimCode ?? (() => generateToken())
 
@@ -221,6 +230,18 @@ export function makeDrizzleAnonReportRepository(
         publishedAt: row.published_at,
         claimCodeHash: row.claim_code_hash,
       }
+    },
+
+    async raiseAbuseFlag(subjectType, subjectId, reason): Promise<void> {
+      await sql`
+        INSERT INTO abuse_flags (subject_type, subject_id, reason, source)
+        SELECT ${subjectType}, ${subjectId}, ${reason}, 'api'
+        WHERE NOT EXISTS (
+          SELECT 1 FROM abuse_flags
+          WHERE subject_type = ${subjectType} AND subject_id = ${subjectId}
+            AND reason = ${reason} AND source = 'api' AND resolved_at IS NULL
+        )
+      `
     },
   }
 }

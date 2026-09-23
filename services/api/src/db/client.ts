@@ -99,3 +99,7 @@ export function makeDb(
 
   return { db, sql, close }
 }
+
+export async function pingDb(handle: DbHandle): Promise<void> {
+  await handle.sql`select 1`
+}

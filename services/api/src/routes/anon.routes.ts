@@ -73,25 +73,17 @@ export async function registerAnonRoutes(
     if (override) return override.service
 
     const sql = container.getDb().sql
+    const repo = makeDrizzleAnonReportRepository(sql)
     return makeAnonService({
-      repo: makeDrizzleAnonReportRepository(sql),
+      repo,
       abuseChecks: container.abuseChecks,
       counters: container.getCounterStore(),
       anonTokenSigningKey: container.env.ANON_TOKEN_SIGNING_KEY,
       resolveJurisdictionGeoid: makeGeoidResolver(container),
       resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
       resolveAddress: makeCachedAddressResolver(container),
-      raiseAbuseFlag: async (subjectType, subjectId, reason) => {
-        await sql`
-          INSERT INTO abuse_flags (subject_type, subject_id, reason, source)
-          SELECT ${subjectType}, ${subjectId}, ${reason}, 'api'
-          WHERE NOT EXISTS (
-            SELECT 1 FROM abuse_flags
-            WHERE subject_type = ${subjectType} AND subject_id = ${subjectId}
-              AND reason = ${reason} AND source = 'api' AND resolved_at IS NULL
-          )
-        `
-      },
+      raiseAbuseFlag: (subjectType, subjectId, reason) =>
+        repo.raiseAbuseFlag(subjectType, subjectId, reason),
       log: (line, extra) => app.log.info(extra ?? {}, line),
     })
   }
