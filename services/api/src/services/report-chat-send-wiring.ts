@@ -117,7 +117,10 @@ export function makeContainerReportChatSendDeps(
   return {
     ...base,
     notifyMembers,
-    forwardCityMention: makeContainerReportCityForward(container),
+    forwardCityMention: makeContainerReportCityForward(
+      container,
+      logger !== undefined ? { logger } : {},
+    ),
     ...(options.mentions
       ? { mentions: { ...options.mentions, notifyChatMention: makeChatMentionNotifier(bellDeps) } }
       : {}),

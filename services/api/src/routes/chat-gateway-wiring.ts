@@ -507,10 +507,13 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
     sendResilience,
   }
 
-  const canForwardCity = makeCityForwardThrottle({
-    incr: (key, ttlSeconds) => container.getCounterStore().incr(key, ttlSeconds),
-    incrBy: (key, by, ttlSeconds) => container.getCounterStore().incrBy(key, by, ttlSeconds),
-  })
+  const canForwardCity = makeCityForwardThrottle(
+    {
+      incr: (key, ttlSeconds) => container.getCounterStore().incr(key, ttlSeconds),
+      incrBy: (key, by, ttlSeconds) => container.getCounterStore().incrBy(key, by, ttlSeconds),
+    },
+    app.log,
+  )
 
   const notifyReportChatMembers =
     notificationService && conversationMutes
@@ -556,6 +559,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const forwardCityMention = makeContainerReportCityForward(container, {
     getReportRepo,
     canForward: canForwardCity,
+    logger: app.log,
   })
   const onReportMessage: OnReportMessage | undefined = useFakeChat
     ? undefined

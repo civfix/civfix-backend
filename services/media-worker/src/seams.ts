@@ -10,6 +10,7 @@ import { LOCAL_STORAGE_DEV_SIGNING_KEY, LocalDiskStorage } from "@civfix/api/ada
 import { captureError, initErrorReporting, flushErrorReporting } from "@civfix/api/errors"
 import { assertRealSeamInProd, loadLimits, parseBool, type WorkerLimits } from "./config.js"
 import { makeDownloader, type DownloadFn } from "./download.js"
+import type { JobLogFn } from "./jobs/obs.js"
 
 export interface WorkerSeams {
   storage: Storage
@@ -31,8 +32,20 @@ function useFake(source: NodeJS.ProcessEnv, key: string): boolean {
   return parseBool(source[key], !isProd)
 }
 
-export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promise<WorkerSeams> {
+export interface BuildSeamsOptions {
+  log?: JobLogFn
+}
+
+// The worker has no pino instance of its own; adapters it builds write to this one channel so a caller
+// can redirect every seam's output at once instead of each adapter choosing its own console fallback.
+const defaultSeamLog: JobLogFn = (line, extra) => console.warn(line, extra ?? {})
+
+export async function buildSeams(
+  source: NodeJS.ProcessEnv = process.env,
+  options: BuildSeamsOptions = {},
+): Promise<WorkerSeams> {
   const limits = loadLimits(source)
+  const log = options.log ?? defaultSeamLog
 
   const fakeStorage = useFake(source, "USE_FAKE_STORAGE")
   const fakeAbuse = useFake(source, "USE_FAKE_ABUSE_NSFW")
@@ -90,7 +103,7 @@ export async function buildSeams(source: NodeJS.ProcessEnv = process.env): Promi
 
   const abuseChecks: AbuseChecks = fakeAbuse
     ? new FakeAbuseChecks()
-    : await buildRealAbuseChecks(source, limits, findPhashDuplicate)
+    : await buildRealAbuseChecks(source, limits, findPhashDuplicate, log)
 
   const download = makeDownloader(storage)
 
@@ -156,6 +169,7 @@ async function buildRealAbuseChecks(
   source: NodeJS.ProcessEnv,
   limits: WorkerLimits,
   findPhashDuplicate: FindPhashDuplicateFn | undefined,
+  log: JobLogFn,
 ): Promise<AbuseChecks> {
   const { RealAbuseChecks } = await import("@civfix/api/adapters/abuse-checks")
   const { perceptualHash } = await import("./sandbox/phash.js")
@@ -165,6 +179,7 @@ async function buildRealAbuseChecks(
     useRealNsfw: parseBool(source.USE_REAL_NSFW, false),
     perceptualHash: (bytes: Uint8Array) => perceptualHash(bytes, limits),
     ...(findPhashDuplicate ? { findPhashDuplicate } : {}),
+    log,
   })
 }
 
