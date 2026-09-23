@@ -174,7 +174,7 @@ describe("host export build", () => {
     ])
     expect(await h.service.run(EXPORT_ID)).toEqual({ status: "ready" })
     const put = h.puts[0]!
-    expect(put.key).toBe("exports/host/2026/02/00000000-0000-0000-0000-0000000000e1.csv")
+    expect(put.key).toBe("exports/host/2026/02/run-1/00000000-0000-0000-0000-0000000000e1.csv")
     expect(put.meta).toMatchObject({ contentType: "text/csv; charset=utf-8" })
     expect(
       String(put.meta && (put.meta as { contentDisposition: string }).contentDisposition),
@@ -225,6 +225,19 @@ describe("host export build", () => {
     await h.service.run(EXPORT_ID)
     expect(await h.service.run(EXPORT_ID)).toEqual({ status: "skipped" })
     expect(h.puts).toHaveLength(1)
+  })
+
+  it("gives every run of one export its own object, so a superseded run cannot discard the winner's", async () => {
+    const h = harness([["1", "x"]])
+    await h.service.run(EXPORT_ID)
+    h.setCurrent({ status: "queued" })
+    await h.service.run(EXPORT_ID)
+
+    const [first, second] = h.puts.map((p) => p.key)
+    expect(first).not.toBe(second)
+    expect(first).toMatch(/^exports\/host\/2026\/02\/run-1\//)
+    expect(second).toMatch(/^exports\/host\/2026\/02\/run-2\//)
+    expect(h.current().r2Key).toBe(second)
   })
 
   it("mints a SHORT forceSigned download url", async () => {

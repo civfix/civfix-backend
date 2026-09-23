@@ -75,10 +75,16 @@ export interface HostExportService {
 export function makeHostExportService(deps: HostExportServiceDeps): HostExportService {
   const now = deps.now ?? (() => new Date())
 
-  function storageKey(exportId: string, at: Date): string {
+  /**
+   * Each run writes its own object: two runs of one export in one month would otherwise share a key,
+   * and a superseded run discarding "its" object would delete the winner's. The export id stays the
+   * last segment because the download filename is read from it.
+   */
+  function storageKey(claimed: HostExportRecord, at: Date): string {
     const year = at.getUTCFullYear()
     const month = String(at.getUTCMonth() + 1).padStart(2, "0")
-    return `exports/host/${year}/${month}/${exportId}.csv`
+    const run = claimed.runToken === null ? "" : `${claimed.runToken}/`
+    return `exports/host/${year}/${month}/${run}${claimed.id}.csv`
   }
 
   /** The failed row keeps its key until this succeeds, so the reaper can finish a partial cleanup. */
@@ -197,7 +203,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
           bytes += note.byteLength
         }
 
-        key = storageKey(claimed.id, at)
+        key = storageKey(claimed, at)
         const owned = await deps.repo.recordObjectKey(claimed.id, {
           r2Key: key,
           runToken: claimed.runToken,
