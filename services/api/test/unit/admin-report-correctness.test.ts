@@ -118,7 +118,7 @@ describe("admin report flag toggle serializes on the report row", () => {
     const repo = makeDrizzleAdminReportRepository(ctl.sql as unknown as Sql)
     await repo.toggleFlag(REPORT_ID, { reason: null, actorId: "op-1" })
     const lock = ctl.statements.find((s) => /SELECT status FROM reports/.test(s.sql))
-    expect(lock?.sql).toMatch(/FOR UPDATE/)
+    expect(lock?.sql).toMatch(/FOR NO KEY UPDATE/)
   })
 })
 

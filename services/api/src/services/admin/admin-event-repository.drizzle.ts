@@ -162,7 +162,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
     ): Promise<boolean | null> {
       return sql.begin(async (tx) => {
         const exists = await tx<{ id: string }[]>`
-          SELECT id FROM cleanups WHERE id = ${id} FOR UPDATE
+          SELECT id FROM cleanups WHERE id = ${id} FOR NO KEY UPDATE
         `
         if (exists.length === 0) return null
 

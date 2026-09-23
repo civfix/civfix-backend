@@ -34,7 +34,7 @@ describe("admin user writes re-check the target inside the transaction", () => {
     const repo = makeDrizzleAdminUserRepository(ctl.sql as unknown as Sql)
     await expect(repo.applyRole(USER_ID, { role: "citizen", actorId: "op-1" })).resolves.toBe(true)
     const read = ctl.statements.find((s) => /SELECT role FROM users/.test(s.sql))
-    expect(read?.sql).toMatch(/FOR UPDATE/)
+    expect(read?.sql).toMatch(/FOR NO KEY UPDATE/)
   })
 
   it("refuses a status change on a row that became an operator after the service pre-check", async () => {
@@ -52,6 +52,17 @@ describe("admin user writes re-check the target inside the transaction", () => {
     expect(outcome).toBe("forbidden")
     expect(ctl.statements.some((s) => /INSERT INTO user_moderation/.test(s.sql))).toBe(false)
   })
+
+  it("locks the target row without blocking foreign-key checks on it", async () => {
+    const ctl = makeFakeSql([
+      { match: /FROM users WHERE id/, rows: [{ id: USER_ID, role: "citizen" }] },
+      AUDIT_ROW,
+    ])
+    const repo = makeDrizzleAdminUserRepository(ctl.sql as unknown as Sql)
+    await repo.setStatus(USER_ID, { status: "suspended", reason: null, actorId: "op-1" })
+    const lock = ctl.statements.find((s) => /SELECT id, role FROM users/.test(s.sql))
+    expect(lock?.sql).toMatch(/FOR NO KEY UPDATE/)
+  })
 })
 
 describe("admin user flag toggle serializes on the user row", () => {
@@ -60,6 +71,6 @@ describe("admin user flag toggle serializes on the user row", () => {
     const repo = makeDrizzleAdminUserRepository(ctl.sql as unknown as Sql)
     await repo.toggleFlag(USER_ID, { reason: null, actorId: "op-1" })
     const lock = ctl.statements.find((s) => /SELECT id FROM users/.test(s.sql))
-    expect(lock?.sql).toMatch(/FOR UPDATE/)
+    expect(lock?.sql).toMatch(/FOR NO KEY UPDATE/)
   })
 })

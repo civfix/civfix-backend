@@ -472,7 +472,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     ): Promise<boolean | null> {
       return sql.begin(async (tx) => {
         const exists = await tx<{ id: string }[]>`
-          SELECT id FROM users WHERE id = ${id} AND deleted_at IS NULL FOR UPDATE
+          SELECT id FROM users WHERE id = ${id} AND deleted_at IS NULL FOR NO KEY UPDATE
         `
         if (exists.length === 0) return null
 
@@ -516,7 +516,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         // The service's operator check ran in an earlier query; re-check on the locked row so a target
         // promoted in between cannot be banned or suspended from the console.
         const target = await tx<{ id: string; role: Role }[]>`
-          SELECT id, role FROM users WHERE id = ${id} AND deleted_at IS NULL FOR UPDATE
+          SELECT id, role FROM users WHERE id = ${id} AND deleted_at IS NULL FOR NO KEY UPDATE
         `
         const row = target[0]
         if (row === undefined) return false
@@ -540,7 +540,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     async applyRole(id: string, input: { role: Role; actorId: string | null }): Promise<boolean> {
       return sql.begin(async (tx) => {
         const existing = await tx<{ role: Role }[]>`
-          SELECT role FROM users WHERE id = ${id} AND deleted_at IS NULL FOR UPDATE
+          SELECT role FROM users WHERE id = ${id} AND deleted_at IS NULL FOR NO KEY UPDATE
         `
         const priorRole = existing[0]?.role
         if (priorRole === undefined) return false

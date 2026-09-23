@@ -47,7 +47,7 @@ describe("admin event flag toggle serializes on the event row", () => {
     const repo = makeDrizzleAdminEventRepository(ctl.sql as unknown as Sql)
     await repo.toggleFlag(EVENT_ID, { reason: null, actorId: "op-1" })
     const lock = ctl.statements.find((s) => /SELECT id FROM cleanups/.test(s.sql))
-    expect(lock?.sql).toMatch(/FOR UPDATE/)
+    expect(lock?.sql).toMatch(/FOR NO KEY UPDATE/)
   })
 })
 
