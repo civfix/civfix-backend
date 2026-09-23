@@ -81,6 +81,27 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
     }
   }
 
+  /**
+   * A retry lands here when an earlier attempt inserted the row but failed to enqueue its plan.
+   * Re-enqueueing cannot double-send: plan() only acts on a 'sending' row and deliveries are unique
+   * per recipient and channel. Without it the notice would wait for the stale-sending sweep.
+   */
+  async function replanUnplannedCancellation(cleanupId: string): Promise<void> {
+    const existing = await deps.repo.findEventCancellation(cleanupId)
+    if (existing !== null && existing.status === "sending" && existing.plannedAt === null) {
+      deps.logger?.warn(
+        { evt: "broadcast.event_cancelled.replanned", cleanupId, broadcastId: existing.id },
+        "event_cancelled lane found its broadcast unplanned; enqueueing the plan again",
+      )
+      await deps.enqueuePlan(existing.id)
+      return
+    }
+    deps.logger?.info(
+      { evt: "broadcast.event_cancelled.deduped", cleanupId },
+      "event_cancelled lane skipped: this event already has a cancellation broadcast",
+    )
+  }
+
   return {
     async eventUpdated(cleanupId: string): Promise<EventUpdateVerdict> {
       const event = await deps.repo.eventContext(cleanupId)
@@ -121,10 +142,7 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
         replyTo: event.replyToVerified ? event.replyTo : null,
       })
       if (record === null) {
-        deps.logger?.info(
-          { evt: "broadcast.event_cancelled.deduped", cleanupId },
-          "event_cancelled lane skipped: this event already has a cancellation broadcast",
-        )
+        await replanUnplannedCancellation(cleanupId)
         return null
       }
       await deps.enqueuePlan(record.id)

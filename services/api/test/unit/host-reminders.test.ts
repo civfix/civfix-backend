@@ -99,9 +99,62 @@ describe("critical lanes", () => {
     const second = await lanes.eventCancelled(EVENT, "storm warning")
     expect(first).not.toBeNull()
     expect(second).toBeNull()
-    expect(planned).toEqual([first])
+    expect(planned).toEqual([first, first])
     const rows = await repo.list({ cleanupId: EVENT, cursor: null, limit: 50 })
     expect(rows.filter((b) => b.kind === "event_cancelled")).toHaveLength(1)
+  })
+})
+
+describe("event_cancelled lane after a failed plan enqueue", () => {
+  function buildFailingFirstEnqueue() {
+    const repo = new InMemoryBroadcastRepository()
+    repo.seedEvent(CONTEXT)
+    const planned: string[] = []
+    let failNext = true
+    const lanes = makeBroadcastLanes({
+      repo,
+      counters: new InMemoryCounterStore(),
+      perEventPerHour: 3,
+      enqueuePlan: (id) => {
+        if (failNext) {
+          failNext = false
+          return Promise.reject(new Error("queue unavailable"))
+        }
+        planned.push(id)
+        return Promise.resolve()
+      },
+    })
+    return { repo, lanes, planned }
+  }
+
+  it("re-enqueues the plan on the retry instead of leaving the notice unplanned", async () => {
+    const { repo, lanes, planned } = buildFailingFirstEnqueue()
+    await expect(lanes.eventCancelled(EVENT, "storm warning")).rejects.toThrow("queue unavailable")
+    await lanes.eventCancelled(EVENT, "storm warning")
+
+    const rows = await repo.list({ cleanupId: EVENT, cursor: null, limit: 50 })
+    const cancellations = rows.filter((b) => b.kind === "event_cancelled")
+    expect(cancellations).toHaveLength(1)
+    expect(planned).toEqual([cancellations[0]!.id])
+  })
+
+  it("looks the cancellation up by event and kind, the key its unique index enforces", async () => {
+    const fake = makeFakeSql([{ match: /FROM broadcasts/, rows: [] }])
+    const repo = makeDrizzleBroadcastRepository(fake.sql as unknown as Sql)
+
+    expect(await repo.findEventCancellation(EVENT)).toBeNull()
+
+    const statement = fake.statements.at(-1)
+    expect(statement?.sql).toMatch(/WHERE cleanup_id = \? AND kind = 'event_cancelled'/)
+    expect(statement?.values).toEqual([EVENT])
+  })
+
+  it("does not re-enqueue a cancellation that was already planned", async () => {
+    const { repo, lanes, planned } = build()
+    const first = await lanes.eventCancelled(EVENT, "storm warning")
+    await repo.markPlanned(first!, { recipientCount: 2, plannedAt: new Date() })
+    await lanes.eventCancelled(EVENT, "storm warning")
+    expect(planned).toEqual([first])
   })
 })
 
@@ -133,6 +186,7 @@ describe("event_updated lane", () => {
       counters: {
         incr: () => Promise.reject(new Error("redis down")),
         incrBy: () => Promise.reject(new Error("redis down")),
+        decrBy: () => Promise.reject(new Error("redis down")),
       },
       perEventPerHour: 3,
       enqueuePlan: () => Promise.resolve(),
