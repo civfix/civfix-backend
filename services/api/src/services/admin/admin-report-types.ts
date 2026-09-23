@@ -9,6 +9,7 @@ import type {
   ReportMedia,
   ReportOutreachStatus,
   ReportTimelineItem,
+  ReportVisibility,
 } from "@civfix/shared"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 import type { FastifyBaseLogger } from "fastify"
@@ -17,6 +18,7 @@ import type { LinkedEventView } from "../cleanup-service.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import type { AdminPersonRecord } from "./admin-person.js"
 import type { ForwardTemplateReader } from "./forward-template-types.js"
+import type { PresignPacketMedia } from "../media-presign.js"
 
 export type AdminReporterRecord = AdminPersonRecord
 
@@ -60,6 +62,7 @@ export interface AdminReportRecord {
   id: string
   category: ReportCategory
   status: AdminReportStatus
+  visibility: ReportVisibility
   flagged: boolean
   title: string
   place: string
@@ -164,10 +167,7 @@ export interface AdminReportServiceDeps {
     r2Key: string,
     thumbKey: string | null,
   ) => Promise<{ url: string; thumbUrl?: string }>
-  presignPacketMedia?: (
-    r2Key: string,
-    thumbKey: string | null,
-  ) => Promise<{ url: string; thumbUrl?: string }>
+  presignPacketMedia?: PresignPacketMedia
   loadLinkedEventsForReports?: (
     reportIds: string[],
   ) => Promise<Map<string, LinkedEventView[]>>

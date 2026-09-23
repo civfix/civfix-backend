@@ -23,6 +23,7 @@ import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { isPubliclyVisibleStatus } from "../report-visibility.js"
 import {
   JURISDICTION_REPLY_NOTE,
   resolveListFilter,
@@ -83,7 +84,8 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     deps.presignMedia ??
     (async (r2Key: string, thumbKey: string | null) =>
       thumbKey === null ? { url: r2Key } : { url: r2Key, thumbUrl: thumbKey })
-  const presignPacketMedia = deps.presignPacketMedia ?? presignMedia
+  const presignPacketMedia =
+    deps.presignPacketMedia ?? (async (r2Key: string) => (await presignMedia(r2Key, null)).url)
 
   async function emitTimeline(event: {
     reportId: string
@@ -389,12 +391,13 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       assertRoutable(await deps.repo.getOutreach(id), toAddr)
 
       const media = await deps.repo.listMedia(id)
+      const publiclyVisible =
+        isPubliclyVisibleStatus(record.status) && record.visibility === "public"
       const mediaLinks: string[] = []
       const attachments: PacketAttachment[] = []
       let attachedBytesTotal = 0
       for (const m of media) {
-        const { url } = await presignPacketMedia(m.r2Key, m.thumbKey)
-        mediaLinks.push(url)
+        mediaLinks.push(await presignPacketMedia(m.r2Key, publiclyVisible))
         if (m.kind !== "image" || attachments.length >= MAX_PACKET_ATTACHMENTS) continue
         const bytes = deps.loadMediaBytes ? await deps.loadMediaBytes(m.r2Key) : null
         if (bytes === null || bytes.byteLength > MAX_PACKET_ATTACHMENT_BYTES) continue

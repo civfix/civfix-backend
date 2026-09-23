@@ -45,15 +45,11 @@ export function makePrivateMediaPresigner(storage: PresignStorage): PresignMedia
 
 export const PACKET_MEDIA_URL_TTL_SEC = 7 * 24 * 60 * 60
 
-export function makePacketMediaPresigner(storage: PresignStorage): PresignMedia {
-  return async (r2Key, thumbKey) => {
-    const url = await storage.presignGet(r2Key, PACKET_MEDIA_URL_TTL_SEC, { forceSigned: true })
-    if (thumbKey === null) return { url }
-    const thumbUrl = await storage.presignGet(thumbKey, PACKET_MEDIA_URL_TTL_SEC, {
-      forceSigned: true,
-    })
-    return { url, thumbUrl }
-  }
+export type PresignPacketMedia = (r2Key: string, publiclyVisible: boolean) => Promise<string>
+
+export function makePacketMediaPresigner(storage: PresignStorage): PresignPacketMedia {
+  return (r2Key, publiclyVisible) =>
+    storage.presignGet(r2Key, PACKET_MEDIA_URL_TTL_SEC, { forceSigned: !publiclyVisible })
 }
 
 // Concurrency cap for presign fan-outs (bounds concurrent SigV4 signings / R2 ops per page).

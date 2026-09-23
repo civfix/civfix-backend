@@ -8,3 +8,9 @@ path = "**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Reach Out Los Angeles Inc. and contributors"
 SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = "services/api/src/adapters/email-wordmark-font.ts"
+precedence = "override"
+SPDX-FileCopyrightText = "2019 The Baloo 2 Project Authors (https://github.com/EkType/Baloo2)"
+SPDX-License-Identifier = "OFL-1.1"

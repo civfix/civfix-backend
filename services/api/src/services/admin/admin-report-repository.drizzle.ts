@@ -23,6 +23,7 @@ import type {
   ReportCategory,
   ReportOutreachStatus,
   ReportTimelineItem,
+  ReportVisibility,
 } from "@civfix/shared"
 import {
   ROUTE_CLAIM_STALE_SECONDS,
@@ -59,6 +60,7 @@ interface ReportRowSelect {
   id: string
   category: ReportCategory
   status: AdminReportStatus
+  visibility: ReportVisibility
   flagged: boolean
   title: string | null
   place: string | null
@@ -101,6 +103,7 @@ function toRecord(r: ReportRowSelect): AdminReportRecord {
     id: r.id,
     category: r.category,
     status: r.status,
+    visibility: r.visibility,
     flagged: r.flagged,
     title: r.title ?? "Untitled report",
     place: r.place ?? "",
@@ -138,6 +141,7 @@ function reportSelect(
       r.id,
       r.category,
       r.status,
+      r.visibility,
       ${flaggedReportExpr(sql)} AS flagged,
       r.title,
       j.name AS place,

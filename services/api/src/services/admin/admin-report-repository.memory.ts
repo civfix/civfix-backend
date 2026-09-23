@@ -17,6 +17,7 @@ import type {
   AdminReportStatus,
   ReportCategory,
   ReportTimelineItem,
+  ReportVisibility,
 } from "@civfix/shared"
 import { mapOutreachStatus } from "./admin-report-repository.drizzle.js"
 import { isPacketKind, type MailMessageKind } from "./mail-repository.js"
@@ -68,6 +69,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     id?: string
     category?: ReportCategory
     status?: AdminReportStatus
+    visibility?: ReportVisibility
     flagged?: boolean
     title?: string
     place?: string
@@ -95,6 +97,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
         id,
         category: input.category ?? "other",
         status: input.status ?? "submitted",
+        visibility: input.visibility ?? "public",
         flagged: input.flagged ?? false,
         title: input.title ?? "Untitled report",
         place: input.place ?? "Somewhere",

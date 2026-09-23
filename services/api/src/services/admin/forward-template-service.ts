@@ -72,6 +72,7 @@ function sampleReport(): AdminReportRecord {
     id: sampleValue("reportId"),
     category: "trash",
     status: "published",
+    visibility: "public",
     flagged: false,
     title: sampleValue("title"),
     place: sampleValue("place"),
