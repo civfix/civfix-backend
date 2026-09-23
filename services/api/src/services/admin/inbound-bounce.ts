@@ -61,6 +61,45 @@ export const PROVIDER_DAEMON_DOMAINS: readonly string[] = [
   "oracleemaildelivery.com",
 ]
 
+// Anyone can open a mailbox at these providers, so sharing one with a jurisdiction contact proves
+// nothing about the sender: only the contact's exact address does.
+export const CONSUMER_MAIL_DOMAINS: ReadonlySet<string> = new Set([
+  "gmail.com",
+  "googlemail.com",
+  "outlook.com",
+  "hotmail.com",
+  "live.com",
+  "msn.com",
+  "yahoo.com",
+  "ymail.com",
+  "rocketmail.com",
+  "aol.com",
+  "icloud.com",
+  "me.com",
+  "mac.com",
+  "proton.me",
+  "protonmail.com",
+  "pm.me",
+  "gmx.com",
+  "gmx.net",
+  "mail.com",
+  "zoho.com",
+  "yandex.com",
+  "fastmail.com",
+  "hey.com",
+  "att.net",
+  "sbcglobal.net",
+  "bellsouth.net",
+  "comcast.net",
+  "verizon.net",
+  "cox.net",
+  "charter.net",
+  "earthlink.net",
+  "optonline.net",
+  "centurylink.net",
+  "windstream.net",
+])
+
 export function isPlausibleBounceSender(input: {
   fromAddr: string | null
   failedRecipient: string

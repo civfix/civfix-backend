@@ -1,10 +1,17 @@
 # civfix Email Worker
 
 Cloudflare Email Worker that ingests catch-all `*@civfix.org` mail. It writes the raw `.eml` to
-**R2** (`inbound/pending/<messageId>.eml` — the source of truth) and best-effort POSTs an HMAC-signed
+**R2** (`inbound/pending/<slug>.<digest>.eml`, the source of truth) and best-effort POSTs an HMAC-signed
 `{ key }` nudge to the backend webhook. The backend re-fetches from R2, parses, routes (reply → mail
 thread; else → inbox), and reconciles `inbound/pending/` on boot + a cron sweep, so a missed nudge is
 never a lost message.
+
+The pending key is `<slug>.<digest>`: `<slug>` is the Message-ID with `<>` stripped and every character
+outside `A-Za-z0-9._@-` replaced by `_`, cut to 120 characters, and `<digest>` is the first 32 hex
+characters of the SHA-256 of the raw message. The sender chooses the Message-ID, so the digest keeps a
+second mail with the same (or a same-slugging) Message-ID from overwriting a pending one, while a
+byte-identical redelivery lands on the same key. A message with no Message-ID is stored under the full
+64-character digest alone.
 
 The Worker does **not** judge sender authentication. `message.headers` does not expose the
 `Authentication-Results` header Cloudflare stamps (workerd#6740), so a header check here never fired.
@@ -59,7 +66,8 @@ Content-Type: text/plain
 We received your report.'
 ```
 
-Expect an `inbound/pending/test-001@example.gov.eml` object and a signed POST to your local backend.
+Expect an `inbound/pending/test-001@example.gov.<digest>.eml` object and a signed POST to your local
+backend.
 
 ## Deploy + enable Email Routing
 

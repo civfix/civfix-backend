@@ -12,7 +12,7 @@ export default {
     const rawBytes = await new Response(message.raw).arrayBuffer()
 
     const messageId = await deriveMessageId(message.headers, rawBytes)
-    const key = `${PENDING_PREFIX}${messageId}.eml`
+    const key = await derivePendingKey(message.headers, rawBytes)
 
     try {
       await env.R2_BUCKET.put(key, rawBytes, {
@@ -35,9 +35,25 @@ export default {
   },
 }
 
+const PENDING_SLUG_MAX_CHARS = 120
+const PENDING_DIGEST_CHARS = 32
+
+// The sender picks the Message-ID, so a key made from it alone lets a later mail (or a Message-ID
+// that slugs alike) overwrite a pending .eml before the backend drains it; the content digest makes
+// the key follow the bytes, while an identical redelivery still lands on the same key.
+export async function derivePendingKey(headers: Headers, raw: ArrayBuffer): Promise<string> {
+  const digest = await contentDigest(raw)
+  const slug = slugify(headers.get("message-id") ?? "").slice(0, PENDING_SLUG_MAX_CHARS)
+  const name = slug.length > 0 ? `${slug}.${digest.slice(0, PENDING_DIGEST_CHARS)}` : digest
+  return `${PENDING_PREFIX}${name}.eml`
+}
+
 export async function deriveMessageId(headers: Headers, raw: ArrayBuffer): Promise<string> {
   const slug = slugify(headers.get("message-id") ?? "")
-  if (slug.length > 0) return slug
+  return slug.length > 0 ? slug : contentDigest(raw)
+}
+
+async function contentDigest(raw: ArrayBuffer): Promise<string> {
   try {
     return await sha256Hex(raw)
   } catch {
