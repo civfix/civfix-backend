@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest"
 import { AppError } from "@civfix/shared"
 import { makeChatGroupService } from "../../src/services/chat-group-service.js"
 import type { ChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
+import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 
 
 const GROUP = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -108,6 +109,16 @@ describe("M12: invitees blocked with an EXISTING member are silently skipped", (
       memberIds: [INVITEE_OK, INVITEE_BLOCKED_BY_MEMBER],
     })
     expect(repo.addMembers).toHaveBeenCalledWith(GROUP, [INVITEE_OK])
+  })
+
+  it("never adds the official CivFix account, which cannot accept or leave a room", async () => {
+    const repo = fakeRepo()
+    const res = await svcOver(repo).addMembers(OWNER, {
+      id: GROUP,
+      memberIds: [INVITEE_OK, CIVFIX_OFFICIAL_USER_ID, CIVFIX_OFFICIAL_USER_ID.toUpperCase()],
+    })
+    expect(repo.addMembers).toHaveBeenCalledWith(GROUP, [INVITEE_OK])
+    expect(res.added).toEqual([INVITEE_OK])
   })
 
   it("adds normally when nobody in the room is blocked with the invitees", async () => {

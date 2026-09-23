@@ -16,6 +16,7 @@ import type {
   GroupMemberView,
 } from "./chat-group-repository.drizzle.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
+import { isOfficialAccount } from "../auth/official-account.js"
 import { NO_AFFILIATIONS, withAffiliation, type AffiliationLoader } from "./affiliation.js"
 
 export const GROUP_MEMBERS_DEFAULT_LIMIT = 25
@@ -96,7 +97,7 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
   }
 
   async function filterInvitees(actorId: string, memberIds: string[]): Promise<string[]> {
-    const unique = [...new Set(memberIds)].filter((id) => id !== actorId)
+    const unique = [...new Set(memberIds)].filter((id) => id !== actorId && !isOfficialAccount(id))
     return groups.invitableIdsOf(actorId, unique)
   }
 
