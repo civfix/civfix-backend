@@ -140,11 +140,13 @@ describe("PUT /cleanups/:id/slot", () => {
     // C5 reuses GetCleanupResponseSchema precisely so this is possible: the caller updates its cache
     // straight from the mutation response instead of refetching the event.
     expect(dto.id).toBe(id)
-    expect(dto.slots.map((s: { title: string; claimed: number; mine?: boolean }) => [
-      s.title,
-      s.claimed,
-      s.mine ?? false,
-    ])).toEqual([
+    expect(
+      dto.slots.map((s: { title: string; claimed: number; mine?: boolean }) => [
+        s.title,
+        s.claimed,
+        s.mine ?? false,
+      ]),
+    ).toEqual([
       ["Grill", 1, true],
       ["Sign-in", 0, false],
     ])
@@ -263,14 +265,18 @@ describe("route configuration", () => {
 
   it("declares the rate limit and CSRF in the source (the two configs a copy-paste route loses)", async () => {
     const { readFile } = await import("node:fs/promises")
-    const src = await readFile(
+    const raw = await readFile(
       new URL("../../src/routes/cleanups.routes.ts", import.meta.url),
       "utf8",
     )
+    // Whitespace-collapsed so the assertions pin the declarations, not the formatter's line breaks.
+    const src = raw.replace(/\s+/g, " ")
     // B29c: the OUTER, per-IP layer. The inner per-(event, user) budget is asserted behaviorally in
     // cleanup-slots-claim.test.ts; this one would otherwise be untested until production.
-    expect(src).toContain("const CLAIM_SLOT_RATE_LIMIT = { max: 30, timeWindow: \"1 minute\" } as const")
-    const claimRoute = src.slice(src.indexOf('route(app, "claimEventSlot"'))
+    expect(src).toContain(
+      'const CLAIM_SLOT_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const',
+    )
+    const claimRoute = src.slice(src.indexOf('"claimEventSlot",'))
     expect(claimRoute.slice(0, 200)).toContain("preHandler: csrfProtect")
     expect(claimRoute.slice(0, 200)).toContain("rateLimit: CLAIM_SLOT_RATE_LIMIT")
   })
@@ -281,7 +287,11 @@ describe("the other cleanup reads carry the slot fields", () => {
     const { app, token } = await makeHarness()
     const { id } = await createWithSlots(app, token)
 
-    const detail = await app.inject({ method: "GET", url: `/v1/cleanups/${id}`, headers: auth(token) })
+    const detail = await app.inject({
+      method: "GET",
+      url: `/v1/cleanups/${id}`,
+      headers: auth(token),
+    })
     expect(detail.json().slots.map((s: { title: string }) => s.title)).toEqual(["Grill", "Sign-in"])
 
     const list = await app.inject({ method: "GET", url: "/v1/cleanups", headers: auth(token) })
