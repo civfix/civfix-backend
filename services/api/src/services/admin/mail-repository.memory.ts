@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import {
   MAIL_STATS_WINDOW_DAYS,
+  type BounceEventKey,
   type CreateThreadInput,
   type InsertMessageInput,
   type ListThreadsInput,
@@ -22,7 +23,10 @@ import {
 } from "./mail-repository.js"
 import { deriveWho, mintThreadToken, toMessageDTO, toThreadListItem } from "./mail-mappers.js"
 import { buildMailStats } from "./mail-stats.js"
-import { ROUTE_DEADLINE_INFLIGHT_SECONDS } from "./outbound-send-policy.js"
+import {
+  ROUTE_CLAIM_STALE_SECONDS,
+  ROUTE_DEADLINE_INFLIGHT_SECONDS,
+} from "./outbound-send-policy.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import type { MailDelivery, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
 
@@ -392,7 +396,8 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   hasSendInFlight(threadId: string): Promise<boolean> {
-    const inflightBefore = new Date(Date.now() - ROUTE_DEADLINE_INFLIGHT_SECONDS * 1000)
+    const inflightBefore = this.now.getTime() - ROUTE_DEADLINE_INFLIGHT_SECONDS * 1000
+    const staleBefore = this.now.getTime() - ROUTE_CLAIM_STALE_SECONDS * 1000
     let latest: MailMessageRecord | null = null
     for (const m of this.messages) {
       if (m.threadId !== threadId || m.direction !== "out") continue
@@ -401,13 +406,29 @@ export class InMemoryMailRepository implements MailRepository {
     if (latest === null) return Promise.resolve(false)
     const own = this.events.filter((e) => e.messageId === latest.id)
     if (own.some((e) => e.type === "sent")) return Promise.resolve(false)
+    const failed = own.filter((e) => e.type === "failed")
+    if (failed.length === 0) return Promise.resolve(latest.createdAt.getTime() > staleBefore)
     return Promise.resolve(
-      own.some(
+      failed.some(
         (e) =>
-          e.type === "failed" &&
           (e.meta as { reason?: unknown } | null)?.reason === "deadline" &&
-          e.createdAt.getTime() > inflightBefore.getTime(),
+          e.createdAt.getTime() > inflightBefore,
       ),
+    )
+  }
+
+  hasBounceEvent(input: BounceEventKey): Promise<boolean> {
+    const recipient = input.failedRecipient.toLowerCase()
+    return Promise.resolve(
+      this.events.some((e) => {
+        if (e.threadId !== input.threadId || e.type !== "bounced") return false
+        const meta = e.meta as { originalMessageId?: unknown; failedRecipient?: unknown } | null
+        return (
+          meta?.originalMessageId === input.originalMessageId &&
+          typeof meta.failedRecipient === "string" &&
+          meta.failedRecipient.toLowerCase() === recipient
+        )
+      }),
     )
   }
 

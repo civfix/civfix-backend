@@ -191,6 +191,24 @@ describe("buildReportPacket", () => {
     expect(packet.html).toContain("mlat=39.5")
   })
 
+  it("dates an evening report by the platform's local day, not the server clock's zone", () => {
+    const serverZone = process.env.TZ
+    process.env.TZ = "UTC"
+    try {
+      const packet = buildReportPacket(
+        reportRecord({ createdAt: new Date("2026-03-10T03:30:00Z") }),
+        null,
+        [],
+        null,
+        { subject: null, body: "Filed {submittedDate}." },
+      )
+      expect(packet.text).toContain("Filed March 9, 2026.")
+    } finally {
+      if (serverZone === undefined) delete process.env.TZ
+      else process.env.TZ = serverZone
+    }
+  })
+
   it("strips CRLF from the subject to block header injection", () => {
     const packet = buildReportPacket(
       reportRecord({ title: "Hi\r\nBcc: evil@x" }),

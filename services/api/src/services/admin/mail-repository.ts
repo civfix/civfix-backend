@@ -181,11 +181,18 @@ export interface MailRepository {
   outboundRecipients(threadId: string): Promise<string[]>
   findMessageByMessageId(messageId: string): Promise<MailMessageRecord | null>
   hasSendInFlight(threadId: string): Promise<boolean>
+  hasBounceEvent(input: BounceEventKey): Promise<boolean>
   claimMessageEffects(id: string, input: ClaimEffectsInput): Promise<number | null>
   setMessageEffectsStage(id: string, stage: number): Promise<void>
   markMessageEffectsApplied(id: string): Promise<void>
   releaseMessageEffects(id: string): Promise<void>
   findMessagesPendingEffects(input: PendingEffectsQuery): Promise<PendingEffects[]>
+}
+
+export interface BounceEventKey {
+  threadId: string
+  failedRecipient: string
+  originalMessageId: string
 }
 
 export interface ClaimEffectsInput {

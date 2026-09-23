@@ -136,15 +136,22 @@ export async function processInboundObject(
   if (bounce.isBounce) {
     const bounceVerdict = readMailAuthVerdict(mail)
     const result = await routeInbox(storage, inboundRepo, bytes, mail, messageId, bounceVerdict)
-    if (result.outcome === "inbox") {
+    if (result.outcome !== "inbox" && result.outcome !== "replay") return result
+    // A replay re-runs the bookkeeping too: the object is only still pending when an earlier run
+    // stored the DSN but failed part-way through handleBounce.
+    try {
       await handleBounce(container, mailRepo, bounce, {
         fromAddr: mail.from?.address ?? null,
         authVerdict: bounceVerdict,
-      }).catch((err: unknown) => {
-        logger.warn({ key, err: errorText(err) }, "inbound: bounce bookkeeping failed")
       })
+    } catch (err) {
+      logger.warn(
+        { key, originalMessageId: bounce.originalMessageId, err: errorText(err) },
+        "inbound: bounce bookkeeping failed; the object stays pending for the next sweep",
+      )
+      return result
     }
-    if (result.outcome === "inbox" || result.outcome === "replay") await storage.delete(key)
+    await storage.delete(key)
     return result
   }
 
@@ -189,6 +196,8 @@ async function correlateThread(
   try {
     token = inboundMail.extractThreadToken(mail)
   } catch {
+    // The token is parsed out of sender-controlled recipient addresses; a malformed one means only
+    // that this mail carries no usable token, so correlation falls through to References.
     token = null
   }
 
@@ -214,7 +223,9 @@ async function routeThreaded(
   const unaffiliated =
     authVerdict !== "pass" || !(await isJurisdictionSender(mailRepo, thread.id, mail))
   // Message-ID is globally unique, so a stored row means this mail can only be a replay. Skipping
-  // the upload keeps a sender who reuses someone else's Message-ID from writing any object.
+  // the upload keeps a sender who reuses someone else's Message-ID from writing any object. A failed
+  // lookup falls through to insertMessage, which is idempotent on Message-ID and throws if the DB is
+  // really down.
   const existing = await mailRepo.findMessageByMessageId(messageId).catch(() => null)
   const inserted =
     existing !== null
@@ -236,6 +247,8 @@ async function routeThreaded(
     })
   }
 
+  // A failed re-read only defers the side effects: the sweep re-drives every message whose effects
+  // were never applied.
   const message =
     inserted?.message ??
     existing ??

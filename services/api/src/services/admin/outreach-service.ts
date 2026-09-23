@@ -2,7 +2,11 @@ import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { ReportCategory } from "@civfix/shared"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
 import type { MailRepository } from "./mail-repository.drizzle.js"
-import type { OutboundMailService } from "./outbound-mail-service.js"
+import {
+  isOutboundSendDeadlineError,
+  type OutboundMailLogger,
+  type OutboundMailService,
+} from "./outbound-mail-service.js"
 
 export interface OutreachDigest {
   geoid: string
@@ -70,6 +74,7 @@ export interface OutreachServiceDeps {
   throttleDays: number
   now?: () => Date
   sweepBatchSize?: number
+  logger?: OutboundMailLogger
 }
 
 export interface OutreachService {
@@ -128,10 +133,17 @@ export function makeOutreachService(deps: OutreachServiceDeps): OutreachService 
         const threadId = await sendDigest(digest)
         return { geoid, sent: true, reportCount: digest.total, threadId }
       } catch (err) {
-        if (!isDeliveredError(err)) {
+        // A deadline is an unknown outcome, not a non-delivery: releasing the window would let the next
+        // sweep put a second digest in front of the same city contact.
+        if (!isDeliveredError(err) && !isOutboundSendDeadlineError(err)) {
           await deps.mailRepo
             .setOutreachState(geoid, { lastOutreachAt: state?.lastOutreachAt ?? null })
-            .catch(() => {})
+            .catch((releaseErr: unknown) => {
+              deps.logger?.warn(
+                { err: releaseErr, geoid },
+                "outreach: releasing the digest window after a failed send failed",
+              )
+            })
         }
         throw err
       }

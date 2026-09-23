@@ -2,7 +2,10 @@ import type { Container } from "../../di.js"
 import { writeAudit } from "./audit.js"
 import { OUTREACH_DIGEST_JOB } from "./jurisdiction-contacts-types.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
-import { makeContainerOutboundMailService } from "./outbound-mail-service.js"
+import {
+  makeContainerOutboundMailService,
+  type OutboundMailLogger,
+} from "./outbound-mail-service.js"
 import { makeDrizzleOutreachRepository } from "./outreach-repository.drizzle.js"
 import {
   makeOutreachService,
@@ -12,8 +15,11 @@ import {
 
 export { OUTREACH_DIGEST_JOB }
 
-export async function registerOutreachJobs(container: Container): Promise<void> {
-  const service = makeOutreachServiceFromContainer(container)
+export async function registerOutreachJobs(
+  container: Container,
+  logger?: OutboundMailLogger,
+): Promise<void> {
+  const service = makeOutreachServiceFromContainer(container, logger)
 
   if (container.env.OUTREACH_DIGEST_ENABLED) {
     await container.jobs.schedule(OUTREACH_DIGEST_JOB, container.env.OUTREACH_DIGEST_CRON)
@@ -33,15 +39,22 @@ export async function registerOutreachJobs(container: Container): Promise<void> 
   })
 }
 
-function makeOutreachServiceFromContainer(container: Container): OutreachService {
+function makeOutreachServiceFromContainer(
+  container: Container,
+  logger: OutboundMailLogger | undefined,
+): OutreachService {
   const sql = container.getDb().sql
   const mailRepo = makeDrizzleMailRepository(sql)
-  const outboundMail = makeContainerOutboundMailService(container, { repo: mailRepo })
+  const outboundMail = makeContainerOutboundMailService(container, {
+    repo: mailRepo,
+    ...(logger !== undefined ? { logger } : {}),
+  })
   return makeOutreachService({
     outreachRepo: makeDrizzleOutreachRepository(sql),
     mailRepo,
     outboundMail,
     throttleDays: container.env.OUTREACH_THROTTLE_DAYS,
+    ...(logger !== undefined ? { logger } : {}),
   })
 }
 

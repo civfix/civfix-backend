@@ -83,6 +83,25 @@ describe("registerDiscoveryJobs", () => {
     ).toBe(false)
   })
 
+  it("does not count a bounced contact as routable, so a bounce-triggered run materializes the task", async () => {
+    const { container, db } = harness([
+      { match: /SELECT\s+EXISTS[\s\S]*has_contact/i, rows: [{ has_contact: false }] },
+      { match: /INSERT\s+INTO\s+jurisdiction_discovery_tasks/i, rows: [{ id: "task-1" }] },
+    ])
+    await registerDiscoveryJobs(container)
+    await container.jobs.enqueue(JURISDICTION_DISCOVERY_JOB, { geoid: "0644000" })
+
+    const probe = db.statements.find((s) => /has_contact/i.test(s.sql))?.sql ?? ""
+    const flat = probe.replace(/\s+/g, " ")
+    expect(flat).toMatch(
+      /FROM jurisdiction_contacts jc WHERE jc\.geoid = \? AND jc\.email IS NOT NULL AND jc\.email <> '' AND jc\.bounced_at IS NULL/,
+    )
+    expect(flat).toMatch(/FROM unnest\(j\.contact_emails\) AS e WHERE e <> '' AND NOT EXISTS/)
+    expect(flat).toMatch(
+      /me\.type = 'bounced' AND lower\(me\.meta->>'failedRecipient'\) = lower\(e\)/,
+    )
+  })
+
   it("is a no-op for a malformed payload with no geoid (no DB touched)", async () => {
     const { container, db } = harness([])
     await registerDiscoveryJobs(container)

@@ -40,6 +40,8 @@ export interface InboundEffectDeps {
 
 export const EFFECTS_LEASE_MS = 10 * 60 * 1000
 
+const EVENT_REPLY_FALLBACK_NOTE = "Jurisdiction replied"
+
 export const EFFECTS_STAGE_TIMELINE = 1
 export const EFFECTS_STAGE_CHAT = 2
 export const EFFECTS_STAGE_NOTIFIED = 3
@@ -343,22 +345,16 @@ export async function onEventReply(
 
   if (stage < EFFECTS_STAGE_TIMELINE) {
     const cleanupRepo = injectedCleanupRepo ?? makeDrizzleCleanupRepository(container.getDb().sql)
-    const fullBody = (message.body ?? "").trim()
-    const preview = replyPreview(fullBody)
-    const note = preview.length > 0 ? `Jurisdiction replied — ${preview}` : "Jurisdiction replied"
     await cleanupRepo.appendCleanupTimeline(cleanupId, {
       kind: "city_reply",
-      note: fullBody.length > 0 ? fullBody : note,
+      note:
+        cityReplyChatBody(message.body, container.env.MAIL_REPLY_DOMAIN) ??
+        EVENT_REPLY_FALLBACK_NOTE,
       actorId: null,
     })
     await mailRepo.setMessageEffectsStage(message.id, EFFECTS_STAGE_TIMELINE)
   }
   await mailRepo.setThreadStatus(thread.id, "replied")
-}
-
-export function replyPreview(body: string): string {
-  const collapsed = body.replace(/\s+/g, " ").trim()
-  return collapsed.length > 140 ? `${collapsed.slice(0, 140)}…` : collapsed
 }
 
 const DERIVED_ID_BODY_PREFIX_CHARS = 4096

@@ -288,7 +288,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
     ): Promise<boolean> {
       return sql.begin(async (tx) => {
         const taskRows = await tx<{ sample_report_id: string | null }[]>`
-          SELECT sample_report_id FROM jurisdiction_discovery_tasks WHERE id = ${id} LIMIT 1
+          SELECT sample_report_id FROM jurisdiction_discovery_tasks WHERE id = ${id} FOR UPDATE
         `
         const task = taskRows[0]
         if (!task) return false
@@ -296,11 +296,19 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         if (task.sample_report_id !== null) {
           await tx`
             INSERT INTO abuse_flags (subject_type, subject_id, reason, source)
-            VALUES ('report', ${task.sample_report_id}, 'manual', 'api')
+            SELECT 'report', ${task.sample_report_id}, 'manual', 'api'
+            WHERE NOT EXISTS (
+              SELECT 1 FROM abuse_flags
+              WHERE subject_type = 'report' AND subject_id = ${task.sample_report_id}
+                AND reason = 'manual' AND resolved_at IS NULL
+            )
           `
         }
+        // A done task stays done: re-opening it would collide with a newer open task for the same geoid
+        // on the one-open-task-per-geoid unique index.
         await tx`
-          UPDATE jurisdiction_discovery_tasks SET status = 'in_progress' WHERE id = ${id}
+          UPDATE jurisdiction_discovery_tasks SET status = 'in_progress'
+          WHERE id = ${id} AND status <> 'done'
         `
         await writeAudit(tx, {
           actorId: input.actorId,
@@ -321,7 +329,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         actorId: string | null
       },
     ): Promise<boolean> {
-      return sql.begin(async (tx) => {
+      const saved = await sql.begin(async (tx) => {
         const taskRows = await tx<{ geoid: string | null }[]>`
           SELECT geoid FROM jurisdiction_discovery_tasks WHERE id = ${id} LIMIT 1
         `
@@ -348,6 +356,8 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         })
         return true
       })
+      if (saved) invalidateDirectoryFacetCache()
+      return saved
     },
 
     async materializeDiscoveryTask(input: {
@@ -421,6 +431,34 @@ async function loadGeometry(
     c && c.lat !== null && c.lng !== null ? [c.lat, c.lng] : null
   const zoom = center !== null ? 11 : null
   return { placeGeojson, center, zoom }
+}
+
+const DIRECTORY_FACET_TTL_MS = 30_000
+
+export interface DirectoryFacetAggregate {
+  total: number
+  facets: { routed: number; unrouted: number }
+}
+
+// The directory's default-view facet counts are cached per process. The cache lives beside
+// upsertJurisdictionContacts so every in-process writer of routing contacts can drop it after commit.
+let directoryFacetCache: { at: number; value: DirectoryFacetAggregate } | null = null
+
+export function readDirectoryFacetCache(): DirectoryFacetAggregate | null {
+  if (directoryFacetCache === null) return null
+  if (Date.now() - directoryFacetCache.at > DIRECTORY_FACET_TTL_MS) {
+    directoryFacetCache = null
+    return null
+  }
+  return directoryFacetCache.value
+}
+
+export function writeDirectoryFacetCache(value: DirectoryFacetAggregate): void {
+  directoryFacetCache = { at: Date.now(), value }
+}
+
+export function invalidateDirectoryFacetCache(): void {
+  directoryFacetCache = null
 }
 
 export interface UpsertDefaultContactOpts {

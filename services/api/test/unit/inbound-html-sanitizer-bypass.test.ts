@@ -200,6 +200,42 @@ describe("sanitizer is linear at the size cap (H14)", () => {
     expect(sanitizeInboundHtml('<img alt="a" alt="b">')).toBe('<img alt="a">')
   })
 
+  it("keeps the spaces in title and alt text", () => {
+    expect(sanitizeInboundHtml('<a title="Click here now" href="https://x.test/a">go</a>')).toBe(
+      '<a title="Click here now" href="https://x.test/a">go</a>',
+    )
+    expect(sanitizeInboundHtml('<img alt="City of Los Angeles logo">')).toBe(
+      '<img alt="City of Los Angeles logo">',
+    )
+  })
+
+  it("keeps an href's own spaces so the link still points where the sender meant", () => {
+    expect(sanitizeInboundHtml('<a href=" https://x.test/a b ">go</a>')).toBe(
+      '<a href="https://x.test/a b">go</a>',
+    )
+  })
+
+  it("decodes common named entities once instead of double-encoding them", () => {
+    expect(sanitizeInboundHtml('<a title="Tom &quot;T&quot; &amp; co">x</a>')).toBe(
+      '<a title="Tom &quot;T&quot; &amp; co">x</a>',
+    )
+    expect(sanitizeInboundHtml('<img alt="a&nbsp;b &lt;c&gt; it&apos;s">')).toBe(
+      '<img alt="a\u00a0b &lt;c&gt; it\'s">',
+    )
+  })
+
+  it("still refuses a script scheme hidden behind spaces, controls or named entities", () => {
+    for (const href of [
+      "java script:alert(1)",
+      " \u0001javascript:alert(1)",
+      "java&Tab;script:alert(1)",
+      "javascript&colon;alert(1)",
+      "&#x6A;ava&#x09;script:alert(1)",
+    ]) {
+      expect(sanitizeInboundHtml(`<a href="${href}">x</a>`)).toBe("<a>x</a>")
+    }
+  })
+
   it("still refuses a body over the size cap", () => {
     expect(sanitizeInboundHtml("a".repeat(INBOUND_HTML_MAX_CHARS + 1))).toBeNull()
   })

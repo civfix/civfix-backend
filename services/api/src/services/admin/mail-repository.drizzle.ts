@@ -31,6 +31,7 @@ import {
   type OutboundMessageSnapshot,
   type OutreachStatePatch,
   type OutreachStateRecord,
+  type BounceEventKey,
   type ClaimEffectsInput,
   type PendingEffects,
   type PendingEffectsQuery,
@@ -502,6 +503,19 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
     async hasSendInFlight(threadId: string): Promise<boolean> {
       const rows = await sql<{ ok: boolean }[]>`
         SELECT ${sendInFlightExpr(sql, sql`${threadId}::uuid`)} AS ok
+      `
+      return rows[0]?.ok ?? false
+    },
+
+    async hasBounceEvent(input: BounceEventKey): Promise<boolean> {
+      const rows = await sql<{ ok: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM mail_events
+          WHERE thread_id = ${input.threadId}::uuid
+            AND type = 'bounced'
+            AND meta->>'originalMessageId' = ${input.originalMessageId}
+            AND lower(meta->>'failedRecipient') = lower(${input.failedRecipient})
+        ) AS ok
       `
       return rows[0]?.ok ?? false
     },

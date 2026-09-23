@@ -108,17 +108,48 @@ export function htmlToText(html: string): string {
     .trim()
 }
 
+const TEXT_NAMED_ENTITIES: ReadonlyMap<string, string> = new Map(
+  Object.entries({
+    nbsp: " ",
+    lt: "<",
+    gt: ">",
+    quot: '"',
+    apos: "'",
+    amp: "&",
+    lsquo: "\u2018",
+    rsquo: "\u2019",
+    sbquo: "\u201a",
+    ldquo: "\u201c",
+    rdquo: "\u201d",
+    bdquo: "\u201e",
+    ndash: "\u2013",
+    mdash: "\u2014",
+    hellip: "\u2026",
+    bull: "\u2022",
+    middot: "\u00b7",
+    laquo: "\u00ab",
+    raquo: "\u00bb",
+    copy: "\u00a9",
+    reg: "\u00ae",
+    trade: "\u2122",
+    deg: "\u00b0",
+    euro: "\u20ac",
+  }),
+)
+
+const TEXT_ENTITY_RE = /&(?:#x([0-9a-f]{1,6})|#([0-9]{1,7})|([a-z]{2,8}));/gi
+
+// One pass, so "&amp;lt;" decodes to the text "&lt;" and never to "<".
 function decodeTextEntities(text: string): string {
-  return text
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#(?:x([0-9a-f]{1,6})|([0-9]{1,7}));/gi, (_m, hex?: string, dec?: string) =>
-      codePointText(hex !== undefined ? Number.parseInt(hex, 16) : Number(dec)),
-    )
-    .replace(/&apos;/gi, "'")
-    .replace(/&amp;/gi, "&")
+  return text.replace(
+    TEXT_ENTITY_RE,
+    (whole, hex: string | undefined, dec: string | undefined, named: string | undefined) => {
+      if (hex !== undefined) return codePointText(Number.parseInt(hex, 16))
+      if (dec !== undefined) return codePointText(Number(dec))
+      const key = named ?? ""
+      return TEXT_NAMED_ENTITIES.get(key) ?? TEXT_NAMED_ENTITIES.get(key.toLowerCase()) ?? whole
+    },
+  )
 }
 
 function codePointText(code: number): string {

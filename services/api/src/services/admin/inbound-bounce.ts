@@ -148,33 +148,36 @@ export async function handleBounce(
   ) {
     return
   }
-  const thread = await mailRepo
-    .findThreadByOutboundMessageIds([bounce.originalMessageId])
-    .catch(() => null)
+  const thread = await mailRepo.findThreadByOutboundMessageIds([bounce.originalMessageId])
   if (thread === null) return
 
   const sql = container.getDb().sql
-  const ownsRecipient = await threadSentTo(sql, thread.id, bounce.failedRecipient).catch(
-    () => false,
-  )
+  const failedRecipient = bounce.failedRecipient
+  const ownsRecipient = await threadSentTo(sql, thread.id, failedRecipient)
   if (!ownsRecipient) return
 
-  await mailRepo
-    .recordEvent({
-      threadId: thread.id,
-      type: "bounced",
-      meta: { failedRecipient: bounce.failedRecipient },
-    })
-    .catch(() => {})
-  await mailRepo.setThreadStatus(thread.id, "bounced").catch(() => {})
+  // The 'bounced' event is written last and doubles as the completion marker: a sweep re-drive after a
+  // partial failure repeats only idempotent steps, and a duplicate delivery of a finished DSN does not
+  // overwrite a thread status an operator has changed since.
+  const marker = {
+    threadId: thread.id,
+    failedRecipient,
+    originalMessageId: bounce.originalMessageId,
+  }
+  if (await mailRepo.hasBounceEvent(marker)) return
 
-  const geoid = thread.jurisdictionGeoid ?? (await geoidForContact(sql, bounce.failedRecipient))
-  if (geoid === null) return
-  await markBouncedContact(sql, bounce.failedRecipient, geoid).catch(() => {})
-  const data: JurisdictionDiscoveryJob = { geoid }
-  await container.jobs
-    .enqueue(JURISDICTION_DISCOVERY_JOB, data, { singletonKey: geoid })
-    .catch(() => {})
+  await mailRepo.setThreadStatus(thread.id, "bounced")
+  const geoid = thread.jurisdictionGeoid ?? (await geoidForContact(sql, failedRecipient))
+  if (geoid !== null) {
+    await markBouncedContact(sql, failedRecipient, geoid)
+    const data: JurisdictionDiscoveryJob = { geoid }
+    await container.jobs.enqueue(JURISDICTION_DISCOVERY_JOB, data, { singletonKey: geoid })
+  }
+  await mailRepo.recordEvent({
+    threadId: thread.id,
+    type: "bounced",
+    meta: { failedRecipient, originalMessageId: bounce.originalMessageId },
+  })
 }
 
 export async function threadSentTo(sql: Sql, threadId: string, email: string): Promise<boolean> {

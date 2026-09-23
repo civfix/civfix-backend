@@ -96,8 +96,17 @@ function mapLinkFor(lat: number, lng: number): string {
   return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=18/${lat}/${lng}`
 }
 
+// The API container runs in UTC, which turns a US evening report into the next day. No jurisdiction
+// carries a time zone yet, so the packet uses the platform default the certificates and events use.
+const SUBMITTED_DATE_FORMAT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Los_Angeles",
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+})
+
 function formatSubmittedDate(d: Date): string {
-  return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+  return SUBMITTED_DATE_FORMAT.format(d)
 }
 
 function buildTemplateValues(
