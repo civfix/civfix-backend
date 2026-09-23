@@ -283,3 +283,289 @@ describe("inviter-revocation SQL", () => {
     expect(indexOf(promoted.statements, REVOKE)).toBe(-1)
   })
 })
+
+describe("an invite whose inviter lost the power to invite", () => {
+  function seatOf(orgId: string, userId: string) {
+    return repo.members.find((m) => m.organizationId === orgId && m.userId === userId)
+  }
+
+  it("does not seat anyone when the inviter was demoted without the invite being withdrawn", async () => {
+    const id = await orgWithAdmin()
+    const inviteId = await inviteAs(id, ADMIN, SOCK_EMAIL)
+    const adminSeat = seatOf(id, ADMIN)
+    if (adminSeat === undefined) throw new Error("expected the admin seat")
+    adminSeat.role = "member"
+
+    await expect(service.acceptMyInvite(SOCK, inviteId)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+
+    expect(seatOf(id, SOCK)).toBeUndefined()
+    expect(statusOf(inviteId)).toBe("revoked")
+    expect(repo.audits).toContainEqual({
+      actorId: SOCK,
+      action: "org.invite_revoked",
+      target: `organization:${id}`,
+      meta: { inviteId, reason: "inviter_demoted" },
+    })
+  })
+
+  it("names the reason: a removed inviter and a closed inviter account", async () => {
+    const id = await orgWithAdmin()
+    await service.setMemberRole(id, OWNER, MEMBER, "admin")
+    const byRemoved = await inviteAs(id, ADMIN, SOCK_EMAIL)
+    const byDeleted = await inviteAs(id, MEMBER, "other@x.org")
+    repo.seedUser({ id: OPERATOR, displayName: "Other", email: "other@x.org" })
+    repo.members.splice(
+      repo.members.findIndex((m) => m.organizationId === id && m.userId === ADMIN),
+      1,
+    )
+    const deleted = repo.users.get(MEMBER)
+    if (deleted === undefined) throw new Error("expected the member account")
+    deleted.deletedAt = clock
+
+    await expect(service.acceptMyInvite(SOCK, byRemoved)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    await expect(service.acceptMyInvite(OPERATOR, byDeleted)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+
+    const reasons = repo.audits
+      .filter((a) => a.action === "org.invite_revoked")
+      .map((a) => [a.meta?.inviteId, a.meta?.reason])
+    expect(reasons).toEqual([
+      [byRemoved, "inviter_removed"],
+      [byDeleted, "account_deleted"],
+    ])
+    expect(seatOf(id, SOCK)).toBeUndefined()
+    expect(seatOf(id, OPERATOR)).toBeUndefined()
+  })
+
+  it("still seats the invitee when the inviter keeps the power to invite", async () => {
+    const id = await orgWithAdmin()
+    const inviteId = await inviteAs(id, ADMIN, SOCK_EMAIL)
+
+    await service.acceptMyInvite(SOCK, inviteId)
+
+    expect(seatOf(id, SOCK)?.role).toBe("admin")
+    expect(statusOf(inviteId)).toBe("accepted")
+  })
+
+  it("refuses to create an invite or seat a handle once the actor lost the power in between", async () => {
+    const id = await orgWithAdmin()
+    const findOrganizationById = repo.findOrganizationById.bind(repo)
+    repo.findOrganizationById = async (orgId, viewerId) => {
+      const record = await findOrganizationById(orgId, viewerId)
+      return record === null ? null : { ...record, myRole: "admin" }
+    }
+
+    await expect(inviteAs(id, MEMBER, SOCK_EMAIL)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+    await expect(
+      service.inviteMember(id, MEMBER, {
+        identifierKind: "handle",
+        identifier: "sock",
+        role: "admin",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+
+    expect(repo.invites.filter((i) => i.organizationId === id)).toEqual([])
+    expect(seatOf(id, SOCK)).toBeUndefined()
+  })
+})
+
+describe("invite SQL under the organization lock", () => {
+  const INVITE = "88888888-8888-4888-8888-888888888888"
+  const ORG_LOCK = /FROM organizations\s+WHERE id = \?.*FOR UPDATE/s
+  const ACTOR_ROLE = /SELECT role FROM organization_members/
+  const FUTURE = new Date("2026-09-20T12:00:00.000Z")
+  const AUDIT: SqlHandler = { match: /INSERT INTO audit_log/, rows: [{ id: "audit-1" }] }
+
+  function indexOf(statements: { sql: string }[], pattern: RegExp): number {
+    return statements.findIndex((s) => pattern.test(s.sql))
+  }
+
+  const inviteRow = {
+    id: INVITE,
+    organization_id: ORG,
+    email: SOCK_EMAIL,
+    role: "admin",
+    status: "pending",
+    created_at: clock,
+    expires_at: FUTURE,
+    user_id: null,
+    user_name: null,
+    user_handle: null,
+    user_bio: null,
+    user_avatar_url: null,
+    invited_by_id: ADMIN,
+    invited_by_name: "Adam Admin",
+    invited_by_handle: "adam",
+    invited_by_bio: null,
+    invited_by_avatar_url: null,
+  }
+
+  function createArgs() {
+    return {
+      inviteId: INVITE,
+      organizationId: ORG,
+      email: SOCK_EMAIL,
+      userId: null,
+      role: "admin" as const,
+      tokenHash: "hash",
+      invitedBy: ADMIN,
+      expiresAt: FUTURE,
+      now: clock,
+    }
+  }
+
+  it("creates an invite only after locking the org and re-reading the inviter's role", async () => {
+    const fake = makeFakeSql([
+      { match: ACTOR_ROLE, rows: [{ role: "admin" }] },
+      { match: /INSERT INTO organization_invites/, rows: [{ id: INVITE }] },
+      { match: /FROM organization_invites i/, rows: [{ ...inviteRow, created_at: clock }] },
+      AUDIT,
+    ])
+
+    const outcome = await makeDrizzleOrganizationRepository(
+      fake.sql as unknown as Sql,
+    ).createInviteTx(createArgs())
+
+    expect(outcome.kind).toBe("created")
+    const lock = indexOf(fake.statements, ORG_LOCK)
+    const role = indexOf(fake.statements, ACTOR_ROLE)
+    expect(lock).toBeGreaterThanOrEqual(0)
+    expect(role).toBeGreaterThan(lock)
+    expect(indexOf(fake.statements, /INSERT INTO organization_invites/)).toBeGreaterThan(role)
+    expect(fake.statements[role]?.values).toEqual(expect.arrayContaining([ORG, ADMIN]))
+  })
+
+  it("refuses an invite from an actor who is no longer an admin inside the transaction", async () => {
+    const fake = makeFakeSql([{ match: ACTOR_ROLE, rows: [{ role: "member" }] }])
+
+    const outcome = await makeDrizzleOrganizationRepository(
+      fake.sql as unknown as Sql,
+    ).createInviteTx(createArgs())
+
+    expect(outcome).toEqual({ kind: "forbidden" })
+    expect(indexOf(fake.statements, /INSERT INTO organization_invites/)).toBe(-1)
+  })
+
+  it("seats a handle only after locking the org and re-reading the actor's role", async () => {
+    const allowed = makeFakeSql([
+      { match: ACTOR_ROLE, rows: [{ role: "owner" }] },
+      { match: /INSERT INTO organization_members/, rows: [{ user_id: SOCK }] },
+      AUDIT,
+    ])
+    const args = { organizationId: ORG, userId: SOCK, role: "admin" as const, actorId: OWNER }
+
+    await expect(
+      makeDrizzleOrganizationRepository(allowed.sql as unknown as Sql).addMemberTx({
+        ...args,
+        now: clock,
+      }),
+    ).resolves.toBe("added")
+    const lock = indexOf(allowed.statements, ORG_LOCK)
+    expect(lock).toBeGreaterThanOrEqual(0)
+    expect(indexOf(allowed.statements, ACTOR_ROLE)).toBeGreaterThan(lock)
+
+    const refused = makeFakeSql([{ match: ACTOR_ROLE, rows: [] }])
+    await expect(
+      makeDrizzleOrganizationRepository(refused.sql as unknown as Sql).addMemberTx({
+        ...args,
+        now: clock,
+      }),
+    ).resolves.toBe("forbidden")
+    expect(indexOf(refused.statements, /INSERT INTO organization_members/)).toBe(-1)
+  })
+
+  function acceptHandlers(inviter: { role: string | null; deleted: boolean }[]): SqlHandler[] {
+    return [
+      { match: /LEFT JOIN organization_members m/, rows: inviter },
+      {
+        match: /SELECT id, organization_id FROM organization_invites/,
+        rows: [{ id: INVITE, organization_id: ORG }],
+      },
+      { match: /FROM organizations/, rows: [{ id: ORG, suspended: false }] },
+      {
+        match: /FROM organization_invites\s+WHERE id = \?\s+LIMIT 1 FOR UPDATE/,
+        rows: [
+          {
+            id: INVITE,
+            email: null,
+            user_id: SOCK,
+            role: "admin",
+            status: "pending",
+            expires_at: FUTURE,
+            invited_by: ADMIN,
+          },
+        ],
+      },
+      AUDIT,
+    ]
+  }
+
+  it("answers invalid and revokes the invite when the inviter was demoted", async () => {
+    const fake = makeFakeSql(acceptHandlers([{ role: "member", deleted: false }]))
+
+    const outcome = await makeDrizzleOrganizationRepository(
+      fake.sql as unknown as Sql,
+    ).acceptInviteTx({ by: { inviteId: INVITE }, userId: SOCK, now: clock })
+
+    expect(outcome).toEqual({ kind: "invalid" })
+    expect(indexOf(fake.statements, /INSERT INTO organization_members/)).toBe(-1)
+    const revoke = fake.statements.find((s) =>
+      /UPDATE organization_invites\s+SET status = 'revoked'/.test(s.sql),
+    )
+    expect(revoke?.values).toEqual(expect.arrayContaining([INVITE]))
+    const audit = fake.statements.find((s) => /INSERT INTO audit_log/.test(s.sql))
+    expect(audit?.values).toContainEqual({ inviteId: INVITE, reason: "inviter_demoted" })
+    expect(indexOf(fake.statements, /LEFT JOIN organization_members m/)).toBeGreaterThan(
+      indexOf(fake.statements, ORG_LOCK),
+    )
+  })
+
+  it("seats the invitee when the inviter still holds an admin seat", async () => {
+    const fake = makeFakeSql([
+      { match: /INSERT INTO organization_members/, rows: [{ user_id: SOCK }] },
+      ...acceptHandlers([{ role: "admin", deleted: false }]),
+    ])
+
+    const outcome = await makeDrizzleOrganizationRepository(
+      fake.sql as unknown as Sql,
+    ).acceptInviteTx({ by: { inviteId: INVITE }, userId: SOCK, now: clock })
+
+    expect(outcome).toMatchObject({ kind: "accepted", role: "admin", alreadyMember: false })
+  })
+})
+
+describe("inviter revocation writes its audit rows in the same statement", () => {
+  it("revokes and audits every pending invite of the inviter with one statement", async () => {
+    const fake = makeFakeSql([
+      { match: /SELECT role FROM organization_members/, rows: [{ role: "admin" }] },
+      { match: /count\(\*\)::int AS n\s+FROM organization_members/, rows: [{ n: 2 }] },
+      { match: /DELETE FROM organization_members/, rows: [{ role: "admin" }] },
+      { match: /UPDATE organization_invites/, rows: [{ id: "invite-1" }, { id: "invite-2" }] },
+      { match: /INSERT INTO audit_log/, rows: [{ id: "audit-1" }] },
+    ])
+
+    await makeDrizzleOrganizationRepository(fake.sql as unknown as Sql).removeMemberTx({
+      organizationId: ORG,
+      userId: ADMIN,
+      actorId: OWNER,
+    })
+
+    const revoking = fake.statements.filter((s) => /UPDATE organization_invites/.test(s.sql))
+    expect(revoking).toHaveLength(1)
+    const stmt = revoking[0]!
+    expect(stmt.sql).toMatch(/INSERT INTO audit_log/)
+    expect(stmt.sql).toMatch(/'org\.invite_revoked'/)
+    expect(stmt.values).toEqual(expect.arrayContaining([ORG, ADMIN, OWNER, "inviter_removed"]))
+    const perInviteAudits = fake.statements.filter(
+      (s) => /INSERT INTO audit_log/.test(s.sql) && s.values.includes("org.invite_revoked"),
+    )
+    expect(perInviteAudits).toEqual([])
+  })
+})

@@ -47,7 +47,6 @@ import type {
   OrgVerificationRecord,
   UpdateOrganizationPatch,
 } from "./organization-repository.types.js"
-import { webBaseUrlOf } from "../../lib/base-url.js"
 
 export const ORGS_CREATED_PER_DAY = 5
 const ORG_CREATE_WINDOW_SEC = 24 * 60 * 60
@@ -114,7 +113,7 @@ export interface OrganizationServiceDeps {
   affiliations?: AffiliationLoader
   mailer?: OrganizationMailer
   notifier?: OrganizationNotifier
-  webOrigin?: string
+  webOrigin: string
   logger?: {
     error: (obj: unknown, msg?: string) => void
     warn?: (obj: unknown, msg?: string) => void
@@ -398,7 +397,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
   const now = deps.now ?? (() => new Date())
   const newId = deps.newId ?? (() => randomUUID())
   const newToken = deps.newToken ?? (() => generateToken(ORG_INVITE_TOKEN_BYTES))
-  const webBase = () => (deps.webOrigin ?? webBaseUrlOf({})).replace(/\/+$/, "")
+  const webBase = () => deps.webOrigin.replace(/\/+$/, "")
 
   async function logoUrlOf(record: OrganizationBaseRecord): Promise<string | null> {
     if (record.logoKey === null || deps.presignLogo === undefined) return null
@@ -842,6 +841,9 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
           expiresAt: new Date(at.getTime() + ORG_INVITE_TTL_MS),
           now: at,
         })
+        if (outcome.kind === "forbidden") {
+          throw AppError.forbidden(hostForbiddenCopy("manage_org_members"))
+        }
         if (outcome.kind === "created") {
           await sendInviteEmail(outcome.invite.email ?? email, org, actorId, input.role, token)
           if (userId !== null) await notifyInvitedUser(userId, org, input.role)
@@ -861,6 +863,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         actorId,
         now: now(),
       })
+      if (outcome === "forbidden") throw AppError.forbidden(hostForbiddenCopy("manage_org_members"))
       if (outcome === "added") await notifyAddedMember(userId, org, input.role)
       const member = await deps.repo.findMember(id, userId)
       return {

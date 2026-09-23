@@ -51,12 +51,16 @@ describe.skipIf(!pg)("organization invite revocation (integration)", () => {
     `
   }
 
-  async function invite(organizationId: string, invitedBy: string): Promise<string> {
+  async function invite(
+    organizationId: string,
+    invitedBy: string,
+    email = `${randomUUID().slice(0, 8)}@example.test`,
+  ): Promise<string> {
     const now = new Date()
     const outcome = await orgs.createInviteTx({
       inviteId: randomUUID(),
       organizationId,
-      email: `${randomUUID().slice(0, 8)}@example.test`,
+      email,
       userId: null,
       role: "admin",
       tokenHash: randomUUID().replace(/-/g, ""),
@@ -64,6 +68,7 @@ describe.skipIf(!pg)("organization invite revocation (integration)", () => {
       expiresAt: new Date(now.getTime() + INVITE_TTL_MS),
       now,
     })
+    if (outcome.kind === "forbidden") throw new Error("inviter unexpectedly refused")
     return outcome.invite.id
   }
 
@@ -131,5 +136,64 @@ describe.skipIf(!pg)("organization invite revocation (integration)", () => {
       }),
     ).resolves.toBe("last_admin")
     expect((await statusOf(kept)).status).toBe("pending")
+  })
+
+  it("refuses to seat an invite whose inviter was demoted without it being withdrawn", async () => {
+    const owner = await newUser("Owner")
+    const admin = await newUser("Admin")
+    const orgId = await newOrg(owner)
+    await seat(orgId, admin, "admin")
+    const email = `${randomUUID().slice(0, 8)}@example.test`
+    const inviteId = await invite(orgId, admin, email)
+    await h.sql`
+      UPDATE organization_members SET role = 'member'
+      WHERE organization_id = ${orgId} AND user_id = ${admin}
+    `
+    const [invitee] = await h.sql<{ id: string }[]>`
+      INSERT INTO users (display_name, handle, email, email_verified)
+      VALUES ('Invitee', ${testHandle()}, ${email}, true)
+      RETURNING id
+    `
+    const inviteeId = (invitee as { id: string }).id
+
+    await expect(
+      orgs.acceptInviteTx({ by: { inviteId }, userId: inviteeId, now: new Date() }),
+    ).resolves.toEqual({ kind: "invalid" })
+
+    expect(await statusOf(inviteId)).toEqual({ status: "revoked", revoked: true })
+    const seated = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM organization_members
+      WHERE organization_id = ${orgId} AND user_id = ${inviteeId}
+    `
+    expect(seated[0]?.n).toBe(0)
+    const audits = await h.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM audit_log
+       WHERE action = 'org.invite_revoked'
+         AND meta->>'inviteId' = ${inviteId}
+         AND meta->>'reason' = 'inviter_demoted'
+    `
+    expect(audits[0]?.n).toBe(1)
+  })
+
+  it("refuses an invite from a member who is no longer an admin", async () => {
+    const owner = await newUser("Owner")
+    const member = await newUser("Member")
+    const orgId = await newOrg(owner)
+    await seat(orgId, member, "member")
+    const now = new Date()
+
+    await expect(
+      orgs.createInviteTx({
+        inviteId: randomUUID(),
+        organizationId: orgId,
+        email: `${randomUUID().slice(0, 8)}@example.test`,
+        userId: null,
+        role: "admin",
+        tokenHash: randomUUID().replace(/-/g, ""),
+        invitedBy: member,
+        expiresAt: new Date(now.getTime() + INVITE_TTL_MS),
+        now,
+      }),
+    ).resolves.toEqual({ kind: "forbidden" })
   })
 })

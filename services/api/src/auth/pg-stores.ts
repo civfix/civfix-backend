@@ -469,8 +469,8 @@ export class PgUserStore implements UserStore {
       `)
     }
     await tx.execute(sql`DELETE FROM organization_members WHERE user_id = ${id}`)
-    // Accepting an invite seats the role it names without re-checking the inviter, so an invite must not
-    // outlive the admin who sent it; one addressed to the closed account can never be accepted.
+    // A pending invite must not outlive the admin who sent it (accept re-checks the inviter too, but a
+    // revoked row keeps it out of every inbox); one addressed to the closed account can never be accepted.
     await tx.execute(sql`
       WITH revoked AS (
         UPDATE organization_invites
