@@ -1,14 +1,12 @@
 import { readdirSync, readFileSync } from "node:fs"
-import { execFileSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 
 const dir = new URL("../dist/db/", import.meta.url)
 const failures = []
 
 for (const tool of ["pnpm", "corepack"]) {
-  try {
-    execFileSync("sh", ["-c", `command -v ${tool}`], { stdio: "pipe" })
-    failures.push(`${tool} is on PATH in the runtime image`)
-  } catch {}
+  const found = spawnSync("sh", ["-c", `command -v ${tool}`]).status === 0
+  if (found) failures.push(`${tool} is on PATH in the runtime image`)
 }
 
 const specifiers = new Set()
