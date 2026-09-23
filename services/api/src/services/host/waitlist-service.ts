@@ -122,6 +122,8 @@ export function makeWaitlistService(deps: WaitlistServiceDeps): WaitlistService 
           throw AppError.validation({ accessCode: "that code is not valid for this ticket type" })
         case "ticket_type_not_found":
           throw AppError.notFound("Ticket type not found")
+        case "banned":
+          throw AppError.forbidden("A host removed you from this event.")
         case "closed":
           throw AppError.conflict("This event is closed.")
         case "ended":

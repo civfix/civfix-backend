@@ -17,8 +17,15 @@ export interface QuestionServiceDeps {
   now?: () => Date
 }
 
+export interface QuestionViewer {
+  canManage: boolean
+}
+
 export interface QuestionService {
-  list(query: ListEventQuestionsRequest): Promise<ListEventQuestionsResponse>
+  list(
+    query: ListEventQuestionsRequest,
+    viewer: QuestionViewer,
+  ): Promise<ListEventQuestionsResponse>
   save(input: SaveEventQuestionsRequest): Promise<SaveEventQuestionsResponse>
 }
 
@@ -26,11 +33,21 @@ export function makeQuestionService(deps: QuestionServiceDeps): QuestionService 
   const now = deps.now ?? (() => new Date())
 
   return {
-    async list(query): Promise<ListEventQuestionsResponse> {
+    async list(query, viewer): Promise<ListEventQuestionsResponse> {
       const records = await deps.repo.listQuestions(query.id, {
         ...(query.ticketTypeId !== undefined ? { ticketTypeId: query.ticketTypeId } : {}),
       })
-      return { items: records.map(toEventQuestionDTO) }
+      if (viewer.canManage || records.every((record) => record.ticketTypeId === null)) {
+        return { items: records.map(toEventQuestionDTO) }
+      }
+      // A hidden type is host-assigned only; its questions would publish its id to anyone.
+      const types = await deps.repo.listTicketTypes(query.id)
+      const hidden = new Set(types.filter((t) => t.visibility === "hidden").map((t) => t.id))
+      return {
+        items: records
+          .filter((record) => record.ticketTypeId === null || !hidden.has(record.ticketTypeId))
+          .map(toEventQuestionDTO),
+      }
     },
 
     async save(input): Promise<SaveEventQuestionsResponse> {

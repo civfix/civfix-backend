@@ -1,5 +1,5 @@
 import { AppError } from "@civfix/shared"
-import type { CheckinMethod, RegistrationRosterSort } from "@civfix/shared"
+import type { CheckinMethod, EventVisibility, RegistrationRosterSort } from "@civfix/shared"
 import type { Queryable, Sql, TransactionSql } from "../../db/client.js"
 import { constantTimeStringEqual } from "../../auth/crypto.js"
 import {
@@ -12,6 +12,7 @@ import {
 import { eventWindowOfRow, hasEventEnded } from "../cleanup-rules.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup } from "../media-bindings.js"
+import { likeContains } from "../admin/like.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./event-media.js"
 import { deterministicUuid } from "../deterministic-uuid.js"
 import {
@@ -45,6 +46,7 @@ import {
 import type {
   AnswerRecord,
   CancelRegistrationOutcome,
+  RemoveRegistrationOutcome,
   CheckinCountersRecord,
   CheckinResultRecord,
   ClaimWaitlistOutcome,
@@ -98,6 +100,70 @@ const ROSTER_SORTS = Object.freeze({
   checked_in_at_desc: (tag: Sql) =>
     tag`COALESCE(ci.first_at, 'epoch'::timestamptz) DESC, r.registered_at DESC, r.id DESC`,
 }) satisfies Readonly<Record<RegistrationRosterSort, (tag: Sql) => unknown>>
+
+async function isBannedIn(tag: Queryable, cleanupId: string, userId: string): Promise<boolean> {
+  const banned = await tag<{ one: number }[]>`
+    SELECT 1 AS one FROM cleanup_bans
+     WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+     LIMIT 1
+  `
+  return banned.length > 0
+}
+
+/** Backstop for a waiting row whose user was banned by a path that did not cancel it. */
+function waitlistEntryNotBanned(tag: Queryable) {
+  return tag`NOT EXISTS (
+    SELECT 1 FROM cleanup_bans b
+     WHERE b.cleanup_id = w.cleanup_id AND b.user_id = w.user_id
+  )`
+}
+
+export async function cancelWaitlistEntriesIn(
+  tag: Queryable,
+  args: {
+    cleanupId: string
+    ticketTypeId: string | null
+    subject: RegistrationSubject
+    now: Date
+  },
+): Promise<{ left: number; releasedTicketTypeIds: string[] }> {
+  const typeFilter =
+    args.ticketTypeId === null ? tag`` : tag`AND ticket_type_id = ${args.ticketTypeId}`
+  const rows = await tag<{ id: string; released_ticket_type_id: string | null }[]>`
+    WITH left_entries AS (
+      UPDATE cleanup_waitlist
+         SET status = 'cancelled'
+       WHERE cleanup_id = ${args.cleanupId}
+         AND status IN ('waiting', 'offered')
+         ${typeFilter}
+         AND ${
+           args.subject.kind === "user"
+             ? tag`user_id = ${args.subject.userId}`
+             : tag`guest_id = ${args.subject.guestId}`
+         }
+      RETURNING id, ticket_type_id, party_size, offered_at
+    ), released AS (
+      UPDATE cleanup_ticket_types t
+         SET reserved_seats = GREATEST(t.reserved_seats - e.party_size, 0),
+             updated_at = ${args.now}
+        FROM left_entries e
+       WHERE t.id = e.ticket_type_id AND e.offered_at IS NOT NULL
+      RETURNING t.id
+    )
+    SELECT id,
+           CASE WHEN offered_at IS NULL THEN NULL ELSE ticket_type_id END
+             AS released_ticket_type_id
+      FROM left_entries
+  `
+  return {
+    left: rows.length,
+    releasedTicketTypeIds: [
+      ...new Set(
+        rows.map((row) => row.released_ticket_type_id).filter((id): id is string => id !== null),
+      ),
+    ],
+  }
+}
 
 class RegistrationRefusal extends Error {
   readonly outcome: RegisterTxOutcome
@@ -160,6 +226,16 @@ function subjectOwner(subject: RegistrationSubject): string {
 
 export function registrationIdempotencyOwner(subject: RegistrationSubject): string {
   return subjectOwner(subject)
+}
+
+// A guest has no standing that could open a private event, so a guest's own sign-up answers exactly as an
+// unknown event does. A host seating a walk-up, and a guest already waiting when the event went private,
+// act on standing the event granted earlier and keep working.
+export function guestSelfRegistrationOnPrivateEvent(
+  args: Pick<RegisterTxArgs, "subject" | "source">,
+  visibility: EventVisibility,
+): boolean {
+  return args.subject.kind === "guest" && args.source === "self" && visibility === "private"
 }
 
 function withinSalesWindow(now: Date, opensAt: Date | null, closesAt: Date | null): boolean {
@@ -608,28 +684,30 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     const locked = await tx<
       {
         status: EventRegistrationContext["status"]
+        visibility: EventRegistrationContext["visibility"]
         registration_opens_at: Date | null
         registration_closes_at: Date | null
         capacity: number | null
       }[]
     >`
-      SELECT status, registration_opens_at, registration_closes_at, capacity
+      SELECT status, visibility, registration_opens_at, registration_closes_at, capacity
         FROM cleanups WHERE id = ${args.cleanupId} LIMIT 1 FOR SHARE
     `
     const event = locked[0]
     if (event === undefined) return { kind: "not_found" as const }
+    if (guestSelfRegistrationOnPrivateEvent(args, event.visibility)) {
+      return { kind: "not_found" as const }
+    }
     if (event.status === "cancelled") return { kind: "closed" as const }
     if (!withinSalesWindow(args.now, event.registration_opens_at, event.registration_closes_at)) {
       return { kind: "registration_closed" as const }
     }
 
-    if (args.subject.kind === "user") {
-      const banned = await tx<{ one: number }[]>`
-        SELECT 1 AS one FROM cleanup_bans
-         WHERE cleanup_id = ${args.cleanupId} AND user_id = ${args.subject.userId}
-         LIMIT 1
-      `
-      if (banned.length > 0) return { kind: "banned" as const }
+    if (
+      args.subject.kind === "user" &&
+      (await isBannedIn(tx, args.cleanupId, args.subject.userId))
+    ) {
+      return { kind: "banned" as const }
     }
 
     const replay = await findRegisterSnapshot(tx, args)
@@ -674,6 +752,10 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     } else if (types.length === 1) {
       ticketType = types[0] ?? null
     } else if (types.length > 1) {
+      return { kind: "ticket_type_not_found" as const }
+    }
+
+    if (ticketType !== null && ticketType.visibility === "hidden" && args.source === "self") {
       return { kind: "ticket_type_not_found" as const }
     }
 
@@ -864,6 +946,44 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
     const registration = await loadRegistrationById(tx, args.cleanupId, registrationId)
     if (registration === null) throw new Error("registration reload returned no row")
     return { kind: "registered" as const, registration }
+  }
+
+  async function cancelRegistrationIn(
+    tag: Queryable,
+    args: { cleanupId: string; registrationId: string; actorId: string | null; now: Date },
+  ): Promise<CancelRegistrationOutcome> {
+    const cancelled = await tag<{ id: string; ticket_type_id: string | null }[]>`
+      WITH cancelled AS (
+        UPDATE cleanup_registrations
+           SET status = 'cancelled', cancelled_at = ${args.now}, cancelled_by = ${args.actorId}
+         WHERE id = ${args.registrationId}
+           AND cleanup_id = ${args.cleanupId}
+           AND status = 'registered'
+        RETURNING id, ticket_type_id, party_size
+      ), seats AS (
+        UPDATE cleanup_registration_seats s
+           SET status = 'cancelled'
+          FROM cancelled c
+         WHERE s.registration_id = c.id AND s.status = 'active'
+        RETURNING s.id
+      ), released AS (
+        UPDATE cleanup_ticket_types t
+           SET reserved_seats = GREATEST(t.reserved_seats - c.party_size, 0),
+               updated_at = ${args.now}
+          FROM cancelled c
+         WHERE t.id = c.ticket_type_id
+        RETURNING t.id
+      )
+      SELECT id, ticket_type_id FROM cancelled
+    `
+    const row = cancelled[0]
+    if (row === undefined) {
+      const existing = await loadRegistrationById(tag, args.cleanupId, args.registrationId)
+      return existing === null ? { kind: "not_found" } : { kind: "already_cancelled" }
+    }
+    const registration = await loadRegistrationById(tag, args.cleanupId, row.id)
+    if (registration === null) return { kind: "not_found" }
+    return { kind: "cancelled", registration, ticketTypeId: row.ticket_type_id }
   }
 
   async function runRegisterTx(args: RegisterTxArgs): Promise<RegisterTxOutcome> {
@@ -1364,18 +1484,19 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       const typeFilter =
         query.ticketTypeId === null ? sql`` : sql`AND r.ticket_type_id = ${query.ticketTypeId}`
       const slotFilter = query.slotId === null ? sql`` : sql`AND sc.slot_id = ${query.slotId}`
-      const search =
-        query.q === null || query.q.length === 0
-          ? sql``
-          : sql`AND (
-              u.display_name ILIKE ${`%${query.q}%`}
-              OR u.handle ILIKE ${`%${query.q}%`}
-              OR g.name ILIKE ${`%${query.q}%`}
-              OR EXISTS (
-                SELECT 1 FROM cleanup_registration_seats s
-                 WHERE s.registration_id = r.id AND s.attendee_name ILIKE ${`%${query.q}%`}
-              )
-            )`
+      const search = (() => {
+        if (query.q === null || query.q.length === 0) return sql``
+        const pattern = likeContains(query.q)
+        return sql`AND (
+          u.display_name ILIKE ${pattern} ESCAPE '\\'
+          OR u.handle ILIKE ${pattern} ESCAPE '\\'
+          OR g.name ILIKE ${pattern} ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM cleanup_registration_seats s
+             WHERE s.registration_id = r.id AND s.attendee_name ILIKE ${pattern} ESCAPE '\\'
+          )
+        )`
+      })()
 
       const cursorFilter = (() => {
         if (query.cursor === null) return sql``
@@ -1464,38 +1585,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       actorId: string | null
       now: Date
     }): Promise<CancelRegistrationOutcome> {
-      const cancelled = await sql<{ id: string; ticket_type_id: string | null }[]>`
-        WITH cancelled AS (
-          UPDATE cleanup_registrations
-             SET status = 'cancelled', cancelled_at = ${args.now}, cancelled_by = ${args.actorId}
-           WHERE id = ${args.registrationId}
-             AND cleanup_id = ${args.cleanupId}
-             AND status = 'registered'
-          RETURNING id, ticket_type_id, party_size
-        ), seats AS (
-          UPDATE cleanup_registration_seats s
-             SET status = 'cancelled'
-            FROM cancelled c
-           WHERE s.registration_id = c.id AND s.status = 'active'
-          RETURNING s.id
-        ), released AS (
-          UPDATE cleanup_ticket_types t
-             SET reserved_seats = GREATEST(t.reserved_seats - c.party_size, 0),
-                 updated_at = ${args.now}
-            FROM cancelled c
-           WHERE t.id = c.ticket_type_id
-          RETURNING t.id
-        )
-        SELECT id, ticket_type_id FROM cancelled
-      `
-      const row = cancelled[0]
-      if (row === undefined) {
-        const existing = await loadRegistrationById(sql, args.cleanupId, args.registrationId)
-        return existing === null ? { kind: "not_found" } : { kind: "already_cancelled" }
-      }
-      const registration = await loadRegistrationById(sql, args.cleanupId, row.id)
-      if (registration === null) return { kind: "not_found" }
-      return { kind: "cancelled", registration, ticketTypeId: row.ticket_type_id }
+      return cancelRegistrationIn(sql, args)
     },
 
     async removeRegistration(args: {
@@ -1504,31 +1594,39 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       actorId: string
       ban: boolean
       now: Date
-    }): Promise<CancelRegistrationOutcome> {
-      const outcome = await repo.cancelRegistration({
-        cleanupId: args.cleanupId,
-        registrationId: args.registrationId,
-        actorId: args.actorId,
-        now: args.now,
+    }): Promise<RemoveRegistrationOutcome> {
+      return sql.begin(async (tx): Promise<RemoveRegistrationOutcome> => {
+        const target = await tx<{ user_id: string | null }[]>`
+          SELECT user_id FROM cleanup_registrations
+           WHERE id = ${args.registrationId} AND cleanup_id = ${args.cleanupId}
+           LIMIT 1
+        `
+        if (target.length === 0) return { kind: "not_found", releasedWaitlistTicketTypeIds: [] }
+        const bannedUserId = args.ban ? (target[0]?.user_id ?? null) : null
+        let releasedWaitlistTicketTypeIds: string[] = []
+        if (bannedUserId !== null) {
+          await tx`
+            INSERT INTO cleanup_bans (cleanup_id, user_id, banned_by_user_id)
+            VALUES (${args.cleanupId}, ${bannedUserId}, ${args.actorId})
+            ON CONFLICT (cleanup_id, user_id) DO NOTHING
+          `
+          await tx`
+            DELETE FROM cleanup_members
+             WHERE cleanup_id = ${args.cleanupId} AND user_id = ${bannedUserId} AND role = 'member'
+          `
+          // Waitlist rows before the registration: the same cleanup_waitlist -> cleanup_ticket_types
+          // order the expiry sweep and leaveWaitlist take, so the two cannot deadlock.
+          const cancelled = await cancelWaitlistEntriesIn(tx, {
+            cleanupId: args.cleanupId,
+            ticketTypeId: null,
+            subject: { kind: "user", userId: bannedUserId },
+            now: args.now,
+          })
+          releasedWaitlistTicketTypeIds = cancelled.releasedTicketTypeIds
+        }
+        const outcome = await cancelRegistrationIn(tx, args)
+        return { ...outcome, releasedWaitlistTicketTypeIds }
       })
-      if (outcome.kind === "not_found") return outcome
-      const registration =
-        outcome.kind === "cancelled"
-          ? outcome.registration
-          : await loadRegistrationById(sql, args.cleanupId, args.registrationId)
-      const targetUserId = registration?.userId ?? null
-      if (args.ban && targetUserId !== null) {
-        await sql`
-          INSERT INTO cleanup_bans (cleanup_id, user_id, banned_by_user_id)
-          VALUES (${args.cleanupId}, ${targetUserId}, ${args.actorId})
-          ON CONFLICT (cleanup_id, user_id) DO NOTHING
-        `
-        await sql`
-          DELETE FROM cleanup_members
-           WHERE cleanup_id = ${args.cleanupId} AND user_id = ${targetUserId} AND role = 'member'
-        `
-      }
-      return outcome
     },
 
     async transferRegistration(args: {
@@ -1630,6 +1728,12 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
           if (hasEventEnded(eventWindowOfRow(event), event.now.getTime())) {
             return { kind: "ended" as const }
           }
+          if (
+            args.subject.kind === "user" &&
+            (await isBannedIn(tx, args.cleanupId, args.subject.userId))
+          ) {
+            return { kind: "banned" as const }
+          }
 
           const typeRows = await tx<
             {
@@ -1645,7 +1749,9 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
              LIMIT 1
           `
           const type = typeRows[0]
-          if (type === undefined) return { kind: "ticket_type_not_found" as const }
+          if (type === undefined || type.visibility === "hidden") {
+            return { kind: "ticket_type_not_found" as const }
+          }
           if (!type.waitlist_enabled) return { kind: "waitlist_disabled" as const }
           if (type.visibility === "access_code") {
             if (args.accessCodeHash === null) return { kind: "access_code_required" as const }
@@ -1742,44 +1848,7 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
       subject: RegistrationSubject
       now: Date
     }): Promise<{ left: number; releasedTicketTypeIds: string[] }> {
-      const typeFilter =
-        args.ticketTypeId === null ? sql`` : sql`AND ticket_type_id = ${args.ticketTypeId}`
-      const rows = await sql<{ id: string; released_ticket_type_id: string | null }[]>`
-        WITH left_entries AS (
-          UPDATE cleanup_waitlist
-             SET status = 'cancelled'
-           WHERE cleanup_id = ${args.cleanupId}
-             AND status IN ('waiting', 'offered')
-             ${typeFilter}
-             AND ${
-               args.subject.kind === "user"
-                 ? sql`user_id = ${args.subject.userId}`
-                 : sql`guest_id = ${args.subject.guestId}`
-             }
-          RETURNING id, ticket_type_id, party_size, offered_at
-        ), released AS (
-          UPDATE cleanup_ticket_types t
-             SET reserved_seats = GREATEST(t.reserved_seats - e.party_size, 0),
-                 updated_at = ${args.now}
-            FROM left_entries e
-           WHERE t.id = e.ticket_type_id AND e.offered_at IS NOT NULL
-          RETURNING t.id
-        )
-        SELECT id,
-               CASE WHEN offered_at IS NULL THEN NULL ELSE ticket_type_id END
-                 AS released_ticket_type_id
-          FROM left_entries
-      `
-      return {
-        left: rows.length,
-        releasedTicketTypeIds: [
-          ...new Set(
-            rows
-              .map((row) => row.released_ticket_type_id)
-              .filter((id): id is string => id !== null),
-          ),
-        ],
-      }
+      return cancelWaitlistEntriesIn(sql, args)
     },
 
     async listWaitlist(args: {
@@ -1821,10 +1890,11 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
             party_size: number
           }[]
         >`
-          SELECT id, cleanup_id, user_id, guest_id, party_size
-            FROM cleanup_waitlist
-           WHERE ticket_type_id = ${args.ticketTypeId} AND status = 'waiting'
-           ORDER BY created_at, id
+          SELECT w.id, w.cleanup_id, w.user_id, w.guest_id, w.party_size
+            FROM cleanup_waitlist w
+           WHERE w.ticket_type_id = ${args.ticketTypeId} AND w.status = 'waiting'
+             AND ${waitlistEntryNotBanned(tx)}
+           ORDER BY w.created_at, w.id
            LIMIT 1
            FOR UPDATE SKIP LOCKED
         `
@@ -1874,11 +1944,12 @@ export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistratio
             party_size: number
           }[]
         >`
-          SELECT id, ticket_type_id, user_id, guest_id, party_size
-            FROM cleanup_waitlist
-           WHERE id = ${args.waitlistId}
-             AND cleanup_id = ${args.cleanupId}
-             AND status = 'waiting'
+          SELECT w.id, w.ticket_type_id, w.user_id, w.guest_id, w.party_size
+            FROM cleanup_waitlist w
+           WHERE w.id = ${args.waitlistId}
+             AND w.cleanup_id = ${args.cleanupId}
+             AND w.status = 'waiting'
+             AND ${waitlistEntryNotBanned(tx)}
            LIMIT 1
            FOR UPDATE
         `
