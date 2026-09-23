@@ -14,6 +14,7 @@ import type {
   MailDelivery,
   MailDirection,
   MailMessageDTO,
+  MailReplyPublication,
   MailStatus,
   MailThreadDTO,
   MailThreadListItemDTO,
@@ -159,6 +160,19 @@ export function toThreadListItem(
 function deliveryOf(message: MailMessageRecord): MailDelivery | null {
   if (message.direction === "in") return null
   return message.delivery ?? "pending"
+}
+
+type PublicationThread = Pick<MailThreadRecord, "reportId" | "cleanupId">
+type PublicationMessage = Pick<MailMessageRecord, "direction" | "unaffiliated" | "effectsAppliedAt">
+
+export function replyPublication(
+  thread: PublicationThread,
+  message: PublicationMessage,
+): MailReplyPublication | null {
+  if (message.direction !== "in") return null
+  if (thread.reportId === null && thread.cleanupId === null) return null
+  if (message.effectsAppliedAt !== null) return "published"
+  return message.unaffiliated ? "withheld" : "pending"
 }
 
 export function toMessageDTO(message: MailMessageRecord): MailMessageDTO {

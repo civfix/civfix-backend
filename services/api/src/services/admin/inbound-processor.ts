@@ -8,6 +8,7 @@ import {
   type MailThreadRecord,
 } from "./mail-repository.drizzle.js"
 import {
+  INBOUND_AUTH_VERDICT_HEADER,
   makeDrizzleInboundRepository,
   type InboundRepository,
 } from "./inbound-repository.drizzle.js"
@@ -348,7 +349,7 @@ function buildStoredHeaders(
         ? value.slice(0, INBOUND_HEADER_VALUE_MAX_CHARS)
         : value
   }
-  out["x-civfix-auth-verdict"] = authVerdict
+  out[INBOUND_AUTH_VERDICT_HEADER] = authVerdict
   return out
 }
 
