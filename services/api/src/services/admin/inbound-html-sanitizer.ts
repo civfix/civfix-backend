@@ -305,8 +305,10 @@ function skipSpace(raw: string, from: number): number {
 // is judged on exactly that cleaned value, which is also the href emitted, so the browser reads the same
 // scheme the check saw: "java\tscript:" is refused, and "h ttp:x" (a relative link to a browser) is too.
 const URL_TAB_NEWLINE_RE = /[\t\n\r]/g
+// A trailing run can only start its match at the run's first character; without the lookbehind every
+// character of an interior run rescans the rest of it, which is quadratic on a crafted href.
 // eslint-disable-next-line no-control-regex
-const URL_EDGE_NOISE_RE = /^[\u0000-\u0020]+|[\u0000-\u0020]+$/g
+const URL_EDGE_NOISE_RE = /^[\u0000-\u0020]+|(?<![\u0000-\u0020])[\u0000-\u0020]+$/g
 
 // eslint-disable-next-line no-control-regex
 const ATTR_CONTROL_CHARS_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g
