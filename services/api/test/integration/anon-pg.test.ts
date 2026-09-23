@@ -296,7 +296,7 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
       req({ idempotencyKey: key, anonToken: first.issuedAnonToken! }),
       { ip: "203.0.113.9", cfGeo: {} },
     )
-    expect(second.response).toEqual(first.response)
+    expect(second.response).toEqual({ ...first.response, claimCode: expect.any(String) })
     const countRows = await h.sql<{ n: number }[]>`
       SELECT COUNT(*)::int AS n FROM reports WHERE idempotency_key = ${key}
     `
