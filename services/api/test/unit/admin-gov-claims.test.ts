@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import {
   InMemoryGovClaimsRepository,
   InMemoryUserProvisioner,
@@ -287,6 +287,22 @@ describe("gov claim approve", () => {
     expect(created).not.toBeNull()
     expect(created?.role).toBe("gov_admin")
     expect(claim.userId).toBe(created?.id)
+  })
+
+  it("creates the placeholder under a neutral name when the claimed name reads as CivFix", async () => {
+    const { repo, users, svc } = harness()
+    const create = vi.spyOn(users, "create")
+    repo.seedClaim({
+      id: "GOV-9",
+      name: "Civ Fix",
+      contactEmail: "civ@waynesboro-va.gov",
+      jurisdictionGeoid: "5182672",
+      status: "pending",
+    })
+
+    await svc.approve("GOV-9", { actorId: "op-1", note: null })
+
+    expect(create).toHaveBeenCalledWith("civ@waynesboro-va.gov", "citizen")
   })
 
   it("F118: a raced/non-pending approve conflicts and leaves the placeholder a plain citizen (no unjustified gov_admin)", async () => {
