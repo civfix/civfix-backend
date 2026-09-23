@@ -19,7 +19,7 @@ const BATCH_SIZE = 500
 
 const LABEL = "reference-codes"
 
-export async function backfillReportReferenceCodes(
+async function backfillReportReferenceCodes(
   sql: Sql,
 ): Promise<{ stamped: number; failed: number }> {
   return stampReferenceCodes<ReferenceCodeRow & { type: ReportType }>(sql, {
@@ -43,7 +43,7 @@ export async function backfillCleanupJurisdictions(
 }
 
 /** Run after backfillCleanupJurisdictions so each event's JURCODE is resolved. */
-export async function backfillCleanupReferenceCodes(
+async function backfillCleanupReferenceCodes(
   sql: Sql,
 ): Promise<{ stamped: number; failed: number }> {
   return stampReferenceCodes<ReferenceCodeRow>(sql, {

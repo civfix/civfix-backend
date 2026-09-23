@@ -20,8 +20,13 @@ type SqlFragment = postgres.Fragment
 
 const BATCH_SIZE = 1000
 
-/** Exported so the integration harness can drive the same loop main() runs. */
-export async function backfillHandles(sql: Sql): Promise<{ assigned: number; skipped: number }> {
+const PG_UNIQUE_VIOLATION = "23505"
+
+const GEOID_TAIL_LENGTH = 4
+
+const FIRST_NUMBERED_SUFFIX = 2
+
+async function backfillHandles(sql: Sql): Promise<{ assigned: number; skipped: number }> {
   let assigned = 0
   let skipped = 0
   // Catches two rows of the same run deriving the same slug before the DB sees them; the UNIQUE index is
@@ -93,8 +98,6 @@ async function assignHandle(
   }
 }
 
-const PG_UNIQUE_VIOLATION = "23505"
-
 function isUniqueViolation(err: unknown): boolean {
   return (
     typeof err === "object" &&
@@ -122,10 +125,10 @@ async function claimHandle(
     return rows.length > 0
   }
   if (!(await taken(base))) return base
-  const tail = geoid.slice(-4)
+  const tail = geoid.slice(-GEOID_TAIL_LENGTH)
   const withTail = `${base}_${tail}`
   if (!(await taken(withTail))) return withTail
-  for (let n = 2; ; n++) {
+  for (let n = FIRST_NUMBERED_SUFFIX; ; n++) {
     const candidate = `${withTail}_${n}`
     if (!(await taken(candidate))) return candidate
   }

@@ -17,24 +17,25 @@
 import { randomUUID } from "node:crypto"
 import type postgres from "postgres"
 import type { Sql } from "./client.js"
-import { runDbCli, runIfMain } from "./cli.js"
+import { EXIT_USAGE, runDbCli, runIfMain } from "./cli.js"
 import { loadEnv } from "../env.js"
 import { makeTicketTokenSigner } from "../services/host/ticket-token.js"
 
 type SqlFragment = postgres.Fragment
 
-export const SIGNUP_SEAT_BACKFILL_BATCH = 500
+const SIGNUP_SEAT_BACKFILL_BATCH = 500
 
 export const SIGNUP_SEAT_BACKFILL_MAX_BATCH = 5000
 
 const BATCH_FLAG = "--batch"
+const DIGITS_ONLY_RE = /^\d+$/
 
 // undefined = flag absent (use the default); null = a value that is not a usable LIMIT.
 export function parseSignupSeatBatchArg(argv: readonly string[]): number | undefined | null {
   const at = argv.indexOf(BATCH_FLAG)
   if (at < 0) return undefined
   const raw = argv[at + 1]
-  if (raw === undefined || !/^\d+$/.test(raw)) return null
+  if (raw === undefined || !DIGITS_ONLY_RE.test(raw)) return null
   const size = Number(raw)
   return size >= 1 && size <= SIGNUP_SEAT_BACKFILL_MAX_BATCH ? size : null
 }
@@ -74,13 +75,48 @@ interface SeatInsertRow {
   created_at: Date
 }
 
-export interface SignupSeatBackfillResult {
+interface SignupSeatBackfillResult {
   scanned: number
   created: number
   batches: number
 }
 
-export async function backfillSignupSeats(
+/** One free registration plus its single seat per candidate, mirroring the live sign-up write. */
+function signupRowsFor(
+  page: readonly CandidateRow[],
+  hashFor: (seatId: string) => string,
+): { registrations: RegistrationInsertRow[]; seatOf: Map<string, SeatInsertRow> } {
+  const registrations: RegistrationInsertRow[] = page.map((row) => ({
+    id: randomUUID(),
+    cleanup_id: row.cleanup_id,
+    ticket_type_id: null,
+    user_id: row.user_id,
+    guest_id: null,
+    party_size: 1,
+    status: "registered",
+    source: "self",
+    registered_at: row.joined_at,
+  }))
+  const seatOf = new Map<string, SeatInsertRow>(
+    registrations.map((registration) => {
+      const seatId = randomUUID()
+      const seat: SeatInsertRow = {
+        id: seatId,
+        cleanup_id: registration.cleanup_id,
+        registration_id: registration.id,
+        seat_index: 0,
+        attendee_name: null,
+        ticket_token_hash: hashFor(seatId),
+        status: "active",
+        created_at: registration.registered_at,
+      }
+      return [registration.id, seat]
+    }),
+  )
+  return { registrations, seatOf }
+}
+
+async function backfillSignupSeats(
   sql: Sql,
   opts: {
     hashFor: (seatId: string) => string
@@ -122,33 +158,7 @@ export async function backfillSignupSeats(
     `
     if (page.length === 0) break
 
-    const registrations: RegistrationInsertRow[] = page.map((row) => ({
-      id: randomUUID(),
-      cleanup_id: row.cleanup_id,
-      ticket_type_id: null,
-      user_id: row.user_id,
-      guest_id: null,
-      party_size: 1,
-      status: "registered",
-      source: "self",
-      registered_at: row.joined_at,
-    }))
-    const seatOf = new Map<string, SeatInsertRow>(
-      registrations.map((registration) => {
-        const seatId = randomUUID()
-        const seat: SeatInsertRow = {
-          id: seatId,
-          cleanup_id: registration.cleanup_id,
-          registration_id: registration.id,
-          seat_index: 0,
-          attendee_name: null,
-          ticket_token_hash: opts.hashFor(seatId),
-          status: "active",
-          created_at: registration.registered_at,
-        }
-        return [registration.id, seat]
-      }),
-    )
+    const { registrations, seatOf } = signupRowsFor(page, opts.hashFor)
 
     const written = await sql
       .begin(async (tx) => {
@@ -208,14 +218,14 @@ export async function backfillSignupSeats(
   return { scanned, created, batches }
 }
 
-export async function main(): Promise<void> {
+async function main(): Promise<void> {
   const commit = process.argv.includes("--yes")
   const batchSize = parseSignupSeatBatchArg(process.argv)
   if (batchSize === null) {
     console.error(
       `backfill-signup-seats: ${BATCH_FLAG} takes an integer from 1 to ${SIGNUP_SEAT_BACKFILL_MAX_BATCH}`,
     )
-    process.exit(2)
+    process.exit(EXIT_USAGE)
   }
   const signer = makeTicketTokenSigner(loadEnv().TICKET_TOKEN_SECRET.trim())
 

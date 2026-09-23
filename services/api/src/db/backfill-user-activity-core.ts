@@ -3,7 +3,7 @@ import type { Sql } from "./client.js"
 
 type SqlFragment = postgres.Fragment
 
-export const USER_ACTIVITY_BACKFILL_BATCH = 500
+const USER_ACTIVITY_BACKFILL_BATCH = 500
 
 export async function backfillUserActivity(
   sql: Sql,

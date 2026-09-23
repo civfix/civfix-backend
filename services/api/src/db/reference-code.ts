@@ -20,6 +20,8 @@ export const UNKNOWN_JURCODE = 0
 
 export const EVENT_PREFIX = "EVENT"
 
+const SEQ_DIGITS = 6
+
 /**
  * Falls back to UNKNOWN_JURCODE rather than failing, so a code is always mintable. It is a plain SELECT
  * that takes no row lock, so it cannot disturb the allocator's lock order wherever it is called.
@@ -44,12 +46,8 @@ export function eventScopeKey(jurCode: number): string {
   return `${EVENT_PREFIX}:${jurCode}`
 }
 
-function pad6(seq: number): string {
-  return String(seq).padStart(6, "0")
-}
-
 export function formatReferenceCode(prefix: string, jurCode: number, seq: number): string {
-  return `${prefix}-${jurCode}-${pad6(seq)}`
+  return `${prefix}-${jurCode}-${String(seq).padStart(SEQ_DIGITS, "0")}`
 }
 
 /** Falls back to the "other" code for an unrecognized type, so a code is always mintable. */
@@ -58,7 +56,7 @@ export function typeCodeFor(type: ReportType): string {
 }
 
 /** Call this FIRST in the create transaction (see the lock-order contract above). */
-export async function allocateNextSeq(sql: Queryable, scopeKey: string): Promise<number> {
+async function allocateNextSeq(sql: Queryable, scopeKey: string): Promise<number> {
   const rows = await sql<{ next_val: number }[]>`
     INSERT INTO reference_counters (scope_key, next_val)
     VALUES (${scopeKey}, 1)
