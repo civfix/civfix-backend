@@ -20,13 +20,18 @@ export function uploaderOf(owner: {
 }
 
 // Every subject this caller's request proves, where uploaderOf picks the one a new upload is stored under:
-// a guest who signs in between presign and finalize still owns the upload its anon cookie created.
+// a guest who signs in between presign and finalize or submit still owns the uploads its anon cookie
+// created, as long as the signed-in request carries that same verified cookie.
 export function uploadersOf(owner: {
   userId?: string | undefined
   anonSessionId?: string | undefined
+  guestAnonSessionId?: string | undefined
 }): string[] {
   const subjects: string[] = []
   if (owner.userId) subjects.push(userUploader(owner.userId))
   if (owner.anonSessionId) subjects.push(anonUploader(owner.anonSessionId))
+  if (owner.guestAnonSessionId && owner.guestAnonSessionId !== owner.anonSessionId) {
+    subjects.push(anonUploader(owner.guestAnonSessionId))
+  }
   return subjects.length > 0 ? subjects : [UNSESSIONED_UPLOADER]
 }

@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto"
 import { describe, expect, it } from "vitest"
 import { FakeJobs, FakeStorage } from "@civfix/shared/fakes"
 import type { AppError } from "@civfix/shared"
+import type { FastifyRequest } from "fastify"
+import { signAnonToken } from "../../src/abuse/anon-token.js"
+import { resolveAuthContext } from "../../src/auth/context.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
@@ -21,11 +24,13 @@ import {
   type RecordedStatement,
   type SqlHandler,
 } from "../helpers/fake-sql.js"
+import { bearer, makeAuthHarness } from "../helpers/auth.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 
 const MEDIA_ID = "44444444-4444-4444-8444-444444444444"
 const GROUP_ID = "55555555-5555-4555-8555-555555555555"
 const UPLOAD_ID = "66666666-6666-4666-8666-666666666666"
+const GUEST_TOKEN_ID = "77777777-7777-4777-8777-777777777777"
 const MEDIA_CLAIM = /UPDATE media_assets\s+SET purpose/
 
 function squash(text: string): string {
@@ -278,12 +283,30 @@ describe("finalizing an upload", () => {
     expect(jobs.jobsFor(MEDIA_CHECKS_JOB)).toHaveLength(1)
   })
 
-  it("accepts the guest session that uploaded, even once the caller has also signed in", async () => {
-    const { service, uploadId } = await harness({ anonSessionId: "anon-1" })
+  it("accepts the guest session that uploaded, once the same browser has also signed in", async () => {
+    const auth = await makeAuthHarness()
+    try {
+      const { token } = await auth.signIn("guest-then-member@example.org")
+      const context = await resolveAuthContext({
+        server: auth.app,
+        headers: bearer(token),
+        cookies: { civfix_anon: signAnonToken(GUEST_TOKEN_ID, auth.env.ANON_TOKEN_SIGNING_KEY) },
+      } as unknown as FastifyRequest)
+      const { service, uploadId } = await harness({ anonSessionId: GUEST_TOKEN_ID })
 
-    await expect(
-      service.finalize({ uploadId }, { userId: randomUUID(), anonSessionId: "anon-1" }),
-    ).resolves.toMatchObject({ status: "validating" })
+      await expect(
+        service.finalize(
+          { uploadId },
+          {
+            userId: context.userId ?? undefined,
+            anonSessionId: context.anonSessionId,
+            guestAnonSessionId: context.guestAnonSessionId,
+          },
+        ),
+      ).resolves.toMatchObject({ status: "validating" })
+    } finally {
+      await auth.app.close()
+    }
   })
 
   it("accepts an unattributed upload only inside the claim window", async () => {

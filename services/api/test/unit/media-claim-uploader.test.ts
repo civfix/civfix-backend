@@ -233,6 +233,57 @@ describe("every uploadId claim binds only the caller's own upload", () => {
     expectLockedBeforeClaim(fake, POST_CLAIM)
   })
 
+  it("a signed-in report also claims the uploads its browser made as a guest", async () => {
+    const reporter = randomUUID()
+    const fake = makeFakeSql([{ match: /INSERT INTO reference_counters/, rows: [{ next_val: 1 }] }])
+
+    await expect(
+      makeDrizzleReportRepository(fake.sql as unknown as Sql).createReportTx({
+        ...reportArgs(reporter),
+        guestAnonSessionId: "guest-token",
+      }),
+    ).rejects.toMatchObject({ httpStatus: 422 })
+
+    const claim = statementMatching(fake, REPORT_CLAIM)
+    expect(squash(claim.sql)).toContain("media_assets.uploader IN (?,?)")
+    expect(claim.values).toEqual(
+      expect.arrayContaining([userUploader(reporter), anonUploader("guest-token")]),
+    )
+    expect(claim.values).not.toContain(UNSESSIONED_UPLOADER)
+  })
+
+  it("a signed-in post also claims the uploads its browser made as a guest", async () => {
+    const author = randomUUID()
+    const fake = makeFakeSql([{ match: /INSERT INTO posts/, rows: [{ id: randomUUID() }] }])
+    const repo = makeDrizzlePostRepository(fake.sql as unknown as Sql, {
+      presignMedia: () => Promise.resolve({ url: "u" }),
+      presignAvatar: () => Promise.resolve("a"),
+    })
+
+    await expect(
+      repo.createPost({
+        authorId: author,
+        guestAnonSessionId: "guest-token",
+        kind: "post",
+        body: "hello",
+        replyToId: null,
+        repostOfId: null,
+        eventId: null,
+        reportId: null,
+        mediaUploadIds: [UPLOAD_ID],
+        mentionedUserIds: [],
+        organizationId: null,
+      }),
+    ).rejects.toMatchObject({ httpStatus: 422 })
+
+    const claim = statementMatching(fake, POST_CLAIM)
+    expect(squash(claim.sql)).toContain("media_assets.uploader IN (?,?)")
+    expect(claim.values).toEqual(
+      expect.arrayContaining([userUploader(author), anonUploader("guest-token")]),
+    )
+    expect(claim.values).not.toContain(UNSESSIONED_UPLOADER)
+  })
+
   it("a chat or DM attachment claims as its sender", async () => {
     const sender = randomUUID()
     const fake = makeFakeSql([{ match: CHAT_CLAIM, rows: [{ upload_id: UPLOAD_ID }] }])

@@ -299,7 +299,10 @@ export async function registerReportRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const body = parse(CreateReportBodySchema, request.body)
-      const dto: ReportDTO = await service().createReport(body, { userId })
+      const dto: ReportDTO = await service().createReport(body, {
+        userId,
+        guestAnonSessionId: request.auth.guestAnonSessionId,
+      })
       reply.status(201).send(dto)
     },
   )

@@ -26,7 +26,7 @@ import type {
 import { REPORT_CREATE_SCOPE } from "./report-service.types.js"
 import { servedKeyExpr, servableMediaFilter } from "./media-served-key.js"
 import { claimableAsReportMedia, lockUploadsForClaim } from "./media-bindings.js"
-import { userUploader } from "./media-uploader.js"
+import { uploadersOf } from "./media-uploader.js"
 import {
   reportColumns,
   selectPublicPins,
@@ -194,7 +194,13 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
               WHERE upload_id IN ${tx(args.mediaUploadIds)}
                 AND (report_id IS NULL OR report_id = ${args.reportId})
                 AND post_id IS NULL AND chat_message_id IS NULL
-                AND ${claimableAsReportMedia(tx, [userUploader(args.reporterUserId)])}
+                AND ${claimableAsReportMedia(
+                  tx,
+                  uploadersOf({
+                    userId: args.reporterUserId,
+                    guestAnonSessionId: args.guestAnonSessionId,
+                  }),
+                )}
                 AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
               RETURNING upload_id
             `

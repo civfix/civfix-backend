@@ -56,6 +56,7 @@ export interface MediaChecksJob {
 export interface MediaOwner {
   userId?: string | undefined
   anonSessionId?: string | undefined
+  guestAnonSessionId?: string | undefined
   ipKey?: string | undefined
 }
 

@@ -6,9 +6,16 @@ import type { AuthServices } from "./auth-services.js"
 import type { AccountStatus } from "./stores.js"
 import { ANON_COOKIE, presentedSessionToken } from "./transport.js"
 
+// A signed-in browser can still carry the verified anon cookie it held as a guest. That id names only
+// the uploads the browser made before signing in; quota, report identity and every other check stay on
+// the account, which is why it is not the anonymous subject.
+export interface RequestAuthContext extends AuthContext {
+  guestAnonSessionId?: string
+}
+
 declare module "fastify" {
   interface FastifyRequest {
-    auth: AuthContext
+    auth: RequestAuthContext
     sessionExpiresAtMs?: number
     accountStatus?: AccountStatus
   }
@@ -43,7 +50,7 @@ function verifiedAnonSessionId(request: FastifyRequest): string | undefined {
   return verifyAnonTokenSignature(anonCookie, signingKey) ?? undefined
 }
 
-export async function resolveAuthContext(request: FastifyRequest): Promise<AuthContext> {
+export async function resolveAuthContext(request: FastifyRequest): Promise<RequestAuthContext> {
   const services: AuthServices | undefined = request.server.authServices
   const token = presentedSessionToken(request)
   if (services && token) {
@@ -51,7 +58,13 @@ export async function resolveAuthContext(request: FastifyRequest): Promise<AuthC
     if (resolved) {
       request.sessionExpiresAtMs = resolved.expiresAtMs
       request.accountStatus = resolved.accountStatus
-      return { userId: resolved.userId, roles: resolved.roles, anon: false }
+      const guestAnonSessionId = verifiedAnonSessionId(request)
+      return {
+        userId: resolved.userId,
+        roles: resolved.roles,
+        anon: false,
+        ...(guestAnonSessionId !== undefined ? { guestAnonSessionId } : {}),
+      }
     }
   }
   return anonymousAuth(verifiedAnonSessionId(request))

@@ -16,7 +16,7 @@ import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
 import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
 import { claimableAsAttachment, lockUploadsForClaim } from "./media-bindings.js"
-import { userUploader } from "./media-uploader.js"
+import { uploadersOf } from "./media-uploader.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
@@ -56,6 +56,7 @@ function organizationRefOf(
 
 export interface CreatePostArgs {
   authorId: string
+  guestAnonSessionId?: string | undefined
   kind: PostKind
   body: string | null
   replyToId: string | null
@@ -1081,7 +1082,10 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
             SET post_id = ${postId}, purpose = 'post'
             WHERE upload_id IN ${tx(args.mediaUploadIds)}
               AND post_id IS NULL AND chat_message_id IS NULL AND report_id IS NULL
-              AND ${claimableAsAttachment(tx, [userUploader(args.authorId)])}
+              AND ${claimableAsAttachment(
+                tx,
+                uploadersOf({ userId: args.authorId, guestAnonSessionId: args.guestAnonSessionId }),
+              )}
               AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
             RETURNING upload_id
           `
