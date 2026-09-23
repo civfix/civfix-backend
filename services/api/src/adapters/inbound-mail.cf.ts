@@ -140,7 +140,11 @@ export function readMailAuthVerdict(mail: ParsedMail): MailAuthVerdict {
   const alignedDkim = leadingDkimResults(results).some((r) =>
     isAlignedPass(r, r.props.get("header.d") ?? r.props.get("header.i"), fromDomain),
   )
-  return alignedDkim ? "pass" : "fail"
+  const mailFrom = soleMailFromResult(stamp, results)
+  const alignedSpf =
+    mailFrom !== undefined &&
+    isAlignedPass(mailFrom, mailFrom.props.get("smtp.mailfrom"), fromDomain)
+  return alignedDkim || alignedSpf ? "pass" : "fail"
 }
 
 function parseStamp(stamp: string): AuthResult[] | null {
@@ -172,6 +176,12 @@ function carriesEnvelopeValue(result: AuthResult): boolean {
 function leadingDkimResults(results: readonly AuthResult[]): readonly AuthResult[] {
   const end = results.findIndex((r) => r.method !== "dkim")
   return end === -1 ? results : results.slice(0, end)
+}
+
+function soleMailFromResult(stamp: string, results: readonly AuthResult[]): AuthResult | undefined {
+  if (stamp.match(/smtp\.mailfrom/gi)?.length !== 1) return undefined
+  const [carrier] = results.filter((r) => r.props.has("smtp.mailfrom"))
+  return carrier?.method === "spf" ? carrier : undefined
 }
 
 function isAlignedPass(result: AuthResult, identity: string | undefined, from: string): boolean {

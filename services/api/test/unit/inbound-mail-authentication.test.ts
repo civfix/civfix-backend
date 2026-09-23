@@ -97,6 +97,13 @@ describe("readMailAuthVerdict (M7)", () => {
     expect(verdict(header)).toBe("pass")
   })
 
+  it("falls back to an aligned SPF pass when there is no DMARC policy", () => {
+    for (const dmarc of ["dmarc=none header.from=lacity.gov", "dmarc=temperror", "dmarc=permerror"]) {
+      expect(verdict(cf(dmarc, "spf=pass smtp.mailfrom=clerk@lacity.gov"))).toBe("pass")
+    }
+    expect(verdict(cf("spf=pass smtp.mailfrom=lacity.gov"))).toBe("pass")
+  })
+
   it("fails dmarc=none when neither DKIM nor SPF is aligned with the From domain", () => {
     const header = cf(
       "dkim=pass header.d=attacker.example",
@@ -119,6 +126,18 @@ describe("readMailAuthVerdict (M7)", () => {
     expect(verdict(cf("dmarc=fail header.from=lacity.gov, attacker.example", "dmarc=pass header.from=lacity.gov"))).toBe(
       "fail",
     )
+  })
+
+  it("passes only an SPF pass whose envelope domain is aligned", () => {
+    expect(verdict(stamp("mail.lacity.gov", "clerk@lacity.gov"))).toBe("pass")
+    expect(verdict(stamp("relay.attacker.example", "a@attacker.example"))).toBe("fail")
+  })
+
+  it("fails a mailfrom local part that closes the SPF comment early", () => {
+    const forged = ["a)smtp.mailfrom=lacity.gov(b", "a);dkim=pass header.d=lacity.gov;(b"]
+    for (const local of [...forged.map((f) => `"${f}"`), ...forged]) {
+      expect(verdict(stamp("relay.attacker.example", `${local}@attacker.example`))).toBe("fail")
+    }
   })
 
   it("ignores results that a ';' in the echoed helo appends, with or without a DMARC result", () => {
