@@ -4,6 +4,7 @@ import {
   MailListQuerySchema,
   MarkMailReadRequestSchema,
   PreviewForwardTemplateRequestSchema,
+  PublishMailReplyRequestSchema,
   ReplyRequestSchema,
   ResendRequestSchema,
   SetForwardTemplateDefaultRequestSchema,
@@ -14,12 +15,20 @@ import {
   type MailStatsResponse,
   type MailThreadDTO,
   type PreviewForwardTemplateResponse,
+  type PublishMailReplyResponse,
 } from "@civfix/shared"
 import type { Storage } from "@civfix/shared/interfaces"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { route } from "../../versioning/route.js"
-import { idParam, overridableService, parse, parseBodyWithId, sendOk } from "./_route-utils.js"
+import {
+  idParam,
+  overridableService,
+  parse,
+  parseBodyWithId,
+  sendOk,
+  twoIdParams,
+} from "./_route-utils.js"
 import { auditRead } from "./_audit-read.js"
 import { requireOperator } from "../../auth/admin-guard.js"
 import { perIdentity } from "../../plugins/rate-limit.js"
@@ -40,8 +49,22 @@ import {
   type ForwardTemplateService,
 } from "../../services/admin/forward-template-service.js"
 import type { ForwardTemplateRepository } from "../../services/admin/forward-template-types.js"
+import {
+  applyInboundEffects,
+  type InboundEffectDeps,
+} from "../../services/admin/inbound-thread-correlation.js"
+import {
+  makeMailReplyPublishService,
+  type MailReplyPublishService,
+} from "../../services/admin/mail-reply-publish-service.js"
 
 export const ADMIN_OUTBOUND_MAIL_RATE_LIMIT = perIdentity({
+  max: 20,
+  timeWindow: "1 minute",
+  skipOnError: false,
+})
+
+export const ADMIN_MAIL_REPLY_PUBLISH_RATE_LIMIT = perIdentity({
   max: 20,
   timeWindow: "1 minute",
   skipOnError: false,
@@ -75,6 +98,7 @@ export interface AdminMailRouteOverrides {
   storage?: Storage
   forwardTemplates?: ForwardTemplateRepository
   outboundStorage?: Storage
+  inboundEffects?: InboundEffectDeps
 }
 
 declare module "fastify" {
@@ -106,6 +130,29 @@ export async function registerAdminMailRoutes(
         repo,
         outboundMail,
         loadAttachmentBytes: (key) => container.storage.getObject(key),
+      })
+    },
+  )
+
+  const publishService = overridableService(
+    app,
+    "adminMailOverrides",
+    (overrides): MailReplyPublishService =>
+      makeMailReplyPublishService({
+        repo: overrides.repo,
+        applyEffects: (thread, message) => {
+          const effects = overrides.inboundEffects ?? {}
+          return applyInboundEffects(container, effects, overrides.repo, thread, message)
+        },
+        logger: app.log,
+      }),
+    () => {
+      const repo = makeDrizzleMailRepository(container.getDb().sql)
+      return makeMailReplyPublishService({
+        repo,
+        applyEffects: (thread, message) =>
+          applyInboundEffects(container, { logger: app.log }, repo, thread, message),
+        logger: app.log,
       })
     },
   )
@@ -183,6 +230,23 @@ export async function registerAdminMailRoutes(
     await service().resend(id, actorId)
     sendOk(reply)
   })
+
+  route(
+    app,
+    "publishMailReply",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_MAIL_REPLY_PUBLISH_RATE_LIMIT } },
+    async (request, reply) => {
+      const actorId = requireOperator(request)
+      const { id, messageId } = twoIdParams(request, "messageId")
+      parse(PublishMailReplyRequestSchema, { ...(request.body as object), id, messageId })
+      const payload: PublishMailReplyResponse = await publishService().publish({
+        threadId: id,
+        messageId,
+        actorId,
+      })
+      reply.status(200).send(payload)
+    },
+  )
 
   route(app, "getForwardTemplateDefault", async (_request, reply) => {
     const payload: ForwardTemplateSettingsDTO = await templateService().get()
