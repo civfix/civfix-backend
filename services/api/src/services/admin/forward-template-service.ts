@@ -6,8 +6,16 @@ import {
   type PreviewForwardTemplateResponse,
   type SetForwardTemplateDefaultRequest,
 } from "@civfix/shared"
+<<<<<<< HEAD
 import { buildReportPacket } from "./mail-format.js"
 import type { AdminReportRecord, AdminReportRoutingRecord } from "./admin-report-types.js"
+=======
+import { buildReportPacket, type PacketMediaLink } from "./mail-format.js"
+import type {
+  AdminReportRecord,
+  AdminReportRoutingRecord,
+} from "./admin-report-types.js"
+>>>>>>> origin/main
 import type {
   ForwardTemplateRepository,
   ForwardTemplateSettingsRecord,
@@ -99,10 +107,11 @@ function sampleRouting(): AdminReportRoutingRecord {
   }
 }
 
-function samplePhotoLinks(): string[] {
+function samplePacketMedia(): PacketMediaLink[] {
   return sampleValue("photoLinks")
     .split("\n")
     .filter((url) => url.trim() !== "")
+    .map((url) => ({ kind: "image", url }))
 }
 
 export function makeForwardTemplateService(
@@ -134,7 +143,7 @@ export function makeForwardTemplateService(
       const packet = buildReportPacket(
         sampleReport(),
         sampleRouting(),
-        samplePhotoLinks(),
+        samplePacketMedia(),
         sampleValue("operatorNote"),
         { subject: subject.template, body: body.template },
       )

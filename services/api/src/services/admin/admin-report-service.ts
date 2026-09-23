@@ -35,6 +35,7 @@ import {
   MAX_PACKET_ATTACHMENTS,
   MAX_PACKET_ATTACHMENT_BYTES,
   MAX_PACKET_TOTAL_BYTES,
+  type PacketMediaLink,
 } from "./mail-format.js"
 import { pickPreviewMedia, previewThumbnailUrl } from "./admin-report-types.js"
 import type {
@@ -406,11 +407,11 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       const media = await deps.repo.listMedia(id)
       const publiclyVisible =
         isPubliclyVisibleStatus(record.status) && record.visibility === "public"
-      const mediaLinks: string[] = []
+      const packetMedia: PacketMediaLink[] = []
       const attachments: PacketAttachment[] = []
       let attachedBytesTotal = 0
       for (const m of media) {
-        mediaLinks.push(await presignPacketMedia(m.r2Key, publiclyVisible))
+        packetMedia.push({ kind: m.kind, url: await presignPacketMedia(m.r2Key, publiclyVisible) })
         if (m.kind !== "image" || attachments.length >= MAX_PACKET_ATTACHMENTS) continue
         const bytes = deps.loadMediaBytes ? await deps.loadMediaBytes(m.r2Key) : null
         if (bytes === null || bytes.byteLength > MAX_PACKET_ATTACHMENT_BYTES) continue
@@ -427,7 +428,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
 
       const defaults =
         deps.forwardTemplates !== undefined ? await deps.forwardTemplates.get() : null
-      const packet = buildReportPacket(record, routing, mediaLinks, input.note, {
+      const packet = buildReportPacket(record, routing, packetMedia, input.note, {
         subject: firstTemplate(routing?.forwardSubjectTemplate, defaults?.subjectTemplate),
         body: firstTemplate(routing?.forwardBodyTemplate, defaults?.bodyTemplate),
       })
