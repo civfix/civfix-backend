@@ -92,6 +92,7 @@ async function seed(
     bodyText?: string | null
     bodyHtml?: string | null
     attachments?: MailAttachment[]
+    headers?: Record<string, string>
     minute?: number
   },
 ): Promise<string> {
@@ -103,7 +104,7 @@ async function seed(
     subject: opts.subject ?? "Re: pothole",
     bodyText: opts.bodyText === undefined ? "Body text here." : opts.bodyText,
     bodyHtml: opts.bodyHtml ?? null,
-    headers: {},
+    headers: opts.headers ?? {},
     attachments: opts.attachments ?? [],
     receivedAt: new Date(Date.UTC(2026, 5, 1, 0, opts.minute ?? 0, 0)),
   })
@@ -229,6 +230,20 @@ describe("GET /admin/inbox (list)", () => {
       expect(res.statusCode, qs).toBe(422)
       expect((res.json() as { code: string }).code).toBe("VALIDATION")
     }
+  })
+})
+
+describe("sender verdict on inbox rows", () => {
+  it("carries the stored verdict on the list and the detail, and null when none was stored", async () => {
+    harness = await makeHarness()
+    const headers = { "x-civfix-auth-verdict": "fail" }
+    const failed = await seed(harness, { messageId: "<v@x>", headers, minute: 2 })
+    await seed(harness, { messageId: "<n@x>", minute: 1 })
+    type Page = { items: { authVerdict: unknown }[] }
+    const page = (await get(harness, "/v1/admin/inbox")).json() as Page
+    expect(page.items.map((i) => i.authVerdict)).toEqual(["fail", null])
+    const detail = await get(harness, `/v1/admin/inbox/${failed}`)
+    expect(detail.json()).toMatchObject({ authVerdict: "fail" })
   })
 })
 
