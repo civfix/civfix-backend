@@ -10,6 +10,7 @@
  * report-chat-repository.drizzle.ts).
  */
 
+import type { FastifyBaseLogger } from "fastify"
 import type { Sql } from "../db/client.js"
 import type { ConversationMuteRoomKind } from "../db/schema/conversation_mutes.js"
 
@@ -49,6 +50,28 @@ export interface ConversationMutesRepository {
     roomId: string,
     userIds: string[],
   ): Promise<Set<string>>
+}
+
+export type FailOpenMuteCheck = (
+  userId: string,
+  roomKind: ConversationMuteRoomKind,
+  roomId: string,
+) => Promise<boolean>
+
+export function makeFailOpenMuteCheck(
+  repo: Pick<ConversationMutesRepository, "isMuted"> | undefined,
+  logger?: Pick<FastifyBaseLogger, "warn">,
+): FailOpenMuteCheck {
+  return async (userId, roomKind, roomId) => {
+    if (!repo) return false
+    try {
+      return await repo.isMuted(userId, roomKind, roomId)
+    } catch (err) {
+      // A mute is a comfort setting: a lookup outage must not silence the room for everyone.
+      logger?.warn({ err, kind: roomKind }, "conversation mute lookup failed; notifying anyway")
+      return false
+    }
+  }
 }
 
 export function makeConversationMutesRepository(sql: Sql): ConversationMutesRepository {

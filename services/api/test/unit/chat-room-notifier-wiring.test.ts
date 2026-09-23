@@ -78,7 +78,10 @@ describe("makeContainerRoomFanoutDeps", () => {
   it("caps the report fan-out member scan at REPORT_CHAT_FANOUT_MEMBER_CAP", async () => {
     const h = harness()
 
-    await makeContainerRoomFanoutDeps(h.container).report.listMemberIds("report-1")
+    await makeContainerRoomFanoutDeps(h.container).report.listMemberIds(
+      "report-1",
+      REPORT_CHAT_FANOUT_MEMBER_CAP,
+    )
 
     const stmt = h.fake.statements[0]!
     expect(stmt.sql).toMatch(/FROM report_chat_members/)

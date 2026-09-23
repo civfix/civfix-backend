@@ -30,7 +30,10 @@ import { makeReportChatRepository } from "./report-chat-repository.drizzle.js"
 import { makeReportChatNotifier } from "./report-chat-notifier.js"
 import { makeNotificationService } from "./notification-service.js"
 import { makeDrizzleNotificationRepository } from "./notification-repository.drizzle.js"
-import { makeConversationMutesRepository } from "./conversation-mutes-repository.drizzle.js"
+import {
+  makeConversationMutesRepository,
+  makeFailOpenMuteCheck,
+} from "./conversation-mutes-repository.drizzle.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import {
   makeReportChatSystemEmitter,
@@ -66,13 +69,7 @@ export function makeContainerReportChatEmitter(
   })
 
   const conversationMutes = makeConversationMutesRepository(sql)
-  const isMuted = async (userId: string, roomId: string): Promise<boolean> => {
-    try {
-      return await conversationMutes.isMuted(userId, "report", roomId)
-    } catch {
-      return false
-    }
-  }
+  const isMutedFor = makeFailOpenMuteCheck(conversationMutes, logger)
 
   /**
    * Batch mute shape: one query for the room's whole member set instead of one per recipient.
@@ -93,8 +90,8 @@ export function makeContainerReportChatEmitter(
 
   const notify = makeReportChatNotifier({
     notificationService,
-    reportChatRepo: { listMemberIds: (reportId) => reportChatRepo.listMemberIds(reportId) },
-    isMuted,
+    reportChatRepo,
+    isMuted: (userId, roomId) => isMutedFor(userId, "report", roomId),
     ...(mutedUserIdsFor ? { mutedUserIdsFor } : {}),
     // presence intentionally omitted — not reachable from the admin/citizen service context (see header).
     roomKeyFor,
@@ -110,6 +107,7 @@ export function makeContainerReportChatEmitter(
     // requires the repo at construction time, and it would buy nothing: see above, a null actor
     // short-circuits the gate before either shape is consulted.
     isBlockedEitherWay: (a, b) => container.getBlocksRepo().isBlockedEitherWay(a, b),
+    logger,
   })
 
   return makeReportChatSystemEmitter({

@@ -4,10 +4,12 @@ import { makeReportChatRepository } from "./report-chat-repository.drizzle.js"
 import { makeChatGroupRepository } from "./chat-group-repository.drizzle.js"
 import { makeNotificationService } from "./notification-service.js"
 import { makeDrizzleNotificationRepository } from "./notification-repository.drizzle.js"
-import { makeConversationMutesRepository } from "./conversation-mutes-repository.drizzle.js"
+import {
+  makeConversationMutesRepository,
+  makeFailOpenMuteCheck,
+} from "./conversation-mutes-repository.drizzle.js"
 import { RedisChatPresence } from "../adapters/chat-presence.js"
 import { roomKeyFor } from "../ws/gateway.js"
-import { REPORT_CHAT_FANOUT_MEMBER_CAP } from "./report-chat-notifier.js"
 import {
   ROOM_FANOUT_THROTTLE_MS,
   type RoomFanoutKind,
@@ -36,18 +38,7 @@ export function makeContainerRoomFanoutDeps(
   })
 
   const conversationMutes = makeConversationMutesRepository(sql)
-  const isMuted = async (
-    userId: string,
-    kind: RoomFanoutKind,
-    roomId: string,
-  ): Promise<boolean> => {
-    try {
-      return await conversationMutes.isMuted(userId, kind, roomId)
-    } catch (err) {
-      logger?.warn({ err, kind }, "room fan-out mute lookup failed; notifying anyway")
-      return false
-    }
-  }
+  const isMuted = makeFailOpenMuteCheck(conversationMutes, logger)
   const mutedUserIdsForRoom = (
     kind: RoomFanoutKind,
   ): ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined => {
@@ -88,12 +79,11 @@ export function makeContainerRoomFanoutDeps(
   return {
     report: {
       ...common("report"),
-      listMemberIds: (reportId) =>
-        reportChatRepo.listMemberIds(reportId, REPORT_CHAT_FANOUT_MEMBER_CAP),
+      listMemberIds: (reportId, limit) => reportChatRepo.listMemberIds(reportId, limit),
     },
     group: {
       ...common("group"),
-      listMemberIds: (groupId) => groupRepo.listMemberIds(groupId),
+      listMemberIds: (groupId, limit) => groupRepo.listMemberIds(groupId, limit),
     },
   }
 }

@@ -1,4 +1,5 @@
 import type { RoomKind } from "@civfix/shared"
+import type { FastifyBaseLogger } from "fastify"
 import type { ChatService, ChatConnection, UserChannel } from "@civfix/shared/interfaces"
 import type { ChatPresence } from "../adapters/chat-presence.js"
 import type { RateLimiter } from "./report-rate-limit.js"
@@ -117,6 +118,7 @@ export interface GatewayChatMentions {
     roomId: string
   }): Promise<import("@civfix/shared").UserMentionDTO[]>
   recordChatMentions(messageId: string, mentionedUserIds: string[]): Promise<void>
+  logger?: Pick<FastifyBaseLogger, "warn"> | undefined
   notifyChatMention(input: {
     kind: RoomKind
     roomId: string

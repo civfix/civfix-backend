@@ -30,6 +30,10 @@ import {
 } from "./chat-room-scope.drizzle.js"
 import { liveMessageIds, toTombstoneDTO } from "./chat-tombstone.js"
 
+// dm_messages is range-partitioned on created_at and an ack carries only the message id, so the bound
+// lets the planner prune the lookup to recent partitions instead of probing every month ever created.
+export const DM_ACK_LOOKUP_WINDOW_DAYS = 90
+
 export interface DmThread {
   id: string
   userLo: string
@@ -539,7 +543,8 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     async resolveMessageCreatedAt(threadId: string, messageId: string): Promise<Date | null> {
       const rows = await sql<{ created_at: Date }[]>`
         SELECT created_at FROM dm_messages
-        WHERE id = ${messageId} AND thread_id = ${threadId} AND created_at >= now() - interval '90 days'
+        WHERE id = ${messageId} AND thread_id = ${threadId}
+          AND created_at >= now() - make_interval(days => ${DM_ACK_LOOKUP_WINDOW_DAYS})
         LIMIT 1
       `
       return rows[0]?.created_at ?? null

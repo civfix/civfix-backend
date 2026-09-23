@@ -262,7 +262,6 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
       if (targetRole === "owner" || (targetRole === "admin" && actorRole !== "owner")) {
         throw forbidden("You can't remove this member.", "remove_forbidden")
       }
-      await groups.removeMember(groupId, targetId)
       await groups.banMember(groupId, targetId, actorId)
     },
 
@@ -312,14 +311,17 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
       if (view === null || view.visibility !== "public") {
         throw forbidden("This group isn't open to join.", "not_public")
       }
-      if (await groups.isBanned(groupId, userId)) {
-        throw forbidden("This group isn't open to join.", "not_public")
-      }
       const role = await groups.roleOf(groupId, userId)
       if (role !== null) {
         return toGroupDTO(view, userId, role)
       }
-      await groups.addMembers(groupId, [userId])
+      if (!(await groups.joinUnlessBanned(groupId, userId))) {
+        const concurrentRole = await groups.roleOf(groupId, userId)
+        if (concurrentRole === null) {
+          throw forbidden("This group isn't open to join.", "not_public")
+        }
+        return toGroupDTO(view, userId, concurrentRole)
+      }
       const refreshed = await requireGroup(groupId)
       return toGroupDTO(refreshed, userId, "member")
     },

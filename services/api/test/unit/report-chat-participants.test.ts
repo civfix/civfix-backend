@@ -22,7 +22,7 @@ function row(over: Partial<ReportMemberRowSelect> = {}): ReportMemberRowSelect {
   return {
     user_id: "11111111-1111-4111-8111-111111111111",
     role: "member",
-    joined_at: "2026-07-31T00:00:00.000Z",
+    joined_at: new Date("2026-07-31T00:00:00.000Z"),
     display_name: "Ada Lovelace",
     handle: "ada",
     bio: "counts things",

@@ -12,6 +12,15 @@ const FANOUT_CONCURRENCY = 8
 
 export const ROOM_FANOUT_MEMBER_CAP = 2000
 
+export const REPORT_CHAT_FANOUT_MEMBER_CAP = 500
+
+// The fan-out owns the cap: a wiring that forwards a one-argument listMemberIds still type-checks, so a
+// cap passed only through the adapter is silently dropped.
+const MEMBER_CAP_BY_KIND: Record<RoomFanoutKind, number> = {
+  report: REPORT_CHAT_FANOUT_MEMBER_CAP,
+  group: ROOM_FANOUT_MEMBER_CAP,
+}
+
 export const ROOM_ACTIVITY_COALESCE_WINDOW_MS = 10 * 60 * 1000
 
 export const ROOM_FANOUT_THROTTLE_MS = 15 * 1000
@@ -20,7 +29,7 @@ const FANOUT_MARKER_SWEEP_THRESHOLD = 5000
 
 export interface RoomFanoutNotifierDeps {
   notificationService: Pick<NotificationService, "createNotifications">
-  listMemberIds: (roomId: string) => Promise<string[]>
+  listMemberIds: (roomId: string, limit: number) => Promise<string[]>
   isMuted: (userId: string, roomId: string) => Promise<boolean>
   mutedUserIdsFor?: (roomId: string, userIds: string[]) => Promise<Set<string>>
   presence?: { online(roomKey: string): Promise<string[]> } | undefined
@@ -47,6 +56,7 @@ export const ROOM_FANOUT_SPEC: Record<RoomFanoutKind, RoomFanoutSpec> = {
 
 async function blockedIds(
   deps: RoomFanoutNotifierDeps,
+  kind: RoomFanoutKind,
   actorId: string | null,
   candidates: string[],
 ): Promise<Set<string>> {
@@ -54,14 +64,16 @@ async function blockedIds(
   if (deps.blockedIdsFor) {
     try {
       return await deps.blockedIdsFor(actorId, candidates)
-    } catch {
+    } catch (err) {
+      deps.logger?.warn({ err, kind }, "room fan-out block lookup failed; skipping the room")
       return new Set(candidates)
     }
   }
   const verdicts = await mapWithLimit(candidates, FANOUT_CONCURRENCY, async (recipientId) => {
     try {
       return await deps.isBlockedEitherWay(actorId, recipientId)
-    } catch {
+    } catch (err) {
+      deps.logger?.warn({ err, kind }, "room fan-out block lookup failed; skipping the recipient")
       return true
     }
   })
@@ -70,6 +82,7 @@ async function blockedIds(
 
 async function mutedIds(
   deps: RoomFanoutNotifierDeps,
+  kind: RoomFanoutKind,
   roomId: string,
   candidates: string[],
 ): Promise<Set<string>> {
@@ -77,14 +90,16 @@ async function mutedIds(
   if (deps.mutedUserIdsFor) {
     try {
       return await deps.mutedUserIdsFor(roomId, candidates)
-    } catch {
+    } catch (err) {
+      deps.logger?.warn({ err, kind }, "room fan-out mute lookup failed; notifying anyway")
       return new Set()
     }
   }
   const verdicts = await mapWithLimit(candidates, FANOUT_CONCURRENCY, async (recipientId) => {
     try {
       return await deps.isMuted(recipientId, roomId)
-    } catch {
+    } catch (err) {
+      deps.logger?.warn({ err, kind }, "room fan-out mute lookup failed; notifying anyway")
       return false
     }
   })
@@ -131,7 +146,11 @@ export function makeRoomFanoutNotifier(
         )
       }
     }
-    await runRoomFanout(spec, deps, roomId, message)
+    try {
+      await runRoomFanout(spec, deps, roomId, message)
+    } catch (err) {
+      deps.logger?.error({ err, kind: spec.kind }, "chat.room.fanout inline fan-out failed")
+    }
   }
 }
 
@@ -144,13 +163,15 @@ export async function runRoomFanout(
   const bell = CONVERSATION_BELL[spec.kind]
   const coalesceWindowMs = deps.coalesceWindowMs ?? ROOM_ACTIVITY_COALESCE_WINDOW_MS
   const actorId = message.from?.id ?? null
-  const memberIds = (await deps.listMemberIds(roomId)).slice(0, ROOM_FANOUT_MEMBER_CAP)
+  const cap = MEMBER_CAP_BY_KIND[spec.kind]
+  const memberIds = (await deps.listMemberIds(roomId, cap)).slice(0, cap)
 
   let present: string[] = []
   if (deps.presence) {
     try {
       present = await deps.presence.online(deps.roomKey(roomId))
-    } catch {
+    } catch (err) {
+      deps.logger?.warn({ err, kind: spec.kind }, "room fan-out presence lookup failed")
       present = []
     }
   }
@@ -164,23 +185,21 @@ export async function runRoomFanout(
   )
   if (candidates.length === 0) return
 
-  const blocked = await blockedIds(deps, actorId, candidates)
+  const blocked = await blockedIds(deps, spec.kind, actorId, candidates)
   const unblocked = candidates.filter((id) => !blocked.has(id))
   if (unblocked.length === 0) return
-  const muted = await mutedIds(deps, roomId, unblocked)
+  const muted = await mutedIds(deps, spec.kind, roomId, unblocked)
   const recipients = unblocked.filter((id) => !muted.has(id))
   if (recipients.length === 0) return
 
   const name = message.from?.name?.trim() ? message.from.name : null
   const preview = textPreview(message)
 
-  await deps.notificationService
-    .createNotifications(recipients, {
-      type: bell.type,
-      ...(name !== null ? { title: name } : { titleKey: spec.titleFallbackKey }),
-      ...(preview !== null ? { body: preview } : { bodyKey: "notification.message.no_preview" }),
-      link: bell.link(roomId),
-      coalesceWindowMs,
-    })
-    .catch(() => {})
+  await deps.notificationService.createNotifications(recipients, {
+    type: bell.type,
+    ...(name !== null ? { title: name } : { titleKey: spec.titleFallbackKey }),
+    ...(preview !== null ? { body: preview } : { bodyKey: "notification.message.no_preview" }),
+    link: bell.link(roomId),
+    coalesceWindowMs,
+  })
 }

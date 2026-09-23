@@ -26,7 +26,7 @@ export interface SystemChatRow {
 export interface ReportMemberRowSelect {
   user_id: string
   role: "owner" | "member"
-  joined_at: string
+  joined_at: Date
   display_name: string | null
   handle: string | null
   bio: string | null
@@ -57,7 +57,7 @@ export function toReportParticipantDTO(r: ReportMemberRowSelect): ReportChatPart
     isFollowing: r.is_following,
     ...(author.deleted ? { deleted: true } : {}),
   }
-  return { user, role: r.role, joinedAt: r.joined_at }
+  return { user, role: r.role, joinedAt: r.joined_at.toISOString() }
 }
 
 export const REPORT_CHAT_ROSTER_CAP = 200

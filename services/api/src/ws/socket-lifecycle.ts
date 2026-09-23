@@ -127,6 +127,7 @@ export async function checkSocketAuthorization(
     }
     return { authorized: true }
   } catch {
+    // A session-store outage must not drop every live socket at once; the next heartbeat re-checks.
     return { authorized: true }
   }
 }
@@ -348,7 +349,9 @@ export function registerChatGateway(app: FastifyInstance, opts: RegisterGatewayO
             return
           }
           closeForAuth()
-        })().catch(() => {})
+        })().catch((err: unknown) => {
+          request.log.warn({ err }, "ws: heartbeat reauthorization failed")
+        })
         if (socket.bufferedAmount > WS_BUFFER_DROP_THRESHOLD) {
           if (++overBufferTicks >= WS_BUFFER_TERMINATE_TICKS) {
             socket.terminate()
