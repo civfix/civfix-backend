@@ -3,6 +3,7 @@ import { mailFailureKind } from "../adapters/mail-failure.js"
 import type { Env } from "../env.js"
 import type { Container } from "../di.js"
 import { makeDataExportService, type DataExportService } from "./data-export-service.js"
+import { isFinalJobAttempt } from "./job-attempt.js"
 
 export const DATA_EXPORT_JOB = "data.export"
 
@@ -32,7 +33,9 @@ export async function registerDataExportJobs(
   await container.jobs.work(DATA_EXPORT_JOB, async (job) => {
     const userId = extractUserId(job.data)
     if (userId === null) return
-    await runDataExport(make(container), userId, opts?.logger)
+    await runDataExport(make(container), userId, opts?.logger, {
+      finalAttempt: isFinalJobAttempt(job),
+    })
   })
 }
 
@@ -40,6 +43,7 @@ export async function runDataExport(
   service: DataExportService,
   userId: string,
   logger?: DataExportJobLogger,
+  attempt: { finalAttempt: boolean } = { finalAttempt: false },
 ): Promise<void> {
   try {
     const result = await service.exportData(userId)
@@ -53,11 +57,18 @@ export async function runDataExport(
       )
     }
   } catch (err) {
-    if (isTransientInfraError(err)) {
+    if (!isTransientInfraError(err)) {
+      logger?.warn({ err, userId }, "data.export failed (completing job)")
+      return
+    }
+    if (!attempt.finalAttempt) {
       logger?.warn({ err, userId }, "data.export transient failure (retrying)")
       throw err
     }
-    logger?.warn({ err, userId }, "data.export failed (completing job)")
+    // An access request must never end with no trail: once the retries are spent, leave it on record for
+    // an operator to fulfil by hand. If even that write fails, the job fails loudly instead.
+    await service.recordUndeliverable(userId, "rejected")
+    logger?.warn({ err, userId }, "data.export retries exhausted (recorded for an operator)")
   }
 }
 

@@ -4,7 +4,7 @@ import type { Mailer } from "@civfix/shared/interfaces"
 import type { UserStore } from "../auth/stores.js"
 import { heading, paragraph } from "../adapters/email-blocks.js"
 import { renderEmailBody } from "../adapters/email-layout.js"
-import { mailFailureKind } from "../adapters/mail-failure.js"
+import { mailFailure } from "../adapters/mail-failure.js"
 import { writeAudit } from "./admin/audit.js"
 
 export interface DataExportServiceDeps {
@@ -15,13 +15,17 @@ export interface DataExportServiceDeps {
   supportEmail: string
 }
 
-/** Why a built export never reached the user: the provider refused its size, or refused the address. */
-export type DataExportUndeliverable = "oversize" | "permanent"
+/**
+ * Why a built export never reached the user: the provider refused its size, refused the address, or
+ * refused the message itself (or kept refusing it until the retries ran out).
+ */
+export type DataExportUndeliverable = "oversize" | "permanent" | "rejected"
 
 export interface DataExportService {
   exportData(
     userId: string,
   ): Promise<{ ok: true; email: string | null; undeliverable?: DataExportUndeliverable }>
+  recordUndeliverable(userId: string, kind: DataExportUndeliverable): Promise<void>
 }
 
 export const DATA_EXPORT_MAX_ROWS = 50_000
@@ -601,8 +605,8 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
           ],
         })
       } catch (err) {
-        const kind = mailFailureKind(err)
-        if (kind !== "oversize" && kind !== "permanent") throw err
+        const kind = undeliverableKind(err)
+        if (kind === null) throw err
         await recordUndeliverable(userId, kind)
         // A rejected recipient would bounce a notice too; only a size refusal can still reach the user.
         if (kind === "oversize") await sendUndeliverableNotice(email)
@@ -611,5 +615,27 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
 
       return { ok: true, email }
     },
+
+    recordUndeliverable,
   }
+}
+
+const SMTP_PERMANENT_MIN = 500
+
+// A 5xx the provider sends in answer to the message body refuses this message, not our credentials or
+// sender, so rebuilding and resending the same export can only be refused again.
+function isMessageRejection(failure: ReturnType<typeof mailFailure>): boolean {
+  return (
+    failure.code === "EMESSAGE" &&
+    failure.command === "DATA" &&
+    failure.responseCode !== undefined &&
+    failure.responseCode >= SMTP_PERMANENT_MIN
+  )
+}
+
+function undeliverableKind(err: unknown): DataExportUndeliverable | null {
+  const failure = mailFailure(err)
+  if (failure.kind === "oversize" || failure.kind === "permanent") return failure.kind
+  if (isMessageRejection(failure)) return "rejected"
+  return null
 }

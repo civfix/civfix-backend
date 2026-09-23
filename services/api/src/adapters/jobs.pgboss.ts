@@ -2,6 +2,7 @@ import type PgBoss from "pg-boss"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
 import { REGISTRATION_QUEUE_NAMES } from "../services/host/registration-queues.js"
 import { COMMS_QUEUE_NAMES } from "../services/host/broadcast-queues.js"
+import type { JobHandlerArgWithAttempt } from "../services/job-attempt.js"
 
 export interface PgBossJobsLogger {
   error(obj: unknown, msg?: string): void
@@ -35,6 +36,24 @@ export const API_QUEUE_NAMES = [
   ...COMMS_QUEUE_NAMES,
 ] as const
 
+type ApiQueueName = (typeof API_QUEUE_NAMES)[number]
+
+type QueueRetryPolicy = Required<Pick<PgBoss.Queue, "retryLimit" | "retryDelay" | "retryBackoff">>
+
+const SECONDS_PER_MINUTE = 60
+
+// A data export that fails on a mail credential or approved-sender fault has to wait for an operator to
+// fix the config. pg-boss's default (2 immediate retries) would rebuild and resend the whole export three
+// times within seconds and then drop the request, so it backs off from a minute to hours instead; the
+// handler records the request for an operator on the last attempt.
+const QUEUE_RETRY_POLICIES: Partial<Record<ApiQueueName, QueueRetryPolicy>> = {
+  "data.export": { retryLimit: 10, retryDelay: SECONDS_PER_MINUTE, retryBackoff: true },
+}
+
+function queueOptions(name: ApiQueueName): PgBoss.Queue {
+  return { name, policy: "short", ...QUEUE_RETRY_POLICIES[name] }
+}
+
 function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {
   const out: PgBoss.SendOptions = {}
   if (opts?.singletonKey !== undefined) out.singletonKey = opts.singletonKey
@@ -62,8 +81,8 @@ export class PgBossJobs implements Jobs {
     boss.on("error", (err: Error) => logger.error({ err }, "pg-boss error"))
     await boss.start()
     for (const name of API_QUEUE_NAMES) {
-      await boss.createQueue(name, { name, policy: "short" })
-      await boss.updateQueue(name, { name, policy: "short" })
+      await boss.createQueue(name, queueOptions(name))
+      await boss.updateQueue(name, queueOptions(name))
     }
     this.boss = boss
   }
@@ -89,9 +108,23 @@ export class PgBossJobs implements Jobs {
   }
 
   async work(name: string, handler: JobHandler): Promise<void> {
-    await this.requireBoss().work(name, async (jobs: PgBoss.Job[]) => {
-      await Promise.all(jobs.map((j) => handler({ id: j.id, data: j.data })))
-    })
+    await this.requireBoss().work(
+      name,
+      { includeMetadata: true },
+      async (jobs: PgBoss.JobWithMetadata[]) => {
+        await Promise.all(
+          jobs.map((j) => {
+            const arg: JobHandlerArgWithAttempt = {
+              id: j.id,
+              data: j.data,
+              retryCount: j.retryCount,
+              retryLimit: j.retryLimit,
+            }
+            return handler(arg)
+          }),
+        )
+      },
+    )
   }
 
   async complete(jobId: string): Promise<void> {

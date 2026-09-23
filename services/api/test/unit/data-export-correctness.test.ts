@@ -9,7 +9,13 @@ import {
   DATA_EXPORT_FREE_TEXT_MAX_ROWS,
   DATA_EXPORT_MAX_ROWS,
 } from "../../src/services/data-export-service.js"
-import { runDataExport } from "../../src/services/data-export-jobs.js"
+import type { JobHandler } from "@civfix/shared/interfaces"
+import type { Container } from "../../src/di.js"
+import {
+  DATA_EXPORT_JOB,
+  registerDataExportJobs,
+  runDataExport,
+} from "../../src/services/data-export-jobs.js"
 
 const FROM = "no-reply@civfix.org"
 const SUPPORT = "support@civfix.org"
@@ -27,6 +33,12 @@ const RECIPIENT_REJECTED = new MailSendError(ErrorCode.CONFLICT, "rejected", {
 const SENDER_REJECTED = new MailSendError(ErrorCode.CONFLICT, "sender not approved", {
   responseCode: 550,
   response: "550 sender address not approved",
+})
+const MESSAGE_REJECTED = new MailSendError(ErrorCode.CONFLICT, "message refused", {
+  responseCode: 554,
+  command: "DATA",
+  code: "EMESSAGE",
+  response: "554 5.7.1 message content rejected by policy",
 })
 
 /** Fails every send that carries an attachment with `failure`; plain notices go through. */
@@ -79,6 +91,12 @@ function auditActions(ctl: FakeSqlControl): unknown[] {
   return ctl.statements.filter((s) => /INSERT INTO audit_log/.test(s.sql)).map((s) => s.values[1])
 }
 
+function auditReasons(ctl: FakeSqlControl): unknown[] {
+  return ctl.statements
+    .filter((s) => /INSERT INTO audit_log/.test(s.sql))
+    .map((s) => (s.values[3] as { reason?: unknown } | null)?.reason)
+}
+
 describe("a data export the mail provider refuses is not dropped silently", () => {
   it("oversize: tells the user where to get the export and leaves an operator record", async () => {
     const mailer = new AttachmentRejectingMailer(OVERSIZE)
@@ -103,6 +121,50 @@ describe("a data export the mail provider refuses is not dropped silently", () =
     const mailer = new AttachmentRejectingMailer(SENDER_REJECTED)
     const { service } = harness(mailer)
     await expect(runDataExport(service, USER_ID)).rejects.toBe(SENDER_REJECTED)
+  })
+
+  it("sender rejected on the last attempt: records the request instead of dropping it", async () => {
+    const mailer = new AttachmentRejectingMailer(SENDER_REJECTED)
+    const { ctl, service } = harness(mailer)
+    await expect(
+      runDataExport(service, USER_ID, undefined, { finalAttempt: true }),
+    ).resolves.toBeUndefined()
+    expect(auditActions(ctl)).toEqual(["data_export.undeliverable"])
+    expect(auditReasons(ctl)).toEqual(["rejected"])
+    expect(mailer.lastOutbound()).toBeUndefined()
+  })
+
+  it("a message the provider refuses at DATA is recorded at once, not rebuilt and resent", async () => {
+    const mailer = new AttachmentRejectingMailer(MESSAGE_REJECTED)
+    const { ctl, service } = harness(mailer)
+    await expect(runDataExport(service, USER_ID)).resolves.toBeUndefined()
+    expect(auditReasons(ctl)).toEqual(["rejected"])
+  })
+
+  it("the job handler treats pg-boss's last retry as the final attempt", async () => {
+    const mailer = new AttachmentRejectingMailer(SENDER_REJECTED)
+    const { ctl, service } = harness(mailer)
+    const handlers = new Map<string, JobHandler>()
+    const container = {
+      jobs: {
+        work: (name: string, handler: JobHandler) => {
+          handlers.set(name, handler)
+          return Promise.resolve()
+        },
+      },
+    } as unknown as Container
+    await registerDataExportJobs(container, { makeService: () => service })
+    const handler = handlers.get(DATA_EXPORT_JOB)!
+
+    await expect(
+      handler({ id: "job-1", data: { userId: USER_ID }, retryCount: 1, retryLimit: 10 } as never),
+    ).rejects.toBe(SENDER_REJECTED)
+    expect(auditActions(ctl)).toEqual([])
+
+    await expect(
+      handler({ id: "job-1", data: { userId: USER_ID }, retryCount: 10, retryLimit: 10 } as never),
+    ).resolves.toBeUndefined()
+    expect(auditReasons(ctl)).toEqual(["rejected"])
   })
 })
 
