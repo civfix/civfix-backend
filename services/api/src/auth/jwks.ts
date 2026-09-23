@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { AppError, ErrorCode } from "@civfix/shared"
+import { exposeMessage } from "../errors/exposed-message.js"
 import { constantTimeStringEqual } from "./crypto.js"
 
 export interface VerifiedIdToken {
@@ -141,9 +142,11 @@ export class RemoteJwksVerifier implements JwksVerifier {
       // Reporting it as "unauthorized" told the client to re-authenticate during a provider outage —
       // and every retry burns another single-use sign-in nonce. 503 says "retry", not "sign in again".
       // A genuinely unknown `kid` still yields 401 (resolveKey).
-      throw new AppError(ErrorCode.INTERNAL, "Could not reach the identity provider.", {
-        httpStatus: 503,
-      })
+      throw exposeMessage(
+        new AppError(ErrorCode.INTERNAL, "Could not reach the identity provider.", {
+          httpStatus: 503,
+        }),
+      )
     }
     const body = (await res.json()) as { keys?: Jwk[] }
     const keys = Array.isArray(body.keys) ? body.keys : []

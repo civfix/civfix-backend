@@ -1,8 +1,10 @@
-import Fastify, { type FastifyInstance } from "fastify"
+import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify"
 import { loadEnv, type Env } from "./env.js"
 import { assertRedisReachable, buildContainer, type Container } from "./di.js"
 import { makeErrorHandler, makeNotFoundHandler } from "./errors/http-mapper.js"
 import { initErrorReporting } from "./errors/glitchtip.js"
+import { LOG_REDACTION_CENSOR, redactLogObject } from "./errors/log-redaction.js"
+import { loggedRequestUrl } from "./lib/request-url.js"
 import { genReqId, registerRequestId } from "./plugins/request-id.js"
 import { registerCors } from "./plugins/cors.js"
 import { registerHelmet } from "./plugins/helmet.js"
@@ -124,42 +126,13 @@ const OVERRIDE_KEYS = [
   "contentSubjectGate",
 ] as const satisfies readonly (keyof BuildServerOptions)[]
 
+// Header and error-envelope paths only. Sensitive keys inside logged objects are censored at any depth by
+// redactLogObject; wildcard paths here only ever reached one nesting level.
 export const LOG_REDACT_PATHS = [
   "req.headers.authorization",
   "req.headers.cookie",
   "res.headers['set-cookie']",
   "req.headers['x-csrf-token']",
-  "*.password",
-  "*.token",
-  "*.otp",
-  "*.email",
-  "*.phone",
-  "*.tokenHash",
-  "*.ticketToken",
-  "*.ticketTokens",
-  "*.manageToken",
-  "*.accessCode",
-  "*.attendeeName",
-  "*.attendeeNames",
-  "*.answer",
-  "*.answers",
-  "*.hostNote",
-  "*.note",
-  "*.einNumber",
-  "*.ein_number",
-  "*.invitedEmail",
-  "*.maskedEmail",
-  "*.recipientEmail",
-  "*.replyTo",
-  "*.to",
-  "*.clientSecret",
-  "*.client_secret",
-  "*.card",
-  "*.cvc",
-  "*.pan",
-  "*.last4",
-  "*.cardLast4",
-  "*.webhookSecret",
   "err.raw",
   "err.raw.source",
   "err.headers",
@@ -168,8 +141,32 @@ export const LOG_REDACT_PATHS = [
   "err.smtp.response",
 ]
 
-export function loggedRequestUrl(url: string): string {
-  return url.split("?")[0] ?? url
+export { loggedRequestUrl }
+
+type LoggerOptions = Exclude<NonNullable<FastifyServerOptions["logger"]>, boolean>
+
+export function loggerOptions(env: Env): LoggerOptions {
+  return {
+    level: env.NODE_ENV === "test" ? "silent" : env.NODE_ENV === "production" ? "info" : "debug",
+    serializers: {
+      req(request) {
+        const acceptVersion = request.headers["accept-version"]
+        return {
+          method: request.method,
+          url: loggedRequestUrl(request.url),
+          version: typeof acceptVersion === "string" ? acceptVersion : undefined,
+          host: request.host,
+          remoteAddress: request.ip,
+          remotePort: request.socket.remotePort,
+        }
+      },
+    },
+    formatters: { log: redactLogObject },
+    redact: {
+      paths: LOG_REDACT_PATHS,
+      censor: LOG_REDACTION_CENSOR,
+    },
+  }
 }
 
 export async function buildServer(opts: BuildServerOptions = {}): Promise<FastifyInstance> {
@@ -184,26 +181,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
     forceCloseConnections: false,
     connectionTimeout: 30000,
     keepAliveTimeout: 5000,
-    logger: {
-      level: env.NODE_ENV === "test" ? "silent" : env.NODE_ENV === "production" ? "info" : "debug",
-      serializers: {
-        req(request) {
-          const acceptVersion = request.headers["accept-version"]
-          return {
-            method: request.method,
-            url: loggedRequestUrl(request.url),
-            version: typeof acceptVersion === "string" ? acceptVersion : undefined,
-            host: request.host,
-            remoteAddress: request.ip,
-            remotePort: request.socket.remotePort,
-          }
-        },
-      },
-      redact: {
-        paths: LOG_REDACT_PATHS,
-        censor: "[REDACTED]",
-      },
-    },
+    logger: loggerOptions(env),
   })
 
   app.decorate("container", container)
