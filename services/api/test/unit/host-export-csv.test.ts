@@ -105,6 +105,13 @@ function harness(
       }
       return Promise.resolve(current)
     },
+    recordObjectKey: (_id, args) => {
+      if (current.status !== "running" || args.runToken !== current.runToken) {
+        return Promise.resolve(false)
+      }
+      current = { ...current, r2Key: args.r2Key }
+      return Promise.resolve(true)
+    },
     markReady: (_id, args) => {
       if (args.runToken !== current.runToken) return Promise.resolve(null)
       const { runToken: _ignored, ...fields } = args
@@ -120,6 +127,8 @@ function harness(
       current = { ...current, status: "expired", r2Key: null }
       return Promise.resolve()
     },
+    listOrphaned: () => Promise.resolve([]),
+    releaseObject: () => Promise.resolve(false),
     deleteOlderThan: () => Promise.resolve(0),
   }
   const service = makeHostExportService({
@@ -239,6 +248,7 @@ describe("host export build", () => {
         ...({} as HostExportRepository),
         listExpired: () => Promise.resolve([h.current()]),
         markExpired: () => Promise.reject(new Error("should not be called")),
+        listOrphaned: () => Promise.resolve([]),
       } as HostExportRepository,
       storage: {
         put: () => Promise.resolve(),
@@ -360,6 +370,7 @@ describe("host export claim token", () => {
     expect(await h.service.run(EXPORT_ID)).toEqual({ status: "skipped" })
     expect(h.current().status).toBe("running")
     expect(h.current().r2Key).toBeNull()
-    expect(h.deletes).toEqual([h.puts[0]!.key])
+    expect(h.puts).toHaveLength(0)
+    expect(h.deletes).toEqual([])
   })
 })

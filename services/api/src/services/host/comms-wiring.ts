@@ -84,6 +84,7 @@ function selfHostsOf(webOrigins: readonly string[]): string[] {
     try {
       hosts.push(new URL(origin).hostname.toLowerCase())
     } catch {
+      // A malformed origin cannot match any referrer, so skipping it only drops a no-op entry.
       continue
     }
   }
@@ -148,6 +149,7 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     ),
     broadcasts,
     config,
+    ...(logger !== undefined ? { logger } : {}),
   })
 
   const pipeline = makeBroadcastPipeline({

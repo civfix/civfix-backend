@@ -53,6 +53,7 @@ export interface BroadcastCreateInput {
   replyTo?: string | null
   status?: BroadcastStatus
   scheduledAt?: Date | null
+  startedAt?: Date | null
   chunkSize?: number
 }
 

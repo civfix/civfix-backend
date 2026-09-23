@@ -102,7 +102,9 @@ function toRecord(row: BroadcastRowSelect): BroadcastRecord {
 }
 
 function joinSet(sql: Sql, fragments: Array<ReturnType<Sql>>): ReturnType<Sql> {
-  return fragments.reduce((acc, frag, i) => (i === 0 ? frag : sql`${acc}, ${frag}`))
+  const [first, ...rest] = fragments
+  if (first === undefined) throw new Error("broadcast UPDATE needs at least one column to set")
+  return rest.reduce((acc, frag) => sql`${acc}, ${frag}`, first)
 }
 
 function jsonParam(sql: Sql, value: unknown): ReturnType<Sql["json"]> | null {
@@ -135,13 +137,13 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
     const rows = await db<BroadcastRowSelect[]>`
         INSERT INTO broadcasts (
           cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-          cta_label, cta_url, segment, channels, reply_to, scheduled_at, chunk_size
+          cta_label, cta_url, segment, channels, reply_to, scheduled_at, started_at, chunk_size
         ) VALUES (
           ${input.cleanupId}, ${input.createdBy}, ${input.kind}, ${input.reminderOffsetMin ?? null},
           ${input.status ?? "draft"}, ${input.subject}, ${input.bodyMd}, ${input.ctaLabel ?? null},
           ${input.ctaUrl ?? null}, ${jsonParam(sql, input.segment)},
           ${input.channels}::text[], ${input.replyTo ?? null}, ${input.scheduledAt ?? null},
-          ${input.chunkSize ?? 200}
+          ${input.startedAt ?? null}, ${input.chunkSize ?? 200}
         )
         RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
                cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
@@ -175,12 +177,12 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       const rows = await sql<BroadcastRowSelect[]>`
         INSERT INTO broadcasts (
           cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-          segment, channels, reply_to
+          segment, channels, reply_to, started_at
         ) VALUES (
           ${input.cleanupId}, ${input.createdBy}, ${input.kind}, ${input.reminderOffsetMin ?? null},
           ${input.status ?? "sending"}, ${input.subject}, ${input.bodyMd},
           ${jsonParam(sql, input.segment)}, ${input.channels}::text[],
-          ${input.replyTo ?? null}
+          ${input.replyTo ?? null}, ${input.startedAt ?? null}
         )
         ON CONFLICT DO NOTHING
         RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,

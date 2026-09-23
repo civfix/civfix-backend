@@ -20,7 +20,11 @@ import { assertNoSlur } from "../../abuse/slur-filter.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
-import type { BroadcastRecord, EventBroadcastContext } from "./broadcast-types.js"
+import type {
+  BroadcastDraftPatch,
+  BroadcastRecord,
+  EventBroadcastContext,
+} from "./broadcast-types.js"
 import { CRITICAL_BROADCAST_KINDS } from "./broadcast-types.js"
 import {
   assertBroadcastLinkPolicy,
@@ -33,6 +37,7 @@ import { verifyUnsubscribeToken } from "./broadcast-capability-token.js"
 
 export const BROADCAST_DEFAULT_LIMIT = 20
 export const BROADCAST_TEST_SENDS_PER_HOUR = 5
+export const TEST_SEND_WINDOW_SEC = 60 * 60
 export const DAY_SECONDS = 24 * 60 * 60
 export const AUDIENCE_PAGE_SIZE = 1000
 export const AUDIENCE_MAX_PAGES = 100
@@ -74,6 +79,7 @@ export type CapKind =
   | "cooldown"
   | "per_event_per_day"
   | "recipients_per_day"
+  | "test_sends"
   | "counter_unavailable"
 
 export class BroadcastCapError extends Error {
@@ -94,6 +100,7 @@ const CAP_COPY: Record<CapKind, string> = {
   cooldown: "You just sent a message for this event. Give it a few minutes.",
   per_event_per_day: "This event has reached its daily message limit.",
   recipients_per_day: "You have reached today's limit for how many people you can message.",
+  test_sends: "You have sent several test messages. Try again in an hour.",
   counter_unavailable: "Messaging is temporarily unavailable. Try again in a moment.",
 }
 
@@ -323,8 +330,32 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
         throw err
       }
     }
-    await deps.enqueuePlan(broadcastId)
+    try {
+      await deps.enqueuePlan(broadcastId)
+    } catch (err) {
+      await releaseUnplannedSend(broadcastId, record.status)
+      throw err
+    }
     return toBroadcastDTO(moved)
+  }
+
+  /**
+   * The host is told the send failed, so the row must not stay 'sending': the stale-sending sweep would
+   * deliver it minutes later anyway. Rolling back is safe even when the enqueue did land, because plan()
+   * skips any broadcast that is no longer 'sending'.
+   */
+  async function releaseUnplannedSend(
+    broadcastId: string,
+    previous: BroadcastStatus,
+  ): Promise<void> {
+    try {
+      await repo.transition(broadcastId, ["sending"], previous, { startedAt: null })
+    } catch (err) {
+      deps.logger?.error(
+        { err, broadcastId },
+        "broadcast: could not roll back a send whose plan job failed to enqueue; the sweep will send it",
+      )
+    }
   }
 
   return {
@@ -381,7 +412,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       const bodyMd = body.bodyMd ?? current.bodyMd ?? ""
       const ctaUrl = "ctaUrl" in body ? (body.ctaUrl ?? null) : current.ctaUrl
       assertContent(subject, bodyMd, ctaUrl)
-      const patch = {
+      const patch: BroadcastDraftPatch = {
         ...(body.subject !== undefined ? { subject: body.subject } : {}),
         ...(body.bodyMd !== undefined ? { bodyMd: body.bodyMd } : {}),
         ...("ctaLabel" in body ? { ctaLabel: body.ctaLabel ?? null } : {}),
@@ -389,7 +420,10 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
         ...(body.segment !== undefined ? { segment: body.segment } : {}),
         ...(body.channels !== undefined ? { channels: body.channels as BroadcastChannel[] } : {}),
       }
-      const updated = await repo.updateDraft(cleanupId, body.broadcastId, patch)
+      let updated: BroadcastRecord | null = current.status === "draft" ? current : null
+      if (Object.keys(patch).length > 0) {
+        updated = await repo.updateDraft(cleanupId, body.broadcastId, patch)
+      }
       if (updated === null) {
         throw AppError.conflict("That message has already been sent or scheduled.")
       }
@@ -454,9 +488,9 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       await guardHost(actorId)
       await reserve(
         `bcast:test:${actorId}`,
-        3600,
+        TEST_SEND_WINDOW_SEC,
         BROADCAST_TEST_SENDS_PER_HOUR,
-        "per_event_per_day",
+        "test_sends",
       )
       const record = await requireDraft(cleanupId, broadcastId)
       const event = await repo.eventContext(cleanupId)
@@ -601,15 +635,22 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
 
     reserveSendSlot,
 
+    /**
+     * The counter store only counts up, so a refused send cannot give its charge back. Refused charges
+     * are added to a second counter and subtracted instead. The refund total is read BEFORE charging: a
+     * refund visible then belongs to a charge already inside the total, so the difference never
+     * undercounts what was actually accepted (a concurrent refusal can only make this call stricter).
+     */
     async reserveRecipientBudget(actorId, recipients) {
       if (recipients <= 0) return true
+      const day = utcDayKey(now())
+      const chargedKey = `bcast:host:${actorId}:${day}`
+      const refundedKey = `${chargedKey}:refunded`
+      let used: number
       try {
-        const used = await deps.counters.incrBy(
-          `bcast:host:${actorId}:${utcDayKey(now())}`,
-          recipients,
-          DAY_SECONDS,
-        )
-        return used <= config.recipientsPerDay
+        const refunded = await deps.counters.incrBy(refundedKey, 0, DAY_SECONDS)
+        const charged = await deps.counters.incrBy(chargedKey, recipients, DAY_SECONDS)
+        used = charged - refunded
       } catch (err) {
         deps.logger?.warn(
           { err, actorId },
@@ -617,6 +658,16 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
         )
         return false
       }
+      if (used <= config.recipientsPerDay) return true
+      try {
+        await deps.counters.incrBy(refundedKey, recipients, DAY_SECONDS)
+      } catch (err) {
+        deps.logger?.warn(
+          { err, actorId, recipients },
+          "broadcast: refused recipients could not be refunded; they stay charged until the UTC day rolls",
+        )
+      }
+      return false
     },
   }
 }

@@ -47,9 +47,9 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
       segment: { kind: "all_registered" },
       channels: AUTOMATED_CHANNELS,
       status: "sending",
+      startedAt: now(),
       replyTo: event.replyToVerified ? event.replyTo : null,
     })
-    await deps.repo.transition(record.id, ["sending"], "sending", { startedAt: now() })
     await deps.enqueuePlan(record.id)
     return record.id
   }
@@ -117,6 +117,7 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
         segment: { kind: "all_registered" },
         channels: AUTOMATED_CHANNELS,
         status: "sending",
+        startedAt: now(),
         replyTo: event.replyToVerified ? event.replyTo : null,
       })
       if (record === null) {
@@ -126,7 +127,6 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
         )
         return null
       }
-      await deps.repo.transition(record.id, ["sending"], "sending", { startedAt: now() })
       await deps.enqueuePlan(record.id)
       return record.id
     },
@@ -153,6 +153,7 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
           segment: { kind: "all_registered" },
           channels: AUTOMATED_CHANNELS,
           status: "sending",
+          startedAt: at,
           replyTo: event.replyToVerified ? event.replyTo : null,
         })
         if (record === null) continue

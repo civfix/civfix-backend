@@ -18,7 +18,7 @@ export interface MetricRow {
 export interface MetricsRepository {
   resolveSlug(slug: string): Promise<{ cleanupId: string; timezone: string | null } | null>
   eventTimezone(cleanupId: string): Promise<string | null>
-  listRollupEvents(since: Date, limit: number): Promise<string[]>
+  listRollupEvents(since: Date, after: string | null, limit: number): Promise<string[]>
   recomputeFromSource(cleanupId: string, timezone: string, since: Date): Promise<MetricUpsert[]>
   upsertExact(rows: readonly MetricUpsert[]): Promise<void>
   upsertGreatest(rows: readonly MetricUpsert[]): Promise<void>
@@ -53,72 +53,82 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
       return rows[0]?.timezone ?? null
     },
 
-    async listRollupEvents(since: Date, limit: number) {
+    async listRollupEvents(since: Date, after: string | null, limit: number) {
+      const afterFilter = after === null ? sql`` : sql`AND c.id > ${after}`
       const rows = await sql<{ id: string }[]>`
-        SELECT DISTINCT c.id
+        SELECT c.id
           FROM cleanups c
-         WHERE c.updated_at >= ${since}
+         WHERE (c.updated_at >= ${since}
             OR EXISTS (
               SELECT 1 FROM cleanup_registrations r
                WHERE r.cleanup_id = c.id AND r.registered_at >= ${since})
             OR EXISTS (
               SELECT 1 FROM broadcasts b
-               WHERE b.cleanup_id = c.id AND b.created_at >= ${since})
+               WHERE b.cleanup_id = c.id AND b.created_at >= ${since}))
+           ${afterFilter}
          ORDER BY c.id
          LIMIT ${limit}`
       return rows.map((r) => r.id)
     },
 
+    /**
+     * upsertExact overwrites whole days, so the window must start at a local midnight: a mid-day
+     * instant would rewrite the oldest day in the window with only the part after that instant.
+     */
     async recomputeFromSource(cleanupId: string, timezone: string, since: Date) {
       const rows = await sql<{ day: string; metric: string; bucket: string; n: string }[]>`
+        WITH bound AS (
+          SELECT date_trunc('day', ${since}::timestamptz AT TIME ZONE ${timezone})
+                   AT TIME ZONE ${timezone} AS since
+        )
         SELECT to_char((r.registered_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD') AS day,
                'registrations' AS metric, '' AS bucket, count(*)::text AS n
           FROM cleanup_registrations r
-         WHERE r.cleanup_id = ${cleanupId} AND r.registered_at >= ${since}
+         WHERE r.cleanup_id = ${cleanupId} AND r.registered_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((r.cancelled_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'cancellations', '', count(*)::text
           FROM cleanup_registrations r
-         WHERE r.cleanup_id = ${cleanupId} AND r.cancelled_at IS NOT NULL AND r.cancelled_at >= ${since}
+         WHERE r.cleanup_id = ${cleanupId} AND r.cancelled_at IS NOT NULL AND r.cancelled_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((s.checked_in_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'checkins', '', count(*)::text
           FROM cleanup_registration_seats s
-         WHERE s.cleanup_id = ${cleanupId} AND s.checked_in_at IS NOT NULL AND s.checked_in_at >= ${since}
+         WHERE s.cleanup_id = ${cleanupId} AND s.checked_in_at IS NOT NULL AND s.checked_in_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((s.no_show_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'no_shows', '', count(*)::text
           FROM cleanup_registration_seats s
-         WHERE s.cleanup_id = ${cleanupId} AND s.no_show_at IS NOT NULL AND s.no_show_at >= ${since}
+         WHERE s.cleanup_id = ${cleanupId} AND s.no_show_at IS NOT NULL AND s.no_show_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((w.created_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'waitlist_joined', '', count(*)::text
           FROM cleanup_waitlist w
-         WHERE w.cleanup_id = ${cleanupId} AND w.created_at >= ${since}
+         WHERE w.cleanup_id = ${cleanupId} AND w.created_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((b.finished_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'broadcast_recipients', '', sum(b.recipient_count)::text
           FROM broadcasts b
-         WHERE b.cleanup_id = ${cleanupId} AND b.finished_at IS NOT NULL AND b.finished_at >= ${since}
+         WHERE b.cleanup_id = ${cleanupId} AND b.finished_at IS NOT NULL AND b.finished_at >= (SELECT since FROM bound)
          GROUP BY 1
         UNION ALL
         SELECT to_char((d.created_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'broadcast_' || d.status, d.channel, count(*)::text
           FROM broadcast_deliveries d
           JOIN broadcasts b ON b.id = d.broadcast_id
-         WHERE b.cleanup_id = ${cleanupId} AND d.created_at >= ${since}
+         WHERE b.cleanup_id = ${cleanupId} AND d.created_at >= (SELECT since FROM bound)
            AND d.status IN ('sent','failed','suppressed')
          GROUP BY 1, 2, 3
         UNION ALL
         SELECT to_char((bu.created_at AT TIME ZONE ${timezone})::date, 'YYYY-MM-DD'),
                'unsubscribes', '', count(*)::text
           FROM broadcast_unsubscribes bu
-         WHERE bu.cleanup_id = ${cleanupId} AND bu.created_at >= ${since}
+         WHERE bu.cleanup_id = ${cleanupId} AND bu.created_at >= (SELECT since FROM bound)
          GROUP BY 1`
       return rows.map((row) => ({
         cleanupId,

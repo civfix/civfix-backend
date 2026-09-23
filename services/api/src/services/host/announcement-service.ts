@@ -14,6 +14,7 @@ import type {
   ListEventAnnouncementsResponse,
   PersonDTO,
 } from "@civfix/shared"
+import type { FastifyBaseLogger } from "fastify"
 import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
 import type { AnnouncementCap, BroadcastRepository } from "./broadcast-repository.js"
 import type { BroadcastRecord } from "./broadcast-types.js"
@@ -32,6 +33,7 @@ export interface AnnouncementServiceDeps {
   identities: AnnouncementIdentityRepository
   broadcasts: BroadcastService
   config: Pick<BroadcastConfig, "chunkSize" | "linkAllowedHosts" | "webBaseUrl">
+  logger?: Pick<FastifyBaseLogger, "warn">
   now?: () => Date
 }
 
@@ -193,7 +195,12 @@ export function makeAnnouncementService(deps: AnnouncementServiceDeps): Announce
         }
         await deps.broadcasts.sendAnnouncement(cleanupId, actorId, draft.id)
       } catch (err) {
-        await repo.deleteDraft(cleanupId, draft.id).catch(() => false)
+        await repo.deleteDraft(cleanupId, draft.id).catch((cleanupErr: unknown) => {
+          deps.logger?.warn(
+            { err: cleanupErr, cleanupId, announcementId: draft.id },
+            "announcement: failed send left its draft behind; it counts toward today's cap",
+          )
+        })
         throw err
       }
 

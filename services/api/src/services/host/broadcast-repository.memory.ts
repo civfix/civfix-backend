@@ -79,6 +79,22 @@ export interface MemoryGuest {
   name?: string
 }
 
+interface Keyed {
+  createdAt: Date
+  id: string
+}
+
+function isBeforeCursor(row: Keyed, cursor: { createdAt: Date; id: string } | null): boolean {
+  if (cursor === null) return true
+  const at = row.createdAt.getTime()
+  const cursorAt = cursor.createdAt.getTime()
+  return at < cursorAt || (at === cursorAt && row.id < cursor.id)
+}
+
+function newestFirst(a: Keyed, b: Keyed): number {
+  return b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : -1)
+}
+
 export class InMemoryBroadcastRepository implements BroadcastRepository {
   private readonly broadcasts = new Map<string, BroadcastRecord>()
   private readonly deliveries = new Map<string, DeliveryRow>()
@@ -170,7 +186,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
       replyTo: input.replyTo ?? null,
       scheduledAt: input.scheduledAt ?? null,
       plannedAt: null,
-      startedAt: null,
+      startedAt: input.startedAt ?? null,
       finishedAt: null,
       chunkSize: input.chunkSize ?? 200,
       chunkCount: 0,
@@ -201,12 +217,11 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   }
 
   async createIfAbsent(input: BroadcastCreateInput): Promise<BroadcastRecord | null> {
-    const exists = [...this.broadcasts.values()].some(
-      (b) =>
-        b.cleanupId === input.cleanupId &&
-        b.kind === input.kind &&
-        b.reminderOffsetMin === (input.reminderOffsetMin ?? null),
-    )
+    const exists = [...this.broadcasts.values()].some((b) => {
+      if (b.cleanupId !== input.cleanupId || b.kind !== input.kind) return false
+      if (input.kind === "event_cancelled") return true
+      return input.kind === "reminder" && b.reminderOffsetMin === (input.reminderOffsetMin ?? null)
+    })
     if (exists) return null
     return this.create(input)
   }
@@ -224,7 +239,8 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     const rows = [...this.broadcasts.values()]
       .filter((b) => b.cleanupId === query.cleanupId)
       .filter((b) => query.status === undefined || b.status === query.status)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .filter((b) => isBeforeCursor(b, query.cursor))
+      .sort(newestFirst)
     return Promise.resolve(rows.slice(0, query.limit))
   }
 
@@ -233,13 +249,8 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
       .filter((b) => b.cleanupId === query.cleanupId)
       .filter((b) => b.kind === ANNOUNCEMENT_BROADCAST_KIND)
       .filter((b) => ANNOUNCEMENT_VISIBLE_STATUSES.includes(b.status))
-      .filter(
-        (b) =>
-          query.cursor === null ||
-          b.createdAt.getTime() < query.cursor.createdAt.getTime() ||
-          (b.createdAt.getTime() === query.cursor.createdAt.getTime() && b.id < query.cursor.id),
-      )
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : -1))
+      .filter((b) => isBeforeCursor(b, query.cursor))
+      .sort(newestFirst)
     return Promise.resolve(rows.slice(0, query.limit))
   }
 
@@ -579,7 +590,8 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
       .filter((d) => d.broadcastId === query.broadcastId)
       .filter((d) => query.status === undefined || d.status === query.status)
       .filter((d) => query.channel === undefined || d.channel === query.channel)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .filter((d) => isBeforeCursor(d, query.cursor))
+      .sort(newestFirst)
       .slice(0, query.limit)
       .map((d) => ({
         id: d.id,

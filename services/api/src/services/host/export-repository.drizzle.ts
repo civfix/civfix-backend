@@ -33,6 +33,10 @@ export interface HostExportRepository {
   listForEvent(cleanupId: string, limit: number): Promise<HostExportRecord[]>
   listForOrganization(organizationId: string, limit: number): Promise<HostExportRecord[]>
   claimForRun(exportId: string, staleBefore: Date): Promise<HostExportRecord | null>
+  recordObjectKey(
+    exportId: string,
+    args: { r2Key: string; runToken: string | null },
+  ): Promise<boolean>
   markReady(
     exportId: string,
     args: {
@@ -47,6 +51,11 @@ export interface HostExportRepository {
   markFailed(exportId: string, errorCode: string): Promise<void>
   listExpired(now: Date, limit: number): Promise<HostExportRecord[]>
   markExpired(exportId: string): Promise<void>
+  listOrphaned(args: { staleBefore: Date; limit: number }): Promise<HostExportRecord[]>
+  releaseObject(
+    record: Pick<HostExportRecord, "id" | "status" | "runToken">,
+    errorCode: string,
+  ): Promise<boolean>
   deleteOlderThan(cutoff: Date, batchSize: number): Promise<number>
 }
 
@@ -151,6 +160,14 @@ export function makeDrizzleHostExportRepository(sql: Sql): HostExportRepository 
       return rows[0] ? toRecord(rows[0]) : null
     },
 
+    async recordObjectKey(exportId, args) {
+      const rows = await sql<{ id: string }[]>`
+        UPDATE host_exports SET r2_key = ${args.r2Key}
+         WHERE id = ${exportId} AND status = 'running' AND run_token IS NOT DISTINCT FROM ${args.runToken}
+        RETURNING id`
+      return rows.length > 0
+    },
+
     async markReady(exportId, args) {
       const rows = await sql<RowSelect[]>`
         UPDATE host_exports
@@ -188,12 +205,38 @@ export function makeDrizzleHostExportRepository(sql: Sql): HostExportRepository 
         UPDATE host_exports SET status = 'expired', r2_key = NULL WHERE id = ${exportId}`
     },
 
+    async listOrphaned({ staleBefore, limit }) {
+      const rows = await sql<RowSelect[]>`
+        SELECT id, cleanup_id, organization_id, requested_by, kind, filters, status, r2_key,
+               row_count, byte_size, truncated, error_code, run_token, requested_at, started_at,
+               completed_at, expires_at
+          FROM host_exports
+         WHERE (status = 'failed' AND r2_key IS NOT NULL)
+            OR (status = 'running' AND started_at < ${staleBefore})
+            OR (status = 'queued' AND requested_at < ${staleBefore})
+         ORDER BY requested_at
+         LIMIT ${limit}`
+      return rows.map(toRecord)
+    },
+
+    async releaseObject(record, errorCode) {
+      const rows = await sql<{ id: string }[]>`
+        UPDATE host_exports
+           SET status = 'failed', error_code = COALESCE(error_code, ${errorCode}), r2_key = NULL,
+               completed_at = COALESCE(completed_at, now())
+         WHERE id = ${record.id} AND status = ${record.status}
+           AND run_token IS NOT DISTINCT FROM ${record.runToken}
+        RETURNING id`
+      return rows.length > 0
+    },
+
+    /** A row that still names an object is kept until the reaper has deleted that object. */
     async deleteOlderThan(cutoff, batchSize) {
       const rows = await sql<{ id: string }[]>`
         DELETE FROM host_exports
          WHERE id IN (
            SELECT id FROM host_exports
-            WHERE requested_at < ${cutoff}
+            WHERE requested_at < ${cutoff} AND r2_key IS NULL
             ORDER BY requested_at
             LIMIT ${batchSize}
          )

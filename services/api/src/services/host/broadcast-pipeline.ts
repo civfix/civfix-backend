@@ -706,7 +706,12 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
           return
         }
         if (failure.kind === "permanent") {
-          await repo.suppressEmail(hash, "hard_bounce").catch(() => undefined)
+          await repo.suppressEmail(hash, "hard_bounce").catch((suppressErr: unknown) => {
+            deps.logger?.warn(
+              { err: suppressErr, deliveryId: claim.id },
+              "broadcast: hard-bounce suppression write failed; the address may be mailed again",
+            )
+          })
           outcomes.push({ id: claim.id, status: "failed", failureKind: "permanent" })
           return
         }

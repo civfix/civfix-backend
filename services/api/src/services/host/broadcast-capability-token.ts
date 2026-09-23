@@ -55,6 +55,7 @@ export function verifyUnsubscribeToken(
   try {
     parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf8"))
   } catch {
+    // Unreachable without the signing key; refused like any other bad token rather than a 500.
     return null
   }
   if (typeof parsed !== "object" || parsed === null) return null

@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from "fastify"
 import type { CacheClient } from "../../auth/cache.js"
 import type { MetricUpsert, MetricsRepository } from "./metrics-repository.drizzle.js"
 import { eventDayKey } from "./event-day.js"
+import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
 
 export { eventDayKey }
 
@@ -11,6 +12,10 @@ export const METRIC_SOURCE = "source"
 export const METRIC_DONATION_CLICKS = "donation_clicks"
 
 export const COUNTER_TTL_SEC = 4 * 24 * 60 * 60
+
+export const ROLLUP_PAGE_SIZE = 500
+
+const DAY_MS = 86_400_000
 
 const COUNTER_PREFIX = "evm:v1"
 
@@ -89,6 +94,7 @@ function hostOf(referrer: string | undefined): string | null {
   try {
     return new URL(referrer).hostname.toLowerCase()
   } catch {
+    // An unparseable Referer is client-controlled noise; it is counted as a direct visit.
     return null
   }
 }
@@ -134,7 +140,7 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
     metric: string,
     bucket: string,
   ): Promise<void> {
-    const day = eventDayKey(now(), timezone)
+    const day = eventDayKey(now(), timezone ?? DEFAULT_EVENT_TIME_ZONE)
     const key = counterKey(cleanupId, day, metric, bucket)
     try {
       await deps.cache.incr(key, COUNTER_TTL_SEC)
@@ -170,9 +176,10 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
     },
 
     async flushCounters() {
+      // A bump keys its dirty set by the event-local day, which east of UTC is already tomorrow.
       const days: string[] = []
-      for (let i = 0; i <= deps.lookbackDays; i += 1) {
-        days.push(new Date(now().getTime() - i * 86_400_000).toISOString().slice(0, 10))
+      for (let i = -1; i <= deps.lookbackDays; i += 1) {
+        days.push(new Date(now().getTime() - i * DAY_MS).toISOString().slice(0, 10))
       }
       const upserts: MetricUpsert[] = []
       for (const day of days) {
@@ -203,17 +210,25 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
     },
 
     async rollup() {
-      const since = new Date(now().getTime() - deps.lookbackDays * 86_400_000)
-      const cleanupIds = await deps.repo.listRollupEvents(since, 500)
+      const since = new Date(now().getTime() - deps.lookbackDays * DAY_MS)
+      let after: string | null = null
+      let events = 0
       let rows = 0
-      for (const cleanupId of cleanupIds) {
-        const timezone = (await deps.repo.eventTimezone(cleanupId)) ?? "UTC"
-        const computed = await deps.repo.recomputeFromSource(cleanupId, timezone, since)
-        await deps.repo.upsertExact(computed)
-        rows += computed.length
-        await new Promise<void>((resolve) => setImmediate(resolve))
+      for (;;) {
+        const cleanupIds = await deps.repo.listRollupEvents(since, after, ROLLUP_PAGE_SIZE)
+        for (const cleanupId of cleanupIds) {
+          const timezone = (await deps.repo.eventTimezone(cleanupId)) ?? DEFAULT_EVENT_TIME_ZONE
+          const computed = await deps.repo.recomputeFromSource(cleanupId, timezone, since)
+          await deps.repo.upsertExact(computed)
+          rows += computed.length
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+        events += cleanupIds.length
+        const last = cleanupIds.at(-1)
+        if (cleanupIds.length < ROLLUP_PAGE_SIZE || last === undefined) break
+        after = last
       }
-      return { events: cleanupIds.length, rows }
+      return { events, rows }
     },
   }
 }

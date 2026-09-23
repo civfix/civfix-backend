@@ -10,6 +10,7 @@ export const EXPORT_DOWNLOAD_URL_TTL_SEC = 300
 export const EXPORT_LIST_LIMIT = 50
 export const EXPORT_YIELD_EVERY_ROWS = 1000
 export const EXPORT_RUN_STALE_MS = 10 * 60 * 1000
+export const EXPORT_ABANDON_AFTER_MS = 60 * 60 * 1000
 
 export interface HostExportConfig {
   maxRows: number
@@ -78,6 +79,22 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
     return `exports/host/${year}/${month}/${exportId}.csv`
   }
 
+  /** The failed row keeps its key until this succeeds, so the reaper can finish a partial cleanup. */
+  async function discardFailedObject(claimed: HostExportRecord, key: string): Promise<void> {
+    try {
+      await deps.storage.delete(key)
+      await deps.repo.releaseObject(
+        { id: claimed.id, status: "failed", runToken: claimed.runToken },
+        "build_failed",
+      )
+    } catch (err) {
+      deps.logger?.warn(
+        { err, exportId: claimed.id },
+        "host export: failed run could not clean up its object; the reaper will retry",
+      )
+    }
+  }
+
   return {
     async request(args) {
       const record = await deps.repo.create({
@@ -125,6 +142,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
           return { status: "failed" }
         }
       }
+      let key: string | null = null
       const ctx: HostExportContext = {
         exportId: claimed.id,
         cleanupId: claimed.cleanupId,
@@ -174,7 +192,18 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
           bytes += note.byteLength
         }
 
-        const key = storageKey(claimed.id, at)
+        key = storageKey(claimed.id, at)
+        const owned = await deps.repo.recordObjectKey(claimed.id, {
+          r2Key: key,
+          runToken: claimed.runToken,
+        })
+        if (!owned) {
+          deps.logger?.warn(
+            { evt: "host.export.superseded", exportId: claimed.id },
+            "host export run superseded by a newer claim before it uploaded",
+          )
+          return { status: "skipped" }
+        }
         await deps.storage.put(key, Buffer.concat(parts), {
           contentType: "text/csv; charset=utf-8",
           contentDisposition: `attachment; filename="${builder.filename(ctx)}"`,
@@ -209,6 +238,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
       } catch (err) {
         deps.logger?.error({ err, exportId: claimed.id }, "host export failed")
         await deps.repo.markFailed(claimed.id, "build_failed")
+        if (key !== null) await discardFailedObject(claimed, key)
         return { status: "failed" }
       }
     },
@@ -216,6 +246,9 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
     async downloadUrl(record) {
       if (record.status !== "ready" || record.r2Key === null) {
         throw AppError.conflict("That export is not ready to download.")
+      }
+      if (record.expiresAt !== null && record.expiresAt.getTime() <= now().getTime()) {
+        throw AppError.conflict("That export has expired.")
       }
       const url = await deps.storage.presignGet(record.r2Key, EXPORT_DOWNLOAD_URL_TTL_SEC, {
         forceSigned: true,
@@ -245,6 +278,25 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
         }
         await deps.repo.markExpired(record.id)
         reaped += 1
+      }
+      const orphaned = await deps.repo.listOrphaned({
+        staleBefore: new Date(now().getTime() - EXPORT_ABANDON_AFTER_MS),
+        limit,
+      })
+      for (const record of orphaned) {
+        if (record.r2Key !== null) {
+          try {
+            await deps.storage.delete(record.r2Key)
+          } catch (err) {
+            deps.logger?.warn(
+              { err, exportId: record.id },
+              "host export reap: orphaned object delete failed; row kept for the next pass",
+            )
+            continue
+          }
+        }
+        const errorCode = record.status === "queued" ? "not_started" : "build_failed"
+        if (await deps.repo.releaseObject(record, errorCode)) reaped += 1
       }
       return { reaped }
     },
