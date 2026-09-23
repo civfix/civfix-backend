@@ -1,17 +1,6 @@
-/**
- * Signup seats against real Postgres (Docker-gated; DECISIONS §44).
- *
- * The unit suite proves the service/repository contract against fakes. Only a live database can prove
- * the three things that are pure SQL: that the free registration's `ON CONFLICT (cleanup_id, user_id)
- * WHERE status = 'registered' AND user_id IS NOT NULL DO NOTHING` actually resolves the partial unique
- * index (a mis-specified arbiter raises 42P10 at plan time, not at review time), that the seat row
- * satisfies every CHECK on `cleanup_registration_seats`, and that the host's roster query and the
- * scanner's token lookup then find the seat the sign-up minted. It also pins the two discriminators
- * the cancel path rests on: a ticket type created AFTER a plain sign-up must not strand an active
- * seat on a departed attendee, and a genuinely ticketed registration must survive a plain leave.
- *
- * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
- */
+// Only a live database can prove the pure-SQL parts: the free registration's ON CONFLICT arbiter
+// resolves the partial unique index (a mis-specified one raises 42P10 at plan time, not review time), the
+// seat row satisfies every CHECK on `cleanup_registration_seats`, and the roster and scanner lookups find it.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -140,7 +129,7 @@ describe.skipIf(!pg)("signup seats (integration)", () => {
     expect((await host.checkinCounters(cleanupId)).checkedIn).toBe(1)
   })
 
-  it("a second join is a no-op — the partial unique arbiter is resolved, not a 42P10", async () => {
+  it("a second join is a no-op: the partial unique arbiter is resolved, not a 42P10", async () => {
     const organizer = await newUser("Olive Organizer")
     const volunteer = await newUser("Vic Volunteer")
     const cleanupId = await newCleanup(organizer)
@@ -177,7 +166,7 @@ describe.skipIf(!pg)("signup seats (integration)", () => {
     expect(await seatRows(cleanupId, volunteer)).toHaveLength(1)
   })
 
-  it("a legacy cleanups.capacity does not gate the sign-up — the slot is the binding gate", async () => {
+  it("a legacy cleanups.capacity does not gate the sign-up; the slot is the binding gate", async () => {
     const organizer = await newUser("Olive Organizer")
     const first = await newUser("First Volunteer")
     const second = await newUser("Second Volunteer")
@@ -190,7 +179,7 @@ describe.skipIf(!pg)("signup seats (integration)", () => {
     expect(await seatRows(cleanupId, second)).toHaveLength(1)
   })
 
-  it("a ticketed event mints nothing — registerIn owns that path", async () => {
+  it("a ticketed event mints nothing; registerIn owns that path", async () => {
     const organizer = await newUser("Olive Organizer")
     const volunteer = await newUser("Vic Volunteer")
     const cleanupId = await newCleanup(organizer)
@@ -299,7 +288,7 @@ describe.skipIf(!pg)("signup seats (integration)", () => {
     expect((await host.checkinCounters(cleanupId)).registered).toBe(0)
   })
 
-  it("releasing a slot keeps the seat — releasing keeps membership", async () => {
+  it("releasing a slot keeps the seat; releasing keeps membership", async () => {
     const organizer = await newUser("Olive Organizer")
     const volunteer = await newUser("Vic Volunteer")
     const cleanupId = await newCleanup(organizer)

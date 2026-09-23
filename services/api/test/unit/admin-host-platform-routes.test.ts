@@ -201,7 +201,6 @@ async function createOrg(
   return res.json() as { id: string; slug: string }
 }
 
-/** Seed an org owned by HOST with one open (pending) verification application. */
 async function seedPendingOrg(orgs: InMemoryOrganizationRepository): Promise<string> {
   orgs.seedUser({ id: HOST, displayName: "Ada", handle: "ada", email: "ada@example.org" })
   const org = await orgs.createOrganizationTx({
@@ -325,10 +324,8 @@ describe("admin legal versions", () => {
 })
 
 describe("admin org verification decision", () => {
-  // The decision's operator audit is written INSIDE the repository transaction (decideVerificationTx ->
-  // writeHostAudit), not by the route like the sibling admin mutations. These tests pin that the row exists
-  // with the operator as actor, the org as target and the decision detail as meta, so the route's lack of a
-  // second writeAudit call is a deliberate no-double-write, not a gap.
+  // The operator audit is written inside the repository transaction, not by the route like sibling admin
+  // mutations, so the route's missing writeAudit call is a deliberate no-double-write, not a gap.
   it("approves, audits the operator + decision, and notifies the owner", async () => {
     const h = await harness()
     const id = await seedPendingOrg(h.orgs)

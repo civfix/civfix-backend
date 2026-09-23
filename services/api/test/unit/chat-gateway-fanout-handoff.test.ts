@@ -131,7 +131,7 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
     expect(p.notified).toEqual([])
   })
 
-  it("the enqueued job carries ids only — no body, no sender name reaches pgboss.job", async () => {
+  it("the enqueued job carries ids only: no body, no sender name reaches pgboss.job", async () => {
     const p = probe()
     const notify = makeGroupChatNotifier({
       ...notifierDeps(p),

@@ -1,17 +1,7 @@
-/**
- * drizzle/0065_void_report_volunteer_hours.sql, against a real database.
- *
- * Filing a report is not volunteer service, so the report auto-award was removed AND every credit it ever
- * wrote is voided. Every other test in the suite gets its database from the template, where 0065 was
- * applied to EMPTY tables — so the branch that matters in production (a live ledger full of report rows
- * and a rollup inflated by them) had no coverage at all. This file covers the void, the rollup RECOMPUTE
- * (which is authoritative: it overwrites total_hours wholesale), what it must NOT touch, and the re-apply
- * guarantee the migration's banner makes.
- *
- * The SQL is READ OUT OF THE MIGRATION FILE rather than retyped, so this cannot pass against a copy that
- * has drifted from what the production runner applies. It runs against a template-cloned database where
- * 0065 has already been applied once, which is exactly the "safe to re-apply" case.
- */
+// drizzle/0065_void_report_volunteer_hours.sql against populated tables: the template applies 0065 to
+// EMPTY tables, so the production case (a live ledger full of report rows) had no coverage otherwise.
+// The SQL is read out of the migration file so it cannot drift from what the runner applies, and the
+// template clone has already applied 0065 once, which is exactly the re-apply case.
 
 import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
@@ -30,10 +20,7 @@ const MIGRATION = fileURLToPath(
   new URL("../../drizzle/0065_void_report_volunteer_hours.sql", import.meta.url),
 )
 
-/**
- * Statement 0, matched at the START of a line so the banner paragraphs that TALK about the lock cannot
- * satisfy (or be stripped by) this. `m` + `[^;]*;` spans the one statement only.
- */
+// Anchored to line start so banner comments that mention the lock cannot match.
 const LOCK_STATEMENT = /^LOCK TABLE[^;]*;/m
 
 describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
@@ -53,7 +40,7 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
     await h.teardown()
   })
 
-  /** Apply the migration exactly as the runner does: the whole file, one `unsafe` call, no parameters. */
+  // Exactly as the runner does: the whole file, one `unsafe` call, no parameters.
   async function applyMigration(): Promise<void> {
     await h.sql.unsafe(migration)
   }
@@ -65,7 +52,6 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
     return u!.id
   }
 
-  /** A done cleanup, so an event credit has a real row to hang off. */
   async function newCleanup(organizerId: string): Promise<string> {
     return await seedCleanup(h.sql, {
       organizerUserId: organizerId,
@@ -78,7 +64,6 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
     })
   }
 
-  /** A published report row, so a report-source credit satisfies its FK. */
   async function newReport(reporterId: string): Promise<string> {
     const [r] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (
@@ -96,7 +81,6 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
     return r!.id
   }
 
-  /** The pre-0065 report auto-award: a ledger row plus its contribution to the public rollup. */
   async function seedReportCredit(userId: string, note: string | null = null): Promise<string> {
     const reportId = await newReport(userId)
     const [row] = await h.sql<{ id: string }[]>`
@@ -145,10 +129,7 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
     return row!
   }
 
-  /**
-   * The invariant the recompute establishes, platform-wide: every rollup total equals the SUM of that
-   * (user, jurisdiction)'s non-voided ledger rows. Empty is what this migration exists to guarantee.
-   */
+  // Rollup totals that differ from the SUM of their non-voided ledger rows; the migration guarantees none.
   async function drift(): Promise<{ user_id: string }[]> {
     return await h.sql<{ user_id: string }[]>`
       SELECT ujh.user_id
@@ -164,14 +145,11 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
 
   it("voids every report credit, leaves event credits alone, and recomputes the rollup", async () => {
     const host = await newUser("Void Host")
-    // Mixed: an event credit that must survive, plus a report credit that must not.
     const alice = await newUser("Void Alice")
     const aliceEvent = await seedEventCredit(alice, 3, host)
     const aliceReport = await seedReportCredit(alice)
-    // Report-only, i.e. most of the platform: their public total goes to 0.
     const bob = await newUser("Void Bob")
     const bobReport = await seedReportCredit(bob)
-    // Event-only control: nothing about this user may move.
     const carol = await newUser("Void Carol")
     await seedEventCredit(carol, 2, host)
 
@@ -180,7 +158,6 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
 
     await applyMigration()
 
-    // The report rows are void, and carry the explanatory note.
     for (const id of [aliceReport, bobReport]) {
       const row = await ledgerRow(id)
       expect(row.voided_at).not.toBeNull()
@@ -189,12 +166,10 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
       expect(row.hours).toBeCloseTo(0.1, 5)
     }
 
-    // The event credit is untouched — this is the hours a host logged for time actually served.
     const kept = await ledgerRow(aliceEvent)
     expect(kept.voided_at).toBeNull()
     expect(kept.note).toBeNull()
 
-    // The rollup is rebuilt from the surviving ledger, NOT decremented.
     expect(await rollupFor(alice)).toBe(3)
     expect(await rollupFor(bob)).toBe(0)
     expect(await rollupFor(carol)).toBe(2)
@@ -213,7 +188,6 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
     const host = await newUser("Rerun Host")
     const dave = await newUser("Rerun Dave")
     await seedEventCredit(dave, 1.5, host)
-    // A row an operator had already annotated: COALESCE must leave their note alone.
     const annotated = await seedReportCredit(dave, "operator: spam filing")
 
     await applyMigration()
@@ -232,23 +206,13 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
     expect(await drift()).toEqual([])
   })
 
-  /**
-   * STATEMENT 0'S LOCK IS LOAD-BEARING, and this proves it is actually taken.
-   *
-   * The runner's transaction is READ COMMITTED (migrate.ts sets no isolation level) and the API may still
-   * be serving. Under READ COMMITTED the recompute's correlated SUM over `volunteer_hours` keeps its
-   * ORIGINAL statement snapshot for that table, so a ledger row a live `logEventHours` commits mid-flight
-   * is invisible to it — and the rollup it then writes silently discards that credit, permanently (the
-   * rollup is maintained by DELTA afterwards, every read trusts it, and `_civfix_migrations` guarantees
-   * 0065 never re-runs).
-   *
-   * The fixture is a user with NO ledger and NO rollup row, deliberately: statement 1 row-locks only
-   * report rows and statement 2 row-locks only rollup rows that already exist, so WITHOUT statement 0
-   * nothing in this transaction conflicts with crediting this user — which is exactly what the second
-   * half asserts. The only thing that can make the credit queue is the table lock.
-   */
+  // Statement 0's lock is load-bearing. The runner's transaction is READ COMMITTED and the API may still
+  // be serving, so the recompute's correlated SUM keeps its original snapshot of `volunteer_hours`: a
+  // credit committed mid-flight would be silently and permanently discarded (the rollup is delta-maintained
+  // afterwards and 0065 never re-runs). The fixture user has no ledger and no rollup row on purpose:
+  // statements 1 and 2 only row-lock existing rows, so without statement 0 nothing conflicts with the
+  // credit, which is what the second half asserts.
   describe("statement 0 (LOCK TABLE)", () => {
-    /** How many backends in this database are parked waiting on a lock. */
     async function waitingOnLock(): Promise<number> {
       const [r] = await h.sql<{ n: number }[]>`
         SELECT count(*)::int AS n
@@ -269,7 +233,7 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
       return false
     }
 
-    /** A live host crediting an attendee, through the REAL repository — the writer the lock exists for. */
+    // Through the real repository: the writer the lock exists for.
     async function creditThroughRepository(
       host: string,
       userId: string,
@@ -313,7 +277,6 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
         reserved.release()
       }
 
-      // The credit landed AFTER the recompute rather than being erased by it.
       expect(await rollupFor(erin)).toBe(4)
       expect(await drift()).toEqual([])
     })
@@ -331,11 +294,10 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
         await reserved.unsafe("begin")
         await reserved.unsafe(unlocked)
         // No table lock and nothing of Frank's is row-locked, so this commits WHILE the migration's
-        // transaction is still open — the window in which the recompute's snapshot can miss it.
+        // transaction is still open: the window in which the recompute's snapshot can miss it.
         await creditThroughRepository(host, frank, cleanupId, 4)
         expect(await rollupFor(frank)).toBe(4)
       } finally {
-        // Roll the stripped run back: it is a demonstration, not a state change the file should keep.
         await reserved.unsafe("rollback").catch(() => {})
         reserved.release()
       }
@@ -344,12 +306,8 @@ describe.skipIf(!pg)("0065 report-hours void (integration)", () => {
     })
   })
 
-  /**
-   * The recompute is AUTHORITATIVE: a rollup value with no backing non-voided ledger row is erased. That
-   * is only safe because logEventHours is the sole remaining writer of either table (there is no
-   * source='manual' writer anywhere, and no script or worker touches them). Pinned here so the day
-   * somebody adds a second writer, this fails and they have to think about it.
-   */
+  // The recompute is authoritative, which is only safe while logEventHours is the sole writer of either
+  // table. Pinned so adding a second writer fails here and forces that decision.
   it("erases a rollup value that has no backing ledger row", async () => {
     const orphan = await newUser("Rollup Orphan")
     await addRollup(orphan, 12)

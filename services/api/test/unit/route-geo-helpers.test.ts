@@ -12,11 +12,9 @@ import {
 } from "../../src/services/route-geo-helpers.js"
 
 /**
- * Route-level jurisdiction wiring (services/route-geo-helpers.ts).
- *
- * The one behavior worth pinning offline is WHICH surfaces memoize the external Census lookup: the anon-ok
- * map resolve opts in (`cacheLookup: true`), the submit-path resolver does NOT, and the memo is held per
- * CONTAINER — the service is rebuilt on every request, so a per-service cache would never see a hit, and a
+ * The one behavior of services/route-geo-helpers.ts worth pinning offline is WHICH surfaces memoize the
+ * external Census lookup: the anon-ok map resolve opts in (`cacheLookup: true`), the submit-path resolver
+ * does NOT, and the memo is held per CONTAINER: the service is rebuilt on every request, so a per-service cache would never see a hit, and a
  * bare module singleton would leak one container's coverage answers into another's tests.
  */
 

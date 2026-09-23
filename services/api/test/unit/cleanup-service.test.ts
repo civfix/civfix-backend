@@ -1324,7 +1324,7 @@ describe("M17: attendee removal is enforceable (cleanup_bans)", () => {
     expect(joined.joined).toBe(true)
   })
 
-  it("leaving voluntarily does NOT ban you — you can RSVP again", async () => {
+  it("leaving voluntarily does NOT ban you: you can RSVP again", async () => {
     const created = await svc.createCleanup(baseInput(), ORG)
     await svc.joinCleanup(created.id, BOB)
     await svc.leaveCleanup(created.id, BOB)
@@ -1390,7 +1390,7 @@ describe("M18: promote/demote notification bombing", () => {
     expect(err).toMatchObject({ code: "RATE_LIMITED" })
   })
 
-  it("the cap is per TARGET — throttling one attendee does not lock out the roster", async () => {
+  it("the cap is per TARGET: throttling one attendee does not lock out the roster", async () => {
     repo.seedUser({ id: ALICE, displayName: "Alice" })
     repo.seedUser({ id: BOB, displayName: "Bob" })
     const svc = makeCleanupService({

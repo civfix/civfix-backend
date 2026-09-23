@@ -392,7 +392,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     )
   }
 
-  /** `withDefaultSlot: false` reproduces a LEGACY slot-less event — the shape 0169 backfilled away. */
+  /** `withDefaultSlot: false` reproduces a LEGACY slot-less event (the shape 0169 backfilled away). */
   seedCleanup(
     over: Partial<StoredCleanup> & { id?: string; withDefaultSlot?: boolean },
   ): StoredCleanup {

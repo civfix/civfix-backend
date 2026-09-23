@@ -1,8 +1,5 @@
-/**
- * Operator removals of chat and DM messages must reach connected clients the way a member's own delete
- * does: one message_update frame for the room carrying the tombstone. Before, only the SQL ran, so every
- * open web/mobile client kept rendering removed content until it refetched history.
- */
+// Operator removals must broadcast the tombstone like a member's own delete, or open clients keep
+// rendering removed content until they refetch history.
 
 import { describe, it, expect } from "vitest"
 import type { ChatMessageDTO, RoomKind } from "@civfix/shared"

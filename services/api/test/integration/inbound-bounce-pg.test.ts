@@ -1,16 +1,16 @@
 /**
- * F111: bounce handling against the REAL jurisdiction_contacts schema (Docker-gated).
+ * Bounce handling against the REAL jurisdiction_contacts schema (Docker-gated).
  *
  * A DSN echoes the failed recipient exactly as the sending MTA recorded it, which is routinely a
  * different CASE from the address the operator saved ("Clerk@LACity.Gov" vs "clerk@lacity.gov").
  * markBouncedContact / geoidForContact used to compare `email = ${email}` verbatim while the ownership
- * guard right before them already folded case — so a case-mismatched DSN passed the guard and then
+ * guard right before them already folded case, so a case-mismatched DSN passed the guard and then
  * updated ZERO rows: no bounced_at stamp, no bounced badge in the directory, and no discovery
  * re-onboarding job. Every failure is silent, which is why it survived (the pre-existing bounce tests all
  * use an all-lowercase recipient and pass either way).
  *
- * These run against a template-cloned database, so the predicate — and the functional
- * jurisdiction_contacts_email_lower_idx that keeps it off a seq scan (drizzle/0083) — are the real ones.
+ * These run against a template-cloned database, so the predicate and the functional
+ * jurisdiction_contacts_email_lower_idx that keeps it off a seq scan (drizzle/0083) are the real ones.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"

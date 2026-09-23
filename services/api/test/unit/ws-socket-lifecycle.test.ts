@@ -511,7 +511,7 @@ describe("socket close DURING an in-flight join", () => {
     expect(await presence.online(ROOM)).toEqual([])
   })
 
-  it("un-does it with NO presence dep too — the post-joinRoom check is the one that must catch it", async () => {
+  it("un-does it with NO presence dep too; the post-joinRoom check is the one that must catch it", async () => {
     await joinThenSettle({ close: true, withPresence: false })
 
     expect(chat.roomSize(ROOM)).toBe(0)

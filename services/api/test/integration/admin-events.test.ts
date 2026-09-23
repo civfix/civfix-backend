@@ -25,7 +25,6 @@ import type { AdminEventRepository } from "../../src/services/admin/admin-event-
 
 const pg = await withPg()
 
-/** Insert a user and return its id. */
 async function insertUser(h: PgHarness, name = "Org"): Promise<string> {
   const rows = await h.sql<{ id: string }[]>`
     INSERT INTO users (display_name) VALUES (${name}) RETURNING id
@@ -33,7 +32,6 @@ async function insertUser(h: PgHarness, name = "Org"): Promise<string> {
   return rows[0]!.id
 }
 
-/** Insert a cleanup and return its id. */
 async function insertCleanup(
   h: PgHarness,
   opts: {
@@ -175,7 +173,7 @@ describe.skipIf(!pg)("admin event repository (integration: real schema)", () => 
     `
     const result = await repo.postMessage(id, { body: "Rescheduled", actorId: org })
     expect(result).not.toBeNull()
-    // L4: notifications are fanned out in the SAME transaction; the count matches the member count.
+    // Notifications are fanned out in the SAME transaction; the count matches the member count.
     expect(result?.notified).toBe(2)
     const chat = await h.sql<
       { id: string; body: string | null; sender_id: string }[]

@@ -57,7 +57,7 @@ describe("loadEnv: outbound SMS", () => {
     expect(() => loadEnv(source)).not.toThrow()
   })
 
-  it("H11: refuses USE_FAKE_SMS in production — it swallows guest OTPs while SMS still reads as available", () => {
+  it("H11: refuses USE_FAKE_SMS in production, since it swallows guest OTPs while SMS still reads as available", () => {
     const source = validProdEnv()
     source.SMS_GUEST_ENABLED = "true"
     delete source.TWILIO_ACCOUNT_SID

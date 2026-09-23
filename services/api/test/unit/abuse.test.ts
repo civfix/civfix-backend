@@ -28,17 +28,7 @@ import {
   ANON_TOKEN_REPORT_CAP,
 } from "../../src/abuse/anon-token.js"
 
-/**
- * Local, Docker-free unit tests for the API-layer abuse stack. Each control is exercised against an
- * in-memory CounterStore + FakeAbuseChecks + an in-memory token store, with an injectable clock where a
- * window/expiry must be advanced. These are the meaningful tests that prove the abuse logic.
- */
-
 const KEY = "test-anon-signing-key"
-
-// ---------------------------------------------------------------------------
-// honeypot (pure)
-// ---------------------------------------------------------------------------
 
 describe("honeypotTripped", () => {
   it("trips on real content, not on empty/whitespace/absent", () => {
@@ -51,10 +41,6 @@ describe("honeypotTripped", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// IP rate limit
-// ---------------------------------------------------------------------------
-
 describe("normalizeIp", () => {
   it("keeps the full IPv4 address as the bucket", () => {
     expect(normalizeIp("203.0.113.7")).toBe("203.0.113.7")
@@ -65,7 +51,6 @@ describe("normalizeIp", () => {
   })
 
   it("reduces an IPv6 address to its /64 prefix", () => {
-    // Two addresses sharing a /64 normalize to the SAME bucket; a different /64 does not.
     const a = normalizeIp("2001:db8:abcd:1234:1111:2222:3333:4444")
     const b = normalizeIp("2001:db8:abcd:1234:9999:8888:7777:6666")
     const c = normalizeIp("2001:db8:abcd:5678:1111:2222:3333:4444")
@@ -75,7 +60,6 @@ describe("normalizeIp", () => {
   })
 
   it("expands a ':: ' compressed IPv6 before taking the /64", () => {
-    // 2001:db8::1 -> first four hextets are 2001:db8:0:0
     expect(normalizeIp("2001:db8::1")).toBe("2001:db8:0:0::/64")
   })
 
@@ -90,14 +74,12 @@ describe("enforceIpRateLimit", () => {
   it("allows up to the hard cap, then rejects the (cap+1)-th with RATE_LIMITED", async () => {
     const counters = new InMemoryCounterStore(() => 0)
     const ip = "198.51.100.5"
-    // The first IP_HARD_LIMIT_PER_HOUR submissions pass.
     for (let i = 0; i < IP_HARD_LIMIT_PER_HOUR; i++) {
       await expect(enforceIpRateLimit(ip, { counters })).resolves.toMatchObject({
         normalizedIp: ip,
         count: i + 1,
       })
     }
-    // The next one is rejected.
     await expect(enforceIpRateLimit(ip, { counters })).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })
@@ -105,12 +87,11 @@ describe("enforceIpRateLimit", () => {
 
   it("counts the IPv6 /64, so rotating the low 64 bits does not evade the cap", async () => {
     const counters = new InMemoryCounterStore(() => 0)
-    const limitFor = (): number => 2 // tighten for a terse test
+    const limitFor = (): number => 2
     const a = "2001:db8:1:2:aaaa::1"
     const b = "2001:db8:1:2:bbbb::2" // same /64
     await enforceIpRateLimit(a, { counters, limitFor })
     await enforceIpRateLimit(b, { counters, limitFor })
-    // Third hit on the same /64 (via yet another low-bits value) trips the cap.
     await expect(
       enforceIpRateLimit("2001:db8:1:2:cccc::3", { counters, limitFor }),
     ).rejects.toMatchObject({ code: "RATE_LIMITED" })
@@ -125,7 +106,6 @@ describe("enforceIpRateLimit", () => {
     await expect(enforceIpRateLimit(ip, { counters, limitFor })).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })
-    // Advance past the 1h window: the counter key has expired, so a fresh window starts.
     nowMs += 60 * 60 * 1000 + 1
     await expect(enforceIpRateLimit(ip, { counters, limitFor })).resolves.toMatchObject({
       count: 1,
@@ -137,10 +117,6 @@ describe("enforceIpRateLimit", () => {
     expect(classifyIpAllowance("2001:db8::/64")).toBe(IP_HARD_LIMIT_PER_HOUR)
   })
 })
-
-// ---------------------------------------------------------------------------
-// H3 per-cell cap (anon-only)
-// ---------------------------------------------------------------------------
 
 describe("abuseH3Cell", () => {
   it("computes a stable cell at the configured resolution", () => {
@@ -177,11 +153,9 @@ describe("enforceH3CellCap", () => {
     const counters = new InMemoryCounterStore(() => 0)
     const limit = 1
     await enforceH3CellCap(34.1, -118.35, { counters, limit }) // LA cell
-    // A point ~thousands of km away lands in a different cell -> its own fresh budget.
     await expect(enforceH3CellCap(40.71, -74.0, { counters, limit })).resolves.toMatchObject({
       count: 1,
     })
-    // But a second LA submission trips the LA cell's cap.
     await expect(enforceH3CellCap(34.1, -118.35, { counters, limit })).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })
@@ -193,10 +167,6 @@ describe("enforceH3CellCap", () => {
     expect(r.limit).toBe(H3_CELL_LIMIT_PER_HOUR)
   })
 })
-
-// ---------------------------------------------------------------------------
-// GPS sanity
-// ---------------------------------------------------------------------------
 
 describe("parseCfGeo", () => {
   it("parses CF lat/lng headers into a point", () => {
@@ -220,13 +190,12 @@ describe("parseCfGeo", () => {
 
 describe("cfGeoFromTrustedEdge (P1-2)", () => {
   it("is TRUE only when Fastify trusted a forwarding hop (request.ips length > 1)", () => {
-    // A trusted proxy forwarded a real client: [proxyPeer, client].
+    // [proxyPeer, client]
     expect(cfGeoFromTrustedEdge({ ips: ["127.0.0.1", "203.0.113.7"] })).toBe(true)
     expect(cfGeoFromTrustedEdge({ ips: ["10.0.0.5", "8.8.8.8", "1.2.3.4"] })).toBe(true)
   })
 
   it("is FALSE for an untrusted/direct client (single entry) or no ips", () => {
-    // An untrusted public peer's spoofed XFF is not trusted, so ips collapses to the peer alone.
     expect(cfGeoFromTrustedEdge({ ips: ["8.8.8.8"] })).toBe(false)
     expect(cfGeoFromTrustedEdge({ ips: [] })).toBe(false)
     expect(cfGeoFromTrustedEdge({})).toBe(false)
@@ -248,7 +217,7 @@ describe("gpsSanityCheck", () => {
   })
 
   it("passes a point JUST INSIDE the ~50km threshold of the IP geo", async () => {
-    // ~0.4 deg of latitude is ~44.5 km (1 deg lat ~ 111.2 km), comfortably inside 50 km.
+    // ~0.4 deg of latitude is ~44.5 km, inside 50 km.
     const point = { lat: 34.5, lng: -118.35 }
     const ipGeo = { lat: 34.1, lng: -118.35 }
     const res = await gpsSanityCheck({ point, ipGeo }, { abuseChecks })
@@ -256,7 +225,6 @@ describe("gpsSanityCheck", () => {
   })
 
   it("fails a point JUST OUTSIDE the ~50km threshold of the IP geo", async () => {
-    // ~0.6 deg of latitude is ~66.7 km, outside 50 km.
     const point = { lat: 34.7, lng: -118.35 }
     const ipGeo = { lat: 34.1, lng: -118.35 }
     const res = await gpsSanityCheck({ point, ipGeo }, { abuseChecks })
@@ -264,11 +232,6 @@ describe("gpsSanityCheck", () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// anon token
-// ---------------------------------------------------------------------------
-
-/** A tiny in-memory AnonTokenStore. */
 class MemTokenStore implements AnonTokenStore {
   readonly rows = new Map<string, AnonTokenRecord>()
   insert(row: AnonTokenRecord): Promise<void> {
@@ -311,7 +274,6 @@ describe("issueAnonToken / resolveAnonToken", () => {
     expect(issued.record.reportCount).toBe(0)
     expect(issued.record.expiresAt.toISOString()).toBe("2026-01-02T00:00:00.000Z")
 
-    // Resolve at a time within the token's lifetime (the same injected clock origin).
     const resolved = await resolveAnonToken(issued.token, {
       store,
       signingKey: KEY,
@@ -328,7 +290,6 @@ describe("issueAnonToken / resolveAnonToken", () => {
       newId: () => "tok-exp",
       now: () => new Date("2026-01-01T00:00:00Z"),
     })
-    // 24h + 1ms later -> expired.
     const resolved = await resolveAnonToken(issued.token, {
       store,
       signingKey: KEY,
@@ -356,9 +317,7 @@ describe("per-token report cap", () => {
       flagged: false,
       claimCode: null,
     }
-    // One under the cap is fine (returns remaining 1).
     expect(assertUnderReportCap(base)).toEqual({ remaining: 1 })
-    // At the cap -> throws.
     expect(() => assertUnderReportCap({ ...base, reportCount: ANON_TOKEN_REPORT_CAP })).toThrow()
   })
 
@@ -367,20 +326,17 @@ describe("per-token report cap", () => {
     let n = 0
     const deps = { store, signingKey: KEY, newId: () => `tok-${++n}` }
 
-    // No token presented -> a fresh one is issued (and handed back).
     const first = await resolveOrIssueAnonToken(undefined, deps)
     expect(first.issuedToken).toBeTruthy()
     expect(first.record.id).toBe("tok-1")
 
-    // Simulate the create tx bumping report_count up to the cap, reusing the SAME token each time.
     const token = signAnonToken("tok-1", KEY)
     for (let i = 1; i <= ANON_TOKEN_REPORT_CAP; i++) {
       store.rows.get("tok-1")!.reportCount = i - 1
       const r = await resolveOrIssueAnonToken(token, deps)
       expect(r.record.id).toBe("tok-1")
-      expect(r.issuedToken).toBeUndefined() // existing token reused -> not re-issued
+      expect(r.issuedToken).toBeUndefined()
     }
-    // Now at the cap: the next reuse is rejected.
     store.rows.get("tok-1")!.reportCount = ANON_TOKEN_REPORT_CAP
     await expect(resolveOrIssueAnonToken(token, deps)).rejects.toMatchObject({
       code: "RATE_LIMITED",

@@ -92,8 +92,8 @@ describe("submitAnonReport: held create", () => {
     const token = store.tokens.get("anontok-1")!
     expect(token.reportCount).toBe(1)
     expect(token.claimCode).toBeNull()
-    // F150: only the DIGEST of the per-report code is persisted; the plaintext lives solely in the
-    // one-time response above.
+    // Only the digest of the per-report code is persisted; the plaintext lives solely in the one-time
+    // response above.
     expect(store.reports.get("report-1")!.claimCodeHash).toBe(await sha256Hex("claim-1"))
 
     const tl = store.timeline.filter((t) => t.reportId === "report-1")
@@ -485,7 +485,7 @@ describe("claim codes are persisted as a digest only (F150)", () => {
 
   it("resolves a row that carries ONLY a backfilled digest (a pre-0091 plaintext-era report)", async () => {
     const { store, service } = makeHarness()
-    // Exactly what 0091's backfill leaves behind: claim_code_hash = sha256(the old plaintext code).
+    // What 0091's backfill leaves behind: claim_code_hash = sha256(the old plaintext code).
     store.seedReport({
       id: "legacy-1",
       anonSessionId: "anontok-legacy",
@@ -570,11 +570,7 @@ function uuid(n: number): string {
   return `00000000-0000-4000-8000-${h}`
 }
 
-/**
- * Address provenance on the anonymous path. It shares one helper with the signed-in path by
- * construction, so what is worth pinning here is the WIRING: the resolver is consulted only when the
- * reporter typed nothing, and the resulting source/precision land on the row alongside the address.
- */
+// The anonymous path shares one address helper with the signed-in path, so only the wiring is pinned here.
 describe("submitAnonReport: address provenance", () => {
   it("records the reporter's own text as 'user', with no provider precision", async () => {
     const { store, service } = makeHarness({

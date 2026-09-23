@@ -1,16 +1,10 @@
 import { describe, it, expect } from "vitest"
 import { httpUrlField } from "../../src/routes/admin/_route-utils.js"
 
-/**
- * L7: `formUrl` on jurisdictions + discovery contacts is persisted and re-served as an href in BOTH the
- * admin console and the public jurisdiction directory. The wire schema in @civfix/shared uses Zod's
- * `.url()`, which only asserts `new URL()` PARSES the string — and `javascript:`, `data:` and `vbscript:`
- * all parse. A stored `javascript:` URI is therefore a stored XSS in two UIs, and in the console that is a
- * full authz bypass (the CSRF cookie is JS-readable).
- *
- * The shared schema cannot be edited from this repo, so the scheme allowlist is enforced at the persist
- * boundary. These tests pin that boundary.
- */
+// `formUrl` is re-served as an href in the admin console and the public directory. Zod's `.url()` only
+// checks that `new URL()` parses, and `javascript:`, `data:` and `vbscript:` all parse: a stored XSS in
+// two UIs, and a full authz bypass in the console (the CSRF cookie is JS-readable). The shared schema
+// is not edited from this repo, so the scheme allowlist is enforced at the persist boundary.
 describe("L7: httpUrlField scheme allowlist", () => {
   it("accepts http and https", () => {
     expect(httpUrlField("https://lacity.gov/report", "formUrl")).toBe("https://lacity.gov/report")

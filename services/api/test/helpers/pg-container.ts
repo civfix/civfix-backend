@@ -2,12 +2,10 @@
  * The Postgres container + template-database primitives shared by the vitest globalSetup
  * (test/global-setup-pg.ts) and the per-file harness (test/helpers/pg.ts).
  *
- * WHY this module exists: the integration suite used to start ONE `postgis/postgis:16-3.4` container PER
- * TEST FILE (~44 boots per CI run, each paying image start + 60 migrations + the jurisdiction seed).
- * The container is now started ONCE by globalSetup, which applies the migrations + seed into a TEMPLATE
+ * The container is started ONCE by globalSetup, which applies the migrations + seed into a TEMPLATE
  * database; every test file then clones that template with `CREATE DATABASE ... TEMPLATE ...` (a
- * file-level copy inside the server, ~100ms) and gets its own fully isolated database — the same
- * isolation a private container gave it, without the boot cost.
+ * file-level copy inside the server, ~100ms) and gets its own fully isolated database, without paying a
+ * container boot plus every migration per file.
  *
  * Nothing here imports `vitest`: globalSetup runs in a different context, where importing the `vitest`
  * entrypoint is unsupported (it reaches for per-worker state that does not exist there).
@@ -55,7 +53,7 @@ const POSTGRES_TUNING = [
 ]
 
 export interface SharedPg {
-  /** Connection URI of the container's default database — the maintenance connection for CREATE/DROP. */
+  /** Connection URI of the container's default database: the maintenance connection for CREATE/DROP. */
   adminUri: string
   /** Name of the migrated template database to clone per test file. */
   templateDb: string
@@ -84,16 +82,16 @@ export interface PgSkipDecision {
  *
  * The skip exists for ONE reason: this repo is developed on machines with no Docker, and a developer
  * running `pnpm test` must get a green unit suite instead of 44 hard failures. In CI that same leniency
- * is a silent hole — a broken Docker socket, a pulled image, a testcontainers upgrade — would make the
+ * is a silent hole: a broken Docker socket, a pulled image or a testcontainers upgrade would make the
  * ENTIRE integration suite vanish from the run while the job still reports success. The suite is the only
  * thing that exercises the real SQL, so "green because nothing ran" must be impossible in CI.
  *
  * Resolution order (first match wins):
- *   1. CIVFIX_ALLOW_PG_SKIP  — explicit escape hatch for a CI job that intentionally has no Docker.
- *   2. CIVFIX_REQUIRE_PG     — explicit demand (usable locally to prove the harness really ran).
- *   3. CI                    — set to `true` by GitHub Actions (and by every other provider), so the
- *                              guard is on in CI with no workflow change.
- *   4. otherwise             — a developer machine: skipping is the whole point.
+ *   1. CIVFIX_ALLOW_PG_SKIP: explicit escape hatch for a CI job that intentionally has no Docker.
+ *   2. CIVFIX_REQUIRE_PG: explicit demand (usable locally to prove the harness really ran).
+ *   3. CI: set to `true` by GitHub Actions (and by every other provider), so the guard is on in CI with
+ *      no workflow change.
+ *   4. otherwise: a developer machine; skipping is the whole point.
  */
 export function pgSkipDecision(env: NodeJS.ProcessEnv = process.env): PgSkipDecision {
   if (isOn(env.CIVFIX_ALLOW_PG_SKIP)) {
@@ -128,7 +126,7 @@ export function assertPgSkipAllowed(reason: string, env: NodeJS.ProcessEnv = pro
  * Start the container and build the migrated template database.
  *
  * Returns `{ ok: false, reason }` when Docker is unavailable (this repo is developed on machines with no
- * Docker) so callers can SKIP rather than fail — UNLESS this environment forbids that skip (CI, see
+ * Docker) so callers can SKIP rather than fail, UNLESS this environment forbids that skip (CI, see
  * assertPgSkipAllowed), in which case it throws rather than let the integration suite disappear from a
  * green run. A migration/seed failure is never the skip case: it is a real error and throws, after
  * cleaning up the container.
@@ -138,7 +136,7 @@ export async function startSharedPg(): Promise<StartSharedPgResult> {
   try {
     started = await new PostgreSqlContainer(POSTGIS_IMAGE).withCommand(POSTGRES_TUNING).start()
   } catch (err) {
-    // Docker not installed / daemon not running / image unavailable: skip, do not fail — but only where
+    // Docker not installed / daemon not running / image unavailable: skip, do not fail, but only where
     // a skip is legitimate. In CI this throws.
     const reason = err instanceof Error ? err.message : String(err)
     assertPgSkipAllowed(reason)
@@ -241,11 +239,11 @@ export async function dropDatabaseIfExists(adminUri: string, name: string): Prom
  * Test-harness-only column defaults for two NOT-NULL columns the PRODUCTION app always supplies but
  * that raw fixture inserts here would otherwise have to hand-roll at ~30 call sites:
  *
- *   - users.handle   — made NOT NULL (no default) by 0026_user_handle_required.sql. The app assigns a
- *                      handle during registration; fixtures that insert a bare user don't care about it.
- *   - reports.type   — 0021_report_type.sql adds it with a default 'other' then DROPS the default, so
- *                      the app must send a type. Fixtures that set up a report to exercise a read query
- *                      don't care about the fine type.
+ *   - users.handle: made NOT NULL (no default) by 0026_user_handle_required.sql. The app assigns a
+ *     handle during registration; fixtures that insert a bare user don't care about it.
+ *   - reports.type: 0021_report_type.sql adds it with a default 'other' then DROPS the default, so the
+ *     app must send a type. Fixtures that set up a report to exercise a read query don't care about the
+ *     fine type.
  *
  * These defaults change ONLY the throwaway test template (never the canonical migrations / production
  * schema) and weaken NO assertion: the suite has no test that a bare insert of these columns is rejected,

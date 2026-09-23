@@ -1,17 +1,7 @@
-/**
- * PERCENT-ENCODED VERSION SEGMENT: the version gate must see the same version Fastify's ROUTER sees.
- *
- * The gate reads `request.url`, which is RAW, while find-my-way percent-DECODES before matching: `GET
- * /%761/ping` is served by the static route `/v1/ping`. So the gate saw the segment "%761", decided it was
- * not a `/vN` at all, and skipped enforcement entirely — sunset (410) and unsupported (400) rejection plus
- * the Deprecation/Sunset headers were all bypassable with a single percent-escape. Latent while v1 is the
- * only version, and a complete defeat of the policy the moment a v2 exists.
- *
- * Asserting a 400 (not a 404) is what proves the GATE rejected the request: `/v2/*` has no registered
- * route, so a gate that skipped enforcement would fall through to the not-found handler.
- *
- * (File named for this wave's adapters/errors pass; it exercises src/versioning/version-gate.ts.)
- */
+// The version gate must see the version Fastify's router sees. `request.url` is raw while find-my-way
+// percent-decodes before matching (`/%761/ping` serves `/v1/ping`), so a single escape once bypassed
+// sunset and unsupported-version enforcement. A 400 (not a 404) proves the gate rejected the request:
+// `/v2/*` has no route, so a skipped gate falls through to not-found.
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import Fastify, { type FastifyInstance } from "fastify"
@@ -67,9 +57,8 @@ describe("version gate with a percent-encoded first segment", () => {
   })
 
   it("does not turn a malformed escape into a 500", async () => {
-    // Fastify itself rejects an undecodable URI before onRequest hooks run, so the gate never sees "%zz";
-    // the guarded decode exists so that a future hook order (or a decodable-but-odd segment) still cannot
-    // throw out of the gate. Either way the outcome must be a client error, never a 500.
+    // Fastify rejects an undecodable URI before onRequest hooks run; the guarded decode exists so a future
+    // hook order still cannot throw out of the gate. Either way it must be a client error, never a 500.
     const res = await app.inject({ method: "GET", url: "/%zz/x" })
     expect([400, 404]).toContain(res.statusCode)
   })

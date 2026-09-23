@@ -1,5 +1,5 @@
 /**
- * DECISIONS §44 — a sign-up on a NON-ticketed event is a free registration.
+ * DECISIONS §44: a sign-up on a NON-ticketed event is a free registration.
  *
  * Before this, a slot-based event's host saw an empty "Attendees" list and zero check-in counters:
  * joining wrote `cleanup_members` (+ a slot claim) and nothing on the registration side, while the
@@ -183,7 +183,7 @@ describe("signing up for a non-ticketed event", () => {
 })
 
 describe("a ticketed event", () => {
-  it("gets no auto-registration — registerIn owns that path", async () => {
+  it("gets no auto-registration; registerIn owns that path", async () => {
     const id = seedEvent()
     seedTicketType(id)
     const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })

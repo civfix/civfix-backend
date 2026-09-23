@@ -1,14 +1,12 @@
 /**
- * SIGTERM DRAIN BEHAVIOUR (blue/green deploys).
- *
- * `makeShutdown` (src/lifecycle.ts) is the whole app-side contract with the blue/green edge:
+ * `makeShutdown` (src/lifecycle.ts) is the whole app-side SIGTERM contract with the blue/green edge:
  *
  *   1. the instant the signal lands, GET /healthz answers 503 + x-civfix-draining so Caddy's active
  *      health check pulls this api color out of the upstream pool on its next probe;
  *   2. the process keeps serving normally for SHUTDOWN_DRAIN_MS;
  *   3. then it closes IDLE keep-alive sockets on a short sweep while awaiting app.close(), so parked
  *      connections cannot stretch the close while ACTIVE requests are allowed to finish (Fastify is
- *      built with forceCloseConnections:false — its default 'idle' destroys in-flight sockets too);
+ *      built with forceCloseConnections:false, because its default 'idle' destroys in-flight sockets too);
  *   4. only then the container (pg-boss / redis / db), under its own watchdog.
  *
  * The ordering tests fake timers so a multi-second drain costs nothing. The availability tests use a

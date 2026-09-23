@@ -235,7 +235,6 @@ describe("org suspension gate (DECISIONS §32)", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
     // Nothing moved: the draft is still a draft and no send slot was consumed.
     expect((await repo.findById(draft.id))?.status).toBe("draft")
-    // Lifting the flag restores the lever.
     repo.setEventOrganizationSuspended(EVENT, false)
     const sent = await service.send(EVENT, HOST, draft.id)
     expect(sent.status).toBe("sending")

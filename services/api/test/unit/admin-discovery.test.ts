@@ -12,13 +12,6 @@ import {
   type DiscoveryService,
 } from "../../src/services/admin/discovery-service.js"
 
-/**
- * Offline unit tests for the admin discovery service over the in-memory DiscoveryRepository (no DB, no
- * Docker). They cover the queue list (filter all|attention|clear + sort pop|reports + search), the
- * detail projection (per-category counts + contacts + sample pins), and the note / flag / draft
- * mutations, plus the pure helpers (dominant category, contact state, SLA, priority band).
- */
-
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
 function harness(): { repo: InMemoryDiscoveryRepository; svc: DiscoveryService } {
@@ -29,7 +22,6 @@ function harness(): { repo: InMemoryDiscoveryRepository; svc: DiscoveryService }
   return { repo, svc }
 }
 
-/** A timestamp `hours` before NOW. */
 function hoursAgo(hours: number): Date {
   return new Date(NOW.getTime() - hours * 60 * 60 * 1000)
 }
@@ -133,7 +125,6 @@ describe("discovery list", () => {
     expect(row.overSla).toBe(true)
     expect(row.priority).toBe("high")
     expect(row.lastReport).toBe("1h")
-    // No contacts on file + waiting reports -> both categories missing.
     expect(row.contactState.missing).toEqual(expect.arrayContaining(["trash", "hazard"]))
   })
 
@@ -163,9 +154,7 @@ describe("discovery list", () => {
 
   it("filters attention (missing contact) vs clear (fully routed)", async () => {
     const { repo, svc } = harness()
-    // Needs attention: waiting trash, no contact.
     repo.seedTask({ id: "ATTN", geoid: "1", place: "Needs", perCategory: { trash: 3 } })
-    // Clear: waiting trash but a default contact covers it.
     repo.seedTask({
       id: "CLEAR",
       geoid: "2",
@@ -184,11 +173,8 @@ describe("discovery list", () => {
     expect(all.items).toHaveLength(2)
   })
 
-  /**
-   * The SQL predicate is `ilikeAnyOf(sql, [j.name, t.geoid], q)` — the jurisdiction NAME or the GEOID.
-   * The task id is not a search column, so a q matching one must find nothing (the fake used to search it,
-   * which is how a search test passed against behavior production lacks).
-   */
+  // The SQL searches only the jurisdiction name and geoid. The fake once also searched the task id, which
+  // let a test pass against behavior production lacks.
   it("search matches place or geoid (case-insensitive) and NEVER the task id", async () => {
     const { repo, svc } = harness()
     repo.seedTask({
@@ -224,7 +210,6 @@ describe("discovery list", () => {
     expect(first.nextCursor).not.toBeNull()
     const second = await svc.list({ limit: 2, cursor: first.nextCursor ?? undefined })
     expect(second.items).toHaveLength(2)
-    // No overlap between pages.
     const firstIds = new Set(first.items.map((i) => i.id))
     expect(second.items.every((i) => !firstIds.has(i.id))).toBe(true)
   })
@@ -289,7 +274,6 @@ describe("discovery detail", () => {
   it("interleaves operator notes and citizen suggestions oldest-first", async () => {
     const { repo, svc } = harness()
     repo.seedTask({ id: "JUR-1", geoid: "4805000", place: "Austin", perCategory: { trash: 1 } })
-    // Suggestion lands first (earlier clock tick), then an operator note.
     repo.seedSuggestion("4805000", { formUrl: "https://austin.gov/report" })
     await svc.addNote("JUR-1", { text: "Verified the form", actorId: "op", who: "jane" })
 
@@ -351,9 +335,7 @@ describe("discovery mutations", () => {
 
     const detail = await svc.getTask("JUR-1")
     expect(detail.contacts).toContainEqual({ category: "trash", email: "trash@city.gov" })
-    // Draft does NOT resolve the task.
     expect(repo.tasks.get("JUR-1")?.task.status).toBe("open")
-    // trash now routed; hazard still missing.
     expect(detail.contactState.routed).toContain("trash")
     expect(detail.contactState.missing).toContain("hazard")
   })

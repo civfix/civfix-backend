@@ -262,7 +262,7 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
   })
 
   /**
-   * M10 for retention: the sweep used to delete ONE fixed batch per table per DAY, so any table whose daily
+   * The sweep used to delete ONE fixed batch per table per DAY, so any table whose daily
    * expiry churn exceeded the batch grew a backlog forever. Real SQL, real LIMIT: five doomed rows against a
    * page size of two must all be gone in one run.
    */
@@ -320,7 +320,7 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
    * (key, scope, COALESCE(user_or_anon, '')), so ONE key value can legitimately name several live rows.
    * The lane used to page with `WHERE key IN (SELECT key ... WHERE created_at < cutoff LIMIT n)`, which
    * re-expands each aged key back over its whole family: a younger row in another scope/owner was
-   * deleted with it — silently voiding a still-live idempotency guarantee — and a single page could
+   * deleted with it (silently voiding a still-live idempotency guarantee), and a single page could
    * delete more rows than the batch limit it was handed. Paging by ctid deletes exactly the rows the age
    * predicate selected.
    */

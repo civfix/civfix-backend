@@ -1,25 +1,13 @@
-/**
- * Budget-sharing tests for chainReverse (src/adapters/reverse-geocode.chain.ts).
- *
- * reverse-geocode-chain.test.ts covers the ordering contract; this file covers the DEADLINE, which is the
- * half that regressed: a single 5s chain ceiling handed whole to the first provider left the fallback
- * ~1s of a 4s-timeout provider, so the fallback the chain exists for came back empty on a Mapbox stall.
- * The budget is now split `remaining / providers-left`, so:
- *   - a hung first provider is abandoned at its share and the fallback still gets a real one,
- *   - a fast first provider passes its UNUSED share on (the common case is not slower than before),
- *   - the TOTAL is still bounded by the chain budget, however many providers are chained.
- *
- * Everything runs on fake timers (vitest fakes Date.now too, which is what the chain measures with), so
- * these assert seconds of behavior in milliseconds of test.
- */
+// The deadline half of chainReverse regressed: one 5s ceiling handed whole to the first provider left
+// the fallback ~1s after a 4s-timeout stall, so the fallback came back empty. The budget is now split
+// `remaining / providers-left`. vitest fakes Date.now too, which is what the chain measures with.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { chainReverse, type PointResolver } from "../../src/adapters/reverse-geocode.chain.js"
 
-/** The budget is scheduling, not shape: a string answer keeps these assertions about the clock. */
+// A string answer keeps these assertions about the clock, not the result shape.
 type StringResolver = PointResolver<string>
 
-/** A provider that never answers — the stalled-vendor case. Records when it was called. */
 function hangs(calls: number[]): StringResolver {
   return () => {
     calls.push(Date.now())
@@ -27,7 +15,6 @@ function hangs(calls: number[]): StringResolver {
   }
 }
 
-/** A provider that answers `value` after `afterMs`. Records when it was called. */
 function answersAfter(afterMs: number, value: string | null, calls: number[]): StringResolver {
   return () => {
     calls.push(Date.now())
@@ -50,11 +37,10 @@ describe("chainReverse budget", () => {
     const start = Date.now()
     const promise = chainReverse(hangs(calls), answersAfter(500, "fallback", calls))(1, 2)
 
-    // Nothing but the stalled provider has been reached yet.
     await vi.advanceTimersByTimeAsync(2_400)
     expect(calls.map((t) => t - start)).toEqual([0])
 
-    // 2500 = 5000 / 2 providers: the stall is cut off here, not at 4000 (its own timeout).
+    // 2500 = 5000 / 2 providers: the stall is cut off here, not at its own 4000 timeout.
     await vi.advanceTimersByTimeAsync(200)
     expect(calls.map((t) => t - start)).toEqual([0, 2_500])
 
@@ -79,7 +65,7 @@ describe("chainReverse budget", () => {
     const start = Date.now()
     const promise = chainReverse(hangs(calls), hangs(calls), hangs(calls))(1, 2)
 
-    // 5000/3, then remaining/2, then the rest — three attempts, one total deadline.
+    // 5000/3, then remaining/2, then the rest: three attempts, one total deadline.
     await vi.advanceTimersByTimeAsync(5_000)
     await expect(promise).resolves.toBeNull()
     expect(calls.length).toBe(3)
@@ -108,7 +94,6 @@ describe("chainReverse budget", () => {
       await vi.advanceTimersByTimeAsync(5_000)
       await expect(promise).resolves.toBeNull()
       await vi.advanceTimersByTimeAsync(5_000)
-      // Let any queued rejection callback run.
       await Promise.resolve()
       expect(unhandled).toEqual([])
     } finally {

@@ -131,7 +131,7 @@ describe("makeAuthHarness (buildServer override pass-through)", () => {
     const h = await harness()
     expect(h.container.env.NODE_ENV).toBe("test")
     // USE_FAKE_CHAT is on for the test env, so the chat seam is the in-memory fake a suite can assert on.
-    // roomSize is the fake's own test helper — the real WS adapter has no such method.
+    // roomSize is the fake's own test helper: the real WS adapter has no such method.
     const chat = h.container.chatService as FakeChatService
     expect(typeof chat.persist).toBe("function")
     expect(chat.roomSize("no-such-room")).toBe(0)
@@ -155,7 +155,7 @@ describe("makeAuthHarness (buildServer override pass-through)", () => {
   /**
    * The isolation claim has to hold on the DEFAULT path, not only when an override forces an explicit
    * source. It previously did not: with no options the harness passed loadEnv(undefined), so the ambient
-   * environment — a developer's real DATABASE_URL among it — became the offline app's config.
+   * environment (a developer's real DATABASE_URL among it) became the offline app's config.
    */
   it("ignores the ambient environment even with NO options passed", async () => {
     // Real infrastructure in the developer's shell, and a flag that would swap a fake for a live adapter.

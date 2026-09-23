@@ -62,7 +62,6 @@ describe("PgBossJobs (API enqueue adapter)", () => {
     const jobs = new PgBossJobs({ connectionString: "postgres://u:p@localhost:5432/civfix" })
     await jobs.start()
 
-    // Constructed with the connection string.
     expect(ctor).toHaveBeenCalledTimes(1)
     expect(ctor.mock.calls[0]![0]).toMatchObject({
       connectionString: "postgres://u:p@localhost:5432/civfix",
@@ -78,7 +77,7 @@ describe("PgBossJobs (API enqueue adapter)", () => {
 
     // Each queue is created AND updated with the "short" policy so a singletonKey actually dedupes
     // pending jobs in pg-boss v10 (the default "standard" policy does not, and createQueue is a no-op on
-    // an already-existing queue — so updateQueue is what fixes a pre-existing default-policy queue).
+    // an already-existing queue, so updateQueue is what fixes a pre-existing default-policy queue).
     for (const name of API_QUEUE_NAMES) {
       expect(lastBoss.createQueue).toHaveBeenCalledWith(
         name,

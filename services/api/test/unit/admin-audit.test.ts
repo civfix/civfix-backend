@@ -6,13 +6,6 @@ import {
   type AuditService,
 } from "../../src/services/admin/audit-service.js"
 
-/**
- * Offline unit tests for the admin audit-view service over the in-memory AuditRepository (no DB, no
- * Docker). Cover the row -> DTO projection (null target/meta fall back to ""/{}), the actor / action /
- * target filters, newest-first ordering, and the keyset pagination. The real SQL read (LEFT JOIN users)
- * is Docker-gated (test/integration/admin-audit.test.ts).
- */
-
 const NOW = new Date("2026-06-15T12:00:00.000Z")
 
 function harness(): { repo: InMemoryAuditRepository; svc: AuditService } {
@@ -95,7 +88,6 @@ describe("audit list", () => {
     repo.seedRow({ id: "b", actorId: "op-2", actorName: "Bob Operator", action: "y" })
 
     expect((await svc.list({ actor: "alice" })).items.map((i) => i.action)).toEqual(["x"])
-    // Exact id match.
     expect((await svc.list({ actor: "op-2" })).items.map((i) => i.action)).toEqual(["y"])
   })
 

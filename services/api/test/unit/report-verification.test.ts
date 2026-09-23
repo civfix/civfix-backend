@@ -55,7 +55,7 @@ function verdictHarness(): VerdictHarness {
   return { repo, svc }
 }
 
-describe("setVerdict (D7) — verdict write + count + flip", () => {
+describe("setVerdict (D7): verdict write + count + flip", () => {
   it("approve-once: records the verdict but leaves report_verified false (count=1 < threshold)", async () => {
     const { repo, svc } = verdictHarness()
     const uid = "user-1"
@@ -166,7 +166,7 @@ describe("setVerdict (D7) — verdict write + count + flip", () => {
   })
 })
 
-describe("setUserReportVerified (D18) — manual override/revoke", () => {
+describe("setUserReportVerified (D18): manual override/revoke", () => {
   function userHarness(): { repo: InMemoryAdminUserRepository; svc: AdminUserService } {
     const repo = new InMemoryAdminUserRepository()
     const svc = makeAdminUserService({
@@ -293,7 +293,7 @@ describe("createReport auto-forward enqueue gate (D9)", () => {
   })
 })
 
-describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
+describe("report.autoforward handler (D9): runAutoForwardWith", () => {
   function handlerHarness(opts: { sendError?: unknown } = {}) {
     const repo = new InMemoryAdminReportRepository()
     repo.now = NOW
@@ -387,7 +387,7 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
     expect(mailer.sent).toHaveLength(0)
   })
 
-  it("(c) a TERMINAL send failure (409 sender-not-approved) is swallowed — handler completes, never throws", async () => {
+  it("(c) a TERMINAL send failure (409 sender-not-approved) is swallowed; handler completes, never throws", async () => {
     const { repo, svc } = handlerHarness({ sendError: AppError.conflict("sender not approved") })
     repo.seedReport({
       id: "rep-1",
@@ -429,7 +429,7 @@ describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
     expect(warnings).toHaveLength(1)
   })
 
-  it("(c'') a DEADLINE expiry is NOT retried — the handler completes and leaves it to the operator", async () => {
+  it("(c'') a DEADLINE expiry is NOT retried; the handler completes and leaves it to the operator", async () => {
     const { repo, svc } = handlerHarness({ sendError: new OutboundSendDeadlineError(30_000) })
     repo.seedReport({
       id: "rep-1",

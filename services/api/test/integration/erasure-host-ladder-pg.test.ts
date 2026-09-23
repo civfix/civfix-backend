@@ -112,7 +112,7 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     await pg?.teardown()
   })
 
-  it("does NOT cancel a sole-owner organization's events — the promoted admin takes them over", async () => {
+  it("does NOT cancel a sole-owner organization's events: the promoted admin takes them over", async () => {
     const h = pg!
     const owner = await user(h, "owner-sole")
     const admin = await user(h, "admin-successor")

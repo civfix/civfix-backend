@@ -11,9 +11,9 @@ import { isJurisdictionSender } from "../../src/services/admin/inbound-thread-co
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 
 /**
- * M7 — forged inbound email could impersonate a jurisdiction: there was NO message authentication at
- * all, and a spoofable `X-Thread-Token` HEADER selected the thread. M6 — untrusted `bodyHtml` was
- * stored and served verbatim to the admin console.
+ * Forged inbound email could impersonate a jurisdiction: there was NO message authentication at all,
+ * and a spoofable `X-Thread-Token` HEADER selected the thread. Untrusted `bodyHtml` was also stored and
+ * served verbatim to the admin console.
  */
 
 function mail(over: Partial<ParsedMail> = {}): ParsedMail {

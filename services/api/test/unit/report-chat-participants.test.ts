@@ -72,7 +72,6 @@ describe("toReportParticipantDTO", () => {
   it("hides a blocked pair behind the shared hidden identity", () => {
     const dto = toReportParticipantDTO(row({ blocked_pair: true }))
 
-    // Not the real display name, and none of the identifying fields survive.
     expect(dto.user.name).not.toBe("Ada Lovelace")
     expect(dto.user.handle).toBeNull()
     expect(dto.user.bio).toBeNull()

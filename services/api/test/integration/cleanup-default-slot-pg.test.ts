@@ -2,7 +2,7 @@
  * 0169_default_event_slot.sql against a live PostGIS container (Docker-gated).
  *
  * The template database this harness clones has already applied the whole chain, so the file under test
- * has already run once against an EMPTY events table — which proves nothing. This file therefore seeds
+ * has already run once against an EMPTY events table, which proves nothing. This file therefore seeds
  * the legacy shapes the backfill exists for and then re-executes the migration's own text (read off
  * disk, run through `sql.unsafe` exactly as src/db/migrate.ts does), which is the only way to observe
  * what it writes:
@@ -10,7 +10,7 @@
  *   - an OPEN slot-less event gains exactly one 'General volunteers' slot, untimed, carrying the event's
  *     capacity, and one claim per existing cleanup_members row, each stamped with the moment that member
  *     actually joined rather than the moment the deploy ran;
- *   - an ENDED slot-less event gains NOTHING — its roster is what credited hours were attested against,
+ *   - an ENDED slot-less event gains NOTHING: its roster is what credited hours were attested against,
  *     and cleanup-service already refuses every slot edit on it (a cancelled event is skipped for the
  *     same reason, plus the obvious one);
  *   - an open event that ALREADY has a board is untouched: no extra slot, and no claim conjured onto a
@@ -143,7 +143,7 @@ describe.skipIf(!pg)("0169 default event slot backfill (integration)", () => {
     ])
     const claims = await claimsOf(id)
     expect(claims.map((c) => c.userId)).toEqual([organizer, member].sort())
-    // The claim is backdated to when the member actually joined, not to when the deploy ran — the
+    // The claim is backdated to when the member actually joined, not to when the deploy ran; the
     // roster is a volunteer-hours record, so a wall-clock stamp would rewrite everyone's history.
     const memberClaim = claims.find((c) => c.userId === member)
     expect(memberClaim?.claimedAt.getTime()).toBe(joinedAt.getTime())
@@ -186,7 +186,7 @@ describe.skipIf(!pg)("0169 default event slot backfill (integration)", () => {
     expect(await claimantsOf(cancelled)).toEqual([])
   })
 
-  it("leaves an open event that already has a board alone — no extra slot, no conjured claim", async () => {
+  it("leaves an open event that already has a board alone: no extra slot, no conjured claim", async () => {
     const organizer = await newUser("Olive Organizer")
     const member = await newUser("Mel Member")
     const id = await newCleanup(organizer)

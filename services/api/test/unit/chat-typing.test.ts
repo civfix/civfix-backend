@@ -57,7 +57,6 @@ describe("typing fan-out", () => {
     expect(bTyping[0]).toMatchObject({ type: "typing", cleanupId: ROOM, userId: ALICE })
     expect(aConn.framesOfType("typing")).toHaveLength(0)
 
-    // The emitted frame is a valid server frame.
     expect(WsServerMessageSchema.safeParse(bTyping[0]).success).toBe(true)
   })
 
@@ -72,7 +71,6 @@ describe("typing fan-out", () => {
 
     expect(mConn.framesOfType("error")).toHaveLength(1)
     expect((mConn.framesOfType("error")[0] as { code: string }).code).toBe("FORBIDDEN")
-    // The member in the room saw no typing from the non-member.
     expect(aConn.framesOfType("typing")).toHaveLength(0)
   })
 

@@ -1,22 +1,22 @@
 /**
- * P9 signup slots — the SERVICE half (B22–B26), against the in-memory CleanupRepository.
+ * Signup slots, the SERVICE half, against the in-memory CleanupRepository.
  *
  * The claim/release transaction has its own file (cleanup-slots-claim.test.ts); this one pins the
  * host-authoring side, where every interesting rule is a REFUSAL that has to happen before a row is
  * touched:
  *
  *   - the reconcile diff itself (add / update / delete, and that `[]` is REFUSED because every event
- *     needs at least one slot, while OMITTING the key leaves the board alone — on create, where there
+ *     needs at least one slot, while OMITTING the key leaves the board alone; on create, where there
  *     is no board yet, an omitted key synthesizes the default slot rather than refusing, because the
  *     wire schema keeps it optional and released clients still ship without it);
- *   - a slot id belonging to ANOTHER event is a hard 422, never a quiet re-parent (B23) — the single
+ *   - a slot id belonging to ANOTHER event is a hard 422, never a quiet re-parent: the single
  *     nastiest failure mode here, because a silent insert would move someone else's roster row;
  *   - case-insensitive duplicate titles 422 DETERMINISTICALLY, before cleanup_slots_cleanup_title_uidx
  *     fires (a raw constraint violation would surface as an unactionable 500);
  *   - the cap and the slur gate, on the same footing as bring/title/reason;
- *   - slots are refused on a done/cancelled event (B26) — deleting a slot after completion rewrites the
- *     roster the credited hours were attested against;
- *   - lowering capacity below the live claim count is ALLOWED and evicts nobody (B25);
+ *   - slots are refused on a done/cancelled event, because deleting a slot after completion rewrites
+ *     the roster the credited hours were attested against;
+ *   - lowering capacity below the live claim count is ALLOWED and evicts nobody;
  *   - slots are legal on BOTH eventKind values, unlike linkedReportIds.
  */
 
@@ -88,7 +88,7 @@ beforeEach(() => {
   service = makeCleanupService({ tickets: TEST_TICKET_SIGNER, repo, counters })
 })
 
-describe("createCleanup — slots ride the create transaction (B22)", () => {
+describe("createCleanup: slots ride the create transaction (B22)", () => {
   it("creates the slots with the event and returns the hydrated board", async () => {
     const dto = await service.createCleanup(
       {
@@ -147,7 +147,7 @@ describe("createCleanup — slots ride the create transaction (B22)", () => {
       },
       ORG,
     )
-    // A fresh row, NOT the id the client sent — which is what makes a foreign id harmless here.
+    // A fresh row, NOT the id the client sent, which is what makes a foreign id harmless here.
     expect(dto.slots).toHaveLength(1)
     expect(dto.slots[0]?.id).not.toBe("99999999-9999-9999-9999-999999999999")
   })
@@ -209,7 +209,7 @@ describe("createCleanup — slots ride the create transaction (B22)", () => {
   })
 })
 
-describe("duplicateCleanup — a legacy slot-less source still yields a valid copy", () => {
+describe("duplicateCleanup: a legacy slot-less source still yields a valid copy", () => {
   it("synthesizes the default slot when the source board is empty", async () => {
     const source = repo.seedCleanup({
       id: CLEANUP_ID,
@@ -256,7 +256,7 @@ describe("duplicateCleanup — a legacy slot-less source still yields a valid co
   })
 })
 
-describe("updateCleanup — the reconcile diff (B23)", () => {
+describe("updateCleanup: the reconcile diff (B23)", () => {
   it("adds, updates and deletes to match the FULL desired set", async () => {
     const id = seedEvent()
     const keep = repo.seedSlot({ cleanupId: id, title: "Grill", capacity: 2, sortOrder: 0 })
@@ -273,13 +273,12 @@ describe("updateCleanup — the reconcile diff (B23)", () => {
       ORG,
     )
 
-    // The kept row is UPDATED in place — its id survives the rename, which is the whole reason slots
+    // The kept row is UPDATED in place: its id survives the rename, which is the whole reason slots
     // carry a surrogate uuid instead of an ordinal key.
     expect(dto.slots.map((s) => [s.id === keep.id, s.title, s.capacity])).toEqual([
       [true, "Grill duty", 4],
       [false, "Sign-in", undefined],
     ])
-    // "Cleanup crew" is absent from the desired set, so it is gone.
     expect(
       repo.slots
         .filter((s) => s.cleanupId === id)
@@ -336,7 +335,7 @@ describe("updateCleanup — the reconcile diff (B23)", () => {
     )
 
     // (cleanup_id, lower(title)) is an IMMEDIATELY-checked unique index, so the first UPDATE of a naive
-    // swap writes a title the second row still holds — a raw 23505, i.e. a 500 on an ordinary edit. The
+    // swap writes a title the second row still holds: a raw 23505, i.e. a 500 on an ordinary edit. The
     // repo parks renamed rows on sentinel titles first; both slots keep their identity through it.
     expect(dto.slots.map((s) => [s.id, s.title])).toEqual([
       [reg.id, "Grill"],
@@ -353,7 +352,7 @@ describe("updateCleanup — the reconcile diff (B23)", () => {
     const dto = await service.updateCleanup(id, { slots: [{ title: "Grill", capacity: 5 }] }, ORG)
 
     expect(dto.slots.map((s) => [s.title, s.capacity])).toEqual([["Grill", 5]])
-    // A genuinely NEW row — dropping the id is how a host resets a slot's claimants.
+    // A genuinely NEW row: dropping the id is how a host resets a slot's claimants.
     expect(dto.slots[0]?.id).not.toBe(old.id)
     expect(repo.slots.filter((s) => s.cleanupId === id)).toHaveLength(1)
   })
@@ -414,7 +413,7 @@ describe("updateCleanup — the reconcile diff (B23)", () => {
     ).rejects.toSatisfy((err: unknown) => fieldsOf(err).slots === `unknown slot: ${unknown}`)
   })
 
-  it("a foreign slot id 422s the WHOLE patch — the scalar fields are not written either", async () => {
+  it("a foreign slot id 422s the WHOLE patch: the scalar fields are not written either", async () => {
     const id = seedEvent()
     seedEvent(OTHER_CLEANUP_ID)
     const foreign = repo.seedSlot({ cleanupId: OTHER_CLEANUP_ID, title: "Someone else's grill" })
@@ -438,7 +437,7 @@ describe("updateCleanup — the reconcile diff (B23)", () => {
 
     // The reconcile's own refusal fires inside a transaction opened AFTER the scalar UPDATE commits, so
     // without the pre-check the host got a 422 for a save whose title/description/scheduledAt had
-    // ALREADY been applied — a half-written PATCH behind an error response. `slots` is validated
+    // ALREADY been applied: a half-written PATCH behind an error response. `slots` is validated
     // against the CURRENT board before anything is written.
     const after = repo.cleanups.get(id)!
     expect(after.title).toBe(originalTitle)
@@ -670,10 +669,8 @@ describe("the cleanup_slot bell (B34/B35)", () => {
     })
 
     const dto = await notified.updateCleanup(id, { slots: [{ title: "Sign-in" }] }, ORG)
-    // The edit itself committed...
     expect(dto.slots.map((s) => s.title)).toEqual(["Sign-in"])
-    // ...and the healthy recipient still got their bell (best-effort PER RECIPIENT, not one try/catch
-    // around the whole loop).
+    // Best-effort PER RECIPIENT, not one try/catch around the whole loop.
     expect(reached.sort()).toEqual([COHOST, MEMBER].sort())
   })
 })
@@ -715,7 +712,7 @@ describe("read shapes (B29a)", () => {
     expect(page.items.find((c) => c.id === id)?.slotCount).toBe(0)
   })
 
-  it("the attendee roster carries each person's slot (no second endpoint — B29b)", async () => {
+  it("the attendee roster carries each person's slot (no second endpoint, B29b)", async () => {
     const id = seedEvent()
     const grill = repo.seedSlot({ cleanupId: id, title: "Grill" })
     await service.claimEventSlot(id, MEMBER, grill.id)
@@ -951,7 +948,7 @@ describe("slot windows (0167)", () => {
     expect(repo.cleanups.get(id)?.endsAt).toEqual(EVENT_END)
   })
 
-  it("422s clearing the event's end entirely — every event must have one", async () => {
+  it("422s clearing the event's end entirely: every event must have one", async () => {
     const id = seedTimedEvent()
     repo.seedSlot({
       cleanupId: id,

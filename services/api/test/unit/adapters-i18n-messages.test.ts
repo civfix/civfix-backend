@@ -1,21 +1,6 @@
-/**
- * Tests for the server message renderer (src/i18n) — previously untested, though every push body, bell
- * title and OTP email subject goes through it.
- *
- * What is pinned here:
- *   - resolution order: the target locale's catalog -> the English source -> the literal key (never empty,
- *     never a throw),
- *   - {{var}} interpolation, including an UNMATCHED placeholder being left intact rather than printing
- *     "undefined" to a user,
- *   - BCP-47 clamping (es-419 -> es, en_US -> en, junk -> en),
- *   - CATALOG INTEGRITY: every translated key exists in the English source (a typo'd key is silently dead
- *     copy, since the catalogs are Partial), and every translated string carries the SAME {{vars}} as its
- *     English source (a dropped placeholder means a name/status never appears in the notification).
- *
- * The naming here is deliberate: `Partial<Record<MessageKey, string>>` makes a MISSING key legal, so only
- * a test can tell an intentional gap from an accident. The English keys that no catalog translates are
- * listed explicitly below.
- */
+// The catalogs are `Partial<Record<MessageKey, string>>`, so a missing or typo'd key is legal and silently
+// dead, and a dropped {{var}} means a name or status never appears in the notification. Only a test can
+// tell an intentional gap from an accident, so the untranslated keys are listed explicitly below.
 
 import { describe, it, expect } from "vitest"
 import { renderMessage } from "../../src/i18n/renderMessage.js"
@@ -27,7 +12,6 @@ import { ko } from "../../src/i18n/messages/ko.js"
 
 const CATALOGS: Record<string, Partial<Record<MessageKey, string>>> = { es, de, ko }
 
-/** Keys intentionally left English in every catalog (see en.ts SCOPE note). */
 const INTENTIONALLY_UNTRANSLATED: readonly MessageKey[] = []
 
 function placeholders(template: string): string[] {
@@ -81,7 +65,7 @@ describe("renderMessage", () => {
   })
 
   it("falls back to English for a key the catalog does not translate", () => {
-    // Pick a key present in en and absent from es; if es ever translates it, this asserts nothing false.
+    // If es ever translates every key, this asserts nothing false.
     const missing = (Object.keys(en) as MessageKey[]).find((k) => es[k] === undefined)
     if (missing !== undefined) {
       expect(renderMessage("es", missing)).toBe(en[missing])
@@ -108,7 +92,7 @@ describe("renderMessage", () => {
     expect(renderMessage("en", "notification.follower.body", { name: "@ada" })).toBe(
       "@ada started following you.",
     )
-    // No vars at all: the template is returned untouched (never "undefined started following you").
+    // Never "undefined started following you".
     expect(renderMessage("en", "notification.follower.body")).toContain("{{name}}")
     expect(renderMessage("en", "notification.follower.body", { other: "x" })).toContain("{{name}}")
   })
@@ -147,12 +131,9 @@ describe("catalog integrity", () => {
     }
   })
 
-  /**
-   * The service-hours transcript is a PDF handed to a school or a court, and every chrome string on it
-   * comes from these catalogs. A missing overlay key falls back to English SILENTLY, so a ko transcript
-   * would ship half in English and look forged. The generic gap check below would catch it too, but this
-   * block names the feature so the failure message says which document broke.
-   */
+  // The service-hours transcript is a PDF handed to a school or a court; a missing key falls back to
+  // English silently and a half-English transcript looks forged. The generic gap check would catch it
+  // too, but this names the feature so the failure says which document broke.
   it("every certificate.* key has a real es/de/ko translation (the PDF must not ship half-English)", () => {
     const certificateKeys = (Object.keys(en) as MessageKey[]).filter((k) =>
       k.startsWith("certificate."),

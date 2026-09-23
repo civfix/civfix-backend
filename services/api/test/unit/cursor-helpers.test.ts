@@ -159,7 +159,7 @@ describe("parseNearCursor / encodeNearCursor", () => {
     expect(parseNearCursor(encoded)).toEqual({ dist: 1234.5, id: UUID })
   })
 
-  it("parses a zero distance and exponent notation (a 0 anchor is legitimate — you are AT the point)", () => {
+  it("parses a zero distance and exponent notation (a 0 anchor is legitimate: you are AT the point)", () => {
     expect(parseNearCursor(`0|${UUID}`)).toEqual({ dist: 0, id: UUID })
     expect(parseNearCursor(`0.0|${UUID}`)).toEqual({ dist: 0, id: UUID })
     expect(parseNearCursor(`1e3|${UUID}`)).toEqual({ dist: 1000, id: UUID })

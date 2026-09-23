@@ -9,14 +9,6 @@ import {
   type AdminEventService,
 } from "../../src/services/admin/admin-event-service.js"
 
-/**
- * Offline unit tests for the admin events (cleanups) service over the in-memory AdminEventRepository (no
- * DB, no Docker). They cover the list (status + flagged facet, search, pagination), the detail (timeline
- * + messages + turnout), status changes (cleanup_timeline + audit), the flag toggle
- * (cleanup_timeline-tracked + audit), cancel (-> cancelled + audit), and post-message (chat row +
- * notify each member + audit), plus the pure helpers.
- */
-
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
 function harness(): { repo: InMemoryAdminEventRepository; svc: AdminEventService } {
@@ -26,7 +18,6 @@ function harness(): { repo: InMemoryAdminEventRepository; svc: AdminEventService
   return { repo, svc }
 }
 
-/** A timestamp `hours` before NOW. */
 function hoursAgo(hours: number): Date {
   return new Date(NOW.getTime() - hours * 60 * 60 * 1000)
 }
@@ -50,7 +41,6 @@ describe("admin events pure helpers", () => {
     expect(flaggedFromTimeline(["flag"])).toBe(true)
     expect(flaggedFromTimeline(["flag", "unflag"])).toBe(false)
     expect(flaggedFromTimeline(["flag", "unflag", "flag"])).toBe(true)
-    // Non-flag rows do not change the state.
     expect(flaggedFromTimeline(["flag", "status", "message"])).toBe(true)
   })
 
@@ -78,7 +68,7 @@ describe("admin events linking", () => {
     repo.seedReport({ id: HELD, status: "held" })
 
     const result = await svc.linkReports(ev.record.id, [R1, R2, HELD], "op-1")
-    // The held report is silently skipped (visibility gate), only the visible ones link.
+    // The visibility gate skips the held report silently.
     expect(result.linked.sort()).toEqual([R1, R2].sort())
     expect(repo.audits.some((a) => a.action === "event.reports_linked")).toBe(true)
 
@@ -178,26 +168,22 @@ describe("admin events list", () => {
       status: "upcoming",
       timeline: [{ kind: "flag", note: null, who: "op", createdAt: NOW }],
     })
-    // counts span ALL events (not the active facet) so the chips stay accurate.
+    // Counts span all events, not the active facet, so the chips stay accurate.
     const { counts } = await svc.list({ filter: "completed" })
     expect(counts).toEqual({ all: 5, upcoming: 2, in_progress: 1, completed: 1, flagged: 1 })
   })
 
-  // H1: a Phase-1 row stored as 'active'/'done' must surface as the Phase-2 EventStatus AND be caught by
-  // the matching facet (the bug: filter=completed missed stored 'done', and 'active'/'done' leaked as an
-  // invalid EventStatus). Seed RAW stored values to mimic a legacy row.
+  // Legacy rows stored as 'active'/'done' must map to a valid EventStatus and be caught by the matching
+  // facet; filter=completed once missed stored 'done'.
   it("H1: legacy stored active/done surface as in_progress/completed and the facet matches them", async () => {
     const { repo, svc } = harness()
     repo.seedEvent({ id: "legacy-active", storedStatus: "active" })
     repo.seedEvent({ id: "legacy-done", storedStatus: "done" })
     repo.seedEvent({ id: "p2-progress", status: "in_progress" })
 
-    // Read maps the stored Phase-1 value to the Phase-2 EventStatus DTO.
     expect((await svc.get("legacy-active")).status).toBe("in_progress")
     expect((await svc.get("legacy-done")).status).toBe("completed")
 
-    // The completed facet catches the legacy 'done' row; the in_progress facet catches both 'active' and
-    // a Phase-2 'in_progress' row.
     expect((await svc.list({ filter: "completed" })).items.map((i) => i.id)).toEqual([
       "legacy-done",
     ])
@@ -226,16 +212,13 @@ describe("admin events list", () => {
     expect((await svc.list({ q: "beach" })).items.map((i) => i.id)).toEqual(["evt-1"])
     expect((await svc.list({ q: "denver" })).items.map((i) => i.id)).toEqual(["evt-2"])
     expect((await svc.list({ q: "pat" })).items.map((i) => i.id)).toEqual(["evt-2"])
-    // u.handle::text is one of the four ILIKE columns; the fake used not to search it at all.
+    // u.handle::text is one of the four ILIKE columns; the fake once did not search it.
     expect((await svc.list({ q: "TRAILboss" })).items.map((i) => i.id)).toEqual(["evt-2"])
   })
 
-  /**
-   * searchEventsFragment's id branch is `OR c.id = $q::uuid`, gated on isUuid(q): an EXACT uuid equality.
-   * The fake used to match any id SUBSTRING, so an id-prefix search "worked" offline and returned nothing
-   * against Postgres.
-   */
-  it("matches an id ONLY on a full uuid — never a substring, never a non-uuid needle", async () => {
+  // The SQL id branch is exact uuid equality; a fake that matched id substrings passed offline while the
+  // same search returned nothing against Postgres.
+  it("matches an id ONLY on a full uuid, never a substring, never a non-uuid needle", async () => {
     const { repo, svc } = harness()
     const id = "7a1b2c33-4455-4666-8777-99aa00bb44dd"
     repo.seedEvent({ id, title: "Creek cleanup", place: "Boise", organizer: null })
@@ -284,7 +267,7 @@ describe("admin events detail", () => {
 })
 
 describe("admin events mutations", () => {
-  it("setStatus 409s every status but cancelled — the rest is a clock reading", async () => {
+  it("setStatus 409s every status but cancelled; the rest is a clock reading", async () => {
     const { repo, svc } = harness()
     repo.seedEvent({ id: "evt-1", status: "upcoming" })
     for (const status of ["upcoming", "in_progress", "completed"] as const) {
@@ -377,13 +360,11 @@ describe("admin events mutations", () => {
       actorId: "op-1",
     })
     expect(notified).toBe(3)
-    // A chat message was appended.
     expect(repo.messages.get("evt-1")?.at(-1)).toMatchObject({
       who: "CivFix",
       text: "Rescheduled to Saturday 9am",
     })
     expect(repo.timeline.get("evt-1")?.at(-1)).toMatchObject({ kind: "message", who: "operator" })
-    // One notification per member, all carrying the body.
     expect(repo.notifications).toHaveLength(3)
     expect(repo.notifications.map((n) => n.userId).sort()).toEqual(["m-1", "m-2", "m-3"])
     expect(repo.notifications.every((n) => n.body === "Rescheduled to Saturday 9am")).toBe(true)

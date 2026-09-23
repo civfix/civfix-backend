@@ -183,7 +183,7 @@ describe("chat-gateway-wiring: the LIVE @city forward gate is the durable thrott
     expect(sent[0]!.input.toAddr).toBe("fix@sf.gov")
   })
 
-  it("caps one sender across DISTINCT reports — rotating report ids no longer buys a fresh email", async () => {
+  it("caps one sender across DISTINCT reports: rotating report ids no longer buys a fresh email", async () => {
     const onReportMessage = wire(new InMemoryCounterStore())
 
     for (let i = 0; i < CITY_FORWARD_PER_SENDER_PER_HOUR + 5; i++) {
@@ -218,7 +218,7 @@ describe("chat-gateway-wiring: the LIVE @city forward gate is the durable thrott
     expect(keys).toContain("citfwd:geoid:0600001")
   })
 
-  it("FAILS CLOSED — no government email leaves when the shared counter store is down", async () => {
+  it("FAILS CLOSED: no government email leaves when the shared counter store is down", async () => {
     const broken = new InMemoryCounterStore()
     vi.spyOn(broken, "incr").mockRejectedValue(new Error("redis down"))
     const onReportMessage = wire(broken)

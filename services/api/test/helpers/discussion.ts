@@ -20,7 +20,6 @@ export interface SeededJurisdiction {
   contactEmail: string | null
 }
 
-/** An in-memory DiscussionRepository faithful to the Drizzle impl's observable report lookup. */
 export class InMemoryDiscussionRepository implements DiscussionRepository {
   /** Reports keyed by id (the visibility handle + resolved jurisdiction). */
   readonly reports = new Map<string, DiscussionReportView>()

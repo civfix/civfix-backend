@@ -44,7 +44,7 @@ function sign(body: string, secret: string): string {
 /**
  * Build a minimal RFC822 message the FakeInboundMail subset parses (headers, blank line, body).
  *
- * M7: a DMARC-pass Authentication-Results header is stamped by default. The processor only lets
+ * A DMARC-pass Authentication-Results header is stamped by default. The processor only lets
  * DMARC-aligned mail reach the threaded path, so a fixture without one is Inbox-only by design.
  */
 function rfc822(opts: {
@@ -198,7 +198,7 @@ describe("inbound-mail webhook: reply threading (token present)", () => {
     await h.app.close()
   })
 
-  it("an UNKNOWN reply token mints no thread — it lands in inbound_emails (finding #37)", async () => {
+  it("an UNKNOWN reply token mints no thread; it lands in inbound_emails (finding #37)", async () => {
     const h = await harness()
     const { res } = await ingest(h, {
       eml: rfc822({
@@ -358,7 +358,7 @@ describe("inbound-mail webhook: malformed / safe handling", () => {
 })
 
 /**
- * L17 — the HMAC covered the body ALONE, with no timestamp and no nonce, so a captured
+ * The HMAC used to cover the body ALONE, with no timestamp and no nonce, so a captured
  * (body, signature) pair stayed valid forever. The signed payload is now `<timestamp>.<body>` and the
  * timestamp must be fresh.
  */
@@ -415,7 +415,7 @@ describe("inbound-mail webhook: signature replay window (L17)", () => {
     await h.app.close()
   })
 
-  it("rejects a fresh timestamp paired with a body-only (legacy) signature — the ts is INSIDE the MAC", async () => {
+  it("rejects a fresh timestamp paired with a body-only (legacy) signature: the ts is INSIDE the MAC", async () => {
     const h = await harness()
     const key = `${INBOUND_PENDING_PREFIX}ts-mixed.eml`
     await h.storage.put(key, rfc822({ from: "a@b.gov", to: "support@civfix.org", body: "x" }))

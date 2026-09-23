@@ -1,9 +1,6 @@
 /**
- * Offline gateway test for CHAT @-mentions (B2): a `send` frame whose body @mentions a user (and/or carries
- * mentionedUserIds) is resolved via the injected GatewayChatMentions seam, persisted (recordChatMentions),
- * PROJECTED onto the broadcast + ack ChatMessageDTO.mentions, and the mentioned user is notified
- * (notifyChatMention). Drives the REAL handleClientFrame over the real WsChatService + an in-memory pub/sub,
- * mirroring chat-realtime.test.ts. The seam is a spy so the persist/notify wiring is asserted with no DB.
+ * Chat @-mentions through the REAL handleClientFrame over the real WsChatService and an in-memory
+ * pub/sub. The GatewayChatMentions seam is a spy, so the persist/notify wiring is asserted with no DB.
  */
 
 import { describe, it, expect, beforeEach } from "vitest"
@@ -112,13 +109,11 @@ describe("chat @-mentions over the gateway send path", () => {
       JSON.stringify({ type: "send", cleanupId: ROOM, body: "hey @bob look", clientId: "c1" }),
     )
 
-    // The broadcast {type:"message"} frame B received carries the resolved mention.
     const msgFrame = bConn.framesOfType("message").at(-1) as { message: ChatMessageDTO } | undefined
     expect(msgFrame?.message.mentions.map((m) => m.id)).toEqual([BOB])
-    // A's ack also carries the projected mention.
     const ackFrame = aConn.framesOfType("ack").at(-1) as { message: ChatMessageDTO } | undefined
     expect(ackFrame?.message.mentions.map((m) => m.id)).toEqual([BOB])
-    // Persisted + notified exactly once for Bob (the author Alice is excluded).
+    // The author Alice is excluded.
     expect(recorded).toHaveLength(1)
     expect(recorded[0]!.ids).toEqual([BOB])
     expect(notified).toEqual([{ mentionedUserId: BOB, actorUserId: ALICE, roomId: ROOM }])

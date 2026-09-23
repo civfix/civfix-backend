@@ -1309,7 +1309,7 @@ describe("guest rsvp: the SMS half of the cancel/update notice", () => {
     return h
   }
 
-  it("texts an SMS-only guest that the event was cancelled — the broadcast pipeline cannot see them", async () => {
+  it("texts an SMS-only guest that the event was cancelled, since the broadcast pipeline cannot see them", async () => {
     const h = await withSmsGuest()
     const sent = await h.service.notifyGuestsBySms(EVENT_ID, "cancelled")
     expect(sent).toBe(1)

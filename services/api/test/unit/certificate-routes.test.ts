@@ -1,16 +1,14 @@
 /**
- * Service-hours certificate routes (DP §8.5) — `app.inject` over `certificateOverrides`, no DB.
- *
  * THE HIGHEST-VALUE TEST IN THIS FILE is `presignGet(key, 900, { forceSigned: true })`. `FakeStorage`
  * declares `presignGet(key, _ttlSec)` and always returns `memory://<key>`, so asserting on the returned
- * STRING proves exactly nothing about the third argument — and in production `R2_PUBLIC_BASE` is set, so
- * a missing `forceSigned` makes `R2Storage.presignGet` hand back an UNSIGNED, PERMANENT CDN URL. That
- * would publish every volunteer's itemised service record forever, with no expiry and no revocation
- * (finding H9). A thin recording wrapper is therefore injected and its ARGUMENTS are asserted.
+ * STRING proves nothing about the third argument, and in production `R2_PUBLIC_BASE` is set, so a
+ * missing `forceSigned` makes `R2Storage.presignGet` hand back an UNSIGNED, PERMANENT CDN URL. That
+ * would publish every volunteer's itemised service record forever, with no expiry and no revocation.
+ * A thin recording wrapper is therefore injected and its ARGUMENTS are asserted.
  *
  * The other rules pinned here: an empty ledger is a 409 (no empty official-looking documents), a repeat
  * tap reuses one document rather than minting a second, an edited ledger row mints a genuinely new one,
- * revoking someone else's code is a 404 (never a 403 — no existence oracle), and the PUBLIC verification
+ * revoking someone else's code is a 404 (never a 403: no existence oracle), and the PUBLIC verification
  * projection leaks no url / userId / r2Key.
  */
 
@@ -216,7 +214,6 @@ describe("POST /me/volunteer-hours/certificates", () => {
     const res = await issue(h.app, me)
     expect(res.statusCode).toBe(409)
     expect(res.json().code).toBe("CONFLICT")
-    // Nothing was rendered or stored on the refusal path.
     expect(h.objects.objects.size).toBe(0)
   })
 
@@ -246,7 +243,6 @@ describe("POST /me/volunteer-hours/certificates", () => {
     expect(head?.contentDisposition).toBe(
       `inline; filename="civfix-service-hours-${formatCertificateCode(body.certificate.code)}.pdf"`,
     )
-    // Really a PDF, not an empty buffer.
     expect(Buffer.from(h.objects.get(key)!).subarray(0, 5).toString()).toBe("%PDF-")
   })
 
@@ -277,7 +273,7 @@ describe("POST /me/volunteer-hours/certificates", () => {
     expect(second.json().reused).toBe(true)
     expect(h.objects.objects.size).toBe(1)
     expect(h.certs.all()).toHaveLength(1)
-    // The reuse path still mints a fresh URL — that is the whole point of calling again.
+    // The reuse path still mints a fresh URL; that is the whole point of calling again.
     expect(second.json().certificate.url).toBeTruthy()
     expect(h.storage.presigns).toHaveLength(2)
   })
@@ -291,7 +287,7 @@ describe("POST /me/volunteer-hours/certificates", () => {
     expect(first.statusCode).toBe(200)
 
     // The host corrects the credit. `volunteer_hours.id` survives the upsert, so the row identity is
-    // stable and only `hours` moves — which is exactly what the fingerprint keys on.
+    // stable and only `hours` moves, which is exactly what the fingerprint keys on.
     await h.hours.logEventHours({
       actorId: "00000000-0000-4000-8000-0000000000aa",
       cleanupId,
@@ -400,7 +396,7 @@ describe("POST /me/volunteer-hours/certificates/:code/revoke", () => {
     expect(second.json().reused).toBe(false)
   })
 
-  it("404s (NOT 403) when the code belongs to somebody else — no existence oracle", async () => {
+  it("404s (NOT 403) when the code belongs to somebody else: no existence oracle", async () => {
     const h = await makeHarness()
     const owner = await h.signIn("owner@example.com", "Owner")
     const stranger = await h.signIn("stranger@example.com", "Stranger")
@@ -415,7 +411,6 @@ describe("POST /me/volunteer-hours/certificates/:code/revoke", () => {
       payload: {},
     })
     expect(res.statusCode).toBe(404)
-    // The owner's document is untouched.
     expect(h.objects.objects.size).toBe(1)
   })
 })
@@ -443,7 +438,7 @@ describe("certificate service: recovery branches", () => {
 
     const second = await issue(h.app, me)
     expect(second.statusCode).toBe(200)
-    // SAME document: same code, same key, no second row — a re-render, not a re-issue.
+    // SAME document: same code, same key, no second row. A re-render, not a re-issue.
     expect(second.json().certificate.code).toBe(code)
     expect(second.json().reused).toBe(true)
     expect([...h.objects.objects.keys()]).toEqual([key])

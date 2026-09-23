@@ -8,9 +8,9 @@
  *     submitted+held timeline, bumps the token's report_count, stamps the claim-code DIGEST, and stores
  *     the snapshot under (scope, key, anon session) - and on a duplicate idempotency key from the SAME
  *     anon session does NONE of that and replays the stored snapshot. A key already spent by a
- *     DIFFERENT anon session never replays (F028); it answers the retryable 409 Postgres produces via
+ *     DIFFERENT anon session never replays; it answers the retryable 409 Postgres produces via
  *     the globally-unique reports.idempotency_key.
- *   - claimByCode matches the stored digest of the presented code (F150 / 0091), links the (unclaimed)
+ *   - claimByCode matches the stored digest of the presented code (0091), links the (unclaimed)
  *     report to the user and clears the digest (single-use); the plaintext code is never stored.
  *
  * The Drizzle-backed repos are covered by the Docker-gated integration test; these fakes exercise the
@@ -58,14 +58,13 @@ export interface StoredAnonReport {
   claimCodeHash: string | null
   /** The submit's idempotency key, globally unique across reports (reports_idempotency_key_key). */
   idempotencyKey: string | null
-  /** The immutable reference code minted at create (#56 / M3). Null on rows seeded without one. */
+  /** The immutable reference code minted at create. Null on rows seeded without one. */
   referenceCode: string | null
   createdAt: Date
   publishedAt: Date | null
   deletedAt: Date | null
 }
 
-/** A stored media asset for the anon/release flow. */
 export interface StoredAnonMedia {
   id: string
   uploadId: string
@@ -101,10 +100,10 @@ export class InMemoryAnonStore {
   readonly timeline: StoredTimeline[] = []
   readonly flags: StoredFlag[] = []
   readonly idempotency = new Map<string, AnonReportResponse>() // `${scope}:${key}:${userOrAnon}`
-  /** Per-scope reference-code counter, mirroring reference_counters (D4). */
+  /** Per-scope reference-code counter, mirroring reference_counters. */
   private readonly refCounters = new Map<string, number>()
 
-  /** Allocate the next reference code for (type, jurCode), mirroring allocateReportReferenceCode (M3). */
+  /** Mirrors allocateReportReferenceCode. */
   private allocateReferenceCode(type: ReportType, jurCode: number): string {
     const typeCode = typeCodeFor(type)
     const scope = reportScopeKey(typeCode, jurCode)
@@ -118,8 +117,6 @@ export class InMemoryAnonStore {
     this.tick += 1
     return new Date(Date.UTC(2026, 0, 1, 0, 0, 0, this.tick))
   }
-
-  // ---- seed helpers ----
 
   seedToken(over: Partial<AnonTokenRecord> = {}): AnonTokenRecord {
     // Default the expiry to 24h from the REAL current time so a seeded token is valid under a service
@@ -183,8 +180,6 @@ export class InMemoryAnonStore {
     this.flags.push({ subjectType, subjectId, reason, resolvedAt: null })
   }
 
-  // ---- AnonReportRepository ----
-
   anonReportRepo(): AnonReportRepository {
     // Arrow-function properties so `this` is the store instance (no this-aliasing).
     return {
@@ -213,7 +208,7 @@ export class InMemoryAnonStore {
 
         // reports.idempotency_key is globally unique (0001), so a key already spent by ANOTHER anon
         // session rolls the real transaction back with a 23505 whose owner-scoped snapshot read then
-        // misses - the retryable 409 (F028). Modeled here so the fakes answer what Postgres answers
+        // misses: the retryable 409. Modeled here so the fakes answer what Postgres answers
         // instead of silently minting a second report on a squatted key.
         const keyTaken = [...this.reports.values()].some(
           (r) => r.idempotencyKey === args.idempotencyKey,
@@ -222,7 +217,7 @@ export class InMemoryAnonStore {
           return Promise.reject(AppError.conflict("Report submit is still settling; retry"))
         }
 
-        // ATOMIC per-token cap (bugs P0-1), mirroring the Drizzle tx: bump report_count ONLY while the
+        // ATOMIC per-token cap, mirroring the Drizzle tx: bump report_count ONLY while the
         // token is under the cap, and abort (throw, no writes) otherwise. The whole body runs
         // synchronously here, so two interleaved calls cannot both pass the cap check - exactly the
         // atomic check-and-consume the real UPDATE ... WHERE report_count < cap provides. The claim-code
@@ -240,7 +235,7 @@ export class InMemoryAnonStore {
           token.reportCount += 1
         }
 
-        // D4: allocate the reference code (mirrors the Drizzle held-create tx; anon reports get a code too).
+        // Mirrors the Drizzle held-create tx: anon reports get a reference code too.
         const referenceCode = this.allocateReferenceCode(args.type, args.jurCode)
 
         this.seedReport({
@@ -263,14 +258,12 @@ export class InMemoryAnonStore {
           referenceCode,
           publishedAt: null,
         })
-        // Attach media (only unattached or already-ours).
         for (const uploadId of args.mediaUploadIds) {
           const asset = this.media.find((m) => m.uploadId === uploadId)
           if (asset && (asset.reportId === null || asset.reportId === args.reportId)) {
             asset.reportId = args.reportId
           }
         }
-        // Timeline: submitted + held.
         this.timeline.push({
           reportId: args.reportId,
           status: "submitted",
@@ -301,8 +294,6 @@ export class InMemoryAnonStore {
       },
     }
   }
-
-  // ---- AnonHoldReleaseRepo ----
 
   holdReleaseRepo(): AnonHoldReleaseRepo {
     // Arrow-function properties so `this` is the store instance (no this-aliasing).
@@ -359,8 +350,6 @@ export class InMemoryAnonStore {
       },
     }
   }
-
-  // ---- ClaimRepository ----
 
   claimRepo(): ClaimRepository {
     // Arrow-function properties so `this` is the store instance (no this-aliasing).

@@ -1,5 +1,5 @@
 /**
- * P9 signup slots — the CLAIM half (B27/B28), against the in-memory CleanupRepository.
+ * Signup slots, the CLAIM half, against the in-memory CleanupRepository.
  *
  * `PUT /cleanups/:id/slot` is ONE endpoint for claim, MOVE and release, because the v1 rule is exactly
  * one slot per person per event, so "my slot on this event" is a singular resource. That shape is what
@@ -8,14 +8,14 @@
  *
  * The rules pinned here are the ones a reader would otherwise have to reconstruct from the SQL:
  *
- *   - claiming AUTO-RSVPs a non-member (B28b) — picking a shift IS an RSVP — but the BAN probe runs
- *     first, so a removed attendee cannot re-enter through the slot door (M17's whole point);
+ *   - claiming AUTO-RSVPs a non-member (picking a shift IS an RSVP), but the BAN probe runs first, so
+ *     a removed attendee cannot re-enter through the slot door;
  *   - an idempotent re-claim of a slot you already hold must NOT run the capacity check, or it 409s on
  *     a full slot you are already sitting in;
  *   - releasing does NOT leave the event: asymmetric on purpose;
- *   - claiming is refused on a done/cancelled event (B28e), because logEventHours requires current
+ *   - claiming is refused on a done/cancelled event, because logEventHours requires current
  *     membership and the auto-RSVP would therefore be a credit-laundering path;
- *   - leaving and being removed both FREE the seat (B28d) — otherwise a departed attendee occupies a
+ *   - leaving and being removed both FREE the seat; otherwise a departed attendee occupies a
  *     phantom-full slot forever.
  *
  * The genuinely concurrent half (N racers on a capacity-1 slot) can only be shown against a real
@@ -47,7 +47,7 @@ let repo: InMemoryCleanupRepository
 let service: CleanupService
 /**
  * Per-test counter store. A service constructed WITHOUT one falls back to a module-level singleton
- * (cleanup-service.ts `fallbackCounters`), which is process-wide — so without this every test in the
+ * (cleanup-service.ts `fallbackCounters`), which is process-wide, so without this every test in the
  * file would spend the same (event, user) flip budget and the later ones would 429 for no reason.
  */
 let counters: InMemoryCounterStore
@@ -86,7 +86,7 @@ describe("claim", () => {
 
     const dto = await service.claimEventSlot(id, MEMBER, grill.id)
 
-    // C5: the response IS GetCleanupResponse — it already carries the refreshed board (with `claimed`
+    // The response IS GetCleanupResponse: it already carries the refreshed board (with `claimed`
     // and `mine`), `joined` and `going`, which is why the contract has no bespoke claim response.
     expect(dto.slots.map((s) => [s.title, s.claimed, s.mine ?? false])).toEqual([
       ["Grill", 1, true],
@@ -121,7 +121,7 @@ describe("claim", () => {
     const slot = repo.seedSlot({ cleanupId: id, title: "Grill", capacity: 1 })
     await service.claimEventSlot(id, MEMBER, slot.id)
 
-    // The capacity check must be skipped when the current claim IS the target — otherwise a retrying
+    // The capacity check must be skipped when the current claim IS the target; otherwise a retrying
     // client (or a double tap) gets "That slot is already full" about the slot it is sitting in.
     const again = await service.claimEventSlot(id, MEMBER, slot.id)
     expect(again.slots[0]?.claimed).toBe(1)
@@ -155,7 +155,7 @@ describe("claim", () => {
 })
 
 describe("move (A -> B)", () => {
-  it("frees A's seat in the same call — never two rows for one person", async () => {
+  it("frees A's seat in the same call: never two rows for one person", async () => {
     const id = seedEvent()
     const a = repo.seedSlot({ cleanupId: id, title: "Grill", capacity: 1, sortOrder: 0 })
     const b = repo.seedSlot({ cleanupId: id, title: "Sign-in", capacity: 1, sortOrder: 1 })
@@ -169,7 +169,7 @@ describe("move (A -> B)", () => {
     ])
     // The (cleanup_id, user_id) PK is the one-slot-per-person rule: a move is an UPDATE of slot_id.
     expect(repo.slotClaims.filter((c) => c.cleanupId === id && c.userId === MEMBER)).toHaveLength(1)
-    // ...and the seat it vacated is immediately claimable by someone else.
+    // The seat it vacated is immediately claimable by someone else.
     await service.claimEventSlot(id, COHOST, a.id)
     expect(await repo.slotOf(id, COHOST)).toBe(a.id)
   })
@@ -297,7 +297,7 @@ describe("auto-RSVP (B28b)", () => {
     expect(await repo.slotOf(id, OUTSIDER)).toBe(a.id)
   })
 
-  it("403s a REMOVED (banned) attendee — the ban probe runs BEFORE the auto-RSVP", async () => {
+  it("403s a REMOVED (banned) attendee: the ban probe runs BEFORE the auto-RSVP", async () => {
     const id = seedEvent()
     const slot = repo.seedSlot({ cleanupId: id, title: "Grill" })
     await service.removeMember(id, ORG, MEMBER)
@@ -305,7 +305,7 @@ describe("auto-RSVP (B28b)", () => {
     await expect(service.claimEventSlot(id, MEMBER, slot.id)).rejects.toMatchObject({
       code: "FORBIDDEN",
     })
-    // The slot door is not a way back into an event a host removed you from (M17).
+    // The slot door is not a way back into an event a host removed you from.
     expect(await repo.isMember(id, MEMBER)).toBe(false)
     expect(repo.slotClaims).toEqual([])
   })
@@ -425,7 +425,7 @@ describe("leaving and removal free the seat (B28d)", () => {
     expect(await repo.slotOf(id, MEMBER)).toBeNull()
     const board = await repo.listSlots(id, null)
     expect(board[0]?.claimed).toBe(0)
-    // ...and the freed seat really is claimable again.
+    // The freed seat really is claimable again.
     await service.claimEventSlot(id, COHOST, slot.id)
     expect(await repo.slotOf(id, COHOST)).toBe(slot.id)
   })
@@ -485,7 +485,7 @@ describe("the flip budget (B29c)", () => {
       })
     }
     // The point of the budget is to keep a flapper off a contended row's lock, so a 409 must still
-    // consume allowance — otherwise polling a full slot is unlimited.
+    // consume allowance; otherwise polling a full slot is unlimited.
     await expect(limited.claimEventSlot(id, MEMBER, slot.id)).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })

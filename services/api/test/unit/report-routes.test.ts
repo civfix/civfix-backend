@@ -23,7 +23,7 @@ interface Harness {
   app: FastifyInstance
   repo: InMemoryReportRepository
   mailer: FakeMailer
-  /** A signed-in user's bearer token + id (minted through the real OTP flow). */
+  /** Minted through the real OTP flow. */
   token: string
   userId: string
 }
@@ -92,7 +92,6 @@ async function makeHarness(
   return h
 }
 
-/** Authorization header for the signed-in user. */
 function auth(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}` }
 }
@@ -362,7 +361,7 @@ describe("POST /reports", () => {
     expect(repo.reports.size).toBe(0)
   })
 
-  // D-C2: the report's creator is auto-joined as an OWNER of its chat, once the report row is committed.
+  // The report's creator is auto-joined as an OWNER of its chat, once the report row is committed.
   it("auto-joins the creator as an 'owner' of the report chat with the new report id", async () => {
     const joinReportChatAsOwner = vi.fn(() => Promise.resolve())
     const { app, token, userId } = await makeHarness({ joinReportChatAsOwner })
@@ -406,7 +405,6 @@ describe("POST /reports", () => {
     })
     expect(res.statusCode).toBe(201)
     expect(joinReportChatAsOwner).toHaveBeenCalledTimes(1)
-    // The report was still persisted despite the auto-join failure.
     expect(repo.reports.size).toBe(1)
   })
 })
@@ -452,8 +450,8 @@ describe("GET /reports/:id", () => {
   })
 
   it("treats a non-UUID id as a reference code (resolve-either): unknown code -> 404", async () => {
-    // Issue #56 resolve-either: GET /reports/:id accepts a UUID OR a reference_code. A non-UUID id is no
-    // longer a 422 — it is looked up by reference_code, and an unknown one is NOT_FOUND.
+    // GET /reports/:id accepts a UUID OR a reference_code: a non-UUID id is looked up by reference_code,
+    // and an unknown one is NOT_FOUND (not a 422).
     const { app } = await makeHarness()
     const res = await app.inject({ method: "GET", url: "/v1/reports/DU-42-999999" })
     expect(res.statusCode).toBe(404)
@@ -543,7 +541,6 @@ describe("GET /reports/:id", () => {
 describe("GET /reports (my reports)", () => {
   it("lists the caller's own reports, newest first", async () => {
     const { app, token, userId } = await makeHarness()
-    // Create two reports as the signed-in user.
     for (const key of [
       "11111111-1111-1111-1111-111111111111",
       "22222222-2222-2222-2222-222222222222",
@@ -569,7 +566,6 @@ describe("GET /reports (my reports)", () => {
     expect(body.items).toHaveLength(2)
     expect(body.items.every((r: { mine: boolean }) => r.mine === true)).toBe(true)
     expect(body.nextCursor).toBeNull()
-    // Sanity: they are this user's.
     void userId
   })
 
@@ -609,14 +605,13 @@ describe("GET /reports (my reports)", () => {
 describe("GET /map/reports", () => {
   // The shared client serializes bbox as a single JSON param and categories as repeated params. We build
   // the query with clientQuery() (a byte-for-byte replica of the client's buildQuery) so these tests
-  // prove the previously-422 client calls now parse + succeed.
-  // M14: `zoom` is no longer independent of `bbox` — the service clamps it to what the requested extent
-  // can actually imply (services/report-clustering.ts effectiveMapZoom), so a per-pin (zoom >= 13) case
-  // needs a bbox that a real client could plausibly be displaying at that zoom. This ~5 km viewport
-  // implies zoom 14, which clears the cluster threshold; the old 33x22 km box did not and is now
-  // (correctly) forced to cluster no matter what zoom is claimed.
+  // prove the client's real calls parse + succeed.
+  // The service clamps `zoom` to what the requested extent can actually imply
+  // (services/report-clustering.ts effectiveMapZoom), so a per-pin (zoom >= 13) case needs a bbox a real
+  // client could plausibly be displaying at that zoom. This ~5 km viewport implies zoom 14, which clears
+  // the cluster threshold.
   const BBOX = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
-  // A world-spanning bbox: the M14 attack shape (`zoom=22` over the whole planet).
+  // A world-spanning bbox: the attack shape (`zoom=22` over the whole planet).
   const WORLD_BBOX = { west: -180, south: -85, east: 180, north: 85 }
 
   it("returns clusters at low zoom and pins at high zoom for points in the bbox (client-encoded bbox)", async () => {
@@ -799,7 +794,6 @@ describe("GET /map/reports", () => {
     expect(res.json().pins).toHaveLength(2)
   })
 
-  // --- M14: bbox/zoom decoupling -------------------------------------------------------------------
   // The attack was `bbox=<whole world>&zoom=22`: clustering was skipped at zoom >= 13 and `zoom` was a
   // free client parameter never correlated with the extent, so one anonymous request pulled up to
   // MAP_REPORTS_CANDIDATE_CAP full report rows AND that many media presign round-trips, with the 60s

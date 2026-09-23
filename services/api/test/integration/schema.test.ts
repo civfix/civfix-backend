@@ -851,7 +851,7 @@ describe.skipIf(!pg)("schema: enum mirrors match the DDL CHECK constraints", () 
     }
   })
 
-  it("media_assets.purpose accepts EVERY mirrored value — including 'post' (0054)", async () => {
+  it("media_assets.purpose accepts EVERY mirrored value, including 'post' (0054)", async () => {
     for (const purpose of schema.MEDIA_PURPOSE_VALUES) {
       const rows = await h.sql<{ purpose: string }[]>`
         INSERT INTO media_assets (upload_id, kind, r2_key, status, purpose)

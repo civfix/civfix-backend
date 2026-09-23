@@ -5,7 +5,7 @@
  * state an asset is ever in at send time: `finalizeMedia` returns `{ status: "validating" }` and hands
  * the flip to `ready` to the media worker. The READ used to require `status = 'ready' AND served_key IS
  * NOT NULL`, so the WS ack and every history page came back with `attachments: []` and the client threw
- * its optimistic local attachment away on reconcile — a photo-only message rendered as an empty row.
+ * its optimistic local attachment away on reconcile: a photo-only message rendered as an empty row.
  *
  * The reports path solved this long ago with `servedKeyExpr` / `servableMediaFilter`
  * (report-repository.drizzle.ts). These tests pin that chat now uses the same two fragments.
@@ -195,7 +195,7 @@ describe("loadServableAttachmentsFor", () => {
 })
 
 describe("makeAttachmentRepo().attach", () => {
-  it("still claims a finalized validating asset — the read now matches what the claim accepts", async () => {
+  it("still claims a finalized validating asset: the read now matches what the claim accepts", async () => {
     const fake = makeFakeSql([{ match: /UPDATE media_assets/, rows: [{ upload_id: UPLOAD }] }])
 
     await makeAttachmentRepo("chat_message_id").attach(

@@ -108,7 +108,7 @@ describe("registerPushToken validation (H15)", () => {
     expect(repo.pushTokens).toHaveLength(1)
   })
 
-  it("REFUSES an endpoint the sender would refuse (internal host) — never stored, never dialed", async () => {
+  it("REFUSES an endpoint the sender would refuse (internal host): never stored, never dialed", async () => {
     const { repo, service } = harness((endpoint) => !endpoint.includes("internal"))
     await expect(
       service.registerPushToken(U, {

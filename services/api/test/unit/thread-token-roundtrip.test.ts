@@ -9,7 +9,7 @@ import { CfInboundMail } from "../../src/adapters/inbound-mail.cf.js"
  *   - the outbound side mints a token via `mintThreadToken()` and sends FROM `{kind}-{token}@`, and
  *   - BOTH the real CfInboundMail adapter AND the FakeInboundMail recover that exact token from the
  *     reply address, so a jurisdiction's reply threads back onto the report/event.
- * The two adapters MUST agree on accept/reject — the original bug was the real adapter rejecting a token
+ * The two adapters MUST agree on accept/reject: the original bug was the real adapter rejecting a token
  * shape the fake accepted, so replies silently never threaded in prod while every fake-based test passed.
  * This locks: the current 12-char base32 token round-trips through both, the legacy 24-hex token and the
  * legacy `+` separator still parse (in-flight replies), and obvious junk is rejected by both.
@@ -63,7 +63,7 @@ describe("thread token round-trip (mint -> {kind}-{token}@ -> extract)", () => {
     // status changes and post an "official city reply" into the public report chat.
     expect(real.extractThreadToken(mail)).toBeNull()
     // The shared FakeInboundMail (an external @civfix/shared package) still honors the header. That is
-    // dev/test-only — the real adapter is what production uses — and the processor's DMARC gate now
+    // dev/test-only (production uses the real adapter), and the processor's DMARC gate
     // stands in front of the threaded path regardless. Tracked for the next @civfix/shared release.
     expect(fake.extractThreadToken(mail)).toBe(token)
   })
@@ -103,7 +103,7 @@ describe("thread token round-trip (mint -> {kind}-{token}@ -> extract)", () => {
 
   it("ignores a typed prefix on a FOREIGN domain (no thread hijack), both adapters", () => {
     // A city's own alias or a mailing-list decoy whose local-part happens to start report-/event-/reply-
-    // must NOT be read as a thread token — the token only ever lives on our reply domain.
+    // must NOT be read as a thread token: the token only ever lives on our reply domain.
     for (const addr of [
       "report-publicworks@city.gov",
       "event-registration@constantcontact.com",

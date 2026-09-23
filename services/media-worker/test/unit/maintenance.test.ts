@@ -675,7 +675,7 @@ describe("media.stuck.sweep", () => {
     expect(res).toEqual({ scanned: 1, requeued: 0, terminalized: 0, errors: 1 })
     expect(reports.length).toBe(1)
   })
-  it("F087b: NEVER clobbers a terminal status — a row the worker finished mid-sweep is left alone", async () => {
+  it("F087b: NEVER clobbers a terminal status; a row the worker finished mid-sweep is left alone", async () => {
     const repo = makeRepo()
     repo.seed({
       id: "raced",

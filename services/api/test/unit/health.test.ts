@@ -71,7 +71,7 @@ describe("health routes", () => {
     expect(body.checks.redis).toBe("skipped")
   })
 
-  it("H11: readiness ignores the USE_FAKE_* flags — a configured backend is always probed", async () => {
+  it("H11: readiness ignores the USE_FAKE_* flags: a configured backend is always probed", async () => {
     const env = loadEnv({
       NODE_ENV: "development",
       DATABASE_URL: "postgres://u:p@localhost:5432/civfix",

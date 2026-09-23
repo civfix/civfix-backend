@@ -1,24 +1,24 @@
 /**
- * P3 Tasks 3.4 + 3.5 integration test (Docker-gated): message PINNING + the moderator delete-others
+ * Integration test (Docker-gated): message PINNING + the moderator delete-others
  * override, against a live PostGIS container (via withPg) over HTTP.
  *
- *   PUT /messages/pin — the chat-powers matrix end-to-end: cleanup organizer pins (member 403
+ *   PUT /messages/pin: the chat-powers matrix end-to-end: cleanup organizer pins (member 403
  *   pin_forbidden), report owner pins (member 403), a global OPERATOR pins in a report room WITHOUT a
  *   membership row, a dm participant pins; unpin clears pinnedAt; system/deleted targets 422; a repeat
  *   pin is IDEMPOTENT (same pinnedAt, no refresh); every successful flip broadcasts a
  *   {type:"message_update"} frame carrying the new pin state to a second connected client.
  *
- *   History pins — the INITIAL page (no before/around) of all three history routes carries `pins`
+ *   History pins: the INITIAL page (no before/around) of all three history routes carries `pins`
  *   (newest-pin first, capped at PIN_LIST_CAP); before-paged and around-paged responses omit the key.
  *
- *   Delete override — a cleanup ORGANIZER deletes a member's message (tombstone broadcast); a member
+ *   Delete override: a cleanup ORGANIZER deletes a member's message (tombstone broadcast); a member
  *   deleting someone else's stays 403; an OPERATOR deletes in a report room without membership; a
  *   report OWNER deleting someone else's stays 403 (owners curate pins, never erase speech); a dm peer
  *   deleting the other's message stays 403 (unchanged).
  *
  * Repos ride chatOverrides on the real Drizzle impls over the harness pool (the established no-redis
  * pattern), and chatOverrides.chatPowers injects the REAL resolver wired to the REAL roleOf lookups
- * (cleanup_members / report_chat_members / users.role) — so the powers matrix is exercised against pg.
+ * (cleanup_members / report_chat_members / users.role), so the powers matrix is exercised against pg.
  * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
  */
 
@@ -89,14 +89,14 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       chatRepo: makeDrizzleChatRepository(h.sql),
       blocksRepo: makeDrizzleBlocksRepository(h.sql),
       reportChat,
-      // The REAL resolver over the REAL pg-backed lookups (incl. the new roleOf queries) — the same
+      // The REAL resolver over the REAL pg-backed lookups (incl. the roleOf queries): the same
       // wiring shape wireChatPowers builds in production, pointed at the harness pool.
       chatPowers: makeChatPowersResolver({
         isDmParticipant: (threadId, userId) => dm.isParticipant(threadId, userId),
         cleanupRoleOf: (cleanupId, userId) => cleanups.roleOf(cleanupId, userId),
         reportChatRoleOf: (reportId, userId) => reportChat.roleOf(reportId, userId),
         globalRoleOf: (userId) => chatAuthorityRoleOf(h.sql, env, userId),
-        // P4 group lane, wired to the real repo for parity (this file exercises no group rooms).
+        // Group lane, wired to the real repo for parity (this file exercises no group rooms).
         groupRoleOf: (groupId, userId) => makeChatGroupRepository(h.sql).roleOf(groupId, userId),
       }),
     }
@@ -435,7 +435,7 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       expect(before.json()).not.toHaveProperty("pins")
 
       // Around-mode: the cleanup around-page reads through the container chatService (FakeChatService
-      // under the test env), which has no such message — the pins key must be absent regardless, and
+      // under the test env), which has no such message; the pins key must be absent regardless, and
       // that is what this asserts (the fake 404s the unknown target).
       const around = await app.inject({
         method: "GET",
@@ -565,7 +565,6 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         headers: { authorization: `Bearer ${await token(memberId)}`, "x-client": "mobile" },
       })
       expect(res.statusCode).toBe(403)
-      // Still present.
       const reread = await chat().findMessage(cleanupId, msg.id, organizerId)
       expect(reread).not.toBeNull()
     })

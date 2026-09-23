@@ -176,7 +176,7 @@ describe("event insights", () => {
     expect((await cancelled.service.insights(EVENT, VIEWER)).phase).toBe("cancelled")
 
     // DECISIONS §40: the phase is a clock reading. A row a pre-0.46.0 host marked complete, whose window
-    // is still ahead, is UPCOMING again — the old `status === "done"` short-circuit is gone.
+    // is still ahead, is UPCOMING again, whatever the stored column says.
     const legacyDone = build(
       {
         eventClock: () =>

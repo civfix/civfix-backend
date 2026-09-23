@@ -1,18 +1,18 @@
 /**
- * Unit tests for `parseAcs` (src/db/backfill-population-core.ts) — the pure Census ACS5 response parser
+ * Unit tests for `parseAcs` (src/db/backfill-population-core.ts), the pure Census ACS5 response parser
  * that turns the API's header+rows matrix into { geoid, population } pairs for the population backfill.
  *
- * Why this is worth pinning (audit 2026-07-24, db LOW test-gap): the geoid is ASSEMBLED by concatenating
+ * Why this is worth pinning: the geoid is ASSEMBLED by concatenating
  * geography columns, and it used to take "every column that isn't the population variable, in HEADER
  * order". That is right for the three shapes we actually request today and silently wrong for anything
- * else — a caller adding `NAME` to the `get=` list would have concatenated "Los Angeles city, California"
+ * else: a caller adding `NAME` to the `get=` list would have concatenated "Los Angeles city, California"
  * into the geoid, and a Census column reshuffle ("county" emitted before "state") would have produced
  * "03706". Neither throws: a bad geoid just makes the UPDATE match zero jurisdiction rows, so the backfill
  * reports "fetched N, updated 0" and the operator has no idea why.
  *
  * The hardening is a FIXED whitelist + order (ACS_GEO_COLUMNS = state, county, place), so the tests below
- * assert the two properties that whitelist buys — an unlisted column is IGNORED and the geoid follows the
- * whitelist order, not header order — alongside the row-level filters.
+ * assert the two properties that whitelist buys (an unlisted column is IGNORED and the geoid follows the
+ * whitelist order, not header order) alongside the row-level filters.
  *
  * Pure functions: no DB, no network, no fakes.
  */

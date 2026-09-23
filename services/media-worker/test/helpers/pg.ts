@@ -4,15 +4,15 @@
  * Mirrors the API's withPg: starts a throwaway postgis container, applies the SAME canonical migrations
  * via the shared @civfix/api/migrate runner (single source of DDL), and hands back a RAW postgres-js tag
  * (`sql`, full value serialization) plus a Drizzle client on its OWN separate connection. On machines
- * with no Docker (like this dev box) it returns null so the integration suite is skipped, keeping the
- * local run green; CI runs it for real — and REFUSES to skip there (see assertSkipAllowed).
+ * with no Docker it returns null so the integration suite is skipped, keeping the local run green; CI
+ * runs it for real and REFUSES to skip there (see assertSkipAllowed).
  *
  * ONE CONTAINER PER FILE, deliberately, unlike the API side. The API harness boots a single container in
  * a vitest globalSetup, migrates a TEMPLATE database once and clones it per file, because it has ~44
  * Docker-gated files and was paying 44 boots + 44 x 60 migrations. This package has TWO, so the shared
  * design would save one boot (~3s) at the price of duplicating globalSetup + the template-clone
  * primitives here: the API's copies live in its private test tree (services/api/test/helpers/pg-container.ts)
- * and are NOT reachable from another package — @civfix/api exports src entrypoints only, and exporting test
+ * and are NOT reachable from another package: @civfix/api exports src entrypoints only, and exporting test
  * helpers from a service package to share 70 lines of container plumbing is the worse trade. What IS shared
  * is everything that affects OUTCOMES rather than speed: the same migrate runner, the same image pin, the
  * same throwaway-database server settings below, and the same CI skip guard. Revisit if this package grows
@@ -34,7 +34,7 @@ export const POSTGIS_IMAGE = "postgis/postgis:16-3.4"
 /**
  * Server knobs for a THROWAWAY database, matching the API harness's POSTGRES_TUNING: durability is
  * worthless when the container is destroyed at the end of the run, and every file here pays all ~60 API
- * migrations. Adopted for PARITY with the API harness rather than on a measured win — on this dev box
+ * migrations. Adopted for PARITY with the API harness rather than on a measured win: on a dev box
  * (colima, ~10s for the two files) tuned and untuned runs were inside run-to-run noise; the fsync cost it
  * removes is a CI/overlayfs effect. max_connections is left at the default: unlike the API's shared
  * container, only one file at a time connects here (4 + 2 connections).
@@ -59,8 +59,8 @@ function isOn(value: string | undefined): boolean {
  * Refuse to turn "no Docker" into "no tests" where a skip is not legitimate.
  *
  * The skip exists so a developer on a Docker-less machine gets a green unit suite. In CI the same leniency
- * would let a broken Docker socket delete this package's ENTIRE integration coverage — the only thing that
- * runs the worker's SQL against the canonical schema — while the job still reports success. Same contract
+ * would let a broken Docker socket delete this package's ENTIRE integration coverage (the only thing that
+ * runs the worker's SQL against the canonical schema) while the job still reports success. Same contract
  * and same variable names as the API harness's assertPgSkipAllowed (services/api/test/helpers/pg-container.ts);
  * duplicated rather than imported because that module is private to the API's test tree.
  */

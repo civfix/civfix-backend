@@ -782,7 +782,7 @@ describe("resolveReport (owner status toggle)", () => {
     expect(repo.reports.get(r.id)!.visibility).toBe("hidden")
   })
 
-  it("L12: the owner is unaffected — they still mutate their own held/unlisted report", async () => {
+  it("L12: the owner is unaffected; they still mutate their own held/unlisted report", async () => {
     const { repo, service } = makeHarness()
     const held = repo.seedReport({ reporterUserId: "owner", status: "held", visibility: "public" })
     await service.unlistReport("owner", held.id, true)
@@ -1484,9 +1484,9 @@ describe("searchReports", () => {
 })
 
 /**
- * F058: owner-only report media (held / unlisted, and any still-`validating` asset) used to be signed with
- * the PUBLIC presigner, which returns a permanent unsigned CDN URL whenever R2_PUBLIC_BASE is configured.
- * The presigner is chosen per report + per asset now; the public map surfaces keep the public one.
+ * Owner-only report media (held / unlisted, and any still-`validating` asset) must never go through the
+ * PUBLIC presigner, which returns a permanent unsigned CDN URL whenever R2_PUBLIC_BASE is configured. The
+ * presigner is chosen per report + per asset; the public map surfaces keep the public one.
  */
 describe("report media presigner selection (F058)", () => {
   function presignHarness() {

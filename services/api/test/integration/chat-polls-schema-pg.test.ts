@@ -1,7 +1,6 @@
 /**
- * P6 Task 6.1 schema integration test (Docker-gated): migration 0048_chat_polls.sql against a live
- * PostGIS container (via withPg). Raw SQL only — no repos exist yet (they land in the following P6
- * tasks). Verifies the things only a real postgres can prove:
+ * Schema integration test (Docker-gated): migration 0048_chat_polls.sql against a live PostGIS
+ * container (via withPg), in raw SQL. Verifies the things only a real postgres can prove:
  *
  *   - the chat_polls / chat_poll_options / chat_poll_votes trio exists with sensible defaults;
  *   - the vote composite FK rejects a vote whose (poll_id, option_idx) has no matching option row;
@@ -27,7 +26,6 @@ describe.skipIf(!pg)("chat polls schema (0048, integration)", () => {
     await h.teardown()
   })
 
-  /** Insert a user and return its id. */
   async function newUser(name: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name) VALUES (${name}) RETURNING id
@@ -36,7 +34,7 @@ describe.skipIf(!pg)("chat polls schema (0048, integration)", () => {
   }
 
   /**
-   * Seed a poll with `optionCount` options. message_id is a bare uuid (no chat_messages row needed —
+   * Seed a poll with `optionCount` options. message_id is a bare uuid (no chat_messages row needed:
    * the table has no FK to the partitioned parent, by design). Returns the poll's message_id.
    */
   async function newPoll(optionCount: number): Promise<string> {

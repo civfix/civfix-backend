@@ -1,5 +1,5 @@
 /**
- * The event status derivation, pinned on BOTH sides of the seam (0.46.0, DECISIONS §40).
+ * The event status derivation, pinned on BOTH sides of the seam (DECISIONS §40).
  *
  * `cleanupStatusExpr` (SQL, projected into every select that feeds a DTO's `status`) and
  * `deriveCleanupStatus` (TS, from @civfix/shared/host, used by every in-memory repository twin) must

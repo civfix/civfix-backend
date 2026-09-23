@@ -145,7 +145,7 @@ describe("makeUnboundOnlyMediaViewAuthorizer (the fail-closed default)", () => {
     createdAt: new Date(),
   }
 
-  it("DENIES every bound asset — a wiring that forgets the real authorizer serves nothing", async () => {
+  it("DENIES every bound asset: a wiring that forgets the real authorizer serves nothing", async () => {
     const auth = makeUnboundOnlyMediaViewAuthorizer()
     for (const binding of [
       { reportId: "r1" },

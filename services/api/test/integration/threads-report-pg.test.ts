@@ -1,18 +1,3 @@
-/**
- * Task D-E3: report chats in the threads inbox + real per-conversation `muted` (Docker-gated). Boots a
- * live PostGIS container (via withPg) and exercises the DB-backed report threads SQL the offline suite
- * covers only with a fake source (test/unit/threads-report.test.ts):
- *
- *   - a member's listThreads includes a kind:"report" thread with the right id/refId/title (category
- *     label + short address) / last / ago / lastFromMe / unread (others' messages after joined_at,
- *     including sender-less system rows) / members, and muted:false;
- *   - inserting a conversation_mutes ('report') row flips that thread's muted to true;
- *   - a NON-member's listThreads excludes the report thread (membership-scoped query);
- *   - a soft-deleted report (deleted_at set) is excluded.
- *
- * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
- */
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -36,7 +21,6 @@ describe.skipIf(!pg)("report chats in the threads inbox (integration)", () => {
     await h.teardown()
   })
 
-  /** Insert a user and return its id. */
   async function newUser(name: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name) VALUES (${name}) RETURNING id
@@ -44,7 +28,6 @@ describe.skipIf(!pg)("report chats in the threads inbox (integration)", () => {
     return u!.id
   }
 
-  /** Insert a report (category + addr drive the thread title) and return its id. */
   async function newReport(
     opts: {
       category?: string
@@ -76,7 +59,6 @@ describe.skipIf(!pg)("report chats in the threads inbox (integration)", () => {
     return r!.id
   }
 
-  /** Add `userId` to a report chat with an explicit join time. */
   async function joinReportChat(reportId: string, userId: string, joinedAt: Date): Promise<void> {
     await h.sql`
       INSERT INTO report_chat_members (report_id, user_id, role, joined_at)
@@ -84,7 +66,6 @@ describe.skipIf(!pg)("report chats in the threads inbox (integration)", () => {
     `
   }
 
-  /** Insert a report chat message (sender_id null => system message). */
   async function addReportMessage(
     reportId: string,
     body: string,
@@ -97,7 +78,6 @@ describe.skipIf(!pg)("report chats in the threads inbox (integration)", () => {
     `
   }
 
-  /** Build the full inbox service exactly as the route wires it (cleanup repo + report source + mutes). */
   function service() {
     return makeThreadsService({
       repo: makeDrizzleThreadsRepository(h.sql),
@@ -116,8 +96,7 @@ describe.skipIf(!pg)("report chats in the threads inbox (integration)", () => {
     await joinReportChat(reportId, me, new Date("2026-06-01T09:00:00.000Z"))
     await joinReportChat(reportId, other, new Date("2026-06-01T09:00:00.000Z"))
 
-    // A message from OTHER after I joined -> unread 1; and a later SYSTEM message (sender_id null) that
-    // must ALSO count as "from others" (IS DISTINCT FROM) -> unread 2, and is the last message.
+    // A system message (sender_id null) must also count as "from others", hence IS DISTINCT FROM.
     await addReportMessage(reportId, "please look", other, new Date("2026-06-01T11:00:00.000Z"))
     await addReportMessage(
       reportId,
@@ -131,7 +110,6 @@ describe.skipIf(!pg)("report chats in the threads inbox (integration)", () => {
     expect(t, "member should see the report thread").toBeDefined()
     expect(t!.kind).toBe("report")
     expect(t!.refId).toBe(reportId)
-    // Title = category label + first comma-segment of addr.
     expect(t!.title).toBe("Trash - 123 Main St")
     expect(t!.last).toBe("Report was acknowledged.")
     expect(t!.ago).toBe("30m")

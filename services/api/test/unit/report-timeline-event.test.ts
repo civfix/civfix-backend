@@ -6,10 +6,9 @@ import {
 } from "../../src/services/report-timeline-event.js"
 
 /**
- * Offline unit tests for the report-chat SYSTEM-message CHOKE POINT (Task D-D1). The emitter mirrors a
- * report timeline event into the report chat: insertSystemMessage -> broadcast -> notify, in that order.
- * It is FULLY best-effort: a throw at ANY step is swallowed so a failed system message never fails (nor
- * rolls back) the underlying status change.
+ * The report-chat SYSTEM-message choke point mirrors a report timeline event into the report chat:
+ * insertSystemMessage -> broadcast -> notify, in that order. It is FULLY best-effort: a throw at ANY step
+ * is swallowed so a failed system message never fails (nor rolls back) the underlying status change.
  */
 
 const REPORT = "11111111-1111-1111-1111-111111111111"
@@ -58,7 +57,7 @@ function recorder(over?: Partial<ReportChatSystemEmitterDeps>): Recorder {
 }
 
 describe("report-chat system-message emitter (D-D1 choke point)", () => {
-  it("emit persists, then broadcasts to the room, then notifies members — in order", async () => {
+  it("emit persists, then broadcasts to the room, then notifies members, in order", async () => {
     const { calls, deps } = recorder()
     const emitter = makeReportChatSystemEmitter(deps)
 

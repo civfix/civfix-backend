@@ -48,7 +48,7 @@ describe("media binding predicate", () => {
       const [table, column] = relation.split(".")
       expect(
         text,
-        `${relation} is not exempted — a bound asset older than the TTL would be reaped`,
+        `${relation} is not exempted; a bound asset older than the TTL would be reaped`,
       ).toContain(table as string)
       expect(text).toContain(column as string)
     }

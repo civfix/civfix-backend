@@ -1,15 +1,5 @@
-/**
- * Task D-C4: @city forward audit table (Docker-gated). Boots a live PostGIS container (via withPg) and
- * exercises the DB-backed report_message_forwards INSERT/UPDATE the offline suite covers only through the
- * spy-audit orchestration test (test/unit/report-forward-audit.test.ts):
- *
- *   - recordMention inserts a (message_id, geoid) row with forwarded_at NULL;
- *   - recordMention is idempotent (ON CONFLICT DO NOTHING) and never clobbers an already-stamped row;
- *   - markForwarded stamps forwarded_at = now(), and keeps the earliest time on an idempotent re-run.
- *
- * The table has no FK on message_id (chat_messages is range-partitioned), so a bare uuid suffices as the
- * message id here. When Docker is unavailable the whole block SKIPS so the local suite stays green.
- */
+// The table has no FK on message_id (chat_messages is range-partitioned), so a bare uuid suffices as the
+// message id here.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -53,11 +43,10 @@ describe.skipIf(!pg)("report_message_forwards audit writes (integration)", () =>
     const stamped = await forwardedAt(msg, GEO)
     expect(stamped).not.toBeNull()
 
-    // A retry re-runs recordMention (ON CONFLICT DO NOTHING); the stamped time must survive unchanged.
+    // A retry re-runs recordMention; the stamped time must survive unchanged.
     await audit.recordMention(msg, GEO)
     expect((await forwardedAt(msg, GEO))!.getTime()).toBe(stamped!.getTime())
 
-    // Exactly one row for the pair (composite PK).
     const rows = await h.sql`
       SELECT 1 FROM report_message_forwards WHERE message_id = ${msg} AND geoid = ${GEO}
     `
@@ -73,17 +62,11 @@ describe.skipIf(!pg)("report_message_forwards audit writes (integration)", () =>
     const first = await forwardedAt(msg, GEO)
     expect(first).not.toBeNull()
 
-    // A second markForwarded (retry) must not advance the timestamp (COALESCE keeps the first).
     await audit.markForwarded(msg, GEO)
     expect((await forwardedAt(msg, GEO))!.getTime()).toBe(first!.getTime())
   })
 })
 
-/**
- * D-C4 follow-up: the report message MAPPER surfaces forwardedToCity (+ cityMention) by LEFT-joining
- * report_message_forwards and resolving the report's jurisdiction. This block drives the real SQL through
- * makeDrizzleChatRepository.reportHistory / findReportMessage against a live DB.
- */
 describe.skipIf(!pg)(
   "report message mapper surfaces forwardedToCity + cityMention (integration)",
   () => {
@@ -93,8 +76,8 @@ describe.skipIf(!pg)(
       h = pg as PgHarness
     })
 
-    // Each case re-seeds a jurisdiction with the SAME @handle, so clear jurisdictions (and the reports /
-    // messages that FK to them) between tests to avoid colliding on jurisdictions_handle_lower_key.
+    // Each case re-seeds a jurisdiction with the same @handle, so clear them (and the rows that FK to
+    // them) between tests to avoid colliding on jurisdictions_handle_lower_key.
     beforeEach(async () => {
       await h.sql`TRUNCATE jurisdictions RESTART IDENTITY CASCADE`
     })
@@ -134,21 +117,18 @@ describe.skipIf(!pg)(
       const reportId = await newReport(geoid)
       const userId = await newUser()
 
-      // A report user message that @mentions the jurisdiction handle.
       const msgId = randomUUID()
       const dto = await chat.insertMessage(
         { cleanupId: reportId, roomKind: "report", userId, body: `pls fix @${HANDLE}` },
         msgId,
       )
-      // At insert time the async forward has not run: pill false, but the @city tint (cityMention) is present.
+      // The async forward has not run yet, but the @city tint is already present.
       expect(dto.forwardedToCity).toBe(false)
       expect(dto.cityMention).toMatchObject({ handle: HANDLE, geoid, forwarded: false })
 
-      // The forward audit lands (recordMention + markForwarded), as the async onReportMessage path would do.
       await audit.recordMention(msgId, geoid)
       await audit.markForwarded(msgId, geoid)
 
-      // A fresh history read now reflects the stamped forward.
       const page = await chat.reportHistory(reportId, undefined, 30, userId)
       const found = page.items.find((m) => m.id === msgId)
       expect(found, "message should appear in report history").toBeDefined()
@@ -160,7 +140,6 @@ describe.skipIf(!pg)(
         forwarded: true,
       })
 
-      // findReportMessage maps the same surfacing.
       const single = await chat.findReportMessage(reportId, msgId, userId)
       expect(single!.forwardedToCity).toBe(true)
       expect(single!.cityMention?.forwarded).toBe(true)
@@ -178,12 +157,10 @@ describe.skipIf(!pg)(
         { cleanupId: reportId, roomKind: "report", userId, body: `@${HANDLE} help` },
         msgId,
       )
-      // Only the NULL-forwarded row exists (no city contact case).
       await audit.recordMention(msgId, geoid)
 
       const single = await chat.findReportMessage(reportId, msgId, userId)
       expect(single!.forwardedToCity).toBe(false)
-      // Still tinted (@mention present), just not forwarded.
       expect(single!.cityMention).toMatchObject({ handle: HANDLE, forwarded: false })
     })
 
@@ -205,9 +182,8 @@ describe.skipIf(!pg)(
   },
 )
 
-// Tear down the shared, memoized withPg() harness only AFTER BOTH describe blocks above have run.
-// A per-block afterAll would stop the container (and close h.sql) before the second block executes,
-// so its tests would fail with CONNECTION_ENDED (see schema.test.ts for the same rule).
+// A per-block afterAll would stop the shared withPg() container before the second block runs, failing it
+// with CONNECTION_ENDED.
 afterAll(async () => {
   if (pg) await pg.teardown()
 })

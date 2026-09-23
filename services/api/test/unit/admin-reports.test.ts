@@ -153,7 +153,7 @@ describe("admin reports pure helpers", () => {
     })
   })
 
-  it("statusChangeNote reads as English to a resident — never a raw enum token", () => {
+  it("statusChangeNote reads as English to a resident, never a raw enum token", () => {
     expect(statusChangeNote("submitted")).toBe("Status set to Submitted")
     expect(statusChangeNote("held")).toBe("Status set to Under review")
     expect(statusChangeNote("published")).toBe("Status set to Published")
@@ -425,7 +425,7 @@ describe("admin reports list", () => {
     expect((await svc.list({ q: "figueroa" })).counts.all).toBe(1)
   })
 
-  it("matches an id ONLY on a full uuid — never a substring, never a non-uuid needle", async () => {
+  it("matches an id ONLY on a full uuid, never a substring, never a non-uuid needle", async () => {
     const { repo, svc } = harness()
     const id = "3f2b1c44-0a55-4d66-8e77-99aa00bb11cc"
     repo.seedReport({ id, title: "Broken swing", place: "Austin", reporter: null })
@@ -604,7 +604,7 @@ describe("admin reports mutations", () => {
     expect(repo.reports.get("rep-1")?.record.status).toBe("held")
   })
 
-  it("setStatus SURVIVES a notifier that throws — the committed status change is not undone", async () => {
+  it("setStatus SURVIVES a notifier that throws; the committed status change is not undone", async () => {
     const { repo, notifier, emitter, svc } = harness()
     repo.seedReport({
       id: "rep-1",

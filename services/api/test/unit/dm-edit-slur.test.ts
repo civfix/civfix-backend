@@ -15,9 +15,8 @@ import { InMemoryChatRepository, InMemoryThreadsRepository } from "../helpers/ch
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 
 /**
- * Offline HTTP test for the hate-slur content gate on the DM edit route (App Store 1.2a, Feature F1):
- *   PATCH /dm/:threadId/messages/:messageId  -> assertNoSlur(body.body) -> 422 on a slur, 200 otherwise.
- * Mirrors the delete-message-routes harness (in-memory repos via chatOverrides, mobile bearer = CSRF-exempt).
+ * The hate-slur content gate on the DM edit route (App Store guideline 1.2a): a slur in the edited body
+ * is a 422. Mobile bearer transport is CSRF-exempt, so no token is needed.
  */
 
 const PEER = "44444444-4444-4444-4444-444444444444"

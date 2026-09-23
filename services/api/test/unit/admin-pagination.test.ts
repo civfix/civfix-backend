@@ -1,10 +1,5 @@
-/**
- * services/admin/pagination.ts — offset-cursor clamping (L22).
- *
- * The offset cursor is opaque but UNAUTHENTICATED: anyone can mint one carrying any integer, and an
- * unbounded OFFSET makes Postgres walk and discard that many rows per request. It was clamped at the
- * lower bound only; both ends are now clamped.
- */
+// The offset cursor is opaque but unauthenticated: anyone can mint one carrying any integer, and an
+// unbounded OFFSET makes Postgres walk and discard that many rows per request.
 
 import { describe, it, expect } from "vitest"
 import {
@@ -13,7 +8,7 @@ import {
   encodeOffsetCursor,
 } from "../../src/services/admin/pagination.js"
 
-/** Mint a cursor for an arbitrary offset, bypassing encodeOffsetCursor's own lower clamp. */
+// Bypasses encodeOffsetCursor's own lower clamp.
 function forgeCursor(offset: number): string {
   return Buffer.from(JSON.stringify({ o: offset }), "utf8").toString("base64url")
 }

@@ -1,12 +1,8 @@
 /**
- * Task D-C1: report-chat SYSTEM messages. A system message is a sender-less report status/timeline
- * event stored as a first-class chat_messages row (kind:"system", sender_id NULL, structured
- * system_* payload). `mapSystemRow` is the PURE, DB-free mapper from such a row to a ChatMessageDTO;
- * it is the genuinely new bit this task owns, so it is unit-tested here without any database.
- *
- * The membership SQL (join/leave/isMember/advanceReadWatermark/listMemberIds/countMembers) is exercised
- * by the Docker-gated pg integration suite (test/integration/report-chat-members-pg.test.ts), which
- * SKIPS when Docker is unavailable. This file covers only the pure mapping.
+ * A report-chat SYSTEM message is a sender-less report status/timeline event stored as a first-class
+ * chat_messages row (kind:"system", sender_id NULL, structured system_* payload). `mapSystemRow` is the
+ * PURE, DB-free mapper from such a row to a ChatMessageDTO. The membership SQL is exercised by the
+ * Docker-gated pg suite (test/integration/report-chat-members-pg.test.ts).
  */
 
 import { describe, expect, it } from "vitest"
@@ -83,9 +79,9 @@ describe("mapSystemRow", () => {
 
 /**
  * insertSystemMessage validates input.status against ReportStatusSchema BEFORE writing any row, so a
- * bogus status can never be persisted (making mapSystemRow's status cast sound for the D-D1 timeline
+ * bogus status can never be persisted (making mapSystemRow's status cast sound for the timeline
  * writers). The full insert path needs a DB (Docker-gated integration test); this asserts the pure
- * validation contract the guard relies on — DB-free.
+ * validation contract the guard relies on.
  */
 describe("insertSystemMessage status validation (ReportStatusSchema guard)", () => {
   it("accepts every report-status the system payload can carry", () => {

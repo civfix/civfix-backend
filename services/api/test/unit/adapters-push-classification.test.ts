@@ -1,11 +1,5 @@
-/**
- * The prune-vs-warn matrix of every push dispatcher, tested as pure functions.
- *
- * Getting this wrong is expensive in both directions: classifying a TRANSIENT failure as "prune" revokes a
- * live device's token (the user silently stops receiving push), while failing to classify a DEAD token
- * leaves it in push_tokens forever and every future send re-attempts it. Only the Expo dispatcher had
- * coverage; APNs/FCM/WebPush had none because the classification was buried inside SDK-calling factories.
- */
+// Prune-vs-warn is expensive to get wrong both ways: pruning on a transient failure silently stops push
+// to a live device, and missing a dead token keeps it in push_tokens with every send re-attempting it.
 
 import { describe, it, expect, vi } from "vitest"
 import { isApnsPruneFailure } from "../../src/adapters/push-apns.js"
@@ -96,7 +90,6 @@ describe("collectExpoInvalidTokens", () => {
       logger,
     )
     expect(invalid).toEqual(["dead"])
-    // The non-prune ticket error is still surfaced.
     expect(warns).toHaveLength(1)
   })
 

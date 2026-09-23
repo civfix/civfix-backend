@@ -816,7 +816,7 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
     expect(repo.moderationEnqueues).toHaveLength(0)
   })
 
-  it("M9: MEDIA_UNSCORED_POLICY=hold fails CLOSED — an unscored asset is HELD, not published", async () => {
+  it("M9: MEDIA_UNSCORED_POLICY=hold fails CLOSED: an unscored asset is HELD, not published", async () => {
     const { deps, storage, repo } = realDeps()
     const holdDeps: MediaChecksDeps = {
       ...deps,

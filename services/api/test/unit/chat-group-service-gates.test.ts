@@ -139,7 +139,7 @@ describe("addMembers reports the ACCEPTED invitees, independently of the members
     expect(res.added).toEqual([INVITEE_OK])
   })
 
-  it("never reports an invitee the block filter dropped (M12) — they must learn nothing", async () => {
+  it("never reports an invitee the block filter dropped (M12): they must learn nothing", async () => {
     const repo = fakeRepo({ blocked: [[MEMBER, INVITEE_BLOCKED_BY_MEMBER]] })
     const res = await svcOver(repo).addMembers(OWNER, {
       id: GROUP,
@@ -237,7 +237,7 @@ describe("L8: unknown group and no-access answer identically (no existence oracl
   })
 })
 
-describe("F044 — group bans survive removal", () => {
+describe("F044: group bans survive removal", () => {
   it("a moderation removal (actor !== target) writes a ban row", async () => {
     const repo = fakeRepo({ visibility: "public" })
     await svcOver(repo).removeMember(OWNER, GROUP, MEMBER)
@@ -252,7 +252,7 @@ describe("F044 — group bans survive removal", () => {
     expect(repo.bannedSet.has(MEMBER)).toBe(false)
   })
 
-  it("a banned user can't re-join a public group — same 403 not_public, no oracle", async () => {
+  it("a banned user can't re-join a public group: same 403 not_public, no oracle", async () => {
     const repo = fakeRepo({ visibility: "public", banned: [STRANGER] })
     const res = await statusOf(() => svcOver(repo).joinGroup(STRANGER, GROUP))
     expect(res).toEqual({ status: 403, code: "not_public" })
@@ -272,10 +272,10 @@ describe("F044 — group bans survive removal", () => {
 })
 
 /**
- * F045: the invite gates used to issue ONE block-scan query per candidate (~100 per addMembers call).
- * They are two bulk reads now — the invitee/actor scan and the pairwise scan — whatever the roster size.
+ * The invite gates used to issue ONE block-scan query per candidate (~100 per addMembers call). They
+ * are two bulk reads now (the invitee/actor scan and the pairwise scan), whatever the roster size.
  */
-describe("F045 — invite block scans are bulk, not per-candidate", () => {
+describe("F045: invite block scans are bulk, not per-candidate", () => {
   it("issues a constant number of block queries for a 40-invitee addMembers", async () => {
     const repo = fakeRepo()
     const invitable = vi.spyOn(repo, "invitableIdsOf")

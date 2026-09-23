@@ -1,20 +1,5 @@
-/**
- * Reports integration test (Docker-gated). Exercises the REAL transaction path: the Drizzle/PostGIS
- * ReportRepository + the report service against a live PostGIS container (via withPg, which seeds the
- * canonical jurisdictions). It is driven at the service+repository layer (not over HTTP) so it needs no
- * Redis/auth - it proves the spatial write/read, jurisdiction resolution, media attach, timeline, and
- * the section-17 idempotency probe directly.
- *
- * Proven here (the Phase-1 done-criterion + the section-17 probe):
- *   - a created pin has the correct geom (ST_X/ST_Y round-trip), geom_source = device, the jurisdiction
- *     resolved from the seeded set, the media_asset attached (report_id set), and a timeline row;
- *   - submitting the SAME idempotency key again returns the SAME report id, inserts NO second report row,
- *     and does NOT orphan or duplicate the media (the asset stays attached to the original report).
- *   - a bbox query returns the inserted point.
- *
- * When Docker is unavailable the whole describe block SKIPS (describe.skipIf) so the local suite stays
- * green; CI runs it for real. Reuses withPg() per the harness contract.
- */
+// Driven at the service+repository layer against real PostGIS (withPg seeds the canonical
+// jurisdictions), so it needs no Redis or auth.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -33,7 +18,6 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
 
   beforeAll(async () => {
     h = pg as PgHarness
-    // The real jurisdiction resolver runs the canonical spatial query against the seeded jurisdictions.
     service = makeReportService({
       repo: makeDrizzleReportRepository(h.sql),
       resolveJurisdictionGeoid: async (lat, lng) => {
@@ -45,7 +29,6 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
         `
         return rows[0]?.geoid ?? null
       },
-      // Presign is irrelevant to the DB contract here; echo the key.
       presignMedia: (r2Key, thumbKey) =>
         Promise.resolve(
           thumbKey === null
@@ -54,7 +37,6 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
         ),
     })
 
-    // A real reporter user (reports.reporter_user_id FK -> users.id).
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name) VALUES ('Reporter') RETURNING id
     `
@@ -65,7 +47,6 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     await h.teardown()
   })
 
-  /** Seed a finalized-but-unattached media_asset (as media-intake would have left it). */
   async function seedMedia(): Promise<{ id: string; uploadId: string }> {
     const uploadId = randomUUID()
     const [row] = await h.sql<{ id: string }[]>`
@@ -97,7 +78,6 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
       { userId },
     )
 
-    // The DTO is the inside-city point, published immediately, resolved to LA city.
     expect(dto.status).toBe("published")
     expect(dto.geomSource).toBe("device")
     expect(dto.jurisdictionGeoid).toBe(LA_CITY.geoid)
@@ -106,7 +86,6 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     expect(dto.timeline).toHaveLength(1)
     expect(dto.timeline[0]!.status).toBe("published")
 
-    // Geom round-trip: ST_X/ST_Y match the submitted lng/lat.
     const [geo] = await h.sql<{ lng: number; lat: number; geom_source: string; h3_cell: string }[]>`
       SELECT ST_X(geom) AS lng, ST_Y(geom) AS lat, geom_source, h3_cell
       FROM reports WHERE id = ${dto.id}
@@ -116,20 +95,17 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     expect(geo!.geom_source).toBe("device")
     expect(geo!.h3_cell.length).toBeGreaterThan(0)
 
-    // The media_asset is now attached to this report.
     const [m] = await h.sql<{ report_id: string | null }[]>`
       SELECT report_id FROM media_assets WHERE id = ${media.id}
     `
     expect(m!.report_id).toBe(dto.id)
 
-    // The timeline row exists in the DB.
     const tl = await h.sql<{ status: string }[]>`
       SELECT status FROM report_timeline WHERE report_id = ${dto.id}
     `
     expect(tl).toHaveLength(1)
     expect(tl[0]!.status).toBe("published")
 
-    // The idempotency snapshot was persisted in the same transaction.
     const idem = await h.sql<{ key: string }[]>`
       SELECT key FROM idempotency_keys WHERE key = ${key} AND scope = 'report_create'
     `
@@ -143,13 +119,12 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
 
     const first = await service.createReport(req, { userId })
 
-    // Count reports + media-attachments BEFORE the retry.
     const before = await h.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM reports WHERE idempotency_key = ${key}
     `
     expect(before[0]!.n).toBe(1)
 
-    // Submit the SAME key again (with a different-looking body to prove the original wins).
+    // A different body under the same key proves the original wins.
     const second = await service.createReport(
       createReq({
         idempotencyKey: key,
@@ -160,18 +135,15 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
       { userId },
     )
 
-    // Same id returned, original content (category trash, not hazard).
     expect(second.id).toBe(first.id)
     expect(second.category).toBe(first.category)
     expect(second.category).toBe("trash")
 
-    // Still exactly ONE report row for that key (no duplicate).
     const after = await h.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM reports WHERE idempotency_key = ${key}
     `
     expect(after[0]!.n).toBe(1)
 
-    // The media asset is attached to exactly ONE report (the original) - not orphaned, not duplicated.
     const mediaRows = await h.sql<{ id: string; report_id: string | null }[]>`
       SELECT id, report_id FROM media_assets WHERE id = ${media.id}
     `
@@ -182,7 +154,7 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
   it("F087e: REJECTS (422) a create whose media is VALIDATING but never finalized, leaving the row unbound", async () => {
     // A row is created 'validating' at PRESIGN time, before any bytes exist. Binding one of those made a
     // permanently stranded asset: bound (so findOrphans skips it), unfinalized (so the stuck sweep skips
-    // it), with no media.checks job behind it — and for an anon report it wedged the hold-release gate
+    // it), with no media.checks job behind it, and for an anon report it wedged the hold-release gate
     // forever, because the report waits on media that will never resolve.
     const uploadId = randomUUID()
     const [row] = await h.sql<{ id: string }[]>`
@@ -209,8 +181,8 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     `
     expect(after!.report_id).toBeNull()
 
-    // ...and the SAME upload binds fine the moment finalize stamps the watermark, so this is a timing
-    // gate on the intake handshake, not a new restriction on what may be attached.
+    // Once finalize stamps the watermark the same upload binds, so this is a timing gate on the intake
+    // handshake, not a restriction on what may be attached.
     await h.sql`UPDATE media_assets SET finalized_at = now() WHERE id = ${row!.id}`
     const ok = await service.createReport(
       createReq({ idempotencyKey: randomUUID(), mediaUploadIds: [uploadId] }),
@@ -220,16 +192,14 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
   })
 
   it("REJECTS (422) a create whose media is already attached to a different report, and leaves it on A", async () => {
-    // Create report A owning the media.
     const media = await seedMedia()
     const a = await service.createReport(
       createReq({ idempotencyKey: randomUUID(), mediaUploadIds: [media.uploadId] }),
       { userId },
     )
 
-    // Report B tries to claim the same upload id. The claim UPDATE matches 0 rows, and (M-media-claim)
-    // an unclaimable id now FAILS THE WHOLE CREATE instead of being silently dropped: the reporter used
-    // to get a 201 with their photo missing from the gallery and no way to tell that had happened.
+    // An unclaimable id fails the whole create instead of being silently dropped: the reporter used to
+    // get a 201 with their photo missing from the gallery and no way to tell.
     const keyB = randomUUID()
     await expect(
       service.createReport(createReq({ idempotencyKey: keyB, mediaUploadIds: [media.uploadId] }), {
@@ -241,15 +211,13 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
       fields: { mediaUploadIds: "One or more media uploads are unavailable." },
     })
 
-    // THE SECURITY ASSERTION (unchanged): the asset stays bound to report A. B must never be able to
-    // re-point another report's photo at itself.
+    // Security: B must never be able to re-point another report's photo at itself.
     const [m] = await h.sql<{ report_id: string | null }[]>`
       SELECT report_id FROM media_assets WHERE id = ${media.id}
     `
     expect(m!.report_id).toBe(a.id)
 
-    // ...and the rejection rolled the whole transaction back: no half-created report row, no timeline
-    // row, no idempotency snapshot that a retry would replay as a success.
+    // The whole transaction rolled back: no idempotency snapshot a retry would replay as a success.
     const rows = await h.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM reports WHERE idempotency_key = ${keyB}
     `
@@ -262,7 +230,7 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
 
   it("REJECTS (422) a create naming an UNKNOWN upload id, and creates nothing", async () => {
     // Same fail-closed rule for an id that matches no media_assets row at all (a typo, a client replaying
-    // a stale draft, or a probe). The pre-fix behavior was a 201 with an empty gallery.
+    // a stale draft, or a probe).
     const key = randomUUID()
     await expect(
       service.createReport(createReq({ idempotencyKey: key, mediaUploadIds: [randomUUID()] }), {
@@ -336,16 +304,9 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     expect(m!.report_id).toBe(dto.id)
   })
 
-  /**
-   * A genuinely street-level viewport around PROBE_INSIDE_CITY (where every fixture report is created).
-   *
-   * M14 made the client's `zoom` advisory: the effective zoom is min(requested, impliedZoomForBBox), so a
-   * bbox must be small enough to JUSTIFY per-pin zoom before listReportsInBBox will return pins at all.
-   * The seeded CALIFORNIA bbox (10.5° lng x 9.5° lat) implies 7, well under CLUSTER_ZOOM_THRESHOLD, so
-   * these tests use a ~0.04° box (implies 16) — asserting on `pins` with a state-wide bbox would silently
-   * assert on an empty array forever. The county bbox no longer works for this: at threshold 10 it
-   * implies exactly 10 and DOES return pins.
-   */
+  // The client's `zoom` is advisory (effective zoom is min(requested, impliedZoomForBBox)), so the bbox
+  // must be small enough to justify per-pin zoom. A state-wide bbox implies 7 and would make every `pins`
+  // assertion check an empty array forever; this ~0.04° box implies 16.
   const STREET_BBOX = {
     west: PROBE_INSIDE_CITY.lng - 0.02,
     east: PROBE_INSIDE_CITY.lng + 0.02,
@@ -359,28 +320,23 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
       createReq({ idempotencyKey: key, category: "water", type: "infrastructure" }),
       { userId },
     )
-    // The fine-grained type (0021) round-trips through the create transaction onto the DTO.
     expect(created.type).toBe("infrastructure")
 
-    // Query a street-level bbox at high zoom (individual pins) and expect the new pin to be present.
     const res = await service.listReportsInBBox(STREET_BBOX, null, null, 16)
     const ids = res.pins.map((p) => p.id)
     expect(ids).toContain(created.id)
     const pin = res.pins.find((p) => p.id === created.id)!
     expect(pin.lat).toBeCloseTo(PROBE_INSIDE_CITY.lat, 6)
     expect(pin.lng).toBeCloseTo(PROBE_INSIDE_CITY.lng, 6)
-    // The pin carries the fine-grained type alongside category.
     expect(pin.type).toBe("infrastructure")
-    // The per-category counts cover every candidate regardless of the cluster/pin split.
+    // Counts cover every candidate regardless of the cluster/pin split.
     expect(res.counts?.water).toBeGreaterThanOrEqual(1)
   })
 
   it("M14: the SAME point over a state-wide bbox clusters even when the client claims zoom 22", async () => {
-    // The anonymous-DoS fix: `zoom` used to be a free query parameter, so bbox=<whole world>&zoom=22
-    // skipped clustering and forced up to 2000 report rows + 2000 media presigns per request. The bbox
-    // extent now caps the zoom, so a claimed street-level zoom over a whole state cannot reach the per-pin
-    // branch. Proven against a live DB (not just the pure clustering unit test) because the presign
-    // fan-out lives on the service side of that branch.
+    // Anonymous DoS guard: a free `zoom` let bbox=<whole world>&zoom=22 skip clustering and force up to
+    // 2000 rows + 2000 presigns per request, so the bbox extent caps the zoom. Proven against a live DB
+    // because the presign fan-out lives on the service side of that branch.
     const created = await service.createReport(
       createReq({ idempotencyKey: randomUUID(), category: "hazard", type: "pavement" }),
       { userId },
@@ -390,20 +346,18 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     const wide = await service.listReportsInBBox({ west, south, east, north }, null, null, 22)
     expect(wide.pins).toHaveLength(0)
     expect(wide.clusters.length).toBeGreaterThan(0)
-    // The report is still COUNTED (and clustered near its true location) — it is not filtered out.
+    // Still counted and clustered near its true location, not filtered out.
     const total = wide.clusters.reduce((n, c) => n + c.count, 0)
     expect(total).toBeGreaterThanOrEqual(1)
     expect(wide.counts?.hazard).toBeGreaterThanOrEqual(1)
 
-    // ...and the identical query over a street-level bbox DOES return it as a pin, so the zero above is
-    // the clamp and not a broken visibility filter.
+    // A street-level bbox returns it as a pin, so the zero above is the clamp, not a visibility filter.
     const tight = await service.listReportsInBBox(STREET_BBOX, null, null, 22)
     expect(tight.clusters).toHaveLength(0)
     expect(tight.pins.map((p) => p.id)).toContain(created.id)
   })
 
   it("the type filter narrows a bbox query to matching reports only (0021)", async () => {
-    // Two published+public reports at the same point with DIFFERENT fine types; the type filter narrows.
     const dump = await service.createReport(
       createReq({ idempotencyKey: randomUUID(), category: "trash", type: "dump" }),
       { userId },
@@ -418,7 +372,7 @@ describe.skipIf(!pg)("reports (integration: real transaction path)", () => {
     expect(ids).toContain(dump.id)
     expect(ids).not.toContain(graffiti.id)
     expect(res.pins.every((p) => p.type === "dump")).toBe(true)
-    // Unfiltered, both are in view — so the exclusion above is the filter, not the bbox.
+    // Unfiltered, both are in view, so the exclusion above is the filter, not the bbox.
     const all = await service.listReportsInBBox(STREET_BBOX, null, null, 16)
     expect(all.pins.map((p) => p.id)).toContain(graffiti.id)
   })

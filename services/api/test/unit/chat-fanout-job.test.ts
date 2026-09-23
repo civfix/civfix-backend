@@ -103,7 +103,7 @@ describe("chat.room.fanout job dispatch (H19)", () => {
     expect(jobs.sent[1]!.singletonKey).not.toBe(jobs.sent[0]!.singletonKey)
   })
 
-  it("queues IDS ONLY — no sender name, no message body reaches pgboss.job", async () => {
+  it("queues IDS ONLY: no sender name, no message body reaches pgboss.job", async () => {
     const jobs = new RecordingJobs()
     const { deps } = harness()
     const notify = makeRoomFanoutNotifier(ROOM_FANOUT_SPEC.group, {

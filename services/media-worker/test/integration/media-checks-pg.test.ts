@@ -107,7 +107,6 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
   it("orphan sweep deletes a never-attached, aged row", async () => {
     const r2Key = `uploads/2026/06/${randomUUID()}`
     const id = randomUUID()
-    // created_at well in the past, report_id null.
     await h.sql`
       INSERT INTO media_assets (id, upload_id, kind, r2_key, status, created_at)
       VALUES (${id}, ${randomUUID()}, 'image', ${r2Key}, 'validating', now() - interval '2 days')
@@ -121,9 +120,9 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
   })
 
   /**
-   * REGRESSION against the REAL SQL (blocker): the predicate was `report_id IS NULL` alone, and every
+   * REGRESSION against the REAL SQL: the predicate was `report_id IS NULL` alone, and every
    * non-report lane leaves report_id NULL, so the first sweep after deploy would have deleted every user
-   * avatar, every social-post photo and every chat/DM attachment older than the TTL — rows AND R2
+   * avatar, every social-post photo and every chat/DM attachment older than the TTL: rows AND R2
    * objects, with avatar_media_id silently NULLed by its ON DELETE SET NULL FK.
    *
    * The unit test covers the same lanes through the in-memory fake; this one is the version that can
@@ -194,7 +193,6 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
     `
     expect(ownerRow!.avatar_media_id).toBe(userAvatar.id)
 
-    // ...and the real orphan is gone, row and bytes.
     const gone = await h.sql<{ id: string }[]>`SELECT id FROM media_assets WHERE id = ${orphan.id}`
     expect(gone.length).toBe(0)
     expect(storage.get(orphan.r2Key)).toBeNull()
@@ -205,7 +203,7 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
    *
    * It is ONE multi-row `INSERT ... ON CONFLICT (r2_key) DO UPDATE`, and Postgres aborts such a statement
    * with 21000 ("ON CONFLICT DO UPDATE command cannot affect row a second time") when one of its rows
-   * repeats the conflict target — which is why the impl collapses `keys` to a Set first. This write is the
+   * repeats the conflict target, which is why the impl collapses `keys` to a Set first. This write is the
    * ONLY record of a leak whose media row has already been deleted, so a throw here strands the object in
    * the bucket permanently. Nothing exercised the dedupe on either side of the seam.
    */
@@ -226,7 +224,7 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
     }
 
     // Only rows the API actually FINALIZED are in scope: a row is created 'validating' at PRESIGN time,
-    // so an unfinalized one is an upload intent whose bytes never arrived — the orphan sweep's job.
+    // so an unfinalized one is an upload intent whose bytes never arrived (the orphan sweep's job).
     const neverFinalized = await seedStuck(false, null)
     const checkedRecently = await seedStuck(true, new Date(Date.now() - 60_000))
     const neverChecked = await seedStuck(true, null)
@@ -293,7 +291,7 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
     expect(won?.status).toBe("ready")
 
     // The stuck sweep terminalized this row and deleted its objects; a media.checks job that finished a
-    // moment later must NOT flip it back to ready — that asset would presign a 404 forever.
+    // moment later must NOT flip it back to ready: that asset would presign a 404 forever.
     await h.sql`UPDATE media_assets SET status = 'rejected' WHERE id = ${id}`
     expect(await repo.applyResult(id, { status: "ready", width: 99 })).toBeNull()
 
@@ -355,7 +353,7 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
     `
     expect(row).toMatchObject({ attempts: 1, last_error: "storage delete failed" })
 
-    // A SEPARATE call is a genuine retry and must bump — the upsert half of the same statement.
+    // A SEPARATE call is a genuine retry and must bump: the upsert half of the same statement.
     await repo.recordLeakedObjects?.({ mediaId, keys: [key], error: "still failing" })
     const [bumped] = await h.sql<{ attempts: number; last_error: string | null }[]>`
       SELECT attempts, last_error FROM media_reap_tombstones WHERE r2_key = ${key}
@@ -372,7 +370,6 @@ describe.skipIf(!pg)("worker media.checks (integration)", () => {
     await expect(
       ensureNextMonthChatPartition(h.sql, new Date("2026-06-15T00:00:00Z")),
     ).resolves.toBe("chat_messages_2026_07")
-    // The partition exists in the catalog.
     const [exists] = await h.sql<{ exists: boolean }[]>`
       SELECT to_regclass('public.chat_messages_2026_07') IS NOT NULL AS exists
     `

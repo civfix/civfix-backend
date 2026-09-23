@@ -1,10 +1,7 @@
 /**
- * Task D-C4 (follow-up): surfacing forwardedToCity + cityMention on a REPORT chat message DTO.
- *
  * cityForwardFields is the PURE, DB-free helper the report message mapper (chat-repository.drizzle.ts
- * toMessageDTO) uses to derive the "@city" surfacing from (a) the per-row forwarded_to_city EXISTS column
- * and (b) the report's resolved jurisdiction. It is the genuinely new bit, so it is unit-tested here with
- * no database. The SQL join (report_message_forwards -> forwarded_to_city) + the jurisdiction lookup are
+ * toMessageDTO) uses to derive the "@city" surfacing on a REPORT chat message DTO from (a) the per-row
+ * forwarded_to_city EXISTS column and (b) the report's resolved jurisdiction. The SQL join (report_message_forwards -> forwarded_to_city) + the jurisdiction lookup are
  * exercised by the Docker-gated pg suite.
  *
  *   - forwardedToCity mirrors the forwarded_to_city column (the "Forwarded to city" pill);
