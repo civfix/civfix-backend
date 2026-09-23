@@ -3,6 +3,7 @@ import { Apple, Google, generateCodeVerifier, generateState } from "arctic"
 import { AppError } from "@civfix/shared"
 import type { OAuthIdentityStore, UserRecord, UserStore } from "./stores.js"
 import { RemoteJwksVerifier, type JwksVerifier, type VerifiedIdToken } from "./jwks.js"
+import { newAccountDisplayName } from "./official-account.js"
 
 export const GOOGLE_ISSUERS = ["https://accounts.google.com", "accounts.google.com"]
 export const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
@@ -176,7 +177,10 @@ export class OAuthService {
     }
 
     const created = await this.users.create(claims.email ?? null, {
-      displayName: fullName ?? deriveDisplayName(claims, provider),
+      displayName: newAccountDisplayName(
+        fullName ?? deriveDisplayName(claims, provider),
+        providerFallbackName(provider),
+      ),
       role: "citizen",
       emailVerified: claims.email !== null && claims.emailVerified,
       avatarUrl: safeAvatarUrl(claims.picture),
@@ -245,6 +249,10 @@ function deriveDisplayName(claims: VerifiedIdToken, provider: string): string {
     const at = claims.email.indexOf("@")
     if (at > 0) return claims.email.slice(0, at)
   }
+  return providerFallbackName(provider)
+}
+
+function providerFallbackName(provider: string): string {
   return provider === PROVIDER_APPLE ? "Apple user" : "Google user"
 }
 
