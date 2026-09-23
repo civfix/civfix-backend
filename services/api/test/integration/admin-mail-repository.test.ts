@@ -297,6 +297,43 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
     expect((await repo.findMessageByMessageId("<bf-3@x>"))?.authVerdict).toBe("pass")
   })
 
+  it("approves a withheld reply once, with its audit row, and makes it sweep-eligible", async () => {
+    const [report] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
+      VALUES (gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
+              'published', '8a2a1072b59ffff', ${GEOID})
+      RETURNING id
+    `
+    const t = await repo.findOrCreateReportThread(report!.id, { subject: "Approve" })
+    const other = await repo.createThread({ subject: "Other" })
+    const out = await repo.insertMessage({ threadId: t.id, direction: "out" })
+    const reply = await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@vendor.example",
+      messageId: "<approve@vendor.example>",
+      unaffiliated: true,
+      authVerdict: "fail",
+    })
+    expect(await repo.findInboundMessage(t.id, reply!.id)).toMatchObject({ authVerdict: "fail" })
+    expect(await repo.findInboundMessage(other.id, reply!.id)).toBeNull()
+    expect(await repo.findInboundMessage(t.id, out!.id)).toBeNull()
+
+    const audit = { actorId: null, action: "mail.reply_published", target: `mail:${t.id}` } as const
+    expect(await repo.approveWithheldReply(reply!.id, audit)).toMatchObject({ unaffiliated: false })
+    expect(await repo.approveWithheldReply(reply!.id, audit)).toBeNull()
+    const rows = await h.sql`SELECT 1 FROM audit_log WHERE action = 'mail.reply_published'`
+    expect(rows).toHaveLength(1)
+    const owed = await repo.findMessagesPendingEffects({
+      before: new Date(Date.now() + 60_000),
+      leaseBefore: new Date(Date.now() + 60_000),
+      limit: 10,
+    })
+    expect(owed.map((p) => p.message.id)).toEqual([reply!.id])
+
+    await h.sql`DELETE FROM reports WHERE id = ${report!.id}`
+  })
+
   it("B4: an EXPIRED claim is reclaimable and keeps the stage it reached", async () => {
     const t = await repo.createThread({ subject: "Lease" })
     const msg = await repo.insertMessage({

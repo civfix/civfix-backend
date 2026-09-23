@@ -1,0 +1,168 @@
+import { randomUUID } from "node:crypto"
+import { describe, expect, it } from "vitest"
+import type { Container } from "../../src/di.js"
+import { RecordingNotifier } from "../helpers/notifications.js"
+import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
+import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
+import { applyInboundEffects } from "../../src/services/admin/inbound-thread-correlation.js"
+import {
+  makeMailReplyPublishService,
+  MAIL_REPLY_NOT_FOUND,
+  MAIL_REPLY_NOT_PUBLISHABLE,
+} from "../../src/services/admin/mail-reply-publish-service.js"
+import type { ReportTimelineEvent } from "../../src/services/report-timeline-event.js"
+
+const REPORT_ID = "report-1"
+const OPERATOR_ID = "operator-1"
+
+function harness() {
+  const repo = new InMemoryMailRepository()
+  const reports = new InMemoryAdminReportRepository()
+  const cleanups = new InMemoryCleanupRepository()
+  const notifier = new RecordingNotifier()
+  const emitted: ReportTimelineEvent[] = []
+  const chat = { fail: false }
+  const warnings: (string | undefined)[] = []
+  reports.seedReport({
+    id: REPORT_ID,
+    status: "published",
+    reporter: {
+      id: "reporter-1",
+      name: "Jane",
+      handle: "jane",
+      emailVerified: true,
+      hasOauth: false,
+      joinedAt: new Date("2025-01-01T00:00:00Z"),
+    },
+  })
+  const effects = {
+    reportRepo: reports,
+    cleanupRepo: cleanups,
+    notifications: notifier,
+    chatEmitter: {
+      emit: (event: ReportTimelineEvent) => {
+        if (chat.fail) return Promise.reject(new Error("chat insert failed"))
+        emitted.push(event)
+        return Promise.resolve()
+      },
+    },
+  }
+  const container = { env: {} } as unknown as Container
+  const service = makeMailReplyPublishService({
+    repo,
+    applyEffects: (thread, message) =>
+      applyInboundEffects(container, effects, repo, thread, message),
+    logger: { warn: (_obj, msg) => warnings.push(msg) },
+  })
+  const withheld = (link: { reportId?: string; cleanupId?: string }) => {
+    const thread = repo.seedThread({ ...link, status: "needs_action" })
+    const message = repo.seedMessage({
+      threadId: thread.id,
+      direction: "in",
+      fromAddr: "clerk@pw.lacity.gov",
+      body: "Crew scheduled for Friday.",
+      unaffiliated: true,
+      authVerdict: "fail",
+    })
+    return { threadId: thread.id, messageId: message.id, message, actorId: OPERATOR_ID }
+  }
+  return { repo, reports, cleanups, notifier, emitted, chat, warnings, service, withheld }
+}
+
+describe("makeMailReplyPublishService", () => {
+  it("approves, audits and publishes a withheld report reply exactly once", async () => {
+    const h = harness()
+    const input = h.withheld({ reportId: REPORT_ID })
+
+    expect(await h.service.publish(input)).toEqual({ publication: "published" })
+    expect(h.reports.reports.get(REPORT_ID)?.record.status).toBe("in_progress")
+    expect(h.emitted.map((e) => e.body)).toEqual(["Crew scheduled for Friday."])
+    expect(h.notifier.sent).toHaveLength(1)
+    expect((await h.repo.getThreadRecord(input.threadId))?.status).toBe("replied")
+    expect(h.repo.audits).toEqual([
+      {
+        actorId: OPERATOR_ID,
+        action: "mail.reply_published",
+        target: `mail:${input.threadId}`,
+        meta: {
+          messageId: input.messageId,
+          reportId: REPORT_ID,
+          cleanupId: null,
+          authVerdict: "fail",
+          fromDomain: "pw.lacity.gov",
+        },
+      },
+    ])
+
+    expect(await h.service.publish(input)).toEqual({ publication: "published" })
+    expect([h.repo.audits.length, h.emitted.length, h.notifier.sent.length]).toEqual([1, 1, 1])
+  })
+
+  it("answers pending when the effects fail and lets a retry or the sweep finish", async () => {
+    const h = harness()
+    const input = h.withheld({ reportId: REPORT_ID })
+    h.chat.fail = true
+
+    expect(await h.service.publish(input)).toEqual({ publication: "pending" })
+    expect(h.warnings).toEqual([
+      "mail: publishing an approved reply failed (claim released; the sweep re-drives it)",
+    ])
+    expect(input.message).toMatchObject({ unaffiliated: false, effectsClaimedAt: null })
+    const owed = await h.repo.findMessagesPendingEffects({
+      before: new Date(Date.now() + 60_000),
+      leaseBefore: new Date(),
+      limit: 10,
+    })
+    expect(owed.map((p) => p.message.id)).toEqual([input.messageId])
+
+    h.chat.fail = false
+    expect(await h.service.publish(input)).toEqual({ publication: "published" })
+    expect([h.repo.audits.length, h.emitted.length]).toEqual([1, 1])
+  })
+
+  it("answers pending without publishing while another runner holds the effects lease", async () => {
+    const h = harness()
+    const input = h.withheld({ reportId: REPORT_ID })
+    input.message.effectsClaimedAt = new Date()
+
+    expect(await h.service.publish(input)).toEqual({ publication: "pending" })
+    expect(h.emitted).toHaveLength(0)
+  })
+
+  it("adds a withheld event reply to the event timeline", async () => {
+    const h = harness()
+    const input = h.withheld({ cleanupId: "cleanup-1" })
+
+    expect(await h.service.publish(input)).toEqual({ publication: "published" })
+    expect(h.cleanups.timeline.map((t) => [t.cleanupId, t.kind])).toEqual([
+      ["cleanup-1", "city_reply"],
+    ])
+    expect((await h.repo.getThreadRecord(input.threadId))?.status).toBe("replied")
+  })
+
+  it("refuses a message that is not an inbound reply on the thread, and an unlinked thread", async () => {
+    const h = harness()
+    const input = h.withheld({ reportId: REPORT_ID })
+    const other = h.repo.seedThread({ reportId: "report-2" })
+    const outbound = h.repo.seedMessage({ threadId: input.threadId, direction: "out" })
+    const loose = h.withheld({})
+
+    await expect(h.service.publish({ ...input, threadId: other.id })).rejects.toMatchObject({
+      httpStatus: 404,
+      message: MAIL_REPLY_NOT_FOUND,
+    })
+    await expect(h.service.publish({ ...input, messageId: outbound.id })).rejects.toMatchObject({
+      httpStatus: 404,
+    })
+    await expect(h.service.publish({ ...input, threadId: randomUUID() })).rejects.toMatchObject({
+      httpStatus: 404,
+    })
+    await expect(h.service.publish(loose)).rejects.toMatchObject({
+      httpStatus: 409,
+      message: MAIL_REPLY_NOT_PUBLISHABLE,
+    })
+    expect(h.repo.audits).toHaveLength(0)
+    expect([input.message.unaffiliated, loose.message.unaffiliated]).toEqual([true, true])
+  })
+})

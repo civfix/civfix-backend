@@ -192,6 +192,8 @@ export interface MailRepository {
   releaseMessageEffects(id: string): Promise<void>
   findMessagesPendingEffects(input: PendingEffectsQuery): Promise<PendingEffects[]>
   hasWithheldReply(threadId: string): Promise<boolean>
+  findInboundMessage(threadId: string, messageId: string): Promise<MailMessageRecord | null>
+  approveWithheldReply(messageId: string, audit: MailAuditInput): Promise<MailMessageRecord | null>
 }
 
 export interface ClaimEffectsInput {
