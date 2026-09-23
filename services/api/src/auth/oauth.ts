@@ -1,6 +1,12 @@
 import { Apple, Google, generateCodeVerifier, generateState } from "arctic"
 import { AppError } from "@civfix/shared"
-import type { OAuthIdentityStore, UserRecord, UserStore } from "./stores.js"
+import { containsSlur } from "../abuse/slur-filter.js"
+import {
+  EmailTakenError,
+  type OAuthIdentityStore,
+  type UserRecord,
+  type UserStore,
+} from "./stores.js"
 import { RemoteJwksVerifier, type JwksVerifier, type VerifiedIdToken } from "./jwks.js"
 
 export const GOOGLE_ISSUERS = ["https://accounts.google.com", "accounts.google.com"]
@@ -163,22 +169,44 @@ export class OAuthService {
       if (user && user.deletedAt === null) return user
     }
 
-    if (claims.email && claims.emailVerified) {
-      const byEmail = await this.users.findByEmail(claims.email)
-      if (byEmail && byEmail.deletedAt === null) {
-        await this.oauthStore.linkIdentity(byEmail.id, provider, claims.sub)
-        return byEmail
-      }
+    // An address the provider has not verified proves nothing about who owns it: it is never stored and
+    // never matched, or a token naming someone else's email would sign in as them, and an OTP sign-in by
+    // the real owner would later walk into an account the token holder planted.
+    const verifiedEmail = claims.email !== null && claims.emailVerified ? claims.email : null
+    if (verifiedEmail !== null) {
+      const linked = await this.linkExistingByEmail(verifiedEmail, provider, claims.sub)
+      if (linked) return linked
     }
 
-    const created = await this.users.create(claims.email ?? null, {
-      displayName: fullName ?? deriveDisplayName(claims, provider),
-      role: "citizen",
-      emailVerified: claims.email !== null && claims.emailVerified,
-      avatarUrl: safeAvatarUrl(claims.picture),
-    })
+    let created: UserRecord
+    try {
+      created = await this.users.create(verifiedEmail, {
+        displayName: providerDisplayName(fullName, claims, provider),
+        role: "citizen",
+        emailVerified: verifiedEmail !== null,
+        avatarUrl: safeAvatarUrl(claims.picture),
+        onEmailConflict: "reject",
+      })
+    } catch (err) {
+      if (!(err instanceof EmailTakenError) || verifiedEmail === null) throw err
+      // A concurrent first sign-in for the same verified address won the insert; link to its account.
+      const linked = await this.linkExistingByEmail(verifiedEmail, provider, claims.sub)
+      if (!linked) throw err
+      return linked
+    }
     await this.oauthStore.linkIdentity(created.id, provider, claims.sub)
     return created
+  }
+
+  private async linkExistingByEmail(
+    verifiedEmail: string,
+    provider: string,
+    providerUserId: string,
+  ): Promise<UserRecord | null> {
+    const byEmail = await this.users.findByEmail(verifiedEmail)
+    if (!byEmail || byEmail.deletedAt !== null) return null
+    await this.oauthStore.linkIdentity(byEmail.id, provider, providerUserId)
+    return byEmail
   }
 
   private requireGoogle(): Google {
@@ -235,13 +263,46 @@ export class OAuthService {
   }
 }
 
-function deriveDisplayName(claims: VerifiedIdToken, provider: string): string {
-  if (claims.name && claims.name.trim().length > 0) return claims.name.trim()
-  if (claims.email) {
-    const at = claims.email.indexOf("@")
-    if (at > 0) return claims.email.slice(0, at)
+// The same cap the profile editor enforces on a display name. Provider names (Apple's client-sent
+// fullName, Google's name claim) are user-controlled and reach every author DTO before the profile step,
+// so they are held to that cap and the slur filter here rather than rejected: a too-long or filtered name
+// must not fail the sign-in itself.
+const MAX_PROVIDER_DISPLAY_NAME_LENGTH = 80
+
+function providerDisplayName(
+  fullName: string | undefined,
+  claims: VerifiedIdToken,
+  provider: string,
+): string {
+  const candidates = [fullName, claims.name, emailLocalPart(claims.email)]
+  for (const candidate of candidates) {
+    const name = sanitizeDisplayName(candidate)
+    if (name !== null) return name
   }
   return provider === PROVIDER_APPLE ? "Apple user" : "Google user"
+}
+
+function sanitizeDisplayName(raw: string | null | undefined): string | null {
+  if (raw === null || raw === undefined) return null
+  const collapsed = raw.replace(/\s+/g, " ").trim()
+  const name = truncateCodePoints(collapsed, MAX_PROVIDER_DISPLAY_NAME_LENGTH).trimEnd()
+  if (name === "" || containsSlur(name)) return null
+  return name
+}
+
+function truncateCodePoints(value: string, maxLength: number): string {
+  let out = ""
+  for (const codePoint of value) {
+    if (out.length + codePoint.length > maxLength) break
+    out += codePoint
+  }
+  return out
+}
+
+function emailLocalPart(email: string | null): string | null {
+  if (!email) return null
+  const at = email.indexOf("@")
+  return at > 0 ? email.slice(0, at) : null
 }
 
 function safeAvatarUrl(picture: string | null): string | null {

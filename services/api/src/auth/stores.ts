@@ -133,6 +133,13 @@ export interface UserRecord {
   deletedAt: Date | null
 }
 
+/**
+ * "return-existing" answers an email conflict with the account that already holds the address, which is
+ * only safe for a caller that has proved control of that inbox (email code, operator allowlist). A caller
+ * holding no such proof must pass "reject" so a conflict can never hand it someone else's account.
+ */
+export type EmailConflictPolicy = "return-existing" | "reject"
+
 export interface CreateUserInput {
   displayName: string
   role?: Role
@@ -140,6 +147,14 @@ export interface CreateUserInput {
   avatarUrl?: string | null
   handle?: string
   profileComplete?: boolean
+  onEmailConflict?: EmailConflictPolicy
+}
+
+export class EmailTakenError extends Error {
+  constructor() {
+    super("email address already belongs to another account")
+    this.name = "EmailTakenError"
+  }
 }
 
 export interface UpdateProfileInput {
@@ -212,6 +227,7 @@ export class InMemoryUserStore implements UserStore {
       const normalized = email.toLowerCase()
       for (const existing of this.byId.values()) {
         if (existing.email !== null && existing.email.toLowerCase() === normalized) {
+          if (input.onEmailConflict === "reject") return Promise.reject(new EmailTakenError())
           return Promise.resolve({ ...existing })
         }
       }
