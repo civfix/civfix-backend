@@ -1,7 +1,11 @@
 import { createHmac } from "node:crypto"
 import { constantTimeStringEqual } from "../../auth/crypto.js"
 
-export const UNSUBSCRIBE_TOKEN_VERSION = "u1"
+const UNSUBSCRIBE_TOKEN_VERSION = "u1"
+const TOKEN_PAYLOAD_VERSION = 1
+const TOKEN_PART_COUNT = 3
+const MS_PER_SECOND = 1000
+const MS_PER_DAY = 24 * 60 * 60 * MS_PER_SECOND
 
 export const UNSUBSCRIBE_TOKEN_TTL_DAYS = 400
 
@@ -29,11 +33,11 @@ export function mintUnsubscribeToken(
   signingKey: string,
 ): string {
   const payload: TokenPayload = {
-    v: 1,
+    v: TOKEN_PAYLOAD_VERSION,
     s: capability.subjectKind,
     i: capability.subjectId,
     e: capability.cleanupId,
-    x: Math.floor(capability.expiresAtMs / 1000),
+    x: Math.floor(capability.expiresAtMs / MS_PER_SECOND),
   }
   const body = encode(JSON.stringify(payload))
   return `${UNSUBSCRIBE_TOKEN_VERSION}.${body}.${sign(body, signingKey)}`
@@ -45,7 +49,7 @@ export function verifyUnsubscribeToken(
   nowMs: number,
 ): UnsubscribeCapability | null {
   const parts = token.split(".")
-  if (parts.length !== 3) return null
+  if (parts.length !== TOKEN_PART_COUNT) return null
   const [version, body, signature] = parts as [string, string, string]
   if (version !== UNSUBSCRIBE_TOKEN_VERSION) return null
   if (body.length === 0 || signature.length === 0) return null
@@ -60,12 +64,12 @@ export function verifyUnsubscribeToken(
   }
   if (typeof parsed !== "object" || parsed === null) return null
   const p = parsed as Record<string, unknown>
-  if (p.v !== 1) return null
+  if (p.v !== TOKEN_PAYLOAD_VERSION) return null
   if (typeof p.s !== "string" || !(SUBJECT_KINDS as readonly string[]).includes(p.s)) return null
   if (typeof p.i !== "string" || p.i.length === 0) return null
   if (typeof p.e !== "string" || p.e.length === 0) return null
   if (typeof p.x !== "number" || !Number.isFinite(p.x)) return null
-  const expiresAtMs = p.x * 1000
+  const expiresAtMs = p.x * MS_PER_SECOND
   if (expiresAtMs <= nowMs) return null
 
   return {
@@ -77,7 +81,7 @@ export function verifyUnsubscribeToken(
 }
 
 export function unsubscribeExpiryFrom(sentAtMs: number): number {
-  return sentAtMs + UNSUBSCRIBE_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000
+  return sentAtMs + UNSUBSCRIBE_TOKEN_TTL_DAYS * MS_PER_DAY
 }
 
 function encode(value: string): string {

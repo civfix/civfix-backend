@@ -36,6 +36,7 @@ import type {
 import {
   ANNOUNCEMENT_VISIBLE_STATUSES,
   CRITICAL_BROADCAST_KINDS,
+  DEFAULT_BROADCAST_CHUNK_SIZE,
   HOST_COMPOSED_BROADCAST_KINDS,
 } from "./broadcast-types.js"
 
@@ -99,6 +100,27 @@ function newestFirst(a: Keyed, b: Keyed): number {
 
 function withCursorAt<T extends Keyed>(row: T): KeysetRow<T> {
   return { ...row, cursorAt: row.createdAt.toISOString() }
+}
+
+function isOpenDelivery(row: DeliveryRow): boolean {
+  return row.status === "pending" || row.status === "in_flight"
+}
+
+function deliveryKey(row: DeliveryRowInput): string {
+  return `${row.broadcastId}|${row.channel}|${row.recipientKind}|${row.userId ?? row.guestId ?? ""}`
+}
+
+function unsubscribeKey(
+  scope: "event" | "global",
+  cleanupId: string | null,
+  subjectKind: "user" | "guest",
+  subjectId: string,
+): string {
+  return `${scope}|${cleanupId ?? ""}|${subjectKind}|${subjectId}`
+}
+
+function muteKey(cleanupId: string, userId: string): string {
+  return `${cleanupId}|${userId}`
 }
 
 export class InMemoryBroadcastRepository implements BroadcastRepository {
@@ -200,7 +222,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
       plannedAt: null,
       startedAt: input.startedAt ?? null,
       finishedAt: null,
-      chunkSize: input.chunkSize ?? 200,
+      chunkSize: input.chunkSize ?? DEFAULT_BROADCAST_CHUNK_SIZE,
       chunkCount: 0,
       recipientCount: 0,
       sentCount: 0,
@@ -435,7 +457,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     for (const id of deliveryIds) {
       const row = this.deliveries.get(id)
       if (row === undefined) continue
-      if (row.status !== "pending" && row.status !== "in_flight") continue
+      if (!isOpenDelivery(row)) continue
       row.status = "pending"
       row.attempts = Math.max(row.attempts - 1, 0)
       row.updatedAt = new Date()
@@ -447,7 +469,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     const chunks = new Set<number>()
     for (const row of this.deliveries.values()) {
       if (row.broadcastId !== broadcastId) continue
-      if (row.status !== "pending" && row.status !== "in_flight") continue
+      if (!isOpenDelivery(row)) continue
       chunks.add(row.chunkNo)
     }
     return Promise.resolve([...chunks].sort((a, b) => a - b))
@@ -481,11 +503,8 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   insertDeliveries(rows: readonly DeliveryRowInput[]): Promise<number> {
     let inserted = 0
     for (const row of rows) {
-      const key = `${row.broadcastId}|${row.channel}|${row.recipientKind}|${row.userId ?? row.guestId ?? ""}`
-      const clash = [...this.deliveries.values()].some(
-        (d) =>
-          `${d.broadcastId}|${d.channel}|${d.recipientKind}|${d.userId ?? d.guestId ?? ""}` === key,
-      )
+      const key = deliveryKey(row)
+      const clash = [...this.deliveries.values()].some((d) => deliveryKey(d) === key)
       if (clash) continue
       const now = new Date()
       const id = randomUUID()
@@ -555,7 +574,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     let n = 0
     for (const row of this.deliveries.values()) {
       if (row.broadcastId !== broadcastId) continue
-      if (row.status !== "pending" && row.status !== "in_flight") continue
+      if (!isOpenDelivery(row)) continue
       if (row.attempts < maxAttempts) continue
       row.status = "failed"
       row.failureKind = "unknown"
@@ -569,7 +588,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     let n = 0
     for (const row of this.deliveries.values()) {
       if (row.broadcastId !== broadcastId) continue
-      if (row.status !== "pending" && row.status !== "in_flight") continue
+      if (!isOpenDelivery(row)) continue
       row.status = "suppressed"
       row.suppressionReason = reason
       row.updatedAt = new Date()
@@ -582,7 +601,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     const counts: DeliveryCounts = { pending: 0, sent: 0, failed: 0, suppressed: 0, skipped: 0 }
     for (const row of this.deliveries.values()) {
       if (row.broadcastId !== broadcastId) continue
-      if (row.status === "pending" || row.status === "in_flight") counts.pending += 1
+      if (isOpenDelivery(row)) counts.pending += 1
       else if (row.status === "sent") counts.sent += 1
       else if (row.status === "failed") counts.failed += 1
       else if (row.status === "suppressed") counts.suppressed += 1
@@ -743,20 +762,20 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     subjectId: string
   }): Promise<void> {
     this.unsubscribes.add(
-      `${args.scope}|${args.cleanupId ?? ""}|${args.subjectKind}|${args.subjectId}`,
+      unsubscribeKey(args.scope, args.cleanupId, args.subjectKind, args.subjectId),
     )
     return Promise.resolve()
   }
 
   setEventMute(cleanupId: string, userId: string, muted: boolean): Promise<void> {
-    const key = `${cleanupId}|${userId}`
+    const key = muteKey(cleanupId, userId)
     if (muted) this.mutes.add(key)
     else this.mutes.delete(key)
     return Promise.resolve()
   }
 
   isEventMuted(cleanupId: string, userId: string): Promise<boolean> {
-    return Promise.resolve(this.mutes.has(`${cleanupId}|${userId}`))
+    return Promise.resolve(this.mutes.has(muteKey(cleanupId, userId)))
   }
 
   listDueReminders(args: { limit: number }): Promise<DueReminder[]> {
@@ -829,14 +848,18 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   private memberAudible(cleanupId: string, member: MemoryMember, kind: BroadcastKind): boolean {
     if (CRITICAL_BROADCAST_KINDS.has(kind)) return true
     if (HOST_COMPOSED_BROADCAST_KINDS.has(kind) && member.hostBroadcastsPref === false) return false
-    if (this.mutes.has(`${cleanupId}|${member.userId}`)) return false
-    if (this.unsubscribes.has(`event|${cleanupId}|user|${member.userId}`)) return false
-    return !this.unsubscribes.has(`global||user|${member.userId}`)
+    if (this.mutes.has(muteKey(cleanupId, member.userId))) return false
+    if (this.unsubscribes.has(unsubscribeKey("event", cleanupId, "user", member.userId))) {
+      return false
+    }
+    return !this.unsubscribes.has(unsubscribeKey("global", null, "user", member.userId))
   }
 
   private guestOptedOut(cleanupId: string, guest: MemoryGuest): boolean {
-    if (this.unsubscribes.has(`event|${cleanupId}|guest|${guest.guestId}`)) return true
-    return this.unsubscribes.has(`global||guest|${guest.guestId}`)
+    if (this.unsubscribes.has(unsubscribeKey("event", cleanupId, "guest", guest.guestId))) {
+      return true
+    }
+    return this.unsubscribes.has(unsubscribeKey("global", null, "guest", guest.guestId))
   }
 
   private memberMatchesSegment(member: MemoryMember, query: AudiencePageQuery): boolean {

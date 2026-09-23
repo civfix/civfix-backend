@@ -4,7 +4,7 @@ import type { Sql } from "../../db/client.js"
 
 type Fragment = postgres.Fragment
 
-export const EVENT_ANALYTICS_SLOT_ROW_LIMIT = 50
+const EVENT_ANALYTICS_SLOT_ROW_LIMIT = 50
 
 export interface EventAnalyticsFacts {
   walkUps: number
@@ -13,7 +13,7 @@ export interface EventAnalyticsFacts {
   postsCreated: number
 }
 
-export const ZERO_EVENT_ANALYTICS_FACTS: EventAnalyticsFacts = Object.freeze({
+const ZERO_EVENT_ANALYTICS_FACTS: EventAnalyticsFacts = Object.freeze({
   walkUps: 0,
   reportsLinked: 0,
   reportsResolved: 0,
@@ -40,6 +40,18 @@ export interface EventAnalyticsRepository {
   reportStatuses(cleanupId: string): Promise<KeyCount[]>
   hoursBuckets(cleanupId: string): Promise<KeyCount[]>
   comparisonMedians(cleanupIds: readonly string[]): Promise<EventComparisonMedians>
+}
+
+const EMPTY_COMPARISON_MEDIANS: EventComparisonMedians = Object.freeze({
+  sampleSize: 0,
+  signups: null,
+  checkInRate: null,
+  hoursPerVolunteer: null,
+  fillRate: null,
+})
+
+function keyCounts(rows: { key: string; n: number }[]): KeyCount[] {
+  return rows.map((row) => ({ key: row.key, count: row.n }))
 }
 
 export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRepository {
@@ -123,7 +135,7 @@ export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRep
          GROUP BY sl.title
          ORDER BY count(*) DESC, sl.title ASC
          LIMIT ${EVENT_ANALYTICS_SLOT_ROW_LIMIT}`
-      return rows.map((row) => ({ key: row.key, count: row.n }))
+      return keyCounts(rows)
     },
 
     async reportStatuses(cleanupId) {
@@ -135,7 +147,7 @@ export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRep
          GROUP BY rep.status
          ORDER BY count(*) DESC, rep.status ASC
          LIMIT ${EVENT_ANALYTICS_SLOT_ROW_LIMIT}`
-      return rows.map((row) => ({ key: row.key, count: row.n }))
+      return keyCounts(rows)
     },
 
     async hoursBuckets(cleanupId) {
@@ -157,19 +169,11 @@ export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRep
                count(*)::int AS n
           FROM per_person
          GROUP BY 1`
-      return rows.map((row) => ({ key: row.key, count: row.n }))
+      return keyCounts(rows)
     },
 
     async comparisonMedians(cleanupIds) {
-      if (cleanupIds.length === 0) {
-        return {
-          sampleSize: 0,
-          signups: null,
-          checkInRate: null,
-          hoursPerVolunteer: null,
-          fillRate: null,
-        }
-      }
+      if (cleanupIds.length === 0) return { ...EMPTY_COMPARISON_MEDIANS }
       const rows = await sql<
         {
           sample_size: number

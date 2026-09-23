@@ -25,9 +25,8 @@ import { route } from "../../versioning/route.js"
 import { parse } from "../_validate.js"
 import { requireCapability, resolveVisibleStanding } from "../../services/host/authz.js"
 import {
-  BroadcastCapError,
-  capError,
   emailHashOf,
+  withCaps,
   type BroadcastService,
 } from "../../services/host/broadcast-service.js"
 import { auditBestEffort, makeCommsRuntime } from "../../services/host/comms-wiring.js"
@@ -74,15 +73,6 @@ export async function registerHostBroadcastRoutes(
 
   function service(): BroadcastService {
     return runtime().broadcasts
-  }
-
-  async function withCaps<T>(fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn()
-    } catch (err) {
-      if (err instanceof BroadcastCapError) throw capError(err.kind)
-      throw err
-    }
   }
 
   route(

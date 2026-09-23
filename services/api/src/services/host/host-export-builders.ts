@@ -1,7 +1,10 @@
 import type { Sql } from "../../db/client.js"
 import { registerHostExportBuilder, type HostExportContext } from "./export-builders.js"
 
-export const EXPORT_PAGE_SIZE = 1000
+const EXPORT_PAGE_SIZE = 1000
+const SHORT_REF_LENGTH = 8
+const ISO_DAY_LENGTH = 10
+const SHORT_REF_FALLBACK = "event"
 
 interface RosterRow {
   registration_id: string
@@ -87,10 +90,23 @@ export function registerEventExportBuilders(getSql: () => Sql): void {
   })
 }
 
-async function* rosterRows(sql: Sql, ctx: HostExportContext): AsyncIterable<readonly string[]> {
+async function* keysetPages<Row>(
+  fetchPage: (after: string) => Promise<readonly Row[]>,
+  keyOf: (row: Row) => string,
+): AsyncIterable<Row> {
   let after = ""
   for (;;) {
-    const rows = await sql<RosterRow[]>`
+    const rows = await fetchPage(after)
+    if (rows.length === 0) return
+    yield* rows
+    after = keyOf(rows[rows.length - 1]!)
+    if (rows.length < EXPORT_PAGE_SIZE) return
+  }
+}
+
+async function* rosterRows(sql: Sql, ctx: HostExportContext): AsyncIterable<readonly string[]> {
+  const pages = keysetPages(
+    (after) => sql<RosterRow[]>`
       SELECT r.id AS registration_id,
              COALESCE(NULLIF(min(s.attendee_name), ''), g.name, u.display_name) AS attendee_name,
              CASE WHEN r.user_id IS NOT NULL THEN 'member' ELSE 'guest' END AS attendee_kind,
@@ -116,33 +132,30 @@ async function* rosterRows(sql: Sql, ctx: HostExportContext): AsyncIterable<read
        GROUP BY r.id, r.cleanup_id, r.user_id, r.status, r.registered_at,
                 g.name, u.display_name, t.name, g.email, g.phone
        ORDER BY r.id
-       LIMIT ${EXPORT_PAGE_SIZE}`
-    if (rows.length === 0) return
-    for (const row of rows) {
-      yield [
-        row.registration_id,
-        row.attendee_name ?? "",
-        row.attendee_kind,
-        row.ticket_type ?? "",
-        String(row.seats),
-        row.slot ?? "",
-        row.status,
-        iso(row.registered_at),
-        iso(row.checked_in_at),
-        row.checkin_method ?? "",
-        row.guest_email ?? "",
-        row.guest_phone ?? "",
-      ]
-    }
-    after = rows[rows.length - 1]!.registration_id
-    if (rows.length < EXPORT_PAGE_SIZE) return
+       LIMIT ${EXPORT_PAGE_SIZE}`,
+    (row) => row.registration_id,
+  )
+  for await (const row of pages) {
+    yield [
+      row.registration_id,
+      row.attendee_name ?? "",
+      row.attendee_kind,
+      row.ticket_type ?? "",
+      String(row.seats),
+      row.slot ?? "",
+      row.status,
+      iso(row.registered_at),
+      iso(row.checked_in_at),
+      row.checkin_method ?? "",
+      row.guest_email ?? "",
+      row.guest_phone ?? "",
+    ]
   }
 }
 
 async function* checkinRows(sql: Sql, ctx: HostExportContext): AsyncIterable<readonly string[]> {
-  let after = ""
-  for (;;) {
-    const rows = await sql<
+  const pages = keysetPages(
+    (after) => sql<
       {
         id: string
         attendee_name: string | null
@@ -166,28 +179,25 @@ async function* checkinRows(sql: Sql, ctx: HostExportContext): AsyncIterable<rea
        WHERE s.cleanup_id = ${ctx.cleanupId}
          AND (${after} = '' OR s.id > ${after}::uuid)
        ORDER BY s.id
-       LIMIT ${EXPORT_PAGE_SIZE}`
-    if (rows.length === 0) return
-    for (const row of rows) {
-      yield [
-        row.id,
-        row.attendee_name ?? "",
-        row.attendee_kind,
-        row.ticket_type ?? "",
-        iso(row.checked_in_at),
-        row.checkin_method ?? "",
-        iso(row.no_show_at),
-      ]
-    }
-    after = rows[rows.length - 1]!.id
-    if (rows.length < EXPORT_PAGE_SIZE) return
+       LIMIT ${EXPORT_PAGE_SIZE}`,
+    (row) => row.id,
+  )
+  for await (const row of pages) {
+    yield [
+      row.id,
+      row.attendee_name ?? "",
+      row.attendee_kind,
+      row.ticket_type ?? "",
+      iso(row.checked_in_at),
+      row.checkin_method ?? "",
+      iso(row.no_show_at),
+    ]
   }
 }
 
 async function* answerRows(sql: Sql, ctx: HostExportContext): AsyncIterable<readonly string[]> {
-  let after = ""
-  for (;;) {
-    const rows = await sql<
+  const pages = keysetPages(
+    (after) => sql<
       {
         id: string
         registration_id: string
@@ -208,24 +218,22 @@ async function* answerRows(sql: Sql, ctx: HostExportContext): AsyncIterable<read
        WHERE a.cleanup_id = ${ctx.cleanupId}
          AND (${after} = '' OR a.id > ${after}::uuid)
        ORDER BY a.id
-       LIMIT ${EXPORT_PAGE_SIZE}`
-    if (rows.length === 0) return
-    for (const row of rows) {
-      const answer =
-        row.scrubbed_at !== null
-          ? ""
-          : (row.value_text ?? (row.value_json === null ? "" : JSON.stringify(row.value_json)))
-      yield [row.registration_id, row.attendee_kind, row.prompt, answer, iso(row.created_at)]
-    }
-    after = rows[rows.length - 1]!.id
-    if (rows.length < EXPORT_PAGE_SIZE) return
+       LIMIT ${EXPORT_PAGE_SIZE}`,
+    (row) => row.id,
+  )
+  for await (const row of pages) {
+    const answer =
+      row.scrubbed_at !== null
+        ? ""
+        : (row.value_text ?? (row.value_json === null ? "" : JSON.stringify(row.value_json)))
+    yield [row.registration_id, row.attendee_kind, row.prompt, answer, iso(row.created_at)]
   }
 }
 
 function shortRef(ctx: HostExportContext): string {
-  return (ctx.cleanupId ?? ctx.organizationId ?? "event").slice(0, 8)
+  return (ctx.cleanupId ?? ctx.organizationId ?? SHORT_REF_FALLBACK).slice(0, SHORT_REF_LENGTH)
 }
 
 function dayOf(ctx: HostExportContext): string {
-  return ctx.now.toISOString().slice(0, 10)
+  return ctx.now.toISOString().slice(0, ISO_DAY_LENGTH)
 }

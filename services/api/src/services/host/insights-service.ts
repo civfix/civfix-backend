@@ -16,13 +16,17 @@ import {
   type LeaderboardEntryDTO,
   type SeatPoint,
 } from "@civfix/shared"
-import { eventPhase, DEFAULT_DURATION_MS } from "@civfix/shared/host"
+import { DEFAULT_DURATION_MS } from "@civfix/shared/host"
 import type {
   AnalyticsRepository,
   EventClockRecord,
   SeatTrendPoint,
 } from "./analytics-repository.drizzle.js"
-import { hostAnalyticsCacheKey, type HostAnalyticsCache } from "./host-analytics-cache.js"
+import {
+  hostAnalyticsCacheKey,
+  perViewerScope,
+  type HostAnalyticsCache,
+} from "./host-analytics-cache.js"
 import { leaderboardEntryOf } from "../volunteer-hours-service.js"
 import type {
   CheckinCountersRecord,
@@ -30,20 +34,25 @@ import type {
 } from "./registration-repository.types.js"
 import { CHECKIN_COARSEN_DAYS } from "./registration-retention.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
+import { DAY_MS, clockPhase } from "./host-analytics-shaping.js"
 
 export const INSIGHTS_LIVE_CACHE_TTL_SEC = 15
 
 export const INSIGHTS_CACHE_TTL_SEC = 300
 
-export const INSIGHTS_PORTFOLIO_EVENT_LIMIT = 200
+const INSIGHTS_PORTFOLIO_EVENT_LIMIT = 200
 
-export const INSIGHTS_RETURNING_MIN_EVENTS = 2
+const INSIGHTS_RETURNING_MIN_EVENTS = 2
 
-export const INSIGHTS_ARRIVAL_MIN_OFFSET_MIN = -120
+const INSIGHTS_ARRIVAL_MIN_OFFSET_MIN = -120
 
-export const INSIGHTS_ARRIVAL_MAX_OFFSET_MIN = 240
+const INSIGHTS_ARRIVAL_MAX_OFFSET_MIN = 240
 
-const DAY_MS = 86_400_000
+const MINUTE_MS = 60_000
+
+const INSIGHTS_CACHE_ENDPOINT = "insights"
+const ENDED_CACHE_RANGE = "event:ended"
+const OPEN_CACHE_RANGE = "event"
 
 type InsightsAnalyticsRepository = Pick<
   AnalyticsRepository,
@@ -98,7 +107,7 @@ function arrivalBuckets(
 ): ArrivalOffsetBucket[] {
   const byOffset = new Map<number, number>()
   for (const bucket of arrivals) {
-    const offsetMin = Math.round((bucket.at.getTime() - startsAt.getTime()) / 60_000)
+    const offsetMin = Math.round((bucket.at.getTime() - startsAt.getTime()) / MINUTE_MS)
     if (offsetMin < INSIGHTS_ARRIVAL_MIN_OFFSET_MIN) continue
     if (offsetMin > INSIGHTS_ARRIVAL_MAX_OFFSET_MIN) continue
     byOffset.set(offsetMin, (byOffset.get(offsetMin) ?? 0) + bucket.count)
@@ -226,22 +235,14 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
       const clock = await deps.analytics.eventClock(cleanupId)
       if (clock === null) throw AppError.notFound("Cleanup not found")
       const at = now()
-      const phase = eventPhase(
-        {
-          status: clock.status,
-          scheduledAt: clock.scheduledAt.toISOString(),
-          endsAt: clock.endsAt?.toISOString() ?? null,
-          completedAt: clock.completedAt?.toISOString() ?? null,
-        },
-        at.getTime(),
-      )
+      const phase = clockPhase(clock, at)
       const generation = await deps.cache.generationOf(cleanupId)
       const rollups = await deps.cache.getOrSet(
         hostAnalyticsCacheKey({
-          endpoint: "insights",
+          endpoint: INSIGHTS_CACHE_ENDPOINT,
           scope: cleanupId,
-          range: phase === "ended" ? "event:ended" : "event",
-          viewerScope: `${viewer.viewerScope}:${viewer.userId}`,
+          range: phase === "ended" ? ENDED_CACHE_RANGE : OPEN_CACHE_RANGE,
+          viewerScope: perViewerScope(viewer),
           generation,
         }),
         () => compute(cleanupId, viewer, clock, phase, at),

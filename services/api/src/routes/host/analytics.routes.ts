@@ -8,8 +8,9 @@ import {
   type AnalyticsRange,
   type PortfolioAnalyticsRange,
 } from "@civfix/shared"
-import { can } from "@civfix/shared/host"
+import { can, type HostStanding } from "@civfix/shared/host"
 import type { FastifyInstance, FastifyRequest } from "fastify"
+import type { ZodType } from "zod"
 import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"
 import { perIdentity } from "../../plugins/rate-limit.js"
@@ -27,6 +28,12 @@ import type { EventAnalyticsService } from "../../services/host/event-analytics-
 import type { InsightsService } from "../../services/host/insights-service.js"
 
 export const ANALYTICS_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
+
+const DEFAULT_EVENT_RANGE: AnalyticsRange = "30d"
+const DEFAULT_PORTFOLIO_RANGE: PortfolioAnalyticsRange = "90d"
+const DEFAULT_EVENT_ANALYTICS_SCOPE = "full"
+const SELF_VIEWER_SCOPE = "self"
+const NO_ROLE = "none"
 
 export interface HostAnalyticsOverrides {
   analytics: AnalyticsService
@@ -46,43 +53,60 @@ function mergeQuery(request: FastifyRequest): Record<string, unknown> {
   return { ...query, ...params }
 }
 
+function viewerScopeOf(standing: HostStanding): string {
+  return `${standing.eventRole ?? NO_ROLE}:${standing.orgRole ?? NO_ROLE}`
+}
+
 export async function registerHostAnalyticsRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
   let cached: CommsRuntime | undefined
 
-  function analytics(): AnalyticsService {
-    const override = app.hostAnalyticsOverrides
-    if (override) return override.analytics
-    return (cached ??= makeCommsRuntime(container, app.log)).analytics
+  function services(): HostAnalyticsOverrides {
+    return app.hostAnalyticsOverrides ?? (cached ??= makeCommsRuntime(container, app.log))
   }
 
-  function eventAnalytics(): EventAnalyticsService {
-    const override = app.hostAnalyticsOverrides
-    if (override) return override.eventAnalytics
-    return (cached ??= makeCommsRuntime(container, app.log)).eventAnalytics
-  }
+  const analytics = (): AnalyticsService => services().analytics
+  const eventAnalytics = (): EventAnalyticsService => services().eventAnalytics
+  const insights = (): InsightsService => services().insights
 
-  function insights(): InsightsService {
-    const override = app.hostAnalyticsOverrides
-    if (override) return override.insights
-    return (cached ??= makeCommsRuntime(container, app.log)).insights
-  }
-
-  async function eventScope(
+  async function authorizeEventView<T extends { id: string }>(
     request: FastifyRequest,
-  ): Promise<{ cleanupId: string; range: AnalyticsRange; viewerScope: string }> {
+    schema: ZodType<T>,
+    input: unknown,
+  ) {
     const userId = requireAuth(request)
-    const query = parse(EventAnalyticsRequestSchema, mergeQuery(request))
+    const query = parse(schema, input)
     const resolution = await requireCapability(
       container.getDb().sql,
       query.id,
       userId,
       "view_analytics",
     )
-    const viewerScope = `${resolution.standing.eventRole ?? "none"}:${resolution.standing.orgRole ?? "none"}`
-    return { cleanupId: query.id, range: query.range ?? "30d", viewerScope }
+    return { userId, query, resolution, viewerScope: viewerScopeOf(resolution.standing) }
+  }
+
+  async function eventScope(
+    request: FastifyRequest,
+  ): Promise<{ cleanupId: string; range: AnalyticsRange; viewerScope: string }> {
+    const { query, viewerScope } = await authorizeEventView(
+      request,
+      EventAnalyticsRequestSchema,
+      mergeQuery(request),
+    )
+    return { cleanupId: query.id, range: query.range ?? DEFAULT_EVENT_RANGE, viewerScope }
+  }
+
+  async function portfolioViewerScope(userId: string, orgId: string | undefined): Promise<string> {
+    if (orgId === undefined) return SELF_VIEWER_SCOPE
+    const standing = await requireOrgCapability(
+      container.getDb().sql,
+      orgId,
+      userId,
+      "view_analytics",
+    )
+    return `org:${standing.orgRole ?? NO_ROLE}`
   }
 
   route(
@@ -90,17 +114,13 @@ export async function registerHostAnalyticsRoutes(
     "getEventAnalytics",
     { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
     async (request, reply) => {
-      const userId = requireAuth(request)
-      const query = parse(GetEventAnalyticsRequestSchema, mergeQuery(request))
-      const resolution = await requireCapability(
-        container.getDb().sql,
-        query.id,
-        userId,
-        "view_analytics",
+      const { userId, query, resolution, viewerScope } = await authorizeEventView(
+        request,
+        GetEventAnalyticsRequestSchema,
+        mergeQuery(request),
       )
-      const viewerScope = `${resolution.standing.eventRole ?? "none"}:${resolution.standing.orgRole ?? "none"}`
       reply.status(200).send(
-        await eventAnalytics().analytics(query.id, query.scope ?? "full", {
+        await eventAnalytics().analytics(query.id, query.scope ?? DEFAULT_EVENT_ANALYTICS_SCOPE, {
           userId,
           organizationId: resolution.organizationId,
           viewerScope,
@@ -174,24 +194,15 @@ export async function registerHostAnalyticsRoutes(
     "getEventInsights",
     { config: { rateLimit: ANALYTICS_RATE_LIMIT } },
     async (request, reply) => {
-      const userId = requireAuth(request)
-      const params = parse(GetEventInsightsRequestSchema, request.params)
-      const resolution = await requireCapability(
-        container.getDb().sql,
-        params.id,
-        userId,
-        "view_analytics",
+      const { userId, query, resolution, viewerScope } = await authorizeEventView(
+        request,
+        GetEventInsightsRequestSchema,
+        request.params,
       )
       if (!can(resolution.standing, "view_roster")) {
         throw AppError.forbidden(hostForbiddenCopy("view_roster"))
       }
-      const viewerScope = `${resolution.standing.eventRole ?? "none"}:${resolution.standing.orgRole ?? "none"}`
-      reply.status(200).send(
-        await insights().insights(params.id, {
-          userId,
-          viewerScope,
-        }),
-      )
+      reply.status(200).send(await insights().insights(query.id, { userId, viewerScope }))
     },
   )
 
@@ -202,17 +213,8 @@ export async function registerHostAnalyticsRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const query = parse(HostedEventsAnalyticsRequestSchema, request.query)
-      let viewerScope = "self"
-      if (query.orgId !== undefined) {
-        const standing = await requireOrgCapability(
-          container.getDb().sql,
-          query.orgId,
-          userId,
-          "view_analytics",
-        )
-        viewerScope = `org:${standing.orgRole ?? "none"}`
-      }
-      const range: PortfolioAnalyticsRange = query.range ?? "90d"
+      const viewerScope = await portfolioViewerScope(userId, query.orgId)
+      const range: PortfolioAnalyticsRange = query.range ?? DEFAULT_PORTFOLIO_RANGE
       reply
         .status(200)
         .send(await analytics().portfolio(userId, query.orgId ?? null, range, viewerScope))
@@ -226,17 +228,8 @@ export async function registerHostAnalyticsRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const query = parse(HostAnalyticsSummaryRequestSchema, request.query)
-      let viewerScope = "self"
-      if (query.orgId !== undefined) {
-        const standing = await requireOrgCapability(
-          container.getDb().sql,
-          query.orgId,
-          userId,
-          "view_analytics",
-        )
-        viewerScope = `org:${standing.orgRole ?? "none"}`
-      }
-      const range: AnalyticsRange = query.range ?? "30d"
+      const viewerScope = await portfolioViewerScope(userId, query.orgId)
+      const range: AnalyticsRange = query.range ?? DEFAULT_EVENT_RANGE
       reply
         .status(200)
         .send(await analytics().summary(userId, query.orgId ?? null, range, viewerScope))

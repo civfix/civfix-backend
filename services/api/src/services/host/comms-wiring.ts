@@ -34,11 +34,14 @@ import { makeMetricsService, type MetricsService } from "./metrics-service.js"
 import { makeDrizzleHostExportRepository } from "./export-repository.drizzle.js"
 import {
   DEFAULT_EXPORT_MAX_BYTES,
+  EXPORT_NOT_FOUND,
   makeHostExportService,
   type HostExportService,
 } from "./export-service.js"
 import { registerEventExportBuilders } from "./host-export-builders.js"
 import { requireCapability } from "./authz.js"
+
+const BROADCAST_JOB_RETRY_LIMIT = 3
 
 export type CommsLogger = Pick<FastifyBaseLogger, "info" | "warn" | "error">
 
@@ -118,6 +121,7 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
   const env = container.env
   const sql = container.getDb().sql
   const config = broadcastConfigOf(container)
+  const optionalLogger = logger !== undefined ? { logger } : {}
 
   if (!buildersRegistered) {
     registerEventExportBuilders(() => container.getDb().sql)
@@ -127,19 +131,21 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
   const repo = makeDrizzleBroadcastRepository(sql)
   const metricsRepo = makeDrizzleMetricsRepository(sql)
 
+  const enqueuePlan = async (broadcastId: string): Promise<void> => {
+    await container.jobs.enqueue(
+      BROADCAST_PLAN_JOB,
+      { broadcastId },
+      { singletonKey: `plan:${broadcastId}`, retryLimit: BROADCAST_JOB_RETRY_LIMIT },
+    )
+  }
+
   const broadcasts = makeBroadcastService({
     repo,
     counters: container.getCounterStore(),
     config,
     mailer: container.mailer,
-    enqueuePlan: async (broadcastId) => {
-      await container.jobs.enqueue(
-        BROADCAST_PLAN_JOB,
-        { broadcastId },
-        { singletonKey: `plan:${broadcastId}`, retryLimit: 3 },
-      )
-    },
-    ...(logger !== undefined ? { logger } : {}),
+    enqueuePlan,
+    ...optionalLogger,
   })
 
   const announcements = makeAnnouncementService({
@@ -149,7 +155,7 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     ),
     broadcasts,
     config,
-    ...(logger !== undefined ? { logger } : {}),
+    ...optionalLogger,
   })
 
   const pipeline = makeBroadcastPipeline({
@@ -166,28 +172,22 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
         { broadcastId, chunkNo, authRetry: opts?.authRetry ?? 0 },
         {
           singletonKey: `chunk:${broadcastId}:${chunkNo}`,
-          retryLimit: 3,
+          retryLimit: BROADCAST_JOB_RETRY_LIMIT,
           ...(opts?.startAfterSec !== undefined ? { startAfter: opts.startAfterSec } : {}),
         },
       )
     },
     audit: (action, actorId, target, meta) =>
       auditBestEffort(sql, { action, actorId, target, meta }, logger),
-    ...(logger !== undefined ? { logger } : {}),
+    ...optionalLogger,
   })
 
   const lanes = makeBroadcastLanes({
     repo,
     counters: container.getCounterStore(),
     perEventPerHour: config.eventUpdatePerEventPerHour,
-    enqueuePlan: async (broadcastId) => {
-      await container.jobs.enqueue(
-        BROADCAST_PLAN_JOB,
-        { broadcastId },
-        { singletonKey: `plan:${broadcastId}`, retryLimit: 3 },
-      )
-    },
-    ...(logger !== undefined ? { logger } : {}),
+    enqueuePlan,
+    ...optionalLogger,
   })
 
   const metrics = makeMetricsService({
@@ -195,14 +195,14 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
     cache: container.getCache(),
     selfHosts: selfHostsOf(container.env.WEB_ORIGINS),
     lookbackDays: env.METRICS_ROLLUP_LOOKBACK_DAYS,
-    ...(logger !== undefined ? { logger } : {}),
+    ...optionalLogger,
   })
 
   const analyticsRepo = makeDrizzleAnalyticsRepository(sql)
   const analyticsCache = makeHostAnalyticsCache({
     cache: container.getCache(),
     ttlSeconds: env.HOST_ANALYTICS_CACHE_TTL_SEC,
-    ...(logger !== undefined ? { logger } : {}),
+    ...optionalLogger,
   })
 
   const analytics = makeAnalyticsService({
@@ -233,10 +233,10 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
       ttlHours: env.HOST_EXPORT_TTL_HOURS,
     },
     authorize: async (record) => {
-      if (record.cleanupId === null) throw AppError.notFound("Export not found")
+      if (record.cleanupId === null) throw AppError.notFound(EXPORT_NOT_FOUND)
       await requireCapability(sql, record.cleanupId, record.requestedBy, "export")
     },
-    ...(logger !== undefined ? { logger } : {}),
+    ...optionalLogger,
   })
 
   return {

@@ -1,6 +1,9 @@
 import type { FastifyBaseLogger } from "fastify"
 import type { Sql } from "../../db/client.js"
 
+const RETENTION_BATCH_SIZE = 1000
+const RETENTION_MAX_PAGES = 50
+
 export interface RetentionLaneResult {
   lane: string
   processed: number
@@ -46,9 +49,6 @@ export async function runRetentionLanes(
   logger?.info({ evt: "host.retention.done", results }, "host retention sweep complete")
   return results
 }
-
-export const RETENTION_BATCH_SIZE = 1000
-export const RETENTION_MAX_PAGES = 50
 
 export async function drainTable(
   page: (batchSize: number) => Promise<number>,

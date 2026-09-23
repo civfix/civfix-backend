@@ -36,6 +36,17 @@ export interface MetricsRepository {
   ): Promise<MetricRow[]>
 }
 
+interface MetricRowSelect {
+  day: string
+  metric: string
+  bucket: string
+  value: string
+}
+
+function toMetricRow(row: MetricRowSelect): MetricRow {
+  return { day: row.day, metric: row.metric, bucket: row.bucket, value: Number(row.value) }
+}
+
 export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
   return {
     async resolveSlug(slug: string) {
@@ -169,7 +180,7 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
     },
 
     async read(cleanupId: string, metrics: readonly string[], from: string, to: string) {
-      const rows = await sql<{ day: string; metric: string; bucket: string; value: string }[]>`
+      const rows = await sql<MetricRowSelect[]>`
         SELECT to_char(day, 'YYYY-MM-DD') AS day, metric, bucket, value::text
           FROM event_metrics_daily
          WHERE cleanup_id = ${cleanupId}
@@ -177,12 +188,7 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
            AND day BETWEEN ${from}::date AND ${to}::date
          ORDER BY day
          LIMIT 20000`
-      return rows.map((row) => ({
-        day: row.day,
-        metric: row.metric,
-        bucket: row.bucket,
-        value: Number(row.value),
-      }))
+      return rows.map(toMetricRow)
     },
 
     async readMany(
@@ -192,7 +198,7 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
       to: string,
     ) {
       if (cleanupIds.length === 0) return []
-      const rows = await sql<{ day: string; metric: string; bucket: string; value: string }[]>`
+      const rows = await sql<MetricRowSelect[]>`
         SELECT to_char(day, 'YYYY-MM-DD') AS day, metric, bucket, sum(value)::text AS value
           FROM event_metrics_daily
          WHERE cleanup_id = ANY(${[...cleanupIds]}::uuid[])
@@ -201,12 +207,7 @@ export function makeDrizzleMetricsRepository(sql: Sql): MetricsRepository {
          GROUP BY 1, 2, 3
          ORDER BY day
          LIMIT 20000`
-      return rows.map((row) => ({
-        day: row.day,
-        metric: row.metric,
-        bucket: row.bucket,
-        value: Number(row.value),
-      }))
+      return rows.map(toMetricRow)
     },
   }
 }
