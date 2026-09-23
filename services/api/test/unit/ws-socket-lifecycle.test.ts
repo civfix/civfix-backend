@@ -25,6 +25,8 @@ import { makeWsTicketStore } from "../../src/auth/ws-ticket.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
 import {
   WS_CLOSE_POLICY_VIOLATION,
+  WS_FRAME_LIMIT,
+  WS_MAX_QUEUED_FRAMES,
   WS_REAUTH_INTERVAL_MS,
   WS_REAUTH_JITTER_MS,
 } from "../../src/ws/types.js"
@@ -294,7 +296,7 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
     expect(chat.roomSize(ROOM)).toBe(0)
   })
 
-  it("a join that fits under BOTH bounds is still applied (the caps are not off-by-one)", async () => {
+  it("a join that fits under BOTH bounds is still buffered and answered (the caps are not off-by-one)", async () => {
     const handler = captureGatewayHandler(baseOpts())
     const socket = new MockSocket()
     handler(socket as unknown as WebSocket, authedRequest(ALICE))
@@ -302,8 +304,9 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
     socket.emit("message", JSON.stringify({ type: "join", cleanupId: ROOM }))
     await flush()
 
-    expect(socket.framesOfType("presence_snapshot")).toHaveLength(1)
-    expect(chat.roomSize(ROOM)).toBe(1)
+    const answers = socket.framesOfType("error")
+    expect(answers).toHaveLength(WS_HANDSHAKE_FRAME_BUFFER)
+    expect(answers.at(-1)).toMatchObject({ code: "RATE_LIMITED" })
   })
 
   it("frames arriving after the session is live still dispatch (the handover works)", async () => {
@@ -315,6 +318,51 @@ describe("frames sent during the async handshake are buffered, not dropped", () 
     await flush()
 
     expect(socket.framesOfType("presence_snapshot")).toHaveLength(1)
+  })
+})
+
+describe("the pre-auth buffer holds as many frames as the post-auth queue", () => {
+  const DRAIN_BUDGET_MS = 1_000
+  const roomN = (n: number): string =>
+    `bbbb${String(n).padStart(4, "0")}-bbbb-4bbb-8bbb-bbbbbbbbbbbb`
+
+  function pipelineJoins(count: number): MockSocket {
+    const handler = captureGatewayHandler(baseOpts({ isMember: () => Promise.resolve(true) }))
+    const socket = new MockSocket()
+    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    for (let i = 0; i < count; i += 1) {
+      socket.emit("message", JSON.stringify({ type: "join", cleanupId: roomN(i) }))
+    }
+    return socket
+  }
+
+  it("sizes the handshake buffer from the post-auth frame cap", () => {
+    expect(WS_HANDSHAKE_FRAME_BUFFER).toBe(WS_MAX_QUEUED_FRAMES)
+  })
+
+  it("applies a full frame-bucket burst of joins pipelined before auth", async () => {
+    const socket = pipelineJoins(WS_FRAME_LIMIT.capacity)
+    await settleUntil(
+      () => socket.framesOfType("presence_snapshot").length >= WS_FRAME_LIMIT.capacity,
+      DRAIN_BUDGET_MS,
+    ).catch(() => undefined)
+
+    expect(socket.framesOfType("presence_snapshot")).toHaveLength(WS_FRAME_LIMIT.capacity)
+    expect(socket.framesOfType("error")).toHaveLength(0)
+  })
+
+  it("answers every buffered frame past the burst instead of dropping it silently", async () => {
+    const socket = pipelineJoins(WS_MAX_QUEUED_FRAMES)
+    const answered = (): number =>
+      socket.framesOfType("presence_snapshot").length + socket.framesOfType("error").length
+    await settleUntil(() => answered() >= WS_MAX_QUEUED_FRAMES, DRAIN_BUDGET_MS).catch(
+      () => undefined,
+    )
+
+    expect(socket.framesOfType("presence_snapshot")).toHaveLength(WS_FRAME_LIMIT.capacity)
+    const limited = socket.framesOfType("error")
+    expect(limited).toHaveLength(WS_MAX_QUEUED_FRAMES - WS_FRAME_LIMIT.capacity)
+    expect(limited.every((f) => f.code === "RATE_LIMITED")).toBe(true)
   })
 })
 
