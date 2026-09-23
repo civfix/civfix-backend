@@ -383,6 +383,7 @@ export interface OAuthIdentityStore {
   findByProvider(provider: string, providerUserId: string): Promise<OAuthIdentityRecord | null>
   linkIdentity(userId: string, provider: string, providerUserId: string): Promise<void>
   deleteAllForUser(userId: string): Promise<void>
+  hasIdentityForUser(userId: string): Promise<boolean>
 }
 
 export class InMemoryOAuthIdentityStore implements OAuthIdentityStore {
@@ -408,6 +409,13 @@ export class InMemoryOAuthIdentityStore implements OAuthIdentityStore {
       if (row.userId === userId) this.identities.delete(k)
     }
     return Promise.resolve()
+  }
+
+  hasIdentityForUser(userId: string): Promise<boolean> {
+    for (const row of this.identities.values()) {
+      if (row.userId === userId) return Promise.resolve(true)
+    }
+    return Promise.resolve(false)
   }
 }
 

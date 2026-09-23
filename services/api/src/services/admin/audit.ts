@@ -3,6 +3,7 @@ import type { Queryable } from "../../db/client.js"
 export type AdminAuditAction =
   | "operator.login"
   | "operator.logout"
+  | "auth.otp_refused_unverified_account"
   | "discovery.contacts_saved"
   | "discovery.draft_saved"
   | "discovery.note_added"

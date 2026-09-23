@@ -509,22 +509,8 @@ export class PgUserStore implements UserStore {
   }
 
   private async scrubAttendeeContributions(tx: DbTransaction, id: string): Promise<string[]> {
-    await tx.execute(sql`
-      UPDATE cleanup_registrations SET host_note = NULL
-       WHERE user_id = ${id} AND host_note IS NOT NULL
-    `)
-    await tx.execute(sql`
-      UPDATE cleanup_registration_seats s
-         SET attendee_name = NULL
-        FROM cleanup_registrations r
-       WHERE s.registration_id = r.id AND r.user_id = ${id} AND s.attendee_name IS NOT NULL
-    `)
-    await tx.execute(sql`
-      UPDATE cleanup_answers a
-         SET value_text = NULL, value_json = NULL, scrubbed_at = now()
-        FROM cleanup_registrations r
-       WHERE a.registration_id = r.id AND r.user_id = ${id} AND a.scrubbed_at IS NULL
-    `)
+    // Waitlist and ticket-type rows before registrations, the order applyBanIn and the waitlist sweep
+    // take, so an erasure racing a ban on one of the user's events cannot deadlock with it.
     const released = await tx.execute<{ id: string }>(sql`
       WITH cancelled_waitlist AS (
         UPDATE cleanup_waitlist SET status = 'cancelled'
@@ -542,6 +528,22 @@ export class PgUserStore implements UserStore {
         FROM releases r
        WHERE t.id = r.ticket_type_id
       RETURNING t.id
+    `)
+    await tx.execute(sql`
+      UPDATE cleanup_registrations SET host_note = NULL
+       WHERE user_id = ${id} AND host_note IS NOT NULL
+    `)
+    await tx.execute(sql`
+      UPDATE cleanup_registration_seats s
+         SET attendee_name = NULL
+        FROM cleanup_registrations r
+       WHERE s.registration_id = r.id AND r.user_id = ${id} AND s.attendee_name IS NOT NULL
+    `)
+    await tx.execute(sql`
+      UPDATE cleanup_answers a
+         SET value_text = NULL, value_json = NULL, scrubbed_at = now()
+        FROM cleanup_registrations r
+       WHERE a.registration_id = r.id AND r.user_id = ${id} AND a.scrubbed_at IS NULL
     `)
     await tx.execute(sql`
       UPDATE donations
@@ -739,6 +741,15 @@ export class PgOAuthIdentityStore implements OAuthIdentityStore {
 
   async deleteAllForUser(userId: string): Promise<void> {
     await this.db.delete(oauthIdentities).where(eq(oauthIdentities.userId, userId))
+  }
+
+  async hasIdentityForUser(userId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ id: oauthIdentities.id })
+      .from(oauthIdentities)
+      .where(eq(oauthIdentities.userId, userId))
+      .limit(1)
+    return rows.length > 0
   }
 }
 

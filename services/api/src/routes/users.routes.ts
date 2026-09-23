@@ -200,7 +200,11 @@ export async function registerUsersRoutes(
       const me = await store.findById(userId)
       const email = me?.email ?? null
       if (email) {
-        const verifiedUserId = await otp.verifyOtp(email, emailOtp, request.ip || null)
+        const verifiedUserId = await otp.verifyOtpForExistingAccount(
+          email,
+          emailOtp,
+          request.ip || null,
+        )
         if (verifiedUserId !== userId) {
           throw AppError.unauthorized("That code could not be verified for this account.")
         }

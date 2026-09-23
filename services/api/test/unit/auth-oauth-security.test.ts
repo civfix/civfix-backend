@@ -65,6 +65,7 @@ function makeServices() {
   const otp = new OtpService({
     store: new InMemoryOtpStore(),
     users,
+    identities: oauthStore,
     cache: new InMemoryCacheClient(() => nowMs.value),
     mailer,
     now: () => nowMs.value,
@@ -116,7 +117,7 @@ describe("provider sign-in with an unverified email", () => {
 
 describe("provider sign-in onto an account whose email was never verified", () => {
   const ACCOUNT_EXISTS_MESSAGE =
-    "An account already uses this email address. Sign in the way you did before, for example with a code sent to your email."
+    "An account already uses this email address. Sign in the way you did before, or contact support."
 
   async function plantedAccount(users: InMemoryUserStore) {
     return users.create(VICTIM_EMAIL, {

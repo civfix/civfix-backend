@@ -19,7 +19,7 @@ export const PROVIDER_GOOGLE = "google"
 export const PROVIDER_APPLE = "apple"
 
 export const UNVERIFIED_ACCOUNT_EXISTS_MESSAGE =
-  "An account already uses this email address. Sign in the way you did before, for example with a code sent to your email."
+  "An account already uses this email address. Sign in the way you did before, or contact support."
 
 export interface OAuthConfig {
   google?: {

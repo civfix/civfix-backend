@@ -16,7 +16,8 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedMediaAsset } from "../helpers/media-pg.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { SessionService } from "../../src/auth/session-service.js"
-import { OtpService } from "../../src/auth/otp.js"
+import { OTP_REFUSED_UNVERIFIED_ACCOUNT_ACTION, OtpService } from "../../src/auth/otp.js"
+import { writeAudit } from "../../src/services/admin/audit.js"
 import {
   PgSessionStore,
   PgUserStore,
@@ -86,7 +87,8 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
     const users = new PgUserStore(h.db)
     const cache = new InMemoryCacheClient()
     const mailer = new FakeMailer()
-    const otp = new OtpService({ store, users, cache, mailer })
+    const identities = new PgOAuthIdentityStore(h.db)
+    const otp = new OtpService({ store, users, identities, cache, mailer })
 
     const email = "otp.it@example.com"
     await otp.issueOtp(email, "203.0.113.6")
@@ -99,7 +101,7 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
 
     // A second sign-in finds the same user.
     const cache2 = new InMemoryCacheClient()
-    const otp2 = new OtpService({ store, users, cache: cache2, mailer })
+    const otp2 = new OtpService({ store, users, identities, cache: cache2, mailer })
     await otp2.issueOtp(email, "203.0.113.6")
     const code2 = mailer.lastOtpFor(email)!
     const again = await otp2.verifyOtp(email, code2, "203.0.113.6")
@@ -210,5 +212,53 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
       SELECT count(*)::int AS n FROM users WHERE email = ${email}
     `
     expect(rows[0]!.n).toBe(1)
+  })
+
+  it("otp: refuses an unverified account that a provider identity holds and audits it without the email", async () => {
+    const users = new PgUserStore(h.db)
+    const identities = new PgOAuthIdentityStore(h.db)
+    const mailer = new FakeMailer()
+    const otp = new OtpService({
+      store: new PgOtpStore(h.db),
+      users,
+      identities,
+      cache: new InMemoryCacheClient(),
+      mailer,
+      audit: async (input) => {
+        await writeAudit(h.sql, input)
+      },
+    })
+    const email = "planted.otp.it@example.com"
+    const planted = await users.create(email, { displayName: "Planted", emailVerified: false })
+    await identities.linkIdentity(planted.id, "google", "planted-otp-it-sub")
+    const bare = await users.create("bare.otp.it@example.com", {
+      displayName: "Bare",
+      emailVerified: false,
+    })
+    expect(await identities.hasIdentityForUser(planted.id)).toBe(true)
+    expect(await identities.hasIdentityForUser(bare.id)).toBe(false)
+
+    await otp.issueOtp(email, "203.0.113.7")
+    await expect(
+      otp.verifyOtp(email, mailer.lastOtpFor(email)!, "203.0.113.7"),
+    ).rejects.toMatchObject({ code: "CONFLICT" })
+
+    const audits = await h.sql<{ actor_id: string | null; meta: Record<string, unknown> }[]>`
+      SELECT actor_id, meta FROM audit_log
+      WHERE action = ${OTP_REFUSED_UNVERIFIED_ACCOUNT_ACTION} AND target = ${`user:${planted.id}`}
+    `
+    expect(audits).toHaveLength(1)
+    expect(audits[0]!.actor_id).toBeNull()
+    expect(JSON.stringify(audits[0]!.meta)).not.toContain(email)
+    const after = await users.findById(planted.id)
+    expect(after?.email).toBe(email)
+    expect(after?.emailVerified).toBe(false)
+    expect((await identities.findByProvider("google", "planted-otp-it-sub"))?.userId).toBe(
+      planted.id,
+    )
+
+    await otp.issueOtp("bare.otp.it@example.com", "203.0.113.7")
+    const bareCode = mailer.lastOtpFor("bare.otp.it@example.com")!
+    expect(await otp.verifyOtp("bare.otp.it@example.com", bareCode, "203.0.113.7")).toBe(bare.id)
   })
 })
