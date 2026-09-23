@@ -18,14 +18,17 @@ authentication to `pass`, `fail` or `unknown`. The email Worker applies no filte
 - The stamp repeats values the sender controls (the SMTP HELO and MAIL FROM, echoed in the SPF results
   and their comments), so it is read fail-closed. It is `fail` when it holds a backslash, a `"` other
   than a quoted `smtp.remote-ip`, a nested or unbalanced comment, a result that repeats a property, or
-  more than one dmarc result. Each result is read from its leading `method=result`; comments are dropped.
+  more than one dmarc result. Comments are dropped, and every result must then be a bare `method=result`
+  followed only by `ptype.property=value` tokens (or be empty or `none`); anything else is `fail`.
 - `dmarc=pass` counts only when its `header.from` equals the parsed From domain. `dmarc=fail`, and any
   result other than the no-policy ones below, is `fail`. A dmarc result written after an SPF result
   that carries `smtp.helo` or `smtp.mailfrom` is `fail`: Cloudflare writes DKIM, then DMARC, then SPF.
 - With no DMARC policy (`dmarc=none`, `temperror`, `permerror`, or no dmarc result), a `dkim=pass` whose
-  `header.d` aligns with the From domain passes, else an `spf=pass` whose `smtp.mailfrom` domain aligns
-  with it. Only the DKIM results the stamp opens with count, and SPF counts only when `smtp.mailfrom`
-  appears exactly once in the whole header, on that SPF result.
+  `header.d` aligns with the From domain passes. Only the DKIM results the stamp opens with count.
+- Aligned means the same organizational domain under the Public Suffix List (`tldts`, private
+  suffixes included), as DMARC relaxed alignment defines it. A From domain that is itself a public
+  suffix (`org`, `co.uk`) has no organizational domain and is `fail`. `isJurisdictionSender` compares
+  the From domain with the thread's contact the same way.
 - A message with more than one `From` header or address has no parsed From. It never threads and goes
   to the Inbox.
 
