@@ -95,8 +95,8 @@ async function toMediaDTO(view: ReportMediaView, presign: PresignMedia): Promise
 async function toMapPinDTO(pin: UnsignedReportPin, presign: PresignMedia): Promise<ReportPinDTO> {
   let thumbUrl: string | null = null
   if (pin.r2Key !== null) {
-    const signed = await presign(pin.r2Key, pin.thumbKey)
-    thumbUrl = signed.thumbUrl ?? signed.url
+    // A pin shows one image, so only that key is signed; a pair presign would also sign the original.
+    thumbUrl = (await presign(pin.thumbKey ?? pin.r2Key, null)).url
   }
   return {
     id: pin.id,
