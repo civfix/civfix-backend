@@ -133,6 +133,13 @@ stages it still owes, then calls `markMessageEffectsApplied`. On a throw it call
 `releaseMessageEffects`, which drops the claim but **keeps the stage**, so the next sweep resumes rather
 than repeating.
 
+Stage 2 builds its emitter with `propagateInsertFailure`: a failed chat insert throws, so the stage stays
+at 1 and the sweep retries it. A broadcast or push failure after the row exists is logged and the stage
+advances, because retrying would post the reply into the chat twice. Every inbound failure is logged with
+its R2 key or message id: parse and park failures, correlation lookups (the object stays in
+`inbound/pending/` for the sweep instead of falling into the Inbox), and the sweep's per-object and
+re-drive errors.
+
 ## The pre-migration backfill
 
 The pending predicate is `direction = 'in' AND effects_applied_at IS NULL` with no `created_at` floor.

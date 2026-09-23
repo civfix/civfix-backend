@@ -18,11 +18,17 @@ import { DEFAULT_REPLY_DOMAIN, domainOf, domainsAligned, replyAddressToken } fro
 
 export { JURISDICTION_REPLY_NOTE }
 
+export interface InboundLogger {
+  warn(obj: unknown, msg?: string): void
+  error(obj: unknown, msg?: string): void
+}
+
 export interface InboundEffectDeps {
   reportRepo?: AdminReportRepository
   cleanupRepo?: CleanupRepository
   notifications?: ReporterNotifier
   chatEmitter?: ReportChatSystemEmitter
+  logger?: InboundLogger
 }
 
 export const EFFECTS_LEASE_MS = 10 * 60 * 1000
@@ -39,12 +45,14 @@ export function inboundEffectDeps(deps: {
   cleanupRepo?: CleanupRepository
   notifications?: ReporterNotifier
   chatEmitter?: ReportChatSystemEmitter
+  logger?: InboundLogger
 } = {}): InboundEffectDeps {
   return {
     ...(deps.adminReportRepo !== undefined ? { reportRepo: deps.adminReportRepo } : {}),
     ...(deps.cleanupRepo !== undefined ? { cleanupRepo: deps.cleanupRepo } : {}),
     ...(deps.notifications !== undefined ? { notifications: deps.notifications } : {}),
     ...(deps.chatEmitter !== undefined ? { chatEmitter: deps.chatEmitter } : {}),
+    ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
   }
 }
 
@@ -188,12 +196,7 @@ export async function isJurisdictionSender(
 ): Promise<boolean> {
   const fromDomain = domainOf(mail.from?.address ?? null)
   if (fromDomain === null) return false
-  let recipients: string[]
-  try {
-    recipients = await mailRepo.outboundRecipients(threadId)
-  } catch {
-    return false
-  }
+  const recipients = await mailRepo.outboundRecipients(threadId)
   for (const recipient of recipients) {
     const contactDomain = domainOf(recipient)
     if (contactDomain !== null && domainsAligned(fromDomain, contactDomain)) return true
@@ -223,7 +226,12 @@ export async function applyInboundEffects(
     }
     await mailRepo.markMessageEffectsApplied(message.id)
   } catch (err) {
-    await mailRepo.releaseMessageEffects(message.id).catch(() => {})
+    await mailRepo.releaseMessageEffects(message.id).catch((releaseErr: unknown) => {
+      injected.logger?.warn(
+        { err: String(releaseErr), messageId: message.id },
+        "inbound: effects claim release failed (the lease expires on its own)",
+      )
+    })
     throw err
   }
 }
@@ -264,7 +272,9 @@ export async function onJurisdictionReply(
 
   if (stage < EFFECTS_STAGE_CHAT) {
     const current = await reportRepo.getReport(reportId)
-    const emitter = injected.chatEmitter ?? makeContainerReportChatEmitter(container)
+    const emitter =
+      injected.chatEmitter ??
+      makeContainerReportChatEmitter(container, injected.logger, { propagateInsertFailure: true })
     await emitter.emit({
       reportId,
       status: current?.status ?? record.status,

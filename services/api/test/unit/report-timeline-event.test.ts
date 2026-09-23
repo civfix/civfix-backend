@@ -112,6 +112,51 @@ describe("report-chat system-message emitter (D-D1 choke point)", () => {
     expect(calls.some((c) => c.startsWith("notify:"))).toBe(false)
   })
 
+  it("calls the logger as a method, so a this-bound (pino) logger works", async () => {
+    const logger = {
+      seen: [] as string[],
+      warn(this: { seen: string[] }, _obj: unknown, msg?: string) {
+        this.seen.push(msg ?? "")
+      },
+    }
+    const { deps } = recorder({
+      reportChat: {
+        insertSystemMessage: async () => {
+          throw new Error("insert boom")
+        },
+      },
+      logger,
+    })
+    await expect(
+      makeReportChatSystemEmitter(deps).emit({ reportId: REPORT, status: "in_progress" }),
+    ).resolves.toBeUndefined()
+    expect(logger.seen).toEqual(["report-chat: system-message emit failed (suppressed)"])
+  })
+
+  it("with propagateInsertFailure, rethrows a failed insert but suppresses a notify failure", async () => {
+    const failedInsert = recorder({
+      reportChat: {
+        insertSystemMessage: async () => {
+          throw new Error("insert boom")
+        },
+      },
+      propagateInsertFailure: true,
+    })
+    await expect(
+      makeReportChatSystemEmitter(failedInsert.deps).emit({ reportId: REPORT, status: "in_progress" }),
+    ).rejects.toThrow("insert boom")
+
+    const failedNotify = recorder({
+      notify: async () => {
+        throw new Error("notify boom")
+      },
+      propagateInsertFailure: true,
+    })
+    await expect(
+      makeReportChatSystemEmitter(failedNotify.deps).emit({ reportId: REPORT, status: "in_progress" }),
+    ).resolves.toBeUndefined()
+  })
+
   it("swallows a notify failure (emit resolves, never rejects)", async () => {
     const { deps } = recorder({
       notify: async () => {
