@@ -36,7 +36,9 @@ import {
   type OutboundMessageSnapshot,
   type OutreachStatePatch,
   type OutreachStateRecord,
+  BOUNCE_DISCOVERY_PENDING_META_KEY,
   type BounceEventKey,
+  type BounceEventState,
   type ClaimEffectsInput,
   type PendingEffects,
   type PendingEffectsQuery,
@@ -150,6 +152,15 @@ async function insertOrSelectThread(
   const row = existing[0]
   if (!row) throw new Error(`${label}: row vanished after conflict`)
   return toThreadRecord(row)
+}
+
+function bounceEventMatch(sql: Queryable, input: BounceEventKey): SqlFragment {
+  return sql`
+    thread_id = ${input.threadId}::uuid
+    AND type = 'bounced'
+    AND meta->>'originalMessageId' = ${input.originalMessageId}
+    AND lower(meta->>'failedRecipient') = lower(${input.failedRecipient})
+  `
 }
 
 export function makeDrizzleMailRepository(sql: Sql): MailRepository {
@@ -512,17 +523,25 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       return rows[0]?.ok ?? false
     },
 
-    async hasBounceEvent(input: BounceEventKey): Promise<boolean> {
-      const rows = await sql<{ ok: boolean }[]>`
-        SELECT EXISTS (
-          SELECT 1 FROM mail_events
-          WHERE thread_id = ${input.threadId}::uuid
-            AND type = 'bounced'
-            AND meta->>'originalMessageId' = ${input.originalMessageId}
-            AND lower(meta->>'failedRecipient') = lower(${input.failedRecipient})
-        ) AS ok
+    async bounceEventState(input: BounceEventKey): Promise<BounceEventState> {
+      const rows = await sql<{ recorded: boolean; complete: boolean }[]>`
+        SELECT
+          COUNT(*) > 0 AS recorded,
+          COALESCE(bool_or((meta->>${BOUNCE_DISCOVERY_PENDING_META_KEY}::text) IS NULL), false) AS complete
+        FROM mail_events
+        WHERE ${bounceEventMatch(sql, input)}
       `
-      return rows[0]?.ok ?? false
+      const row = rows[0]
+      if (row?.recorded !== true) return "none"
+      return row.complete ? "complete" : "discovery_pending"
+    },
+
+    async markBounceDiscoveryEnqueued(input: BounceEventKey): Promise<void> {
+      await sql`
+        UPDATE mail_events SET meta = meta - ${BOUNCE_DISCOVERY_PENDING_META_KEY}::text
+        WHERE ${bounceEventMatch(sql, input)}
+          AND (meta->>${BOUNCE_DISCOVERY_PENDING_META_KEY}::text) IS NOT NULL
+      `
     },
 
     async claimMessageEffects(id: string, input: ClaimEffectsInput): Promise<number | null> {

@@ -36,6 +36,9 @@ export interface InboundRepository {
   list(query: InboxListQuery): Promise<InboxListResponse>
   get(id: string): Promise<InboundEmailDTO | null>
   setStatus(id: string, status: InboundEmailStatus, actorId: string | null): Promise<boolean>
+  /** Counts one more failed bounce-bookkeeping run for a pending object; returns the new total. */
+  recordBounceFailure(objectKey: string): Promise<number>
+  clearBounceFailures(objectKey: string): Promise<void>
 }
 
 export { toPreview }
@@ -207,6 +210,23 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
         })
         return true
       })
+    },
+
+    async recordBounceFailure(objectKey: string): Promise<number> {
+      const rows = await sql<{ attempts: number }[]>`
+        INSERT INTO inbound_bounce_attempts (object_key, attempts, last_attempt_at)
+        VALUES (${objectKey}, 1, now())
+        ON CONFLICT (object_key) DO UPDATE
+          SET attempts = inbound_bounce_attempts.attempts + 1, last_attempt_at = now()
+        RETURNING attempts
+      `
+      const attempts = rows[0]?.attempts
+      if (attempts === undefined) throw new Error("recordBounceFailure: upsert returned no row")
+      return attempts
+    },
+
+    async clearBounceFailures(objectKey: string): Promise<void> {
+      await sql`DELETE FROM inbound_bounce_attempts WHERE object_key = ${objectKey}`
     },
   }
 }

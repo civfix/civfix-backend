@@ -181,7 +181,8 @@ export interface MailRepository {
   outboundRecipients(threadId: string): Promise<string[]>
   findMessageByMessageId(messageId: string): Promise<MailMessageRecord | null>
   hasSendInFlight(threadId: string): Promise<boolean>
-  hasBounceEvent(input: BounceEventKey): Promise<boolean>
+  bounceEventState(input: BounceEventKey): Promise<BounceEventState>
+  markBounceDiscoveryEnqueued(input: BounceEventKey): Promise<void>
   claimMessageEffects(id: string, input: ClaimEffectsInput): Promise<number | null>
   setMessageEffectsStage(id: string, stage: number): Promise<void>
   markMessageEffectsApplied(id: string): Promise<void>
@@ -194,6 +195,15 @@ export interface BounceEventKey {
   failedRecipient: string
   originalMessageId: string
 }
+
+/**
+ * "discovery_pending": the 'bounced' event is recorded but the discovery job it calls for may not be
+ * enqueued yet, so a re-drive must still enqueue it. Events written before the flag existed read as
+ * "complete", which is what they were.
+ */
+export type BounceEventState = "none" | "discovery_pending" | "complete"
+
+export const BOUNCE_DISCOVERY_PENDING_META_KEY = "discoveryPending"
 
 export interface ClaimEffectsInput {
   leaseBefore: Date

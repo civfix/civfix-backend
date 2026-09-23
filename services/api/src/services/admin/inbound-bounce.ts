@@ -2,6 +2,7 @@ import type { Container } from "../../di.js"
 import type { Sql } from "../../db/client.js"
 import type { ParsedMail } from "@civfix/shared/interfaces"
 import type { MailRepository } from "./mail-repository.drizzle.js"
+import { BOUNCE_DISCOVERY_PENDING_META_KEY } from "./mail-repository.js"
 import {
   JURISDICTION_DISCOVERY_JOB,
   type JurisdictionDiscoveryJob,
@@ -182,28 +183,39 @@ export async function handleBounce(
   const ownsRecipient = await threadSentTo(sql, thread.id, failedRecipient)
   if (!ownsRecipient) return
 
-  // The 'bounced' event is written last and doubles as the completion marker: a sweep re-drive after a
-  // partial failure repeats only idempotent steps, and a duplicate delivery of a finished DSN does not
-  // overwrite a thread status an operator has changed since.
+  // The 'bounced' event is the completion marker: a sweep re-drive after a partial failure repeats only
+  // idempotent steps, and a duplicate delivery of a finished DSN does not overwrite a thread status an
+  // operator has changed since. It is also the only bounce signal a legacy contact_emails address has,
+  // so it is written before discovery is enqueued (a job that ran first would still see the address as
+  // usable and skip). Until the enqueue lands it carries a pending flag, so a re-drive still enqueues.
   const marker = {
     threadId: thread.id,
     failedRecipient,
     originalMessageId: bounce.originalMessageId,
   }
-  if (await mailRepo.hasBounceEvent(marker)) return
+  const state = await mailRepo.bounceEventState(marker)
+  if (state === "complete") return
 
-  await mailRepo.setThreadStatus(thread.id, "bounced")
   const geoid = thread.jurisdictionGeoid ?? (await geoidForContact(sql, failedRecipient))
+  if (state === "none") {
+    await mailRepo.setThreadStatus(thread.id, "bounced")
+    if (geoid !== null) await markBouncedContact(sql, failedRecipient, geoid)
+    await mailRepo.recordEvent({
+      threadId: thread.id,
+      type: "bounced",
+      meta: {
+        failedRecipient,
+        originalMessageId: bounce.originalMessageId,
+        ...(geoid !== null ? { [BOUNCE_DISCOVERY_PENDING_META_KEY]: true } : {}),
+      },
+    })
+    if (geoid === null) return
+  }
   if (geoid !== null) {
-    await markBouncedContact(sql, failedRecipient, geoid)
     const data: JurisdictionDiscoveryJob = { geoid }
     await container.jobs.enqueue(JURISDICTION_DISCOVERY_JOB, data, { singletonKey: geoid })
   }
-  await mailRepo.recordEvent({
-    threadId: thread.id,
-    type: "bounced",
-    meta: { failedRecipient, originalMessageId: bounce.originalMessageId },
-  })
+  await mailRepo.markBounceDiscoveryEnqueued(marker)
 }
 
 export async function threadSentTo(sql: Sql, threadId: string, email: string): Promise<boolean> {

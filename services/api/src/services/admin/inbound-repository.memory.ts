@@ -31,6 +31,7 @@ export interface RecordedInboxAudit {
 export class InMemoryInboundRepository implements InboundRepository {
   readonly rows: StoredInbound[] = []
   readonly audits: RecordedInboxAudit[] = []
+  readonly bounceAttempts = new Map<string, number>()
   private tick = 0
 
   private nextDate(base?: Date): Date {
@@ -107,6 +108,17 @@ export class InMemoryInboundRepository implements InboundRepository {
       meta: { status, priorStatus },
     })
     return Promise.resolve(true)
+  }
+
+  recordBounceFailure(objectKey: string): Promise<number> {
+    const attempts = (this.bounceAttempts.get(objectKey) ?? 0) + 1
+    this.bounceAttempts.set(objectKey, attempts)
+    return Promise.resolve(attempts)
+  }
+
+  clearBounceFailures(objectKey: string): Promise<void> {
+    this.bounceAttempts.delete(objectKey)
+    return Promise.resolve()
   }
 }
 

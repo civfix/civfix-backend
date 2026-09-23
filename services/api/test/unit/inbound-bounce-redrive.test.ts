@@ -4,11 +4,15 @@ import { InMemoryMailRepository } from "../../src/services/admin/mail-repository
 import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
 import {
   processInboundObject,
+  INBOUND_BOUNCE_MAX_ATTEMPTS,
   INBOUND_PENDING_PREFIX,
   type InboundProcessorDeps,
 } from "../../src/services/admin/inbound-processor.js"
 import type { Container } from "../../src/di.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"
+import type { Sql } from "../../src/db/client.js"
+import { makeDrizzleMailRepository } from "../../src/services/admin/mail-repository.drizzle.js"
+import { JURISDICTION_DISCOVERY_JOB } from "../../src/services/jurisdiction-service.js"
 
 const GEOID = "0644000"
 const FAILED = "clerk@lacity.gov"
@@ -57,7 +61,7 @@ function setup() {
   } as unknown as Container
   const thread = mailRepo.seedThread({ jurisdictionGeoid: GEOID, status: "sent" })
   mailRepo.seedMessage({ threadId: thread.id, direction: "out", messageId: OUTBOUND_ID })
-  return { storage, mailRepo, jobs, deps, container, thread, warn }
+  return { storage, mailRepo, inboundRepo, jobs, deps, container, thread, warn }
 }
 
 function bouncedEvents(repo: InMemoryMailRepository) {
@@ -107,5 +111,122 @@ describe("bounce bookkeeping survives a transient failure", () => {
     expect(await s.storage.getObject(KEY)).toBeNull()
     expect(bouncedEvents(s.mailRepo)).toHaveLength(1)
     expect((await s.mailRepo.getThreadRecord(s.thread.id))?.status).toBe("replied")
+  })
+})
+
+describe("bounce discovery sees the bounce it was enqueued for", () => {
+  it("records the bounced event before it enqueues discovery", async () => {
+    const s = setup()
+    const eventsAtEnqueue: number[] = []
+    const realEnqueue = s.jobs.enqueue.bind(s.jobs)
+    s.jobs.enqueue = (name, data, opts) => {
+      if (name === JURISDICTION_DISCOVERY_JOB)
+        eventsAtEnqueue.push(bouncedEvents(s.mailRepo).length)
+      return realEnqueue(name, data, opts)
+    }
+    await s.storage.put(KEY, dsnBytes())
+    await processInboundObject(s.container, KEY, s.deps)
+    expect(eventsAtEnqueue).toEqual([1])
+  })
+
+  it("re-enqueues discovery on the next run when the enqueue failed after the bounce was recorded", async () => {
+    const s = setup()
+    const realEnqueue = s.jobs.enqueue.bind(s.jobs)
+    let failures = 1
+    s.jobs.enqueue = (name, data, opts) => {
+      if (name === JURISDICTION_DISCOVERY_JOB && failures > 0) {
+        failures -= 1
+        return Promise.reject(new Error("pg-boss unavailable"))
+      }
+      return realEnqueue(name, data, opts)
+    }
+    await s.storage.put(KEY, dsnBytes())
+    await processInboundObject(s.container, KEY, s.deps)
+    expect(await s.storage.getObject(KEY)).not.toBeNull()
+    expect(bouncedEvents(s.mailRepo)).toHaveLength(1)
+    await s.mailRepo.setThreadStatus(s.thread.id, "replied")
+
+    await processInboundObject(s.container, KEY, s.deps)
+    expect(await s.storage.getObject(KEY)).toBeNull()
+    expect(s.jobs.jobsFor(JURISDICTION_DISCOVERY_JOB)).toHaveLength(1)
+    expect(bouncedEvents(s.mailRepo)).toHaveLength(1)
+    expect((await s.mailRepo.getThreadRecord(s.thread.id))?.status).toBe("replied")
+  })
+})
+
+describe("a DSN whose bounce bookkeeping never succeeds", () => {
+  const FAILED_KEY = KEY.replace(INBOUND_PENDING_PREFIX, "inbound/failed/")
+
+  function failEveryBounceEvent(s: ReturnType<typeof setup>): void {
+    s.mailRepo.recordEvent = (input) =>
+      input.type === "bounced"
+        ? Promise.reject(new Error("constraint violation"))
+        : Promise.resolve("event-id")
+  }
+
+  it("stays pending until the attempt cap, then is parked under inbound/failed/", async () => {
+    const s = setup()
+    failEveryBounceEvent(s)
+    await s.storage.put(KEY, dsnBytes())
+
+    for (let attempt = 1; attempt < INBOUND_BOUNCE_MAX_ATTEMPTS; attempt += 1) {
+      await processInboundObject(s.container, KEY, s.deps)
+      expect(await s.storage.getObject(KEY)).not.toBeNull()
+    }
+    const last = await processInboundObject(s.container, KEY, s.deps)
+
+    expect(last).toMatchObject({ outcome: "failed", reason: "bounce-bookkeeping" })
+    expect(await s.storage.getObject(KEY)).toBeNull()
+    expect(await s.storage.getObject(FAILED_KEY)).not.toBeNull()
+    expect(s.inboundRepo.bounceAttempts.size).toBe(0)
+  })
+
+  it("forgets earlier failures once the bookkeeping succeeds", async () => {
+    const s = setup()
+    const realRecordEvent = s.mailRepo.recordEvent.bind(s.mailRepo)
+    let failures = INBOUND_BOUNCE_MAX_ATTEMPTS - 1
+    s.mailRepo.recordEvent = (input) => {
+      if (input.type === "bounced" && failures > 0) {
+        failures -= 1
+        return Promise.reject(new Error("constraint violation"))
+      }
+      return realRecordEvent(input)
+    }
+    await s.storage.put(KEY, dsnBytes())
+    for (let attempt = 1; attempt < INBOUND_BOUNCE_MAX_ATTEMPTS; attempt += 1) {
+      await processInboundObject(s.container, KEY, s.deps)
+    }
+    const done = await processInboundObject(s.container, KEY, s.deps)
+
+    expect(done.outcome).toBe("replay")
+    expect(await s.storage.getObject(KEY)).toBeNull()
+    expect(await s.storage.getObject(FAILED_KEY)).toBeNull()
+    expect(s.inboundRepo.bounceAttempts.size).toBe(0)
+  })
+})
+
+describe("the stored bounce marker", () => {
+  const marker = { threadId: "t-1", failedRecipient: FAILED, originalMessageId: OUTBOUND_ID }
+
+  it("reads as none, discovery pending, or complete", async () => {
+    const cases = [
+      [{ recorded: false, complete: false }, "none"],
+      [{ recorded: true, complete: false }, "discovery_pending"],
+      [{ recorded: true, complete: true }, "complete"],
+    ] as const
+    for (const [row, state] of cases) {
+      const fake = makeFakeSql([{ match: /FROM mail_events/, rows: [row] }])
+      const repo = makeDrizzleMailRepository(fake.sql as unknown as Sql)
+      expect(await repo.bounceEventState(marker)).toBe(state)
+    }
+  })
+
+  it("clears only the pending flag once discovery is enqueued", async () => {
+    const fake = makeFakeSql()
+    await makeDrizzleMailRepository(fake.sql as unknown as Sql).markBounceDiscoveryEnqueued(marker)
+    const update = fake.statements[0]
+    expect(update?.sql).toMatch(/SET meta = meta - \?::text/)
+    expect(update?.values).toContain("discoveryPending")
+    expect(update?.sql).toMatch(/type = 'bounced'/)
   })
 })

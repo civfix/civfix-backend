@@ -60,16 +60,37 @@ describe.skipIf(!pg)("mail send + bounce state against real SQL", () => {
       failedRecipient: "Clerk@LACity.gov",
       originalMessageId: "<out-1@civfix.org>",
     }
-    expect(await mail.hasBounceEvent(key)).toBe(false)
+    expect(await mail.bounceEventState(key)).toBe("none")
     await mail.recordEvent({
       threadId,
       type: "bounced",
       meta: { failedRecipient: "clerk@lacity.gov", originalMessageId: "<out-1@civfix.org>" },
     })
-    expect(await mail.hasBounceEvent(key)).toBe(true)
-    expect(await mail.hasBounceEvent({ ...key, originalMessageId: "<out-2@civfix.org>" })).toBe(
-      false,
+    expect(await mail.bounceEventState(key)).toBe("complete")
+    expect(await mail.bounceEventState({ ...key, originalMessageId: "<out-2@civfix.org>" })).toBe(
+      "none",
     )
+  })
+
+  it("keeps a bounce pending until its discovery enqueue is marked", async () => {
+    const { threadId } = await outbound()
+    const key = {
+      threadId,
+      failedRecipient: "clerk@lacity.gov",
+      originalMessageId: "<out-1@civfix.org>",
+    }
+    await mail.recordEvent({
+      threadId,
+      type: "bounced",
+      meta: {
+        failedRecipient: "clerk@lacity.gov",
+        originalMessageId: "<out-1@civfix.org>",
+        discoveryPending: true,
+      },
+    })
+    expect(await mail.bounceEventState(key)).toBe("discovery_pending")
+    await mail.markBounceDiscoveryEnqueued(key)
+    expect(await mail.bounceEventState(key)).toBe("complete")
   })
 
   it("never picks a legacy contact_emails address that bounced since the last contact save", async () => {

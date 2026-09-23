@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto"
 import {
   MAIL_STATS_WINDOW_DAYS,
+  BOUNCE_DISCOVERY_PENDING_META_KEY,
   type BounceEventKey,
+  type BounceEventState,
   type CreateThreadInput,
   type InsertMessageInput,
   type ListThreadsInput,
@@ -417,19 +419,33 @@ export class InMemoryMailRepository implements MailRepository {
     )
   }
 
-  hasBounceEvent(input: BounceEventKey): Promise<boolean> {
+  private bounceEvents(input: BounceEventKey): StoredMailEvent[] {
     const recipient = input.failedRecipient.toLowerCase()
-    return Promise.resolve(
-      this.events.some((e) => {
-        if (e.threadId !== input.threadId || e.type !== "bounced") return false
-        const meta = e.meta as { originalMessageId?: unknown; failedRecipient?: unknown } | null
-        return (
-          meta?.originalMessageId === input.originalMessageId &&
-          typeof meta.failedRecipient === "string" &&
-          meta.failedRecipient.toLowerCase() === recipient
-        )
-      }),
-    )
+    return this.events.filter((e) => {
+      if (e.threadId !== input.threadId || e.type !== "bounced") return false
+      const meta = e.meta as { originalMessageId?: unknown; failedRecipient?: unknown } | null
+      return (
+        meta?.originalMessageId === input.originalMessageId &&
+        typeof meta.failedRecipient === "string" &&
+        meta.failedRecipient.toLowerCase() === recipient
+      )
+    })
+  }
+
+  bounceEventState(input: BounceEventKey): Promise<BounceEventState> {
+    const events = this.bounceEvents(input)
+    if (events.length === 0) return Promise.resolve("none")
+    const complete = events.some((e) => e.meta?.[BOUNCE_DISCOVERY_PENDING_META_KEY] === undefined)
+    return Promise.resolve(complete ? "complete" : "discovery_pending")
+  }
+
+  markBounceDiscoveryEnqueued(input: BounceEventKey): Promise<void> {
+    for (const event of this.bounceEvents(input)) {
+      if (event.meta === null) continue
+      const { [BOUNCE_DISCOVERY_PENDING_META_KEY]: _pending, ...rest } = event.meta
+      event.meta = rest
+    }
+    return Promise.resolve()
   }
 
   claimMessageEffects(id: string, input: ClaimEffectsInput): Promise<number | null> {

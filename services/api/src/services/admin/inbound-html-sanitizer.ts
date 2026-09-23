@@ -284,8 +284,8 @@ function sanitizeAttributes(tag: string, raw: string): string {
     if (!allowed.has(name) || seen.has(name)) continue
     seen.add(name)
     const decoded = decodeEntities(rawValue)
-    if (name === "href" && !SAFE_URL_RE.test(decoded.replace(URL_SCHEME_NOISE_RE, ""))) continue
     const value = name === "href" ? normalizeUrlAttr(decoded) : decoded
+    if (name === "href" && !SAFE_URL_RE.test(value)) continue
     out.push(`${name}="${escapeAttr(value)}"`)
   }
   return out.length > 0 ? ` ${out.join(" ")}` : ""
@@ -297,12 +297,9 @@ function skipSpace(raw: string, from: number): number {
   return i
 }
 
-// The scheme is judged on the value with every control and space removed, a superset of what a browser
-// drops before it reads a scheme, so "java\tscript:" or " javascript:" can never pass as http(s)/mailto.
-// eslint-disable-next-line no-control-regex
-const URL_SCHEME_NOISE_RE = /[\u0000-\u0020]/g
-
-// Browsers remove tab/newline anywhere in a URL and trim C0 controls and spaces at either end.
+// Browsers remove tab/newline anywhere in a URL and trim C0 controls and spaces at either end. The scheme
+// is judged on exactly that cleaned value, which is also the href emitted, so the browser reads the same
+// scheme the check saw: "java\tscript:" is refused, and "h ttp:x" (a relative link to a browser) is too.
 const URL_TAB_NEWLINE_RE = /[\t\n\r]/g
 // eslint-disable-next-line no-control-regex
 const URL_EDGE_NOISE_RE = /^[\u0000-\u0020]+|[\u0000-\u0020]+$/g

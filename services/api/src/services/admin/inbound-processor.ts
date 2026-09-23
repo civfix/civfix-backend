@@ -53,6 +53,10 @@ export const INBOUND_OBJECT_MAX_BYTES = 30 * 1024 * 1024
 
 export const INBOUND_PARSE_TIMEOUT_MS = 20_000
 
+// At the 5-minute sweep cadence this parks a DSN after roughly half an hour of failing bookkeeping, long
+// enough to ride out a transient fault and short enough that poison DSNs cannot fill the sweep batch.
+export const INBOUND_BOUNCE_MAX_ATTEMPTS = 6
+
 const CONTENT_DIGEST_HEX_CHARS = 32
 
 function contentDigest(bytes: Uint8Array): string {
@@ -145,12 +149,12 @@ export async function processInboundObject(
         authVerdict: bounceVerdict,
       })
     } catch (err) {
-      logger.warn(
-        { key, originalMessageId: bounce.originalMessageId, err: errorText(err) },
-        "inbound: bounce bookkeeping failed; the object stays pending for the next sweep",
-      )
-      return result
+      return deferOrParkBounce(storage, inboundRepo, logger, key, bytes, result, {
+        originalMessageId: bounce.originalMessageId,
+        err: errorText(err),
+      })
     }
+    await inboundRepo.clearBounceFailures(key)
     await storage.delete(key)
     return result
   }
@@ -449,6 +453,27 @@ async function streamAttachments(
 
 function recordSkipped(oversize: string[], filename: string): void {
   if (oversize.length < INBOUND_ATTACHMENT_MAX_COUNT) oversize.push(filename)
+}
+
+async function deferOrParkBounce(
+  storage: Storage,
+  inboundRepo: InboundRepository,
+  logger: InboundLogger,
+  key: string,
+  bytes: Uint8Array,
+  result: ProcessResult,
+  context: { originalMessageId: string | null; err: string },
+): Promise<ProcessResult> {
+  logger.warn({ key, ...context }, "inbound: bounce bookkeeping failed")
+  const attempts = await inboundRepo.recordBounceFailure(key)
+  if (attempts < INBOUND_BOUNCE_MAX_ATTEMPTS) return result
+  logger.error(
+    { key, attempts, originalMessageId: context.originalMessageId },
+    "inbound: bounce bookkeeping kept failing; parked under inbound/failed/",
+  )
+  await moveToFailed(storage, key, bytes)
+  await inboundRepo.clearBounceFailures(key)
+  return { outcome: "failed", reason: "bounce-bookkeeping" }
 }
 
 async function moveToFailed(storage: Storage, key: string, bytes: Uint8Array): Promise<void> {

@@ -199,4 +199,13 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     expect(due.map((r) => r.id)).not.toContain(fresh.id)
     expect(due.map((r) => r.id)).not.toContain(unread.id)
   })
+
+  it("counts failed bounce runs per pending object and forgets them on clear", async () => {
+    const key = `inbound/pending/${randomUUID()}.eml`
+    expect(await repo.recordBounceFailure(key)).toBe(1)
+    expect(await repo.recordBounceFailure(key)).toBe(2)
+    await repo.clearBounceFailures(key)
+    expect(await repo.recordBounceFailure(key)).toBe(1)
+    await repo.clearBounceFailures(key)
+  })
 })
