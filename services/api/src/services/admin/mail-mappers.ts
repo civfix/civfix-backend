@@ -1,5 +1,7 @@
 
 import type { CursorAnchor } from "./pagination.js"
+import type { MailAuthVerdict } from "../../adapters/inbound-mail.cf.js"
+import { MAIL_AUTH_VERDICT_VALUES } from "../../db/schema/types.js"
 import { toPreview } from "./mail-preview.js"
 import type {
   MailMessageKind,
@@ -48,6 +50,7 @@ export interface MessageRowSelect {
   effects_claimed_at: Date | null
   effects_applied_at: Date | null
   effects_stage: number
+  auth_verdict?: string | null
   created_at: Date
   truncated?: boolean
   delivery?: MailDelivery | null
@@ -75,6 +78,15 @@ export function toThreadRecord(r: ThreadRowSelect): MailThreadRecord {
   }
 }
 
+function isMailAuthVerdict(value: string): value is MailAuthVerdict {
+  return (MAIL_AUTH_VERDICT_VALUES as readonly string[]).includes(value)
+}
+
+export function normalizeAuthVerdict(value: string | null | undefined): MailAuthVerdict | null {
+  if (value === null || value === undefined) return null
+  return isMailAuthVerdict(value) ? value : "unknown"
+}
+
 export function toMessageRecord(r: MessageRowSelect): MailMessageRecord {
   return {
     id: r.id,
@@ -93,6 +105,7 @@ export function toMessageRecord(r: MessageRowSelect): MailMessageRecord {
     effectsClaimedAt: r.effects_claimed_at,
     effectsAppliedAt: r.effects_applied_at,
     effectsStage: r.effects_stage,
+    authVerdict: normalizeAuthVerdict(r.auth_verdict),
     createdAt: r.created_at,
     ...(r.truncated === true ? { truncated: true } : {}),
     delivery: r.delivery ?? null,

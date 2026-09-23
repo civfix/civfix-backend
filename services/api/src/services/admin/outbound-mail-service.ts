@@ -295,6 +295,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       try {
         const fresh = await repo.getThreadRecord(args.threadId)
         if (fresh === null || !THREAD_STATUS_CLEARED_BY_DELIVERY.includes(fresh.status)) return
+        if (fresh.status === "needs_action" && (await repo.hasWithheldReply(args.threadId))) return
         await repo.setThreadStatus(args.threadId, "sent")
       } catch (err) {
         logger.warn(

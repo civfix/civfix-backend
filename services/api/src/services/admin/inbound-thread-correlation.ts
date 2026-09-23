@@ -253,6 +253,7 @@ export async function onJurisdictionReply(
   if (!record) return
 
   const note = JURISDICTION_REPLY_NOTE
+  const chatBody = cityReplyChatBody(message.body, container.env.MAIL_REPLY_DOMAIN)
 
   if (stage < EFFECTS_STAGE_TIMELINE) {
     const advances = record.status === "published" || record.status === "acknowledged"
@@ -280,7 +281,7 @@ export async function onJurisdictionReply(
       status: current?.status ?? record.status,
       kind: "reply",
       note,
-      body: cityReplyChatBody(message.body, container.env.MAIL_REPLY_DOMAIN),
+      body: chatBody,
     })
     await mailRepo.setMessageEffectsStage(messageId, EFFECTS_STAGE_CHAT)
   }
@@ -299,6 +300,15 @@ export async function onJurisdictionReply(
     await mailRepo.setMessageEffectsStage(messageId, EFFECTS_STAGE_NOTIFIED)
   }
 
+  if (chatBody === null && (message.body ?? "").trim() !== "") {
+    await mailRepo.setThreadStatus(thread.id, "needs_action", {
+      actorId: null,
+      action: "mail.reply_published_without_text",
+      target: `mail:${thread.id}`,
+      meta: { messageId, reportId },
+    })
+    return
+  }
   await mailRepo.setThreadStatus(thread.id, "replied")
 }
 

@@ -26,7 +26,11 @@ import {
 } from "./inbound-thread-correlation.js"
 import type { CleanupRepository } from "../cleanup-service.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
-import { readMailAuthVerdict, type MailAuthVerdict } from "../../adapters/inbound-mail.cf.js"
+import {
+  domainOf,
+  readMailAuthVerdict,
+  type MailAuthVerdict,
+} from "../../adapters/inbound-mail.cf.js"
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
 
@@ -206,6 +210,7 @@ async function routeThreaded(
 ): Promise<ProcessResult> {
   const unaffiliated =
     authVerdict !== "pass" || !(await isJurisdictionSender(mailRepo, thread.id, mail))
+  const withheld = unaffiliated && (thread.reportId !== null || thread.cleanupId !== null)
   const { attachments, oversize } = await streamAttachments(storage, `inbound-mail/${thread.id}`, mail)
   const inserted = await mailRepo.insertMessage({
     threadId: thread.id,
@@ -218,6 +223,8 @@ async function routeThreaded(
     messageId,
     inReplyTo: mail.inReplyTo ?? null,
     unaffiliated,
+    authVerdict,
+    ...(withheld ? { threadStatus: "needs_action" as const } : {}),
   })
   if (inserted !== null) {
     await mailRepo.recordEvent({
@@ -233,6 +240,17 @@ async function routeThreaded(
         ...(oversize.length > 0 ? { oversizeAttachments: oversize } : {}),
       },
     })
+    if (withheld) {
+      logger.warn(
+        {
+          threadId: thread.id,
+          messageId: inserted.id,
+          fromDomain: domainOf(mail.from?.address ?? null),
+          authVerdict,
+        },
+        "inbound: reply withheld from public effects pending operator review",
+      )
+    }
   }
 
   const message = inserted ?? (await mailRepo.findMessageByMessageId(messageId).catch(() => null))
