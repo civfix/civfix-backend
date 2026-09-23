@@ -44,7 +44,7 @@ the backfill runs they read as not-found.
 
 ```sh
 ssh civfix
-sudo -n docker exec compose-api-1 node dist/db/backfill-served-key.js
+sudo -n docker exec $(sudo docker ps --format '{{.Names}}' | grep -m1 -E 'compose-api-(blue|green)') node dist/db/backfill-served-key.js
 ```
 
 Ordering, and it matters:

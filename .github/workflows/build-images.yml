@@ -124,6 +124,9 @@ jobs:
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
 
+      - name: Smoke the api image
+        run: docker run --rm ghcr.io/civfix/api:sha-${{ github.sha }} node scripts/image-smoke.mjs
+
       - name: Build + push media-worker
         id: media-worker
         uses: docker/build-push-action@v6
