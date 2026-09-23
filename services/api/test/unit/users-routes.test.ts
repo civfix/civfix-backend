@@ -16,6 +16,7 @@ import {
 import { InMemoryChatRepository, InMemoryThreadsRepository } from "../helpers/chat.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 import { BLOCK_RATE_LIMIT } from "../../src/routes/users.routes.js"
+import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 
 interface Session {
   userId: string
@@ -167,6 +168,18 @@ describe("POST /users/:id/block", () => {
     expect(res.json().code).toBe("VALIDATION")
     expect(res.json().fields.id).toMatch(/yourself/i)
     expect(await h.blocks.isBlockedEitherWay(me.userId, me.userId)).toBe(false)
+  })
+
+  it("403s blocking the official CivFix account in any letter case, and writes no edge", async () => {
+    const h = await makeHarness()
+    const me = await h.signIn("resident@example.com", "Resident")
+    for (const id of [CIVFIX_OFFICIAL_USER_ID, CIVFIX_OFFICIAL_USER_ID.toUpperCase()]) {
+      const res = await h.app.inject({ method: "POST", url: blockUrl(id), headers: bearer(me) })
+      expect(res.statusCode, id).toBe(403)
+      expect(res.json().code).toBe("FORBIDDEN")
+    }
+    expect((await h.app.inject({ method: "GET", url: "/v1/me/blocks", headers: bearer(me) })).json())
+      .toEqual({ blocked: [] })
   })
 
   it("422s a non-uuid :id before any store lookup", async () => {
