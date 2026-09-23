@@ -1,12 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { AppError, MAX_TEAM_INVITES_PER_EVENT } from "@civfix/shared"
-import type {
-  CleanupMemberRole,
-  CleanupStatus,
-  EventTeamInviteStatus,
-  EventTeamRole,
-  EventVisibility,
-} from "@civfix/shared"
+import type { CleanupMemberRole, EventTeamInviteStatus, EventTeamRole } from "@civfix/shared"
 import {
   encodeTimeCursor,
   isBeforeTimeCursor,
@@ -139,8 +133,8 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
       title: over.title ?? SEED_EVENT_TITLE,
       startsAt: over.startsAt ?? new Date(Date.now() + SEED_EVENT_LEAD_MS),
       endsAt: over.endsAt ?? null,
-      status: over.status ?? ("upcoming" as CleanupStatus),
-      visibility: over.visibility ?? ("public" as EventVisibility),
+      status: over.status ?? "upcoming",
+      visibility: over.visibility ?? "public",
       coverKey: over.coverKey ?? null,
       address: over.address ?? null,
     }

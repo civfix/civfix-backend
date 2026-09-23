@@ -69,7 +69,7 @@ describe.skipIf(!pg)("performance indexes 0186-0192 (integration)", () => {
       debug: (_conn: number, query: string, params: unknown[]) => {
         if (query.includes("JOIN follows_people f")) captured = { query, params }
       },
-    }) as unknown as Sql
+    })
   })
 
   afterAll(async () => {

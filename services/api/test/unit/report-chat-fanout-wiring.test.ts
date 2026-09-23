@@ -4,6 +4,7 @@ import type { ChatMessageDTO } from "@civfix/shared"
 import type { Container } from "../../src/di.js"
 
 const stub = vi.hoisted(() => ({
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
   notifRepo: undefined as unknown,
   roster: [] as string[],
   limits: [] as (number | undefined)[],

@@ -83,7 +83,7 @@ async function guestUpload(h: AuthHarness, mediaRepo: InMemoryMediaRepository): 
     payload: UPLOAD_REQUEST,
   })
   expect(res.statusCode).toBe(200)
-  const { uploadId } = res.json() as { uploadId: string }
+  const { uploadId } = res.json<{ uploadId: string }>()
   const asset = (await mediaRepo.findByUploadId(uploadId))!
   expect(asset.uploader).toBe(anonUploader(GUEST_TOKEN_ID))
   await (h.container.storage as FakeStorage).put(

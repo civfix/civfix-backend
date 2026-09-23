@@ -198,7 +198,7 @@ async function createOrg(
     },
   })
   if (res.statusCode !== 201) throw new Error(`create failed: ${res.statusCode} ${res.body}`)
-  return res.json() as { id: string; slug: string }
+  return res.json<{ id: string; slug: string }>()
 }
 
 async function seedPendingOrg(orgs: InMemoryOrganizationRepository): Promise<string> {
@@ -237,7 +237,7 @@ describe("admin signup-page moderation", () => {
   it("lists pages with the operator moderation state", async () => {
     const res = await h.app.inject({ method: "GET", url: "/v1/admin/pages" })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { items: { cleanupId: string; viewCount: number }[] }
+    const body = res.json<{ items: { cleanupId: string; viewCount: number }[] }>()
     expect(body.items).toHaveLength(1)
     expect(body.items[0]?.cleanupId).toBe(CLEANUP)
     expect(body.items[0]?.viewCount).toBe(12)
@@ -250,7 +250,7 @@ describe("admin signup-page moderation", () => {
       payload: { flagged: true, reason: "impersonates a city agency" },
     })
     expect(res.statusCode).toBe(200)
-    expect((res.json() as { flaggedAt: string | null }).flaggedAt).not.toBeNull()
+    expect(res.json<{ flaggedAt: string | null }>().flaggedAt).not.toBeNull()
     expect(h.pages[0]?.flagReason).toBe("impersonates a city agency")
   })
 
@@ -261,7 +261,7 @@ describe("admin signup-page moderation", () => {
       payload: { reason: "off-platform payment link" },
     })
     expect(res.statusCode).toBe(200)
-    expect((res.json() as { status: string }).status).toBe("unpublished")
+    expect(res.json<{ status: string }>().status).toBe("unpublished")
   })
 
   it("404s a page that does not exist rather than inventing one", async () => {
@@ -288,7 +288,7 @@ describe("admin media read", () => {
     const h = await harness()
     const res = await h.app.inject({ method: "GET", url: `/v1/admin/media/${MEDIA}` })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { media: { id: string; url: string }; expiresAt: string }
+    const body = res.json<{ media: { id: string; url: string }; expiresAt: string }>()
     expect(body.media.id).toBe(MEDIA)
     expect(body.media.url.length).toBeGreaterThan(0)
     expect(Date.parse(body.expiresAt)).toBeGreaterThan(Date.now())
@@ -314,7 +314,7 @@ describe("admin legal versions", () => {
     const h = await harness()
     const res = await h.app.inject({ method: "GET", url: "/v1/admin/legal/versions" })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { documents: { type: string; version: string; sha256: string }[] }
+    const body = res.json<{ documents: { type: string; version: string; sha256: string }[] }>()
     expect(body.documents.length).toBeGreaterThan(0)
     for (const doc of body.documents) {
       expect(doc.version.length).toBeGreaterThan(0)
@@ -400,14 +400,14 @@ describe("admin host list", () => {
 
     const res = await h.app.inject({ method: "GET", url: "/v1/admin/hosts" })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as {
+    const body = res.json<{
       items: {
         host: { id: string }
         messagingSuspended: boolean
         broadcastCount: number
         windowDays: number
       }[]
-    }
+    }>()
     expect(body.items).toHaveLength(1)
     expect(body.items[0]?.host.id).toBe(HOST)
     expect(body.items[0]?.messagingSuspended).toBe(true)
@@ -425,10 +425,10 @@ describe("admin host list", () => {
     })
 
     const suspended = await h.app.inject({ method: "GET", url: "/v1/admin/hosts?suspended=true" })
-    expect((suspended.json() as { items: unknown[] }).items).toHaveLength(1)
+    expect(suspended.json<{ items: unknown[] }>().items).toHaveLength(1)
 
     const active = await h.app.inject({ method: "GET", url: "/v1/admin/hosts?suspended=false" })
-    expect((active.json() as { items: unknown[] }).items).toHaveLength(0)
+    expect(active.json<{ items: unknown[] }>().items).toHaveLength(0)
   })
 
   it("rejects an activity window longer than a year", async () => {
@@ -514,28 +514,28 @@ describe("admin org management (0.41.0)", () => {
     })
     const all = await h.app.inject({ method: "GET", url: "/v1/admin/orgs" })
     expect(all.statusCode).toBe(200)
-    const body = all.json() as {
+    const body = all.json<{
       items: { slug: string }[]
       counts: unknown
       nextCursor: string | null
-    }
+    }>()
     expect(body.items.map((o) => o.slug).sort()).toEqual(["reach-out-la", "second"])
     expect(body.counts).toEqual({ all: 2, verified: 1, pending: 0, suspended: 1 })
     expect(h.audits.map((a) => a.action)).toContain("org.list_viewed")
 
     const suspended = await h.app.inject({ method: "GET", url: "/v1/admin/orgs?suspended=true" })
-    expect((suspended.json() as { items: { slug: string }[] }).items.map((o) => o.slug)).toEqual([
+    expect(suspended.json<{ items: { slug: string }[] }>().items.map((o) => o.slug)).toEqual([
       "second",
     ])
     const verified = await h.app.inject({
       method: "GET",
       url: "/v1/admin/orgs?verified=verified&kind=nonprofit",
     })
-    expect((verified.json() as { items: { slug: string }[] }).items.map((o) => o.slug)).toEqual([
+    expect(verified.json<{ items: { slug: string }[] }>().items.map((o) => o.slug)).toEqual([
       "reach-out-la",
     ])
     const q = await h.app.inject({ method: "GET", url: "/v1/admin/orgs?q=reach" })
-    expect((q.json() as { items: unknown[] }).items).toHaveLength(1)
+    expect(q.json<{ items: unknown[] }>().items).toHaveLength(1)
     const bad = await h.app.inject({ method: "GET", url: "/v1/admin/orgs?suspended=maybe" })
     expect(bad.statusCode).toBe(422)
   })
@@ -627,7 +627,7 @@ describe("admin org management (0.41.0)", () => {
 
     const list = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}/members` })
     expect(list.statusCode).toBe(200)
-    expect((list.json() as { items: { user: { handle: string }; role: string }[] }).items).toEqual([
+    expect(list.json<{ items: { user: { handle: string }; role: string }[] }>().items).toEqual([
       expect.objectContaining({ user: expect.objectContaining({ handle: "ada" }), role: "owner" }),
       expect.objectContaining({ user: expect.objectContaining({ handle: "bea" }), role: "admin" }),
     ])
@@ -688,7 +688,7 @@ describe("admin org management (0.41.0)", () => {
     const index = h.orgs.members.findIndex((m) => m.organizationId === a.id && m.role === "owner")
     h.orgs.members.splice(index, 1)
     const before = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}` })
-    expect((before.json() as { owner: unknown }).owner).toBeNull()
+    expect(before.json<{ owner: unknown }>().owner).toBeNull()
     const add = await h.app.inject({
       method: "POST",
       url: `/v1/admin/orgs/${a.id}/members`,
@@ -704,7 +704,7 @@ describe("admin org management (0.41.0)", () => {
       reason: "repair",
     })
     const after = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}` })
-    expect((after.json() as { owner: { id: string } }).owner).toMatchObject({ id: SECOND })
+    expect(after.json<{ owner: { id: string } }>().owner).toMatchObject({ id: SECOND })
     expect(h.notes).toEqual([
       { userId: HOST, type: "org_invite" },
       { userId: SECOND, type: "org_invite" },
@@ -731,7 +731,7 @@ describe("admin org management (0.41.0)", () => {
 
     const all = await h.app.inject({ method: "GET", url: `/v1/admin/orgs/${a.id}/events` })
     expect(all.statusCode).toBe(200)
-    const items = (all.json() as { items: { title: string; id: string }[] }).items
+    const items = all.json<{ items: { title: string; id: string }[] }>().items
     expect(items.map((e) => e.title)).toEqual(["Future sweep", "Past sweep"])
     expect(items[0]?.id).toBe(CLEANUP)
 
@@ -739,14 +739,14 @@ describe("admin org management (0.41.0)", () => {
       method: "GET",
       url: `/v1/admin/orgs/${a.id}/events?when=upcoming`,
     })
-    expect((upcoming.json() as { items: { title: string }[] }).items.map((e) => e.title)).toEqual([
+    expect(upcoming.json<{ items: { title: string }[] }>().items.map((e) => e.title)).toEqual([
       "Future sweep",
     ])
     const past = await h.app.inject({
       method: "GET",
       url: `/v1/admin/orgs/${a.id}/events?when=past`,
     })
-    expect((past.json() as { items: { title: string }[] }).items.map((e) => e.title)).toEqual([
+    expect(past.json<{ items: { title: string }[] }>().items.map((e) => e.title)).toEqual([
       "Past sweep",
     ])
     expect(h.audits.map((x) => x.action)).toContain("org.events_viewed")

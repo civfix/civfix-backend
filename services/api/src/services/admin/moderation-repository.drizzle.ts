@@ -936,8 +936,8 @@ export async function insertModerationItem(
       ${input.place ?? null},
       ${input.priority ?? DEFAULT_ITEM_PRIORITY},
       ${input.autoAction ?? null},
-      ${tx.json((input.signals ?? []) as Parameters<typeof tx.json>[0])},
-      ${tx.json((input.similar ?? []) as Parameters<typeof tx.json>[0])},
+      ${tx.json(input.signals ?? [])},
+      ${tx.json(input.similar ?? [])},
       ${"open"},
       ${tx.json(meta as Parameters<typeof tx.json>[0])}
     )

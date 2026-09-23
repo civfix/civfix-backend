@@ -12,7 +12,7 @@ const KEY = MEDIA_UPLOAD_BYTE_PREFIX + SUBJECT
 const ELAPSED_WINDOW_MS = 3_000
 
 function freshRedis(): RedisClient {
-  return new RedisMock() as unknown as RedisClient
+  return new RedisMock()
 }
 
 describe("RedisByteMeter keeps a fixed daily window", () => {

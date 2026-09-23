@@ -435,10 +435,10 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
       const tok = await token(ownerId)
       const page1 = await inject(tok, "GET", `/v1/groups/${dto.id}/members?limit=3`)
       expect(page1.statusCode).toBe(200)
-      const p1 = page1.json() as {
+      const p1 = page1.json<{
         members: Array<{ user: { id: string }; role: string }>
         nextCursor: string | null
-      }
+      }>()
       expect(p1.members).toHaveLength(3)
       // Ordering: owner first, then members by joined_at ASC (insertion order within the create tx).
       expect(p1.members[0]).toMatchObject({ user: { id: ownerId }, role: "owner" })
@@ -450,10 +450,10 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
         `/v1/groups/${dto.id}/members?limit=3&cursor=${p1.nextCursor}`,
       )
       expect(page2.statusCode).toBe(200)
-      const p2 = page2.json() as {
+      const p2 = page2.json<{
         members: Array<{ user: { id: string } }>
         nextCursor: string | null
-      }
+      }>()
       expect(p2.members).toHaveLength(3)
       expect(p2.nextCursor).toBeNull()
 

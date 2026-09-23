@@ -87,8 +87,8 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
           ${input.subject},
           ${input.bodyText},
           ${input.bodyHtml},
-          ${sql.json(input.headers as Parameters<typeof sql.json>[0])},
-          ${sql.json(input.attachments as Parameters<typeof sql.json>[0])},
+          ${sql.json(input.headers)},
+          ${sql.json(input.attachments)},
           ${input.attachments.length > 0},
           ${receivedAt}
         )

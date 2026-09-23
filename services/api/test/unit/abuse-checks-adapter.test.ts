@@ -99,7 +99,7 @@ describe("RealAbuseChecks.verifyTurnstile hostname/action binding (L16)", () => 
       ok: true,
       status: 200,
       json: () => Promise.resolve(body),
-    }) as unknown as typeof fetch
+    })
   }
 
   afterEach(() => {

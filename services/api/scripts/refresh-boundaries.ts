@@ -242,7 +242,7 @@ async function stampVintage(
 ): Promise<void> {
   await sql`
     INSERT INTO boundary_vintage (id, vintage_tag, tiger_vintage, padus_version, row_counts, loaded_at)
-    VALUES (true, ${tag}, ${year}, ${PADUS_VERSION}, ${sql.json(rowCounts as Parameters<typeof sql.json>[0])}, now())
+    VALUES (true, ${tag}, ${year}, ${PADUS_VERSION}, ${sql.json(rowCounts)}, now())
     ON CONFLICT (id) DO UPDATE SET
       vintage_tag = EXCLUDED.vintage_tag,
       tiger_vintage = EXCLUDED.tiger_vintage,

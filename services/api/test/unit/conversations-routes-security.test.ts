@@ -66,7 +66,7 @@ async function harnessWithoutGate(): Promise<Harness> {
     headers: { "x-client": "mobile" },
     payload: { email, code: mailer.lastOtpFor(email)! },
   })
-  const token = (verify.json() as { token: string }).token
+  const token = verify.json<{ token: string }>().token
   return { app, token, setMuted, setHidden, markRoomRead }
 }
 

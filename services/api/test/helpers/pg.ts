@@ -121,7 +121,7 @@ async function create(): Promise<PgHarness | null> {
  */
 function openHarness(uri: string, after: () => Promise<void>): PgHarness {
   // Raw client (full postgres.js serialization) for the repositories and test-side inserts.
-  const sql = postgres(uri, { max: 4, onnotice: () => {} }) as Sql
+  const sql = postgres(uri, { max: 4, onnotice: () => {} })
   // Drizzle gets its OWN client so it never clobbers `sql`'s value serializers (see makeDb in
   // src/db/client.ts and drizzle-orm#3108).
   const drizzleSql = postgres(uri, { max: 2, onnotice: () => {} })
@@ -176,7 +176,7 @@ async function bootOwnContainer(): Promise<PgHarness | null> {
  */
 function readProvided(): ProvidedPg | undefined {
   try {
-    return inject("civfixPg") as ProvidedPg | undefined
+    return inject("civfixPg")
   } catch {
     return undefined
   }

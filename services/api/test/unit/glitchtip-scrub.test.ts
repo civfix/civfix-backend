@@ -95,9 +95,7 @@ describe("scrubEvent (exception + message redaction)", () => {
     const input = { exception: { values: [{ value: "x@y.com" }] } }
     const out = scrubEvent(input)
     expect((input.exception.values[0] as { value: string }).value).toBe("x@y.com")
-    expect((out.exception as { values: Array<{ value: string }> }).values[0]!.value).toBe(
-      "[redacted]",
-    )
+    expect(out.exception.values[0]!.value).toBe("[redacted]")
   })
 })
 

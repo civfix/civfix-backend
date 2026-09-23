@@ -104,9 +104,8 @@ async function syncPageMediaIn(
 }
 
 async function upsertPageRowIn(tx: TransactionSql, args: SavePageArgs): Promise<void> {
-  const blocks = tx.json(args.blocks as unknown as Parameters<typeof tx.json>[0])
-  const seo =
-    args.seo === undefined ? null : tx.json(args.seo as unknown as Parameters<typeof tx.json>[0])
+  const blocks = tx.json(args.blocks)
+  const seo = args.seo === undefined ? null : tx.json(args.seo)
   await tx`
     INSERT INTO cleanup_pages (
       cleanup_id, status, theme_accent, blocks, seo, created_at, updated_at

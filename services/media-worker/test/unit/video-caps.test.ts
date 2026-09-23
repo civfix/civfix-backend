@@ -13,6 +13,7 @@ type StubProbe = {
 }
 
 const stub = vi.hoisted(() => ({
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
   probe: {
     durationSec: 10,
     codec: "h264",

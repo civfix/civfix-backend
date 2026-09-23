@@ -38,12 +38,12 @@ function makeFakeReportChat(
     join,
     leave,
     roleOf: () => Promise.resolve(over.isMember ? ("member" as const) : null),
-    advanceReadWatermark: notImpl("advanceReadWatermark") as never,
-    markRead: notImpl("markRead") as never,
-    insertSystemMessage: notImpl("insertSystemMessage") as never,
-    listMemberIds: notImpl("listMemberIds") as never,
-    countMembers: notImpl("countMembers") as never,
-    listMembers: notImpl("listMembers") as never,
+    advanceReadWatermark: notImpl("advanceReadWatermark"),
+    markRead: notImpl("markRead"),
+    insertSystemMessage: notImpl("insertSystemMessage"),
+    listMemberIds: notImpl("listMemberIds"),
+    countMembers: notImpl("countMembers"),
+    listMembers: notImpl("listMembers"),
   }
 }
 

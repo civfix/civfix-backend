@@ -438,7 +438,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
             ${input.body ?? null},
             ${input.html ?? null},
             ${input.kind ?? null},
-            ${tx.json(attachments as Parameters<typeof tx.json>[0])},
+            ${tx.json(attachments)},
             ${input.messageId ?? null},
             ${input.inReplyTo ?? null},
             ${input.unaffiliated ?? false}

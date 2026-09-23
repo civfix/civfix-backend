@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest"
-import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import type { CreateCleanupTxArgs, DesiredSlot } from "../../src/services/cleanup-repository.js"
 import { makeSqlRecorder, type SqlRecorder } from "../helpers/sql-recorder.js"
@@ -37,7 +36,7 @@ async function createWith(slots: DesiredSlot[]): Promise<SqlRecorder> {
   const rec = makeSqlRecorder()
   rec.on(/reference_counters/, [{ next_val: 1 }])
   await expect(
-    makeDrizzleCleanupRepository(rec.sql as unknown as Sql).createCleanupTx(createArgs(slots)),
+    makeDrizzleCleanupRepository(rec.sql).createCleanupTx(createArgs(slots)),
   ).rejects.toMatchObject({ httpStatus: 500 })
   return rec
 }

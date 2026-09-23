@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest"
-import type { Sql } from "../../../src/db/client.js"
 import { makeDrizzleAnalyticsRepository } from "../../../src/services/host/analytics-repository.drizzle.js"
 import { makeSqlRecorder } from "../../helpers/sql-recorder.js"
 
@@ -9,11 +8,7 @@ const ORG = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 async function hostedEventIdsQuery(organizationId: string | null) {
   const rec = makeSqlRecorder()
   rec.enqueue([{ id: "b" }, { id: "a" }])
-  const ids = await makeDrizzleAnalyticsRepository(rec.sql as unknown as Sql).hostedEventIds(
-    USER,
-    organizationId,
-    7,
-  )
+  const ids = await makeDrizzleAnalyticsRepository(rec.sql).hostedEventIds(USER, organizationId, 7)
   expect(rec.queries).toHaveLength(1)
   return { ids, query: rec.queries[0]! }
 }

@@ -347,7 +347,7 @@ async function persistIdempotencySnapshot(
               ${args.idempotencyKey},
               ${ANON_REPORT_CREATE_SCOPE},
               ${args.anonSessionId},
-              ${sql.json(storedSnapshot as Parameters<typeof sql.json>[0])}
+              ${sql.json(storedSnapshot)}
             )
           `
 }

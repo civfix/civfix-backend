@@ -221,7 +221,7 @@ async function adminApp(handlers: SqlHandler[]): Promise<{
 async function nextCursorOf(app: FastifyInstance, url: string): Promise<string | null> {
   const res = await app.inject({ method: "GET", url })
   expect(res.statusCode).toBe(200)
-  return (res.json() as { nextCursor: string | null }).nextCursor
+  return res.json<{ nextCursor: string | null }>().nextCursor
 }
 
 describe("operator broadcast list cursors", () => {

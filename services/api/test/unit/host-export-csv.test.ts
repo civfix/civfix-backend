@@ -281,7 +281,7 @@ describe("host export build", () => {
         listExpired: () => Promise.resolve([h.current()]),
         markExpired: () => Promise.reject(new Error("should not be called")),
         listOrphaned: () => Promise.resolve([]),
-      } as HostExportRepository,
+      },
       storage: {
         put: () => Promise.resolve(),
         presignGet: () => Promise.resolve("x"),

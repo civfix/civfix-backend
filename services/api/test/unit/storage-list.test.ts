@@ -46,7 +46,7 @@ describe("FakeStorage.getObject", () => {
   it("returns the stored bytes, or null when absent", async () => {
     const s = new FakeStorage()
     await s.put("k", enc.encode("hello"))
-    expect(new TextDecoder().decode((await s.getObject("k"))!)).toBe("hello")
+    expect(new TextDecoder().decode(await s.getObject("k"))).toBe("hello")
     expect(await s.getObject("missing")).toBeNull()
   })
 })

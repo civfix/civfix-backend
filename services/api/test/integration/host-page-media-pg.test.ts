@@ -60,7 +60,7 @@ describe.skipIf(!pg)("event page media binding (integration)", () => {
       id: "b1",
       kind: "sponsors",
       entries: [{ name: "Acme", logoMediaId: mediaId, url: "https://acme.example" }],
-    } as EventPageBlock
+    }
   }
 
   it("claims a fresh upload used as a sponsor logo and records the binding", async () => {

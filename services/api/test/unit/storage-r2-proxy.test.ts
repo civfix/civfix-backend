@@ -100,15 +100,15 @@ describe("R2 client egress", () => {
 
 describe("proxy settings parsing", () => {
   it("reports no proxy when the variable is absent or blank", () => {
-    expect(readProxySettings({} as NodeJS.ProcessEnv)).toBeNull()
-    expect(readProxySettings({ HTTPS_PROXY: "   " } as NodeJS.ProcessEnv)).toBeNull()
+    expect(readProxySettings({})).toBeNull()
+    expect(readProxySettings({ HTTPS_PROXY: "   " })).toBeNull()
   })
 
   it("honors exact, suffix, wildcard and host:port NO_PROXY entries", () => {
     const settings = readProxySettings({
       HTTPS_PROXY: "http://p:8888",
       NO_PROXY: "postgres, .internal, redis:6379",
-    } as NodeJS.ProcessEnv)!
+    })!
     expect(shouldProxyHost("postgres", settings)).toBe(false)
     expect(shouldProxyHost("db.internal", settings)).toBe(false)
     expect(shouldProxyHost("redis", settings)).toBe(false)
@@ -117,7 +117,7 @@ describe("proxy settings parsing", () => {
     const all = readProxySettings({
       HTTPS_PROXY: "http://p:8888",
       NO_PROXY: "*",
-    } as NodeJS.ProcessEnv)!
+    })!
     expect(shouldProxyHost("anything", all)).toBe(false)
   })
 })

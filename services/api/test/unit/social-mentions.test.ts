@@ -17,7 +17,7 @@ function fakeSql(rows: unknown[]): Sql {
       if (Array.isArray(args[0]) && "raw" in (args[0] as object)) return Promise.resolve(rows)
       return { __fragment: true }
     },
-  }) as Sql
+  })
 }
 
 describe("resolveHandles", () => {

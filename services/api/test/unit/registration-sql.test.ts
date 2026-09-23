@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest"
-import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleHostRegistrationRepository } from "../../src/services/host/registration-repository.drizzle.js"
 import { makeSqlRecorder, type SqlRecorder } from "../helpers/sql-recorder.js"
 
@@ -11,7 +10,7 @@ const NOW = new Date("2026-03-04T05:06:07.000Z")
 const SORT_UPDATE = /^UPDATE cleanup_ticket_types/
 
 function repoOver(rec: SqlRecorder) {
-  return makeDrizzleHostRegistrationRepository(rec.sql as unknown as Sql)
+  return makeDrizzleHostRegistrationRepository(rec.sql)
 }
 
 function recorderWithTypes(...ids: string[]): SqlRecorder {

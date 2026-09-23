@@ -35,7 +35,7 @@ async function sessionUserId(h: AuthHarness, token: string): Promise<string | nu
     url: "/v1/auth/session",
     headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
   })
-  return (res.json() as { user: { id: string } | null }).user?.id ?? null
+  return res.json<{ user: { id: string } | null }>().user?.id ?? null
 }
 
 describe("DELETE /v1/me after the erasure commits", () => {

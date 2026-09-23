@@ -205,7 +205,7 @@ export async function initErrorReporting(opts: ErrorReportingOptions): Promise<b
     return false
   }
   try {
-    const mod = (await import("@sentry/node")) as SentryModule
+    const mod = await import("@sentry/node")
     mod.init({
       dsn: opts.dsn,
       environment: opts.environment,

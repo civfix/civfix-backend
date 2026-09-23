@@ -33,7 +33,7 @@ vi.mock("pg-boss", () => {
     default: class {
       constructor(opts: unknown) {
         ctor(opts)
-        return lastBoss as unknown as object
+        return lastBoss
       }
     },
   }

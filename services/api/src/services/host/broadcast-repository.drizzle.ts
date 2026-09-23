@@ -223,7 +223,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
              AND created_at >= ${cap.since}`
         if ((rows[0]?.n ?? 0) >= cap.max) return null
         return insertBroadcast(tx, input)
-      }) as Promise<BroadcastRecord | null>
+      })
     },
 
     async createIfAbsent(input: BroadcastCreateInput): Promise<BroadcastRecord | null> {
@@ -920,7 +920,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
         if (rows.length === 0) return false
         await insertAuditRow(tx, audit)
         return true
-      }) as Promise<boolean>
+      })
     },
 
     async isEmailSuppressed(emailHash: string): Promise<boolean> {

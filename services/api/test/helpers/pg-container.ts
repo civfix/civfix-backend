@@ -153,7 +153,7 @@ export async function startSharedPg(): Promise<StartSharedPgResult> {
     const templateSql = postgres(uriWithDatabase(adminUri, TEMPLATE_DB), {
       max: 4,
       onnotice: () => {},
-    }) as Sql
+    })
     try {
       // Apply the EXACT canonical SQL the production runner applies, then the shared seed.
       await applyMigrations(templateSql, MIGRATIONS_DIR)

@@ -258,7 +258,7 @@ describe("route configuration", () => {
       payload: { slotId: null },
     })
     expect(wrongVerb.statusCode).toBe(404)
-    expect((wrongVerb.json() as { message?: string }).message?.startsWith("Route POST ")).toBe(true)
+    expect(wrongVerb.json<{ message?: string }>().message?.startsWith("Route POST ")).toBe(true)
   })
 
   it("declares the rate limit and CSRF in the source (the two configs a copy-paste route loses)", async () => {
@@ -400,7 +400,7 @@ describe("slot windows over the wire", () => {
       },
     })
     expect(res.statusCode).toBe(422)
-    const body = res.json() as { code: string; fields: Record<string, string> }
+    const body = res.json<{ code: string; fields: Record<string, string> }>()
     expect(body.code).toBe("VALIDATION")
     expect(body.fields["slots.0.endsAt"]).toBe("set both a start and an end, or neither")
   })
@@ -428,7 +428,7 @@ describe("slot windows over the wire", () => {
       },
     })
     expect(res.statusCode).toBe(422)
-    expect((res.json() as { fields: Record<string, string> }).fields["slots.0.endsAt"]).toBe(
+    expect(res.json<{ fields: Record<string, string> }>().fields["slots.0.endsAt"]).toBe(
       "must be at least 15 minutes after startsAt",
     )
   })

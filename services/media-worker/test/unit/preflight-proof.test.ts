@@ -129,9 +129,7 @@ describe("sandboxProofFailure", () => {
 
 describe("assertSandboxPreflight", () => {
   it("is a no-op outside production", async () => {
-    await expect(
-      assertSandboxPreflight({ NODE_ENV: "development" } as NodeJS.ProcessEnv),
-    ).resolves.toBeUndefined()
+    await expect(assertSandboxPreflight({ NODE_ENV: "development" })).resolves.toBeUndefined()
   })
 
   it("refuses production without the sandbox identity", async () => {
@@ -140,7 +138,7 @@ describe("assertSandboxPreflight", () => {
         NODE_ENV: "production",
         FFMPEG_PATH: "/bin/sh",
         FFPROBE_PATH: "/bin/sh",
-      } as NodeJS.ProcessEnv),
+      }),
     ).rejects.toThrow()
   })
 })

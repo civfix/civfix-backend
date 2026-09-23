@@ -8,7 +8,6 @@ import {
   SaveDraftRequestSchema,
   type DiscoveryListResponse,
   type DiscoveryTaskDetailDTO,
-  type ReportCategory,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
@@ -90,7 +89,7 @@ export async function registerAdminDiscoveryRoutes(
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(SaveDraftRequestSchema, request)
     await service().saveDraft(id, {
-      contacts: (body.contacts ?? {}) as Partial<Record<ReportCategory, string | null>>,
+      contacts: body.contacts ?? {},
       defaultEmails: body.defaultEmails ?? [],
       // The shared `.url()` schema lets javascript:/data: URIs through.
       formUrl: httpUrlField(body.formUrl, "formUrl"),

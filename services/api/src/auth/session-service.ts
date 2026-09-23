@@ -421,11 +421,11 @@ export class SessionService {
       ) {
         return {
           userId: parsed.userId,
-          roles: parsed.roles as Role[],
+          roles: parsed.roles,
           expiresAtMs: parsed.expiresAtMs,
           createdAtMs: parsed.createdAtMs,
           epoch: parsed.epoch,
-          accountStatus: parsed.accountStatus as AccountStatus,
+          accountStatus: parsed.accountStatus,
         }
       }
       return null

@@ -80,9 +80,7 @@ describe("links mailed from a runtime with no web origin configured", () => {
       webOrigin: webBaseUrlOf({ NODE_ENV: "test" }),
     })
     const org = await service.createOrganization(
-      { name: "Creek Trust", slug: "creek-trust" } as Parameters<
-        typeof service.createOrganization
-      >[0],
+      { name: "Creek Trust", slug: "creek-trust" },
       OWNER,
     )
 

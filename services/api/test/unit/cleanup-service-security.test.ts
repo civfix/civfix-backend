@@ -7,7 +7,6 @@ import {
   makeCleanupService,
   RESOURCE_REQUEST_PER_HOST_PER_DAY,
   RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR,
-  type CleanupService,
 } from "../../src/services/cleanup-service.js"
 
 const GEOID = "0644000"
@@ -72,7 +71,7 @@ function harness() {
     return dto.id
   }
 
-  return { svc: svc as CleanupService, sent, eventHostedBy }
+  return { svc: svc, sent, eventHostedBy }
 }
 
 describe("resource request budgets", () => {

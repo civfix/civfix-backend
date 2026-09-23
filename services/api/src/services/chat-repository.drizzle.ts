@@ -440,7 +440,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           : Promise.resolve(null),
       ])
       const attachments = wantsMedia
-        ? ((await loadChatAttachments(sql, [id], presign!, input.userId)).get(id) ?? [])
+        ? ((await loadChatAttachments(sql, [id], presign, input.userId)).get(id) ?? [])
         : []
       return toMessageDTO(rows[0]!, {
         viewerUserId: input.userId,

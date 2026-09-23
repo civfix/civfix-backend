@@ -15,6 +15,7 @@ import {
   InMemoryDmRepository,
 } from "../../src/services/dm-repository.memory.js"
 
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
 const { captured } = vi.hoisted(() => ({ captured: {} as { reportChat?: GatewayReportChat } }))
 
 vi.mock("../../src/ws/gateway.js", async (importOriginal) => {
@@ -42,15 +43,15 @@ function makeReportChatSource(
   }
   return {
     isMember: () => Promise.resolve(true),
-    roleOf: notImpl("roleOf") as never,
+    roleOf: notImpl("roleOf"),
     advanceReadWatermark,
-    markRead: notImpl("markRead") as never,
-    join: notImpl("join") as never,
-    leave: notImpl("leave") as never,
-    insertSystemMessage: notImpl("insertSystemMessage") as never,
-    listMemberIds: notImpl("listMemberIds") as never,
-    countMembers: notImpl("countMembers") as never,
-    listMembers: notImpl("listMembers") as never,
+    markRead: notImpl("markRead"),
+    join: notImpl("join"),
+    leave: notImpl("leave"),
+    insertSystemMessage: notImpl("insertSystemMessage"),
+    listMemberIds: notImpl("listMemberIds"),
+    countMembers: notImpl("countMembers"),
+    listMembers: notImpl("listMembers"),
   }
 }
 

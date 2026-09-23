@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest"
-import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleHostRegistrationRepository } from "../../src/services/host/registration-repository.drizzle.js"
 import type { DesiredQuestion } from "../../src/services/host/registration-repository.js"
 import { makeSqlRecorder, type ExecutedQuery, type SqlRecorder } from "../helpers/sql-recorder.js"
@@ -31,11 +30,7 @@ function question(over: Partial<DesiredQuestion> = {}): DesiredQuestion {
 async function reconcile(desired: DesiredQuestion[]): Promise<SqlRecorder> {
   const rec = makeSqlRecorder()
   rec.on(/^SELECT id FROM cleanups/, [{ id: EVENT }])
-  await makeDrizzleHostRegistrationRepository(rec.sql as unknown as Sql).reconcileQuestions(
-    EVENT,
-    desired,
-    NOW,
-  )
+  await makeDrizzleHostRegistrationRepository(rec.sql).reconcileQuestions(EVENT, desired, NOW)
   return rec
 }
 
@@ -217,9 +212,11 @@ describe("saving an event's questions", () => {
   it("writes nothing for an event that is gone", async () => {
     const rec = makeSqlRecorder()
 
-    const saved = await makeDrizzleHostRegistrationRepository(
-      rec.sql as unknown as Sql,
-    ).reconcileQuestions(EVENT, mixed, NOW)
+    const saved = await makeDrizzleHostRegistrationRepository(rec.sql).reconcileQuestions(
+      EVENT,
+      mixed,
+      NOW,
+    )
 
     expect(saved).toEqual([])
     expect(rec.queries).toHaveLength(1)

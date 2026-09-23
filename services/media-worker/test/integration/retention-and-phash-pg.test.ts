@@ -50,7 +50,7 @@ beforeAll(async () => {
     USE_FAKE_STORAGE: "1",
     USE_FAKE_ABUSE_NSFW: "1",
     USE_FAKE_JOBS: "1",
-  } as NodeJS.ProcessEnv)
+  })
 })
 
 afterAll(async () => {

@@ -201,14 +201,14 @@ describe("fetchJsonWithTimeout", () => {
     const single = streamResponse(JSON.stringify({ a: 1 }))
     const r1 = await fetchJsonWithTimeout<{ a: number }>("https://x/y", {
       timeoutMs: 50,
-      fetchImpl: (async () => single.res) as unknown as typeof fetch,
+      fetchImpl: async () => single.res,
     })
     expect(r1).toEqual({ ok: true, status: 200, json: { a: 1 } })
 
     const multi = streamResponse(JSON.stringify({ hello: "world", n: 42 }), { chunks: 5 })
     const r2 = await fetchJsonWithTimeout<{ hello: string; n: number }>("https://x/y", {
       timeoutMs: 50,
-      fetchImpl: (async () => multi.res) as unknown as typeof fetch,
+      fetchImpl: async () => multi.res,
     })
     expect(r2.ok && r2.json).toEqual({ hello: "world", n: 42 })
   })
@@ -218,7 +218,7 @@ describe("fetchJsonWithTimeout", () => {
     const result = await fetchJsonWithTimeout("https://x/y", {
       timeoutMs: 50,
       maxBytes: 100,
-      fetchImpl: (async () => big.res) as unknown as typeof fetch,
+      fetchImpl: async () => big.res,
     })
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.kind).toBe("body")
@@ -234,7 +234,7 @@ describe("fetchJsonWithTimeout", () => {
     const result = await fetchJsonWithTimeout("https://x/y", {
       timeoutMs: 50,
       maxBytes: 500,
-      fetchImpl: (async () => lying.res) as unknown as typeof fetch,
+      fetchImpl: async () => lying.res,
     })
     expect(result.ok === false && result.kind).toBe("body")
     expect(result.ok === false && result.kind === "body" && result.error).toBeInstanceOf(
@@ -255,9 +255,7 @@ describe("fetchJsonWithTimeout", () => {
   it("resolves globalThis.fetch at CALL time when no fetchImpl is injected", async () => {
     const original = globalThis.fetch
     try {
-      globalThis.fetch = vi.fn(async () =>
-        jsonResponse({ via: "global" }),
-      ) as unknown as typeof fetch
+      globalThis.fetch = vi.fn(async () => jsonResponse({ via: "global" }))
       const result = await fetchJsonWithTimeout<{ via: string }>("https://x/y", { timeoutMs: 50 })
       expect(result.ok && result.json).toEqual({ via: "global" })
     } finally {

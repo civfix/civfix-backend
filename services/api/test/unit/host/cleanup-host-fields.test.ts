@@ -30,7 +30,7 @@ function base(over: Partial<CreateCleanupRequest> = {}): CreateCleanupRequest {
     scheduledAt: new Date(Date.now() + 86_400_000).toISOString(),
     slots: [{ title: "Volunteers" }],
     ...over,
-  } as CreateCleanupRequest
+  }
 }
 
 function makeService(): CleanupService {

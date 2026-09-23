@@ -8,7 +8,6 @@ import {
   SaveContactsRequestSchema,
   type JurisdictionDirectoryResponse,
   type JurisdictionGeometryResponse,
-  type ReportCategory,
 } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
@@ -80,7 +79,7 @@ export async function registerAdminJurisdictionsRoutes(
     await service().saveAndRoute(
       geoid,
       {
-        contacts: (body.contacts ?? {}) as Partial<Record<ReportCategory, string | null>>,
+        contacts: body.contacts ?? {},
         defaultEmails: body.defaultEmails ?? [],
         // The shared `.url()` schema lets javascript:/data: URIs through.
         formUrl: httpUrlField(body.formUrl, "formUrl"),
@@ -115,9 +114,7 @@ export async function registerAdminJurisdictionsRoutes(
     await service().patch(
       geoid,
       {
-        ...(body.contacts !== undefined
-          ? { contacts: body.contacts as Partial<Record<ReportCategory, string | null>> }
-          : {}),
+        ...(body.contacts !== undefined ? { contacts: body.contacts } : {}),
         ...(body.defaultEmails !== undefined ? { defaultEmails: body.defaultEmails } : {}),
         // Same scheme allowlist as save; an absent field still means "leave unchanged".
         ...(body.formUrl !== undefined ? { formUrl: httpUrlField(body.formUrl, "formUrl") } : {}),

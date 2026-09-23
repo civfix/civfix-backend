@@ -83,9 +83,7 @@ function platformMediaUrlPrefixes(container: Container): string[] {
 function lazyNotifier(container: Container, logger?: HostServiceLogger): RegistrationNotifier {
   return {
     createNotification: (userId, input) =>
-      container
-        .getNotificationService(logger as Parameters<Container["getNotificationService"]>[0])
-        .createNotification(userId, input),
+      container.getNotificationService(logger).createNotification(userId, input),
   }
 }
 

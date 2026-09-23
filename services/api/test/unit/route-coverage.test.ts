@@ -221,7 +221,7 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
       const res = await app.inject(injectArgs(ep))
 
       if (res.statusCode === 404) {
-        const body = res.json() as { message?: string }
+        const body = res.json<{ message?: string }>()
         const isRouteMissing =
           typeof body.message === "string" && body.message.startsWith(`Route ${ep.method} `)
         expect(isRouteMissing, `endpoint ${name} (${ep.method} ${ep.path}) is NOT registered`).toBe(
@@ -239,7 +239,7 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
   it("the discriminator is not vacuous: a bogus path IS detected as route-missing", async () => {
     const res = await app.inject({ method: "GET", url: "/this/route/does/not/exist" })
     expect(res.statusCode).toBe(404)
-    const body = res.json() as { message?: string; code?: string }
+    const body = res.json<{ message?: string; code?: string }>()
     expect(body.message?.startsWith("Route GET ")).toBe(true)
     expect(body.code).toBe("NOT_FOUND")
   })

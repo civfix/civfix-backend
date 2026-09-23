@@ -92,7 +92,7 @@ export async function signIn(
   if (verified.statusCode !== 200) {
     throw new Error(`signIn(${email}): otp/verify ${verified.statusCode} ${verified.body}`)
   }
-  const body = verified.json() as SessionResponse
+  const body = verified.json<SessionResponse>()
   if (typeof body.token !== "string" || body.token === "") {
     throw new Error(`signIn(${email}): otp/verify returned no bearer token (${verified.body})`)
   }

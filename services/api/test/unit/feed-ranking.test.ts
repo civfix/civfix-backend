@@ -66,8 +66,8 @@ describe("feed ranking: each weight term in isolation", () => {
 
   for (const [flag, weight] of flags) {
     it(`adds exactly ${weight} when ${flag} is set`, () => {
-      const score = rawScore(candidate({ [flag]: true } as Partial<FeedCandidate>), CFG)
-      expect(score - base).toBeCloseTo(CFG[weight] as number, 10)
+      const score = rawScore(candidate({ [flag]: true }), CFG)
+      expect(score - base).toBeCloseTo(CFG[weight], 10)
     })
   }
 

@@ -93,9 +93,9 @@ export function makeHostRouteContext(app: FastifyInstance, container: Container)
 }
 
 export function bodyWith(request: FastifyRequest, extra: Record<string, unknown>): object {
-  return { ...((request.body ?? {}) as object), ...extra }
+  return { ...(request.body ?? {}), ...extra }
 }
 
 export function queryWith(request: FastifyRequest, extra: Record<string, unknown>): object {
-  return { ...((request.query ?? {}) as object), ...extra }
+  return { ...(request.query ?? {}), ...extra }
 }

@@ -16,7 +16,7 @@ function createReq(): CreateReportRequest {
     lng: -118.25,
     geomSource: "device",
     mediaUploadIds: [],
-  } as CreateReportRequest
+  }
 }
 
 function makeHarness(over: Partial<Parameters<typeof makeReportService>[0]> = {}) {

@@ -105,7 +105,7 @@ export async function withWorkerPg(): Promise<WorkerPgHarness | null> {
 
   const uri = started.getConnectionUri()
   // Raw client (full postgres.js serialization) for raw `sql` queries + migrations.
-  const sql = postgres(uri, { max: 4, onnotice: () => {} }) as Sql
+  const sql = postgres(uri, { max: 4, onnotice: () => {} })
   // Drizzle gets its OWN client so it never clobbers `sql`'s value serializers (see makeDb in
   // @civfix/api src/db/client.ts and drizzle-orm#3108). Mirrors the API test harness.
   const drizzleSql = postgres(uri, { max: 2, onnotice: () => {} })
@@ -127,7 +127,7 @@ export async function withWorkerPg(): Promise<WorkerPgHarness | null> {
   let torn = false
   const harness: WorkerPgHarness = {
     sql,
-    db: db as unknown as Db,
+    db: db,
     uri,
     async teardown() {
       if (torn) return

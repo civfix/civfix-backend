@@ -37,7 +37,7 @@ describe("held-media moderation item names its reporter", () => {
     const { db, calls } = stubDb(["trash", "Pile of bags", "Los Angeles", "Dana R", REPORTER_ID])
     const repo = makeDrizzleMediaWorkerRepository(db, {} as Sql)
 
-    await repo.enqueueHeldModerationItem!({
+    await repo.enqueueHeldModerationItem({
       reportId: REPORT_ID,
       reason: "NSFW model over threshold",
     })
@@ -49,7 +49,7 @@ describe("held-media moderation item names its reporter", () => {
     const { db, calls } = stubDb(["trash", null, null, null, null])
     const repo = makeDrizzleMediaWorkerRepository(db, {} as Sql)
 
-    await repo.enqueueHeldModerationItem!({
+    await repo.enqueueHeldModerationItem({
       reportId: REPORT_ID,
       reason: "NSFW model over threshold",
     })
@@ -72,7 +72,7 @@ describe("held media folding into an open moderation item", () => {
     const db = drizzle(client as never) as unknown as Db
     const repo = makeDrizzleMediaWorkerRepository(db, {} as Sql)
 
-    await repo.enqueueHeldModerationItem!({
+    await repo.enqueueHeldModerationItem({
       reportId: REPORT_ID,
       reason: "NSFW model over threshold",
     })

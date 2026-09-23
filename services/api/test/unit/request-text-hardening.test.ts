@@ -377,7 +377,7 @@ describe("PATCH /dm/:threadId/messages/:messageId over HTTP (CVX-002b)", () => {
       headers: { "x-client": "mobile" },
       payload: { email: "me@example.com", code: mailer.lastOtpFor("me@example.com")! },
     })
-    const { token, user } = verified.json() as { token: string; user: { id: string } }
+    const { token, user } = verified.json<{ token: string; user: { id: string } }>()
     dmRepo.registerUser({ id: user.id, displayName: "Me", handle: "me" })
     const thread = await dmRepo.openOrCreateThread(user.id, PEER)
     const message = await dmRepo.persist({ threadId: thread.id, senderId: user.id, body: "typo" })

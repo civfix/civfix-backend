@@ -64,7 +64,7 @@ function makeNotifier(throwFor?: string): RecordingNotifier {
       sent.push({
         userId,
         type: input.type,
-        vars: (input.vars ?? {}) as Record<string, string | number>,
+        vars: input.vars ?? {},
       })
       return Promise.resolve({} as Awaited<ReturnType<NotificationService["createNotification"]>>)
     },
@@ -1012,7 +1012,7 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
       headers: { "x-client": "mobile" },
       payload: { email, code: mailer.lastOtpFor(email)! },
     })
-    const body = verify.json() as { token: string; user: { id: string } }
+    const body = verify.json<{ token: string; user: { id: string } }>()
     return { app: built, token: body.token, userId: body.user.id }
   }
 
@@ -1023,7 +1023,7 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
       url: `/v1/jurisdictions/${GEOID_A}/leaderboard`,
     })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { geoid: string; entries: unknown[] }
+    const body = res.json<{ geoid: string; entries: unknown[] }>()
     expect(body.geoid).toBe(GEOID_A)
     expect(body.entries).toEqual([])
   })

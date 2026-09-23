@@ -32,7 +32,7 @@ function recordingDb(respond: Responder): { db: Db; statements: Recorded[] } {
       return callback(client)
     },
   }
-  return { db: drizzle(client as never, { schema }) as unknown as Db, statements }
+  return { db: drizzle(client as never, { schema }), statements }
 }
 
 function userRow(fields: Record<string, unknown>): unknown[] {
