@@ -7,6 +7,8 @@ import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatRepository } from "../helpers/chat.js"
 import {
   WS_CLOSE_POLICY_VIOLATION,
+  WS_FRAME_LIMIT,
+  WS_MAX_JOINED_ROOMS,
   WS_MAX_QUEUED_BYTES,
   WS_MAX_QUEUED_FRAMES,
 } from "../../src/ws/types.js"
@@ -180,7 +182,22 @@ describe("post-handshake inbound frame backlog is bounded", () => {
     for (let i = 0; i < 10; i += 1) await flush()
 
     expect(socket.closes).toHaveLength(0)
-    expect(membership.calls).toEqual(Array.from({ length: queued + 1 }, (_, i) => roomN(i)))
+    const admittedByBucket = Math.min(queued + 1, WS_FRAME_LIMIT.capacity)
+    expect(membership.calls).toEqual(Array.from({ length: admittedByBucket }, (_, i) => roomN(i)))
+  })
+
+  it("keeps a full token-bucket burst or a full room re-join open behind one slow handler", async () => {
+    const socket = await openLiveSocket(membership)
+    const burst = Math.max(WS_FRAME_LIMIT.capacity, WS_MAX_JOINED_ROOMS)
+    socket.emit("message", joinFrame(0))
+    await flush()
+    for (let i = 1; i < burst; i += 1) socket.emit("message", joinFrame(i))
+
+    expect(socket.closes).toHaveLength(0)
+    membership.release()
+    for (let i = 0; i < 10; i += 1) await flush()
+    expect(socket.closes).toHaveLength(0)
+    expect(membership.calls.length).toBeGreaterThanOrEqual(WS_FRAME_LIMIT.capacity)
   })
 
   it("frees backlog room as frames finish, so a drained socket takes a new burst", async () => {
