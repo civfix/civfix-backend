@@ -12,7 +12,7 @@ forbids. Previous passes 2026-07-27, 2026-06-20).
 This documents exactly what happens to a user's data when they delete their
 account via `DELETE /me`, so the published privacy policy and any DSAR / erasure
 response can be answered truthfully. It is the source of record for the
-"published-report erasure" decision flagged P0 in `documents/21-privacy-compliance.md` §7.2.
+"published-report erasure" decision.
 
 ## The deletion path
 
@@ -49,13 +49,15 @@ response can be answered truthfully. It is the source of record for the
    - AFTER the commit, best-effort deletes each revoked certificate's R2 object.
      Failures are logged, never thrown: a completed erasure must not surface to
      the client as "deletion failed".
-2. `SessionStore.banUser(userId)` — deletes every durable session row, drops the
-   write-through cache entries, and sets the ban/veto marker so any warm session
-   that slipped a revoke is rejected on its next request.
+2. `SessionService.banUser(userId)` (`services/api/src/auth/session-service.ts`): deletes
+   every durable session row, drops the write-through cache entries, and sets the
+   ban/veto marker so any warm session that slipped a revoke is rejected on its
+   next request.
 3. Clears the session + CSRF cookies on the response.
-4. Three independent best-effort cleanups (`allSettled`, each logged on failure):
-   unlink the OAuth identities, hard-delete the device push tokens, and write the
-   audit-log row (`account.deleted`, actor = the user).
+4. Four independent best-effort cleanups (`allSettled`, each logged on failure):
+   unlink the OAuth identities, hard-delete the device push tokens, delete the
+   user's notifications (F088 below), and write the audit-log row
+   (`account.deleted`, actor = the user).
 
 ## What is scrubbed vs. kept
 
@@ -67,7 +69,7 @@ response can be answered truthfully. It is the source of record for the
 | OAuth identity links | **Deleted** (best-effort, step 4) — otherwise a provider sign-in walks back into the tombstone once the ban marker's TTL lapses. |
 | Device push tokens | **Deleted** (best-effort, step 4). |
 | Reports the user filed | **Kept** as rows; the user's `public` ones are flipped to `hidden` (see public rendering below). |
-| Discussion comments, chat, DMs the user wrote | **Kept** (soft-deleted only where the user deleted them individually). |
+| Report chat, event/group chat, DMs the user wrote | **Kept** (soft-deleted only where the user deleted them individually). |
 | Cleanups organized / joined | **Kept**; an `upcoming`/`active` event they organize is TRANSFERRED where anyone can take it over, and cancelled only when nobody can (ladder below). |
 | Organizations they belonged to | Membership rows **deleted**, and `users.primary_organization_id` (the affiliation badge pin, 0.43.0) is nulled in the same transaction. An organization they OWNED promotes its earliest live admin; one left with nobody is **soft-deleted** and its events lose their `organization_id`. The events keep their own `donation_url` — since the platform stopped processing donations that link belongs to the host, not to the organization's verification. |
 | Event team invitations they sent or received | Pending ones **revoked**, the invitee address **scrubbed**. |
@@ -229,7 +231,7 @@ Verified call sites (all public projections):
 | Surface | File | Behavior for a deleted author |
 |---|---|---|
 | Public **reports** (detail / list / map pins / search) | `services/api/src/services/report-service.ts` (`ReportDTO`, `ReportPinDTO`) | The public report DTO **carries no reporter identity at all** — there is no reporter name/handle/avatar field on `ReportDTO`/`ReportPinDTO`. So a surviving public report exposes zero author PII regardless of deletion. (Reporter identity exists only on the admin `AdminReportDTO`.) |
-| Report **discussion** comments | `services/api/src/services/discussion-service.ts` (`toAuthorDTO`) | Renders "Deleted User", no handle, `deleted: true`. |
+| Report **chat** | `services/api/src/services/report-chat-repository.drizzle.ts` | Uses `publicAuthorIdentity`: "Deleted User", no handle, `deleted: true`. (The old per-report discussion system was dropped in `drizzle/0044_drop_report_discussion.sql`; report chat replaced it.) |
 | Cleanup group **chat** | `services/api/src/services/chat-repository.drizzle.ts` (`toMessageDTO`) | Renders "Deleted User", no handle/avatar, bio nulled, `deleted: true`. |
 | **Direct messages** | `services/api/src/services/dm-repository.drizzle.ts` | Uses `publicAuthorIdentity` — "Deleted User". The surviving party KEEPS the thread in their inbox (the thread list no longer filters the peer on `deleted_at IS NULL`), with the peer rendered as "Deleted User", no handle/avatar/bio, `deleted: true`. |
 | **Profiles / people directory / follow lists** | `services/api/src/services/social-repository.drizzle.ts` | Soft-deleted users are **excluded** (`deleted_at IS NULL`): the profile read returns *not found*, and they never appear in the directory, follower/following lists, search, or @-mention pickers. |
@@ -245,8 +247,8 @@ moderator-`rejected`, owner-hidden, or anon-`held`) is absent from the
 only deletes links whose report passes that same filter — an omitted invisible link
 is left intact and writes no `report_unlinked` timeline row.
 
-**Conclusion:** after account deletion, a user's PUBLISHED reports and discussion
-comments survive but render the author as "Deleted User" (reports expose no author
+**Conclusion:** after account deletion, a user's PUBLISHED reports and chat
+messages survive but render the author as "Deleted User" (reports expose no author
 at all); their profile, directory presence, and mention-ability are removed. The
 identity columns on the `users` row are themselves scrubbed, so the admin panel
 no longer holds the real name or email either. The de-link is complete on every
@@ -258,7 +260,7 @@ These are policy choices, not engineering gaps. They are deliberately **not**
 implemented as code in this pass:
 
 1. **Hard purge of public-record content.** Account deletion does NOT hard-delete
-   the user's published reports, their discussion comments, the `users` row, or
+   the user's published reports, their chat messages, the `users` row, or
    the associated R2 media. Keeping public-record civic reports after the author
    leaves (rendered authorless) is a defensible free-expression / public-record
    stance, but it must be a **written, disclosed decision**. If counsel decides an

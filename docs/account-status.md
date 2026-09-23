@@ -1,7 +1,8 @@
 # Account status semantics (`user_moderation.account_status`)
 
 Four values, one meaning each. The console (`POST /v1/admin/users/:id/status`) and the moderation queue
-("remove" on a `user`/`profile` subject, which writes `suspended`) are the only writers.
+are the only writers: "remove" on a `user`/`profile` subject writes `suspended`, and an appeal decided
+`overturn` on such a subject writes `active` (`restoreSubject` in `moderation-repository.drizzle.ts`).
 
 | Status | Effect |
 | --- | --- |
@@ -66,5 +67,6 @@ Background jobs (pg-boss) are unaffected: they act on records, not on a request 
 
 ## Audit
 
-Status changes keep writing `user.status_changed` (or `user.banned`), and the moderation path keeps
-writing `moderation.removed`. Nothing about the audit trail changed.
+Status changes keep writing `user.status_changed` (or `user.banned`), the moderation "remove" path
+keeps writing `moderation.removed`, and an appeal decision writes `moderation.appeal_decided`. Nothing
+about the audit trail changed.

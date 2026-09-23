@@ -1,7 +1,7 @@
 # Media pipeline: served keys, decoder sandbox, egress
 
 **Audience:** internal (engineering + ops). Not served publicly.
-**Last updated:** 2026-09-02 (audit C1 / H7 / H8 / H13 / H16).
+**Last updated:** 2026-09-23 (checked against the code; audit C1 / H7 / H8 / H13 / H16).
 
 This page covers the four things about the media pipeline an operator has to
 know: which object is actually served, what the decoders can reach, where
@@ -24,55 +24,70 @@ processed bytes to `served_key`, records it in the same patch that flips the
 row to `ready`/`held`, and then deletes the upload object (best-effort, with
 the same tombstone + retry as every other reap).
 
-**Every read path serves `served_key` and treats a NULL as "not found"** — the
-same 404 as a non-ready asset (`services/media-served-key.ts` holds the one SQL
-fragment; `getMedia` holds the TypeScript twin). Serving `r2_key` would mean
-serving an object the uploader can still overwrite with unchecked bytes after
-the asset is already published on a report.
+**A `ready` row is served only through `served_key`, and a `ready` row whose
+`served_key` is NULL reads as "not found".** The SQL lives in
+`services/media-served-key.ts`: `servedKeyExpr` + `servableMediaFilter` for
+product reads, `moderationMediaKeyExpr` + `moderationMediaFilter` for the
+operator moderation queue. `getMedia` (`services/media-intake-service.ts`) is
+the TypeScript twin and serves `ready` rows only. Serving `r2_key` for a
+published asset would mean serving an object the uploader can still overwrite
+with unchecked bytes.
+
+**The exception is a `validating` row.** `servedKeyExpr` falls back to
+`r2_key` while the row is `validating`, and `servableMediaFilter` admits
+`validating` rows, so a caller can show an upload before the worker has
+checked it. The report read confines that to the owner: `findMediaForReport`
+drops `validating` media unless it is the owner's view
+(`services/report-repository.drizzle.ts:268`), and `toReportDTO` signs it
+through the private presigner (`services/report-service.ts:134`). Most other
+callers of `servedKeyExpr` have no such filter. Event covers and galleries
+(`cleanup-sql.ts:189`, `cleanup-repository.drizzle.ts:738`), organization logos
+(`cleanup-sql.ts:201`, `organization-repository.drizzle.ts:227`) and user
+avatars on profiles, follow suggestions and post authors
+(`social-repository.drizzle.ts:289`, `post-repository.drizzle.ts:554`) accept a
+`validating` asset when it is bound (`cleanup-repository.drizzle.ts:131`,
+`organization-repository.drizzle.ts:289`, `avatar-media.ts:31`), so any viewer
+is handed the unchecked, uploader-writable `r2_key` until the worker finishes.
+Chat-group avatars are the exception: `chat-group-repository.drizzle.ts:148`
+signs only a `ready` avatar. The moderation fragments fall back to `r2_key` for
+every non-`ready` row with no `served_key`, so an operator can review an asset
+the worker has not published.
 
 The worker also binds the row to the exact object version it inspected: the API
 records the upload's ETag at finalize and passes it in the job payload, the
 worker compares it to what it downloaded, and it re-HEADs the upload key
 immediately before publishing. A mismatch (or a vanished object) is a
-`rejected` outcome — never a throw, per the pipeline's never-throw invariant.
+`rejected` outcome, never a throw, per the pipeline's never-throw invariant.
+Both comparisons are skipped when the storage backend returns no ETag
+(`uploadDriftNote` in `jobs/media-checks.ts`); R2 always returns one.
 
-### Deploy step: the served-key backfill (REQUIRED, once)
+### The served-key backfill runs on every deploy
 
 Rows that went `ready` **before** migration 0097 have `served_key = NULL`, and
 their processed bytes live at `r2_key` (that is what the old worker wrote). Until
-the backfill runs they read as not-found.
+the backfill stamps them they read as not-found.
 
-```sh
-ssh civfix
-sudo -n docker exec compose-api-1 node dist/db/backfill-served-key.js
-```
+`src/db/backfill-served-key.ts` stamps `served_key = r2_key` for every `ready`
+row with a NULL `served_key` that is **older than the 15-minute presigned-PUT
+window** (`R2_PUT_TTL_SEC`). It is keyset-paged, idempotent, safe to run while
+the API serves traffic, and a no-op once every row is stamped. Rows inside the
+window are skipped on purpose while their PUT could still be live, and the next
+run adopts them.
 
-Ordering, and it matters:
+It needs no operator step: the compose `migrate` one-shot in `civfix-infra` runs
+`node dist/db/migrate.js && node dist/db/backfill-served-key.js` before the api
+colors and the worker start, so every deploy re-runs it. To run it by hand:
+`pnpm --filter @civfix/api db:backfill:served-key` locally, or the built entry
+`pnpm start:backfill:served-key` (`node dist/db/backfill-served-key.js`) inside
+an api container.
 
-1. `0097` (adds the column) and `0098` apply with the rest of the migrations.
-2. The new API + worker images start.
-3. **Then** run the backfill above. It stamps `served_key = r2_key` for every
-   pre-existing `ready` row **older than the 15-minute presigned-PUT window**,
-   keyset-paged, idempotent, safe to run while the API serves traffic.
-4. Re-run it once more after ~20 minutes to adopt rows uploaded right before the
-   cutover (they are skipped on purpose while their PUT could still be live).
-
-Between step 2 and step 3 pre-existing media reads as not-found. Prod is
-pre-launch, so the window is acceptable; run the backfill immediately after the
-health gate. Local dev: `pnpm --filter @civfix/api db:backfill:served-key`.
-
-**Automate this before launch.** The deploy is CI-automatic on merge, but this
-step is a human `docker exec`, so the not-found window lasts as long as it takes
-someone to notice. The clean home for it is the compose `migrate` one-shot, which
-already runs `node dist/db/migrate.js` before the API starts: appending
-`&& node dist/db/backfill-served-key.js` there makes the deploy self-healing (the
-backfill is idempotent and a no-op once every row is stamped). That file lives in
-`civfix-infra`, so it is raised as a cross-slice request rather than changed here.
-
-`R2_PUBLIC_BASE` note: the served key is new and is written exactly once, by the
-worker, so no CDN edge can hold a pre-strip copy of it. The old failure mode (a
-public fetch of the upload key caching the EXIF-laden original at the URL clients
-later read) is structurally gone.
+`R2_PUBLIC_BASE` note: the served key is written exactly once, by the worker,
+after the checks, so no CDN edge can hold a pre-strip copy of a served key. The
+upload key is not covered by that. A `validating` cover, logo or avatar is
+signed through the public presigner, which returns `<R2_PUBLIC_BASE>/<r2_key>`
+when the base is set (`adapters/storage.r2.ts:63`), so a public fetch can still
+reach, and a CDN edge can still cache, the unstripped original while the asset
+is `validating` (see the exception above).
 
 ### Out-of-band index
 
@@ -211,17 +226,21 @@ Never place an executable in `/tmp`: the compose tmpfs is `noexec`.
 must interpret an untrusted container — with no security-patch channel. It is a
 **devDependency** now and is pruned out of the production image.
 
-The image installs a pinned, checksum-verified release instead
-(`FFMPEG_URL` / `FFMPEG_SHA256` ARGs in `services/media-worker/Dockerfile`,
-currently **FFmpeg n8.1.2**, LGPL linux64 static). The build fails on a checksum
-mismatch and runs `ffprobe -version` as a sanity step. `FFMPEG_PATH` /
+The image installs a pinned, checksum-verified release instead: one BtbN
+autobuild per CPU architecture, selected by BuildKit's `TARGETARCH`
+(`FFMPEG_URL_AMD64` / `FFMPEG_SHA256_AMD64` and `FFMPEG_URL_ARM64` /
+`FFMPEG_SHA256_ARM64` ARGs in `services/media-worker/Dockerfile`, currently
+**FFmpeg n8.1.2**, LGPL static; the boxes are arm64). The build fails on a
+checksum mismatch and checks that both `ffprobe -version` and `ffmpeg -version`
+report `FFMPEG_VERSION`. `FFMPEG_PATH` /
 `FFPROBE_PATH` are set in the image and **required in production**
 (`src/sandbox/binaries.ts`), so there is no silent fallback to the 2018 build;
 outside production the npm statics remain the fallback so local dev and the unit
 suite need no setup.
 
-Bumping: pick a newer asset from the same feed, set `FFMPEG_URL`, and set
-`FFMPEG_SHA256` to `sha256sum` of the downloaded file. The build breaks loudly if
+Bumping: pick the linux64 and linuxarm64 assets of one newer autobuild, set
+`FFMPEG_VERSION`, `FFMPEG_RELEASE` and both `FFMPEG_URL_*` ARGs, and set each
+`FFMPEG_SHA256_*` to the `sha256sum` of its download. The build breaks loudly if
 the pinned URL is pruned upstream.
 
 The probe is also narrowed: `-f mov,mp4,m4a,3gp,3g2,mj2` forces the demuxer
@@ -257,9 +276,9 @@ hosts. Neither the AWS SDK nor Node's `fetch` reads those variables, so:
 Both are exact no-ops when `HTTPS_PROXY` is unset — the API container, local dev,
 tests and the `dev/` stack are unchanged.
 
-`@sentry/node` (GlitchTip) reads only the **lowercase** `https_proxy`/`no_proxy`, so the worker's
-compose environment must set both cases if a `GLITCHTIP_DSN` is ever configured for it — and the DSN's
-host must be added to the allowlist, or error reports fail silently. The worker has no DSN today.
+`@sentry/node` (GlitchTip) reads only the **lowercase** `https_proxy`/`no_proxy`; the worker's compose
+environment already sets both cases. If a `GLITCHTIP_DSN` is ever configured for the worker, the DSN's
+host must also be added to the allowlist, or error reports fail silently. The worker has no DSN today.
 
 **A new outbound host the worker acquires must be added to
 `civfix-infra/egress/allowed-hosts`,** or the proxy refuses the CONNECT and the

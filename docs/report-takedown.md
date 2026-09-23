@@ -1,13 +1,13 @@
 # Per-report takedown request path (civfix-backend)
 
 **Audience:** internal (engineering + support + privacy counsel). Not served publicly.
-**Last updated:** 2026-06-20 (privacy/backend-hardening).
+**Last updated:** 2026-09-23 (checked against the code; first written 2026-06-20).
 
-Backs the "report takedown / removal request path" item in
-`documents/21-privacy-compliance.md` section 7.2. `DELETE /me` soft-deletes the
-*account* but published reports survive (rendered authorless). This documents how
-a user requests removal of one specific published report **without** deleting
-their account.
+Backs the privacy item "report takedown / removal request path". `DELETE /me`
+soft-deletes and anonymizes the *account* and unlists every report the user filed
+(`visibility = 'hidden'` in `softDeleteAndAnonymize`, `auth/pg-stores.ts`; the
+rows are kept, see `docs/erasure-behavior.md`). This documents how a user requests
+removal of one specific published report **without** deleting their account.
 
 ## How a user requests takedown of their OWN report
 
@@ -19,34 +19,56 @@ existing content-report channel carries it:
     { "subjectType": "report", "subjectId": "<their report id>", "reason": "...", "details": "..." }
 
 Route: `services/api/src/routes/report-content.routes.ts` (op `reportContent`,
-auth + csrf, rate-limited). The handler:
+auth + csrf, rate-limited per identity at 20/min). The handler:
 
-1. Files a `user_report` moderation item into the existing admin queue
-   (`moderation_items`, the same queue operators already read).
-2. **Detects ownership server-side** (`reportOwnedBy`): when the `report`
-   subject's `reporter_user_id` equals the caller, the item is marked distinctly
-   so an operator can fast-track an owner-consented removal:
+1. Checks the caller can see the subject (`assertReportable`,
+   `services/content-report-subject.ts`); a report the caller cannot read is a
+   404. With no `DATABASE_URL` the gate allows everything.
+2. **Detects ownership server-side** (`reportOwnedBy`, `services/report-sql.ts`):
+   the report is not deleted and its `reporter_user_id` equals the caller.
+3. Files a `user_report` moderation item into the existing admin queue
+   (`moderation_items`, the same queue operators already read) with
+   `dedupeOpen: true`. When no open item exists for the report, an owner's
+   request is marked distinctly so an operator can fast-track an owner-consented
+   removal:
    - `flag = "Owner takedown request"` (vs. `"User report"` for third-party reports),
    - `priority = "high"` (vs. `"med"`).
-3. Writes an **audit-log entry** `report.takedown_requested`
-   (`target = report:<id>`, `meta = { reason, via: "content-reports" }`) so the
-   request is on the record even before an operator acts.
 
-An operator then actions the queue item. **Remove** (`moderation.remove` ->
-`report.removed` audit) sets `reports.status = 'rejected'`, `deleted_at = now()`,
-and writes a `rejected` timeline row -- the report disappears from every public
-surface (the report read returns 404 once `deleted_at` is set).
+   When an open item already exists for the report (a held report, or an earlier
+   third-party report), `dedupeOpen` does not insert. It escalates that item
+   (`escalateOpenItem`: `priority = 'high'`, the caller's id appended to
+   `meta.reporters`) and drops the new flag, reason and details, so the queue item
+   does not say that the owner asked for removal.
+4. Writes an **audit-log entry** `report.takedown_requested`
+   (`target = report:<id>`, `meta = { reason, via: "content-reports" }`) whenever
+   ownership was confirmed, so the request is on the record even before an
+   operator acts, and even when step 3 folded it into an existing item.
 
-`dedupeOpen` keeps one open queue item per report, so repeated requests do not
-spam the queue.
+An operator then actions the queue item. **Remove** from the moderation queue
+(`remove` in `services/admin/moderation-repository.drizzle.ts`, audit
+`moderation.removed` with `target = moderation:<id>`) sets
+`reports.status = 'rejected'` and `deleted_at`, writes a `rejected` timeline row
+(note: the operator's reason, or "Removed in moderation"), and adds a strike and a
+removal to the report author's `user_moderation` counters, which for an owner
+takedown is the requester. The admin report screen's own remove action
+(`services/admin/admin-report-repository.drizzle.ts`) does the same row changes
+without the strike and audits `report.removed`. Either way the report read returns
+404 once `deleted_at` is set, and `getMedia` denies the report's media
+(`authorizeReportBound`, `services/media-authorization.ts`).
+
+The report's media objects are not touched. With `R2_PUBLIC_BASE` set, a public
+report's photos were served at a stable, unsigned `<R2_PUBLIC_BASE>/<served_key>`
+URL (`makeMediaPresigner`, `adapters/storage.r2.ts:63`), and that URL keeps
+resolving after the takedown for anyone who already holds it.
 
 ## Offline / no-DB behavior
 
-`reportOwnedBy` is DB-gated and fail-safe: with no `DATABASE_URL` (all-fakes boot)
-or on any query error it returns `false`, so the route degrades to the ordinary
+The ownership check is DB-gated: with no `DATABASE_URL` (all-fakes boot) it
+returns `false` without querying, so the route degrades to the ordinary
 user-report path (the request is still filed, just not flagged as an owner
-takedown). The audit write only runs when ownership was confirmed, which implies
-a real DB is present.
+takedown). It does not swallow errors: a failing ownership query fails the
+request, and nothing is filed. The audit write only runs when ownership was
+confirmed, which implies a real DB is present.
 
 ## What this does NOT do (product/counsel DECISIONS)
 
