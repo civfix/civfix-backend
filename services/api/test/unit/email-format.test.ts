@@ -6,6 +6,7 @@ import {
   NO_PHOTO_LINKS,
 } from "../../src/services/admin/mail-format.js"
 import { renderEmailBody } from "../../src/adapters/email-layout.js"
+import { WORDMARK_FONT_WOFF2_BASE64 } from "../../src/adapters/email-wordmark-font.js"
 import {
   DEFAULT_FORWARD_BODY_TEMPLATE,
   DEFAULT_FORWARD_SUBJECT_TEMPLATE,
@@ -61,6 +62,17 @@ describe("email layout", () => {
     expect(html).toContain("civfix")
     expect(html).toContain("civfix.org")
     expect(html).toContain('style="')
+  })
+
+  it("sets the wordmark in the embedded brand font, screen-only so Outlook keeps the fallback stack", () => {
+    const { html } = renderEmailBody({ blocks: [paragraph("Hello")] })
+    expect(html).toMatch(
+      /<style>@media screen\{@font-face\{font-family:'civfix-wordmark';[^}]*src:url\(data:font\/woff2;base64,[A-Za-z0-9+/=]+\) format\('woff2'\);\}[^<]*\}<\/style><style>@media \(max-width:600px\)/,
+    )
+    expect(html).toContain(`<span class="cv-wordmark" style="font-family:-apple-system,`)
+    const font = Buffer.from(WORDMARK_FONT_WOFF2_BASE64, "base64")
+    expect(font.subarray(0, 4).toString("latin1")).toBe("wOF2")
+    expect(font.readUInt32BE(8)).toBe(font.length)
   })
 
   it("converts newlines to <br> in paragraphs but keeps them in the text part", () => {
