@@ -14,6 +14,12 @@ import { SUSPENDED_MESSAGE } from "../../auth/account-status.js"
 import type { Env } from "../../env.js"
 import { resolveLocale } from "../../i18n/locales.js"
 import { isAdminEmail } from "../../auth/admin-allowlist.js"
+<<<<<<< HEAD
+=======
+import { newAccountDisplayName } from "../../auth/official-account.js"
+import { createAccessVerifier, type AccessIdentity, type VerifyAccessJwt } from "../../auth/cf-access.js"
+import { writeAudit, type WriteAuditInput } from "../../services/admin/audit.js"
+>>>>>>> origin/main
 import {
   createAccessVerifier,
   type AccessIdentity,
@@ -29,6 +35,7 @@ import {
 import { route } from "../../versioning/route.js"
 
 const ADMIN_AUTH_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
+const UNNAMED_OPERATOR_DISPLAY_NAME = "Operator"
 
 export interface AdminAuthOverrides {
   auditSink(input: WriteAuditInput): Promise<void>
@@ -59,7 +66,10 @@ export async function registerAdminAuthRoutes(
     let user = await services.users.findByEmail(email)
     if (!user) {
       user = await services.users.create(email, {
-        displayName: deriveOperatorName(email),
+        displayName: newAccountDisplayName(
+          deriveOperatorName(email),
+          UNNAMED_OPERATOR_DISPLAY_NAME,
+        ),
         role: "operator",
         emailVerified: true,
       })
@@ -229,5 +239,5 @@ function toUserPayload(user: UserRecord): AdminLoginResponse["user"] {
 function deriveOperatorName(email: string): string {
   const at = email.indexOf("@")
   const local = at > 0 ? email.slice(0, at) : email
-  return local.length > 0 ? local : "Operator"
+  return local.length > 0 ? local : UNNAMED_OPERATOR_DISPLAY_NAME
 }

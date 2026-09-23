@@ -5,7 +5,10 @@ import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
 import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import { tombstonePostInTx } from "../post-repository.drizzle.js"
-import { assertTargetIsNotOperatorRole } from "../../auth/operator-target.js"
+import {
+  assertTargetIsNotOfficialAccount,
+  assertTargetIsNotOperatorRole,
+} from "../../auth/operator-target.js"
 import { moderationMediaKeyExpr, moderationMediaFilter } from "../media-served-key.js"
 import {
   type CreateModerationItemInput,
@@ -811,6 +814,7 @@ async function tombstoneSubject(
     }
     case "profile":
     case "user": {
+      assertTargetIsNotOfficialAccount(subjectId, "remove")
       const target = await tx<{ role: string }[]>`
         SELECT role FROM users WHERE id = ${subjectId}`
       assertTargetIsNotOperatorRole(target[0]?.role, "remove")

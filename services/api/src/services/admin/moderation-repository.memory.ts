@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
-import { assertTargetIsNotOperatorRole } from "../../auth/operator-target.js"
+import {
+  assertTargetIsNotOfficialAccount,
+  assertTargetIsNotOperatorRole,
+} from "../../auth/operator-target.js"
 import {
   type CreateModerationItemInput,
   type ListModerationArgs,
@@ -178,6 +181,7 @@ export class InMemoryModerationRepository implements ModerationRepository {
   ): Promise<ModerationItemRecord | null> {
     const pending = this.items.get(id)
     if (pending && isUserSubjectType(pending.subjectType)) {
+      assertTargetIsNotOfficialAccount(pending.subjectId, "remove")
       assertTargetIsNotOperatorRole(this.userRoles.get(pending.subjectId), "remove")
     }
     const item = this.resolve(id, "removed")

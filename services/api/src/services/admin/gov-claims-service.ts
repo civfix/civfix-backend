@@ -27,6 +27,7 @@
 
 import { AppError, relativeAgo } from "@civfix/shared"
 import { applyRoleChange, type RevokeAllSessions } from "./role-change.js"
+import { newAccountDisplayName } from "../../auth/official-account.js"
 import type {
   GovCheck,
   GovCheckStatus,
@@ -330,7 +331,7 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
       } else {
         // No account yet: create a placeholder with an UNverified email. It has no sessions and only
         // becomes usable when the real owner signs in via Email-OTP, which proves control of the address.
-        user = await deps.users.create(email, claim.name)
+        user = await deps.users.create(email, newAccountDisplayName(claim.name, "citizen"))
       }
 
       const updated = await deps.repo.approve(id, {
