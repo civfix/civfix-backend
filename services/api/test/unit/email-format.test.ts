@@ -70,7 +70,9 @@ describe("email layout", () => {
       /<style>@media screen\{@font-face\{font-family:'civfix-wordmark';[^}]*src:url\(data:font\/woff2;base64,[A-Za-z0-9+/=]+\) format\('woff2'\);\}[^<]*\}<\/style><style>@media \(max-width:600px\)/,
     )
     expect(html).toContain(`<span class="cv-wordmark" style="font-family:-apple-system,`)
-    expect(Buffer.from(WORDMARK_FONT_WOFF2_BASE64, "base64").subarray(0, 4).toString("latin1")).toBe("wOF2")
+    const font = Buffer.from(WORDMARK_FONT_WOFF2_BASE64, "base64")
+    expect(font.subarray(0, 4).toString("latin1")).toBe("wOF2")
+    expect(font.readUInt32BE(8)).toBe(font.length)
   })
 
   it("converts newlines to <br> in paragraphs but keeps them in the text part", () => {
