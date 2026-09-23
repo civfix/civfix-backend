@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { ParsedMail } from "@civfix/shared/interfaces"
 import {
   CfInboundMail,
+  CLOUDFLARE_AUTHSERV_ID,
   domainsAligned,
   readMailAuthVerdict,
 } from "../../src/adapters/inbound-mail.cf.js"
@@ -28,50 +29,157 @@ function mail(over: Partial<ParsedMail> = {}): ParsedMail {
 }
 
 describe("readMailAuthVerdict (M7)", () => {
+  const cf = (...resinfos: string[]) => ["mx.cloudflare.net", ...resinfos].join("; ")
+  const verdict = (header: string, from = "clerk@lacity.gov") =>
+    readMailAuthVerdict(mail({ from: { address: from }, headers: { "authentication-results": header } }))
+  const stamp = (helo: string, mailFrom: string, dmarc = "dmarc=none header.from=lacity.gov policy.dmarc=none") =>
+    cf(
+      "dkim=none",
+      dmarc,
+      `spf=none (mx.cloudflare.net: no SPF records found for postmaster@${helo}) smtp.helo=${helo}`,
+      `spf=pass (mx.cloudflare.net: domain of ${mailFrom} designates 192.0.2.1 as permitted sender) smtp.mailfrom=${mailFrom}`,
+      'arc=none smtp.remote-ip="2001:db8::1"',
+    )
+
   it("returns 'unknown' when the MTA stamped no Authentication-Results header (FAIL CLOSED)", () => {
     expect(readMailAuthVerdict(mail())).toBe("unknown")
     expect(readMailAuthVerdict(mail({ headers: { "authentication-results": "  " } }))).toBe("unknown")
   })
 
-  it("passes a DMARC-aligned message", () => {
-    const m = mail({
-      headers: { "authentication-results": "mx.civfix.org; spf=pass; dkim=pass; dmarc=pass" },
-    })
-    expect(readMailAuthVerdict(m)).toBe("pass")
+  it("returns 'unknown' when the header was not stamped by Cloudflare's MX", () => {
+    expect(CLOUDFLARE_AUTHSERV_ID).toBe("mx.cloudflare.net")
+    expect(verdict("mx.civfix.org; dmarc=pass header.from=lacity.gov")).toBe("unknown")
+    expect(verdict("attacker.example; spf=pass; dkim=pass header.d=lacity.gov; dmarc=pass")).toBe("unknown")
+  })
+
+  it("passes a DMARC pass evaluated on the parsed From domain", () => {
+    expect(verdict(cf("spf=pass", "dkim=pass header.d=lacity.gov", "dmarc=pass header.from=lacity.gov"))).toBe(
+      "pass",
+    )
+  })
+
+  it("fails a DMARC pass that was evaluated on a different From domain", () => {
+    expect(verdict(cf("dmarc=pass header.from=attacker.example"))).toBe("fail")
   })
 
   it("fails a DMARC fail even when SPF passes (SPF authenticates the envelope, not the From header)", () => {
-    const m = mail({
-      headers: { "authentication-results": "mx.civfix.org; spf=pass; dmarc=fail" },
-    })
-    expect(readMailAuthVerdict(m)).toBe("fail")
+    expect(verdict(cf("dmarc=fail header.from=lacity.gov", "spf=pass smtp.mailfrom=clerk@lacity.gov"))).toBe(
+      "fail",
+    )
   })
 
-  it("does not let an appended relay verdict override our MTA's (first token wins)", () => {
-    const m = mail({
-      headers: { "authentication-results": "mx.civfix.org; dmarc=fail, attacker.example; dmarc=pass" },
-    })
-    expect(readMailAuthVerdict(m)).toBe("fail")
+  it("keeps an enforced DMARC failure a failure even with an aligned DKIM pass", () => {
+    for (const result of ["fail", "quarantine", "reject"]) {
+      expect(verdict(cf("dkim=pass header.d=lacity.gov", `dmarc=${result} header.from=lacity.gov`))).toBe("fail")
+    }
   })
 
-  it("accepts DKIM only when the signing domain is ALIGNED with the visible From domain", () => {
-    const aligned = mail({
-      from: { address: "clerk@lacity.gov" },
-      headers: { "authentication-results": "mx.civfix.org; dkim=pass header.d=mail.lacity.gov" },
-    })
-    expect(readMailAuthVerdict(aligned)).toBe("pass")
+  it("passes dmarc=none on an aligned DKIM pass (Cloudflare's real header shape)", () => {
+    const header = cf(
+      "dkim=pass header.d=lacity.gov header.s=sig1 header.b=AbCd1234",
+      "dmarc=none header.from=lacity.gov policy.dmarc=none",
+      "spf=none (mx.cloudflare.net: no SPF records found for postmaster@relay.example) smtp.helo=relay.example",
+      "spf=softfail (mx.cloudflare.net: domain of transitioning bounce@esp.example) smtp.mailfrom=bounce@esp.example",
+      "arc=none smtp.remote-ip=192.0.2.1",
+    )
+    expect(verdict(header)).toBe("pass")
+  })
 
-    const unaligned = mail({
-      from: { address: "clerk@lacity.gov" },
-      headers: { "authentication-results": "mx.civfix.org; dkim=pass header.d=attacker.example" },
-    })
-    expect(readMailAuthVerdict(unaligned)).toBe("fail")
+  it("checks EVERY DKIM pass for alignment, not only the first", () => {
+    const header = cf(
+      "dkim=pass header.d=tenant.onmicrosoft.com",
+      "dkim=pass header.i=@mail.lacity.gov",
+      "dmarc=none header.from=lacity.gov",
+    )
+    expect(verdict(header)).toBe("pass")
+  })
+
+  it("fails dmarc=none when neither DKIM nor SPF is aligned with the From domain", () => {
+    const header = cf(
+      "dkim=pass header.d=attacker.example",
+      "dmarc=none header.from=lacity.gov",
+      "spf=pass smtp.mailfrom=bounce@attacker.example",
+    )
+    expect(verdict(header)).toBe("fail")
+  })
+
+  it("reads only each result's leading method=result, never comments, quoted text or properties", () => {
+    expect(verdict(cf("spf=fail (dmarc=pass header.from=lacity.gov)", "dmarc=none header.from=lacity.gov"))).toBe(
+      "fail",
+    )
+    expect(verdict(cf('dmarc=none reason="dmarc=pass; dkim=pass header.d=lacity.gov" policy.dmarc=pass'))).toBe(
+      "fail",
+    )
+  })
+
+  it("does not let a later DMARC result override the first one", () => {
+    expect(verdict(cf("dmarc=fail header.from=lacity.gov, attacker.example", "dmarc=pass header.from=lacity.gov"))).toBe(
+      "fail",
+    )
+  })
+
+  it("ignores results that a ';' in the echoed helo appends, with or without a DMARC result", () => {
+    const forged = ["dkim=pass header.d=lacity.gov", "spf=pass smtp.mailfrom=lacity.gov", "dmarc=pass header.from=lacity.gov"]
+    for (const result of forged) {
+      expect(verdict(stamp(`relay.example;${result}`, "a@attacker.example"))).toBe("fail")
+      expect(verdict(stamp(`relay.example;${result}`, "a@attacker.example", "dkim=none"))).toBe("fail")
+    }
+  })
+
+  it("fails a backslash, a nested or unbalanced comment, a repeated property, and DKIM after DMARC", () => {
+    for (const tail of ["(a\\) b)", "(a (b) c)", "(a", "header.d=attacker.example"]) {
+      const dkim = `dkim=pass header.d=lacity.gov ${tail}`
+      expect(verdict(cf(dkim, "dmarc=none header.from=lacity.gov"))).toBe("fail")
+    }
+    expect(verdict(cf("dmarc=none header.from=lacity.gov", "dkim=pass header.d=lacity.gov"))).toBe("fail")
+  })
+
+  it("fails a Cloudflare-stamped message with no single From address", () => {
+    const header = cf("dmarc=pass header.from=lacity.gov")
+    expect(readMailAuthVerdict(mail({ from: null, headers: { "authentication-results": header } }))).toBe("fail")
   })
 
   it("rejects a lookalike domain as aligned (suffix match is dot-anchored)", () => {
     expect(domainsAligned("mail.city.gov", "city.gov")).toBe(true)
     expect(domainsAligned("city.gov", "city.gov")).toBe(true)
     expect(domainsAligned("evilcity.gov", "city.gov")).toBe(false)
+  })
+})
+
+describe("CfInboundMail.parse: the headers the verdict trusts", () => {
+  const adapter = new CfInboundMail({ replyDomain: "civfix.org" })
+  const eml = (...headers: string[]) =>
+    new TextEncoder().encode([...headers, "To: report-abcdefgh1234@civfix.org", "", "Crew dispatched."].join("\r\n"))
+
+  it("trusts only the top-most Authentication-Results, ignoring a forged copy below it", async () => {
+    const parsed = await adapter.parse(
+      eml(
+        "Authentication-Results: mx.cloudflare.net; dkim=pass header.d=attacker.example; dmarc=none header.from=lacity.gov",
+        "Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=lacity.gov",
+        "From: Clerk <clerk@lacity.gov>",
+      ),
+    )
+    expect(parsed.from?.address).toBe("clerk@lacity.gov")
+    expect(readMailAuthVerdict(parsed)).toBe("fail")
+  })
+
+  it("fails a stamp that a leading continuation line in the sender's headers extends", async () => {
+    const stamp = "mx.cloudflare.net; dkim=none; dmarc=none header.from=lacity.gov; spf=pass smtp.mailfrom=a@x.example"
+    for (const injected of ["dkim=pass header.d=lacity.gov", "spf=pass smtp.mailfrom=clerk@lacity.gov"]) {
+      const parsed = await adapter.parse(eml(`Authentication-Results: ${stamp}`, ` ; ${injected}`, "From: clerk@lacity.gov"))
+      expect(parsed.headers["authentication-results"]).toContain(injected)
+      expect(readMailAuthVerdict(parsed)).toBe("fail")
+    }
+  })
+
+  it("returns no From for a message with two From headers or two From addresses", async () => {
+    const auth = "Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=attacker.example"
+    const twoHeaders = await adapter.parse(eml(auth, "From: x@attacker.example", "From: clerk@lacity.gov"))
+    expect(twoHeaders.from).toBeNull()
+    expect(readMailAuthVerdict(twoHeaders)).toBe("fail")
+
+    const twoAddresses = await adapter.parse(eml(auth, "From: clerk@lacity.gov, x@attacker.example"))
+    expect(twoAddresses.from).toBeNull()
   })
 })
 
