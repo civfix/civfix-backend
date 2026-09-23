@@ -98,7 +98,7 @@ export async function runUploadReapJob(
     return "deleted"
   } catch (err) {
     await deps.repo
-      .recordLeakedObjects?.({
+      .recordLeakedObjects({
         mediaId: payload.mediaId,
         keys: [r2Key],
         error: "delayed upload reap delete failed",

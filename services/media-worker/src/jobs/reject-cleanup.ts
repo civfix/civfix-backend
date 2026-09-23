@@ -58,7 +58,7 @@ export async function deleteSupersededUpload(
   }
 
   await deps.repo
-    .recordLeakedObjects?.({
+    .recordLeakedObjects({
       mediaId: asset.id,
       keys: [asset.r2Key],
       error: "superseded-upload delete failed",
@@ -110,7 +110,7 @@ export async function deleteRejectedObjects(
   if (leaked.length === 0) return
 
   await deps.repo
-    .recordLeakedObjects?.({
+    .recordLeakedObjects({
       mediaId: asset.id,
       keys: leaked,
       error: "rejected-media delete failed",

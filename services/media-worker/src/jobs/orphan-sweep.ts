@@ -127,8 +127,6 @@ async function retryTombstonedLeaks(
   report: JobReportFn,
 ): Promise<{ retried: number; reclaimed: number; errors: number }> {
   const { repo } = deps
-  const clear = repo.clearLeakedObject?.bind(repo)
-  if (!repo.listLeakedObjects || !clear) return { retried: 0, reclaimed: 0, errors: 0 }
 
   let rows: LeakedObjectRow[]
   try {
@@ -147,7 +145,7 @@ async function retryTombstonedLeaks(
     retried++
     try {
       await deps.storage.delete(row.r2Key)
-      await clear(row.r2Key)
+      await repo.clearLeakedObject(row.r2Key)
       reclaimed++
     } catch (err) {
       errors++
@@ -166,7 +164,7 @@ async function recordLeakRetryFailure(
 ): Promise<void> {
   const attempts = row.attempts + 1
   await repo
-    .recordLeakedObjects?.({ mediaId: row.mediaId, keys: [row.r2Key], error: String(err) })
+    .recordLeakedObjects({ mediaId: row.mediaId, keys: [row.r2Key], error: String(err) })
     .catch((bumpErr: unknown) =>
       log("orphan.sweep: tombstone bump failed", { key: row.r2Key, err: String(bumpErr) }),
     )
@@ -246,7 +244,7 @@ async function sweepPage(
       hooks.onDeleted()
       if (leaked.length > 0) {
         await deps.repo
-          .recordLeakedObjects?.({ mediaId: o.id, keys: leaked, error: "storage delete failed" })
+          .recordLeakedObjects({ mediaId: o.id, keys: leaked, error: "storage delete failed" })
           .catch((err: unknown) =>
             log("orphan.sweep: tombstone write failed (leak is now unrecoverable)", {
               mediaId: o.id,

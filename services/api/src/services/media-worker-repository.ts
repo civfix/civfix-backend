@@ -76,7 +76,7 @@ export interface MediaWorkerRepository {
     hash: string,
     opts?: { excludeAssetId?: string; excludeReportId?: string },
   ): Promise<NearDuplicateResult>
-  enqueueHeldModerationItem?(input: {
+  enqueueHeldModerationItem(input: {
     reportId: string
     reason: string
     kind?: "image" | "duplicate"
@@ -84,11 +84,11 @@ export interface MediaWorkerRepository {
   }): Promise<void>
   refreshAvatarUrls?(mediaId: string, avatarUrl: string): Promise<number>
 
-  recordLeakedObjects?(input: {
+  recordLeakedObjects(input: {
     mediaId: string | null
     keys: string[]
     error?: string | null
   }): Promise<void>
-  listLeakedObjects?(limit: number, maxAttempts: number): Promise<LeakedObjectRow[]>
-  clearLeakedObject?(r2Key: string): Promise<void>
+  listLeakedObjects(limit: number, maxAttempts: number): Promise<LeakedObjectRow[]>
+  clearLeakedObject(r2Key: string): Promise<void>
 }

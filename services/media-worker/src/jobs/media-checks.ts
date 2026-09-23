@@ -394,7 +394,7 @@ async function onHeld(
     note: result.note,
     flags: result.flags.map((f) => f.reason),
   })
-  if (!asset.reportId || !deps.repo.enqueueHeldModerationItem) return
+  if (!asset.reportId) return
   await deps.repo
     .enqueueHeldModerationItem({
       reportId: asset.reportId,
