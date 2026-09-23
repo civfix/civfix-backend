@@ -5,7 +5,7 @@ import { resolveJobObs, type JobObsDeps } from "./obs.js"
 
 export const MEDIA_UPLOAD_REAP_JOB = "media.upload.reap"
 
-export const UPLOAD_REAP_SLACK_SEC = 5 * 60
+const UPLOAD_REAP_SLACK_SEC = 5 * 60
 
 export function uploadReapDelaySec(): number {
   return R2_PUT_TTL_SEC + UPLOAD_REAP_SLACK_SEC

@@ -89,14 +89,7 @@ async function isChatMessageReportable(
     SELECT thread_id FROM dm_messages WHERE id = ${messageId} LIMIT 1
   `
   const dm = dmRows[0]
-  if (dm) {
-    const member = await sql<{ ok: number }[]>`
-      SELECT 1 AS ok FROM dm_threads
-      WHERE id = ${dm.thread_id} AND (user_lo = ${reporterUserId} OR user_hi = ${reporterUserId})
-      LIMIT 1
-    `
-    return member.length > 0
-  }
+  if (dm) return isDmParticipant(sql, dm.thread_id, reporterUserId)
 
   const chatRows = await sql<
     { cleanup_id: string | null; report_id: string | null; group_id: string | null }[]
@@ -106,46 +99,73 @@ async function isChatMessageReportable(
   `
   const msg = chatRows[0]
   if (!msg) return false
+  if (msg.cleanup_id !== null) return isCleanupMember(sql, msg.cleanup_id, reporterUserId)
+  if (msg.group_id !== null) return isGroupMessageVisible(sql, msg.group_id, reporterUserId)
+  if (msg.report_id !== null) return isReportChatVisible(sql, msg.report_id, reporterUserId)
+  return false
+}
 
-  if (msg.cleanup_id !== null) {
-    const member = await sql<{ ok: number }[]>`
-      SELECT 1 AS ok FROM cleanup_members
-      WHERE cleanup_id = ${msg.cleanup_id} AND user_id = ${reporterUserId} LIMIT 1
+async function isDmParticipant(
+  sql: Sql,
+  threadId: string,
+  reporterUserId: string,
+): Promise<boolean> {
+  const member = await sql<{ ok: number }[]>`
+      SELECT 1 AS ok FROM dm_threads
+      WHERE id = ${threadId} AND (user_lo = ${reporterUserId} OR user_hi = ${reporterUserId})
+      LIMIT 1
     `
-    return member.length > 0
-  }
+  return member.length > 0
+}
 
-  if (msg.group_id !== null) {
-    const rows = await sql<{ visibility: string; is_member: boolean }[]>`
+async function isCleanupMember(
+  sql: Sql,
+  cleanupId: string,
+  reporterUserId: string,
+): Promise<boolean> {
+  const member = await sql<{ ok: number }[]>`
+      SELECT 1 AS ok FROM cleanup_members
+      WHERE cleanup_id = ${cleanupId} AND user_id = ${reporterUserId} LIMIT 1
+    `
+  return member.length > 0
+}
+
+async function isGroupMessageVisible(
+  sql: Sql,
+  groupId: string,
+  reporterUserId: string,
+): Promise<boolean> {
+  const rows = await sql<{ visibility: string; is_member: boolean }[]>`
       SELECT g.visibility,
              EXISTS (
                SELECT 1 FROM chat_group_members m
                WHERE m.group_id = g.id AND m.user_id = ${reporterUserId}
              ) AS is_member
-      FROM chat_groups g WHERE g.id = ${msg.group_id} LIMIT 1
+      FROM chat_groups g WHERE g.id = ${groupId} LIMIT 1
     `
-    const group = rows[0]
-    if (!group) return false
-    return group.is_member || group.visibility === "public"
-  }
+  const group = rows[0]
+  if (!group) return false
+  return group.is_member || group.visibility === "public"
+}
 
-  if (msg.report_id !== null) {
-    const rows = await sql<
-      {
-        reporter_user_id: string | null
-        status: string
-        visibility: string
-        deleted_at: Date | null
-      }[]
-    >`
+async function isReportChatVisible(
+  sql: Sql,
+  reportId: string,
+  reporterUserId: string,
+): Promise<boolean> {
+  const rows = await sql<
+    {
+      reporter_user_id: string | null
+      status: string
+      visibility: string
+      deleted_at: Date | null
+    }[]
+  >`
       SELECT reporter_user_id, status, visibility, deleted_at
-      FROM reports WHERE id = ${msg.report_id} LIMIT 1
+      FROM reports WHERE id = ${reportId} LIMIT 1
     `
-    const report = rows[0]
-    if (!report || report.deleted_at !== null) return false
-    if (isPubliclyVisibleStatus(report.status) && report.visibility === "public") return true
-    return report.reporter_user_id === reporterUserId
-  }
-
-  return false
+  const report = rows[0]
+  if (!report || report.deleted_at !== null) return false
+  if (isPubliclyVisibleStatus(report.status) && report.visibility === "public") return true
+  return report.reporter_user_id === reporterUserId
 }

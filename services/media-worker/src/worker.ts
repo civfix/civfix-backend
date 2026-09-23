@@ -1,7 +1,13 @@
 import type { JobHandler } from "@civfix/shared/interfaces"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
 import { releaseAnonHoldIfReady, type HeldReportView } from "@civfix/api/anon-hold-release"
-import { buildJobs, stopGraceMsFor, type JobsHandle, type WorkerJobs } from "./jobs.js"
+import {
+  buildJobs,
+  stopGraceMsFor,
+  type JobsHandle,
+  type QueueOptions,
+  type WorkerJobs,
+} from "./jobs.js"
 import { buildSeams, type WorkerSeams } from "./seams.js"
 import {
   CHAT_PARTITION_CRON,
@@ -11,7 +17,12 @@ import {
   RETENTION_SWEEP_CRON,
   type WorkerLimits,
 } from "./config.js"
-import { runMediaChecksJobDetailed, parsePayload } from "./jobs/media-checks.js"
+import {
+  runMediaChecksJobDetailed,
+  parsePayload,
+  type MediaChecksOutcome,
+  type MediaChecksPayload,
+} from "./jobs/media-checks.js"
 import { runOrphanSweep } from "./jobs/orphan-sweep.js"
 import { runHoldReleaseSweep } from "./jobs/hold-release-sweep.js"
 import { runPartitionMaintenance } from "./jobs/partition-maintenance.js"
@@ -35,6 +46,32 @@ export const RETENTION_SWEEP_JOB = "retention.sweep"
 export const MEDIA_STUCK_SWEEP_JOB = "media.stuck.sweep"
 
 const CRON_EXPIRE_SECONDS = 25 * 60
+const MEDIA_CHECKS_RETRY_LIMIT = 5
+const UPLOAD_REAP_RETRY_LIMIT = 3
+const MS_PER_SECOND = 1000
+const COMPOSE_STOP_GRACE_HEADROOM_SEC = 15
+
+const QUEUES: readonly [name: string, options: QueueOptions][] = [
+  [MEDIA_CHECKS_JOB, { policy: "short", retryLimit: MEDIA_CHECKS_RETRY_LIMIT, retryBackoff: true }],
+  [ORPHAN_SWEEP_JOB, { policy: "singleton" }],
+  [CHAT_PARTITION_JOB, { policy: "singleton" }],
+  [ANON_HOLD_RELEASE_JOB, { policy: "short" }],
+  [ANON_HOLD_RELEASE_SWEEP_JOB, { policy: "singleton" }],
+  [RETENTION_SWEEP_JOB, { policy: "singleton" }],
+  [MEDIA_STUCK_SWEEP_JOB, { policy: "singleton" }],
+  [
+    MEDIA_UPLOAD_REAP_JOB,
+    { policy: "short", retryLimit: UPLOAD_REAP_RETRY_LIMIT, retryBackoff: true },
+  ],
+]
+
+const CRON_SCHEDULES: readonly [name: string, cron: string][] = [
+  [ORPHAN_SWEEP_JOB, ORPHAN_SWEEP_CRON],
+  [CHAT_PARTITION_JOB, CHAT_PARTITION_CRON],
+  [ANON_HOLD_RELEASE_SWEEP_JOB, HOLD_RELEASE_SWEEP_CRON],
+  [RETENTION_SWEEP_JOB, RETENTION_SWEEP_CRON],
+  [MEDIA_STUCK_SWEEP_JOB, MEDIA_STUCK_SWEEP_CRON],
+]
 
 export interface Worker {
   jobs: WorkerJobs
@@ -78,38 +115,50 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
     })
 
     if (outcome.status !== "missing") {
-      try {
-        await jobs.enqueue(
-          MEDIA_UPLOAD_REAP_JOB,
-          { mediaId: payload.mediaId, uploadId: payload.uploadId, r2Key: payload.r2Key },
-          { singletonKey: payload.uploadId, startAfter: uploadReapDelaySec() },
-        )
-      } catch (err) {
-        console.warn("media.checks: failed to schedule media.upload.reap (non-fatal)", {
-          uploadId: payload.uploadId,
-          err: String(err),
-        })
-      }
+      await scheduleUploadReap(jobs, payload)
     }
+    await enqueueHoldReleaseIfAnonHeld(jobs, seams, repo, payload, outcome)
+  }
+}
 
-    try {
-      const reportId =
-        outcome.reportId ??
-        (outcome.status === "missing" ? null : await findReportId(repo, payload))
-      if (reportId && (await shouldEnqueueHoldRelease(seams, reportId))) {
-        await jobs.enqueue(ANON_HOLD_RELEASE_JOB, { reportId }, { singletonKey: reportId })
-      } else {
-        console.debug("media.checks: hold-release skipped (no row/reportId, or not anon-held)", {
-          uploadId: payload.uploadId,
-          status: outcome.status,
-        })
-      }
-    } catch (err) {
-      console.warn("media.checks: failed to enqueue anon.hold.release (non-fatal)", {
+async function scheduleUploadReap(jobs: WorkerJobs, payload: MediaChecksPayload): Promise<void> {
+  try {
+    await jobs.enqueue(
+      MEDIA_UPLOAD_REAP_JOB,
+      { mediaId: payload.mediaId, uploadId: payload.uploadId, r2Key: payload.r2Key },
+      { singletonKey: payload.uploadId, startAfter: uploadReapDelaySec() },
+    )
+  } catch (err) {
+    console.warn("media.checks: failed to schedule media.upload.reap (non-fatal)", {
+      uploadId: payload.uploadId,
+      err: String(err),
+    })
+  }
+}
+
+async function enqueueHoldReleaseIfAnonHeld(
+  jobs: WorkerJobs,
+  seams: WorkerSeams,
+  repo: NonNullable<WorkerSeams["repo"]>,
+  payload: MediaChecksPayload,
+  outcome: MediaChecksOutcome,
+): Promise<void> {
+  try {
+    const reportId =
+      outcome.reportId ?? (outcome.status === "missing" ? null : await findReportId(repo, payload))
+    if (reportId && (await shouldEnqueueHoldRelease(seams, reportId))) {
+      await jobs.enqueue(ANON_HOLD_RELEASE_JOB, { reportId }, { singletonKey: reportId })
+    } else {
+      console.debug("media.checks: hold-release skipped (no row/reportId, or not anon-held)", {
         uploadId: payload.uploadId,
-        err: String(err),
+        status: outcome.status,
       })
     }
+  } catch (err) {
+    console.warn("media.checks: failed to enqueue anon.hold.release (non-fatal)", {
+      uploadId: payload.uploadId,
+      err: String(err),
+    })
   }
 }
 
@@ -250,18 +299,9 @@ async function registerHandlers(
   seams: WorkerSeams,
   limits: WorkerLimits,
 ): Promise<void> {
-  await jobs.createQueue(MEDIA_CHECKS_JOB, { policy: "short", retryLimit: 5, retryBackoff: true })
-  await jobs.createQueue(ORPHAN_SWEEP_JOB, { policy: "singleton" })
-  await jobs.createQueue(CHAT_PARTITION_JOB, { policy: "singleton" })
-  await jobs.createQueue(ANON_HOLD_RELEASE_JOB, { policy: "short" })
-  await jobs.createQueue(ANON_HOLD_RELEASE_SWEEP_JOB, { policy: "singleton" })
-  await jobs.createQueue(RETENTION_SWEEP_JOB, { policy: "singleton" })
-  await jobs.createQueue(MEDIA_STUCK_SWEEP_JOB, { policy: "singleton" })
-  await jobs.createQueue(MEDIA_UPLOAD_REAP_JOB, {
-    policy: "short",
-    retryLimit: 3,
-    retryBackoff: true,
-  })
+  for (const [name, options] of QUEUES) {
+    await jobs.createQueue(name, options)
+  }
 
   await jobs.workWithSettings(MEDIA_CHECKS_JOB, makeMediaChecksHandler(jobs, seams), {
     batchSize: limits.mediaChecksConcurrency,
@@ -276,36 +316,9 @@ async function registerHandlers(
   await jobs.work(MEDIA_STUCK_SWEEP_JOB, makeStuckSweepHandler(jobs, seams))
   await jobs.work(MEDIA_UPLOAD_REAP_JOB, makeUploadReapHandler(seams))
 
-  await jobs.schedule(
-    ORPHAN_SWEEP_JOB,
-    ORPHAN_SWEEP_CRON,
-    undefined,
-    cronSchedule(ORPHAN_SWEEP_JOB),
-  )
-  await jobs.schedule(
-    CHAT_PARTITION_JOB,
-    CHAT_PARTITION_CRON,
-    undefined,
-    cronSchedule(CHAT_PARTITION_JOB),
-  )
-  await jobs.schedule(
-    ANON_HOLD_RELEASE_SWEEP_JOB,
-    HOLD_RELEASE_SWEEP_CRON,
-    undefined,
-    cronSchedule(ANON_HOLD_RELEASE_SWEEP_JOB),
-  )
-  await jobs.schedule(
-    RETENTION_SWEEP_JOB,
-    RETENTION_SWEEP_CRON,
-    undefined,
-    cronSchedule(RETENTION_SWEEP_JOB),
-  )
-  await jobs.schedule(
-    MEDIA_STUCK_SWEEP_JOB,
-    MEDIA_STUCK_SWEEP_CRON,
-    undefined,
-    cronSchedule(MEDIA_STUCK_SWEEP_JOB),
-  )
+  for (const [name, cron] of CRON_SCHEDULES) {
+    await jobs.schedule(name, cron, undefined, cronSchedule(name))
+  }
 }
 
 function cronSchedule(name: string): { expireInSeconds: number; singletonKey: string } {
@@ -317,7 +330,8 @@ function logStopGraceRequirement(limits: WorkerLimits): void {
   console.log("media-worker: graceful-stop budget", {
     jobTimeoutMs: limits.jobTimeoutMs,
     stopGraceMs: graceMs,
-    requiredComposeStopGracePeriodSec: Math.ceil(graceMs / 1000) + 15,
+    requiredComposeStopGracePeriodSec:
+      Math.ceil(graceMs / MS_PER_SECOND) + COMPOSE_STOP_GRACE_HEADROOM_SEC,
   })
 }
 

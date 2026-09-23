@@ -24,7 +24,16 @@ export interface ReportCityForwardWiringOverrides {
   logger?: CityForwardLogger
 }
 
-export const NOOP_REPORT_CITY_FORWARD: ReportCityForwardEffect = () => Promise.resolve()
+function makeContainerOutboundMail(container: Container): OutboundMailService {
+  return makeOutboundMailService({
+    repo: makeDrizzleMailRepository(container.getDb().sql),
+    mailer: container.mailer,
+    env: {
+      MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
+      MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
+    },
+  })
+}
 
 export function makeContainerReportCityForward(
   container: Container,
@@ -44,14 +53,7 @@ export function makeContainerReportCityForward(
     (reportRepo ??= makeDrizzleDiscussionRepository(container.getDb().sql))
 
   return async (reportId, message, actorUserId) => {
-    outboundMail ??= makeOutboundMailService({
-      repo: makeDrizzleMailRepository(container.getDb().sql),
-      mailer: container.mailer,
-      env: {
-        MAIL_FROM_OUTREACH: container.env.MAIL_FROM_OUTREACH,
-        MAIL_REPLY_DOMAIN: container.env.MAIL_REPLY_DOMAIN,
-      },
-    })
+    outboundMail ??= makeContainerOutboundMail(container)
     audit ??= makeReportForwardAudit(container.getDb().sql)
     const report = await getReportRepo().findReportForDiscussion(reportId)
     if (report === null) return

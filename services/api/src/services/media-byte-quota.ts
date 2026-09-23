@@ -23,6 +23,8 @@ export const MEDIA_UPLOAD_BYTE_WINDOW_SECONDS = 24 * 60 * 60
 /** Distinct bucket from every other abuse counter (see abuse/counter-store.ts). */
 export const MEDIA_UPLOAD_BYTE_PREFIX = "abuse:media:bytes:"
 
+const MS_PER_SECOND = 1000
+
 export interface ByteMeter {
   /** Returns the running total after the add. */
   add(subject: string, bytes: number): Promise<number>
@@ -55,7 +57,7 @@ export class InMemoryByteMeter implements ByteMeter {
     if (!existing || existing.expiresAtMs <= now) {
       this.store.set(subject, {
         total: bytes,
-        expiresAtMs: now + MEDIA_UPLOAD_BYTE_WINDOW_SECONDS * 1000,
+        expiresAtMs: now + MEDIA_UPLOAD_BYTE_WINDOW_SECONDS * MS_PER_SECOND,
       })
       return Promise.resolve(bytes)
     }

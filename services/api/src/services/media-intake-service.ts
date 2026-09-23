@@ -11,8 +11,6 @@ import type {
 } from "@civfix/shared"
 import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/shared"
 import type { MEDIA_PURPOSE_VALUES } from "../db/schema/types-host.js"
-
-type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
 import { readEtag } from "./media-etag.js"
 import { uploaderOf, uploadersOf } from "./media-uploader.js"
@@ -22,6 +20,8 @@ import {
   makeUnboundOnlyMediaViewAuthorizer,
   type MediaViewAuthorizer,
 } from "./media-authorization.js"
+
+type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
 
 interface IntakeLogger {
   warn(obj: unknown, msg?: string): void
@@ -33,17 +33,21 @@ export const MEDIA_GET_URL_TTL_SEC = 15 * 60
 
 export const MEDIA_PRIVATE_GET_URL_TTL_SEC = 5 * 60
 
-export const ALLOWED_IMAGE_CONTENT_TYPES: ReadonlySet<string> = new Set([
+const ALLOWED_IMAGE_CONTENT_TYPES: ReadonlySet<string> = new Set([
   "image/jpeg",
   "image/png",
   "image/webp",
 ])
-export const ALLOWED_VIDEO_CONTENT_TYPES: ReadonlySet<string> = new Set([
-  "video/mp4",
-  "video/quicktime",
-])
+const ALLOWED_VIDEO_CONTENT_TYPES: ReadonlySet<string> = new Set(["video/mp4", "video/quicktime"])
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
+const UPLOAD_KEY_PREFIX = "uploads/"
+const MS_PER_SECOND = 1000
+const USER_QUOTA_PREFIX = "u:"
+const ANON_QUOTA_PREFIX = "a:"
+const IP_QUOTA_PREFIX = "ip:"
+const UNKNOWN_IP_KEY = "unknown"
+const MEDIA_NOT_FOUND = "Media not found"
 
 export interface MediaChecksJob {
   mediaId: string
@@ -149,15 +153,36 @@ export function precheckUpload(input: CreateMediaUploadRequest): void {
 export function buildR2Key(uploadId: string, now: Date): string {
   const yyyy = String(now.getUTCFullYear()).padStart(4, "0")
   const mm = String(now.getUTCMonth() + 1).padStart(2, "0")
-  return `uploads/${yyyy}/${mm}/${uploadId}`
+  return `${UPLOAD_KEY_PREFIX}${yyyy}/${mm}/${uploadId}`
 }
 
 const SIZE_MISMATCH_TOLERANCE = 1024
 
 export function quotaSubjects(owner: MediaOwner): string[] {
-  if (owner.userId) return [`u:${owner.userId}`]
-  const ipSubject = `ip:${owner.ipKey ?? "unknown"}`
-  return owner.anonSessionId ? [`a:${owner.anonSessionId}`, ipSubject] : [ipSubject]
+  if (owner.userId) return [`${USER_QUOTA_PREFIX}${owner.userId}`]
+  const ipSubject = `${IP_QUOTA_PREFIX}${owner.ipKey ?? UNKNOWN_IP_KEY}`
+  return owner.anonSessionId
+    ? [`${ANON_QUOTA_PREFIX}${owner.anonSessionId}`, ipSubject]
+    : [ipSubject]
+}
+
+async function enforceByteQuota(
+  quota: MediaByteQuota,
+  owner: MediaOwner,
+  byteSize: number,
+  logger: IntakeLogger | undefined,
+): Promise<void> {
+  let over: { subject: string; total: number } | null = null
+  for (const subject of quotaSubjects(owner)) {
+    const total = await quota.charge(subject, byteSize)
+    if (total > quota.limitBytes && over === null) over = { subject, total }
+  }
+  if (!over) return
+  logger?.warn(
+    { subject: over.subject, totalBytes: over.total, limitBytes: quota.limitBytes },
+    "media upload byte quota exceeded",
+  )
+  throw AppError.rateLimited("Upload quota exceeded. Try again later.")
 }
 
 export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeService {
@@ -173,7 +198,10 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
   function finalizableBy(asset: MediaAssetView, owner: MediaOwner): boolean {
     if (asset.uploader == null) {
       const createdAt = asset.createdAt?.getTime()
-      return createdAt !== undefined && now().getTime() - createdAt < MEDIA_CLAIM_WINDOW_SEC * 1000
+      return (
+        createdAt !== undefined &&
+        now().getTime() - createdAt < MEDIA_CLAIM_WINDOW_SEC * MS_PER_SECOND
+      )
     }
     return uploadersOf(owner).includes(asset.uploader)
   }
@@ -185,20 +213,8 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
     ): Promise<CreateMediaUploadResponse> {
       precheckUpload(input)
 
-      const quota = deps.byteQuota
-      if (quota) {
-        let over: { subject: string; total: number } | null = null
-        for (const subject of quotaSubjects(owner)) {
-          const total = await quota.charge(subject, input.byteSize)
-          if (total > quota.limitBytes && over === null) over = { subject, total }
-        }
-        if (over) {
-          deps.logger?.warn(
-            { subject: over.subject, totalBytes: over.total, limitBytes: quota.limitBytes },
-            "media upload byte quota exceeded",
-          )
-          throw AppError.rateLimited("Upload quota exceeded. Try again later.")
-        }
+      if (deps.byteQuota) {
+        await enforceByteQuota(deps.byteQuota, owner, input.byteSize, deps.logger)
       }
 
       const uploadId = newId()
@@ -282,16 +298,16 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
     async getMedia(id: string, viewer: MediaOwner): Promise<MediaDTO> {
       const asset = await deps.repo.findById(id)
       if (!asset || asset.status !== "ready") {
-        throw AppError.notFound("Media not found")
+        throw AppError.notFound(MEDIA_NOT_FOUND)
       }
 
       const decision = await authorizer.authorize(asset, viewer)
       if (!decision.allowed) {
-        throw AppError.notFound("Media not found")
+        throw AppError.notFound(MEDIA_NOT_FOUND)
       }
 
       if (asset.servedKey === null) {
-        throw AppError.notFound("Media not found")
+        throw AppError.notFound(MEDIA_NOT_FOUND)
       }
       const issue = decision.private ? presignPrivate : presign
       const { url, thumbUrl } = await issue(asset.servedKey, asset.thumbKey)

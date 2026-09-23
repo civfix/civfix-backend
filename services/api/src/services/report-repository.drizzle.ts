@@ -29,7 +29,6 @@ import type {
   ReportTimelineView,
   ReportVisibilityTimelineKind,
 } from "./report-service.types.js"
-import { REPORT_CREATE_SCOPE } from "./report-service.types.js"
 import { servedKeyExpr, servableMediaFilter } from "./media-served-key.js"
 import { claimableAsReportMedia, lockUploadsForClaim } from "./media-bindings.js"
 import { uploadersOf } from "./media-uploader.js"
@@ -66,6 +65,62 @@ function notOwnerOutcome(row: {
 }): "not_found" | "forbidden" {
   const publiclyVisible = isPubliclyVisibleStatus(row.status) && row.visibility === "public"
   return publiclyVisible ? "forbidden" : "not_found"
+}
+
+interface OwnerLockRow {
+  reporter_user_id: string | null
+  deleted_at: Date | null
+  status: ReportStatus
+  visibility: ReportVisibility
+}
+
+// Locks the row for the rest of the transaction, so the ownership verdict cannot go stale before the write.
+async function lockOwnedReport(
+  tx: Queryable,
+  reportId: string,
+  userId: string,
+): Promise<{ row: OwnerLockRow } | { outcome: "not_found" | "forbidden" }> {
+  const rows = await tx<OwnerLockRow[]>`
+          SELECT reporter_user_id, deleted_at, status, visibility
+          FROM reports
+          WHERE id = ${reportId}
+          LIMIT 1
+          FOR UPDATE
+        `
+  const row = rows[0]
+  if (!row || row.deleted_at !== null) return { outcome: "not_found" }
+  if (row.reporter_user_id !== userId) return { outcome: notOwnerOutcome(row) }
+  return { row }
+}
+
+// An asset bound to a post, a chat/DM message or any other owner is never re-bindable to a report, or
+// the holder of an uploadId could cross-publish private media into a public report gallery.
+async function claimReportMedia(
+  tx: postgres.TransactionSql,
+  args: CreateReportTxArgs,
+): Promise<void> {
+  await lockUploadsForClaim(tx, args.mediaUploadIds)
+  const claimed = await tx<{ upload_id: string }[]>`
+              UPDATE media_assets
+              SET report_id = ${args.reportId}
+              WHERE upload_id IN ${tx(args.mediaUploadIds)}
+                AND (report_id IS NULL OR report_id = ${args.reportId})
+                AND post_id IS NULL AND chat_message_id IS NULL
+                AND ${claimableAsReportMedia(
+                  tx,
+                  uploadersOf({
+                    userId: args.reporterUserId,
+                    guestAnonSessionId: args.guestAnonSessionId,
+                  }),
+                )}
+                AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
+              RETURNING upload_id
+            `
+  if (claimed.length !== new Set(args.mediaUploadIds).size) {
+    throw AppError.validation({
+      mediaUploadIds: "One or more media uploads are unavailable.",
+    })
+  }
 }
 
 export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
@@ -190,31 +245,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           `
 
           if (args.mediaUploadIds.length > 0) {
-            // An asset bound to a post, a chat/DM message or any other owner is never re-bindable to a
-            // report, or the holder of an uploadId could cross-publish private media into a public
-            // report gallery.
-            await lockUploadsForClaim(tx, args.mediaUploadIds)
-            const claimed = await tx<{ upload_id: string }[]>`
-              UPDATE media_assets
-              SET report_id = ${args.reportId}
-              WHERE upload_id IN ${tx(args.mediaUploadIds)}
-                AND (report_id IS NULL OR report_id = ${args.reportId})
-                AND post_id IS NULL AND chat_message_id IS NULL
-                AND ${claimableAsReportMedia(
-                  tx,
-                  uploadersOf({
-                    userId: args.reporterUserId,
-                    guestAnonSessionId: args.guestAnonSessionId,
-                  }),
-                )}
-                AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
-              RETURNING upload_id
-            `
-            if (claimed.length !== new Set(args.mediaUploadIds).size) {
-              throw AppError.validation({
-                mediaUploadIds: "One or more media uploads are unavailable.",
-              })
-            }
+            await claimReportMedia(tx, args)
           }
 
           await tx`
@@ -411,23 +442,9 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       input: { status: OwnerToggleStatus; note: string },
     ): Promise<"updated" | "unchanged" | "not_found" | "forbidden" | "invalid_state"> {
       return sql.begin(async (tx) => {
-        const rows = await tx<
-          {
-            reporter_user_id: string | null
-            deleted_at: Date | null
-            status: ReportStatus
-            visibility: ReportVisibility
-          }[]
-        >`
-          SELECT reporter_user_id, deleted_at, status, visibility
-          FROM reports
-          WHERE id = ${reportId}
-          LIMIT 1
-          FOR UPDATE
-        `
-        const row = rows[0]
-        if (!row || row.deleted_at !== null) return "not_found"
-        if (row.reporter_user_id !== userId) return notOwnerOutcome(row)
+        const locked = await lockOwnedReport(tx, reportId, userId)
+        if ("outcome" in locked) return locked.outcome
+        const { row } = locked
         const transition = ownerStatusTransition(row.status, input.status)
         if (transition !== "apply") return transition
 
@@ -446,23 +463,9 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       input: { visibility: ReportVisibility; note: string; kind: ReportVisibilityTimelineKind },
     ): Promise<"updated" | "unchanged" | "not_found" | "forbidden"> {
       return sql.begin(async (tx) => {
-        const rows = await tx<
-          {
-            reporter_user_id: string | null
-            deleted_at: Date | null
-            status: ReportStatus
-            visibility: ReportVisibility
-          }[]
-        >`
-          SELECT reporter_user_id, deleted_at, status, visibility
-          FROM reports
-          WHERE id = ${reportId}
-          LIMIT 1
-          FOR UPDATE
-        `
-        const row = rows[0]
-        if (!row || row.deleted_at !== null) return "not_found"
-        if (row.reporter_user_id !== userId) return notOwnerOutcome(row)
+        const locked = await lockOwnedReport(tx, reportId, userId)
+        if ("outcome" in locked) return locked.outcome
+        const { row } = locked
         if (row.visibility === input.visibility) return "unchanged"
 
         await tx`UPDATE reports SET visibility = ${input.visibility} WHERE id = ${reportId}`
@@ -475,5 +478,3 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     },
   }
 }
-
-export { REPORT_CREATE_SCOPE }

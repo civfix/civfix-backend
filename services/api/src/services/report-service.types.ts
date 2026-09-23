@@ -40,7 +40,6 @@ export const REPORTS_SEARCH_DEFAULT_LIMIT = 20
 
 export interface ReportOwner {
   userId?: string | undefined
-  anonSessionId?: string | undefined
 }
 
 export interface SignedInReportOwner {

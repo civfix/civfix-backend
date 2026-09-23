@@ -92,34 +92,35 @@ export async function probeBytes(bytes: Uint8Array, limits: WorkerLimits): Promi
       cwd: scratch.dir,
     })
 
-    let parsed: FfprobeJson
-    try {
-      parsed = JSON.parse(res.stdout) as FfprobeJson
-    } catch (err) {
-      throw new SandboxToolError("ffprobe", {
-        timedOut: false,
-        exitCode: 0,
-        stderrTail: "unparseable ffprobe json",
-        cause: err,
-      })
-    }
-
-    const streams = parsed.streams ?? []
-    const video = streams.find((s) => s.codec_type === "video")
-    const isVideo = video !== undefined
-
-    const durationSec = num(parsed.format?.duration) || num(video?.duration)
-
-    return {
-      durationSec,
-      codec: video?.codec_name ?? null,
-      width: typeof video?.width === "number" ? video.width : null,
-      height: typeof video?.height === "number" ? video.height : null,
-      fps: frameRate(video?.avg_frame_rate, video?.r_frame_rate),
-      bitrateBps: bitrate(video?.bit_rate, parsed.format?.bit_rate),
-      isVideo,
-    }
+    return toProbeResult(parseProbeJson(res.stdout))
   } finally {
     await scratch.cleanup()
+  }
+}
+
+function parseProbeJson(stdout: string): FfprobeJson {
+  try {
+    return JSON.parse(stdout) as FfprobeJson
+  } catch (err) {
+    throw new SandboxToolError("ffprobe", {
+      timedOut: false,
+      exitCode: 0,
+      stderrTail: "unparseable ffprobe json",
+      cause: err,
+    })
+  }
+}
+
+function toProbeResult(parsed: FfprobeJson): ProbeResult {
+  const streams = parsed.streams ?? []
+  const video = streams.find((s) => s.codec_type === "video")
+  return {
+    durationSec: num(parsed.format?.duration) || num(video?.duration),
+    codec: video?.codec_name ?? null,
+    width: typeof video?.width === "number" ? video.width : null,
+    height: typeof video?.height === "number" ? video.height : null,
+    fps: frameRate(video?.avg_frame_rate, video?.r_frame_rate),
+    bitrateBps: bitrate(video?.bit_rate, parsed.format?.bit_rate),
+    isVideo: video !== undefined,
   }
 }

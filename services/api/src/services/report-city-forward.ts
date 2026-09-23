@@ -15,10 +15,16 @@ export interface CityForwardContext {
   actorDisplayName?: string | null
 }
 
-export const CITY_FORWARD_DEDUP_TTL_SECONDS = 10 * 60
-export const CITY_FORWARD_WINDOW_SECONDS = 60 * 60
+const CITY_FORWARD_DEDUP_TTL_SECONDS = 10 * 60
+const CITY_FORWARD_WINDOW_SECONDS = 60 * 60
 export const CITY_FORWARD_PER_SENDER_PER_HOUR = 3
 export const CITY_FORWARD_PER_GEOID_PER_HOUR = 20
+
+const CITY_FORWARD_KEY_PREFIX = "citfwd:"
+const dedupKey = (actorUserId: string, reportId: string, geoid: string): string =>
+  `${CITY_FORWARD_KEY_PREFIX}dedup:${actorUserId}:${reportId}:${geoid}`
+const senderKey = (actorUserId: string): string => `${CITY_FORWARD_KEY_PREFIX}user:${actorUserId}`
+const geoidKey = (geoid: string): string => `${CITY_FORWARD_KEY_PREFIX}geoid:${geoid}`
 
 export interface CityForwardResult {
   mentioned: boolean
@@ -51,18 +57,15 @@ export function makeCityForwardThrottle(
   return async (reportId, geoid, actorUserId) => {
     try {
       const dedup = await counters.incr(
-        `citfwd:dedup:${actorUserId}:${reportId}:${geoid}`,
+        dedupKey(actorUserId, reportId, geoid),
         CITY_FORWARD_DEDUP_TTL_SECONDS,
       )
       if (dedup > 1) return false
 
-      const perSender = await counters.incr(
-        `citfwd:user:${actorUserId}`,
-        CITY_FORWARD_WINDOW_SECONDS,
-      )
+      const perSender = await counters.incr(senderKey(actorUserId), CITY_FORWARD_WINDOW_SECONDS)
       if (perSender > CITY_FORWARD_PER_SENDER_PER_HOUR) return false
 
-      const perGeoid = await counters.incr(`citfwd:geoid:${geoid}`, CITY_FORWARD_WINDOW_SECONDS)
+      const perGeoid = await counters.incr(geoidKey(geoid), CITY_FORWARD_WINDOW_SECONDS)
       if (perGeoid > CITY_FORWARD_PER_GEOID_PER_HOUR) return false
 
       return true
@@ -92,17 +95,17 @@ export async function forwardReportCityMention(
   await recordMention(opts, geoid)
   const contact = jurisdiction.contactEmail
   if (contact === null || contact === "") {
-    return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
+    return mentionedNotForwarded(geoid)
   }
   const thread = await existingReportThread(outboundMail, ctx.reportId, opts.logger)
   if (thread === null) {
-    return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
+    return mentionedNotForwarded(geoid)
   }
   if (
     opts.canForward !== undefined &&
     !(await opts.canForward(ctx.reportId, geoid, ctx.actorUserId))
   ) {
-    return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
+    return mentionedNotForwarded(geoid)
   }
   const packet = buildDiscussionForwardPacket(
     {
@@ -127,11 +130,15 @@ export async function forwardReportCityMention(
     return { mentioned: true, geoid, forwarded: true, forwardedAt: createdAt }
   } catch (err) {
     opts.logger?.warn({ err, reportId: ctx.reportId, geoid }, "city forward send failed")
-    return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
+    return mentionedNotForwarded(geoid)
   }
 }
 
-export function discussionForwardSubject(threadSubject: string | null, fallback: string): string {
+function mentionedNotForwarded(geoid: string): CityForwardResult {
+  return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
+}
+
+function discussionForwardSubject(threadSubject: string | null, fallback: string): string {
   if (threadSubject === null || threadSubject.trim() === "") return fallback
   return replySubject(threadSubject)
 }
@@ -149,22 +156,34 @@ async function existingReportThread(
   }
 }
 
-async function recordMention(opts: CityForwardOptions, geoid: string): Promise<void> {
+// The audit trail is best-effort: a failed write is logged and never blocks the forward itself.
+async function writeAudit(
+  opts: CityForwardOptions,
+  geoid: string,
+  write: (audit: ReportForwardAudit, messageId: string) => Promise<unknown>,
+  failureMessage: string,
+): Promise<void> {
   if (opts.audit === undefined || opts.messageId === undefined) return
   const messageId = opts.messageId
-  await opts.audit
-    .recordMention(messageId, geoid)
-    .catch((err: unknown) =>
-      opts.logger?.warn({ err, messageId, geoid }, "city forward mention audit write failed"),
-    )
+  await write(opts.audit, messageId).catch((err: unknown) =>
+    opts.logger?.warn({ err, messageId, geoid }, failureMessage),
+  )
 }
 
-async function markForwarded(opts: CityForwardOptions, geoid: string): Promise<void> {
-  if (opts.audit === undefined || opts.messageId === undefined) return
-  const messageId = opts.messageId
-  await opts.audit
-    .markForwarded(messageId, geoid)
-    .catch((err: unknown) =>
-      opts.logger?.warn({ err, messageId, geoid }, "city forward delivery audit write failed"),
-    )
+function recordMention(opts: CityForwardOptions, geoid: string): Promise<void> {
+  return writeAudit(
+    opts,
+    geoid,
+    (audit, messageId) => audit.recordMention(messageId, geoid),
+    "city forward mention audit write failed",
+  )
+}
+
+function markForwarded(opts: CityForwardOptions, geoid: string): Promise<void> {
+  return writeAudit(
+    opts,
+    geoid,
+    (audit, messageId) => audit.markForwarded(messageId, geoid),
+    "city forward delivery audit write failed",
+  )
 }

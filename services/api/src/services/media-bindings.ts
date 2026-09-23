@@ -10,8 +10,6 @@ export const MEDIA_BINDING_RELATIONS = [
   "cleanup_page_media.media_id",
 ] as const
 
-export const MEDIA_BINDING_COLUMNS = ["report_id", "chat_message_id", "post_id"] as const
-
 export function mediaBoundElsewhere(tag: Queryable, exceptCleanupId: string | null) {
   return tag`
     EXISTS (SELECT 1 FROM users u WHERE u.avatar_media_id = media_assets.id)

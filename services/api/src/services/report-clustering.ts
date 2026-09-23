@@ -30,7 +30,10 @@ export const CLUSTER_ZOOM_THRESHOLD = 10
  * an implied zoom of 3 and can therefore NEVER reach the per-pin branch. MAP_REPORTS_CANDIDATE_CAP
  * still bounds the pin payload at 2000 rows, and the route's 60s Cache-Control is unchanged.
  */
-export const MAP_VIEWPORT_REFERENCE_TILES = 8
+const MAP_VIEWPORT_REFERENCE_TILES = 8
+
+const DEGREES_OF_LONGITUDE = 360
+const MAX_MAP_ZOOM = 22
 
 export interface MapBBox {
   west: number
@@ -47,9 +50,9 @@ export function impliedZoomForBBox(bbox: MapBBox): number {
   // The route already rejects west >= east, but a zero span would send log2 to +Infinity, i.e. no clamp.
   const span = Math.max(lngSpan, latSpan)
   if (!Number.isFinite(span) || span <= 0) return 0
-  const z = Math.log2((360 * MAP_VIEWPORT_REFERENCE_TILES) / span)
+  const z = Math.log2((DEGREES_OF_LONGITUDE * MAP_VIEWPORT_REFERENCE_TILES) / span)
   if (!Number.isFinite(z)) return 0
-  return Math.max(0, Math.min(22, Math.floor(z)))
+  return Math.max(0, Math.min(MAX_MAP_ZOOM, Math.floor(z)))
 }
 
 export function effectiveMapZoom(bbox: MapBBox, requestedZoom: number): number {
@@ -68,7 +71,7 @@ export function clusterCellSizeDeg(zoom: number): number {
   // at NaN coords, which serializes to null (a broken pin).
   const safeZoom = Number.isFinite(zoom) ? zoom : 0
   const z = Math.max(0, Math.floor(safeZoom))
-  return 360 / Math.pow(2, z + 1)
+  return DEGREES_OF_LONGITUDE / Math.pow(2, z + 1)
 }
 
 // An individual pin BEFORE its thumbnail is presigned. clusterByZoom is pure/sync and cannot reach the

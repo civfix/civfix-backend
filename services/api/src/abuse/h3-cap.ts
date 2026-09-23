@@ -15,7 +15,7 @@ export const ABUSE_H3_RES = 10
 
 export const H3_CELL_LIMIT_PER_HOUR = 30
 
-export const H3_WINDOW_SECONDS = 60 * 60
+const H3_WINDOW_SECONDS = 60 * 60
 
 const H3_COUNTER_PREFIX = "abuse:h3:"
 

@@ -5,8 +5,14 @@ import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { WorkerLimits } from "../config.js"
 import { DownloadTooLargeError, type DownloadedObject, type DownloadFn } from "../download.js"
 import { settleWithin } from "../timeout.js"
-import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from "./obs.js"
-import { readEtag } from "@civfix/api/media-repo"
+import {
+  resolveJobObs,
+  type JobObs,
+  type JobObsDeps,
+  type JobLogFn,
+  type JobReportFn,
+} from "./obs.js"
+import { MEDIA_CHECKS_JOB, readEtag } from "@civfix/api/media-repo"
 import { SandboxSpawnError } from "../sandbox/exec.js"
 import { ScratchSetupError } from "../sandbox/tmp.js"
 import { servedKey, thumbnailKey } from "./media-keys.js"
@@ -17,7 +23,7 @@ export * from "./media-pipeline.js"
 
 export type { DownloadFn }
 
-export class JobTimeoutError extends Error {
+class JobTimeoutError extends Error {
   constructor(ms: number) {
     super(`media.checks exceeded the per-job wall-clock budget of ${ms}ms`)
     this.name = "JobTimeoutError"
@@ -34,7 +40,7 @@ export class MediaInfraError extends Error {
   }
 }
 
-export function withJobTimeout<T>(p: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
+function withJobTimeout<T>(p: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
   return settleWithin(p, ms, {
     timeoutError: () => new JobTimeoutError(ms),
     ...(onTimeout ? { onElapsed: onTimeout } : {}),
@@ -52,7 +58,7 @@ export interface MediaChecksDeps extends JobObsDeps {
   publicMediaBase?: string
 }
 
-export function publicMediaUrl(base: string, key: string): string {
+function publicMediaUrl(base: string, key: string): string {
   return `${base.replace(/\/+$/, "")}/${key.replace(/^\/+/, "")}`
 }
 
@@ -89,26 +95,52 @@ export interface MediaChecksOutcome {
   reportId: string | null
 }
 
+interface RetryableFailure {
+  phase: string
+  reportPhase?: string
+  line: string
+  ids: Record<string, unknown>
+  logExtra?: Record<string, unknown>
+}
+
+// The one shape every retryable failure takes: report it, log it, and hand back the MediaInfraError the
+// caller throws. MediaInfraError is the only error allowed to leave a media.checks job, so every infra
+// branch below funnels through here rather than wrapping the whole job in a catch that would misclassify
+// a rejection as infra.
+function retryableFailure(
+  { log, report }: JobObs,
+  err: unknown,
+  failure: RetryableFailure,
+): MediaInfraError {
+  report(err, {
+    job: MEDIA_CHECKS_JOB,
+    phase: failure.reportPhase ?? failure.phase,
+    ...failure.ids,
+  })
+  log(failure.line, { ...failure.ids, ...failure.logExtra, err: String(err) })
+  return new MediaInfraError(failure.phase, err)
+}
+
 export async function runMediaChecksJobDetailed(
   payload: MediaChecksPayload,
   deps: MediaChecksDeps,
 ): Promise<MediaChecksOutcome> {
-  const { log, report } = resolveJobObs(deps)
+  const obs = resolveJobObs(deps)
 
   let asset: MediaWorkerAsset | null = null
   try {
     asset = await deps.repo.findById(payload.mediaId)
     if (!asset) asset = await deps.repo.findByUploadId(payload.uploadId)
   } catch (err) {
-    report(err, { job: "media.checks", phase: "load-infra", uploadId: payload.uploadId })
-    log("media.checks: failed to load asset, will retry", {
-      uploadId: payload.uploadId,
-      err: String(err),
+    throw retryableFailure(obs, err, {
+      phase: "load",
+      reportPhase: "load-infra",
+      line: "media.checks: failed to load asset, will retry",
+      ids: { uploadId: payload.uploadId },
     })
-    throw new MediaInfraError("load", err)
   }
   if (!asset) {
-    log("media.checks: asset not found (already swept?)", { uploadId: payload.uploadId })
+    obs.log("media.checks: asset not found (already swept?)", { uploadId: payload.uploadId })
     return { status: "missing", reportId: null }
   }
   const reportId = asset.reportId ?? null
@@ -123,15 +155,15 @@ export async function runMediaChecksJob(
   return outcome.status === "missing" ? "rejected" : outcome.status
 }
 
+type PhaseOutcome<T> = { settled: true; status: MediaStatus } | { settled: false; value: T }
+
 async function processAsset(
   asset: MediaWorkerAsset,
   payload: MediaChecksPayload,
   deps: MediaChecksDeps,
 ): Promise<MediaStatus> {
-  const { log, report } = resolveJobObs(deps)
-
   if (asset.status !== "validating") {
-    log("media.checks: asset already terminal, skipping", {
+    resolveJobObs(deps).log("media.checks: asset already terminal, skipping", {
       mediaId: asset.id,
       uploadId: asset.uploadId,
       status: asset.status,
@@ -139,6 +171,33 @@ async function processAsset(
     return asset.status
   }
 
+  const download = await downloadUpload(asset, payload, deps)
+  if (download.settled) return download.status
+  const downloaded = download.value
+
+  const processing = await runPipeline(asset, downloaded.bytes, deps)
+  if (processing.settled) return processing.status
+  const result = processing.value
+
+  const publishes = result.status !== "rejected" && result.processedBytes !== null
+  if (publishes) {
+    const drift = await uploadDriftBeforePublish(asset, downloaded.etag, deps)
+    if (drift !== null) return persistRejection(asset, deps, drift)
+  }
+
+  const { applied, uploaded } = await persistResult(asset, result, publishes, deps)
+  if (applied === null) {
+    return settleTerminalRace(asset, deps, { attempted: result.status, uploaded })
+  }
+  await afterApply(asset, result, applied, uploaded, deps)
+  return result.status
+}
+
+async function downloadUpload(
+  asset: MediaWorkerAsset,
+  payload: MediaChecksPayload,
+  deps: MediaChecksDeps,
+): Promise<PhaseOutcome<DownloadedObject>> {
   let downloaded: DownloadedObject
   const downloadAbort = new AbortController()
   try {
@@ -149,25 +208,57 @@ async function processAsset(
     )
   } catch (err) {
     if (err instanceof DownloadTooLargeError) {
-      return persistRejection(asset, deps, errNote("download too large", err))
+      return rejectedOutcome(asset, deps, errNote("download too large", err))
     }
-    report(err, { job: "media.checks", phase: "download-infra", mediaId: asset.id })
-    log("media.checks: download infra failure, will retry", {
-      mediaId: asset.id,
-      r2Key: asset.r2Key,
-      err: String(err),
+    throw retryableFailure(resolveJobObs(deps), err, {
+      phase: "download",
+      reportPhase: "download-infra",
+      line: "media.checks: download infra failure, will retry",
+      ids: { mediaId: asset.id },
+      logExtra: { r2Key: asset.r2Key },
     })
-    throw new MediaInfraError("download", err)
   }
 
-  const bytes = downloaded.bytes
   if (payload.uploadEtag && downloaded.etag && payload.uploadEtag !== downloaded.etag) {
-    return persistRejection(asset, deps, "upload object changed between finalize and processing")
+    return rejectedOutcome(asset, deps, "upload object changed between finalize and processing")
   }
+  return { settled: false, value: downloaded }
+}
 
-  let result: MediaProcessResult
+async function rejectedOutcome<T>(
+  asset: MediaWorkerAsset,
+  deps: MediaChecksDeps,
+  note: string,
+): Promise<PhaseOutcome<T>> {
+  return { settled: true, status: await persistRejection(asset, deps, note) }
+}
+
+function retryableProcessFailure(err: unknown): { phase: string; line: string } | null {
+  if (err instanceof JobTimeoutError) {
+    return { phase: "process-timeout", line: "media.checks: processing timed out, will retry" }
+  }
+  if (err instanceof SandboxSpawnError) {
+    return {
+      phase: "sandbox-spawn",
+      line: "media.checks: a decoder could not be started, will retry",
+    }
+  }
+  if (err instanceof ScratchSetupError) {
+    return {
+      phase: "scratch",
+      line: "media.checks: the sandbox scratch dir could not be prepared, will retry",
+    }
+  }
+  return null
+}
+
+async function runPipeline(
+  asset: MediaWorkerAsset,
+  bytes: Uint8Array,
+  deps: MediaChecksDeps,
+): Promise<PhaseOutcome<MediaProcessResult>> {
   try {
-    result = await withJobTimeout(
+    const result = await withJobTimeout(
       processMedia(
         { bytes, kind: asset.kind, selfAssetId: asset.id, selfReportId: asset.reportId },
         {
@@ -178,31 +269,61 @@ async function processAsset(
       ),
       deps.limits.jobTimeoutMs,
     )
+    return { settled: false, value: result }
   } catch (err) {
-    if (err instanceof JobTimeoutError) {
-      report(err, { job: "media.checks", phase: "process-timeout", mediaId: asset.id })
-      log("media.checks: processing timed out, will retry", { mediaId: asset.id, err: String(err) })
-      throw new MediaInfraError("process-timeout", err)
+    const retryable = retryableProcessFailure(err)
+    if (retryable !== null) {
+      throw retryableFailure(resolveJobObs(deps), err, { ...retryable, ids: { mediaId: asset.id } })
     }
-    if (err instanceof SandboxSpawnError) {
-      report(err, { job: "media.checks", phase: "sandbox-spawn", mediaId: asset.id })
-      log("media.checks: a decoder could not be started, will retry", {
-        mediaId: asset.id,
-        err: String(err),
-      })
-      throw new MediaInfraError("sandbox-spawn", err)
-    }
-    if (err instanceof ScratchSetupError) {
-      report(err, { job: "media.checks", phase: "scratch", mediaId: asset.id })
-      log("media.checks: the sandbox scratch dir could not be prepared, will retry", {
-        mediaId: asset.id,
-        err: String(err),
-      })
-      throw new MediaInfraError("scratch", err)
-    }
-    return persistRejection(asset, deps, errNote("process failed", err))
+    return rejectedOutcome(asset, deps, errNote("process failed", err))
   }
+}
 
+async function uploadDriftBeforePublish(
+  asset: MediaWorkerAsset,
+  downloadedEtag: string | null,
+  deps: MediaChecksDeps,
+): Promise<string | null> {
+  let current: StorageHead | null
+  try {
+    current = await deps.storage.head(asset.r2Key)
+  } catch (err) {
+    throw retryableFailure(resolveJobObs(deps), err, {
+      phase: "publish-precheck",
+      line: "media.checks: pre-publish head failed, will retry",
+      ids: { mediaId: asset.id },
+    })
+  }
+  return uploadDriftNote(current, downloadedEtag)
+}
+
+function contentTypeOption(contentType: string | null): { contentType?: string } {
+  return contentType !== null ? { contentType } : {}
+}
+
+async function putProcessedObjects(
+  asset: MediaWorkerAsset,
+  processedBytes: Buffer,
+  result: MediaProcessResult,
+  storage: Storage,
+): Promise<{ servedKey: string; thumbKey: string | null }> {
+  const sKey = servedKey(asset.r2Key)
+  const tKey = result.thumbnailBytes ? thumbnailKey(asset.r2Key) : null
+  await Promise.all([
+    storage.put(sKey, processedBytes, contentTypeOption(result.processedContentType)),
+    tKey && result.thumbnailBytes
+      ? storage.put(tKey, result.thumbnailBytes, contentTypeOption(result.thumbnailContentType))
+      : Promise.resolve(),
+  ])
+  return { servedKey: sKey, thumbKey: tKey }
+}
+
+async function persistResult(
+  asset: MediaWorkerAsset,
+  result: MediaProcessResult,
+  publishes: boolean,
+  deps: MediaChecksDeps,
+): Promise<{ applied: MediaWorkerAsset | null; uploaded: boolean }> {
   const patch: MediaResultPatch = {
     status: result.status,
     codec: result.codec,
@@ -210,50 +331,13 @@ async function processAsset(
     height: result.height,
     phash: result.phash,
   }
-
-  const publishes = result.status !== "rejected" && result.processedBytes !== null
-
-  if (publishes) {
-    let current: StorageHead | null
-    try {
-      current = await deps.storage.head(asset.r2Key)
-    } catch (err) {
-      report(err, { job: "media.checks", phase: "publish-precheck", mediaId: asset.id })
-      log("media.checks: pre-publish head failed, will retry", {
-        mediaId: asset.id,
-        err: String(err),
-      })
-      throw new MediaInfraError("publish-precheck", err)
-    }
-    const note = uploadDriftNote(current, downloaded.etag)
-    if (note !== null) {
-      return persistRejection(asset, deps, note)
-    }
-  }
-
   let uploaded = false
-  let applied: MediaWorkerAsset | null
   try {
     if (publishes && result.processedBytes) {
-      const sKey = servedKey(asset.r2Key)
-      const tKey = result.thumbnailBytes ? thumbnailKey(asset.r2Key) : null
-      await Promise.all([
-        deps.storage.put(sKey, result.processedBytes, {
-          ...(result.processedContentType !== null
-            ? { contentType: result.processedContentType }
-            : {}),
-        }),
-        tKey && result.thumbnailBytes
-          ? deps.storage.put(tKey, result.thumbnailBytes, {
-              ...(result.thumbnailContentType !== null
-                ? { contentType: result.thumbnailContentType }
-                : {}),
-            })
-          : Promise.resolve(),
-      ])
+      const keys = await putProcessedObjects(asset, result.processedBytes, result, deps.storage)
       patch.byteSize = result.processedBytes.byteLength
-      patch.servedKey = sKey
-      if (tKey) patch.thumbKey = tKey
+      patch.servedKey = keys.servedKey
+      if (keys.thumbKey) patch.thumbKey = keys.thumbKey
       uploaded = true
     }
 
@@ -261,60 +345,84 @@ async function processAsset(
       await deps.repo.insertAbuseFlag({ subjectId: asset.id, reason: flag.reason })
     }
 
-    applied = await deps.repo.applyResult(asset.id, patch)
+    return { applied: await deps.repo.applyResult(asset.id, patch), uploaded }
   } catch (err) {
-    report(err, { job: "media.checks", phase: "persist", mediaId: asset.id })
-    log("media.checks: persist infra failure, will retry", { mediaId: asset.id, err: String(err) })
-    throw new MediaInfraError("persist", err)
+    throw retryableFailure(resolveJobObs(deps), err, {
+      phase: "persist",
+      line: "media.checks: persist infra failure, will retry",
+      ids: { mediaId: asset.id },
+    })
   }
+}
 
-  if (applied === null) {
-    return settleTerminalRace(asset, deps, { attempted: result.status, uploaded })
-  }
-
+async function afterApply(
+  asset: MediaWorkerAsset,
+  result: MediaProcessResult,
+  applied: MediaWorkerAsset,
+  uploaded: boolean,
+  deps: MediaChecksDeps,
+): Promise<void> {
+  const { log, report } = resolveJobObs(deps)
   if (uploaded) {
     await deleteSupersededUpload(asset, deps, log, report)
   }
-
   if (result.status === "rejected") {
     logRejection(asset, log, report, result.note)
     await deleteRejectedObjects(asset, deps, log, report)
-  } else if (result.status === "held") {
-    log("media.checks: held", {
-      mediaId: asset.id,
-      note: result.note,
-      flags: result.flags.map((f) => f.reason),
-    })
-    if (asset.reportId && deps.repo.enqueueHeldModerationItem) {
-      await deps.repo
-        .enqueueHeldModerationItem({
-          reportId: asset.reportId,
-          reason: `NSFW model over threshold (${asset.kind})`,
-          kind: "image",
-          note: result.note ?? null,
-        })
-        .catch((err: unknown) =>
-          log("media.checks: moderation enqueue failed (non-fatal)", { err: String(err) }),
-        )
-    }
-  } else {
-    log("media.checks: ready", {
-      mediaId: asset.id,
-      kind: asset.kind,
-      width: result.width,
-      height: result.height,
-      codec: result.codec,
-      exifGpsPresent: result.exifGps !== null,
-    })
-    if (applied.servedKey && deps.publicMediaBase && deps.repo.refreshAvatarUrls) {
-      await deps.repo
-        .refreshAvatarUrls(asset.id, publicMediaUrl(deps.publicMediaBase, applied.servedKey))
-        .catch((err: unknown) =>
-          log("media.checks: avatar url refresh failed (non-fatal)", { err: String(err) }),
-        )
-    }
+    return
   }
-  return result.status
+  if (result.status === "held") {
+    await onHeld(asset, result, deps, log)
+    return
+  }
+  await onReady(asset, result, applied, deps, log)
+}
+
+async function onHeld(
+  asset: MediaWorkerAsset,
+  result: MediaProcessResult,
+  deps: MediaChecksDeps,
+  log: JobLogFn,
+): Promise<void> {
+  log("media.checks: held", {
+    mediaId: asset.id,
+    note: result.note,
+    flags: result.flags.map((f) => f.reason),
+  })
+  if (!asset.reportId || !deps.repo.enqueueHeldModerationItem) return
+  await deps.repo
+    .enqueueHeldModerationItem({
+      reportId: asset.reportId,
+      reason: `NSFW model over threshold (${asset.kind})`,
+      kind: "image",
+      note: result.note ?? null,
+    })
+    .catch((err: unknown) =>
+      log("media.checks: moderation enqueue failed (non-fatal)", { err: String(err) }),
+    )
+}
+
+async function onReady(
+  asset: MediaWorkerAsset,
+  result: MediaProcessResult,
+  applied: MediaWorkerAsset,
+  deps: MediaChecksDeps,
+  log: JobLogFn,
+): Promise<void> {
+  log("media.checks: ready", {
+    mediaId: asset.id,
+    kind: asset.kind,
+    width: result.width,
+    height: result.height,
+    codec: result.codec,
+    exifGpsPresent: result.exifGps !== null,
+  })
+  if (!applied.servedKey || !deps.publicMediaBase || !deps.repo.refreshAvatarUrls) return
+  await deps.repo
+    .refreshAvatarUrls(asset.id, publicMediaUrl(deps.publicMediaBase, applied.servedKey))
+    .catch((err: unknown) =>
+      log("media.checks: avatar url refresh failed (non-fatal)", { err: String(err) }),
+    )
 }
 
 async function settleTerminalRace(
@@ -330,7 +438,7 @@ async function settleTerminalRace(
     current = await deps.repo.findById(asset.id)
   } catch (err) {
     reread = false
-    report(err, { job: "media.checks", phase: "terminal-race-reread", mediaId: asset.id })
+    report(err, { job: MEDIA_CHECKS_JOB, phase: "terminal-race-reread", mediaId: asset.id })
   }
 
   const winner = current?.status ?? null
@@ -348,7 +456,7 @@ async function settleTerminalRace(
         new Error(
           "media.checks re-uploaded bytes for an already-terminal asset it could not re-read",
         ),
-        { job: "media.checks", phase: "terminal-race", mediaId: asset.id, r2Key: asset.r2Key },
+        { job: MEDIA_CHECKS_JOB, phase: "terminal-race", mediaId: asset.id, r2Key: asset.r2Key },
       )
     } else if (winner === null || winner === "rejected") {
       await deleteRejectedObjects(
@@ -383,30 +491,30 @@ function logRejection(
 ): void {
   log("media.checks: rejected", { mediaId: asset.id, kind: asset.kind, note })
   report(new Error(note ?? "media rejected"), {
-    job: "media.checks",
+    job: MEDIA_CHECKS_JOB,
     mediaId: asset.id,
     kind: asset.kind,
     note,
   })
 }
 
-export async function persistRejection(
+async function persistRejection(
   asset: MediaWorkerAsset,
   deps: MediaChecksDeps,
   note: string,
 ): Promise<MediaStatus> {
-  const { log, report } = resolveJobObs(deps)
+  const obs = resolveJobObs(deps)
+  const { log, report } = obs
   let applied: MediaWorkerAsset | null
   try {
     applied = await deps.repo.applyResult(asset.id, { status: "rejected" })
   } catch (err) {
-    report(err, { job: "media.checks", phase: "reject", mediaId: asset.id })
-    log("media.checks: failed to persist rejection, will retry", {
-      mediaId: asset.id,
-      note,
-      err: String(err),
+    throw retryableFailure(obs, err, {
+      phase: "reject",
+      line: "media.checks: failed to persist rejection, will retry",
+      ids: { mediaId: asset.id },
+      logExtra: { note },
     })
-    throw new MediaInfraError("reject", err)
   }
   if (applied === null) {
     return settleTerminalRace(asset, deps, { attempted: "rejected", uploaded: false })

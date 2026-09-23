@@ -40,6 +40,9 @@ export interface BuildSeamsOptions {
 // can redirect every seam's output at once instead of each adapter choosing its own console fallback.
 const defaultSeamLog: JobLogFn = (line, extra) => console.warn(line, extra ?? {})
 
+const DEFAULT_NODE_ENV = "development"
+const DEFAULT_SERVICE_VERSION = "0.0.0"
+
 export async function buildSeams(
   source: NodeJS.ProcessEnv = process.env,
   options: BuildSeamsOptions = {},
@@ -61,41 +64,19 @@ export async function buildSeams(
 
   await initErrorReporting({
     ...(source.GLITCHTIP_DSN ? { dsn: source.GLITCHTIP_DSN } : {}),
-    environment: source.NODE_ENV ?? "development",
-    release: `media-worker@${source.SERVICE_VERSION ?? "0.0.0"}`,
+    environment: source.NODE_ENV ?? DEFAULT_NODE_ENV,
+    release: `media-worker@${source.SERVICE_VERSION ?? DEFAULT_SERVICE_VERSION}`,
   })
 
   const localStorageDir = (source.LOCAL_STORAGE_DIR ?? "").trim()
   const storage: Storage =
     localStorageDir.length > 0
-      ? new LocalDiskStorage({
-          rootDirectory: localStorageDir,
-          namespace: "media",
-          publicApiUrl: req(source, "PUBLIC_API_URL"),
-          signingKey:
-            (source.LOCAL_STORAGE_SIGNING_KEY ?? "").trim() || LOCAL_STORAGE_DEV_SIGNING_KEY,
-          nodeEnv: source.NODE_ENV ?? "development",
-        })
+      ? localDiskStorage(source, localStorageDir, "media")
       : fakeStorage
         ? new FakeStorage()
-        : new R2Storage({
-            accountId: req(source, "R2_ACCOUNT_ID"),
-            accessKeyId: req(source, "R2_ACCESS_KEY_ID"),
-            secretAccessKey: req(source, "R2_SECRET_ACCESS_KEY"),
-            bucket: req(source, "R2_BUCKET"),
-          })
+        : r2Storage(source, () => req(source, "R2_BUCKET"))
 
-  let dbHandle: DbHandle | undefined
-  let repo: MediaWorkerRepo | undefined
-  let anonHoldRepo: AnonHoldReleaseRepo | undefined
-  const databaseUrl = (source.DATABASE_URL ?? "").trim()
-  if (databaseUrl) {
-    dbHandle = makeDb(databaseUrl)
-    repo = makeDrizzleMediaWorkerRepo(dbHandle.db, dbHandle.sql)
-    anonHoldRepo = makeDrizzleAnonHoldReleaseRepo(dbHandle.sql)
-  } else if (source.NODE_ENV === "production") {
-    throw new Error("media-worker: DATABASE_URL is required in production to persist media results")
-  }
+  const { dbHandle, repo, anonHoldRepo } = buildDbSeams(source)
 
   const findPhashDuplicate: FindPhashDuplicateFn | undefined = dbHandle
     ? makePhashDuplicateLookup(dbHandle)
@@ -107,36 +88,11 @@ export async function buildSeams(
 
   const download = makeDownloader(storage)
 
-  const inboundBucket =
-    (source.R2_INBOUND_BUCKET ?? "").trim() ||
-    ((source.R2_PUBLIC_BASE ?? "").trim().length === 0 ? (source.R2_BUCKET ?? "").trim() : "")
-  const usesR2 = localStorageDir.length === 0 && !fakeStorage
-  if (usesR2 && inboundBucket.length === 0) {
-    console.warn(
-      "media-worker: no R2_INBOUND_BUCKET (and R2_PUBLIC_BASE is set), so the inbound-email retention " +
-        "lane is DISABLED and archived inbound_emails rows are kept. Set R2_INBOUND_BUCKET to the same " +
-        "bucket the API writes inbound mail to.",
-    )
-  }
-  const inboundStorage: Storage | undefined = usesR2
-    ? inboundBucket.length === 0
-      ? undefined
-      : new R2Storage({
-          accountId: req(source, "R2_ACCOUNT_ID"),
-          accessKeyId: req(source, "R2_ACCESS_KEY_ID"),
-          secretAccessKey: req(source, "R2_SECRET_ACCESS_KEY"),
-          bucket: inboundBucket,
-        })
-    : localStorageDir.length > 0
-      ? new LocalDiskStorage({
-          rootDirectory: localStorageDir,
-          namespace: "inbound",
-          publicApiUrl: req(source, "PUBLIC_API_URL"),
-          signingKey:
-            (source.LOCAL_STORAGE_SIGNING_KEY ?? "").trim() || LOCAL_STORAGE_DEV_SIGNING_KEY,
-          nodeEnv: source.NODE_ENV ?? "development",
-        })
-      : storage
+  const inboundStorage = buildInboundStorage(source, {
+    storage,
+    localStorageDir,
+    usesR2: localStorageDir.length === 0 && !fakeStorage,
+  })
 
   const publicMediaBaseRaw = (source.R2_PUBLIC_BASE ?? "").trim()
 
@@ -157,6 +113,71 @@ export async function buildSeams(
       await flushErrorReporting()
     },
   }
+}
+
+function localDiskStorage(
+  source: NodeJS.ProcessEnv,
+  rootDirectory: string,
+  namespace: "media" | "inbound",
+): LocalDiskStorage {
+  return new LocalDiskStorage({
+    rootDirectory,
+    namespace,
+    publicApiUrl: req(source, "PUBLIC_API_URL"),
+    signingKey: (source.LOCAL_STORAGE_SIGNING_KEY ?? "").trim() || LOCAL_STORAGE_DEV_SIGNING_KEY,
+    nodeEnv: source.NODE_ENV ?? DEFAULT_NODE_ENV,
+  })
+}
+
+// The bucket is resolved after the credentials so a missing credential is the error reported first.
+function r2Storage(source: NodeJS.ProcessEnv, bucket: () => string): R2Storage {
+  return new R2Storage({
+    accountId: req(source, "R2_ACCOUNT_ID"),
+    accessKeyId: req(source, "R2_ACCESS_KEY_ID"),
+    secretAccessKey: req(source, "R2_SECRET_ACCESS_KEY"),
+    bucket: bucket(),
+  })
+}
+
+function buildDbSeams(
+  source: NodeJS.ProcessEnv,
+): Pick<WorkerSeams, "dbHandle" | "repo" | "anonHoldRepo"> {
+  const databaseUrl = (source.DATABASE_URL ?? "").trim()
+  if (databaseUrl) {
+    const dbHandle = makeDb(databaseUrl)
+    return {
+      dbHandle,
+      repo: makeDrizzleMediaWorkerRepo(dbHandle.db, dbHandle.sql),
+      anonHoldRepo: makeDrizzleAnonHoldReleaseRepo(dbHandle.sql),
+    }
+  }
+  if (source.NODE_ENV === "production") {
+    throw new Error("media-worker: DATABASE_URL is required in production to persist media results")
+  }
+  return { dbHandle: undefined, repo: undefined, anonHoldRepo: undefined }
+}
+
+function buildInboundStorage(
+  source: NodeJS.ProcessEnv,
+  media: { storage: Storage; localStorageDir: string; usesR2: boolean },
+): Storage | undefined {
+  const inboundBucket =
+    (source.R2_INBOUND_BUCKET ?? "").trim() ||
+    ((source.R2_PUBLIC_BASE ?? "").trim().length === 0 ? (source.R2_BUCKET ?? "").trim() : "")
+  if (media.usesR2 && inboundBucket.length === 0) {
+    console.warn(
+      "media-worker: no R2_INBOUND_BUCKET (and R2_PUBLIC_BASE is set), so the inbound-email retention " +
+        "lane is DISABLED and archived inbound_emails rows are kept. Set R2_INBOUND_BUCKET to the same " +
+        "bucket the API writes inbound mail to.",
+    )
+  }
+  if (media.usesR2) {
+    return inboundBucket.length === 0 ? undefined : r2Storage(source, () => inboundBucket)
+  }
+  if (media.localStorageDir.length > 0) {
+    return localDiskStorage(source, media.localStorageDir, "inbound")
+  }
+  return media.storage
 }
 
 function req(source: NodeJS.ProcessEnv, key: string): string {

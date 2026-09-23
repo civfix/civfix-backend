@@ -1,7 +1,11 @@
+const THUMBNAIL_PREFIX = "thumbs/"
+const THUMBNAIL_SUFFIX = ".jpg"
+const SERVED_PREFIX = "processed/"
+
 export function thumbnailKey(r2Key: string): string {
-  return `thumbs/${r2Key}.jpg`
+  return `${THUMBNAIL_PREFIX}${r2Key}${THUMBNAIL_SUFFIX}`
 }
 
 export function servedKey(r2Key: string): string {
-  return `processed/${r2Key}`
+  return `${SERVED_PREFIX}${r2Key}`
 }

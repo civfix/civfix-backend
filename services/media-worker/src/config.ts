@@ -1,9 +1,11 @@
 import { dirname, join } from "node:path"
 import { MAX_VIDEO_BYTES } from "@civfix/shared"
 
+const TRUTHY_FLAG_VALUES = ["1", "true", "yes", "on"]
+
 export function parseBool(raw: string | undefined, fallback: boolean): boolean {
   if (raw === undefined || raw === "") return fallback
-  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase())
+  return TRUTHY_FLAG_VALUES.includes(raw.trim().toLowerCase())
 }
 
 export function assertRealSeamInProd(
@@ -86,12 +88,14 @@ export function loadSandboxIdentity(
   return null
 }
 
+const IMAGE_LANE_ENTRY_FILE = "image-lane.js"
+
 export function loadImageLaneEntry(source: NodeJS.ProcessEnv = process.env): string {
   const configured = (source.MEDIA_IMAGE_LANE_ENTRY ?? "").trim()
   if (configured) return configured
   const entry = process.argv[1]
   const dir = entry === undefined ? process.cwd() : dirname(entry)
-  return join(dir, "image-lane.js")
+  return join(dir, IMAGE_LANE_ENTRY_FILE)
 }
 
 export function loadHttpsProxy(source: NodeJS.ProcessEnv = process.env): string | null {
@@ -102,6 +106,34 @@ export function loadHttpsProxy(source: NodeJS.ProcessEnv = process.env): string 
 export const ALLOWED_VIDEO_CODECS: ReadonlySet<string> = new Set(["h264", "hevc"])
 
 const ONE_MB = 1024 * 1024
+const HOUR_MS = 60 * 60 * 1000
+
+const DEFAULT_LIMITS = {
+  maxImagePixels: 24_000_000,
+  sharpPixelLimit: 32_000_000,
+  maxChildOutputBytes: MAX_VIDEO_BYTES + ONE_MB,
+  maxToolStdoutBytes: ONE_MB,
+  ffprobeTimeoutMs: 10_000,
+  ffmpegTimeoutMs: 30_000,
+  imageTimeoutMs: 15_000,
+  jobTimeoutMs: 90_000,
+  maxVideoDurationSec: 30,
+  maxVideoPixels: 3840 * 2160,
+  maxVideoFps: 120,
+  maxVideoBitrateBps: 50_000_000,
+  thumbnailMaxEdge: 400,
+  nsfwHoldThreshold: 0.8,
+  mediaChecksConcurrency: 2,
+  orphanTtlMs: 6 * HOUR_MS,
+  orphanSweepBatch: 1000,
+  orphanSweepMaxPages: 50,
+  holdReleaseSweepBatch: 200,
+  retentionSweepBatch: 5000,
+  retentionSweepMaxPages: 20,
+  stuckMediaTtlMs: HOUR_MS,
+  stuckSweepBatch: 500,
+  stuckSweepMaxAttempts: 5,
+} as const
 
 const IMAGE_LANE_SPAWN_OVERHEAD_MS = 5_000
 
@@ -130,32 +162,65 @@ function assertImageLaneFitsJobBudget(limits: WorkerLimits): void {
 export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimits {
   const limits: WorkerLimits = {
     maxDownloadBytes: parsePosInt(source.MEDIA_MAX_DOWNLOAD_BYTES, MAX_VIDEO_BYTES),
-    maxImagePixels: parsePosInt(source.MEDIA_MAX_IMAGE_PIXELS, 24_000_000),
-    sharpPixelLimit: parsePosInt(source.MEDIA_SHARP_PIXEL_LIMIT, 32_000_000),
-    maxChildOutputBytes: parsePosInt(source.MEDIA_MAX_CHILD_OUTPUT_BYTES, MAX_VIDEO_BYTES + ONE_MB),
-    maxToolStdoutBytes: parsePosInt(source.MEDIA_MAX_TOOL_STDOUT_BYTES, ONE_MB),
-    ffprobeTimeoutMs: parsePosInt(source.MEDIA_FFPROBE_TIMEOUT_MS, 10_000),
-    ffmpegTimeoutMs: parsePosInt(source.MEDIA_FFMPEG_TIMEOUT_MS, 30_000),
-    imageTimeoutMs: parsePosInt(source.MEDIA_IMAGE_TIMEOUT_MS, 15_000),
-    jobTimeoutMs: parsePosInt(source.MEDIA_JOB_TIMEOUT_MS, 90_000),
-    maxVideoDurationSec: parsePosInt(source.MEDIA_MAX_VIDEO_DURATION_SEC, 30),
-    maxVideoPixels: parsePosInt(source.MEDIA_VIDEO_MAX_PIXELS, 3840 * 2160),
-    maxVideoFps: parsePosInt(source.MEDIA_VIDEO_MAX_FPS, 120),
-    maxVideoBitrateBps: parsePosInt(source.MEDIA_VIDEO_MAX_BITRATE, 50_000_000),
-    thumbnailMaxEdge: parsePosInt(source.MEDIA_THUMBNAIL_MAX_EDGE, 400),
-    nsfwHoldThreshold: clampUnit(source.MEDIA_NSFW_HOLD_THRESHOLD, 0.8),
+    maxImagePixels: parsePosInt(source.MEDIA_MAX_IMAGE_PIXELS, DEFAULT_LIMITS.maxImagePixels),
+    sharpPixelLimit: parsePosInt(source.MEDIA_SHARP_PIXEL_LIMIT, DEFAULT_LIMITS.sharpPixelLimit),
+    maxChildOutputBytes: parsePosInt(
+      source.MEDIA_MAX_CHILD_OUTPUT_BYTES,
+      DEFAULT_LIMITS.maxChildOutputBytes,
+    ),
+    maxToolStdoutBytes: parsePosInt(
+      source.MEDIA_MAX_TOOL_STDOUT_BYTES,
+      DEFAULT_LIMITS.maxToolStdoutBytes,
+    ),
+    ffprobeTimeoutMs: parsePosInt(source.MEDIA_FFPROBE_TIMEOUT_MS, DEFAULT_LIMITS.ffprobeTimeoutMs),
+    ffmpegTimeoutMs: parsePosInt(source.MEDIA_FFMPEG_TIMEOUT_MS, DEFAULT_LIMITS.ffmpegTimeoutMs),
+    imageTimeoutMs: parsePosInt(source.MEDIA_IMAGE_TIMEOUT_MS, DEFAULT_LIMITS.imageTimeoutMs),
+    jobTimeoutMs: parsePosInt(source.MEDIA_JOB_TIMEOUT_MS, DEFAULT_LIMITS.jobTimeoutMs),
+    maxVideoDurationSec: parsePosInt(
+      source.MEDIA_MAX_VIDEO_DURATION_SEC,
+      DEFAULT_LIMITS.maxVideoDurationSec,
+    ),
+    maxVideoPixels: parsePosInt(source.MEDIA_VIDEO_MAX_PIXELS, DEFAULT_LIMITS.maxVideoPixels),
+    maxVideoFps: parsePosInt(source.MEDIA_VIDEO_MAX_FPS, DEFAULT_LIMITS.maxVideoFps),
+    maxVideoBitrateBps: parsePosInt(
+      source.MEDIA_VIDEO_MAX_BITRATE,
+      DEFAULT_LIMITS.maxVideoBitrateBps,
+    ),
+    thumbnailMaxEdge: parsePosInt(source.MEDIA_THUMBNAIL_MAX_EDGE, DEFAULT_LIMITS.thumbnailMaxEdge),
+    nsfwHoldThreshold: clampUnit(
+      source.MEDIA_NSFW_HOLD_THRESHOLD,
+      DEFAULT_LIMITS.nsfwHoldThreshold,
+    ),
     nsfwUnscoredPolicy:
       source.MEDIA_UNSCORED_POLICY?.trim().toLowerCase() === "hold" ? "hold" : "flag",
-    mediaChecksConcurrency: parsePosInt(source.MEDIA_CHECKS_CONCURRENCY, 2),
-    orphanTtlMs: parsePosInt(source.MEDIA_ORPHAN_TTL_MS, 6 * 60 * 60 * 1000),
-    orphanSweepBatch: parsePosInt(source.MEDIA_ORPHAN_SWEEP_BATCH, 1000),
-    orphanSweepMaxPages: parsePosInt(source.MEDIA_ORPHAN_SWEEP_MAX_PAGES, 50),
-    holdReleaseSweepBatch: parsePosInt(source.MEDIA_HOLD_RELEASE_SWEEP_BATCH, 200),
-    retentionSweepBatch: parsePosInt(source.RETENTION_SWEEP_BATCH, 5000),
-    retentionSweepMaxPages: parsePosInt(source.RETENTION_SWEEP_MAX_PAGES, 20),
-    stuckMediaTtlMs: parsePosInt(source.MEDIA_STUCK_TTL_MS, 60 * 60 * 1000),
-    stuckSweepBatch: parsePosInt(source.MEDIA_STUCK_SWEEP_BATCH, 500),
-    stuckSweepMaxAttempts: parsePosInt(source.MEDIA_STUCK_SWEEP_MAX_ATTEMPTS, 5),
+    mediaChecksConcurrency: parsePosInt(
+      source.MEDIA_CHECKS_CONCURRENCY,
+      DEFAULT_LIMITS.mediaChecksConcurrency,
+    ),
+    orphanTtlMs: parsePosInt(source.MEDIA_ORPHAN_TTL_MS, DEFAULT_LIMITS.orphanTtlMs),
+    orphanSweepBatch: parsePosInt(source.MEDIA_ORPHAN_SWEEP_BATCH, DEFAULT_LIMITS.orphanSweepBatch),
+    orphanSweepMaxPages: parsePosInt(
+      source.MEDIA_ORPHAN_SWEEP_MAX_PAGES,
+      DEFAULT_LIMITS.orphanSweepMaxPages,
+    ),
+    holdReleaseSweepBatch: parsePosInt(
+      source.MEDIA_HOLD_RELEASE_SWEEP_BATCH,
+      DEFAULT_LIMITS.holdReleaseSweepBatch,
+    ),
+    retentionSweepBatch: parsePosInt(
+      source.RETENTION_SWEEP_BATCH,
+      DEFAULT_LIMITS.retentionSweepBatch,
+    ),
+    retentionSweepMaxPages: parsePosInt(
+      source.RETENTION_SWEEP_MAX_PAGES,
+      DEFAULT_LIMITS.retentionSweepMaxPages,
+    ),
+    stuckMediaTtlMs: parsePosInt(source.MEDIA_STUCK_TTL_MS, DEFAULT_LIMITS.stuckMediaTtlMs),
+    stuckSweepBatch: parsePosInt(source.MEDIA_STUCK_SWEEP_BATCH, DEFAULT_LIMITS.stuckSweepBatch),
+    stuckSweepMaxAttempts: parsePosInt(
+      source.MEDIA_STUCK_SWEEP_MAX_ATTEMPTS,
+      DEFAULT_LIMITS.stuckSweepMaxAttempts,
+    ),
   }
   assertImageLaneFitsJobBudget(limits)
   return limits

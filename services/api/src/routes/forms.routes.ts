@@ -13,13 +13,18 @@ import { sanitizeHeaderValue } from "../adapters/mail-text.js"
 import { parse } from "./_validate.js"
 import { exposeMessage } from "../errors/exposed-message.js"
 
-export const HOME_TURF_RATE_LIMIT = perHost({ max: 5, timeWindow: "1 minute" })
+const HOME_TURF_REQUESTS_PER_MINUTE = 5
 
-export const HOME_TURF_BODY_LIMIT = 16384
+export const HOME_TURF_RATE_LIMIT = perHost({
+  max: HOME_TURF_REQUESTS_PER_MINUTE,
+  timeWindow: "1 minute",
+})
+
+const HOME_TURF_BODY_LIMIT = 16384
 
 export const HOME_TURF_IP_LIMIT_PER_HOUR = 10
 
-export const HOME_TURF_IP_WINDOW_SECONDS = 60 * 60
+const HOME_TURF_IP_WINDOW_SECONDS = 60 * 60
 
 const HOME_TURF_IP_COUNTER_PREFIX = "abuse:home-turf:ip:"
 
@@ -27,7 +32,14 @@ const HOME_TURF_EMAIL_COUNTER_PREFIX = "abuse:home-turf:email:"
 
 export const HOME_TURF_EMAIL_LIMIT_PER_DAY = 1
 
-export const HOME_TURF_EMAIL_WINDOW_SECONDS = 24 * 60 * 60
+const HOME_TURF_EMAIL_WINDOW_SECONDS = 24 * 60 * 60
+
+const MAX_EMAIL_LENGTH = 254
+const MAX_NOTES_LENGTH = 2000
+const MAX_TOKEN_LENGTH = 4096
+const GMAIL_DOMAIN = "gmail.com"
+const GOOGLEMAIL_DOMAIN = "googlemail.com"
+const OK_BODY = { ok: true } as const
 
 export interface HomeTurfOverrides {
   counters?: CounterStore
@@ -46,11 +58,11 @@ const HomeTurfFormSchema = z
     school: z.string().trim().min(1).max(160),
     city: z.string().trim().min(1).max(120),
     teamSize: z.string().trim().min(1).max(30),
-    email: z.string().trim().max(254).email(),
+    email: z.string().trim().max(MAX_EMAIL_LENGTH).email(),
     phone: z.string().trim().min(1).max(40),
-    notes: z.string().trim().max(2000).optional(),
-    turnstileToken: z.string().min(1).max(4096),
-    honeypot: z.string().max(4096).optional(),
+    notes: z.string().trim().max(MAX_NOTES_LENGTH).optional(),
+    turnstileToken: z.string().min(1).max(MAX_TOKEN_LENGTH),
+    honeypot: z.string().max(MAX_TOKEN_LENGTH).optional(),
   })
   .strict()
 
@@ -67,7 +79,7 @@ export async function enforceHomeTurfIpCap(
   }
 }
 
-export function canonicalizeHomeTurfEmail(email: string): string {
+function canonicalizeHomeTurfEmail(email: string): string {
   const trimmed = email.trim().toLowerCase()
   const at = trimmed.lastIndexOf("@")
   if (at <= 0 || at === trimmed.length - 1) return trimmed
@@ -75,8 +87,8 @@ export function canonicalizeHomeTurfEmail(email: string): string {
   let domain = trimmed.slice(at + 1)
   const plus = local.indexOf("+")
   if (plus !== -1) local = local.slice(0, plus)
-  if (domain === "googlemail.com") domain = "gmail.com"
-  if (domain === "gmail.com") local = local.replace(/\./g, "")
+  if (domain === GOOGLEMAIL_DOMAIN) domain = GMAIL_DOMAIN
+  if (domain === GMAIL_DOMAIN) local = local.replace(/\./g, "")
   return `${local}@${domain}`
 }
 
@@ -154,7 +166,7 @@ export async function registerHomeTurfRoutes(
           { ip: request.ip },
           "home-turf form: honeypot tripped; fake success, no mail",
         )
-        return reply.status(200).send({ ok: true })
+        return reply.status(200).send(OK_BODY)
       }
 
       const notifyTo = requireNotifyTo()
@@ -169,7 +181,7 @@ export async function registerHomeTurfRoutes(
         request.log.info(
           "home-turf form: recipient confirmation cap reached; staff notified, confirmation skipped",
         )
-        return reply.status(200).send({ ok: true })
+        return reply.status(200).send(OK_BODY)
       }
 
       try {
@@ -181,7 +193,7 @@ export async function registerHomeTurfRoutes(
         )
       }
 
-      return reply.status(200).send({ ok: true })
+      return reply.status(200).send(OK_BODY)
     },
   )
 }

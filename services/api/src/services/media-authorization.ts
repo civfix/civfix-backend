@@ -23,18 +23,17 @@ export function makeUnboundOnlyMediaViewAuthorizer(
 ): MediaViewAuthorizer {
   return {
     authorize(asset: MediaAssetView): Promise<MediaAccessDecision> {
-      if (asset.purpose === "verification") return Promise.resolve(DENY)
-      if (
-        asset.purpose === "event_cover" ||
-        asset.purpose === "event_gallery" ||
-        asset.purpose === "org_logo"
-      ) {
+      if (asset.purpose === "verification" || isEntityBoundPurpose(asset.purpose)) {
         return Promise.resolve(DENY)
       }
       if (asset.reportId || asset.chatMessageId || asset.postId) return Promise.resolve(DENY)
       return Promise.resolve(withinGrace(asset.createdAt, now()) ? ALLOW_PRIVATE : DENY)
     },
   }
+}
+
+function isEntityBoundPurpose(purpose: MediaAssetView["purpose"]): boolean {
+  return purpose === "event_cover" || purpose === "event_gallery" || purpose === "org_logo"
 }
 
 function withinGrace(createdAt: Date | null | undefined, now: Date): boolean {
@@ -85,12 +84,7 @@ export async function authorizeChatBound(
   const dm = dmRows[0]
   if (dm) {
     if (dm.deleted_at !== null) return DENY
-    const member = await sql<{ ok: number }[]>`
-      SELECT 1 AS ok FROM dm_threads
-      WHERE id = ${dm.thread_id} AND (user_lo = ${viewerId} OR user_hi = ${viewerId})
-      LIMIT 1
-    `
-    return member.length > 0 ? ALLOW_PRIVATE : DENY
+    return authorizeDmThread(sql, dm.thread_id, viewerId)
   }
 
   const chatRows = await sql<
@@ -106,35 +100,56 @@ export async function authorizeChatBound(
   `
   const msg = chatRows[0]
   if (!msg || msg.deleted_at !== null) return DENY
-
-  if (msg.cleanup_id !== null) {
-    const member = await sql<{ ok: number }[]>`
-      SELECT 1 AS ok FROM cleanup_members
-      WHERE cleanup_id = ${msg.cleanup_id} AND user_id = ${viewerId} LIMIT 1
-    `
-    return member.length > 0 ? ALLOW_PRIVATE : DENY
+  if (msg.cleanup_id !== null) return authorizeCleanupRoom(sql, msg.cleanup_id, viewerId)
+  if (msg.group_id !== null) return authorizeGroupRoom(sql, msg.group_id, viewerId)
+  if (msg.report_id !== null) {
+    const { allowed } = await authorizeReportBound(sql, msg.report_id, viewerId)
+    return allowed ? ALLOW_PRIVATE : DENY
   }
+  return DENY
+}
 
-  if (msg.group_id !== null) {
-    const rows = await sql<{ visibility: string; is_member: boolean }[]>`
+async function authorizeDmThread(
+  sql: Sql,
+  threadId: string,
+  viewerId: string,
+): Promise<MediaAccessDecision> {
+  const member = await sql<{ ok: number }[]>`
+      SELECT 1 AS ok FROM dm_threads
+      WHERE id = ${threadId} AND (user_lo = ${viewerId} OR user_hi = ${viewerId})
+      LIMIT 1
+    `
+  return member.length > 0 ? ALLOW_PRIVATE : DENY
+}
+
+async function authorizeCleanupRoom(
+  sql: Sql,
+  cleanupId: string,
+  viewerId: string,
+): Promise<MediaAccessDecision> {
+  const member = await sql<{ ok: number }[]>`
+      SELECT 1 AS ok FROM cleanup_members
+      WHERE cleanup_id = ${cleanupId} AND user_id = ${viewerId} LIMIT 1
+    `
+  return member.length > 0 ? ALLOW_PRIVATE : DENY
+}
+
+async function authorizeGroupRoom(
+  sql: Sql,
+  groupId: string,
+  viewerId: string,
+): Promise<MediaAccessDecision> {
+  const rows = await sql<{ visibility: string; is_member: boolean }[]>`
       SELECT g.visibility,
              EXISTS (
                SELECT 1 FROM chat_group_members m
                WHERE m.group_id = g.id AND m.user_id = ${viewerId}
              ) AS is_member
-      FROM chat_groups g WHERE g.id = ${msg.group_id} LIMIT 1
+      FROM chat_groups g WHERE g.id = ${groupId} LIMIT 1
     `
-    const group = rows[0]
-    if (!group) return DENY
-    return group.is_member || group.visibility === "public" ? ALLOW_PRIVATE : DENY
-  }
-
-  if (msg.report_id !== null) {
-    const visible = await reportVisible(sql, msg.report_id, viewerId)
-    return visible ? ALLOW_PRIVATE : DENY
-  }
-
-  return DENY
+  const group = rows[0]
+  if (!group) return DENY
+  return group.is_member || group.visibility === "public" ? ALLOW_PRIVATE : DENY
 }
 
 export async function authorizeEventBound(
@@ -213,15 +228,6 @@ export async function authorizeReportBound(
   if (isPubliclyVisibleStatus(report.status) && report.visibility === "public") return ALLOW_PUBLIC
   if (viewerId !== null && report.reporter_user_id === viewerId) return ALLOW_PRIVATE
   return DENY
-}
-
-async function reportVisible(
-  sql: Sql,
-  reportId: string,
-  viewerId: string | null,
-): Promise<boolean> {
-  const decision = await authorizeReportBound(sql, reportId, viewerId)
-  return decision.allowed
 }
 
 async function authorizeUnbound(

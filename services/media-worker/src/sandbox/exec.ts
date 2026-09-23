@@ -1,7 +1,15 @@
 import { dirname } from "node:path"
 import { tmpdir } from "node:os"
 import { execa, type Options as ExecaOptions } from "execa"
-import { CHILD_KILL_SIGNAL, loadSandboxIdentity, type SandboxIdentity } from "../config.js"
+import {
+  CHILD_KILL_SIGNAL,
+  loadSandboxIdentity,
+  parseBool,
+  type SandboxIdentity,
+} from "../config.js"
+
+const STDERR_TAIL_CHARS = 800
+const SANDBOX_LOCALE = "C"
 
 export interface RunResult {
   stdout: string
@@ -121,13 +129,8 @@ export function dropBoundingSet(source?: NodeJS.ProcessEnv): boolean {
   return cachedDropBounding
 }
 
-export function resetDropBoundingSet(): void {
-  cachedDropBounding = undefined
-}
-
-export function parseDropBounding(source: NodeJS.ProcessEnv): boolean {
-  const raw = (source.MEDIA_SANDBOX_DROP_BOUNDING ?? "").trim().toLowerCase()
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on"
+function parseDropBounding(source: NodeJS.ProcessEnv): boolean {
+  return parseBool(source.MEDIA_SANDBOX_DROP_BOUNDING, false)
 }
 
 export function sandboxEnv(binaryPath: string, cwd: string): Record<string, string> {
@@ -135,7 +138,7 @@ export function sandboxEnv(binaryPath: string, cwd: string): Record<string, stri
     PATH: dirname(binaryPath),
     HOME: cwd,
     TMPDIR: cwd,
-    LANG: "C",
+    LANG: SANDBOX_LOCALE,
   }
 }
 
@@ -155,14 +158,14 @@ export function killAllSandboxChildren(): void {
 function killProcessGroup(pid: number | undefined): void {
   if (pid === undefined || pid <= 0) return
   try {
-    process.kill(-pid, "SIGKILL")
+    process.kill(-pid, CHILD_KILL_SIGNAL)
   } catch (ignored) {
     // ESRCH: the group already exited, which is the state this call exists to reach.
     void ignored
   }
 }
 
-function tail(s: string, n = 800): string {
+function tail(s: string, n = STDERR_TAIL_CHARS): string {
   return s.length <= n ? s : s.slice(s.length - n)
 }
 
@@ -190,7 +193,7 @@ export async function runTool(
     ...(opts.binaryStdout ? { encoding: "buffer" as const } : {}),
   }
 
-  let result: Awaited<ReturnType<typeof execa>>
+  let result: ToolResult
   const subprocess = execa(spawned.command, spawned.argv, execaOpts)
   const leaderPid = typeof subprocess.pid === "number" ? subprocess.pid : undefined
   const cleanup = trackSandboxChild(leaderPid)
@@ -212,37 +215,9 @@ export async function runTool(
     cleanup()
   }
 
-  const stderrText =
-    typeof result.stderr === "string"
-      ? result.stderr
-      : Buffer.isBuffer(result.stderr)
-        ? result.stderr.toString("utf8")
-        : ""
-
+  const stderrText = outputText(result.stderr)
   if (result.failed || result.timedOut || (result.exitCode ?? 1) !== 0) {
-    const failure = result as {
-      signal?: string
-      isTerminated?: boolean
-      isMaxBuffer?: boolean
-      cause?: unknown
-    }
-    const signal = typeof failure.signal === "string" ? failure.signal : null
-    const ranAndDied =
-      signal !== null || failure.isTerminated === true || failure.isMaxBuffer === true
-    const neverRan =
-      !result.timedOut &&
-      !ranAndDied &&
-      typeof result.exitCode !== "number" &&
-      (leaderPid === undefined || isSpawnSyscallFailure(failure.cause))
-    if (neverRan) {
-      throw new SandboxSpawnError(name, failure.cause ?? tail(stderrText))
-    }
-    throw new SandboxToolError(name, {
-      timedOut: Boolean(result.timedOut),
-      exitCode: typeof result.exitCode === "number" ? result.exitCode : null,
-      signal,
-      stderrTail: tail(stderrText),
-    })
+    throw toolFailure(name, result, leaderPid, stderrText)
   }
 
   const stdoutBuffer = Buffer.isBuffer(result.stdout)
@@ -257,4 +232,44 @@ export async function runTool(
     stdoutBuffer,
     exitCode: result.exitCode ?? 0,
   }
+}
+
+type ToolResult = Awaited<ReturnType<typeof execa>>
+
+function outputText(output: ToolResult["stderr"]): string {
+  if (typeof output === "string") return output
+  return Buffer.isBuffer(output) ? output.toString("utf8") : ""
+}
+
+// A tool that never started says nothing about the bytes (infra, retried); one that ran and died is a
+// verdict on them. With no exit code, a missing pid or a spawn-syscall failure counts as "never started".
+function toolFailure(
+  name: string,
+  result: ToolResult,
+  leaderPid: number | undefined,
+  stderrText: string,
+): SandboxSpawnError | SandboxToolError {
+  const failure = result as {
+    signal?: string
+    isTerminated?: boolean
+    isMaxBuffer?: boolean
+    cause?: unknown
+  }
+  const signal = typeof failure.signal === "string" ? failure.signal : null
+  const ranAndDied =
+    signal !== null || failure.isTerminated === true || failure.isMaxBuffer === true
+  const neverRan =
+    !result.timedOut &&
+    !ranAndDied &&
+    typeof result.exitCode !== "number" &&
+    (leaderPid === undefined || isSpawnSyscallFailure(failure.cause))
+  if (neverRan) {
+    return new SandboxSpawnError(name, failure.cause ?? tail(stderrText))
+  }
+  return new SandboxToolError(name, {
+    timedOut: Boolean(result.timedOut),
+    exitCode: typeof result.exitCode === "number" ? result.exitCode : null,
+    signal,
+    stderrTail: tail(stderrText),
+  })
 }

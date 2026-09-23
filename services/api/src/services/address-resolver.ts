@@ -64,6 +64,17 @@ async function orNull<T>(p: Promise<T | null>): Promise<T | null> {
   }
 }
 
+function topRung(
+  hit: { line: string; precision: AddressPrecision } | null,
+  cityStateLabel: string,
+): ResolvedAddress {
+  if (hit !== null) return { address: hit.line, precision: hit.precision, cityStateLabel }
+  if (cityStateLabel.length > 0) {
+    return { address: cityStateLabel, precision: "locality", cityStateLabel }
+  }
+  return { address: null, precision: null, cityStateLabel }
+}
+
 export function makeAddressResolver(deps: AddressResolverDeps): AddressResolver {
   const cache = deps.cache ?? NO_GEOCODE_CACHE
 
@@ -87,12 +98,7 @@ export function makeAddressResolver(deps: AddressResolverDeps): AddressResolver 
     ])
 
     const cityStateLabel = label ?? ""
-    const resolved: ResolvedAddress =
-      hit !== null
-        ? { address: hit.line, precision: hit.precision, cityStateLabel }
-        : cityStateLabel.length > 0
-          ? { address: cityStateLabel, precision: "locality", cityStateLabel }
-          : { address: null, precision: null, cityStateLabel }
+    const resolved = topRung(hit, cityStateLabel)
 
     if (hit !== null || !chainAlreadyMissed) {
       await orNull(
