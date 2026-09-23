@@ -1872,6 +1872,7 @@ export const cases: TranscriptCase[] = [
             replyToId: "replyToId-1",
           },
           "id-1",
+          { inTx: () => Promise.resolve(undefined) },
         ),
   },
   {

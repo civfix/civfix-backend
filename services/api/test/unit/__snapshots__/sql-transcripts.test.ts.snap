@@ -1105,10 +1105,10 @@ COMMIT tx1
 -- row
 BEGIN tx1
 [tx1] SELECT id FROM cleanups WHERE id = $1 LIMIT 1 -- ["id-1"]
-[tx1] INSERT INTO chat_messages (cleanup_id, sender_id, body, kind) VALUES ($1, $2, $3, 'text') -- ["id-1","actorId-1","body-1"]
+[tx1] INSERT INTO chat_messages (cleanup_id, sender_id, body, kind) VALUES ($1, $2, $3, 'text') RETURNING id -- ["id-1","00000000-0000-4000-8000-00000000c1f1","body-1"]
 [tx1] INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id) VALUES ($1, 'message', 'Posted an update to attendees', $2) -- ["id-1","actorId-1"]
 [tx1] INSERT INTO notifications (user_id, type, title, body, link) SELECT cm.user_id, 'cleanup_chat', 'Cleanup update', $1, $2 FROM cleanup_members cm WHERE cm.cleanup_id = $3 RETURNING user_id -- ["body-1","/cleanups/id-1","id-1"]
-[tx1] INSERT INTO audit_log (actor_id, action, target, meta) VALUES ($1, $2, $3, $4) RETURNING id -- ["actorId-1","event.message_posted","cleanup:id-1",{"<json>":{"members":1}}]
+[tx1] INSERT INTO audit_log (actor_id, action, target, meta) VALUES ($1, $2, $3, $4) RETURNING id -- ["actorId-1","event.message_posted","cleanup:id-1",{"<json>":{"members":1,"messageId":"id-row"}}]
 COMMIT tx1
 => {"notified":1}"
 `;
