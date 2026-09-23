@@ -1,5 +1,5 @@
 import type { SocialLinks } from "@civfix/shared"
-import type { CleanupRecord } from "./cleanup-service.js"
+import type { CleanupRecord } from "./cleanup-repository.js"
 
 export interface PersonView {
   id: string

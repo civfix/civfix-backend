@@ -17,13 +17,13 @@ import type {
   CreateOrganizationInviteArgs,
   CreateOrganizationInviteOutcome,
   DeclineOrganizationInviteOutcome,
-  InviterStanding,
   OrganizationInviteRecord,
   OrganizationRepository,
   PendingOrganizationInviteRecord,
   RevokeOrganizationInviteOutcome,
 } from "./organization-repository.js"
-import { inviterRevocationReason, ORG_INVITE_CAP_MESSAGE } from "./organization-repository.js"
+import type { InviterStanding } from "./organization-rules.js"
+import { inviterRevocationReason, ORG_INVITE_CAP_MESSAGE } from "./organization-rules.js"
 
 type InviteLookup = { tokenHash: string } | { inviteId: string }
 

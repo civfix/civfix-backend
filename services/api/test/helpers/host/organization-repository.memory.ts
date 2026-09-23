@@ -45,15 +45,17 @@ import type {
   UpdateOrganizationAudit,
   UpdateOrganizationOutcome,
   UpdateOrganizationPatch,
+} from "../../../src/services/host/organization-repository.js"
+import type {
   InviterRevocationReason,
   InviterStanding,
-} from "../../../src/services/host/organization-repository.js"
+} from "../../../src/services/host/organization-rules.js"
 import {
   canManageOrgMembers,
   inviterRevocationReason,
   roleChangeWithdrawsInvites,
-} from "../../../src/services/host/organization-repository.js"
-import { ORG_INVITE_CAP_MESSAGE } from "../../../src/services/host/organization-repository.js"
+} from "../../../src/services/host/organization-rules.js"
+import { ORG_INVITE_CAP_MESSAGE } from "../../../src/services/host/organization-rules.js"
 import { encodeTimeCursor } from "../../../src/db/cursor-helpers.js"
 
 const SEED_DISPLAY_NAME = "Member"

@@ -30,7 +30,7 @@ import type {
   PendingInviteForUserRecord,
   RevokeTeamInviteOutcome,
 } from "../../../src/services/host/host-team-repository.js"
-import { TEAM_INVITE_CAP_MESSAGE } from "../../../src/services/host/host-team-repository.js"
+import { TEAM_INVITE_CAP_MESSAGE } from "../../../src/services/host/host-team-rules.js"
 import { MS_PER_DAY } from "../../../src/lib/time.js"
 
 interface StoredInvite {

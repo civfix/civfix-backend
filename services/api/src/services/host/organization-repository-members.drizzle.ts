@@ -15,7 +15,6 @@ import type {
   AdminOrgMemberRecord,
   AdminSetMemberRoleArgs,
   AdminSetMemberRoleOutcome,
-  InviterRevocationReason,
   OrganizationMemberRecord,
   OrganizationOwnerRecord,
   OrganizationRepository,
@@ -23,7 +22,8 @@ import type {
   RemoveOrganizationMemberOutcome,
   SetOrganizationMemberRoleOutcome,
 } from "./organization-repository.js"
-import { canManageOrgMembers, roleChangeWithdrawsInvites } from "./organization-repository.js"
+import type { InviterRevocationReason } from "./organization-rules.js"
+import { canManageOrgMembers, roleChangeWithdrawsInvites } from "./organization-rules.js"
 
 interface MemberRowSelect {
   user_id: string

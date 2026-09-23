@@ -169,7 +169,8 @@ export interface EventCheckinExportRow {
 }
 
 /**
- * Every column a personal data export can carry: a column that is not selected here cannot leak into one.
+ * Every column a personal data export can carry, as the row types of the projections in
+ * data-export-repository.drizzle.ts: a column those SELECTs do not name cannot leak into an export.
  * Section methods return the pending query unawaited, so the service decides when each statement is sent,
  * and fetch one row past `rowCap` so a clipped section is detectable.
  */
