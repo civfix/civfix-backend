@@ -354,9 +354,9 @@ describe("an invite whose inviter lost the power to invite", () => {
 
   it("refuses to create an invite or seat a handle once the actor lost the power in between", async () => {
     const id = await orgWithAdmin()
-    const findOrganizationById = repo.findOrganizationById.bind(repo)
-    repo.findOrganizationById = async (orgId, viewerId) => {
-      const record = await findOrganizationById(orgId, viewerId)
+    const findOrganizationAccess = repo.findOrganizationAccess.bind(repo)
+    repo.findOrganizationAccess = async (orgId, viewerId) => {
+      const record = await findOrganizationAccess(orgId, viewerId)
       return record === null ? null : { ...record, myRole: "admin" }
     }
 

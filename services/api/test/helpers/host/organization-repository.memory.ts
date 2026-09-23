@@ -29,6 +29,7 @@ import type {
   CreateOrganizationInviteOutcome,
   DecideOrgVerificationArgs,
   DecideOrgVerificationOutcome,
+  OrganizationAccessRecord,
   OrganizationBaseRecord,
   OrganizationInviteRecord,
   OrganizationMemberRecord,
@@ -313,6 +314,13 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     return Promise.resolve(
       org === undefined || org.deletedAt !== null ? null : this.toRecord(org, viewerId),
     )
+  }
+
+  findOrganizationAccess(id: string, viewerId: string): Promise<OrganizationAccessRecord | null> {
+    const org = this.organizations.get(id)
+    if (org === undefined || org.deletedAt !== null) return Promise.resolve(null)
+    const { slug, name, suspendedAt, verifiedStatus, myRole } = this.toBaseRecord(org, viewerId)
+    return Promise.resolve({ id: org.id, slug, name, suspendedAt, verifiedStatus, myRole })
   }
 
   findOrganizationBySlug(

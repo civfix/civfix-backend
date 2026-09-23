@@ -166,6 +166,32 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
     expect(await orgs.findOrganizationById(first, null)).toBeNull()
   })
 
+  it("reads the gate's access record from the same row and role as the full organization record", async () => {
+    const owner = await newUser("Access owner")
+    const stranger = await newUser("Access stranger")
+    const orgId = await newOrg(owner, `access-${randomUUID().slice(0, 8)}`)
+    await h.sql`UPDATE organizations SET suspended_at = now() WHERE id = ${orgId}`
+
+    for (const viewer of [owner, stranger]) {
+      const full = await orgs.findOrganizationById(orgId, viewer)
+      expect(full).not.toBeNull()
+      expect(await orgs.findOrganizationAccess(orgId, viewer)).toEqual({
+        id: full?.id,
+        slug: full?.slug,
+        name: full?.name,
+        suspendedAt: full?.suspendedAt,
+        verifiedStatus: full?.verifiedStatus,
+        myRole: full?.myRole,
+      })
+    }
+    expect((await orgs.findOrganizationAccess(orgId, owner))?.myRole).toBe("owner")
+    expect((await orgs.findOrganizationAccess(orgId, stranger))?.myRole).toBeNull()
+
+    await h.sql`UPDATE organizations SET deleted_at = now() WHERE id = ${orgId}`
+    expect(await orgs.findOrganizationAccess(orgId, owner)).toBeNull()
+    expect(await orgs.findOrganizationById(orgId, owner)).toBeNull()
+  })
+
   it("keeps at most one OPEN verification per organization and scrubs the EIN on schedule", async () => {
     const owner = await newUser("Verifier")
     const operator = await newUser("Operator")

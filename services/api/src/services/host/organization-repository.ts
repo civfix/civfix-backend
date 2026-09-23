@@ -40,6 +40,12 @@ export interface OrgHoursTotals {
 
 export interface OrganizationRecord extends OrganizationBaseRecord, OrgHoursTotals {}
 
+/** The org fields an authorization gate and the invite/notify paths read, without the public-profile aggregates. */
+export type OrganizationAccessRecord = Pick<
+  OrganizationBaseRecord,
+  "id" | "slug" | "name" | "suspendedAt" | "verifiedStatus" | "myRole"
+>
+
 export interface OrganizationMemberRecord {
   person: CleanupPersonView
   role: OrganizationMemberRole
@@ -292,6 +298,8 @@ export type DecideOrgVerificationOutcome = "decided" | "not_found" | "no_applica
 export interface OrganizationRepository {
   createOrganizationTx(args: CreateOrganizationArgs): Promise<OrganizationRecord | "slug_taken">
   findOrganizationById(id: string, viewerId: string | null): Promise<OrganizationRecord | null>
+  /** Null for a missing or deleted org, like findOrganizationById; `myRole` is null for a non-member. */
+  findOrganizationAccess(id: string, viewerId: string): Promise<OrganizationAccessRecord | null>
   findOrganizationBySlug(slug: string, viewerId: string | null): Promise<OrganizationRecord | null>
   listMyOrganizations(userId: string, limit: number): Promise<OrganizationRecord[]>
   updateOrganizationTx(
