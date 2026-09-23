@@ -41,24 +41,27 @@ export function makeChatPollRepository(sql: Sql): ChatPollRepository {
           created_by: string
           closed_at: Date | null
           allow_multiple: boolean
+          option_idxs: number[]
         }[]
       >`
-        SELECT message_id, created_by, closed_at, allow_multiple
-        FROM chat_polls
-        WHERE message_id = ${messageId}
+        SELECT p.message_id, p.created_by, p.closed_at, p.allow_multiple,
+               COALESCE(
+                 (SELECT array_agg(o.idx ORDER BY o.idx)::int[]
+                  FROM chat_poll_options o WHERE o.poll_id = p.message_id),
+                 '{}'::int[]
+               ) AS option_idxs
+        FROM chat_polls p
+        WHERE p.message_id = ${messageId}
         LIMIT 1
       `
       const r = rows[0]
       if (!r) return null
-      const opts = await sql<{ idx: number }[]>`
-        SELECT idx FROM chat_poll_options WHERE poll_id = ${messageId} ORDER BY idx ASC
-      `
       return {
         messageId: r.message_id,
         createdBy: r.created_by,
         closedAt: r.closed_at,
         allowMultiple: r.allow_multiple,
-        optionIdxs: opts.map((o) => o.idx),
+        optionIdxs: r.option_idxs,
       }
     },
 
