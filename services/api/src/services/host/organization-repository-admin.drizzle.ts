@@ -13,7 +13,7 @@ import {
   organizationColumns,
   toOrganizationBaseRecord,
   type OrganizationRowSelect,
-} from "./organization-rows.drizzle.js"
+} from "./organization-repository-rows.drizzle.js"
 import type {
   AdminOrganizationCounts,
   AdminOrganizationListQuery,

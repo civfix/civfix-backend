@@ -20,8 +20,8 @@ import {
   loadRegistrationById,
   loadWaitlistEntry,
   subjectIs,
-} from "./registration-load.drizzle.js"
-import { registerErrorOutcome, registerIn } from "./registration-register.drizzle.js"
+} from "./registration-repository-load.drizzle.js"
+import { registerErrorOutcome, registerIn } from "./registration-repository-register.drizzle.js"
 import type {
   ClaimWaitlistOutcome,
   EventRegistrationContext,

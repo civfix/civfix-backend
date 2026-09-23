@@ -10,8 +10,8 @@ import {
 import type { Queryable, Sql } from "../../db/client.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
 import { writeHostAudit } from "./host-audit.js"
-import { lockOrgForActorIn } from "./organization-members.drizzle.js"
-import { personViewOf, UNKNOWN_PERSON_NAME } from "./organization-rows.drizzle.js"
+import { lockOrgForActorIn } from "./organization-repository-members.drizzle.js"
+import { personViewOf, UNKNOWN_PERSON_NAME } from "./organization-repository-rows.drizzle.js"
 import type {
   AcceptOrganizationInviteOutcome,
   CreateOrganizationInviteArgs,

@@ -2,7 +2,7 @@ import type { Queryable, Sql, TransactionSql } from "../../db/client.js"
 import { constantTimeStringEqual } from "../../auth/crypto.js"
 import { isCheckViolationOn, isUniqueViolationOn } from "../../db/pg-errors.js"
 import { SALES_WINDOW_CONSTRAINT } from "./registration-sql.js"
-import { loadTicketType, loadTicketTypes } from "./registration-load.drizzle.js"
+import { loadTicketType, loadTicketTypes } from "./registration-repository-load.drizzle.js"
 import type {
   CreateTicketTypeOutcome,
   DeleteTicketTypeOutcome,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { Queryable, Sql } from "../../src/db/client.js"
-import { attachChatMedia } from "../../src/services/chat-attachments.drizzle.js"
+import { attachChatMedia } from "../../src/services/chat-attachments-repository.drizzle.js"
 import { mediaBoundElsewhere } from "../../src/services/media-bindings.js"
 import {
   makeDrizzlePostRepository,

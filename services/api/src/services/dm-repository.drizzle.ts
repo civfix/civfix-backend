@@ -10,9 +10,9 @@ import type {
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
-import { loadChatReactions, toggleChatReaction } from "./chat-reactions.drizzle.js"
+import { loadChatReactions, toggleChatReaction } from "./chat-reactions-repository.drizzle.js"
 import { loadChatMentions } from "./chat-mentions-repository.drizzle.js"
-import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
+import { attachChatMedia, loadChatAttachments } from "./chat-attachments-repository.drizzle.js"
 import { monotonicReadWatermark } from "./read-watermark-repository.drizzle.js"
 import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
 import { msKeysetFilter, type TimeCursor } from "../db/cursor-helpers.js"
@@ -28,7 +28,7 @@ import {
   replyFor,
   senderColumns,
   type MessageCoreRow,
-} from "./chat-message-core.drizzle.js"
+} from "./chat-message-core-sql.js"
 
 // dm_messages is range-partitioned on created_at and an ack carries only the message id, so the bound
 // lets the planner prune the lookup to recent partitions instead of probing every month ever created.

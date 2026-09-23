@@ -8,7 +8,7 @@ import {
   readOrgHours,
   toOrganizationRecord,
   type OrganizationRowSelect,
-} from "./organization-rows.drizzle.js"
+} from "./organization-repository-rows.drizzle.js"
 import type {
   CreateOrganizationArgs,
   OrganizationRecord,

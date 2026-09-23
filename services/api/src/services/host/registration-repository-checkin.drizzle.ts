@@ -1,8 +1,8 @@
 import type { CheckinMethod } from "@civfix/shared"
 import type { Sql } from "../../db/client.js"
 import { toSeatRecord, waitlistEntryNotBanned, type SeatRowSelect } from "./registration-sql.js"
-import { loadRegistrationById } from "./registration-load.drizzle.js"
-import { MAX_TICKET_TYPES } from "./registration-ticket-types.drizzle.js"
+import { loadRegistrationById } from "./registration-repository-load.drizzle.js"
+import { MAX_TICKET_TYPES } from "./registration-repository-ticket-types.drizzle.js"
 import type {
   CheckinCountersRecord,
   CheckinResultRecord,

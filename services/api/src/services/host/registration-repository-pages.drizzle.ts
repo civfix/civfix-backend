@@ -9,7 +9,7 @@ import {
   loadLiveQuestions,
   loadPage,
   loadTicketTypes,
-} from "./registration-load.drizzle.js"
+} from "./registration-repository-load.drizzle.js"
 import type {
   HostRegistrationRepository,
   PageRecord,

@@ -5,7 +5,7 @@ import type { ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
 // Every room kind and DMs share the one chat table because message ids are globally unique uuids.
 export type ReactionTable = "chat_message_reactions"
 
-export interface MessageReactionRepo {
+export interface MessageReactionRepository {
   toggle(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean>
   loadFor(
     messageIds: string[],
@@ -13,7 +13,10 @@ export interface MessageReactionRepo {
   ): Promise<Map<string, ReactionSummaryDTO[]>>
 }
 
-export function makeReactionRepo(sql: Sql, table: ReactionTable): MessageReactionRepo {
+export function makeMessageReactionRepository(
+  sql: Sql,
+  table: ReactionTable,
+): MessageReactionRepository {
   return {
     toggle(messageId, userId, emoji) {
       // One tx so a concurrent double-toggle can't interleave a delete and an insert out of order.

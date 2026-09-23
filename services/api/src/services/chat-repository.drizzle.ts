@@ -10,9 +10,9 @@ import type {
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
-import { loadChatReactions, toggleChatReaction } from "./chat-reactions.drizzle.js"
+import { loadChatReactions, toggleChatReaction } from "./chat-reactions-repository.drizzle.js"
 import { loadChatMentions } from "./chat-mentions-repository.drizzle.js"
-import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
+import { attachChatMedia, loadChatAttachments } from "./chat-attachments-repository.drizzle.js"
 import type { PresignMedia } from "./media-presign.js"
 import { mapSystemRow } from "./report-chat-repository.drizzle.js"
 import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-mentions.js"
@@ -30,7 +30,7 @@ import {
   replyFor,
   senderColumns,
   type MessageCoreRow,
-} from "./chat-message-core.drizzle.js"
+} from "./chat-message-core-sql.js"
 
 export interface ReportCityContext {
   geoid: string

@@ -17,7 +17,7 @@ import { evalSqlPredicate } from "../helpers/sql-predicate.js"
 import type { Queryable } from "../../src/db/client.js"
 import {
   loadServableAttachmentsFor,
-  makeAttachmentRepo,
+  makeMessageAttachmentRepository,
 } from "../../src/services/message-attachments-repository.drizzle.js"
 
 const MESSAGE = "11111111-1111-4111-8111-111111111111"
@@ -194,11 +194,11 @@ describe("loadServableAttachmentsFor", () => {
   })
 })
 
-describe("makeAttachmentRepo().attach", () => {
+describe("makeMessageAttachmentRepository().attach", () => {
   it("still claims a finalized validating asset: the read now matches what the claim accepts", async () => {
     const fake = makeFakeSql([{ match: /UPDATE media_assets/, rows: [{ upload_id: UPLOAD }] }])
 
-    await makeAttachmentRepo("chat_message_id").attach(
+    await makeMessageAttachmentRepository("chat_message_id").attach(
       fake.sql as unknown as Queryable,
       MESSAGE,
       [UPLOAD],
@@ -215,7 +215,7 @@ describe("makeAttachmentRepo().attach", () => {
   it("does nothing when no upload ids were sent", async () => {
     const fake = makeFakeSql([])
 
-    await makeAttachmentRepo("chat_message_id").attach(
+    await makeMessageAttachmentRepository("chat_message_id").attach(
       fake.sql as unknown as Queryable,
       MESSAGE,
       [],

@@ -17,7 +17,7 @@ export interface CleanupMapRepository {
   ): Promise<CleanupPinDTO[]>
 }
 
-export function makeCleanupMapRepository(sql: Sql): CleanupMapRepository {
+export function makeDrizzleCleanupMapRepository(sql: Sql): CleanupMapRepository {
   return {
     async listCleanupPins(bbox, when): Promise<CleanupPinDTO[]> {
       const whenFilter = buildWhenFilter(sql, when ?? "upcoming")

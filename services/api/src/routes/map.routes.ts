@@ -22,7 +22,10 @@ import {
   makeCachedAddressResolver,
   makeRouteJurisdictionService,
 } from "../services/route-geo-helpers.js"
-import { makeCleanupMapRepository, MAP_CLEANUPS_LIMIT } from "../services/cleanup-map-repository.js"
+import {
+  makeDrizzleCleanupMapRepository,
+  MAP_CLEANUPS_LIMIT,
+} from "../services/cleanup-map-repository.drizzle.js"
 import { insertAuditRow } from "../services/admin/audit-repository.drizzle.js"
 import { CappedBBoxQueryParam } from "./query-encoding.js"
 import { parse, trimTextFields } from "./_validate.js"
@@ -200,7 +203,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
         ...(q.when !== undefined ? { when: q.when } : {}),
       })
 
-      const repo = makeCleanupMapRepository(container.getDb().sql)
+      const repo = makeDrizzleCleanupMapRepository(container.getDb().sql)
       const pins = await repo.listCleanupPins(bbox, when)
       const payload: MapCleanupsResponse = { pins }
       reply.header("Cache-Control", MAP_CLEANUPS_CACHE_CONTROL)

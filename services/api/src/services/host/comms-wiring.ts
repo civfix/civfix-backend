@@ -11,7 +11,7 @@ import { makeDrizzleAnalyticsRepository } from "./analytics-repository.drizzle.j
 import { makeAnalyticsService, type AnalyticsService } from "./analytics-service.js"
 import { makeDrizzleEventAnalyticsRepository } from "./event-analytics-repository.drizzle.js"
 import { makeEventAnalyticsService, type EventAnalyticsService } from "./event-analytics-service.js"
-import { makeDrizzleAnnouncementIdentityRepository } from "./announcement-repository.drizzle.js"
+import { makeDrizzleAnnouncementIdentityRepository } from "./announcement-identity-repository.drizzle.js"
 import { makeAnnouncementService, type AnnouncementService } from "./announcement-service.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../media-intake-service.js"
 import { makeInsightsService, type InsightsService } from "./insights-service.js"

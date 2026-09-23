@@ -3,7 +3,10 @@
 
 import type { Queryable, Sql } from "../db/client.js"
 import type { ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
-import { loadReactionsFor, makeReactionRepo } from "./message-reactions-repository.drizzle.js"
+import {
+  loadReactionsFor,
+  makeMessageReactionRepository,
+} from "./message-reactions-repository.drizzle.js"
 
 const CHAT_REACTIONS = "chat_message_reactions" as const
 
@@ -32,5 +35,5 @@ export function toggleChatReaction(
   userId: string,
   emoji: ReactionEmoji,
 ): Promise<boolean> {
-  return makeReactionRepo(sql, CHAT_REACTIONS).toggle(messageId, userId, emoji)
+  return makeMessageReactionRepository(sql, CHAT_REACTIONS).toggle(messageId, userId, emoji)
 }

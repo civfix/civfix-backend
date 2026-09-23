@@ -5,7 +5,7 @@ import { likeContains } from "../../db/like.js"
 import { mediaBoundElsewhere, uploadedByClaimant } from "../media-bindings.js"
 import { userUploader } from "../media-uploader.js"
 import { writeHostAudit } from "./host-audit.js"
-import { adminActorOf } from "./organization-rows.drizzle.js"
+import { adminActorOf } from "./organization-repository-rows.drizzle.js"
 import type {
   AdminOrgListQuery,
   AdminOrgVerificationRecord,

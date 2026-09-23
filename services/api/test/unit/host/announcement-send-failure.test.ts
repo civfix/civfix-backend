@@ -7,7 +7,7 @@ import {
   type BroadcastConfig,
 } from "../../../src/services/host/broadcast-service.js"
 import { makeAnnouncementService } from "../../../src/services/host/announcement-service.js"
-import type { AnnouncementIdentityRepository } from "../../../src/services/host/announcement-repository.drizzle.js"
+import type { AnnouncementIdentityRepository } from "../../../src/services/host/announcement-identity-repository.drizzle.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const HOST = "00000000-0000-0000-0000-0000000000aa"

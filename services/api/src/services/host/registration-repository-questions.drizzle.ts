@@ -6,7 +6,7 @@ import {
   type AnswerRowSelect,
   type QuestionRowSelect,
 } from "./registration-sql.js"
-import { loadLiveQuestions } from "./registration-load.drizzle.js"
+import { loadLiveQuestions } from "./registration-repository-load.drizzle.js"
 import type {
   AnswerRecord,
   DesiredQuestion,

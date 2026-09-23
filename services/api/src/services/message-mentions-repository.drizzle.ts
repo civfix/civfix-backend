@@ -7,18 +7,18 @@ export type MentionTable = "chat_message_mentions" | "post_mentions"
 
 export type MentionIdColumn = "message_id" | "post_id"
 
-export interface MessageMentionRepo {
+export interface MessageMentionRepository {
   // `mentionedUserIds` must already be deduped and self-excluded. Pass the create/edit tx so the
   // delete-then-insert replace is atomic with the message write.
   recordFor(tx: Queryable, messageId: string, mentionedUserIds: string[]): Promise<void>
   loadFor(messageIds: string[]): Promise<Map<string, UserMentionDTO[]>>
 }
 
-export function makeMentionRepo(
+export function makeMessageMentionRepository(
   sql: Sql,
   table: MentionTable,
   idColumn: MentionIdColumn = "message_id",
-): MessageMentionRepo {
+): MessageMentionRepository {
   return {
     async recordFor(tx, messageId, mentionedUserIds) {
       await tx`DELETE FROM ${tx(table)} WHERE ${tx(idColumn)} = ${messageId}`

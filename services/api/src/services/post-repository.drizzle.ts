@@ -17,7 +17,10 @@ import {
   paginateKeyset,
   parseKeysetCursor,
 } from "../db/cursor-helpers.js"
-import { loadMentionsFor, makeMentionRepo } from "./message-mentions-repository.drizzle.js"
+import {
+  loadMentionsFor,
+  makeMessageMentionRepository,
+} from "./message-mentions-repository.drizzle.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
 import { claimableAsAttachment } from "./media-bindings.js"
 import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
@@ -1153,7 +1156,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         }
 
         if (args.mentionedUserIds.length > 0) {
-          await makeMentionRepo(sql, "post_mentions", "post_id").recordFor(
+          await makeMessageMentionRepository(sql, "post_mentions", "post_id").recordFor(
             tx,
             postId,
             args.mentionedUserIds,

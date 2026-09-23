@@ -12,7 +12,7 @@ export type MessageMediaColumn = "chat_message_id"
 
 const CLAIM_GUARD_COLUMNS: readonly string[] = ["report_id", "post_id"]
 
-export interface MessageAttachmentRepo {
+export interface MessageAttachmentRepository {
   attach(
     tx: Queryable,
     messageId: string,
@@ -34,7 +34,9 @@ interface MediaRow {
   height: number | null
 }
 
-export function makeAttachmentRepo(column: MessageMediaColumn): MessageAttachmentRepo {
+export function makeMessageAttachmentRepository(
+  column: MessageMediaColumn,
+): MessageAttachmentRepository {
   return {
     async attach(tx, messageId, uploadIds, messageCreatedAt, senderId) {
       if (uploadIds.length === 0) return

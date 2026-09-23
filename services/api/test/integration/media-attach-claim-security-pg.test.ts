@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { seedMediaAsset, type SeededMedia } from "../helpers/media-pg.js"
-import { attachChatMedia } from "../../src/services/chat-attachments.drizzle.js"
+import { attachChatMedia } from "../../src/services/chat-attachments-repository.drizzle.js"
 import { userUploader } from "../../src/services/media-uploader.js"
 import {
   makeDrizzlePostRepository,

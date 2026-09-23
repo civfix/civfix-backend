@@ -6,7 +6,11 @@ import { deterministicUuid } from "../deterministic-uuid.js"
 import { isEventPubliclyVisible } from "./authz.js"
 import { isUniqueViolationOn } from "../../db/pg-errors.js"
 import { isReservedSeatsBackstopViolation } from "./registration-sql.js"
-import { isBannedIn, loadRegistrationById, subjectIs } from "./registration-load.drizzle.js"
+import {
+  isBannedIn,
+  loadRegistrationById,
+  subjectIs,
+} from "./registration-repository-load.drizzle.js"
 import type {
   EventRegistrationContext,
   HostRegistrationRepository,

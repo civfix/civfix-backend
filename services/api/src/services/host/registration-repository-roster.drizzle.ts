@@ -15,12 +15,12 @@ import {
   registrationJoins,
   type RegistrationRowSelect,
 } from "./registration-sql.js"
-import { hydrate, loadRegistrationById } from "./registration-load.drizzle.js"
+import { hydrate, loadRegistrationById } from "./registration-repository-load.drizzle.js"
 import {
   cancelWaitlistEntriesIn,
   listWaitlistIn,
   waitlistEntryAsRegistration,
-} from "./registration-waitlist.drizzle.js"
+} from "./registration-repository-waitlist.drizzle.js"
 import type {
   CancelRegistrationOutcome,
   HostRegistrationRepository,

@@ -33,7 +33,7 @@ import type {
   RevokeTeamInviteOutcome,
 } from "./host-team-repository.types.js"
 import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.types.js"
-import { personViewOf, UNKNOWN_PERSON_NAME } from "./organization-rows.drizzle.js"
+import { personViewOf, UNKNOWN_PERSON_NAME } from "./organization-repository-rows.drizzle.js"
 
 const TEAM_INVITE_PENDING_CONSTRAINTS = [
   "cleanup_team_invites_pending_user_uidx",

@@ -3,7 +3,7 @@ import type { MediaDTO } from "@civfix/shared"
 import type { PresignMedia } from "./media-presign.js"
 import {
   loadServableAttachmentsFor,
-  makeAttachmentRepo,
+  makeMessageAttachmentRepository,
   type MessageMediaColumn,
 } from "./message-attachments-repository.drizzle.js"
 
@@ -16,7 +16,7 @@ export function attachChatMedia(
   messageCreatedAt: Date,
   senderId: string,
 ): Promise<void> {
-  return makeAttachmentRepo(CHAT_MESSAGE_COLUMN).attach(
+  return makeMessageAttachmentRepository(CHAT_MESSAGE_COLUMN).attach(
     sql,
     messageId,
     uploadIds,

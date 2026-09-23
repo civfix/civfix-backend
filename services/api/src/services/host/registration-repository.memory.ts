@@ -17,15 +17,15 @@ import {
   ARRIVAL_BUCKET_MINUTES,
   buildCheckinResult,
   emptyCheckinResult,
-} from "./registration-checkin.drizzle.js"
+} from "./registration-repository-checkin.drizzle.js"
 import {
   guestSelfRegistrationOnPrivateEvent,
   subjectOwner,
   withinSalesWindow,
-} from "./registration-register.drizzle.js"
-import type { AppliedBan } from "./registration-roster.drizzle.js"
-import { MAX_TICKET_TYPES } from "./registration-ticket-types.drizzle.js"
-import { waitlistEntryAsRegistration } from "./registration-waitlist.drizzle.js"
+} from "./registration-repository-register.drizzle.js"
+import type { AppliedBan } from "./registration-repository-roster.drizzle.js"
+import { MAX_TICKET_TYPES } from "./registration-repository-ticket-types.drizzle.js"
+import { waitlistEntryAsRegistration } from "./registration-repository-waitlist.drizzle.js"
 import type {
   AnswerRecord,
   CancelRegistrationOutcome,
