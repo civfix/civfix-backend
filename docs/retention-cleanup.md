@@ -70,6 +70,14 @@ separate **product/counsel retention DECISION** — this sweep only reaps auth
 artifacts that are unambiguously dead once expired. Orphaned media already has its
 own `orphan.sweep`.
 
+## The official account
+
+The `users` row `00000000-0000-4000-8000-00000000c1f1` (`@civfix`, created by
+migration `0180`) is kept **indefinitely**. It is the platform's own identity, not
+a person: it has no email, no OAuth identity and no personal data, it can never
+hold a session, and admin-panel chat posts reference it as their `sender_id`.
+No sweep, erasure path or demo purge touches it.
+
 ---
 
 ## F088 (mw half) — notifications now aged in retention.sweep

@@ -15,6 +15,7 @@ import {
   SUGGEST_CANDIDATE_RADIUS_DEG,
 } from "../../src/services/social-repository.drizzle.js"
 import { DEFAULT_EVENT_DURATION_MS } from "../../src/services/cleanup-rules.js"
+import { isOfficialAccount } from "../../src/auth/official-account.js"
 
 interface StoredUser {
   id: string
@@ -199,6 +200,7 @@ export class InMemorySocialRepository implements SocialRepository {
     }
     const eligible = [...this.users.values()].filter((u) => {
       if (u.deletedAt !== null || u.handle === null || u.id === args.viewerId) return false
+      if (isOfficialAccount(u.id)) return false
       if (this.follows.some((f) => f.followerId === args.viewerId && f.followeeId === u.id)) {
         return false
       }

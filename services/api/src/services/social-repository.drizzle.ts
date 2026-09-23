@@ -29,6 +29,7 @@ import {
 import { escapeLike } from "./admin/like.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
 import { servedKeyExpr } from "./media-served-key.js"
+import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
 
 export {
   searchByHandlePrefix,
@@ -320,6 +321,7 @@ function suggestFollowsStatement(
     u.deleted_at IS NULL
     AND u.handle IS NOT NULL
     AND u.id <> ${viewerId}
+    AND u.id <> ${CIVFIX_OFFICIAL_USER_ID}
     AND NOT EXISTS (
       SELECT 1 FROM follows_people f
       WHERE f.follower_id = ${viewerId} AND f.followee_id = u.id
