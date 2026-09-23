@@ -541,6 +541,17 @@ describe("OutboundMailService: a failed send is recorded as a failure", () => {
     expect(repo.threads.get(t.id)?.status).toBe("sent")
   })
 
+  it("keeps needs_action while the thread holds a withheld city reply", async () => {
+    const repo = new InMemoryMailRepository()
+    const svc = makeOutboundMailService({ repo, mailer: new FakeMailer(), env: ENV })
+    const t = repo.seedThread({ reportId: "report-1", status: "needs_action" })
+    repo.seedMessage({ threadId: t.id, direction: "in", unaffiliated: true })
+
+    await svc.appendOutbound(t.id, { toAddr: "x@y.com", body: "b" })
+
+    expect(repo.threads.get(t.id)?.status).toBe("needs_action")
+  })
+
   it("writes no audit row when the failed send carries no report", async () => {
     const repo = new InMemoryMailRepository()
     const mailer = new FakeMailer()

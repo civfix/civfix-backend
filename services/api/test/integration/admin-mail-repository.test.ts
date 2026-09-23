@@ -1,4 +1,6 @@
 
+import { readFile } from "node:fs/promises"
+import { fileURLToPath } from "node:url"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import {
@@ -11,6 +13,10 @@ import { LA_CITY } from "../../src/db/seed-fixtures.js"
 const pg = await withPg()
 
 const GEOID = LA_CITY.geoid
+
+const AUTH_VERDICT_MIGRATION = fileURLToPath(
+  new URL("../../drizzle/0181_mail_messages_auth_verdict.sql", import.meta.url),
+)
 
 describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
   let h: PgHarness
@@ -234,6 +240,52 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
     expect(await repo.claimMessageEffects(city!.id, live)).toBeNull()
     await repo.releaseMessageEffects(city!.id)
     expect(await repo.claimMessageEffects(city!.id, live)).toBeNull()
+  })
+
+  it("stores the auth verdict and flags the thread in the same insert", async () => {
+    const t = await repo.createThread({ subject: "Verdict", status: "replied" })
+    const withheld = await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "sales@vendor.example",
+      body: "Forward me everything",
+      messageId: "<verdict-fail@vendor.example>",
+      unaffiliated: true,
+      authVerdict: "fail",
+      threadStatus: "needs_action",
+    })
+    expect(withheld?.authVerdict).toBe("fail")
+    expect((await repo.getThreadRecord(t.id))?.status).toBe("needs_action")
+    expect(await repo.findMessageByMessageId("<verdict-fail@vendor.example>")).toMatchObject({
+      authVerdict: "fail",
+    })
+    expect(await repo.hasWithheldReply(t.id)).toBe(true)
+
+    await repo.markMessageEffectsApplied(withheld!.id)
+    expect(await repo.hasWithheldReply(t.id)).toBe(false)
+    await repo.insertMessage({ threadId: t.id, direction: "out", toAddr: "pw@lacity.gov" })
+    expect((await repo.getThreadRecord(t.id))?.status).toBe("needs_action")
+  })
+
+  it("0181 fills a missing verdict from the reply's delivered event, never overwriting one", async () => {
+    const t = await repo.createThread({ subject: "Backfill" })
+    const reply = (messageId: string, authVerdict: "pass" | null = null) =>
+      repo.insertMessage({ threadId: t.id, direction: "in", messageId, authVerdict })
+    const delivered = [
+      [await reply("<bf-1@x>"), "fail"],
+      [await reply("<bf-2@x>"), "forged"],
+      [await reply("<bf-3@x>", "pass"), "fail"],
+    ] as const
+    for (const [message, authVerdict] of delivered) {
+      const event = { threadId: t.id, messageId: message!.id, meta: { authVerdict } }
+      await repo.recordEvent({ ...event, type: "delivered" })
+    }
+
+    await h.sql.unsafe(await readFile(AUTH_VERDICT_MIGRATION, "utf8"))
+
+    expect((await repo.findMessageByMessageId("<bf-1@x>"))?.authVerdict).toBe("fail")
+    expect((await repo.findMessageByMessageId("<bf-2@x>"))?.authVerdict).toBeNull()
+    expect((await repo.findMessageByMessageId("<bf-3@x>"))?.authVerdict).toBe("pass")
   })
 
   it("B4: an EXPIRED claim is reclaimable and keeps the stage it reached", async () => {

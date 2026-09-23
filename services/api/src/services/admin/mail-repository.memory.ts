@@ -104,6 +104,7 @@ export class InMemoryMailRepository implements MailRepository {
       effectsClaimedAt: over.effectsClaimedAt ?? null,
       effectsAppliedAt: over.effectsAppliedAt ?? null,
       effectsStage: over.effectsStage ?? 0,
+      authVerdict: over.authVerdict ?? null,
       createdAt: over.createdAt ?? this.nextDate(),
     }
     this.messages.push(record)
@@ -257,6 +258,7 @@ export class InMemoryMailRepository implements MailRepository {
       effectsClaimedAt: null,
       effectsAppliedAt: null,
       effectsStage: 0,
+      authVerdict: input.authVerdict ?? null,
       createdAt,
     }
     this.messages.push(record)
@@ -266,6 +268,7 @@ export class InMemoryMailRepository implements MailRepository {
       thread.lastMessageAt =
         prev === null || createdAt.getTime() > prev.getTime() ? createdAt : prev
       if (input.direction === "in") thread.unread = true
+      if (input.threadStatus !== undefined) thread.status = input.threadStatus
     }
     this.recordAudit(input.audit)
     return Promise.resolve({ ...record })
@@ -465,6 +468,18 @@ export class InMemoryMailRepository implements MailRepository {
       if (out.length >= input.limit) break
     }
     return Promise.resolve(out)
+  }
+
+  hasWithheldReply(threadId: string): Promise<boolean> {
+    return Promise.resolve(
+      this.messages.some(
+        (m) =>
+          m.threadId === threadId &&
+          m.direction === "in" &&
+          m.unaffiliated &&
+          m.effectsAppliedAt === null,
+      ),
+    )
   }
 
   markThreadRead(id: string): Promise<boolean> {

@@ -1,7 +1,7 @@
 # Mail effects and the outbound send triad
 
 **Audience:** internal (engineering). Not served publicly.
-**Last updated:** 2026-09-22 (sender authentication policy; unauthenticated token replies file as unaffiliated).
+**Last updated:** 2026-09-23 (withheld replies flag their thread for review; a reply stripped to nothing is flagged too).
 
 An inbound message that correlates to a mail thread can drive **public** effects: a report status
 transition, a public `report_timeline` row, a report-chat system message, and a push to the reporter.
@@ -45,8 +45,20 @@ matched case-insensitively on `MAIL_REPLY_DOMAIN`. It then routes:
 | `pass` | threaded; effects run when `isJurisdictionSender` holds | threaded; same | Inbox |
 | `fail` / `unknown` | threaded as **unaffiliated**: operator-visible, no public effects | Inbox | Inbox |
 
-The verdict is kept with the message: `meta.authVerdict` on the thread's `delivered` event, and the
+The verdict is kept with the message: `mail_messages.auth_verdict` on a threaded reply (migration `0181`
+filled it for earlier replies from `meta.authVerdict` on their `delivered` event), and the
 `x-civfix-auth-verdict` header on an Inbox row.
+
+## A withheld reply waits for an operator
+
+An unaffiliated reply on a thread linked to a report or event is **withheld**. It is stored with its
+verdict and applies no public effect, and the same insert sets the thread to `needs_action`, so it shows
+under the Mail list's attention filter. A warning logs the sender's domain, never the address.
+
+A delivered outbound message clears a send failure's `needs_action` back to `sent`, but not while the
+thread still holds a withheld reply (`hasWithheldReply`): a resend, a follow-up or a resident's @city
+forward would otherwise drop the reply out of review. A thread with no report or event has nothing
+public to publish to, so an unaffiliated reply there is stored without the flag.
 
 ## Stage 2 publishes the city's reply text (product decision)
 
@@ -109,7 +121,11 @@ separator (`___`, `---`) lines is dropped. A non-trailing quote is kept — a re
 answers keeps both halves — unless it holds one of our identifiers.
 
 If the result is empty (a reply that was nothing but quoted history), stage 2 falls back to the previous
-behavior: the note only, with `body: null`.
+behavior: the note only, with `body: null`. When the stored body had text and the strip removed all of
+it, for instance a one-line reply that mentions our reply address, the thread ends at `needs_action`
+instead of `replied` and a `mail.reply_published_without_text` audit row with no actor records it, so an
+operator can see that the city's words did not reach the chat and relay them. Like a send failure's, this
+flag clears on the thread's next delivered outbound message.
 
 The chat emitter is injectable (`InboundEffectDeps.chatEmitter`, plumbed through
 `InboundProcessorDeps`), so the stage is observable in the unit suite without a database.
