@@ -65,8 +65,8 @@ importers:
         specifier: ^3.700.0
         version: 3.1057.0
       '@civfix/shared':
-        specifier: ^0.55.0
-        version: 0.55.0
+        specifier: ^0.57.0
+        version: 0.57.0
       '@fastify/cookie':
         specifier: ^11.0.1
         version: 11.0.2
@@ -213,8 +213,8 @@ importers:
         specifier: workspace:*
         version: link:../api
       '@civfix/shared':
-        specifier: ^0.55.0
-        version: 0.55.0
+        specifier: ^0.57.0
+        version: 0.57.0
       '@sentry/node':
         specifier: ^10.73.0
         version: 10.73.0(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))
@@ -417,8 +417,8 @@ packages:
   '@balena/dockerignore@1.0.2':
     resolution: {integrity: sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==}
 
-  '@civfix/shared@0.55.0':
-    resolution: {integrity: sha512-f24XyngBWMV4L7ipARvX8oATSObFKkrEvCBQxJDobbpenHduZ3LkU6sC5uZfN/ZrsySiH0xcInvxgit966S3gA==}
+  '@civfix/shared@0.57.0':
+    resolution: {integrity: sha512-v4IFb4pR9hbnf+AueRmL7GLB8DIhG9c9ZJjAnXKK3Yqjsv0Mbmhj0Khmb27YRgKL1Aoe//7nLiFkgj11Qrg7GQ==}
     engines: {node: '>=20'}
 
   '@derhuerst/http-basic@8.2.4':
@@ -4450,7 +4450,7 @@ snapshots:
 
   '@balena/dockerignore@1.0.2': {}
 
-  '@civfix/shared@0.55.0':
+  '@civfix/shared@0.57.0':
     dependencies:
       zod: 3.25.76
 
