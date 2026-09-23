@@ -11,7 +11,8 @@ import {
   makeDrizzleInboundRepository,
   type InboundRepository,
 } from "./inbound-repository.drizzle.js"
-import type { AdminReportRepository, ReporterNotifier } from "./admin-report-service.js"
+import type { ReporterNotifier } from "./admin-report-service.js"
+import type { AdminReportRepository } from "./admin-report-repository.js"
 import { detectBounce, handleBounce } from "./inbound-bounce.js"
 import {
   applyInboundEffects,

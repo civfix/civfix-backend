@@ -20,11 +20,11 @@ import {
   makeSocialService,
   PERSON_NOT_FOUND_MESSAGE,
   type SocialNotifier,
-  type SocialRepository,
   type SocialService,
   type SocialServiceDeps,
   type SocialViewer,
 } from "../services/social-service.js"
+import type { SocialRepository } from "../services/social-repository.js"
 import { makeDrizzleSocialRepository } from "../services/social-repository.drizzle.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"

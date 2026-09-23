@@ -16,15 +16,14 @@
  */
 
 import type { Sql } from "../db/client.js"
-import {
-  CertificateConflictError,
-  type CertificateConflictKind,
-  type CertificateHolder,
-  type CertificateInsert,
-  type CertificateRepository,
-  type CertificateRow,
-  type CertificateVerifyRow,
-} from "./certificate-service.js"
+import { CertificateConflictError, type CertificateConflictKind } from "./certificate-service.js"
+import type {
+  CertificateHolder,
+  CertificateInsert,
+  CertificateRepository,
+  CertificateRow,
+  CertificateVerifyRow,
+} from "./certificate-repository.js"
 import { PG_UNIQUE_VIOLATION } from "../db/pg-errors.js"
 
 /** The partial `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL` index (0064). */

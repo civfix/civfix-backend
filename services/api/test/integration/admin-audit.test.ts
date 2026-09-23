@@ -15,7 +15,7 @@ import {
   makeDrizzleAuditRepository,
 } from "../../src/services/admin/audit-repository.drizzle.js"
 import type { AdminAuditAction } from "../../src/services/admin/audit.js"
-import type { AuditRepository } from "../../src/services/admin/audit-service.js"
+import type { AuditRepository } from "../../src/services/admin/audit-repository.js"
 
 const pg = await withPg()
 

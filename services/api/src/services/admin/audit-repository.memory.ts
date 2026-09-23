@@ -1,4 +1,4 @@
-import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
+import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-repository.js"
 import { pageBeforeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
 
 export interface SeedAuditInput {

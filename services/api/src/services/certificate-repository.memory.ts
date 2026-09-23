@@ -18,14 +18,14 @@
  * `snapshot` is stored but never read back, exactly as in production.
  */
 
-import {
-  CertificateConflictError,
-  type CertificateHolder,
-  type CertificateInsert,
-  type CertificateRepository,
-  type CertificateRow,
-  type CertificateVerifyRow,
-} from "./certificate-service.js"
+import { CertificateConflictError } from "./certificate-service.js"
+import type {
+  CertificateHolder,
+  CertificateInsert,
+  CertificateRepository,
+  CertificateRow,
+  CertificateVerifyRow,
+} from "./certificate-repository.js"
 import type { TranscriptModel } from "./certificate-model.js"
 
 /** Mirrors the `users.locale` column default. */

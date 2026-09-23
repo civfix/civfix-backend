@@ -4,16 +4,19 @@
 import { AppError } from "@civfix/shared"
 import type { JurisdictionListQuery } from "@civfix/shared"
 import { toDirectoryDTO, hasAnyContact } from "./jurisdiction-directory-projection.js"
-import type { DirectoryFilter, DirectorySort } from "./jurisdiction-contacts-types.js"
+import type {
+  DirectoryFilter,
+  DirectorySort,
+  PatchContactsInput,
+  SaveContactsInput,
+} from "./jurisdiction-contacts-repository.js"
 import { isReservedHandle } from "../../auth/reserved-handles.js"
 import { clampLimit } from "./pagination.js"
 import { isThrottled } from "./outreach-service.js"
 import type {
   JurisdictionContactsService,
   JurisdictionContactsServiceDeps,
-  PatchContactsInput,
   SaveAndRouteResult,
-  SaveContactsInput,
 } from "./jurisdiction-contacts-types.js"
 import { OUTREACH_DIGEST_JOB } from "../../lib/queue-names.js"
 

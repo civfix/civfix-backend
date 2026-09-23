@@ -42,20 +42,22 @@ import {
   REPORT_VISIBILITY_TIMELINE_KIND,
   REPORTS_DEFAULT_LIMIT,
   REPORTS_SEARCH_DEFAULT_LIMIT,
-  type BBox,
-  type OwnerToggleStatus,
   type ReportAutoForwardJob,
   type ReportChatMeta,
   type ReportDiscussionMeta,
-  type ReportMediaView,
   type ReportOwner,
   type SignedInReportOwner,
-  type ReportRecord,
   type ReportSearchInput,
   type ReportService,
   type ReportServiceDeps,
-  type ReportTimelineView,
 } from "./report-types.js"
+import type {
+  BBox,
+  OwnerToggleStatus,
+  ReportMediaView,
+  ReportRecord,
+  ReportTimelineView,
+} from "./report-repository.js"
 
 export * from "./report-types.js"
 export * from "./report-clustering.js"

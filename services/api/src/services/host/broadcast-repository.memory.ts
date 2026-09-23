@@ -13,7 +13,7 @@ import type {
   KeysetRow,
 } from "./broadcast-repository.js"
 import { DEFAULT_PREFS } from "../notification-helpers.js"
-import type { NotificationPrefsRecord } from "../notification-service.js"
+import type { NotificationPrefsRecord } from "../notification-repository.js"
 import type { WriteAuditInput } from "../admin/audit.js"
 import type { KeysetCursor } from "../../db/cursor-helpers.js"
 import type {

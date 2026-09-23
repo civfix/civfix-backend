@@ -43,9 +43,9 @@ import {
   type DmThreadsSource,
   type GroupThreadsSource,
   type ReportThreadsSource,
-  type ThreadsRepository,
   type ThreadsService,
 } from "../services/threads-service.js"
+import type { ThreadsRepository } from "../services/threads-repository.js"
 import type { NotificationService } from "../services/notification-service.js"
 import type { ResolveChatPowers } from "../services/chat-room-roles.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"

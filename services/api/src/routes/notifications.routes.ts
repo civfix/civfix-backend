@@ -17,9 +17,9 @@ import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import {
   makeNotificationService,
-  type NotificationRepository,
   type NotificationService,
 } from "../services/notification-service.js"
+import type { NotificationRepository } from "../services/notification-repository.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"

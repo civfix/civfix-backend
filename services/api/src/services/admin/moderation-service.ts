@@ -1,8 +1,6 @@
 import { AppError, relativeAgo } from "@civfix/shared"
 import type {
   ModerationItemDTO,
-  ModerationDestinationKind,
-  ModerationKind,
   ModerationSubjectType,
   ModerationListQuery,
   ModerationListResponse,
@@ -10,8 +8,6 @@ import type {
   ModerationSignal,
   ModerationSimilar,
   ModerationUser,
-  Priority,
-  ReportCategory,
   UserStatus,
 } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
@@ -20,110 +16,19 @@ import { mapWithLimit } from "../../lib/concurrency.js"
 import { PRESIGN_CONCURRENCY, type PresignMedia } from "../media-presign.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import type { MessageUpdateAnnouncer } from "./admin-report-chat-service.js"
-
-export type ModerationFilter = "all" | ModerationKind | "high"
+import type {
+  CreateModerationItemInput,
+  ListModerationArgs,
+  ModerationItemRecord,
+  ModerationRepository,
+  ModerationUserSnapshot,
+} from "./moderation-repository.js"
 
 /** Shared by the service's chat mirror and the repository's report_timeline row, which must agree. */
 export const MODERATION_APPROVED_NOTE = "Approved in moderation"
 export const MODERATION_REMOVED_NOTE = "Removed in moderation"
 
 const MODERATION_ITEM_NOT_FOUND = "Moderation item not found"
-
-export interface ListModerationArgs {
-  q: string | null
-  filter: ModerationFilter
-  cursor: string | null
-  limit: number
-}
-
-export interface ModerationUserSnapshot {
-  id: string | null
-  handle: string
-  name: string
-  joined: string
-  priorReports: number
-  priorRemovals: number
-  strikes: number
-  device: string
-}
-
-export interface ModerationMediaRecord {
-  id: string
-  kind: "image" | "video"
-  r2Key: string
-  thumbKey: string | null
-}
-
-export interface ModerationItemRecord {
-  id: string
-  kind: ModerationKind
-  subjectType: ModerationSubjectType
-  subjectId: string
-  destinationKind: ModerationDestinationKind | null
-  destinationId: string | null
-  flag: string | null
-  reason: string | null
-  category: ReportCategory | null
-  place: string | null
-  priority: Priority
-  autoAction: string | null
-  reporter: string | null
-  reporterId: string | null
-  desc: string | null
-  status: "open" | "approved" | "removed" | "held"
-  signals: ModerationSignal[]
-  similar: ModerationSimilar[]
-  user: ModerationUserSnapshot | null
-  media: ModerationMediaRecord[]
-  createdAt: Date
-  reportTimelineStatus?: "published" | "rejected"
-  restoredUserId?: string
-  suspendedUserId?: string
-}
-
-export interface CreateModerationItemInput {
-  kind: ModerationKind
-  subjectType: ModerationSubjectType
-  subjectId: string
-  flag?: string | null
-  reason?: string | null
-  category?: ReportCategory | null
-  place?: string | null
-  priority?: Priority
-  autoAction?: string | null
-  reporter?: string | null
-  reporterUserId?: string | null
-  desc?: string | null
-  signals?: ModerationSignal[]
-  similar?: ModerationSimilar[]
-  user?: ModerationUserSnapshot | null
-  dedupeOpen?: boolean
-}
-
-export interface ModerationRepository {
-  listOpen(
-    args: ListModerationArgs,
-  ): Promise<{ records: ModerationItemRecord[]; nextCursor: string | null }>
-  getItem(id: string): Promise<ModerationItemRecord | null>
-  approve(
-    id: string,
-    input: { actorId: string | null; note: string | null },
-  ): Promise<ModerationItemRecord | null>
-  remove(
-    id: string,
-    input: { actorId: string | null; reason: string | null },
-  ): Promise<ModerationItemRecord | null>
-  hold(
-    id: string,
-    input: { actorId: string | null; note: string | null },
-  ): Promise<ModerationItemRecord | null>
-  decideAppeal(
-    id: string,
-    input: { decision: "uphold" | "overturn"; actorId: string | null; note: string | null },
-  ): Promise<ModerationItemRecord | null>
-  createItem(input: CreateModerationItemInput): Promise<string | null>
-  backfillFromHeldReports(): Promise<number>
-}
 
 const NEUTRAL_USER_SNAPSHOT: ModerationUserSnapshot = {
   id: null,

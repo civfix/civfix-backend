@@ -18,17 +18,17 @@ import {
 import { personSelect } from "./admin-person-sql.js"
 import { toPersonRecord } from "./admin-person.js"
 import { STATUS_BUCKETS, toTimelineKind } from "./admin-report-status.js"
-import {
-  REPORT_VERIFIED_THRESHOLD,
-  type AdminReporterRecord,
-  type AdminReportMediaRecord,
-  type AdminReportRecord,
-  type AdminReportRepository,
-  type AdminReportRoutingRecord,
-  type AdminReportTimelineRecord,
-  type ListReportsArgs,
-  type ReportOutreachState,
-} from "./admin-report-types.js"
+import { REPORT_VERIFIED_THRESHOLD } from "./admin-report-types.js"
+import type {
+  AdminReportMediaRecord,
+  AdminReportRecord,
+  AdminReportRepository,
+  AdminReportRoutingRecord,
+  AdminReportTimelineRecord,
+  AdminReporterRecord,
+  ListReportsArgs,
+  ReportOutreachState,
+} from "./admin-report-repository.js"
 import type {
   AdminReportCounts,
   AdminReportStatus,

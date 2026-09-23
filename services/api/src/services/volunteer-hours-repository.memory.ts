@@ -30,7 +30,7 @@ import type {
   VolunteerHoursAnomaly,
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
-} from "./volunteer-hours-service.js"
+} from "./volunteer-hours-repository.js"
 import { MS_PER_WEEK } from "../lib/time.js"
 
 export interface MemoryLeaderboardUser {

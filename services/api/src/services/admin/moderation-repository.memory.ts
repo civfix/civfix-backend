@@ -5,14 +5,13 @@ import {
   assertTargetIsNotOfficialAccount,
   assertTargetIsNotOperatorRole,
 } from "../../auth/operator-target.js"
-import {
-  isMessageSubject,
-  isUserSubject,
-  type CreateModerationItemInput,
-  type ListModerationArgs,
-  type ModerationItemRecord,
-  type ModerationRepository,
-} from "./moderation-service.js"
+import { isMessageSubject, isUserSubject } from "./moderation-service.js"
+import type {
+  CreateModerationItemInput,
+  ListModerationArgs,
+  ModerationItemRecord,
+  ModerationRepository,
+} from "./moderation-repository.js"
 
 export interface SeededHeldReport {
   id: string

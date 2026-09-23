@@ -23,10 +23,8 @@ import {
   sendOk,
   spreadNow,
 } from "./_route-utils.js"
-import {
-  makeDiscoveryService,
-  type DiscoveryRepository,
-} from "../../services/admin/discovery-service.js"
+import { makeDiscoveryService } from "../../services/admin/discovery-service.js"
+import type { DiscoveryRepository } from "../../services/admin/discovery-repository.js"
 import { makeDrizzleDiscoveryRepository } from "../../services/admin/discovery-repository.drizzle.js"
 
 const FALLBACK_OPERATOR_LABEL = "operator"

@@ -9,18 +9,18 @@ import type {
   AnalyticsRetentionResponse,
   ReportCategory,
 } from "@civfix/shared"
-import {
-  ANALYTICS_CATEGORIES,
-  type CategoryCount,
-  type CategoryMedian,
-  type CoverageCounts,
-  type EventAggregates,
-  type FunnelCounts,
-  type KpiAggregates,
-  type MonthBucket,
-  type RetentionRow,
-  type WeekBucket,
-} from "./analytics-types.js"
+import { ANALYTICS_CATEGORIES } from "./analytics-types.js"
+import type {
+  CategoryCount,
+  CategoryMedian,
+  CoverageCounts,
+  EventAggregates,
+  FunnelCounts,
+  KpiAggregates,
+  MonthBucket,
+  RetentionRow,
+  WeekBucket,
+} from "./analytics-repository.js"
 import { MS_PER_DAY, MS_PER_WEEK } from "../../lib/time.js"
 
 const MONTH_ABBR = [

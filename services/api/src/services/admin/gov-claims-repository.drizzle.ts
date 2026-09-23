@@ -13,13 +13,13 @@ import {
   parseKeysetCursor,
 } from "../../db/cursor-helpers.js"
 import { ilikeAnyOf } from "./sql-fragments.js"
-import {
-  GOV_CHECKS,
-  type GovCheckRecord,
-  type GovClaimRecord,
-  type GovClaimsRepository,
-  type ListGovClaimsArgs,
-} from "./gov-claims-service.js"
+import { GOV_CHECKS } from "./gov-claims-service.js"
+import type {
+  GovCheckRecord,
+  GovClaimRecord,
+  GovClaimsRepository,
+  ListGovClaimsArgs,
+} from "./gov-claims-repository.js"
 import type { GovCheckStatus, GovMethod, GovVerificationCheck } from "@civfix/shared"
 
 interface GovClaimRow {

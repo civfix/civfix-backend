@@ -7,7 +7,7 @@ import type {
   ProfileStats,
   SocialRepository,
   UpcomingEventsArgs,
-} from "./social-service.js"
+} from "./social-repository.js"
 import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
 import type {
   CleanupStatus,

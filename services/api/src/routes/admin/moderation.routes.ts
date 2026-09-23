@@ -22,9 +22,9 @@ import {
 } from "./_route-utils.js"
 import {
   makeModerationService,
-  type ModerationRepository,
   type ModerationSessionControl,
 } from "../../services/admin/moderation-service.js"
+import type { ModerationRepository } from "../../services/admin/moderation-repository.js"
 import { makeDrizzleModerationRepository } from "../../services/admin/moderation-repository.drizzle.js"
 import { makeContainerReportChatEmitter } from "../../services/report-chat-emitter.js"
 import { makePrivateMediaPresigner, type PresignMedia } from "../../services/media-presign.js"

@@ -10,9 +10,8 @@ import {
   type GroupThreadsSource,
   type ReportThreadAggregateView,
   type ReportThreadsSource,
-  type ThreadAggregate,
-  type ThreadsRepository,
 } from "./threads-service.js"
+import type { ThreadAggregate, ThreadsRepository } from "./threads-repository.js"
 
 function reportThreadTitle(category: ReportCategory | string, addr: string | null): string {
   const label = REPORT_CATEGORY_LABELS[category as ReportCategory] ?? category

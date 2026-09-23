@@ -8,21 +8,7 @@ import {
   type OutboundMailLogger,
   type OutboundMailService,
 } from "./outbound-mail-service.js"
-
-export interface OutreachDigest {
-  geoid: string
-  org: string | null
-  toAddr: string
-  perCategory: Partial<Record<ReportCategory, number>>
-  total: number
-  oldestWaitingAt: Date | null
-}
-
-export interface OutreachRepository {
-  loadDigest(geoid: string): Promise<OutreachDigest | null>
-  listCandidateGeoids(limit?: number): Promise<string[]>
-  claimOutreachWindow?(geoid: string, window: { at: Date; windowStart: Date }): Promise<boolean>
-}
+import type { OutreachDigest, OutreachRepository } from "./outreach-repository.js"
 
 const OUTREACH_SWEEP_BATCH_SIZE = 200
 

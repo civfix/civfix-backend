@@ -1,5 +1,5 @@
 import type { NotificationDTO, NotificationPrefsDTO, NotificationType } from "@civfix/shared"
-import type { NotificationPrefsRecord, NotificationRecord } from "./notification-service.js"
+import type { NotificationPrefsRecord, NotificationRecord } from "./notification-repository.js"
 import { MINUTES_PER_HOUR } from "../lib/time.js"
 
 export const DEFAULT_PREFS: NotificationPrefsRecord = {

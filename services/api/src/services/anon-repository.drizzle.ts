@@ -24,13 +24,15 @@
 
 import type { Sql, TransactionSql } from "../db/client.js"
 import { generateToken, sha256Hex } from "../auth/crypto.js"
+import type { AnonAbuseReason } from "./anon-service.js"
 import type {
-  AnonAbuseReason,
   AnonReportRepository,
   AnonReportStatusRow,
+  ClaimRepository,
   CreateAnonReportTxArgs,
   CreateAnonReportTxResult,
-} from "./anon-service.js"
+  PendingAnonReport,
+} from "./anon-repository.js"
 import { ANON_REPORT_CREATE_SCOPE } from "./anon-service.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
 import {
@@ -38,7 +40,6 @@ import {
   type AnonTokenRecord,
   type AnonTokenStore,
 } from "../abuse/anon-token.js"
-import type { ClaimRepository, PendingAnonReport } from "./claim-service.js"
 import { AppError } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
 import { insertModerationItem } from "./admin/moderation-repository.drizzle.js"

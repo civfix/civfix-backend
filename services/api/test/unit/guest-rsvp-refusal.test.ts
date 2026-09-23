@@ -13,8 +13,8 @@ import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"
 import {
   makeGuestRsvpService,
   type GuestRegistrationBridge,
-  type UpsertGuestArgs,
 } from "../../src/services/guest-rsvp-service.js"
+import type { UpsertGuestArgs } from "../../src/services/guest-rsvp-repository.js"
 
 const EVENT_ID = "11111111-1111-1111-1111-111111111111"
 const CODE = "424242"

@@ -15,7 +15,7 @@ import type {
   ListDirectoryResult,
   PatchContactsInput,
   SaveContactsInput,
-} from "./jurisdiction-contacts-types.js"
+} from "./jurisdiction-contacts-repository.js"
 import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 

@@ -6,7 +6,8 @@ import type {
   MailThreadRecord,
 } from "./mail-repository.drizzle.js"
 import { makeDrizzleAdminReportRepository } from "./admin-report-repository.drizzle.js"
-import type { AdminReportRepository, ReporterNotifier } from "./admin-report-service.js"
+import type { ReporterNotifier } from "./admin-report-service.js"
+import type { AdminReportRepository } from "./admin-report-repository.js"
 import { JURISDICTION_REPLY_NOTE } from "./admin-report-status.js"
 import { makeDrizzleCleanupRepository } from "../cleanup-repository.drizzle.js"
 import type { CleanupRepository } from "../cleanup-service.js"

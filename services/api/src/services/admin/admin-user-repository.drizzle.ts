@@ -17,7 +17,7 @@ import type {
   UserEventRecord,
   UserMessageRecord,
   UserReportRecord,
-} from "./admin-user-service.js"
+} from "./admin-user-repository.js"
 import type {
   AdminReportStatus,
   AdminUserCounts,

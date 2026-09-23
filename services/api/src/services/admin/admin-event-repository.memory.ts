@@ -21,15 +21,15 @@ import { toEventStatus } from "./event-status.js"
 import { CIVFIX_OFFICIAL_DISPLAY_NAME } from "../../auth/official-account.js"
 import { DEFAULT_EVENT_DURATION_MS, deriveCleanupStatus } from "../cleanup-rules.js"
 import { MS_PER_HOUR } from "../../lib/time.js"
+import type { EventMemberRef } from "./admin-event-service.js"
 import type {
   AdminEventMessageRecord,
   AdminEventRecord,
   AdminEventRepository,
   AdminEventTimelineRecord,
   AdminOrganizerRecord,
-  EventMemberRef,
   ListEventsArgs,
-} from "./admin-event-service.js"
+} from "./admin-event-repository.js"
 import type { LinkedReportView } from "../cleanup-service.js"
 import type { AdminEventCounts, EventKind, EventStatus, ReportCategory } from "@civfix/shared"
 

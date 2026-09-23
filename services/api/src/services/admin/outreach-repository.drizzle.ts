@@ -1,9 +1,6 @@
 import type { Sql } from "../../db/client.js"
-import {
-  OUTREACH_CATEGORIES,
-  type OutreachDigest,
-  type OutreachRepository,
-} from "./outreach-service.js"
+import { OUTREACH_CATEGORIES } from "./outreach-service.js"
+import type { OutreachDigest, OutreachRepository } from "./outreach-repository.js"
 import { parseCategoryCounts, parseCount, type CategoryCountRow } from "./category-counts.js"
 import { categoryCountsFragment, categoryCountsProjection } from "./category-counts-sql.js"
 import { legacyContactEmailUsable } from "./sql-fragments.js"

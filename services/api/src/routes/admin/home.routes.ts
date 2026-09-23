@@ -7,7 +7,7 @@ import {
   ANALYTICS_CACHE_TTL_MS,
   makeDrizzleAnalyticsRepository,
 } from "../../services/admin/analytics-repository.drizzle.js"
-import type { AnalyticsRepository } from "../../services/admin/analytics-service.js"
+import type { AnalyticsRepository } from "../../services/admin/analytics-repository.js"
 import { route } from "../../versioning/route.js"
 import { overridableService, spreadNow } from "./_route-utils.js"
 

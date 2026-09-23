@@ -21,13 +21,15 @@ import {
   isUserSubject,
   MODERATION_APPROVED_NOTE,
   MODERATION_REMOVED_NOTE,
-  type CreateModerationItemInput,
-  type ListModerationArgs,
-  type ModerationItemRecord,
-  type ModerationMediaRecord,
-  type ModerationRepository,
-  type ModerationUserSnapshot,
 } from "./moderation-service.js"
+import type {
+  CreateModerationItemInput,
+  ListModerationArgs,
+  ModerationItemRecord,
+  ModerationMediaRecord,
+  ModerationRepository,
+  ModerationUserSnapshot,
+} from "./moderation-repository.js"
 
 type SubjectType = ModerationItemRecord["subjectType"]
 

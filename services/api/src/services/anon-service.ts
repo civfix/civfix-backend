@@ -4,11 +4,7 @@ import type {
   AnonReportRequest,
   AnonReportResponse,
   AnonReportStatusResponse,
-  GeomSource,
   LatLng,
-  ReportCategory,
-  ReportType,
-  ReportStatus,
 } from "@civfix/shared"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import type { AbuseChecks } from "@civfix/shared/interfaces"
@@ -24,7 +20,6 @@ import {
   verifyAnonTokenSignature,
   ANON_TOKEN_REPORT_CAP,
   type AnonTokenDeps,
-  type AnonTokenStore,
 } from "../abuse/anon-token.js"
 import { generateToken, constantTimeStringEqual, sha256Hex } from "../auth/crypto.js"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
@@ -35,7 +30,7 @@ import {
   type AddressResolver,
   type ReportAddressWrite,
 } from "./address-resolver.js"
-import type { AddressPrecision, ReportAddressSource } from "@civfix/shared"
+import type { AnonReportRepository } from "./anon-repository.js"
 
 export const ANON_REPORT_CREATE_SCOPE = "anon_report_create"
 
@@ -50,51 +45,6 @@ const REPORT_NOT_FOUND_MESSAGE = "Report not found"
 export type AnonLog = (line: string, extra?: Record<string, unknown>) => void
 
 export type AnonAbuseReason = "honeypot" | "gps"
-
-export interface CreateAnonReportTxArgs {
-  reportId: string
-  anonSessionId: string
-  idempotencyKey: string
-  lat: number
-  lng: number
-  geomSource: GeomSource
-  jurisdictionGeoid: string | null
-  jurCode: number
-  category: ReportCategory
-  type: ReportType
-  title: string | null
-  description: string | null
-  addr: string | null
-  addrSource: ReportAddressSource | null
-  addrPrecision: AddressPrecision | null
-  h3Cell: string
-  mediaUploadIds: string[]
-  mediaUploaders: readonly string[]
-  claimCodeHash: string
-  reportCap: number
-  responseSnapshot: AnonReportResponse
-}
-
-export type CreateAnonReportTxResult =
-  | { kind: "created"; snapshot: AnonReportResponse }
-  | { kind: "replayed"; snapshot: AnonReportResponse }
-
-export interface AnonReportStatusRow {
-  reportId: string
-  status: ReportStatus
-  publishedAt: Date | null
-  claimCodeHash: string | null
-}
-
-export interface AnonReportRepository extends AnonTokenStore {
-  findIdempotentSnapshot(
-    key: string,
-    scope: string,
-    userOrAnon: string | null,
-  ): Promise<AnonReportResponse | null>
-  createAnonReportTx(args: CreateAnonReportTxArgs): Promise<CreateAnonReportTxResult>
-  findAnonReportStatus(reportId: string): Promise<AnonReportStatusRow | null>
-}
 
 export interface AnonSubmitContext {
   ip: string | null

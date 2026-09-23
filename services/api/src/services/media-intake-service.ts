@@ -7,10 +7,8 @@ import type {
   FinalizeMediaResponse,
   MediaDTO,
   MediaKind,
-  MediaStatus,
 } from "@civfix/shared"
 import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES } from "@civfix/shared"
-import type { MEDIA_PURPOSE_VALUES } from "../db/schema/types-host.js"
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
 import { readEtag } from "./media-etag.js"
 import { uploaderOf, uploadersOf } from "./media-uploader.js"
@@ -22,8 +20,7 @@ import {
 } from "./media-authorization.js"
 import { MS_PER_SECOND } from "../lib/time.js"
 import { MEDIA_CHECKS_JOB } from "../lib/queue-names.js"
-
-type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
+import type { MediaAssetView, MediaRepository } from "./media-repository.js"
 
 interface IntakeLogger {
   warn(obj: unknown, msg?: string): void
@@ -61,44 +58,6 @@ export interface MediaOwner {
   anonSessionId?: string | undefined
   guestAnonSessionId?: string | undefined
   ipKey?: string | undefined
-}
-
-export interface MediaAssetView {
-  id: string
-  uploadId: string
-  kind: MediaKind
-  codec: string | null
-  r2Key: string
-  servedKey: string | null
-  thumbKey: string | null
-  status: MediaStatus
-  width: number | null
-  height: number | null
-  byteSize: number | null
-  purpose?: MediaPurpose
-  reportId?: string | null
-  chatMessageId?: string | null
-  postId?: string | null
-  createdAt?: Date | null
-  finalizedAt?: Date | null
-  uploader?: string | null
-}
-
-export interface NewMediaAsset {
-  id: string
-  uploadId: string
-  kind: MediaKind
-  r2Key: string
-  status: MediaStatus
-  byteSize: number
-  uploader: string
-}
-
-export interface MediaRepository {
-  insert(row: NewMediaAsset): Promise<void>
-  findByUploadId(uploadId: string): Promise<MediaAssetView | null>
-  findById(id: string): Promise<MediaAssetView | null>
-  markFinalized(uploadId: string, uploadEtag: string | null): Promise<MediaAssetView | null>
 }
 
 export interface MediaIntakeDeps {

@@ -13,8 +13,8 @@ import {
   directoryStatus,
   hasAnyContact,
   type JurisdictionContactsService,
-  type JurisdictionDirectoryRecord,
 } from "../../src/services/admin/jurisdiction-contacts-service.js"
+import type { JurisdictionDirectoryRecord } from "../../src/services/admin/jurisdiction-contacts-repository.js"
 import { OUTREACH_DIGEST_JOB } from "../../src/lib/queue-names.js"
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")

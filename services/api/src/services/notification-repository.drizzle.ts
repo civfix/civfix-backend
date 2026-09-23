@@ -13,7 +13,7 @@ import type {
   NotificationRecord,
   NotificationRepository,
   PushTokenUpsertOutcome,
-} from "./notification-service.js"
+} from "./notification-repository.js"
 import { DEFAULT_PREFS, FEED_HIDDEN_NOTIFICATION_TYPES } from "./notification-service.js"
 import { AppError } from "@civfix/shared"
 import type { NotificationType, PushPlatform } from "@civfix/shared"

@@ -17,6 +17,7 @@ import {
 import { isPubliclyVisibleStatus, ownerStatusTransition } from "./report-visibility.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
 import { likeContains } from "../db/like.js"
+import type { ReportVisibilityTimelineKind } from "./report-types.js"
 import type {
   BBox,
   CreateReportTxArgs,
@@ -27,8 +28,7 @@ import type {
   ReportRecord,
   ReportRepository,
   ReportTimelineView,
-  ReportVisibilityTimelineKind,
-} from "./report-types.js"
+} from "./report-repository.js"
 import { servedKeyExpr, servableMediaFilter } from "./media-served-key.js"
 import { claimableAsReportMedia } from "./media-bindings.js"
 import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"

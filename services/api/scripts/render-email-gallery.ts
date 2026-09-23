@@ -14,7 +14,7 @@ import {
   orgVerificationDecisionEmailVars,
 } from "../src/services/host/organization-service.js"
 import { teamInviteEmailVars } from "../src/services/host/host-team-service.js"
-import type { AdminReportRecord } from "../src/services/admin/admin-report-types.js"
+import type { AdminReportRecord } from "../src/services/admin/admin-report-repository.js"
 
 interface GalleryEntry {
   name: string

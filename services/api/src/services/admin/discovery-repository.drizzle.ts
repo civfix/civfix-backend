@@ -11,16 +11,16 @@ import {
   type CategoryCountRow,
 } from "./category-counts.js"
 import { categoryCountsFragment, categoryCountsProjection } from "./category-counts-sql.js"
-import {
-  type DiscoveryContactRecord,
-  type DiscoveryContactSuggestionRecord,
-  type DiscoveryDetailRecord,
-  type DiscoveryNoteRecord,
-  type DiscoveryRepository,
-  type DiscoverySamplePinRecord,
-  type DiscoveryTaskRecord,
-  type ListDiscoveryArgs,
-} from "./discovery-service.js"
+import type {
+  DiscoveryContactRecord,
+  DiscoveryContactSuggestionRecord,
+  DiscoveryDetailRecord,
+  DiscoveryNoteRecord,
+  DiscoveryRepository,
+  DiscoverySamplePinRecord,
+  DiscoveryTaskRecord,
+  ListDiscoveryArgs,
+} from "./discovery-repository.js"
 import {
   invalidateDirectoryFacetCache,
   upsertJurisdictionContacts,

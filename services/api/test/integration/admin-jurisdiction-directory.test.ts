@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleJurisdictionContactsRepository } from "../../src/services/admin/jurisdiction-contacts-repository.drizzle.js"
-import type { JurisdictionContactsRepository } from "../../src/services/admin/jurisdiction-contacts-types.js"
+import type { JurisdictionContactsRepository } from "../../src/services/admin/jurisdiction-contacts-repository.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()

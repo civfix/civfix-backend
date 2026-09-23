@@ -7,9 +7,9 @@ import {
   MEDIA_GET_URL_TTL_SEC,
   quotaSubjects,
   type MediaIntakeService,
-  type MediaAssetView,
   type MediaOwner,
 } from "../../src/services/media-intake-service.js"
+import type { MediaAssetView } from "../../src/services/media-repository.js"
 import {
   makeUnboundOnlyMediaViewAuthorizer,
   UNBOUND_GRACE_MS,

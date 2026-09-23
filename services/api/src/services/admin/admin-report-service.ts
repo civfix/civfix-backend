@@ -42,16 +42,18 @@ import {
 } from "./mail-format.js"
 import { pickPreviewMedia, previewThumbnailUrl } from "./admin-report-types.js"
 import type {
-  AdminReportMediaRecord,
-  AdminReportRecord,
   AdminReportService,
   AdminReportServiceDeps,
-  AdminReportTimelineRecord,
   FollowupResult,
-  ListReportsArgs,
-  ReportOutreachState,
   RouteToJurisdictionResult,
 } from "./admin-report-types.js"
+import type {
+  AdminReportMediaRecord,
+  AdminReportRecord,
+  AdminReportTimelineRecord,
+  ListReportsArgs,
+  ReportOutreachState,
+} from "./admin-report-repository.js"
 
 export * from "./admin-report-types.js"
 export * from "./admin-report-status.js"

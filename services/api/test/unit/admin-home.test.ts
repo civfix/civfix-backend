@@ -9,10 +9,8 @@ import {
   type HomeRepository,
   type HomeService,
 } from "../../src/services/admin/home-service.js"
-import {
-  PINS_BY_WEEK_WEEKS,
-  type AnalyticsRepository,
-} from "../../src/services/admin/analytics-types.js"
+import { PINS_BY_WEEK_WEEKS } from "../../src/services/admin/analytics-types.js"
+import type { AnalyticsRepository } from "../../src/services/admin/analytics-repository.js"
 
 const NOW = new Date("2026-06-15T12:00:00.000Z")
 

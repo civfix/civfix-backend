@@ -8,9 +8,8 @@ import {
   PROFILE_PAST_EVENTS_LIMIT,
   type SocialNotifier,
   type SocialService,
-  type SocialRepository,
-  type PersonView,
 } from "../../src/services/social-service.js"
+import type { PersonView, SocialRepository } from "../../src/services/social-repository.js"
 import {
   toPersonView,
   SUGGEST_CANDIDATE_POOL,

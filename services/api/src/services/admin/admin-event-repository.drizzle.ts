@@ -28,7 +28,7 @@ import type {
   AdminEventTimelineRecord,
   AdminOrganizerRecord,
   ListEventsArgs,
-} from "./admin-event-service.js"
+} from "./admin-event-repository.js"
 import type { LinkedReportView } from "../cleanup-service.js"
 import type { AdminEventCounts, EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
 

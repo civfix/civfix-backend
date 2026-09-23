@@ -7,7 +7,7 @@ import {
   paginateKeyset,
   parseKeysetCursor,
 } from "../../db/cursor-helpers.js"
-import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
+import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-repository.js"
 import type { WriteAuditInput } from "./audit.js"
 import { likeContains } from "../../db/like.js"
 

@@ -15,7 +15,7 @@ import {
 import { paragraph, kvTable, linkList } from "../../src/adapters/email-blocks.js"
 import { renderOtp, renderTemplate } from "../../src/adapters/mailer.oci.js"
 import { buildDataExportEmail } from "../../src/services/data-export-service.js"
-import type { AdminReportRecord } from "../../src/services/admin/admin-report-types.js"
+import type { AdminReportRecord } from "../../src/services/admin/admin-report-repository.js"
 
 function reportRecord(overrides: Partial<AdminReportRecord> = {}): AdminReportRecord {
   return {

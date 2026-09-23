@@ -9,7 +9,8 @@ import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemorySocialRepository, makeCleanupRecord } from "../helpers/social.js"
 import type { SocialServiceOverrides } from "../../src/routes/social.routes.js"
-import type { SocialNotifier, PersonView } from "../../src/services/social-service.js"
+import type { SocialNotifier } from "../../src/services/social-service.js"
+import type { PersonView } from "../../src/services/social-repository.js"
 
 class SpyNotifier implements SocialNotifier {
   readonly calls: Array<{ followeeId: string; follower: PersonView }> = []

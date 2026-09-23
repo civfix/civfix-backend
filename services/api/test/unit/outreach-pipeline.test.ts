@@ -9,8 +9,8 @@ import {
   digestSubject,
   digestBody,
   type OutreachService,
-  type OutreachRepository,
 } from "../../src/services/admin/outreach-service.js"
+import type { OutreachRepository } from "../../src/services/admin/outreach-repository.js"
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 const THROTTLE_DAYS = 7

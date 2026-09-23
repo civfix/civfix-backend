@@ -3,7 +3,7 @@ import PDFDocument from "pdfkit"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { InMemoryCertificateRepository } from "../../src/services/certificate-repository.memory.js"
 import { makeCertificateService } from "../../src/services/certificate-service.js"
-import type { VolunteerHoursEntryView } from "../../src/services/volunteer-hours-service.js"
+import type { VolunteerHoursEntryView } from "../../src/services/volunteer-hours-repository.js"
 
 const qrPayloads = vi.hoisted(() => [] as string[])
 

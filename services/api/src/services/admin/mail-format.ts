@@ -23,7 +23,7 @@ import type {
   AdminReportMediaRecord,
   AdminReportRecord,
   AdminReportRoutingRecord,
-} from "./admin-report-types.js"
+} from "./admin-report-repository.js"
 import type { MarkdownInline } from "@civfix/shared/markdown"
 import { ATTACHMENT_FILENAME_MAX_CHARS, safeFilenameChars } from "../../lib/filename.js"
 

@@ -10,8 +10,8 @@ import {
   FEED_HIDDEN_NOTIFICATION_TYPES,
   NOTIFICATION_DEDUPE_WINDOW_MS,
   type NotificationService,
-  type NotificationPrefsRecord,
 } from "../../src/services/notification-service.js"
+import type { NotificationPrefsRecord } from "../../src/services/notification-repository.js"
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import {
   InMemoryNotificationRepository,

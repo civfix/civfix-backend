@@ -2,14 +2,13 @@
 
 import { randomUUID } from "node:crypto"
 import { pageInMemoryById } from "./pagination.js"
-import {
-  type GovCheckRecord,
-  type GovClaimRecord,
-  type GovClaimsRepository,
-  type ListGovClaimsArgs,
-  type ProvisionedUser,
-  type UserProvisioner,
-} from "./gov-claims-service.js"
+import { type ProvisionedUser, type UserProvisioner } from "./gov-claims-service.js"
+import type {
+  GovCheckRecord,
+  GovClaimRecord,
+  GovClaimsRepository,
+  ListGovClaimsArgs,
+} from "./gov-claims-repository.js"
 import type { GovCheckStatus, GovVerificationCheck, Role } from "@civfix/shared"
 
 export class InMemoryGovClaimsRepository implements GovClaimsRepository {

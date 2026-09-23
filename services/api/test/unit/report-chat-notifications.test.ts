@@ -14,7 +14,7 @@ import {
   InMemoryNotificationRepository,
   flushNotificationDispatch,
 } from "../helpers/notifications.js"
-import type { NotificationPrefsRecord } from "../../src/services/notification-service.js"
+import type { NotificationPrefsRecord } from "../../src/services/notification-repository.js"
 import {
   makeNotificationService,
   PUSH_FANOUT_BATCH_SIZE,

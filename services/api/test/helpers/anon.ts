@@ -25,15 +25,16 @@ import type { AnonTokenRecord } from "../../src/abuse/anon-token.js"
 import type {
   AnonReportRepository,
   AnonReportStatusRow,
+  ClaimRepository,
   CreateAnonReportTxArgs,
   CreateAnonReportTxResult,
-} from "../../src/services/anon-service.js"
+  PendingAnonReport,
+} from "../../src/services/anon-repository.js"
 import type {
   AnonHoldReleaseRepository,
   HeldReportView,
   ReleaseMediaView,
 } from "../../src/services/anon-hold-release.js"
-import type { ClaimRepository, PendingAnonReport } from "../../src/services/claim-service.js"
 import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
 import type { ReportType } from "@civfix/shared"
 

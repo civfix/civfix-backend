@@ -23,7 +23,7 @@ import type {
   DeliveryListRow,
   KeysetRow,
 } from "./broadcast-repository.js"
-import type { NotificationPrefsRecord } from "../notification-service.js"
+import type { NotificationPrefsRecord } from "../notification-repository.js"
 import type {
   AdminBroadcastRow,
   AdminHostListParams,

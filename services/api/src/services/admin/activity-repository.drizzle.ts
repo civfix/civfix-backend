@@ -38,12 +38,14 @@ import {
   MAIL_BOUNCE_EVENT_TYPES,
   auditRulesForKind,
   sourcesForKind,
-  type ActivityRepository,
   type AuditActionRule,
-  type ActivitySource,
-  type ActivitySourceRecord,
-  type ListActivityArgs,
 } from "./activity-service.js"
+import type {
+  ActivityRepository,
+  ActivitySource,
+  ActivitySourceRecord,
+  ListActivityArgs,
+} from "./activity-repository.js"
 
 interface ActivityRowSelect {
   source: ActivitySource

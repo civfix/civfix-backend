@@ -12,7 +12,7 @@ import type { AdminEventPageRow } from "../../src/services/host/admin-pages-repo
 import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
 import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
 import { InMemoryAdminEventRepository } from "../../src/services/admin/admin-event-repository.memory.js"
-import type { MediaAssetView, MediaRepository } from "../../src/services/media-intake-service.js"
+import type { MediaAssetView, MediaRepository } from "../../src/services/media-repository.js"
 
 const OPERATOR = "11111111-1111-1111-1111-111111111111"
 const CLEANUP = "22222222-2222-2222-2222-222222222222"

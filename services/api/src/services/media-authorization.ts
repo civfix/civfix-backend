@@ -1,5 +1,6 @@
 import type { Sql } from "../db/client.js"
-import type { MediaAssetView, MediaOwner } from "./media-intake-service.js"
+import type { MediaOwner } from "./media-intake-service.js"
+import type { MediaAssetView } from "./media-repository.js"
 import { isPubliclyVisibleStatus } from "./report-visibility.js"
 import {
   makeDrizzleMediaAuthorizationRepository,

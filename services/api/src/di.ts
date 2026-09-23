@@ -62,9 +62,9 @@ import {
   type BlocksRepository,
 } from "./services/blocks-repository.drizzle.js"
 import { makeDrizzleVolunteerHoursRepository } from "./services/volunteer-hours-repository.drizzle.js"
-import type { VolunteerHoursRepository } from "./services/volunteer-hours-service.js"
+import type { VolunteerHoursRepository } from "./services/volunteer-hours-repository.js"
+import type { CertificateRepository } from "./services/certificate-repository.js"
 import { makeDrizzleCertificateRepository } from "./services/certificate-repository.drizzle.js"
-import type { CertificateRepository } from "./services/certificate-service.js"
 import {
   makeDrizzlePostRepository,
   type PostRepository,

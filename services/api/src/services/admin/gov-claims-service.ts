@@ -12,12 +12,17 @@ import type {
   GovClaimDTO,
   GovClaimListQuery,
   GovClaimListResponse,
-  GovClaimStatus,
-  GovMethod,
   GovVerificationCheck,
   Role,
 } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
+import type {
+  GovCheckRecord,
+  GovClaimRecord,
+  GovClaimSort,
+  GovClaimsRepository,
+  ListGovClaimsArgs,
+} from "./gov-claims-repository.js"
 
 /** Display order. */
 export const GOV_CHECKS: readonly GovVerificationCheck[] = ["linkedin", "directory", "callback"]
@@ -30,41 +35,8 @@ const OPERATOR_ROLE: Role = "operator"
 const GOV_CLAIM_NOT_FOUND = "Gov claim not found"
 const GOV_CLAIM_NOT_PENDING = "Gov claim is not pending"
 
-export interface GovCheckRecord {
-  status: GovCheckStatus
-  evidence: string | null
-  note: string | null
-}
-
-export interface GovClaimRecord {
-  id: string
-  userId: string | null
-  name: string
-  title: string | null
-  org: string | null
-  jurisdictionGeoid: string | null
-  method: GovMethod
-  contactEmail: string | null
-  status: GovClaimStatus
-  checks: Partial<Record<GovVerificationCheck, GovCheckRecord>>
-  rejectReason: string | null
-  createdAt: Date
-}
-
-export type GovClaimFilter = "all" | GovClaimStatus
-
-export type GovClaimSort = "newest" | "oldest"
-
 function parseGovClaimSort(sort: string | undefined): GovClaimSort {
   return sort === "oldest" ? "oldest" : "newest"
-}
-
-export interface ListGovClaimsArgs {
-  q: string | null
-  filter: GovClaimFilter
-  sort: GovClaimSort
-  cursor: string | null
-  limit: number
 }
 
 export interface ProvisionedUser {
@@ -79,35 +51,6 @@ export interface UserProvisioner {
   findByEmail(email: string): Promise<ProvisionedUser | null>
   create(email: string, displayName: string): Promise<ProvisionedUser>
   setRole(id: string, role: Role): Promise<ProvisionedUser>
-}
-
-export interface GovClaimsRepository {
-  list(args: ListGovClaimsArgs): Promise<{ records: GovClaimRecord[]; nextCursor: string | null }>
-  getClaim(id: string): Promise<GovClaimRecord | null>
-  /** Null when the claim does not exist or is no longer pending. */
-  setCheck(
-    id: string,
-    input: {
-      check: GovVerificationCheck
-      status: GovCheckStatus
-      evidence: string | null
-      note: string | null
-      actorId: string | null
-    },
-  ): Promise<GovClaimRecord | null>
-  /**
-   * Persists only the claim transition and the user link; provisioning and the role grant belong to the
-   * service. Null when the claim does not exist or is not pending.
-   */
-  approve(
-    id: string,
-    input: { userId: string; actorId: string | null; note: string | null },
-  ): Promise<GovClaimRecord | null>
-  /** Null when the claim does not exist or is not pending. */
-  reject(
-    id: string,
-    input: { reason: string; actorId: string | null },
-  ): Promise<GovClaimRecord | null>
 }
 
 export function toChecksDTO(

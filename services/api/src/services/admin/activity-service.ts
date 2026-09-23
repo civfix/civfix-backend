@@ -13,37 +13,14 @@ import type {
   ActivityListResponse,
 } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
-
-export type ActivitySource = "audit" | "report" | "cleanup" | "mail_event"
-
-export interface ActivitySourceRecord {
-  source: ActivitySource
-  id: string
-  ts: Date
-  who: string
-  where: string
-  action?: string | null
-  eventType?: string | null
-  subject?: string | null
-}
-
-export type ActivityFilter = "all" | ActivityKind
-
-export type ActivitySort = "newest" | "oldest"
-
-export interface ListActivityArgs {
-  q: string | null
-  filter: ActivityFilter
-  sort: ActivitySort
-  cursor: string | null
-  limit: number
-}
-
-export interface ActivityRepository {
-  list(
-    args: ListActivityArgs,
-  ): Promise<{ records: ActivitySourceRecord[]; nextCursor: string | null }>
-}
+import type {
+  ActivityFilter,
+  ActivityRepository,
+  ActivitySort,
+  ActivitySource,
+  ActivitySourceRecord,
+  ListActivityArgs,
+} from "./activity-repository.js"
 
 /**
  * `filter` / `sort` are free-form strings on the wire (ActivityListQuerySchema), so an unrecognized value

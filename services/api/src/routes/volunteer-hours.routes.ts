@@ -20,9 +20,9 @@ import {
   makeVolunteerHoursService,
   type CleanupHoursLookup,
   type HoursModerationSink,
-  type VolunteerHoursRepository,
   type VolunteerHoursService,
 } from "../services/volunteer-hours-service.js"
+import type { VolunteerHoursRepository } from "../services/volunteer-hours-repository.js"
 import { toHoursAnomalyModerationItem } from "../services/volunteer-hours-anomaly.js"
 import { makeModerationService } from "../services/admin/moderation-service.js"
 import { makeDrizzleModerationRepository } from "../services/admin/moderation-repository.drizzle.js"

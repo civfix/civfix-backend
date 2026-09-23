@@ -20,7 +20,7 @@ import { makeDrizzleActivityRepository } from "../../src/services/admin/activity
 import type {
   ActivityRepository,
   ListActivityArgs,
-} from "../../src/services/admin/activity-service.js"
+} from "../../src/services/admin/activity-repository.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()

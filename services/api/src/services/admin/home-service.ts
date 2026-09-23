@@ -6,7 +6,7 @@ import type {
   HomeSummaryResponse,
   ReportStatus,
 } from "@civfix/shared"
-import type { AnalyticsRepository } from "./analytics-types.js"
+import type { AnalyticsRepository } from "./analytics-repository.js"
 import { buildCoverage, buildPinsByWeek, round1 } from "./analytics-shaping.js"
 import { PINS_BY_WEEK_WEEKS } from "./analytics-types.js"
 import type {

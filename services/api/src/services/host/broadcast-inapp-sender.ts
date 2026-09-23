@@ -2,7 +2,8 @@ import type { BroadcastKind, NotificationType } from "@civfix/shared"
 import type { BroadcastVarValues } from "@civfix/shared/host"
 import type { FastifyBaseLogger } from "fastify"
 import { isWithinQuietHours, pushGateAllows, type PushGateMode } from "../notification-helpers.js"
-import type { NotificationPrefsRecord, NotificationService } from "../notification-service.js"
+import type { NotificationService } from "../notification-service.js"
+import type { NotificationPrefsRecord } from "../notification-repository.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 import type {
   BroadcastRecord,

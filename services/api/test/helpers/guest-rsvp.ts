@@ -10,7 +10,7 @@ import type {
   GuestRsvpRepository,
   InsertGuestOtpArgs,
   UpsertGuestArgs,
-} from "../../src/services/guest-rsvp-service.js"
+} from "../../src/services/guest-rsvp-repository.js"
 import type { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
 import type { GuestCountSource } from "./cleanups.js"
 

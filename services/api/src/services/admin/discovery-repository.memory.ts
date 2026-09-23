@@ -3,17 +3,17 @@
 
 import { randomUUID } from "node:crypto"
 import { pageInMemoryById } from "./pagination.js"
-import {
-  computeContactState,
-  type DiscoveryContactRecord,
-  type DiscoveryContactSuggestionRecord,
-  type DiscoveryDetailRecord,
-  type DiscoveryNoteRecord,
-  type DiscoveryRepository,
-  type DiscoverySamplePinRecord,
-  type DiscoveryTaskRecord,
-  type ListDiscoveryArgs,
-} from "./discovery-service.js"
+import { computeContactState } from "./discovery-service.js"
+import type {
+  DiscoveryContactRecord,
+  DiscoveryContactSuggestionRecord,
+  DiscoveryDetailRecord,
+  DiscoveryNoteRecord,
+  DiscoveryRepository,
+  DiscoverySamplePinRecord,
+  DiscoveryTaskRecord,
+  ListDiscoveryArgs,
+} from "./discovery-repository.js"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 
 export interface SeededDiscoveryTask {

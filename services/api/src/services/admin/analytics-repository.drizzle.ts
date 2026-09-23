@@ -13,7 +13,7 @@ import type {
   TopContributorRow,
   TopJurisdictionRow,
   WeekBucket,
-} from "./analytics-types.js"
+} from "./analytics-repository.js"
 import type { ReportCategory } from "@civfix/shared"
 import { jurisdictionHasAnyContactExpr } from "./sql-fragments.js"
 

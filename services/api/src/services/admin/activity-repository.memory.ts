@@ -9,12 +9,12 @@
 
 import { AUDIT_READ_ACTIONS } from "./audit.js"
 import { pageInMemoryById } from "./pagination.js"
-import {
-  classifyActivity,
-  type ActivityRepository,
-  type ActivitySourceRecord,
-  type ListActivityArgs,
-} from "./activity-service.js"
+import { classifyActivity } from "./activity-service.js"
+import type {
+  ActivityRepository,
+  ActivitySourceRecord,
+  ListActivityArgs,
+} from "./activity-repository.js"
 
 const READ_ACTIONS: ReadonlySet<string> = new Set(AUDIT_READ_ACTIONS)
 

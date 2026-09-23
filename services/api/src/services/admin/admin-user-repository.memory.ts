@@ -8,7 +8,7 @@ import type {
   UserEventRecord,
   UserMessageRecord,
   UserReportRecord,
-} from "./admin-user-service.js"
+} from "./admin-user-repository.js"
 import type { AdminUserCounts, Role, UserStatus } from "@civfix/shared"
 
 export interface RecordedUserAudit {

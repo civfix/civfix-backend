@@ -21,10 +21,10 @@ import {
 } from "./_route-utils.js"
 import {
   makeGovClaimsService,
-  type GovClaimsRepository,
   type ProvisionedUser,
   type UserProvisioner,
 } from "../../services/admin/gov-claims-service.js"
+import type { GovClaimsRepository } from "../../services/admin/gov-claims-repository.js"
 import { makeDrizzleGovClaimsRepository } from "../../services/admin/gov-claims-repository.drizzle.js"
 import type { RevokeAllSessions } from "../../services/admin/role-change.js"
 import type { UserRecord, UserStore } from "../../auth/stores.js"

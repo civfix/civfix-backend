@@ -2,15 +2,15 @@ import { randomUUID } from "node:crypto"
 import { isUuid } from "../../db/cursor-helpers.js"
 import { pageInMemoryById } from "./pagination.js"
 import type {
-  AdminReporterRecord,
   AdminReportMediaRecord,
   AdminReportRecord,
   AdminReportRepository,
   AdminReportRoutingRecord,
   AdminReportTimelineRecord,
+  AdminReporterRecord,
   ListReportsArgs,
   ReportOutreachState,
-} from "./admin-report-types.js"
+} from "./admin-report-repository.js"
 import type {
   AdminReportCounts,
   AdminReportStatus,

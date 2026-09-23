@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 import { makeDrizzleJurisdictionContactsRepository } from "../../src/services/admin/jurisdiction-contacts-repository.drizzle.js"
 import { makeDrizzleDiscoveryRepository } from "../../src/services/admin/discovery-repository.drizzle.js"
-import type { ListDirectoryArgs } from "../../src/services/admin/jurisdiction-contacts-types.js"
+import type { ListDirectoryArgs } from "../../src/services/admin/jurisdiction-contacts-repository.js"
 import type { Sql } from "../../src/db/client.js"
 
 const DEFAULT_VIEW: ListDirectoryArgs = {

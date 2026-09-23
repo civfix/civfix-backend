@@ -15,7 +15,7 @@ import {
 } from "../../src/services/chat-reply-hydration.js"
 import { aroundLimits } from "../../src/services/chat-history-window.js"
 import { toTombstoneDTO } from "../../src/services/chat-tombstone.js"
-import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
+import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-repository.js"
 import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.drizzle.js"
 import { visibleAfterHides } from "../../src/services/conversation-hides-repository.memory.js"
 import type { TimeCursor } from "../../src/db/cursor-helpers.js"

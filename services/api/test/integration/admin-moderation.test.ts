@@ -6,7 +6,7 @@ import {
   insertModerationItem,
   makeDrizzleModerationRepository,
 } from "../../src/services/admin/moderation-repository.drizzle.js"
-import type { ModerationRepository } from "../../src/services/admin/moderation-service.js"
+import type { ModerationRepository } from "../../src/services/admin/moderation-repository.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()

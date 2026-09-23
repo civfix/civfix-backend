@@ -10,7 +10,7 @@ import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleModerationRepository } from "../../src/services/admin/moderation-repository.drizzle.js"
-import type { ModerationRepository } from "../../src/services/admin/moderation-service.js"
+import type { ModerationRepository } from "../../src/services/admin/moderation-repository.js"
 
 const pg = await withPg()
 
