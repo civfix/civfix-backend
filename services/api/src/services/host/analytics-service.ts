@@ -2,7 +2,6 @@ import {
   ANALYTICS_SUPPRESSION_K,
   MAX_PORTFOLIO_TOP_VOLUNTEERS,
   type AnalyticsRange,
-  type BreakdownRow,
   type BroadcastChannel,
   type EventAnalyticsBroadcastsResponse,
   type EventAnalyticsCheckinsResponse,
@@ -28,8 +27,6 @@ import {
   suppressRate,
   type DayCount,
   type DayRange,
-  type DerivedBreakdownRow,
-  type DerivedPanel,
   type KeyCount,
 } from "@civfix/shared/host"
 import type { AnalyticsRepository, LabeledKeyCount } from "./analytics-repository.drizzle.js"
@@ -58,6 +55,7 @@ import {
   seriesOf,
   shiftDayKey,
   toFunnelSteps,
+  toPanel,
   toRate,
   toSeries,
   toSuppressedRate,
@@ -539,18 +537,4 @@ function sumMetric(rows: readonly MetricRow[], metric: string, bucket?: string):
   return rows
     .filter((row) => row.metric === metric && (bucket === undefined || row.bucket === bucket))
     .reduce((acc, row) => acc + row.value, 0)
-}
-
-function toPanel(panel: DerivedPanel<DerivedBreakdownRow>): Panel {
-  return {
-    panelSuppressed: panel.panelSuppressed,
-    rows: panel.rows.map(
-      (row): BreakdownRow => ({
-        key: row.key,
-        label: row.key,
-        value: row.value,
-        suppressed: row.suppressed,
-      }),
-    ),
-  }
 }

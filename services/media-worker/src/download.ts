@@ -1,5 +1,6 @@
 import type { Storage } from "@civfix/shared/interfaces"
 import { normalizeEtag, readEtag } from "@civfix/api/media-repo"
+import { concatChunks, readCappedChunks, type CappedChunks } from "@civfix/api/capped-body"
 import { loadHttpsProxy } from "./config.js"
 
 export interface DownloadedObject {
@@ -130,8 +131,6 @@ async function readWholeBody(res: Response, r2Key: string, maxBytes: number): Pr
   return buf
 }
 
-// The cap is enforced while streaming, so a body that lies about (or omits) its content-length is cut
-// off at maxBytes instead of being buffered whole.
 async function readCappedStream(
   body: ReadableStream<Uint8Array>,
   r2Key: string,
@@ -139,38 +138,16 @@ async function readCappedStream(
   controller: AbortController,
 ): Promise<Uint8Array> {
   const reader = body.getReader()
-  const chunks: Uint8Array[] = []
-  let total = 0
+  let read: CappedChunks | null
   try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (value) {
-        total += value.byteLength
-        if (total > maxBytes) {
-          controller.abort()
-          throw new DownloadTooLargeError(maxBytes)
-        }
-        chunks.push(value)
-      }
-    }
+    read = await readCappedChunks(reader, maxBytes, () => controller.abort())
   } catch (err) {
-    if (err instanceof DownloadTooLargeError) throw err
     throw new StorageUnavailableError(r2Key, err)
   } finally {
     reader.releaseLock()
   }
-  return concatChunks(chunks, total)
-}
-
-function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) {
-    out.set(c, offset)
-    offset += c.byteLength
-  }
-  return out
+  if (read === null) throw new DownloadTooLargeError(maxBytes)
+  return concatChunks(read.chunks, read.total)
 }
 
 async function headEtag(storage: Storage, r2Key: string): Promise<string | null> {

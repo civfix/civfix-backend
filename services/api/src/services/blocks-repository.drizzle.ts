@@ -34,6 +34,14 @@ export interface BlocksRepository {
   listBlocked(blockerId: string, args?: ListBlockedArgs): Promise<ListBlockedPage>
 }
 
+export function bindBlockedIdsAmong(
+  repo: BlocksRepository,
+): ((actorId: string, candidateIds: string[]) => Promise<Set<string>>) | undefined {
+  const batch = repo.blockedIdsAmong
+  if (!batch) return undefined
+  return (actorId, candidateIds) => batch.call(repo, actorId, candidateIds)
+}
+
 export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
   return {
     async block(blockerId: string, blockedId: string): Promise<void> {

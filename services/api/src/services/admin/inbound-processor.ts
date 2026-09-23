@@ -30,6 +30,7 @@ import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
 import { ATTACHMENT_FILENAME_MAX_CHARS, safeFilenameChars } from "../../lib/filename.js"
 import { sha256HexSync } from "../../lib/hash.js"
+import { passThroughRejection, settleWithin } from "../../lib/timeout.js"
 
 export { detectBounce, resolveMessageId }
 
@@ -67,20 +68,6 @@ const CONTENT_DIGEST_HEX_CHARS = 32
 
 function contentDigest(bytes: Uint8Array): string {
   return sha256HexSync(bytes).slice(0, CONTENT_DIGEST_HEX_CHARS)
-}
-
-async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error("inbound parse timed out")), ms)
-      }),
-    ])
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-  }
 }
 
 export type ProcessOutcome = "threaded" | "inbox" | "replay" | "skipped" | "failed"
@@ -133,7 +120,10 @@ export async function processInboundObject(
 
   let mail: ParsedMail
   try {
-    mail = await withTimeout(inboundMail.parse(bytes), INBOUND_PARSE_TIMEOUT_MS)
+    mail = await settleWithin(inboundMail.parse(bytes), INBOUND_PARSE_TIMEOUT_MS, {
+      timeoutError: () => new Error("inbound parse timed out"),
+      normalizeError: passThroughRejection,
+    })
   } catch (err) {
     logger.warn({ key, err: errorText(err) }, "inbound: parse failed; parked under inbound/failed/")
     await moveToFailed(storage, key, bytes)

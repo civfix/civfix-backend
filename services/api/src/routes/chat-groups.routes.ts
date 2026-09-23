@@ -32,6 +32,7 @@ import {
   type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
 import { makeChatGroupService, type ChatGroupService } from "../services/chat-group-service.js"
+import { nudgeThreads } from "../services/threads-nudge.js"
 import {
   makeDrizzleChatRepository,
   type ChatRepository,
@@ -102,16 +103,6 @@ export async function registerChatGroupRoutes(
       ? overrides.conversationMutes
       : (mutesRepo ??= makeConversationMutesRepository(container.getDb().sql))
 
-  /**
-   * A room the user just joined or was added to otherwise only surfaces on the client's next manual
-   * refresh. Carries no room id, so it is safe to fire at anyone whose membership may have changed.
-   */
-  const nudgeThreads = (userId: string): void => {
-    void Promise.resolve(container.userChannel?.publishToUser(userId, { topic: "threads" })).catch(
-      () => {},
-    )
-  }
-
   const svc = (): ChatGroupService => {
     const mutes = getMutes()
     return makeChatGroupService({
@@ -161,7 +152,7 @@ export async function registerChatGroupRoutes(
       const userId = requireAuth(request)
       const { id } = parse(GetChatGroupRequestSchema, request.params)
       const dto = await svc().joinGroup(userId, id)
-      nudgeThreads(userId)
+      nudgeThreads(container.userChannel, userId)
       reply.status(200).send(dto)
     },
   )
@@ -185,7 +176,7 @@ export async function registerChatGroupRoutes(
       // `added`, not the returned page, decides who is nudged: an invitee the block filter dropped must
       // learn nothing, and in a group at or over GROUP_MEMBERS_DEFAULT_LIMIT members a fresh member sorts
       // past page one, so a page-derived set skips exactly the big rooms.
-      for (const memberId of added) nudgeThreads(memberId)
+      for (const memberId of added) nudgeThreads(container.userChannel, memberId)
       reply.status(200).send(page)
     },
   )

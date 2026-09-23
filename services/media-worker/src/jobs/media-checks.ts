@@ -2,9 +2,9 @@ import type { MediaKind, MediaStatus } from "@civfix/shared"
 import type { AbuseChecks, Storage, StorageHead } from "@civfix/shared/interfaces"
 import type { MediaResultPatch, MediaWorkerAsset, MediaWorkerRepo } from "@civfix/api/media-repo"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
+import { settleWithin } from "@civfix/api/timeout"
 import type { WorkerLimits } from "../config.js"
 import { DownloadTooLargeError, type DownloadedObject, type DownloadFn } from "../download.js"
-import { settleWithin } from "../timeout.js"
 import {
   resolveJobObs,
   type JobObs,

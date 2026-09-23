@@ -52,6 +52,20 @@ export function makeFailOpenMuteCheck(
   }
 }
 
+/**
+ * Probed, never bound to an empty-Set default: the fan-out treats a present `mutedUserIdsFor` as
+ * authoritative and skips the per-user `isMuted`, so a `new Set()` fallback would silently unmute the
+ * whole room over a mutes store without the batch method.
+ */
+export function bindMutedUserIdsFor(
+  repo: ConversationMutesRepository | undefined,
+  roomKind: ConversationMuteRoomKind,
+): ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined {
+  const batch = repo?.mutedUserIdsFor
+  if (!repo || !batch) return undefined
+  return (roomId, userIds) => batch.call(repo, roomKind, roomId, userIds)
+}
+
 export function makeConversationMutesRepository(sql: Sql): ConversationMutesRepository {
   return {
     async isMuted(

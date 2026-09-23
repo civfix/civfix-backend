@@ -1,5 +1,4 @@
 import type { Queryable, Sql } from "../db/client.js"
-import { publicAuthorIdentity } from "./public-author.js"
 import type {
   ChatMessageDTO,
   ChatMessageKind,
@@ -11,12 +10,8 @@ import type {
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
-import {
-  loadChatReactions,
-  loadChatReactionsFor,
-  toggleChatReaction,
-} from "./chat-reactions.drizzle.js"
-import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions-repository.drizzle.js"
+import { loadChatReactions, toggleChatReaction } from "./chat-reactions.drizzle.js"
+import { loadChatMentions } from "./chat-mentions-repository.drizzle.js"
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
 import type { PresignMedia } from "./media-presign.js"
 import { mapSystemRow } from "./report-chat-repository.drizzle.js"
@@ -29,6 +24,13 @@ import {
   type RoomScopeSql,
 } from "./room-messages-repository.drizzle.js"
 import { liveMessageIds, toTombstoneDTO } from "./chat-tombstone.js"
+import {
+  loadMessageExtras,
+  messageCoreFields,
+  replyFor,
+  senderColumns,
+  type MessageCoreRow,
+} from "./chat-message-core.drizzle.js"
 
 export interface ReportCityContext {
   geoid: string
@@ -166,28 +168,15 @@ export interface SoftDeleteOpts {
 
 export { PIN_LIST_CAP }
 
-interface ChatRowSelect {
-  id: string
+interface ChatRowSelect extends MessageCoreRow {
   cleanup_id: string | null
   report_id: string | null
   group_id: string | null
   sender_id: string | null
-  body: string | null
-  kind: ChatMessageKind
   attachments: unknown[] | null
-  created_at: Date
-  edited_at: Date | null
-  deleted_at: Date | null
-  reply_to_id: string | null
-  pinned_at: Date | null
   system_status: string | null
   system_kind: string | null
   system_body: string | null
-  sender_display_name: string | null
-  sender_handle: string | null
-  sender_bio: string | null
-  sender_avatar_url: string | null
-  sender_deleted_at: Date | null
   forwarded_to_city?: boolean
 }
 
@@ -231,13 +220,6 @@ function buildMessageDTO(
       system_body: r.system_body,
     })
   }
-  const author = publicAuthorIdentity({
-    id: r.sender_id!,
-    displayName: r.sender_display_name ?? "",
-    handle: r.sender_handle,
-    avatarUrl: r.sender_avatar_url,
-    deletedAt: r.sender_deleted_at,
-  })
   const isReport = r.report_id !== null
   const isGroup = r.group_id !== null
   return {
@@ -245,28 +227,7 @@ function buildMessageDTO(
     cleanupId: r.cleanup_id ?? r.report_id ?? r.group_id!,
     ...(isReport ? { roomKind: "report" as const } : {}),
     ...(isGroup ? { roomKind: "group" as const } : {}),
-    from: {
-      id: r.sender_id!,
-      name: author.name,
-      handle: author.handle,
-      bio: author.deleted ? null : r.sender_bio,
-      avatar: author.avatar,
-      ...(author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
-      followers: 0,
-      following: 0,
-      isFollowing: false,
-      ...(author.deleted ? { deleted: true } : {}),
-    },
-    ...(r.body !== null ? { body: r.body } : {}),
-    kind: r.kind,
-    attachments,
-    reactions,
-    mentions,
-    createdAt: r.created_at.toISOString(),
-    ...(r.edited_at !== null ? { editedAt: r.edited_at.toISOString() } : {}),
-    ...(r.deleted_at !== null ? { deletedAt: r.deleted_at.toISOString() } : {}),
-    ...(r.reply_to_id !== null ? { replyToId: r.reply_to_id, replyTo: replyTo ?? null } : {}),
-    ...(r.pinned_at != null ? { pinnedAt: r.pinned_at.toISOString() } : {}),
+    ...messageCoreFields(r, r.sender_id!, { attachments, reactions, mentions, replyTo }),
     ...(poll != null ? { poll } : {}),
     mine: viewerUserId != null && r.sender_id === viewerUserId,
     ...(isReport ? cityForwardFields(r, reportCity) : {}),
@@ -291,13 +252,6 @@ export function cityForwardFields(
         }
       : null
   return { forwardedToCity, cityMention }
-}
-
-function replyFor(
-  row: Pick<ChatRowSelect, "reply_to_id">,
-  replyByTarget: Map<string, ReplyToDTO>,
-): ReplyToDTO | null {
-  return row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null
 }
 
 function forwardedColumn(sql: Queryable, alias: string) {
@@ -326,11 +280,7 @@ function chatColumns(sql: Queryable, includeForward: boolean) {
     cm.system_status,
     cm.system_kind,
     cm.system_body,
-    u.display_name AS sender_display_name,
-    u.handle AS sender_handle,
-    u.bio AS sender_bio,
-    u.avatar_url AS sender_avatar_url,
-    u.deleted_at AS sender_deleted_at
+    ${senderColumns(sql)}
     ${forward}
   `
 }
@@ -355,11 +305,7 @@ function selectChatRowFrom(tag: Queryable, cte: string, includeForward: boolean)
       ${tag(cte)}.system_status,
       ${tag(cte)}.system_kind,
       ${tag(cte)}.system_body,
-      u.display_name AS sender_display_name,
-      u.handle AS sender_handle,
-      u.bio AS sender_bio,
-      u.avatar_url AS sender_avatar_url,
-      u.deleted_at AS sender_deleted_at
+      ${senderColumns(tag)}
       ${forward}
     FROM ${tag(cte)}
     LEFT JOIN users u ON u.id = ${tag(cte)}.sender_id
@@ -390,31 +336,16 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     viewerUserId: string | null,
     reportCity: ReportCityContext | null,
   ): Promise<ChatMessageDTO[]> {
-    const ids = liveMessageIds(page)
     const pollIds = page.filter((r) => r.kind === "poll" && r.deleted_at === null).map((r) => r.id)
-    const [
-      attachmentsByMessage,
-      reactionsByMessage,
-      mentionsByMessage,
-      replyByTarget,
-      pollsByMessage,
-    ] = await Promise.all([
-      presign
-        ? loadChatAttachments(sql, ids, presign, viewerUserId)
-        : Promise.resolve(new Map<string, MediaDTO[]>()),
-      loadChatReactionsFor(sql, ids, viewerUserId),
-      loadChatMentionsFor(sql, ids),
-      replyMapForRows(sql, "chat_messages", page),
+    const [partsFor, pollsByMessage] = await Promise.all([
+      loadMessageExtras(sql, "chat_messages", page, viewerUserId, presign),
       loadPollsFor(sql, pollIds, viewerUserId),
     ])
     return page.map((r) =>
       toMessageDTO(r, {
-        reactions: reactionsByMessage.get(r.id) ?? [],
-        mentions: mentionsByMessage.get(r.id) ?? [],
+        ...partsFor(r),
         viewerUserId,
-        attachments: attachmentsByMessage.get(r.id) ?? [],
         reportCity,
-        replyTo: replyFor(r, replyByTarget),
         poll: pollsByMessage.get(r.id) ?? null,
       }),
     )

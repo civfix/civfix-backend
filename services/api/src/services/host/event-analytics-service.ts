@@ -8,7 +8,6 @@ import {
   MAX_EVENT_ANALYTICS_ARRIVAL_BUCKETS,
   MAX_EVENT_ANALYTICS_PANEL_ROWS,
   MAX_EVENT_ANALYTICS_SERIES_POINTS,
-  type BreakdownRow,
   type EventAnalyticsPhase,
   type EventAnalyticsScope,
   type GetEventAnalyticsResponse,
@@ -55,6 +54,7 @@ import {
   seriesOf,
   shiftDayKey,
   toFunnelSteps,
+  toPanel,
   toRate,
   toSeries,
 } from "./host-analytics-shaping.js"
@@ -89,18 +89,8 @@ export interface EventAnalyticsService {
   ): Promise<GetEventAnalyticsResponse>
 }
 
-function toPanel(panel: DerivedPanel<DerivedBreakdownRow>): Panel {
-  return {
-    panelSuppressed: panel.panelSuppressed,
-    rows: panel.rows.slice(0, MAX_EVENT_ANALYTICS_PANEL_ROWS).map(
-      (row): BreakdownRow => ({
-        key: row.key,
-        label: row.key,
-        value: row.value,
-        suppressed: row.suppressed,
-      }),
-    ),
-  }
+function eventPanel(panel: DerivedPanel<DerivedBreakdownRow>): Panel {
+  return toPanel(panel, MAX_EVENT_ANALYTICS_PANEL_ROWS)
 }
 
 function tailSum(points: readonly { value: number | null }[], days: number): number | null {
@@ -118,7 +108,7 @@ function cardSlotPanel(
   registeredPublishable: boolean,
   full: boolean,
 ): Panel {
-  const panel = toPanel(breakdown(rows, { totalPublishable: registeredPublishable }))
+  const panel = eventPanel(breakdown(rows, { totalPublishable: registeredPublishable }))
   if (full) return panel
   return { ...panel, rows: panel.rows.slice(0, EVENT_ANALYTICS_CARD_SLOT_ROWS) }
 }
@@ -269,7 +259,7 @@ function shapeResponse(
       bySlot: cardSlotPanel(inputs.registrationsBySlot, registeredPublishable, full),
       ...(full
         ? {
-            bySource: toPanel(
+            bySource: eventPanel(
               breakdown(
                 inputs.bySource.map((row) => ({ key: row.source, count: row.seats })),
                 { totalPublishable: registeredPublishable },
@@ -284,12 +274,12 @@ function shapeResponse(
     },
     eventDay: {
       arrivals: full ? arrivals : arrivals.slice(-EVENT_ANALYTICS_CARD_SERIES_POINTS),
-      ...(full ? { bySlot: toPanel(breakdown(inputs.checkinsBySlot)) } : {}),
+      ...(full ? { bySlot: eventPanel(breakdown(inputs.checkinsBySlot)) } : {}),
     },
     impact: full
       ? {
-          hoursBuckets: toPanel(breakdown(inputs.hoursBuckets)),
-          reportStatuses: toPanel(breakdown(inputs.reportStatuses)),
+          hoursBuckets: eventPanel(breakdown(inputs.hoursBuckets)),
+          reportStatuses: eventPanel(breakdown(inputs.reportStatuses)),
         }
       : {},
     comparison: inputs.comparison,

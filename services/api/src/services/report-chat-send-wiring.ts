@@ -4,12 +4,13 @@ import type { Container } from "../di.js"
 import { makeReportChatRepository } from "./report-chat-repository.drizzle.js"
 import { makeReportChatNotifier } from "./report-chat-notifier.js"
 import { makeChatMentionNotifier, type ChatBellDeps } from "./chat-bells.js"
-import { makeNotificationService } from "./notification-service.js"
-import { makeDrizzleNotificationRepository } from "./notification-repository.drizzle.js"
+import { makeRouteNotificationService } from "./route-notifier.js"
 import {
+  bindMutedUserIdsFor,
   makeConversationMutesRepository,
   makeFailOpenMuteCheck,
 } from "./conversation-mutes-repository.drizzle.js"
+import { bindBlockedIdsAmong } from "./blocks-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "./cleanup-repository.drizzle.js"
 import { makeChatGroupRepository } from "./chat-group-repository.drizzle.js"
 import { makeContainerReportCityForward } from "./report-city-forward-wiring.js"
@@ -59,35 +60,17 @@ export function makeContainerReportChatSendDeps(
   const reportChatRepo = makeReportChatRepository(sql)
   const logger = options.logger
 
-  const notificationService = makeNotificationService({
-    repo: makeDrizzleNotificationRepository(sql),
-    pushSender: container.pushSender,
-    userChannel: container.userChannel,
-    ...(logger !== undefined ? { logger } : {}),
-  })
+  const notificationService = makeRouteNotificationService(container, logger)
 
   const conversationMutes = makeConversationMutesRepository(sql)
   const isMutedFor = makeFailOpenMuteCheck(conversationMutes, logger)
 
-  const mutedUserIdsFor = (():
-    | ((roomId: string, userIds: string[]) => Promise<Set<string>>)
-    | undefined => {
-    const batch = conversationMutes.mutedUserIdsFor
-    if (!batch) return undefined
-    return (roomId, userIds) => batch.call(conversationMutes, "report", roomId, userIds)
-  })()
+  const mutedUserIdsFor = bindMutedUserIdsFor(conversationMutes, "report")
 
   const isBlockedEitherWay = (a: string, b: string): Promise<boolean> =>
     container.getBlocksRepo().isBlockedEitherWay(a, b)
 
-  const blockedIdsFor = (():
-    | ((actorId: string, candidateIds: string[]) => Promise<Set<string>>)
-    | undefined => {
-    const repo = container.getBlocksRepo()
-    const batch = repo.blockedIdsAmong
-    if (!batch) return undefined
-    return (actorId, candidateIds) => batch.call(repo, actorId, candidateIds)
-  })()
+  const blockedIdsFor = bindBlockedIdsAmong(container.getBlocksRepo())
 
   let cleanupRepo: ReturnType<typeof makeDrizzleCleanupRepository> | undefined
   let groupRepo: ReturnType<typeof makeChatGroupRepository> | undefined

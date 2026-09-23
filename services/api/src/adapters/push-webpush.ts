@@ -7,6 +7,7 @@ import {
   type PushAddressResolver,
 } from "../services/push-token-policy.js"
 import { mapWithLimit } from "../lib/concurrency.js"
+import { passThroughRejection, settleWithin } from "../lib/timeout.js"
 import { Agent } from "node:https"
 import type WebPush from "web-push"
 
@@ -148,22 +149,13 @@ export class WebPushDeadlineError extends Error {
   }
 }
 
-async function withDeadline<T>(work: Promise<T>, ms: number, onExpire: () => void): Promise<T> {
-  void work.catch(() => {})
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const guard = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      onExpire()
-      reject(new WebPushDeadlineError(ms))
-    }, ms)
-    timer.unref?.()
+function withDeadline<T>(work: Promise<T>, ms: number, onExpire: () => void): Promise<T> {
+  return settleWithin(work, ms, {
+    timeoutError: () => new WebPushDeadlineError(ms),
+    onElapsed: onExpire,
+    unref: true,
+    normalizeError: passThroughRejection,
   })
-
-  try {
-    return await Promise.race([work, guard])
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-  }
 }
 
 export function makeWebPushDispatcher(

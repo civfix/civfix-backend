@@ -1,8 +1,16 @@
-import type { EventPhase, FunnelStep, SeriesPoint, SuppressedRate } from "@civfix/shared"
+import type {
+  BreakdownRow,
+  EventPhase,
+  FunnelStep,
+  Panel,
+  SeriesPoint,
+  SuppressedRate,
+} from "@civfix/shared"
 import {
   eventPhase,
   suppressRate,
   type DayCount,
+  type DerivedBreakdownRow,
   type DerivedPanel,
   type SeriesClosure,
 } from "@civfix/shared/host"
@@ -98,4 +106,19 @@ export function seriesOf(rows: readonly MetricRow[], metric: string): DayCount[]
     byDay.set(row.day, (byDay.get(row.day) ?? 0) + row.value)
   }
   return [...byDay].map(([day, count]) => ({ day, count }))
+}
+
+export function toPanel(panel: DerivedPanel<DerivedBreakdownRow>, maxRows?: number): Panel {
+  const rows = maxRows === undefined ? panel.rows : panel.rows.slice(0, maxRows)
+  return {
+    panelSuppressed: panel.panelSuppressed,
+    rows: rows.map(
+      (row): BreakdownRow => ({
+        key: row.key,
+        label: row.key,
+        value: row.value,
+        suppressed: row.suppressed,
+      }),
+    ),
+  }
 }

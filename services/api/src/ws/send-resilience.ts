@@ -2,6 +2,7 @@ import type { FastifyBaseLogger } from "fastify"
 import type { ChatMessageDTO, RoomKind, WsServerMessage } from "@civfix/shared"
 import { unrefSleep } from "../lib/sleep.js"
 import { MS_PER_SECOND } from "../lib/time.js"
+import { settleWithin } from "../lib/timeout.js"
 
 export const SEND_DEDUPE_TTL_SECONDS = 24 * 60 * 60
 
@@ -156,21 +157,7 @@ export interface SendResilience {
 const OPEN: SendReservation = { state: "open" }
 
 function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
-  work.catch(() => undefined)
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timed out")), ms)
-    if (typeof timer.unref === "function") timer.unref()
-    work.then(
-      (value) => {
-        clearTimeout(timer)
-        resolve(value)
-      },
-      (err: unknown) => {
-        clearTimeout(timer)
-        reject(err instanceof Error ? err : new Error(String(err)))
-      },
-    )
-  })
+  return settleWithin(work, ms, { timeoutError: () => new Error("timed out"), unref: true })
 }
 
 export function makeRateLimitedWarn(

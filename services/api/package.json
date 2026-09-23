@@ -23,7 +23,9 @@
     "./migrate": "./src/db/migrate.ts",
     "./env-parsers": "./src/env/parsers.ts",
     "./concurrency": "./src/lib/concurrency.ts",
-    "./time": "./src/lib/time.ts"
+    "./time": "./src/lib/time.ts",
+    "./capped-body": "./src/lib/capped-body.ts",
+    "./timeout": "./src/lib/timeout.ts"
   },
   "scripts": {
     "build": "tsup",
