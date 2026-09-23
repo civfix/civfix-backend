@@ -4,7 +4,7 @@ import type { ChatMessageDTO } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../src/di.js"
 import type { OnReportMessage } from "../../src/ws/types.js"
-import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
+import type { ReportChatRepository } from "../../src/services/report-chat-repository.js"
 import type { DiscussionReportView } from "../../src/services/discussion-repository.js"
 import type {
   AppendOutboundInput,

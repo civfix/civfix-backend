@@ -31,12 +31,9 @@ import type {
   EventHoursTotals,
   EventKpiRow,
   SourceSeats,
-} from "./analytics-repository.drizzle.js"
-import type {
-  EventAnalyticsFacts,
-  EventAnalyticsRepository,
-} from "./event-analytics-repository.drizzle.js"
-import type { MetricRow, MetricsRepository } from "./metrics-repository.drizzle.js"
+} from "./analytics-repository.js"
+import type { EventAnalyticsFacts, EventAnalyticsRepository } from "./event-analytics-repository.js"
+import type { MetricRow, MetricsRepository } from "./metrics-repository.js"
 import {
   hostAnalyticsCacheKey,
   perViewerScope,

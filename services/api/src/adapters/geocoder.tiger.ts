@@ -14,10 +14,8 @@
 import { AppError } from "@civfix/shared"
 import type { Geocoder } from "@civfix/shared/interfaces"
 import type { Sql } from "../db/client.js"
-import {
-  makeDrizzleJurisdictionRepository,
-  type JurisdictionRepository,
-} from "../services/jurisdiction-repository.drizzle.js"
+import { makeDrizzleJurisdictionRepository } from "../services/jurisdiction-repository.drizzle.js"
+import type { JurisdictionRepository } from "../services/jurisdiction-repository.js"
 
 /** A fixed public Census code list, so it lives in-process rather than in a lookup table. */
 const STATE_FIPS_TO_USPS: Readonly<Record<string, string>> = {

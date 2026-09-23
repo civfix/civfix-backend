@@ -16,11 +16,11 @@ import { parse, paramsOverBody } from "../_validate.js"
 import type { WriteAuditInput } from "../../services/admin/audit.js"
 import { insertAuditRow } from "../../services/admin/audit-repository.drizzle.js"
 import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
-import {
-  makeDrizzleAdminEventPageRepository,
-  type AdminEventPageRepository,
-  type AdminEventPageRow,
-} from "../../services/host/admin-pages-repository.drizzle.js"
+import { makeDrizzleAdminEventPageRepository } from "../../services/host/admin-pages-repository.drizzle.js"
+import type {
+  AdminEventPageRepository,
+  AdminEventPageRow,
+} from "../../services/host/admin-pages-repository.js"
 import { makeDrizzleHostRegistrationRepository } from "../../services/host/registration-repository.drizzle.js"
 import { toEventPageDTO } from "../../services/host/registration-dto.js"
 import { makeEventMediaPresigner } from "../../services/host/event-media.js"

@@ -25,14 +25,10 @@ import {
   REPORT_NOT_FOUND,
 } from "./chat-route-helpers.js"
 import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
-import {
-  makeDrizzleChatRepository,
-  type ChatRepository,
-} from "../services/chat-repository.drizzle.js"
-import {
-  makeReportChatRepository,
-  type ReportChatRepository,
-} from "../services/report-chat-repository.drizzle.js"
+import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
+import type { ChatRepository } from "../services/chat-repository.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import type { DiscussionRepository } from "../services/discussion-repository.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"

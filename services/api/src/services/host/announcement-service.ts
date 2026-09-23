@@ -22,7 +22,7 @@ import type { BroadcastRecord } from "./broadcast-types.js"
 import { ANNOUNCEMENT_VISIBLE_STATUSES } from "./broadcast-types.js"
 import { announcementPath, broadcastLinkWarnings } from "./broadcast-render.js"
 import type { BroadcastConfig, BroadcastService } from "./broadcast-service.js"
-import type { AnnouncementIdentityRepository } from "./announcement-identity-repository.drizzle.js"
+import type { AnnouncementIdentityRepository } from "./announcement-identity-repository.js"
 
 const ANNOUNCEMENT_DEFAULT_LIMIT = 20
 const ANNOUNCEMENT_MAX_LIMIT = 50

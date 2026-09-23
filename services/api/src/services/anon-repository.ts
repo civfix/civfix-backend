@@ -8,6 +8,7 @@ import type {
   ReportType,
 } from "@civfix/shared"
 import type { AnonTokenStore } from "../abuse/anon-token.js"
+import type { AnonAbuseReason } from "./anon-service.js"
 
 export interface CreateAnonReportTxArgs {
   reportId: string
@@ -61,4 +62,12 @@ export interface PendingAnonReport {
 export interface ClaimRepository extends AnonTokenStore {
   rotatePendingClaimCode(tokenId: string, claimCodeHash: string): Promise<PendingAnonReport | null>
   claimByCode(claimCodeHash: string, userId: string): Promise<{ reportId: string } | null>
+}
+
+export interface DrizzleAnonReportRepository extends AnonReportRepository {
+  raiseAbuseFlag(
+    subjectType: "report" | "anon_token",
+    subjectId: string,
+    reason: AnonAbuseReason,
+  ): Promise<void>
 }

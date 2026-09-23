@@ -19,19 +19,17 @@ import { requireAuth } from "../auth/context.js"
 import { parse, trimTextFields } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import { makeChatEditService, type IsRoomMemberFn } from "../services/chat-edit-service.js"
-import {
-  makeDrizzleChatRepository,
-  type ChatRepository,
-} from "../services/chat-repository.drizzle.js"
-import {
-  makeReportChatRepository,
-  type ReportChatRepository,
-} from "../services/report-chat-repository.drizzle.js"
+import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
+import type { ChatRepository } from "../services/chat-repository.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.js"
+import type { DmRepository } from "../services/dm-repository.js"
+import type { BlocksRepository } from "../services/blocks-repository.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import {
   canPostToGroup,
   makeChatGroupRepository,
-  type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
@@ -42,8 +40,6 @@ import { messageRoomMatches, REPORT_NOT_FOUND } from "./chat-route-helpers.js"
 import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { chatMentionDeps, type ChatMentionSeam } from "./chat-gateway-wiring.js"
-import type { DmRepository } from "../services/dm-repository.drizzle.js"
-import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
 import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
 import { makeChatPollRepository } from "../services/chat-poll-repository.drizzle.js"

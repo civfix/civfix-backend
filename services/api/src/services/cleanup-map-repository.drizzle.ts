@@ -1,21 +1,14 @@
 import type { CleanupPinDTO } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
-import type { CleanupBBox } from "./cleanup-repository.js"
 import {
   buildBboxFilter,
   buildVisibilityFilter,
   buildWhenFilter,
   goingScalar,
 } from "./cleanup-sql.js"
+import type { CleanupMapRepository } from "./cleanup-map-repository.js"
 
 export const MAP_CLEANUPS_LIMIT = 500
-
-export interface CleanupMapRepository {
-  listCleanupPins(
-    bbox: CleanupBBox,
-    when: "upcoming" | "past" | undefined,
-  ): Promise<CleanupPinDTO[]>
-}
 
 export function makeDrizzleCleanupMapRepository(sql: Sql): CleanupMapRepository {
   return {

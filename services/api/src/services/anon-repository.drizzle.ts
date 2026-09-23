@@ -24,9 +24,7 @@
 
 import type { Sql, TransactionSql } from "../db/client.js"
 import { generateToken, sha256Hex } from "../auth/crypto.js"
-import type { AnonAbuseReason } from "./anon-service.js"
 import type {
-  AnonReportRepository,
   AnonReportStatusRow,
   ClaimRepository,
   CreateAnonReportTxArgs,
@@ -46,6 +44,7 @@ import { insertModerationItem } from "./admin/moderation-repository.drizzle.js"
 import { claimableAsReportMedia } from "./media-bindings.js"
 import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
 import { isUniqueViolation } from "../db/pg-errors.js"
+import type { DrizzleAnonReportRepository } from "./anon-repository.js"
 
 const HELD_REVIEW_NOTE = "Awaiting automated review"
 
@@ -103,14 +102,6 @@ type StoredAnonSnapshot = Omit<AnonReportResponse, "claimCode">
 
 export interface DrizzleAnonReportRepositoryOptions {
   newClaimCode?: () => string
-}
-
-export interface DrizzleAnonReportRepository extends AnonReportRepository {
-  raiseAbuseFlag(
-    subjectType: "report" | "anon_token",
-    subjectId: string,
-    reason: AnonAbuseReason,
-  ): Promise<void>
 }
 
 export function makeDrizzleAnonReportRepository(

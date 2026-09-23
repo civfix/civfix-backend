@@ -11,11 +11,7 @@
  */
 
 import type { Sql } from "../db/client.js"
-
-export interface ReportForwardAuditRepository {
-  recordMention(messageId: string, geoid: string): Promise<void>
-  markForwarded(messageId: string, geoid: string): Promise<void>
-}
+import type { ReportForwardAuditRepository } from "./report-forward-audit-repository.js"
 
 export function makeDrizzleReportForwardAuditRepository(sql: Sql): ReportForwardAuditRepository {
   return {

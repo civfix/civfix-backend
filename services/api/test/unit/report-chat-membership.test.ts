@@ -14,7 +14,7 @@ import {
   InMemoryBlocksRepository,
   InMemoryDmRepository,
 } from "../../src/services/dm-repository.memory.js"
-import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
+import type { ReportChatRepository } from "../../src/services/report-chat-repository.js"
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 

@@ -8,7 +8,7 @@ import {
   type HostExportBuilder,
   type HostExportContext,
 } from "./export-builders.js"
-import type { HostExportRecord, HostExportRepository } from "./export-repository.drizzle.js"
+import type { HostExportRecord, HostExportRepository } from "./export-repository.js"
 import type { WriteAuditInput } from "../admin/audit.js"
 import { MS_PER_HOUR, MS_PER_SECOND } from "../../lib/time.js"
 

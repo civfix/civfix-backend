@@ -1,34 +1,23 @@
 import { MAX_HOST_SUMMARY_EVENT_ROWS } from "@civfix/shared"
 import type { BroadcastKind, CleanupStatus, RegistrationSource } from "@civfix/shared"
-import type { DayCount, DayTimeCount, KeyCount } from "@civfix/shared/host"
+import type { DayCount, KeyCount } from "@civfix/shared/host"
 import type { Sql } from "../../db/client.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
+import type {
+  AnalyticsRepository,
+  EventKpiRow,
+  HeldEventTotals,
+  HostActivityTotals,
+  LabeledKeyCount,
+  PortfolioHoursTotals,
+} from "./analytics-repository.js"
 
 export const INSIGHTS_TREND_LIMIT = 400
 
 export const INSIGHTS_SOURCE_LIMIT = 10
 
 const SUMMARY_DAY_ZONE = "UTC"
-
-export interface EventKpiRow {
-  registered: number
-  checkedIn: number
-  waitlisted: number
-  cancelled: number
-  noShow: number
-  capacity: number | null
-}
-
-export interface EventClockRecord {
-  status: CleanupStatus
-  createdAt: Date
-  scheduledAt: Date
-  endsAt: Date | null
-  completedAt: Date | null
-  registrationClosesAt: Date | null
-  timezone: string | null
-}
 
 interface EventClockRowSelect {
   status: CleanupStatus
@@ -42,27 +31,6 @@ interface EventClockRowSelect {
 
 function eventClockColumns(tag: Sql) {
   return tag`${cleanupStatusExpr(tag)} AS status, c.created_at, c.scheduled_at, c.ends_at, c.completed_at, c.registration_closes_at, c.timezone`
-}
-
-export interface SeatTrendPoint {
-  day: string
-  added: number
-  removed: number
-}
-
-export interface SourceSeats {
-  source: RegistrationSource
-  seats: number
-}
-
-export interface EventBroadcastRecord {
-  id: string
-  kind: BroadcastKind
-  finishedAt: Date | null
-  recipients: number
-  sent: number
-  failed: number
-  suppressed: number
 }
 
 interface EventBroadcastRowSelect {
@@ -79,52 +47,10 @@ function eventBroadcastColumns(tag: Sql) {
   return tag`id, kind, finished_at, recipient_count, sent_count, failed_count, suppressed_count`
 }
 
-export interface EventHoursTotals {
-  credited: number
-  attendeesCredited: number
-  attendeesCheckedIn: number
-}
-
-export interface TopVolunteerRow {
-  userId: string
-  name: string
-  handle: string | null
-  avatarUrl: string | null
-  hours: number
-}
-
-export interface PortfolioHoursTotals {
-  credited: number
-  volunteersCredited: number
-}
-
 const ZERO_PORTFOLIO_HOURS_TOTALS: PortfolioHoursTotals = Object.freeze({
   credited: 0,
   volunteersCredited: 0,
 })
-
-export interface ReturningAttendees {
-  seats: number
-  ofRegistered: number
-}
-
-export interface PortfolioTotals {
-  events: number
-  registrations: number
-  checkIns: number
-  uniqueAttendees: number
-  repeatAttendees: number
-}
-
-export interface HostActivityTotals {
-  registrations: number
-  cancellations: number
-  hoursTotal: number
-  hoursVolunteers: number
-  reportsLinked: number
-  reportsResolved: number
-  postsCreated: number
-}
 
 const ZERO_HOST_ACTIVITY_TOTALS: HostActivityTotals = Object.freeze({
   registrations: 0,
@@ -136,74 +62,12 @@ const ZERO_HOST_ACTIVITY_TOTALS: HostActivityTotals = Object.freeze({
   postsCreated: 0,
 })
 
-export interface HeldEventTotals {
-  events: number
-  registered: number
-  checkedIn: number
-  noShow: number
-}
-
 const ZERO_HELD_EVENT_TOTALS: HeldEventTotals = Object.freeze({
   events: 0,
   registered: 0,
   checkedIn: 0,
   noShow: 0,
 })
-
-export interface LabeledKeyCount extends KeyCount {
-  label: string
-}
-
-export interface HostSummarySignups {
-  daily: DayCount[]
-  byEvent: LabeledKeyCount[]
-  hoursByEvent: LabeledKeyCount[]
-}
-
-export interface AnalyticsRepository {
-  eventKpis(cleanupId: string): Promise<EventKpiRow>
-  registrationsByDay(
-    cleanupId: string,
-    timezone: string,
-    from: string,
-    to: string,
-  ): Promise<DayCount[]>
-  cancellationsByDay(
-    cleanupId: string,
-    timezone: string,
-    from: string,
-    to: string,
-  ): Promise<DayCount[]>
-  registrationsByTicketType(cleanupId: string): Promise<KeyCount[]>
-  registrationsByAudience(cleanupId: string): Promise<KeyCount[]>
-  checkinsByTicketType(cleanupId: string): Promise<KeyCount[]>
-  checkinsBySlot(cleanupId: string): Promise<KeyCount[]>
-  arrivalOffsets(cleanupId: string, limit: number): Promise<number[]>
-  waitlistConversion(cleanupId: string): Promise<{ promoted: number; joined: number }>
-  hostedEventIds(userId: string, organizationId: string | null, limit: number): Promise<string[]>
-  portfolioTotals(cleanupIds: readonly string[]): Promise<PortfolioTotals>
-  portfolioByEvent(cleanupIds: readonly string[], limit: number): Promise<KeyCount[]>
-  portfolioDayTime(cleanupIds: readonly string[]): Promise<DayTimeCount[]>
-  broadcastsSent(cleanupId: string, timezone: string, from: string, to: string): Promise<number>
-  eventClock(cleanupId: string): Promise<EventClockRecord | null>
-  seatTrend(cleanupId: string, timezone: string): Promise<SeatTrendPoint[]>
-  registrationsBySource(cleanupId: string): Promise<SourceSeats[]>
-  broadcastsForEvent(cleanupId: string, limit: number): Promise<EventBroadcastRecord[]>
-  eventHoursTotals(cleanupId: string): Promise<EventHoursTotals>
-  topVolunteers(cleanupIds: readonly string[], limit: number): Promise<TopVolunteerRow[]>
-  hoursTotals(cleanupIds: readonly string[]): Promise<PortfolioHoursTotals>
-  returningAttendees(
-    cleanupId: string,
-    hostedEventIds: readonly string[],
-  ): Promise<ReturningAttendees>
-  activityTotals(cleanupIds: readonly string[], from: Date, to: Date): Promise<HostActivityTotals>
-  heldEventTotals(cleanupIds: readonly string[], from: Date, to: Date): Promise<HeldEventTotals>
-  signupsByDayAcross(
-    cleanupIds: readonly string[],
-    fromDay: string,
-    toDay: string,
-  ): Promise<HostSummarySignups>
-}
 
 function dayCounts(rows: { day: string; n: string }[]): DayCount[] {
   return rows.map((row) => ({ day: row.day, count: Number(row.n) }))

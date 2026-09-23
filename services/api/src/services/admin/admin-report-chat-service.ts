@@ -13,7 +13,7 @@ import {
   type ChatHistorySource,
 } from "../../routes/chat-route-helpers.js"
 import { sendReportChatMessage, type ReportChatSendDeps } from "../report-chat-send.js"
-import type { AdminReportChatRepository } from "./admin-report-chat-repository.drizzle.js"
+import type { AdminReportChatRepository } from "./admin-report-chat-repository.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
 
 /** Called only after the operator's change committed; never throws. */

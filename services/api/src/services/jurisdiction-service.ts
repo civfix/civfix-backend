@@ -6,10 +6,8 @@ import type {
   JurisdictionLookup,
   JurisdictionLookupResult,
 } from "../adapters/jurisdiction-lookup.census.js"
-import {
-  makeDrizzleJurisdictionRepository,
-  type JurisdictionRepository,
-} from "./jurisdiction-repository.drizzle.js"
+import { makeDrizzleJurisdictionRepository } from "./jurisdiction-repository.drizzle.js"
+import type { JurisdictionRepository } from "./jurisdiction-repository.js"
 import { JURISDICTION_DISCOVERY_JOB } from "../lib/queue-names.js"
 
 const CONTACT_STALE_MONTHS = 18

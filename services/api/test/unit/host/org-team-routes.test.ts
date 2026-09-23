@@ -16,7 +16,7 @@ import { InMemoryOrganizationRepository } from "../../../src/services/host/organ
 import { fakeCleanupReader } from "../../helpers/host-team.js"
 import { InMemoryHostTeamRepository } from "../../../src/services/host/host-team-repository.memory.js"
 import { hostForbiddenCopy } from "../../../src/services/host/authz.js"
-import type { HostStandingResolution } from "../../../src/services/host/host-standing-repository.drizzle.js"
+import type { HostStandingResolution } from "../../../src/services/host/host-standing-repository.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const OTHER_EVENT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

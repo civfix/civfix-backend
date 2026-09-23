@@ -45,10 +45,8 @@ import { webBaseUrlOf } from "../lib/base-url.js"
 import { makeInsightsGeneration } from "../services/host/host-analytics-cache.js"
 import { makeEventMediaPresigner } from "../services/host/event-media.js"
 import { SCHEDULE_MAX_AHEAD_MS, SCHEDULE_MAX_BACKDATE_MS } from "../services/cleanup-rules.js"
-import {
-  makeDrizzleChatRepository,
-  type ChatRepository,
-} from "../services/chat-repository.drizzle.js"
+import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
+import type { ChatRepository } from "../services/chat-repository.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { buildIcs } from "@civfix/shared/ics"
 import { makeCachedAddressResolver, makeGeoidResolver } from "../services/route-geo-helpers.js"

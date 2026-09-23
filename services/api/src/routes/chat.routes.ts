@@ -18,9 +18,13 @@ import { wireChatGateway } from "./chat-gateway-wiring.js"
 import { deleteMessageWithPowers, DELETE_MESSAGE_FORBIDDEN } from "./chat-route-helpers.js"
 import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
-import type { ChatRepository } from "../services/chat-repository.drizzle.js"
-import type { ReportChatRepository } from "../services/report-chat-repository.drizzle.js"
-import type { ChatPollRepository } from "../services/chat-poll-repository.drizzle.js"
+import type { ChatRepository } from "../services/chat-repository.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import type { ChatPollRepository } from "../services/chat-poll-repository.js"
+import type { DmRepository } from "../services/dm-repository.js"
+import type { BlocksRepository } from "../services/blocks-repository.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.js"
 import {
   roomKeyFor,
   type GatewayChatMentions,
@@ -32,9 +36,6 @@ import {
   makeDrizzleReportThreadsSource,
   makeDrizzleThreadsRepository,
 } from "../services/threads-repository.drizzle.js"
-import type { DmRepository } from "../services/dm-repository.drizzle.js"
-import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
-import type { ChatGroupRepository } from "../services/chat-group-repository.drizzle.js"
 import type { ChatPresence } from "../adapters/chat-presence.js"
 import {
   makeThreadsService,
@@ -49,10 +50,7 @@ import type { ThreadsRepository } from "../services/threads-repository.js"
 import type { NotificationService } from "../services/notification-service.js"
 import type { ResolveChatPowers } from "../services/chat-room-roles.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
-import {
-  makeConversationMutesRepository,
-  type ConversationMutesRepository,
-} from "../services/conversation-mutes-repository.drizzle.js"
+import { makeConversationMutesRepository } from "../services/conversation-mutes-repository.drizzle.js"
 
 export interface ChatGatewayOverrides {
   isMember: IsMemberFn

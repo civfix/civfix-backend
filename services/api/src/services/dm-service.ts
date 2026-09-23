@@ -1,7 +1,7 @@
 import { AppError, relativeAgo, avatarGradient } from "@civfix/shared"
 import type { ChatMessageDTO, MessageThreadDTO, PersonDTO } from "@civfix/shared"
-import type { BlocksRepository } from "./blocks-repository.drizzle.js"
-import type { DmRepository } from "./dm-repository.drizzle.js"
+import type { BlocksRepository } from "./blocks-repository.js"
+import type { DmRepository } from "./dm-repository.js"
 
 export const DM_FORBIDDEN_MESSAGE = "You can't message this account."
 

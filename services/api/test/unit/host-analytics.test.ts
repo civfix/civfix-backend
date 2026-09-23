@@ -11,8 +11,8 @@ import {
   makeHostAnalyticsCache,
 } from "../../src/services/host/host-analytics-cache.js"
 import { makeAnalyticsService } from "../../src/services/host/analytics-service.js"
-import type { AnalyticsRepository } from "../../src/services/host/analytics-repository.drizzle.js"
-import type { MetricsRepository } from "../../src/services/host/metrics-repository.drizzle.js"
+import type { AnalyticsRepository } from "../../src/services/host/analytics-repository.js"
+import type { MetricsRepository } from "../../src/services/host/metrics-repository.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const EVENT_A = "11111111-1111-4111-8111-111111111111"

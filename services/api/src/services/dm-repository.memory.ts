@@ -7,21 +7,21 @@ import { PIN_LIST_CAP } from "./room-messages-repository.drizzle.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { aroundLimits } from "./chat-history-window.js"
 import { toTombstoneDTO } from "./chat-tombstone.js"
-import type { ConversationHidesRepository } from "./conversation-hides-repository.drizzle.js"
-import { visibleAfterHides } from "./conversation-hides-repository.memory.js"
+import type { ConversationHidesRepository } from "./conversation-hides-repository.js"
 import type {
   DmMessageMeta,
   DmPersistInput,
   DmRepository,
   DmThread,
   DmThreadAggregate,
-} from "./dm-repository.drizzle.js"
+} from "./dm-repository.js"
 import type {
   BlockState,
   BlocksRepository,
   ListBlockedArgs,
   ListBlockedPage,
-} from "./blocks-repository.drizzle.js"
+} from "./blocks-repository.js"
+import { visibleAfterHides } from "./conversation-hides-repository.memory.js"
 import { LIST_BLOCKS_DEFAULT_LIMIT } from "./blocks-repository.drizzle.js"
 import type { TimeCursor } from "../db/cursor-helpers.js"
 import type { PersonDTO } from "@civfix/shared"

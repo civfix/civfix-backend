@@ -14,23 +14,15 @@ import { requireAuth } from "../auth/context.js"
 import { parse } from "./_validate.js"
 import { route } from "../versioning/route.js"
 import type { ConversationMuteRoomKind } from "../db/schema/conversation_mutes.js"
-import {
-  makeConversationMutesRepository,
-  type ConversationMutesRepository,
-} from "../services/conversation-mutes-repository.drizzle.js"
-import {
-  makeConversationHidesRepository,
-  type ConversationHidesRepository,
-} from "../services/conversation-hides-repository.drizzle.js"
+import { makeConversationMutesRepository } from "../services/conversation-mutes-repository.drizzle.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.js"
+import type { ConversationHidesRepository } from "../services/conversation-hides-repository.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.js"
+import { makeConversationHidesRepository } from "../services/conversation-hides-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
-import {
-  makeReportChatRepository,
-  type ReportChatRepository,
-} from "../services/report-chat-repository.drizzle.js"
-import {
-  makeChatGroupRepository,
-  type ChatGroupRepository,
-} from "../services/chat-group-repository.drizzle.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import { makeChatGroupRepository } from "../services/chat-group-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
 import type { DiscussionRepository } from "../services/discussion-repository.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"

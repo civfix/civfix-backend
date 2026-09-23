@@ -13,6 +13,7 @@ import type { Sql, SqlFragment } from "../db/client.js"
 import { isUuid } from "../db/cursor-helpers.js"
 import { aroundLimits, mergeAroundWindow } from "./chat-history-window.js"
 import type { ReplyTable } from "./reply-targets-repository.drizzle.js"
+import type { RoomMessagesRepository } from "./room-messages-repository.js"
 
 export type RoomTable = ReplyTable
 
@@ -52,23 +53,6 @@ export interface RoomScopeSql<Row extends RoomScopeRow, Ctx> {
   hydratePage(rows: Row[], viewerUserId: string | null, ctx: Ctx): Promise<ChatMessageDTO[]>
   /** Resolves its own context so the single-id loaders and the context query share one Promise.all. */
   hydrateOne(row: Row, viewerUserId: string | null): Promise<ChatMessageDTO>
-}
-
-export interface RoomMessagesRepository {
-  history(
-    before: string | undefined,
-    limit: number,
-    viewerUserId: string | null,
-    around?: string,
-  ): Promise<ChatHistoryPage>
-  historyAround(
-    around: string,
-    limit: number,
-    viewerUserId: string | null,
-  ): Promise<ChatHistoryPage>
-  findMessage(messageId: string, viewerUserId: string | null): Promise<ChatMessageDTO | null>
-  setPinned(messageId: string, userId: string, pinned: boolean): Promise<ChatMessageDTO | null>
-  listPins(viewerUserId: string | null): Promise<ChatMessageDTO[]>
 }
 
 export function makeDrizzleRoomMessagesRepository<Row extends RoomScopeRow, Ctx>(

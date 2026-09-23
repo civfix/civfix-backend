@@ -14,10 +14,7 @@ import {
   type ReportChatSendDeps,
 } from "../../src/services/report-chat-send.js"
 import { makeAuditedReportChatPersist } from "../../src/services/report-chat-send-wiring.js"
-import type {
-  ChatRepository,
-  InsertMessageOptions,
-} from "../../src/services/chat-repository.drizzle.js"
+import type { ChatRepository, InsertMessageOptions } from "../../src/services/chat-repository.js"
 import type { Queryable } from "../../src/db/client.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 import { roomKeyFor } from "../../src/ws/gateway.js"

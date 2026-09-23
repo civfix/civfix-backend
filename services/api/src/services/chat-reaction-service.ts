@@ -10,8 +10,8 @@
 
 import { AppError, ReactionEmojiSchema } from "@civfix/shared"
 import type { ChatMessageDTO, ReactionEmoji } from "@civfix/shared"
-import type { ChatMessageMeta, ChatRepository } from "./chat-repository.drizzle.js"
-import type { DmRepository } from "./dm-repository.drizzle.js"
+import type { ChatMessageMeta, ChatRepository } from "./chat-repository.js"
+import type { DmRepository } from "./dm-repository.js"
 
 const CHAT_REACTION_FORBIDDEN = "You can't react in this conversation."
 

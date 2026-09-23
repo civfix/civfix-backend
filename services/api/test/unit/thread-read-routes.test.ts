@@ -18,9 +18,9 @@ import {
   THREAD_READ_RATE_LIMIT,
   type ConversationRoutesOverrides,
 } from "../../src/routes/conversations.routes.js"
-import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
-import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
-import type { ChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
+import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.js"
+import type { ReportChatRepository } from "../../src/services/report-chat-repository.js"
+import type { ChatGroupRepository } from "../../src/services/chat-group-repository.js"
 
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const OTHER = "99999999-9999-9999-9999-999999999999"

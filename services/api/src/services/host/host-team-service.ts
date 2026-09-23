@@ -31,7 +31,7 @@ import type { MessageKey } from "../../i18n/renderMessage.js"
 import type { CreateNotificationInput } from "../notification-service.js"
 import { assertMayGrantRole, isEventPubliclyVisible, requireCapability } from "./authz.js"
 import type { EventMediaPresigner } from "./event-media.js"
-import type { HostStandingResolution } from "./host-standing-repository.drizzle.js"
+import type { HostStandingResolution } from "./host-standing-repository.js"
 import type {
   EventTeamInviteRecord,
   EventTeamMemberRecord,

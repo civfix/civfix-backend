@@ -2,10 +2,8 @@ import type { ChatMessageDTO } from "@civfix/shared"
 import type { Container } from "../di.js"
 import { makeOutboundMailService, type OutboundMailService } from "./admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "./admin/mail-repository.drizzle.js"
-import {
-  makeDrizzleReportForwardAuditRepository,
-  type ReportForwardAuditRepository,
-} from "./report-forward-audit-repository.drizzle.js"
+import { makeDrizzleReportForwardAuditRepository } from "./report-forward-audit-repository.drizzle.js"
+import type { ReportForwardAuditRepository } from "./report-forward-audit-repository.js"
 import { makeDrizzleDiscussionRepository } from "./discussion-repository.drizzle.js"
 import type { DiscussionRepository } from "./discussion-repository.js"
 import {

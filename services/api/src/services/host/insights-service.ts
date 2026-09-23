@@ -21,7 +21,7 @@ import type {
   AnalyticsRepository,
   EventClockRecord,
   SeatTrendPoint,
-} from "./analytics-repository.drizzle.js"
+} from "./analytics-repository.js"
 import {
   hostAnalyticsCacheKey,
   perViewerScope,

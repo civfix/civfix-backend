@@ -7,9 +7,8 @@ import {
   explainFeedCandidates,
   makeDrizzlePostRepository,
   FEED_NEARBY_INDEX,
-  type FeedCandidateArgs,
-  type PostRepository,
 } from "../../src/services/post-repository.drizzle.js"
+import type { FeedCandidateArgs, PostRepository } from "../../src/services/post-repository.js"
 import { makePostService, type PostService } from "../../src/services/post-service.js"
 
 const pg = await withPg()

@@ -13,7 +13,7 @@ import type {
   ChatGroupView,
   GroupMemberRole,
   GroupMemberView,
-} from "./chat-group-repository.drizzle.js"
+} from "./chat-group-repository.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { isOfficialAccount } from "../auth/official-account.js"
 import { clampPageLimit } from "../lib/page-limit.js"

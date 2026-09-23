@@ -38,7 +38,7 @@ import type {
   PostRepository,
   RepliesPage,
   ReplyListArgs,
-} from "../../src/services/post-repository.drizzle.js"
+} from "../../src/services/post-repository.js"
 
 const throwingSql = (() => {
   throw new Error("posts-routes.test: no SQL may be issued on these paths")

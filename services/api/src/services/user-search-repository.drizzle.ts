@@ -2,6 +2,7 @@ import type { Sql } from "../db/client.js"
 import { avatarGradient } from "@civfix/shared"
 import type { UserSearchResultDTO } from "@civfix/shared"
 import { likeContains, likePrefix } from "../db/like.js"
+import type { UserSearchRepository } from "./user-search-repository.js"
 
 interface UserSearchRow {
   id: string
@@ -18,11 +19,6 @@ function toSearchResult(r: UserSearchRow): UserSearchResultDTO {
     avatar: avatarGradient(r.id),
     ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
   }
-}
-
-export interface UserSearchRepository {
-  searchByHandlePrefix(q: string, viewerId: string, limit: number): Promise<UserSearchResultDTO[]>
-  searchMentionable(q: string, viewerId: string, limit: number): Promise<UserSearchResultDTO[]>
 }
 
 export function makeDrizzleUserSearchRepository(sql: Sql): UserSearchRepository {

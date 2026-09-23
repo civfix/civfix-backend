@@ -7,20 +7,11 @@ import { mapWithLimit } from "../lib/concurrency.js"
 import { PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { uploaderServableFilter, uploaderServedKeyExpr } from "./media-served-key.js"
 import { userUploader } from "./media-uploader.js"
+import type { MessageAttachmentRepository } from "./message-attachments-repository.js"
 
 export type MessageMediaColumn = "chat_message_id"
 
 const CLAIM_GUARD_COLUMNS: readonly string[] = ["report_id", "post_id"]
-
-export interface MessageAttachmentRepository {
-  attach(
-    tx: Queryable,
-    messageId: string,
-    uploadIds: string[],
-    messageCreatedAt: Date,
-    senderId: string,
-  ): Promise<void>
-}
 
 interface MediaRow {
   id: string

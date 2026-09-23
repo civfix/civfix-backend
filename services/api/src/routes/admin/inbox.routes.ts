@@ -19,10 +19,8 @@ import { requireOperator } from "../../auth/admin-guard.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
 import { PRESIGN_CONCURRENCY } from "../../services/media-presign.js"
 import { mapWithLimit } from "../../lib/concurrency.js"
-import {
-  makeDrizzleInboundRepository,
-  type InboundRepository,
-} from "../../services/admin/inbound-repository.drizzle.js"
+import { makeDrizzleInboundRepository } from "../../services/admin/inbound-repository.drizzle.js"
+import type { InboundRepository } from "../../services/admin/inbound-repository.js"
 
 /** Defends against a crafted mail with thousands of parts. */
 const MAX_INBOX_ATTACHMENTS = 50

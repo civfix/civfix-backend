@@ -33,7 +33,7 @@ import { MS_PER_HOUR, MS_PER_MINUTE } from "../lib/time.js"
 import { PRESIGN_CONCURRENCY } from "./media-presign.js"
 import type { AffiliationLoader } from "./affiliation.js"
 import { hasHostStanding, isEventPubliclyVisible } from "./host/authz.js"
-import type { TopVolunteerRow } from "./host/analytics-repository.drizzle.js"
+import type { TopVolunteerRow } from "./host/analytics-repository.js"
 import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import type { NotificationService } from "./notification-service.js"
 import type {

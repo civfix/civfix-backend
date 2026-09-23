@@ -2,7 +2,7 @@ import { buildDiscussionForwardPacket } from "./admin/mail-format.js"
 import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-mentions.js"
 import { replySubject, type OutboundMailService } from "./admin/outbound-mail-service.js"
 import type { MailThreadRecord } from "./admin/mail-repository.drizzle.js"
-import type { ReportForwardAuditRepository } from "./report-forward-audit-repository.drizzle.js"
+import type { ReportForwardAuditRepository } from "./report-forward-audit-repository.js"
 import type { ReportJurisdictionView } from "./discussion-repository.js"
 import type { CounterStore } from "../abuse/counter-store.js"
 

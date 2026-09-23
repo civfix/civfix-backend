@@ -2,11 +2,10 @@ import type { HostedEventDTO, HostPortfolioKpis, ListMyHostedEventsResponse } fr
 import { hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import type { EventMediaPresigner } from "./event-media.js"
 import type {
-  HostedEventRecord,
-  HostPortfolioRepository,
   HostPortfolioTotals,
   HostPortfolioTotalsArgs,
 } from "./host-portfolio-repository.drizzle.js"
+import type { HostPortfolioRepository, HostedEventRecord } from "./host-portfolio-repository.js"
 import { ZERO_HOSTED_EVENT_COUNTS, type HostedEventCounts } from "./portfolio-counts.js"
 import { isEventPubliclyVisible } from "./authz.js"
 import { mapWithLimit } from "../../lib/concurrency.js"

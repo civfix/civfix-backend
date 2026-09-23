@@ -1,9 +1,6 @@
 import { sql } from "drizzle-orm"
 import type { Db } from "../../db/client.js"
-
-export interface OrganizationMembershipRepository {
-  isActiveMember(userId: string, organizationId: string): Promise<boolean>
-}
+import type { OrganizationMembershipRepository } from "./organization-membership-repository.js"
 
 export function makeDrizzleOrganizationMembershipRepository(
   db: Db,

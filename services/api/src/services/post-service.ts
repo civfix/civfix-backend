@@ -19,15 +19,14 @@ import type { Sql } from "../db/client.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { resolveMentionTargets } from "./mention-targets-repository.drizzle.js"
 import { parseTimeCursor } from "../db/cursor-helpers.js"
-import {
-  NIL_VIEWER_ID,
-  POSTS_DEFAULT_LIMIT,
-  type FeedCandidateRow,
-  type FeedPage,
-  type PostBrief,
-  type PostRepository,
-  type RepliesPage,
-} from "./post-repository.drizzle.js"
+import { NIL_VIEWER_ID, POSTS_DEFAULT_LIMIT } from "./post-repository.drizzle.js"
+import type {
+  FeedCandidateRow,
+  FeedPage,
+  PostBrief,
+  PostRepository,
+  RepliesPage,
+} from "./post-repository.js"
 import {
   applyCutoff,
   bucketSeed,

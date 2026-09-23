@@ -6,15 +6,15 @@ import { heading, paragraph } from "../adapters/email-blocks.js"
 import { renderEmailBody } from "../adapters/email-layout.js"
 import { mailFailure } from "../adapters/mail-failure.js"
 import { insertAuditRow } from "./admin/audit-repository.drizzle.js"
-import {
-  makeDrizzleDataExportRepository,
-  type BlockExportRow,
-  type DataExportRepository,
-  type FollowerExportRow,
-  type FollowingExportRow,
-  type ProfileRow,
-  type PushTokenRow,
-} from "./data-export-repository.drizzle.js"
+import { makeDrizzleDataExportRepository } from "./data-export-repository.drizzle.js"
+import type {
+  BlockExportRow,
+  DataExportRepository,
+  FollowerExportRow,
+  FollowingExportRow,
+  ProfileRow,
+  PushTokenRow,
+} from "./data-export-repository.js"
 
 export interface DataExportServiceDeps {
   sql: Sql

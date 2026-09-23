@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import {
-  makeDrizzleInboundRepository,
-  type InboundEmailInsert,
-  type InboundRepository,
-} from "../../src/services/admin/inbound-repository.drizzle.js"
+import { makeDrizzleInboundRepository } from "../../src/services/admin/inbound-repository.drizzle.js"
+import type {
+  InboundEmailInsert,
+  InboundRepository,
+} from "../../src/services/admin/inbound-repository.js"
 
 const pg = await withPg()
 

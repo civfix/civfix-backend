@@ -6,7 +6,7 @@ import {
   CITY_FORWARD_PER_GEOID_PER_HOUR,
 } from "../../src/services/report-city-forward.js"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
-import type { ReportForwardAuditRepository } from "../../src/services/report-forward-audit-repository.drizzle.js"
+import type { ReportForwardAuditRepository } from "../../src/services/report-forward-audit-repository.js"
 import type {
   AppendOutboundInput,
   OutboundMailService,

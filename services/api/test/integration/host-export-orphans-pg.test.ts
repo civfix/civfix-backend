@@ -1,10 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
-import {
-  makeDrizzleHostExportRepository,
-  type HostExportRepository,
-} from "../../src/services/host/export-repository.drizzle.js"
+import { makeDrizzleHostExportRepository } from "../../src/services/host/export-repository.drizzle.js"
+import type { HostExportRepository } from "../../src/services/host/export-repository.js"
 
 const pg = await withPg()
 

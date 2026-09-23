@@ -8,7 +8,7 @@ import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { ConversationRoutesOverrides } from "../../src/routes/conversations.routes.js"
-import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
+import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.js"
 
 /**
  * Route-level tests for PUT /conversations/mute, run with NO database: a fake

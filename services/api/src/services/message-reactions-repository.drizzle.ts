@@ -1,17 +1,10 @@
 import type { Queryable, Sql } from "../db/client.js"
 import type { ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
+import type { MessageReactionRepository } from "./message-reactions-repository.js"
 
 // `table` is a module-constant union literal, never user input, interpolated as a postgres.js identifier.
 // Every room kind and DMs share the one chat table because message ids are globally unique uuids.
 export type ReactionTable = "chat_message_reactions"
-
-export interface MessageReactionRepository {
-  toggle(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean>
-  loadFor(
-    messageIds: string[],
-    viewerUserId: string | null,
-  ): Promise<Map<string, ReactionSummaryDTO[]>>
-}
 
 export function makeMessageReactionRepository(
   sql: Sql,

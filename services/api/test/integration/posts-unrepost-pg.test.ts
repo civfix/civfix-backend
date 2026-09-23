@@ -6,10 +6,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
-import {
-  makeDrizzlePostRepository,
-  type PostRepository,
-} from "../../src/services/post-repository.drizzle.js"
+import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
+import type { PostRepository } from "../../src/services/post-repository.js"
 
 const pg = await withPg()
 

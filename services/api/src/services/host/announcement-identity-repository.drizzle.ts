@@ -5,13 +5,9 @@ import { PRESIGN_CONCURRENCY } from "../media-presign.js"
 import { presentIds } from "../present-ids.js"
 import { publicAuthorIdentity } from "../public-author.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
+import type { AnnouncementIdentityRepository } from "./announcement-identity-repository.js"
 
 export type AnnouncementImagePresigner = (r2Key: string) => Promise<string>
-
-export interface AnnouncementIdentityRepository {
-  authorsFor(userIds: readonly (string | null)[]): Promise<Map<string, PersonDTO>>
-  organizationFor(cleanupId: string): Promise<OrganizationRefDTO | null>
-}
 
 interface AuthorRowSelect {
   id: string

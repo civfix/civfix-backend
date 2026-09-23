@@ -19,7 +19,7 @@ import type { SeatDraft } from "../../src/services/host/registration-repository.
 import type {
   AnalyticsRepository,
   EventClockRecord,
-} from "../../src/services/host/analytics-repository.drizzle.js"
+} from "../../src/services/host/analytics-repository.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const OTHER_EVENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"

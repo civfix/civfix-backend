@@ -1,9 +1,7 @@
 import type { Sql } from "../../db/client.js"
 import { registerHostExportBuilder, type HostExportContext } from "./export-builders.js"
-import {
-  makeDrizzleHostExportRowsRepository,
-  type HostExportRowsRepository,
-} from "./export-repository.drizzle.js"
+import { makeDrizzleHostExportRowsRepository } from "./export-repository.drizzle.js"
+import type { HostExportRowsRepository } from "./export-repository.js"
 
 const EXPORT_PAGE_SIZE = 1000
 const SHORT_REF_LENGTH = 8

@@ -1,7 +1,7 @@
 import type { PageViewSource } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import type { CacheClient } from "../../auth/cache.js"
-import type { MetricUpsert, MetricsRepository } from "./metrics-repository.drizzle.js"
+import type { MetricUpsert, MetricsRepository } from "./metrics-repository.js"
 import { eventDayKey } from "./event-day.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
 import {

@@ -21,12 +21,10 @@ import { makeDmService, type DmService, type DmUserLookup } from "../services/dm
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import { makeChatEditService } from "../services/chat-edit-service.js"
 import { makeDmPeerOf } from "../services/dm-peer.js"
-import type { DmRepository } from "../services/dm-repository.drizzle.js"
-import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
-import {
-  makeConversationMutesRepository,
-  type ConversationMutesRepository,
-} from "../services/conversation-mutes-repository.drizzle.js"
+import type { DmRepository } from "../services/dm-repository.js"
+import type { BlocksRepository } from "../services/blocks-repository.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.js"
+import { makeConversationMutesRepository } from "../services/conversation-mutes-repository.drizzle.js"
 import {
   chatHistoryPayload,
   clampChatHistoryLimit,

@@ -2,10 +2,8 @@ import type { Sql } from "../db/client.js"
 import type { MediaOwner } from "./media-intake-service.js"
 import type { MediaAssetView } from "./media-repository.js"
 import { isPubliclyVisibleStatus } from "./report-visibility.js"
-import {
-  makeDrizzleMediaAuthorizationRepository,
-  type MediaAuthorizationRepository,
-} from "./media-authorization-repository.drizzle.js"
+import { makeDrizzleMediaAuthorizationRepository } from "./media-authorization-repository.drizzle.js"
+import type { MediaAuthorizationRepository } from "./media-authorization-repository.js"
 
 export interface MediaAccessDecision {
   allowed: boolean

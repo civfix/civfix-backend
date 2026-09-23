@@ -32,15 +32,17 @@ import { resolveMentionTargets } from "../services/mention-targets-repository.dr
 import { makeChatMentionResolver } from "../services/chat-mention-resolver.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import {
-  makeReportChatRepository,
-  type ReportChatRepository,
-} from "../services/report-chat-repository.drizzle.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.js"
+import type { ChatRepository } from "../services/chat-repository.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.js"
+import type { DmRepository } from "../services/dm-repository.js"
+import type { BlocksRepository } from "../services/blocks-repository.js"
 import {
   canPostToGroup,
   GROUP_MEMBER_SCAN_CAP,
   makeChatGroupRepository,
-  type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
 import { WS_ROUTE, WS_SEND_LIMITS, type GatewayGroupChat } from "../ws/types.js"
 import { makeCityForwardThrottle } from "../services/report-city-forward.js"
@@ -48,10 +50,7 @@ import { makeContainerReportCityForward } from "../services/report-city-forward-
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makeTokenBucketLimiter, type RateLimiter } from "../ws/report-rate-limit.js"
 import { THREAD_SIGNAL_MEMBER_CAP } from "../services/cleanup-service.js"
-import {
-  makeDrizzleChatRepository,
-  type ChatRepository,
-} from "../services/chat-repository.drizzle.js"
+import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import {
   recordChatMentions,
@@ -67,7 +66,6 @@ import {
   bindMutedUserIdsFor,
   makeConversationMutesRepository,
   makeFailOpenMuteCheck,
-  type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
 import { makeReportChatNotifier } from "../services/report-chat-notifier.js"
 import { makeGroupChatNotifier } from "../services/group-chat-notifier.js"
@@ -81,12 +79,8 @@ import {
   clearConversationBellFor,
   type ConversationBellKind,
 } from "../services/conversation-bell.js"
-import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import { makeDmPeerOf } from "../services/dm-peer.js"
-import {
-  bindBlockedIdsAmong,
-  type BlocksRepository,
-} from "../services/blocks-repository.drizzle.js"
+import { bindBlockedIdsAmong } from "../services/blocks-repository.drizzle.js"
 import {
   InMemoryChatPresence,
   RedisChatPresence,

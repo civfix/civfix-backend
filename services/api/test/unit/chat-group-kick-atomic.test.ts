@@ -2,10 +2,8 @@ import { describe, it, expect } from "vitest"
 import { AppError } from "@civfix/shared"
 import type { Sql } from "../../src/db/client.js"
 import { makeChatGroupService } from "../../src/services/chat-group-service.js"
-import {
-  makeChatGroupRepository,
-  type ChatGroupRepository,
-} from "../../src/services/chat-group-repository.drizzle.js"
+import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
+import type { ChatGroupRepository } from "../../src/services/chat-group-repository.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 
 const GROUP = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"

@@ -8,8 +8,8 @@ import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { ConversationRoutesOverrides } from "../../src/routes/conversations.routes.js"
-import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
-import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.drizzle.js"
+import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.js"
+import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.js"
 
 const ROOM_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 

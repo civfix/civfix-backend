@@ -17,7 +17,7 @@ import { makeContainerReportCityForward } from "./report-city-forward-wiring.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import type { ChatMentionRecordSeam } from "./chat-mention-resolver.js"
 import type { ReportChatSendDeps } from "./report-chat-send.js"
-import type { ChatRepository } from "./chat-repository.drizzle.js"
+import type { ChatRepository } from "./chat-repository.js"
 import { insertAuditRow } from "./admin/audit-repository.drizzle.js"
 
 const REPORT_MESSAGE_POSTED_AUDIT_ACTION = "report.message_posted"

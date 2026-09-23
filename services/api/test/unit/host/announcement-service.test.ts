@@ -19,7 +19,7 @@ import {
   makeAnnouncementService,
   type AnnouncementService,
 } from "../../../src/services/host/announcement-service.js"
-import type { AnnouncementIdentityRepository } from "../../../src/services/host/announcement-identity-repository.drizzle.js"
+import type { AnnouncementIdentityRepository } from "../../../src/services/host/announcement-identity-repository.js"
 import type { EventBroadcastContext } from "../../../src/services/host/broadcast-types.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"

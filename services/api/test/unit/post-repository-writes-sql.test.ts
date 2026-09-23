@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { makeFakeSql, type SqlHandler } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
-import {
-  makeDrizzlePostRepository,
-  type CreatePostArgs,
-} from "../../src/services/post-repository.drizzle.js"
+import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
+import type { CreatePostArgs } from "../../src/services/post-repository.js"
 
 const AUTHOR = "11111111-1111-1111-1111-111111111111"
 const TARGET = "22222222-2222-2222-2222-222222222222"

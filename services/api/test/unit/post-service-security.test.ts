@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Sql } from "../../src/db/client.js"
 import { makePostService } from "../../src/services/post-service.js"
-import type { PostBrief, PostRepository } from "../../src/services/post-repository.drizzle.js"
+import type { PostBrief, PostRepository } from "../../src/services/post-repository.js"
 
 const AUTHOR = "author"
 const STRANGER = "stranger"

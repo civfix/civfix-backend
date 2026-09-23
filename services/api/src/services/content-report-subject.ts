@@ -6,10 +6,8 @@ import {
   authorizeReportBound,
   makeDrizzleMediaViewAuthorizer,
 } from "./media-authorization.js"
-import {
-  makeDrizzleMediaAuthorizationRepository,
-  type MediaAuthorizationRepository,
-} from "./media-authorization-repository.drizzle.js"
+import { makeDrizzleMediaAuthorizationRepository } from "./media-authorization-repository.drizzle.js"
+import type { MediaAuthorizationRepository } from "./media-authorization-repository.js"
 import { makeDrizzleMediaRepository } from "./media-repository.drizzle.js"
 import { isPubliclyVisibleStatus } from "./report-visibility.js"
 import { hasHostStanding, isEventPubliclyVisible } from "./host/authz.js"

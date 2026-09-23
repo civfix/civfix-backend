@@ -29,9 +29,9 @@ import {
   type DayRange,
   type KeyCount,
 } from "@civfix/shared/host"
-import type { AnalyticsRepository, LabeledKeyCount } from "./analytics-repository.drizzle.js"
+import type { AnalyticsRepository, LabeledKeyCount } from "./analytics-repository.js"
+import type { MetricRow, MetricsRepository } from "./metrics-repository.js"
 import { leaderboardEntryOf } from "../volunteer-hours-service.js"
-import type { MetricRow, MetricsRepository } from "./metrics-repository.drizzle.js"
 import { hostAnalyticsCacheKey, type HostAnalyticsCache } from "./host-analytics-cache.js"
 import { eventDayKey } from "./event-day.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"

@@ -1,15 +1,5 @@
-import type postgres from "postgres"
 import type { Sql } from "../../db/client.js"
-
-export interface CountRow {
-  n: string
-}
-
-// Each read returns the pending query rather than its rows so the probe can cancel it on timeout.
-export interface SystemHealthRepository {
-  countJurisdictions(): postgres.PendingQuery<CountRow[]>
-  countMailEventsLast7Days(): postgres.PendingQuery<CountRow[]>
-}
+import type { CountRow, SystemHealthRepository } from "./system-health-repository.js"
 
 export function makeDrizzleSystemHealthRepository(sql: Sql): SystemHealthRepository {
   return {

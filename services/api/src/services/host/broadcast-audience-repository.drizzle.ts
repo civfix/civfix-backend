@@ -2,6 +2,7 @@ import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
 import type { Queryable } from "../../db/client.js"
 import { CRITICAL_BROADCAST_KINDS, HOST_COMPOSED_BROADCAST_KINDS } from "./broadcast-types.js"
 import type { AudiencePageQuery } from "./broadcast-repository.js"
+import type { BroadcastAudienceRepository } from "./broadcast-audience-repository.js"
 
 // Sorts before every real id, so a first page starts at the beginning of the keyset.
 const FIRST_UUID = "00000000-0000-0000-0000-000000000000"
@@ -32,10 +33,6 @@ export async function listGuestAudiencePage(
 ): Promise<string[]> {
   const rows = await guestQuery(sql, query)
   return rows.map((row) => row.id)
-}
-
-export interface BroadcastAudienceRepository {
-  audiencePage(query: AudiencePageQuery): Promise<{ members: string[]; guests: string[] }>
 }
 
 export function makeDrizzleBroadcastAudienceRepository(

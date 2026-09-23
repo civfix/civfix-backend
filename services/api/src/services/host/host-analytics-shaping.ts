@@ -14,8 +14,8 @@ import {
   type DerivedPanel,
   type SeriesClosure,
 } from "@civfix/shared/host"
-import type { EventClockRecord } from "./analytics-repository.drizzle.js"
-import type { MetricRow } from "./metrics-repository.drizzle.js"
+import type { EventClockRecord } from "./analytics-repository.js"
+import type { MetricRow } from "./metrics-repository.js"
 import { MS_PER_DAY } from "../../lib/time.js"
 
 export const PORTFOLIO_EVENT_LIMIT = 200

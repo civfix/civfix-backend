@@ -7,10 +7,8 @@ import {
   type MailRepository,
   type MailThreadRecord,
 } from "./mail-repository.drizzle.js"
-import {
-  makeDrizzleInboundRepository,
-  type InboundRepository,
-} from "./inbound-repository.drizzle.js"
+import { makeDrizzleInboundRepository } from "./inbound-repository.drizzle.js"
+import type { InboundRepository } from "./inbound-repository.js"
 import type { ReporterNotifier } from "./admin-report-service.js"
 import type { AdminReportRepository } from "./admin-report-repository.js"
 import { detectBounce, handleBounce } from "./inbound-bounce.js"

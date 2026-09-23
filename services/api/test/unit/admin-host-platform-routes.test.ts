@@ -8,7 +8,7 @@ import { registerAdminMediaRoutes } from "../../src/routes/admin/media.routes.js
 import { registerAdminLegalRoutes } from "../../src/routes/admin/legal.routes.js"
 import { registerAdminBroadcastRoutes } from "../../src/routes/admin/broadcasts.routes.js"
 import { registerAdminOrgRoutes } from "../../src/routes/admin/orgs.routes.js"
-import type { AdminEventPageRow } from "../../src/services/host/admin-pages-repository.drizzle.js"
+import type { AdminEventPageRow } from "../../src/services/host/admin-pages-repository.js"
 import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
 import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
 import { InMemoryAdminEventRepository } from "../../src/services/admin/admin-event-repository.memory.js"

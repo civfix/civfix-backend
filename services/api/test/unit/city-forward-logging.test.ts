@@ -4,7 +4,7 @@ import {
   makeCityForwardThrottle,
 } from "../../src/services/report-city-forward.js"
 import type { CounterStore } from "../../src/abuse/counter-store.js"
-import type { ReportForwardAuditRepository } from "../../src/services/report-forward-audit-repository.drizzle.js"
+import type { ReportForwardAuditRepository } from "../../src/services/report-forward-audit-repository.js"
 import type { OutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 import type { MailThreadRecord } from "../../src/services/admin/mail-repository.drizzle.js"
 

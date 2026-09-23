@@ -1,11 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { clampLimit } from "./pagination.js"
 import { pageBeforeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
-import {
-  localPartOf,
-  type InboundEmailInsert,
-  type InboundRepository,
-} from "./inbound-repository.drizzle.js"
+import { localPartOf } from "./inbound-repository.drizzle.js"
+import type { InboundEmailInsert, InboundRepository } from "./inbound-repository.js"
 import { toPreview } from "./mail-preview.js"
 import type {
   InboundEmailDTO,

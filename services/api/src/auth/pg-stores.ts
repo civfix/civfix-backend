@@ -30,16 +30,14 @@ import {
 } from "../services/media-claim-repository.drizzle.js"
 import { userUploader } from "../services/media-uploader.js"
 import { enqueueWaitlistPromotion } from "../services/host/waitlist-promotion.js"
-import {
-  makeDrizzleOrganizationMembershipRepository,
-  type OrganizationMembershipRepository,
-} from "../services/host/organization-membership-repository.drizzle.js"
-import {
-  makeDrizzleErasureRepository,
-  type DbTransaction,
-  type ErasureRepository,
-  type TransferredEvent,
-} from "../services/erasure-repository.drizzle.js"
+import { makeDrizzleOrganizationMembershipRepository } from "../services/host/organization-membership-repository.drizzle.js"
+import type { OrganizationMembershipRepository } from "../services/host/organization-membership-repository.js"
+import type {
+  DbTransaction,
+  ErasureRepository,
+  TransferredEvent,
+} from "../services/erasure-repository.js"
+import { makeDrizzleErasureRepository } from "../services/erasure-repository.drizzle.js"
 import type { NotificationService } from "../services/notification-service.js"
 import {
   EmailTakenError,
