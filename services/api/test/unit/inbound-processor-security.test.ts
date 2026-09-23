@@ -319,3 +319,132 @@ describe("inbox inbound attachments cannot be overwritten by a later mail", () =
     expect(await keysUnder(c.storage, "inbound-emails/")).toEqual([stored])
   })
 })
+
+function missFirstLookup(repo: InMemoryMailRepository): void {
+  const lookup = repo.findMessageByMessageId.bind(repo)
+  let calls = 0
+  repo.findMessageByMessageId = (messageId) => {
+    calls += 1
+    return calls === 1 ? Promise.resolve(null) : lookup(messageId)
+  }
+}
+
+describe("threaded inbound under a Message-ID lookup failure or insert race", () => {
+  it("surfaces a lookup failure and leaves the pending object for the sweep", async () => {
+    const c = ctx()
+    const threadId = seedReportThread(c)
+    c.mailRepo.findMessageByMessageId = () => Promise.reject(new Error("db down"))
+    const key = `${INBOUND_PENDING_PREFIX}lookup.eml`
+    await c.storage.put(
+      key,
+      mailWithAttachment({
+        from: "clerk@city.gov",
+        to: REPLY_TO,
+        messageId: "<city-4@city.gov>",
+        filename: "photo.jpg",
+        content: CITY_BYTES,
+      }),
+    )
+
+    await expect(processInboundObject(c.container, key, c.deps)).rejects.toThrow("db down")
+
+    expect(await c.storage.getObject(key)).not.toBeNull()
+    expect(c.mailRepo.messagesOf(threadId).filter((m) => m.direction === "in")).toHaveLength(0)
+    expect(await keysUnder(c.storage, `inbound-mail/${threadId}/`)).toEqual([])
+  })
+
+  it("discards the loser's attachment objects when a racing insert stored other bytes", async () => {
+    const c = ctx()
+    const threadId = seedReportThread(c)
+    const messageId = "<city-5@city.gov>"
+    await deliver(
+      c,
+      `${INBOUND_PENDING_PREFIX}winner.eml`,
+      mailWithAttachment({
+        from: "mallory@gmail.com",
+        to: REPLY_TO,
+        messageId,
+        filename: "photo.jpg",
+        content: ATTACKER_BYTES,
+      }),
+    )
+    const winnerKey = c.mailRepo.messagesOf(threadId).find((m) => m.direction === "in")!
+      .attachments[0]!.key
+
+    missFirstLookup(c.mailRepo)
+    const outcome = await deliver(
+      c,
+      `${INBOUND_PENDING_PREFIX}loser.eml`,
+      mailWithAttachment({
+        from: "clerk@city.gov",
+        to: REPLY_TO,
+        messageId,
+        filename: "photo.jpg",
+        content: CITY_BYTES,
+      }),
+    )
+
+    expect(outcome).toBe("replay")
+    expect(await keysUnder(c.storage, `inbound-mail/${threadId}/`)).toEqual([winnerKey])
+    expect(text(await c.storage.getObject(winnerKey))).toBe(ATTACKER_BYTES)
+  })
+
+  it("keeps the objects the winner references when the same mail raced itself", async () => {
+    const c = ctx()
+    const threadId = seedReportThread(c)
+    const raw = mailWithAttachment({
+      from: "clerk@city.gov",
+      to: REPLY_TO,
+      messageId: "<city-6@city.gov>",
+      filename: "photo.jpg",
+      content: CITY_BYTES,
+    })
+    expect(await deliver(c, `${INBOUND_PENDING_PREFIX}one.eml`, raw)).toBe("threaded")
+    const stored = c.mailRepo.messagesOf(threadId).find((m) => m.direction === "in")!
+      .attachments[0]!.key
+
+    missFirstLookup(c.mailRepo)
+    expect(await deliver(c, `${INBOUND_PENDING_PREFIX}two.eml`, raw)).toBe("replay")
+
+    expect(await keysUnder(c.storage, `inbound-mail/${threadId}/`)).toEqual([stored])
+    expect(text(await c.storage.getObject(stored))).toBe(CITY_BYTES)
+  })
+
+  it("never deletes an identical attachment another message of the thread still holds", async () => {
+    const c = ctx()
+    const threadId = seedReportThread(c)
+    await deliver(
+      c,
+      `${INBOUND_PENDING_PREFIX}earlier.eml`,
+      mailWithAttachment({
+        from: "clerk@city.gov",
+        to: REPLY_TO,
+        messageId: "<city-7@city.gov>",
+        filename: "photo.jpg",
+        content: CITY_BYTES,
+      }),
+    )
+    const earlierKey = c.mailRepo.messagesOf(threadId).find((m) => m.direction === "in")!
+      .attachments[0]!.key
+    c.mailRepo.seedMessage({
+      threadId: c.mailRepo.seedThread({ threadToken: "fedcba9876543210fedcba98" }).id,
+      direction: "in",
+      messageId: "<elsewhere@city.gov>",
+    })
+
+    missFirstLookup(c.mailRepo)
+    await deliver(
+      c,
+      `${INBOUND_PENDING_PREFIX}resend.eml`,
+      mailWithAttachment({
+        from: "clerk@city.gov",
+        to: REPLY_TO,
+        messageId: "<elsewhere@city.gov>",
+        filename: "photo.jpg",
+        content: CITY_BYTES,
+      }),
+    )
+
+    expect(text(await c.storage.getObject(earlierKey))).toBe(CITY_BYTES)
+  })
+})
