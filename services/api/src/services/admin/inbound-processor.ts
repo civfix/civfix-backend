@@ -196,7 +196,7 @@ async function routeThreaded(
     fromAddr: mail.from?.address ?? null,
     toAddr: mail.to[0]?.address ?? null,
     subject: mail.subject ?? null,
-    body: threadBody(mail),
+    body: plainTextBody(mail),
     attachments,
     messageId,
     inReplyTo: mail.inReplyTo ?? null,
@@ -231,7 +231,7 @@ async function routeThreaded(
   return { outcome: "threaded", id: inserted.id }
 }
 
-function threadBody(mail: ParsedMail): string | null {
+function plainTextBody(mail: ParsedMail): string | null {
   if (mail.text !== null && mail.text !== undefined) return clipBodyText(mail.text)
   if (mail.html === null || mail.html === undefined || mail.html.length === 0) return null
   return clipBodyText(htmlToText(mail.html.slice(0, INBOUND_HTML_SOURCE_MAX_CHARS)))
@@ -267,7 +267,7 @@ async function routeInbox(
     toAddr,
     recipient,
     subject: mail.subject ?? null,
-    bodyText: clipBodyText(mail.text),
+    bodyText: plainTextBody(mail),
     bodyHtml: sanitizeInboundHtml(mail.html),
     headers: buildStoredHeaders(mail.headers, authVerdict),
     attachments,

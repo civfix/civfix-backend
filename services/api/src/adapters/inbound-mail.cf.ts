@@ -16,7 +16,7 @@ export interface CfInboundMailConfig {
   replyDomain?: string
 }
 
-const DEFAULT_REPLY_DOMAIN = "civfix.org"
+export const DEFAULT_REPLY_DOMAIN = "civfix.org"
 
 const REPLY_ADDRESS_RE = /^(?:reply|report|event)[-+]([^@\s]+)@([^@\s]+)$/
 
@@ -61,8 +61,8 @@ export class CfInboundMail implements InboundMail {
     }
     const { simpleParser } = await import("mailparser")
     const parsed = await simpleParser(Buffer.from(raw), {
-      maxHtmlLengthToParse: 2 * 1024 * 1024,
       skipImageLinks: true,
+      skipHtmlToText: true,
     })
 
     const fromValue = singleFromMailbox(parsed.headerLines, parsed.from)
@@ -70,7 +70,7 @@ export class CfInboundMail implements InboundMail {
       from: fromValue ? toAddress(fromValue) : null,
       to: toAddresses(parsed.to),
       subject: parsed.subject ?? null,
-      text: parsed.text ?? null,
+      text: parsed.text !== undefined && parsed.text.trim() !== "" ? parsed.text : null,
       html: typeof parsed.html === "string" ? parsed.html : null,
       messageId: parsed.messageId ?? null,
       inReplyTo: parsed.inReplyTo ?? null,

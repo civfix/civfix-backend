@@ -24,6 +24,14 @@ describe("htmlToText", () => {
     expect(htmlToText("<p>hello <b>world</b></p>").replace(/\s+/g, " ").trim()).toBe("hello world")
   })
 
+  it("breaks lines at blocks, marks blockquote lines, decodes numeric entities, keeps http links", () => {
+    const html =
+      '<div>a&#233;</div><blockquote><p>q1</p>q2</blockquote><p>&#x1F600;&#0;</p>' +
+      '<a href="https://x.gov/t?a=1&amp;b=2">ticket</a> <a href="javascript:alert(1)">bad</a>'
+    const emoji = String.fromCodePoint(0x1f600, 0xfffd)
+    expect(htmlToText(html)).toBe(`a\u00e9\n\n> q1\n> q2\n\n${emoji}\nticket (https://x.gov/t?a=1&b=2) bad`)
+  })
+
   it("toPreview prefers text, falls back to html, and bounds the length", () => {
     expect(toPreview("plain text wins", "<p>html</p>")).toBe("plain text wins")
     expect(toPreview(null, "<p>Crew dispatched to 42 Elm St</p>")).toBe("Crew dispatched to 42 Elm St")
