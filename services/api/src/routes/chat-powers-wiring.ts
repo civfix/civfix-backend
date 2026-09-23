@@ -25,6 +25,8 @@
 
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
+import type { Env } from "../env.js"
+import { isAdminEmail } from "../auth/admin-allowlist.js"
 import { makeChatPowersResolver, type ResolveChatPowers } from "../services/chat-room-roles.js"
 import type { ROLE_VALUES } from "../db/schema/types.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
@@ -69,6 +71,25 @@ export async function globalRoleOf(
     SELECT role FROM users WHERE id = ${userId} LIMIT 1
   `
   return rows[0]?.role ?? null
+}
+
+/**
+ * The global role that counts for chat powers. users.role is never demoted when an operator is
+ * off-boarded, so the operator role only carries authority while the row's current email passes the same
+ * ADMIN_EMAILS check the admin guard applies; otherwise the user has no global authority (null).
+ */
+export async function chatAuthorityRoleOf(
+  sql: ReturnType<Container["getDb"]>["sql"],
+  env: Pick<Env, "ADMIN_EMAILS">,
+  userId: string,
+): Promise<GlobalRole | null> {
+  const rows = await sql<{ role: GlobalRole; email: string | null }[]>`
+    SELECT role, email FROM users WHERE id = ${userId} LIMIT 1
+  `
+  const row = rows[0]
+  if (!row) return null
+  if (row.role === "operator" && (row.email === null || !isAdminEmail(env, row.email))) return null
+  return row.role
 }
 
 /** Per-instance memo (see the module banner). Keyed on the app so two harnesses never share a resolver. */
@@ -127,7 +148,7 @@ function buildChatPowers(app: FastifyInstance, container: Container): ResolveCha
       (cleanups ??= makeDrizzleCleanupRepository(container.getDb().sql)).roleOf(cleanupId, userId),
     reportChatRoleOf: (reportId, userId) =>
       (reportChat ??= makeReportChatRepository(container.getDb().sql)).roleOf(reportId, userId),
-    globalRoleOf: (userId) => globalRoleOf(container.getDb().sql, userId),
+    globalRoleOf: (userId) => chatAuthorityRoleOf(container.getDb().sql, container.env, userId),
     groupRoleOf: (groupId, userId) =>
       (groups ??= makeChatGroupRepository(container.getDb().sql)).roleOf(groupId, userId),
   })

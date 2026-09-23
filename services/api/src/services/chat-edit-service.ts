@@ -4,13 +4,13 @@
  * shape: a factory over optional per-room deps, so a DM-only caller (dm.routes) wires only the dm half.
  *
  * Gate ladder (in order):
- *   1. Resolve the message by id in the correct table (dm_messages for "dm", chat_messages otherwise)
- *      and verify its room ref matches roomId -> 404 otherwise (also plain-missing).
- *   2. Room-send permission still held (the SAME checks the WS send path runs): cleanup member, report
+ *   1. Room-send permission still held (the SAME checks the WS send path runs): cleanup member, report
  *      chat member (preceded by the report VISIBILITY check when deps.isReportVisible is wired -> 404),
- *      group member (P4 4.4), dm thread peer + not blocked either way -> plain 403. This runs BEFORE the per-row
- *      state gates so a non-member probing leaked UUIDs learns nothing about a message's deleted-ness
- *      or kind — they only ever see the generic 403.
+ *      group member, dm thread peer + not blocked either way -> plain 403. This runs BEFORE the message
+ *      lookup, like chat-reaction-service, so a non-member probing leaked UUIDs gets the same generic
+ *      403 whether or not the message exists, belongs to the room, is deleted, or is a system row.
+ *   2. Resolve the message by id in the correct table (dm_messages for "dm", chat_messages otherwise)
+ *      and verify its room ref matches roomId -> 404 otherwise (also plain-missing).
  *   3. Sender-only -> 403 (machine code "not_sender" in the error envelope's `fields.code`). A
  *      sender-less SYSTEM row skips this gate and fails the kind gate below instead (422) — "not your
  *      message" would be misleading for a message nobody authored.
@@ -156,13 +156,11 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     if (!dm || !dmPeerOf || !isBlockedEitherWay) {
       throw new Error("chat-edit-service: dm deps not wired")
     }
-    const meta = await dm.findMessageMeta(messageId)
-    if (meta === null || meta.threadId !== roomId) throw AppError.notFound("Message not found")
-    // Room-send permission still held: thread peer + not blocked either way (the WS dm gate). BEFORE the
-    // per-row state gates so a non-participant learns nothing beyond the generic 403 (no info leak).
     const peer = await dmPeerOf(roomId, userId)
     if (peer === null) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)
     if (await isBlockedEitherWay(userId, peer)) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)
+    const meta = await dm.findMessageMeta(messageId)
+    if (meta === null || meta.threadId !== roomId) throw AppError.notFound("Message not found")
     assertEditable(meta, userId)
     assertNoSlur(body, "body")
 
@@ -183,18 +181,6 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     if (!chat) throw new Error("chat-edit-service: chat deps not wired")
     const isReport = roomKind === "report"
     const isGroup = roomKind === "group"
-    const meta = await chat.findMessageMeta(messageId)
-    const roomMatches =
-      meta !== null &&
-      (isReport
-        ? meta.reportId === roomId
-        : isGroup
-          ? meta.groupId === roomId
-          : meta.cleanupId === roomId)
-    if (meta === null || !roomMatches) throw AppError.notFound("Message not found")
-    // Room-send permission still held: the SAME membership checks the WS send path runs. BEFORE the
-    // per-row state gates so a non-member probing leaked UUIDs learns nothing about a message's
-    // deleted-ness/kind — they only ever see the generic 403.
     if (isReport) {
       // Visibility first (when wired), so a report that went held/unlisted answers 404 like the routes'
       // requireVisibleReport rather than leaking a 403 keyed on a stale membership row.
@@ -213,6 +199,15 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
       if (!isCleanupMember) throw new Error("chat-edit-service: cleanup deps not wired")
       if (!(await isCleanupMember(roomId, userId))) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)
     }
+    const meta = await chat.findMessageMeta(messageId)
+    const roomMatches =
+      meta !== null &&
+      (isReport
+        ? meta.reportId === roomId
+        : isGroup
+          ? meta.groupId === roomId
+          : meta.cleanupId === roomId)
+    if (meta === null || !roomMatches) throw AppError.notFound("Message not found")
     assertEditable(meta, userId)
     assertNoSlur(body, "body")
 

@@ -37,14 +37,16 @@ import { isReportVisibleTo } from "../services/report-visibility.js"
 import { conversationReadSeam } from "./chat-gateway-wiring.js"
 import type { MarkRoomRead } from "../services/room-read-service.js"
 
+type ParticipatesFn = (
+  roomKind: ConversationMuteRoomKind,
+  roomId: string,
+  userId: string,
+) => Promise<boolean>
+
 export interface ConversationRoutesOverrides {
   repo: ConversationMutesRepository
   hides?: ConversationHidesRepository
-  participates?: (
-    roomKind: ConversationMuteRoomKind,
-    roomId: string,
-    userId: string,
-  ) => Promise<boolean>
+  participates: ParticipatesFn
   markRoomRead?: MarkRoomRead
 }
 
@@ -87,11 +89,7 @@ export async function registerConversationRoutes(
   let reports: DiscussionRepository | undefined
   let dmParticipant: ReturnType<Container["getDmRepo"]> | undefined
 
-  const participatesReal = async (
-    roomKind: ConversationMuteRoomKind,
-    roomId: string,
-    userId: string,
-  ): Promise<boolean> => {
+  const participatesReal: ParticipatesFn = async (roomKind, roomId, userId) => {
     const sql = container.getDb().sql
     if (roomKind === "dm") {
       return (dmParticipant ??= container.getDmRepo()).isParticipant(roomId, userId)
@@ -109,7 +107,8 @@ export async function registerConversationRoutes(
     return access !== null && (access.role !== null || access.visibility === "public")
   }
 
-  const participates = overrides ? overrides.participates : participatesReal
+  // An override built without a gate (an untyped or partial test object) must never open these routes.
+  const participates: ParticipatesFn = overrides?.participates ?? participatesReal
 
   let markRoomRead: MarkRoomRead | undefined
   const getMarkRoomRead = (): MarkRoomRead =>
@@ -125,7 +124,7 @@ export async function registerConversationRoutes(
       if (!isMutableRoomKind(body.roomKind)) {
         throw AppError.validation({ roomKind: "This conversation kind cannot be muted." })
       }
-      if (participates && !(await participates(body.roomKind, body.roomId, userId))) {
+      if (!(await participates(body.roomKind, body.roomId, userId))) {
         throw AppError.forbidden("You can't change notifications for this conversation.")
       }
       await getRepo().setMuted(userId, body.roomKind, body.roomId, body.muted)
@@ -144,7 +143,7 @@ export async function registerConversationRoutes(
       if (!isMutableRoomKind(body.roomKind)) {
         throw AppError.validation({ roomKind: "This conversation kind cannot be hidden." })
       }
-      if (participates && !(await participates(body.roomKind, body.roomId, userId))) {
+      if (!(await participates(body.roomKind, body.roomId, userId))) {
         throw AppError.forbidden("You can't change this conversation.")
       }
       await getHidesRepo().setHidden(userId, body.roomKind, body.roomId, body.hidden)
@@ -163,7 +162,7 @@ export async function registerConversationRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const body = parse(MarkThreadReadRequestSchema, request.body)
-      if (participates && !(await participates(body.roomKind, body.roomId, userId))) {
+      if (!(await participates(body.roomKind, body.roomId, userId))) {
         throw AppError.forbidden("You can't open this conversation.")
       }
       await getMarkRoomRead()(body.roomKind, body.roomId, userId)

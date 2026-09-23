@@ -55,7 +55,7 @@ async function makeHarness(participates?: Participates): Promise<Harness> {
   const conversationRoutesOverrides: ConversationRoutesOverrides = {
     repo: makeMutesRepo(),
     hides,
-    ...(participates ? { participates } : {}),
+    participates: participates ?? (() => Promise.resolve(true)),
   }
 
   const app = await buildServer({ env, authServices, conversationRoutesOverrides })
