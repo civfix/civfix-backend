@@ -19,7 +19,11 @@ import {
   interpolateForwardTemplate,
   templateUsesToken,
 } from "@civfix/shared"
-import type { AdminReportRecord, AdminReportRoutingRecord } from "./admin-report-types.js"
+import type {
+  AdminReportMediaRecord,
+  AdminReportRecord,
+  AdminReportRoutingRecord,
+} from "./admin-report-types.js"
 import type { MarkdownInline } from "@civfix/shared/markdown"
 
 export const NO_PHOTO_LINKS = "(none)"
@@ -56,6 +60,39 @@ export interface ReportPacket {
   html: string
 }
 
+export interface PacketMediaLink {
+  kind: AdminReportMediaRecord["kind"]
+  url: string
+}
+
+interface LabelledMediaLink {
+  label: string
+  href: string
+}
+
+const MEDIA_KIND_LABELS: Record<PacketMediaLink["kind"], string> = {
+  image: "Photo",
+  video: "Video",
+}
+
+function labelPacketMedia(media: readonly PacketMediaLink[]): LabelledMediaLink[] {
+  const counts: Record<PacketMediaLink["kind"], number> = { image: 0, video: 0 }
+  return media.map(({ kind, url }) => {
+    counts[kind] += 1
+    return { label: `${MEDIA_KIND_LABELS[kind]} ${counts[kind]}`, href: url }
+  })
+}
+
+function photoLinksValue(labelled: readonly LabelledMediaLink[]): string {
+  if (labelled.length === 0) return NO_PHOTO_LINKS
+  return labelled.map(({ label, href }) => `- ${label}: ${href}`).join("\n")
+}
+
+function mediaListHeading(media: readonly PacketMediaLink[]): string {
+  const noun = media.some(({ kind }) => kind === "video") ? "Photos and videos" : "Photos"
+  return `${noun} (${media.length})`
+}
+
 function mapLinkFor(lat: number, lng: number): string {
   return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=18/${lat}/${lng}`
 }
@@ -67,7 +104,7 @@ function formatSubmittedDate(d: Date): string {
 function buildTemplateValues(
   record: AdminReportRecord,
   routing: AdminReportRoutingRecord | null,
-  mediaLinks: string[],
+  labelledMedia: readonly LabelledMediaLink[],
   noteText: string | null,
 ): Record<string, string> {
   const ref = record.referenceCode ?? record.id.slice(0, 8)
@@ -93,8 +130,8 @@ function buildTemplateValues(
     submittedDate: formatSubmittedDate(record.createdAt),
     jurisdictionName: routing?.place ?? place,
     operatorNote: noteText ?? "",
-    photoLinks: mediaLinks.length > 0 ? mediaLinks.join("\n") : NO_PHOTO_LINKS,
-    photoCount: String(mediaLinks.length),
+    photoLinks: photoLinksValue(labelledMedia),
+    photoCount: String(labelledMedia.length),
   }
 }
 
@@ -146,14 +183,15 @@ function templateParagraphs(rendered: string): EmailBlock[] {
 export function buildReportPacket(
   record: AdminReportRecord,
   routing: AdminReportRoutingRecord | null,
-  mediaLinks: string[],
+  media: readonly PacketMediaLink[],
   note: string | null,
   templates: ForwardTemplates,
 ): ReportPacket {
   const categoryLabel = REPORT_CATEGORY_LABELS[record.category]
   const place = routing?.place ?? record.place
   const noteText = note && note.trim() !== "" ? note.trim() : null
-  const values = buildTemplateValues(record, routing, mediaLinks, noteText)
+  const labelledMedia = labelPacketMedia(media)
+  const values = buildTemplateValues(record, routing, labelledMedia, noteText)
 
   const subjectTemplate = resolveTemplate(templates.subject, DEFAULT_FORWARD_SUBJECT_TEMPLATE)
   const bodyTemplate = resolveTemplate(templates.body, DEFAULT_FORWARD_BODY_TEMPLATE)
@@ -168,13 +206,8 @@ export function buildReportPacket(
   if (noteText !== null && !templateUsesToken(bodyTemplate, "operatorNote")) {
     blocks.push(quote(noteText))
   }
-  if (mediaLinks.length > 0 && !templateUsesToken(bodyTemplate, "photoLinks")) {
-    blocks.push(
-      linkList(
-        `Photos (${mediaLinks.length})`,
-        mediaLinks.map((href, i) => ({ label: `Photo ${i + 1}`, href })),
-      ),
-    )
+  if (labelledMedia.length > 0 && !templateUsesToken(bodyTemplate, "photoLinks")) {
+    blocks.push(linkList(mediaListHeading(media), labelledMedia))
   }
 
   const { text, html } = renderEmailBody({
