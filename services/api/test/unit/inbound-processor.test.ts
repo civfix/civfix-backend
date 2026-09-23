@@ -82,6 +82,7 @@ interface Ctx {
   jobs: FakeJobs
   db: FakeSqlControl
   chatEvents: ReportTimelineEvent[]
+  logs: string[]
 }
 
 function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlHandler[] = []): Ctx {
@@ -94,7 +95,10 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
   const jobs = new FakeJobs()
   const db = makeFakeSql(sqlHandlers)
   const chatEvents: ReportTimelineEvent[] = []
+  const logs: string[] = []
+  const record = (_obj: unknown, msg?: string) => logs.push(msg ?? "")
   const deps: InboundProcessorDeps = {
+    logger: { warn: record, error: record },
     storage,
     inboundMail,
     mailRepo,
@@ -129,6 +133,7 @@ function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlH
     jobs,
     db,
     chatEvents,
+    logs,
   }
 }
 
@@ -631,6 +636,42 @@ describe("processInboundObject: unaffiliated thread joiners (H5)", () => {
     expect(stored?.unaffiliated).toBe(false)
     expect(stored?.effectsAppliedAt).not.toBeNull()
     expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
+  })
+})
+
+describe("processInboundObject: failures surface instead of being swallowed", () => {
+  it("keeps the chat stage owed and releases the claim when the chat insert fails", async () => {
+    const reportId = "report-chatfail"
+    const insertFails: SqlHandler = {
+      match: /INSERT INTO chat_messages/i,
+      rows: () => {
+        throw new Error("chat insert failed")
+      },
+    }
+    const c = ctx(new FakeInboundMail(), [insertFails])
+    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    delete c.deps.chatEmitter
+    const key = `${INBOUND_PENDING_PREFIX}chatfail.eml`
+    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org` }))
+
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+    const stored = c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")
+    expect(stored).toMatchObject({ effectsStage: 1, effectsClaimedAt: null })
+    expect(stored?.effectsAppliedAt).toBeNull()
+    expect(c.logs).toContain("inbound: side effects failed (claim released; the sweep re-drives it)")
+  })
+
+  it("leaves the object pending when the thread lookup fails", async () => {
+    const c = ctx()
+    c.mailRepo.findThreadByToken = () => Promise.reject(new Error("db down"))
+    const key = `${INBOUND_PENDING_PREFIX}lookupfail.eml`
+    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org` }))
+
+    await expect(processInboundObject(c.container, key, c.deps)).rejects.toThrow("db down")
+    expect(c.storage.get(key)).not.toBeNull()
+    expect(c.inboundRepo.rows).toHaveLength(0)
   })
 })
 
