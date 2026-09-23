@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest"
 import {
   EXPORT_ABANDON_AFTER_MS,
+  EXPORT_RUN_STALE_MS,
   makeHostExportService,
 } from "../../src/services/host/export-service.js"
 import {
@@ -48,6 +49,7 @@ function harness(
     markReady?: HostExportRepository["markReady"]
     deleteFails?: boolean
     initial?: Partial<HostExportRecord>
+    onDelete?: (key: string) => Promise<void>
   } = {},
 ) {
   registerHostExportBuilder("roster", {
@@ -65,13 +67,23 @@ function harness(
     findById: () => Promise.resolve(current),
     listForEvent: () => Promise.resolve([current]),
     listForOrganization: () => Promise.resolve([]),
-    claimForRun: () => {
-      if (current.status !== "queued") return Promise.resolve(null)
+    claimForRun: (_id, staleBefore) => {
+      const reclaimable =
+        current.status === "running" &&
+        current.startedAt !== null &&
+        current.startedAt < staleBefore
+      if (current.status !== "queued" && !reclaimable) return Promise.resolve(null)
       current = { ...current, status: "running", startedAt: NOW, runToken: "run-1" }
       return Promise.resolve(current)
     },
-    recordObjectKey: (_id, args) => {
+    recordObjectKey: (
+      _id,
+      args: { r2Key: string; runToken: string | null; replaces?: string | null },
+    ) => {
       if (current.status !== "running" || current.runToken !== args.runToken) {
+        return Promise.resolve(false)
+      }
+      if (args.replaces !== undefined && current.r2Key !== args.replaces) {
         return Promise.resolve(false)
       }
       current = { ...current, r2Key: args.r2Key }
@@ -80,13 +92,20 @@ function harness(
     markReady:
       opts.markReady ??
       ((_id, args) => {
+        if (current.status !== "running" || current.runToken !== args.runToken) {
+          return Promise.resolve(null)
+        }
         const { runToken: _ignored, ...fields } = args
         current = { ...current, status: "ready", ...fields }
         return Promise.resolve(current)
       }),
-    markFailed: (_id, errorCode) => {
+    markFailed: (_id: string, errorCode: string, runToken?: string | null) => {
+      const open = current.status === "queued" || current.status === "running"
+      if (!open || (runToken !== undefined && current.runToken !== runToken)) {
+        return Promise.resolve(false)
+      }
       current = { ...current, status: "failed", errorCode }
-      return Promise.resolve()
+      return Promise.resolve(true)
     },
     listExpired: () => Promise.resolve([]),
     markExpired: () => Promise.resolve(),
@@ -122,10 +141,10 @@ function harness(
         return Promise.resolve()
       },
       presignGet: (key) => Promise.resolve(`https://signed.example/${key}`),
-      delete: (key) => {
-        if (deleteFails) return Promise.reject(new Error("r2 down"))
+      delete: async (key) => {
+        if (deleteFails) throw new Error("r2 down")
         objects.delete(key)
-        return Promise.resolve()
+        await opts.onDelete?.(key)
       },
     },
     config: { maxRows: 100, maxBytes: 1_000_000, ttlHours: 24 },
@@ -133,8 +152,15 @@ function harness(
   })
   return {
     service,
+    repo,
     objects,
     current: () => current,
+    setCurrent: (patch: Partial<HostExportRecord>) => {
+      current = { ...current, ...patch }
+    },
+    failDeletes: () => {
+      deleteFails = true
+    },
     storageRecovers: () => {
       deleteFails = false
     },
@@ -233,5 +259,138 @@ describe("host export download", () => {
         }),
       ),
     ).rejects.toMatchObject({ code: "CONFLICT", message: "That export has expired." })
+  })
+})
+
+describe("the reaper fences a stale run before deleting its object", () => {
+  it("never leaves a ready row pointing at an object it deleted", async () => {
+    const key = "exports/host/2026/02/run-live/00000000-0000-0000-0000-0000000000e1.csv"
+    let lateReady: HostExportRecord | null | undefined
+    const h: ReturnType<typeof harness> = harness({
+      initial: {
+        status: "running",
+        runToken: "run-live",
+        r2Key: key,
+        startedAt: new Date(NOW.getTime() - EXPORT_ABANDON_AFTER_MS - 1),
+      },
+      onDelete: async () => {
+        lateReady = await h.repo.markReady(EXPORT_ID, {
+          r2Key: key,
+          rowCount: 1,
+          byteSize: 2,
+          truncated: false,
+          expiresAt: new Date(NOW.getTime() + 3_600_000),
+          runToken: "run-live",
+        })
+      },
+    })
+    h.objects.add(key)
+
+    await h.service.reap(10)
+
+    expect(lateReady).toBeNull()
+    expect(h.objects.has(key)).toBe(false)
+    expect(h.current().status).toBe("failed")
+    expect(h.current().r2Key).toBeNull()
+  })
+
+  it("leaves the key on the fenced row when the delete fails, for the next pass", async () => {
+    const key = "exports/host/2026/02/run-crashed/00000000-0000-0000-0000-0000000000e1.csv"
+    const h = harness({
+      initial: {
+        status: "running",
+        runToken: "run-crashed",
+        r2Key: key,
+        startedAt: new Date(NOW.getTime() - EXPORT_ABANDON_AFTER_MS - 1),
+      },
+      deleteFails: true,
+    })
+    h.objects.add(key)
+
+    await h.service.reap(10)
+    expect(h.current().status).toBe("failed")
+    expect(h.current().r2Key).toBe(key)
+
+    h.storageRecovers()
+    await h.service.reap(10)
+    expect(h.objects.has(key)).toBe(false)
+    expect(h.current().r2Key).toBeNull()
+  })
+})
+
+describe("a re-claimed run never loses the previous run's object", () => {
+  const OLD_KEY = "exports/host/2026/02/run-crashed/00000000-0000-0000-0000-0000000000e1.csv"
+  const staleRun = {
+    status: "running" as const,
+    runToken: "run-crashed",
+    r2Key: OLD_KEY,
+    startedAt: new Date(NOW.getTime() - EXPORT_RUN_STALE_MS - 1),
+  }
+
+  it("deletes the object a crashed run uploaded before recording its own", async () => {
+    const h = harness({ initial: staleRun })
+    h.objects.add(OLD_KEY)
+
+    expect(await h.service.run(EXPORT_ID)).toEqual({ status: "ready" })
+
+    expect(h.objects.has(OLD_KEY)).toBe(false)
+    expect(h.objects.size).toBe(1)
+    expect(h.current().r2Key).not.toBe(OLD_KEY)
+    expect(h.objects.has(h.current().r2Key ?? "")).toBe(true)
+  })
+
+  it("fails the run and keeps the old key on the row when that delete fails", async () => {
+    const h = harness({ initial: staleRun, deleteFails: true })
+    h.objects.add(OLD_KEY)
+
+    expect(await h.service.run(EXPORT_ID)).toEqual({ status: "failed" })
+
+    expect(h.current().status).toBe("failed")
+    expect(h.current().r2Key).toBe(OLD_KEY)
+    expect([...h.objects]).toEqual([OLD_KEY])
+  })
+
+  it("refuses to record a key over a different one it was not told to replace", async () => {
+    const fake = makeFakeSql()
+    const repo = makeDrizzleHostExportRepository(fake.sql as unknown as Sql)
+    await repo.recordObjectKey(EXPORT_ID, {
+      r2Key: "exports/host/new.csv",
+      runToken: "run-1",
+      replaces: OLD_KEY,
+    })
+    const stmt = fake.statements[0]!
+    expect(stmt.sql).toMatch(/r2_key IS NOT DISTINCT FROM \?/)
+    expect(stmt.values).toContain(OLD_KEY)
+  })
+})
+
+describe("a superseded run cannot fail the live run", () => {
+  it("guards the failure write with the run token", async () => {
+    const fake = makeFakeSql()
+    const repo = makeDrizzleHostExportRepository(fake.sql as unknown as Sql)
+    await repo.markFailed(EXPORT_ID, "build_failed", "run-1")
+    const stmt = fake.statements[0]!
+    expect(stmt.sql).toMatch(/run_token IS NOT DISTINCT FROM \?/)
+    expect(stmt.values).toContain("run-1")
+  })
+
+  it("leaves the newer claim running when the older run's build throws", async () => {
+    const h = harness()
+    resetHostExportBuildersForTests()
+    registerHostExportBuilder("roster", {
+      filename: () => "civfix-roster-test.csv",
+      header: () => Promise.resolve(["a"]),
+      provenance: () => Promise.resolve([]),
+      // eslint-disable-next-line require-yield
+      rows: async function* () {
+        h.setCurrent({ runToken: "run-newer" })
+        throw new Error("builder blew up")
+      },
+    })
+
+    expect(await h.service.run(EXPORT_ID)).toEqual({ status: "failed" })
+
+    expect(h.current().status).toBe("running")
+    expect(h.current().runToken).toBe("run-newer")
   })
 })

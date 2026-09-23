@@ -149,7 +149,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
             { err, exportId: claimed.id },
             "host export refused: the requester no longer holds the capability",
           )
-          await deps.repo.markFailed(claimed.id, "forbidden")
+          await deps.repo.markFailed(claimed.id, "forbidden", claimed.runToken)
           return { status: "failed" }
         }
       }
@@ -203,10 +203,14 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
           bytes += note.byteLength
         }
 
+        // A re-claimed row still names the crashed run's object. It is deleted before this run's key
+        // replaces it; if the delete fails the row fails holding that key, so the reaper finishes it.
+        if (claimed.r2Key !== null) await deps.storage.delete(claimed.r2Key)
         key = storageKey(claimed, at)
         const owned = await deps.repo.recordObjectKey(claimed.id, {
           r2Key: key,
           runToken: claimed.runToken,
+          replaces: claimed.r2Key,
         })
         if (!owned) {
           deps.logger?.warn(
@@ -248,7 +252,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
         return { status: "ready" }
       } catch (err) {
         deps.logger?.error({ err, exportId: claimed.id }, "host export failed")
-        await deps.repo.markFailed(claimed.id, "build_failed")
+        await deps.repo.markFailed(claimed.id, "build_failed", claimed.runToken)
         if (key !== null) await discardFailedObject(claimed, key)
         return { status: "failed" }
       }
@@ -295,19 +299,34 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
         limit,
       })
       for (const record of orphaned) {
-        if (record.r2Key !== null) {
-          try {
-            await deps.storage.delete(record.r2Key)
-          } catch (err) {
-            deps.logger?.warn(
-              { err, exportId: record.id },
-              "host export reap: orphaned object delete failed; row kept for the next pass",
-            )
-            continue
-          }
-        }
         const errorCode = record.status === "queued" ? "not_started" : "build_failed"
-        if (await deps.repo.releaseObject(record, errorCode)) reaped += 1
+        // Fence first: failing the row under its run token makes a still-live run's markReady miss, so
+        // no ready row can end up naming the object deleted below. The key stays on the failed row
+        // until the delete succeeds.
+        if (
+          record.status !== "failed" &&
+          !(await deps.repo.markFailed(record.id, errorCode, record.runToken))
+        ) {
+          continue
+        }
+        if (record.r2Key === null) {
+          reaped += 1
+          continue
+        }
+        try {
+          await deps.storage.delete(record.r2Key)
+        } catch (err) {
+          deps.logger?.warn(
+            { err, exportId: record.id },
+            "host export reap: orphaned object delete failed; row kept for the next pass",
+          )
+          continue
+        }
+        const released = await deps.repo.releaseObject(
+          { id: record.id, status: "failed", runToken: record.runToken },
+          errorCode,
+        )
+        if (released) reaped += 1
       }
       return { reaped }
     },

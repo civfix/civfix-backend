@@ -81,4 +81,37 @@ describe.skipIf(!pg)("host export orphaned objects (integration)", () => {
     expect(released?.errorCode).toBe("build_failed")
     expect(await repo.releaseObject(record, "build_failed")).toBe(false)
   })
+
+  it("only lets the run holding the token fail the row or replace the key it was told about", async () => {
+    const staleBefore = new Date("2026-02-05T11:00:00Z")
+    const id = await exportRow({
+      status: "running",
+      r2Key: "exports/host/crashed.csv",
+      requestedAt: new Date("2026-02-05T09:00:00Z"),
+      startedAt: new Date("2026-02-05T09:00:00Z"),
+    })
+    const claimed = await repo.claimForRun(id, staleBefore)
+    expect(claimed?.r2Key).toBe("exports/host/crashed.csv")
+    const runToken = claimed!.runToken
+
+    expect(
+      await repo.recordObjectKey(id, { r2Key: "exports/host/new.csv", runToken, replaces: null }),
+    ).toBe(false)
+    expect(await repo.markFailed(id, "build_failed", "00000000-0000-0000-0000-000000000000")).toBe(
+      false,
+    )
+    expect((await repo.findById(id))?.status).toBe("running")
+
+    expect(
+      await repo.recordObjectKey(id, {
+        r2Key: "exports/host/new.csv",
+        runToken,
+        replaces: "exports/host/crashed.csv",
+      }),
+    ).toBe(true)
+    expect(await repo.markFailed(id, "build_failed", runToken)).toBe(true)
+    const failed = await repo.findById(id)
+    expect(failed?.status).toBe("failed")
+    expect(failed?.r2Key).toBe("exports/host/new.csv")
+  })
 })

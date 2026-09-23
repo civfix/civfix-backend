@@ -125,7 +125,7 @@ function harness(
     },
     markFailed: (_id, errorCode) => {
       current = { ...current, status: "failed", errorCode }
-      return Promise.resolve()
+      return Promise.resolve(true)
     },
     listExpired: () => Promise.resolve(current.status === "ready" ? [current] : []),
     markExpired: () => {

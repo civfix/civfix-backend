@@ -37,9 +37,13 @@ export interface HostExportRepository {
   listForEvent(cleanupId: string, limit: number): Promise<HostExportRecord[]>
   listForOrganization(organizationId: string, limit: number): Promise<HostExportRecord[]>
   claimForRun(exportId: string, staleBefore: Date): Promise<HostExportRecord | null>
+  /**
+   * Records the run's object key. `replaces` names the key the row must still hold (null for none): a
+   * re-claimed row keeps the crashed run's key, and overwriting it unseen would orphan that object.
+   */
   recordObjectKey(
     exportId: string,
-    args: { r2Key: string; runToken: string | null },
+    args: { r2Key: string; runToken: string | null; replaces: string | null },
   ): Promise<boolean>
   markReady(
     exportId: string,
@@ -52,7 +56,8 @@ export interface HostExportRepository {
       runToken: string | null
     },
   ): Promise<HostExportRecord | null>
-  markFailed(exportId: string, errorCode: string): Promise<void>
+  /** Fails the run holding `runToken`; the row keeps any object key for the reaper to delete. */
+  markFailed(exportId: string, errorCode: string, runToken: string | null): Promise<boolean>
   listExpired(now: Date, limit: number): Promise<HostExportRecord[]>
   markExpired(exportId: string): Promise<void>
   listOrphaned(args: { staleBefore: Date; limit: number }): Promise<HostExportRecord[]>
@@ -174,6 +179,7 @@ export function makeDrizzleHostExportRepository(sql: Sql): HostExportRepository 
       const rows = await sql<{ id: string }[]>`
         UPDATE host_exports SET r2_key = ${args.r2Key}
          WHERE id = ${exportId} AND status = 'running' AND run_token IS NOT DISTINCT FROM ${args.runToken}
+           AND r2_key IS NOT DISTINCT FROM ${args.replaces}
         RETURNING id`
       return rows.length > 0
     },
@@ -191,11 +197,14 @@ export function makeDrizzleHostExportRepository(sql: Sql): HostExportRepository 
       return rows[0] ? toRecord(rows[0]) : null
     },
 
-    async markFailed(exportId, errorCode) {
-      await sql`
+    async markFailed(exportId, errorCode, runToken) {
+      const rows = await sql<{ id: string }[]>`
         UPDATE host_exports
            SET status = 'failed', error_code = ${errorCode}, completed_at = now()
-         WHERE id = ${exportId} AND status IN ('queued','running')`
+         WHERE id = ${exportId} AND status IN ('queued','running')
+           AND run_token IS NOT DISTINCT FROM ${runToken}
+        RETURNING id`
+      return rows.length > 0
     },
 
     async listExpired(now, limit) {
