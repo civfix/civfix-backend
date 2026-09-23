@@ -21,9 +21,10 @@ import type { PacketAttachment } from "./outbound-mail-service.js"
 import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignPacketMedia } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY, type PresignPacketMedia } from "../media-presign.js"
 import { isPubliclyVisibleStatus } from "../report-visibility.js"
-import { ADMIN_DEFAULT_LIMIT } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
 import {
   JURISDICTION_REPLY_NOTE,
   resolveListFilter,
@@ -162,7 +163,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         flaggedOnly,
         needsVerificationOnly,
         cursor: query.cursor ?? null,
-        limit: query.limit ?? ADMIN_DEFAULT_LIMIT,
+        limit: clampLimit(query.limit),
       }
       const [{ records, nextCursor }, counts] = await Promise.all([
         deps.repo.listReports(args),

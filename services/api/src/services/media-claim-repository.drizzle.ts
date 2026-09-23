@@ -1,5 +1,6 @@
 import type { Queryable } from "../db/client.js"
 import { UNBOUND_GRACE_MS } from "./media-authorization.js"
+import { MS_PER_SECOND } from "../lib/time.js"
 
 export interface AvatarClaimant {
   uploader: string
@@ -13,7 +14,6 @@ export interface AvatarMediaRow extends Record<string, unknown> {
   served_key: string | null
 }
 
-const MS_PER_SECOND = 1000
 const AVATAR_CLAIM_WINDOW_SECONDS = UNBOUND_GRACE_MS / MS_PER_SECOND
 
 type SqlTemplateTag<Q> = (strings: TemplateStringsArray, ...values: (string | number | null)[]) => Q

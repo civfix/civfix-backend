@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import type { Container } from "../../di.js"
 import type { ParsedMail } from "@civfix/shared/interfaces"
 import type {
@@ -14,6 +13,7 @@ import type { CleanupRepository } from "../cleanup-service.js"
 import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import { MESSAGE_BODY_MAX, segmentGraphemes } from "@civfix/shared"
+import { sha256HexSync } from "../../lib/hash.js"
 import {
   DEFAULT_REPLY_DOMAIN,
   domainOf,
@@ -374,5 +374,5 @@ export function resolveMessageId(mail: ParsedMail): string {
     String(body.length),
     body.slice(0, DERIVED_ID_BODY_PREFIX_CHARS),
   ].join("|")
-  return `${DERIVED_ID_PREFIX}${createHash("sha256").update(basis).digest("hex")}`
+  return `${DERIVED_ID_PREFIX}${sha256HexSync(basis)}`
 }

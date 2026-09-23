@@ -18,7 +18,8 @@
 import type PgBoss from "pg-boss"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
 import { FakeJobs } from "@civfix/shared/fakes"
-import { assertRealSeamInProd, loadLimits, parseBool } from "./config.js"
+import { parseBool } from "@civfix/api/env-parsers"
+import { assertRealSeamInProd, loadLimits } from "./config.js"
 
 /** Default ON outside production so the worker boots offline; an explicit ON in prod fails boot. */
 function useFakeJobs(source: NodeJS.ProcessEnv = process.env): boolean {

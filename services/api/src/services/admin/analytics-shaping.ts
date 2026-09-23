@@ -21,6 +21,7 @@ import {
   type RetentionRow,
   type WeekBucket,
 } from "./analytics-types.js"
+import { MS_PER_DAY, MS_PER_WEEK } from "../../lib/time.js"
 
 const MONTH_ABBR = [
   "Jan",
@@ -36,9 +37,6 @@ const MONTH_ABBR = [
   "Nov",
   "Dec",
 ] as const
-
-const DAY_MS = 24 * 60 * 60 * 1000
-const WEEK_MS = 7 * DAY_MS
 
 const ROUTE_TIME_PENDING_DELTA = "Phase 3"
 
@@ -172,7 +170,7 @@ export function buildPinsByWeek(
   const values = new Array<number>(weeks).fill(0)
   for (const b of buckets) {
     const bWeek = startOfWeekUtc(b.weekStart).getTime()
-    const weeksAgo = Math.round((refWeek - bWeek) / WEEK_MS)
+    const weeksAgo = Math.round((refWeek - bWeek) / MS_PER_WEEK)
     if (weeksAgo >= 0 && weeksAgo < weeks) {
       // index 0 is the oldest week in the window, weeks-1 is the current week.
       values[weeks - 1 - weeksAgo] = b.count
@@ -245,7 +243,7 @@ export function startOfWeekUtc(d: Date): Date {
   // getUTCDay: 0=Sun..6=Sat. Postgres week starts Monday; shift so Monday is the anchor.
   const dow = copy.getUTCDay()
   const deltaToMonday = (dow + 6) % 7
-  return new Date(copy.getTime() - deltaToMonday * DAY_MS)
+  return new Date(copy.getTime() - deltaToMonday * MS_PER_DAY)
 }
 
 export function subtractMonths(

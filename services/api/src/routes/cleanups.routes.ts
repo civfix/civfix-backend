@@ -59,7 +59,7 @@ import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { perHost, perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
-import { chatHistoryPayload } from "./chat-route-helpers.js"
+import { chatHistoryPayload, clampChatHistoryLimit } from "./chat-route-helpers.js"
 import { CappedBBoxQueryParam, LatLngQueryParam } from "./query-encoding.js"
 
 export interface CleanupServiceOverrides {
@@ -93,8 +93,6 @@ const ListCleanupsQuerySchema = z.object({
   cursor: z.string().optional(),
   limit: z.string().optional(),
 })
-
-const HISTORY_DEFAULT_LIMIT = 30
 
 const MEMBER_MANAGEMENT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" } as const
 
@@ -468,7 +466,7 @@ export async function registerCleanupRoutes(
     const isMember = await repo().isMember(id, userId)
     if (!isMember) throw AppError.forbidden("You are not a member of this cleanup.")
 
-    const limit = q.limit ?? HISTORY_DEFAULT_LIMIT
+    const limit = clampChatHistoryLimit(q.limit)
     const pinsSource = q.before === undefined && q.around === undefined ? pinsRepo() : null
     const payload: ChatHistoryResponse = await chatHistoryPayload(
       {

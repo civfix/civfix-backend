@@ -22,7 +22,7 @@ import {
   toNotificationDTO,
   toPrefsDTO,
 } from "./notification-helpers.js"
-import { mapWithLimit } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 import { classifyPushToken, isRegistrablePushEndpoint } from "./push-token-policy.js"
 import { renderMessage, type MessageKey, type MessageVars } from "../i18n/renderMessage.js"
 import { DEFAULT_LOCALE } from "../i18n/locales.js"

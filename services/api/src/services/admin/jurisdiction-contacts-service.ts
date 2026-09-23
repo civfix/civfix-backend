@@ -6,7 +6,7 @@ import type { JurisdictionListQuery } from "@civfix/shared"
 import { toDirectoryDTO, hasAnyContact } from "./jurisdiction-directory-projection.js"
 import type { DirectoryFilter, DirectorySort } from "./jurisdiction-contacts-types.js"
 import { isReservedHandle } from "../../auth/reserved-handles.js"
-import { ADMIN_DEFAULT_LIMIT } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
 import { isThrottled } from "./outreach-service.js"
 import {
   OUTREACH_DIGEST_JOB,
@@ -68,7 +68,7 @@ export function makeJurisdictionContactsService(
         layer: query.layer ?? null,
         sort: (query.sort ?? "population") as DirectorySort,
         cursor: query.cursor ?? null,
-        limit: query.limit ?? ADMIN_DEFAULT_LIMIT,
+        limit: clampLimit(query.limit),
       })
       return {
         items: records.map(toDirectoryDTO),

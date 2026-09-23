@@ -10,6 +10,7 @@ import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
 import { makeDrizzleRetentionRepository } from "@civfix/api/retention-repo"
 import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
+import { MS_PER_DAY, MS_PER_HOUR } from "@civfix/api/time"
 
 export interface RetentionSweepDeps extends JobObsDeps {
   sql: Sql
@@ -36,13 +37,11 @@ export interface RetentionSweepResult {
 }
 
 const RETENTION_SWEEP = "retention.sweep"
-const HOUR_MS = 60 * 60 * 1000
-const DAY_MS = 24 * HOUR_MS
 
-export const RETENTION_GRACE_MS = HOUR_MS
+export const RETENTION_GRACE_MS = MS_PER_HOUR
 const RETENTION_BATCH = 5000
-const RETENTION_IDEMPOTENCY_MS = 48 * HOUR_MS
-const RETENTION_NOTIFICATIONS_MS = 90 * DAY_MS
+const RETENTION_IDEMPOTENCY_MS = 48 * MS_PER_HOUR
+const RETENTION_NOTIFICATIONS_MS = 90 * MS_PER_DAY
 export const RETENTION_GEOCODE_CACHE_MS = GEOCODE_CACHE_TTL_MS
 export const RETENTION_INBOUND_EMAILS_MS = INBOUND_EMAIL_RETENTION_MS
 export const RETENTION_MAX_PAGES = 20

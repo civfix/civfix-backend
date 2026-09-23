@@ -1,5 +1,6 @@
 import type postgres from "postgres"
 import type { Queryable } from "./client.js"
+import { MS_PER_MINUTE } from "../lib/time.js"
 
 export const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -73,7 +74,6 @@ const CURSOR_INSTANT_PARTS_RE =
 // Postgres refuses a timestamptz input whose UTC offset is past 15:59 (22009), while JS Date takes
 // anything up to 23:59.
 const MAX_CURSOR_OFFSET_MINUTES = 15 * 60 + 59
-const MINUTE_MS = 60_000
 
 function pad(n: number, width = 2): string {
   return String(n).padStart(width, "0")
@@ -96,7 +96,7 @@ function canonicalCursorInstant(text: string, at: Date): string | null {
     offsetMinutes = (Number(offsetH) * 60 + offsetMinutePart) * (sign === "-" ? -1 : 1)
     if (Math.abs(offsetMinutes) > MAX_CURSOR_OFFSET_MINUTES) return null
   }
-  const wall = new Date(at.getTime() + offsetMinutes * MINUTE_MS)
+  const wall = new Date(at.getTime() + offsetMinutes * MS_PER_MINUTE)
   if (
     wall.getUTCFullYear() !== Number(year) ||
     wall.getUTCMonth() + 1 !== Number(month) ||

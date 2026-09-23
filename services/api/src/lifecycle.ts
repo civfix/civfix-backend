@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify"
 import { flushErrorReporting } from "./errors/glitchtip.js"
 import { SHUTDOWN_DRAIN_MS_MAX } from "./env/parsers.js"
+import { sleep } from "./lib/sleep.js"
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -53,12 +54,6 @@ export interface ShutdownOptions {
 
 interface WebsocketHost {
   websocketServer?: { clients?: Iterable<{ terminate: () => void }> }
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, ms)
-  })
 }
 
 async function settleWithin(work: Promise<unknown>, ms: number): Promise<"settled" | "timeout"> {
@@ -147,7 +142,7 @@ export function makeShutdown(
     }, hardDeadlineMs)
     deadline.unref()
 
-    if (drainMs > 0) await delay(drainMs)
+    if (drainMs > 0) await sleep(drainMs)
 
     app.log.info("shutdown: drain window elapsed, closing server")
 

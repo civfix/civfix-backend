@@ -20,6 +20,7 @@ import {
   makeUnboundOnlyMediaViewAuthorizer,
   type MediaViewAuthorizer,
 } from "./media-authorization.js"
+import { MS_PER_SECOND } from "../lib/time.js"
 
 type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
 
@@ -42,7 +43,6 @@ const ALLOWED_VIDEO_CONTENT_TYPES: ReadonlySet<string> = new Set(["video/mp4", "
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const UPLOAD_KEY_PREFIX = "uploads/"
-const MS_PER_SECOND = 1000
 const USER_QUOTA_PREFIX = "u:"
 const ANON_QUOTA_PREFIX = "a:"
 const IP_QUOTA_PREFIX = "ip:"

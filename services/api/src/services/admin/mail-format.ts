@@ -25,6 +25,7 @@ import type {
   AdminReportRoutingRecord,
 } from "./admin-report-types.js"
 import type { MarkdownInline } from "@civfix/shared/markdown"
+import { ATTACHMENT_FILENAME_MAX_CHARS, safeFilenameChars } from "../../lib/filename.js"
 
 export const NO_PHOTO_LINKS = "(none)"
 
@@ -39,10 +40,7 @@ const ATTACHMENT_EXTENSIONS: Record<string, string> = {
 }
 
 const EXTENSION_FALLBACK = ".jpg"
-const ATTACHMENT_FILENAME_MAX_CHARS = 120
 const FILE_EXTENSION_RE = /\.[A-Za-z0-9]{2,5}$/
-const UNSAFE_FILENAME_CHARS_RE = /[^A-Za-z0-9._-]+/g
-const LEADING_DOTS_RE = /^\.+/
 
 const SHORT_ID_CHARS = 8
 const UNKNOWN_PLACE_LABEL = "the area"
@@ -55,7 +53,7 @@ function hasExtension(name: string): boolean {
 export function attachmentFilename(r2Key: string, index: number, contentType?: string): string {
   const ext = ATTACHMENT_EXTENSIONS[(contentType ?? "").trim().toLowerCase()] ?? EXTENSION_FALLBACK
   const tail = r2Key.split("/").pop() ?? ""
-  const cleaned = tail.replace(UNSAFE_FILENAME_CHARS_RE, "_").replace(LEADING_DOTS_RE, "")
+  const cleaned = safeFilenameChars(tail)
   if (cleaned.length === 0) return `photo-${index + 1}${ext}`
   if (hasExtension(cleaned)) return cleaned.slice(0, ATTACHMENT_FILENAME_MAX_CHARS)
   return `${cleaned.slice(0, ATTACHMENT_FILENAME_MAX_CHARS - ext.length)}${ext}`

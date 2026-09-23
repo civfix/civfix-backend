@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto"
 import { MAX_CERTIFICATE_ENTRIES } from "@civfix/shared"
 import type { VolunteerHoursSource } from "@civfix/shared"
 import { resolveLocale } from "../i18n/locales.js"
+import { sha256HexSync } from "../lib/hash.js"
 import { renderMessage, type MessageKey } from "../i18n/renderMessage.js"
 
 export const CERTIFICATE_TIME_ZONE = "America/Los_Angeles"
@@ -215,5 +215,5 @@ export function ledgerFingerprint(model: TranscriptModel): string {
     count: model.entryCount,
     rows: model.rows.map((row) => [row.id, row.hours.toFixed(2), row.occurredAt]),
   })
-  return createHash("sha256").update(basis).digest("hex")
+  return sha256HexSync(basis)
 }

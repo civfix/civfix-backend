@@ -1,6 +1,7 @@
 import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { ReportCategory } from "@civfix/shared"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 import type { MailRepository } from "./mail-repository.drizzle.js"
 import {
   isOutboundSendDeadlineError,
@@ -25,13 +26,11 @@ export interface OutreachRepository {
 
 const OUTREACH_SWEEP_BATCH_SIZE = 200
 
-const DAY_MS = 24 * 60 * 60 * 1000
-
 export const OUTREACH_CATEGORIES: readonly ReportCategory[] = ADMIN_CATEGORIES
 
 export function isThrottled(lastOutreachAt: Date | null, now: Date, throttleDays: number): boolean {
   if (lastOutreachAt === null) return false
-  const windowMs = throttleDays * DAY_MS
+  const windowMs = throttleDays * MS_PER_DAY
   return now.getTime() - lastOutreachAt.getTime() < windowMs
 }
 
@@ -126,7 +125,7 @@ export function makeOutreachService(deps: OutreachServiceDeps): OutreachService 
     const at = now()
     const claim = deps.outreachRepo.claimOutreachWindow
     if (claim) {
-      const windowStart = new Date(at.getTime() - deps.throttleDays * DAY_MS)
+      const windowStart = new Date(at.getTime() - deps.throttleDays * MS_PER_DAY)
       const won = await claim(geoid, { at, windowStart })
       if (!won) {
         return { geoid, sent: false, skipped: "throttled", reportCount: 0 }

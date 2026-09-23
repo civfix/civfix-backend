@@ -16,6 +16,7 @@ import type {
 } from "./chat-group-repository.drizzle.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { isOfficialAccount } from "../auth/official-account.js"
+import { clampPageLimit } from "../lib/page-limit.js"
 import { NO_AFFILIATIONS, withAffiliation, type AffiliationLoader } from "./affiliation.js"
 
 export const GROUP_MEMBERS_DEFAULT_LIMIT = 25
@@ -309,10 +310,7 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
 
     async listMembers(viewerId, req) {
       await requireReadable(viewerId, req.id)
-      const limit = Math.min(
-        Math.max(req.limit ?? GROUP_MEMBERS_DEFAULT_LIMIT, 1),
-        GROUP_MEMBERS_MAX_LIMIT,
-      )
+      const limit = clampPageLimit(req.limit, GROUP_MEMBERS_DEFAULT_LIMIT, GROUP_MEMBERS_MAX_LIMIT)
       const page = await groups.listMembers(req.id, viewerId, req.cursor ?? null, limit)
       const affiliations = deps.affiliations
         ? await deps.affiliations(

@@ -21,7 +21,7 @@ import type {
   CleanupMemberRole,
 } from "@civfix/shared"
 import { toRelAbs } from "./admin-format.js"
-import { ADMIN_DEFAULT_LIMIT } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
 import { applyRoleChange } from "./role-change.js"
 import type { MessageUpdateAnnouncer } from "./admin-report-chat-service.js"
 import {
@@ -236,7 +236,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
         flaggedOnly,
         deletedOnly,
         cursor: query.cursor ?? null,
-        limit: query.limit ?? ADMIN_DEFAULT_LIMIT,
+        limit: clampLimit(query.limit),
       }
       const [{ records, nextCursor }, counts] = await Promise.all([
         deps.repo.listUsers(args),

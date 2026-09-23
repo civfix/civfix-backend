@@ -12,14 +12,13 @@
  */
 
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose"
+import { stripTrailingSlashes } from "../lib/base-url.js"
 
 const ACCESS_JWT_ALG = "RS256"
 
 const ACCESS_CLOCK_TOLERANCE_SECONDS = 30
 
 const ACCESS_CERTS_PATH = "/cdn-cgi/access/certs"
-
-const TRAILING_SLASHES_RE = /\/+$/
 
 export interface AccessIdentity {
   /** Verified email for an interactive (human) login; null for a service-token (machine) login. */
@@ -52,7 +51,7 @@ export function createAccessVerifier(
   config: AccessVerifierConfig,
   jwks?: JWTVerifyGetKey,
 ): VerifyAccessJwt {
-  const issuer = config.teamDomain.replace(TRAILING_SLASHES_RE, "")
+  const issuer = stripTrailingSlashes(config.teamDomain)
   const keySet = jwks ?? createRemoteJWKSet(new URL(`${issuer}${ACCESS_CERTS_PATH}`))
 
   return async function verifyAccessJwt(token: string): Promise<AccessIdentity> {

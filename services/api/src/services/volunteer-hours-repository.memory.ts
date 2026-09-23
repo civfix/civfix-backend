@@ -31,6 +31,7 @@ import type {
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
 } from "./volunteer-hours-service.js"
+import { MS_PER_WEEK } from "../lib/time.js"
 
 export interface MemoryLeaderboardUser {
   name: string
@@ -80,8 +81,6 @@ const DEFAULT_LEGACY_REPORT_HOURS = 0.1
 function round2(n: number): number {
   return Math.round(n * HOURS_ROUNDING_FACTOR) / HOURS_ROUNDING_FACTOR
 }
-
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 
 export interface InMemoryVolunteerHoursRepositoryOpts {
   now?: () => Date
@@ -257,7 +256,7 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
             e.userId === entry.userId &&
             e.source !== "report" &&
             e.voidedAt === undefined &&
-            nowMs - e.createdAt.getTime() <= WEEK_MS,
+            nowMs - e.createdAt.getTime() <= MS_PER_WEEK,
         )
         .reduce((sum, e) => sum + e.hours, 0)
       if (weekly > weeklyFlagHours) {

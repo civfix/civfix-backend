@@ -1,12 +1,8 @@
 import { dirname } from "node:path"
 import { tmpdir } from "node:os"
 import { execa, type Options as ExecaOptions } from "execa"
-import {
-  CHILD_KILL_SIGNAL,
-  loadSandboxIdentity,
-  parseBool,
-  type SandboxIdentity,
-} from "../config.js"
+import { parseBool } from "@civfix/api/env-parsers"
+import { CHILD_KILL_SIGNAL, loadSandboxIdentity, type SandboxIdentity } from "../config.js"
 
 const STDERR_TAIL_CHARS = 800
 const SANDBOX_LOCALE = "C"

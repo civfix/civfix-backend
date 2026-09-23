@@ -20,12 +20,12 @@ import { makeDrizzleBroadcastRepository } from "./broadcast-repository.drizzle.j
 import { makeDrizzleHostTeamRepository } from "./host-team-repository.drizzle.js"
 import { TEAM_INVITE_EMAIL_SCRUB_DELAY_MS } from "./host-team-service.js"
 import { runRegistrationRetentionLanes } from "./registration-retention.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
 const DELIVERY_RETENTION_DAYS = 180
 const BROADCAST_CONTENT_RETENTION_DAYS = 180
 const EXPORT_ROW_RETENTION_DAYS = 90
 const EXPORT_REAP_LIMIT = 200
-const MS_PER_DAY = 86_400_000
 
 function daysBefore(now: Date, days: number): Date {
   return new Date(now.getTime() - days * MS_PER_DAY)

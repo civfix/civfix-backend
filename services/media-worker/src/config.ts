@@ -1,12 +1,6 @@
 import { dirname, join } from "node:path"
 import { MAX_VIDEO_BYTES } from "@civfix/shared"
-
-const TRUTHY_FLAG_VALUES = ["1", "true", "yes", "on"]
-
-export function parseBool(raw: string | undefined, fallback: boolean): boolean {
-  if (raw === undefined || raw === "") return fallback
-  return TRUTHY_FLAG_VALUES.includes(raw.trim().toLowerCase())
-}
+import { MS_PER_HOUR } from "@civfix/api/time"
 
 export function assertRealSeamInProd(
   source: NodeJS.ProcessEnv,
@@ -106,7 +100,6 @@ export function loadHttpsProxy(source: NodeJS.ProcessEnv = process.env): string 
 export const ALLOWED_VIDEO_CODECS: ReadonlySet<string> = new Set(["h264", "hevc"])
 
 const ONE_MB = 1024 * 1024
-const HOUR_MS = 60 * 60 * 1000
 
 const DEFAULT_LIMITS = {
   maxImagePixels: 24_000_000,
@@ -124,13 +117,13 @@ const DEFAULT_LIMITS = {
   thumbnailMaxEdge: 400,
   nsfwHoldThreshold: 0.8,
   mediaChecksConcurrency: 2,
-  orphanTtlMs: 6 * HOUR_MS,
+  orphanTtlMs: 6 * MS_PER_HOUR,
   orphanSweepBatch: 1000,
   orphanSweepMaxPages: 50,
   holdReleaseSweepBatch: 200,
   retentionSweepBatch: 5000,
   retentionSweepMaxPages: 20,
-  stuckMediaTtlMs: HOUR_MS,
+  stuckMediaTtlMs: MS_PER_HOUR,
   stuckSweepBatch: 500,
   stuckSweepMaxAttempts: 5,
 } as const

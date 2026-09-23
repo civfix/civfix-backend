@@ -6,7 +6,7 @@ import {
   resolveSafePushTarget,
   type PushAddressResolver,
 } from "../services/push-token-policy.js"
-import { mapWithLimit } from "../services/media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 import { Agent } from "node:https"
 import type WebPush from "web-push"
 

@@ -9,7 +9,8 @@ import type {
 } from "./host-portfolio-repository.drizzle.js"
 import { ZERO_HOSTED_EVENT_COUNTS, type HostedEventCounts } from "./portfolio-counts.js"
 import { isEventPubliclyVisible } from "./authz.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY } from "../media-presign.js"
 
 export const HOSTED_EVENTS_DEFAULT_LIMIT = 20
 

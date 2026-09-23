@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import type { Container } from "../../di.js"
 import type { InboundMail, ParsedMail, Storage } from "@civfix/shared/interfaces"
 import type { MailAttachment } from "@civfix/shared"
@@ -29,6 +28,8 @@ import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import { readMailAuthVerdict, type MailAuthVerdict } from "../../adapters/inbound-mail.cf.js"
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
+import { ATTACHMENT_FILENAME_MAX_CHARS, safeFilenameChars } from "../../lib/filename.js"
+import { sha256HexSync } from "../../lib/hash.js"
 
 export { detectBounce, resolveMessageId }
 
@@ -54,7 +55,6 @@ const THREADED_ATTACHMENT_PREFIX = "inbound-mail/"
 const INBOX_ATTACHMENT_PREFIX = "inbound-emails/"
 const ATTACHMENT_CONTENT_TYPE = "application/octet-stream"
 const RAW_MAIL_CONTENT_TYPE = "message/rfc822"
-const ATTACHMENT_FILENAME_MAX_CHARS = 120
 
 const CIVFIX_HEADER_PREFIX = "x-civfix-"
 const AUTH_VERDICT_HEADER = `${CIVFIX_HEADER_PREFIX}auth-verdict`
@@ -66,7 +66,7 @@ export const INBOUND_BOUNCE_MAX_ATTEMPTS = 6
 const CONTENT_DIGEST_HEX_CHARS = 32
 
 function contentDigest(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex").slice(0, CONTENT_DIGEST_HEX_CHARS)
+  return sha256HexSync(bytes).slice(0, CONTENT_DIGEST_HEX_CHARS)
 }
 
 async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
@@ -483,6 +483,6 @@ async function moveToFailed(storage: Storage, key: string, bytes: Uint8Array): P
 }
 
 function sanitizeFilename(name: string): string {
-  const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "")
+  const cleaned = safeFilenameChars(name)
   return cleaned.length > 0 ? cleaned.slice(0, ATTACHMENT_FILENAME_MAX_CHARS) : "file"
 }

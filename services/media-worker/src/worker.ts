@@ -37,6 +37,7 @@ import {
 import { sweepStaleScratchDirs } from "./sandbox/tmp.js"
 import { assertSandboxPreflight } from "./sandbox/preflight.js"
 import { killAllSandboxChildren } from "./sandbox/exec.js"
+import { MS_PER_SECOND } from "@civfix/api/time"
 
 export const ORPHAN_SWEEP_JOB = "orphan.sweep"
 export const CHAT_PARTITION_JOB = "chat.partition.maintenance"
@@ -48,7 +49,6 @@ export const MEDIA_STUCK_SWEEP_JOB = "media.stuck.sweep"
 const CRON_EXPIRE_SECONDS = 25 * 60
 const MEDIA_CHECKS_RETRY_LIMIT = 5
 const UPLOAD_REAP_RETRY_LIMIT = 3
-const MS_PER_SECOND = 1000
 const COMPOSE_STOP_GRACE_HEADROOM_SEC = 15
 
 const QUEUES: readonly [name: string, options: QueueOptions][] = [

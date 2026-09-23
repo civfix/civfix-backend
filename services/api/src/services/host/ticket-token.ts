@@ -1,5 +1,6 @@
-import { createHash, createHmac } from "node:crypto"
+import { createHmac } from "node:crypto"
 import { constantTimeStringEqual } from "../../auth/crypto.js"
+import { sha256HexSync } from "../../lib/hash.js"
 
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 
@@ -53,7 +54,7 @@ export function makeTicketTokenSigner(secret: string): TicketTokenSigner {
   }
 
   function hashOf(token: string): string {
-    return createHash("sha256").update(normalizeTicketToken(token)).digest("hex")
+    return sha256HexSync(normalizeTicketToken(token))
   }
 
   return {

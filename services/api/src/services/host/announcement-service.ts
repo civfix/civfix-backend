@@ -16,6 +16,7 @@ import type {
 } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
+import { clampPageLimit } from "../../lib/page-limit.js"
 import type { AnnouncementCap, BroadcastRepository } from "./broadcast-repository.js"
 import type { BroadcastRecord } from "./broadcast-types.js"
 import { ANNOUNCEMENT_VISIBLE_STATUSES } from "./broadcast-types.js"
@@ -210,7 +211,7 @@ export function makeAnnouncementService(deps: AnnouncementServiceDeps): Announce
     },
 
     async list(cleanupId, query, projection) {
-      const limit = Math.min(query.limit ?? ANNOUNCEMENT_DEFAULT_LIMIT, ANNOUNCEMENT_MAX_LIMIT)
+      const limit = clampPageLimit(query.limit, ANNOUNCEMENT_DEFAULT_LIMIT, ANNOUNCEMENT_MAX_LIMIT)
       const rows = await repo.listAnnouncements({
         cleanupId,
         cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),

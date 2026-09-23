@@ -5,25 +5,11 @@ import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from "./obs.js"
 import { R2_PUT_TTL_SEC } from "@civfix/api/adapters/storage"
 import { servedKey, thumbnailKey } from "./media-keys.js"
-
-async function mapWithLimit<T>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<void>,
-): Promise<void> {
-  let cursor = 0
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      const item = items[cursor++]
-      if (item !== undefined) await fn(item)
-    }
-  })
-  await Promise.all(runners)
-}
+import { mapWithLimit } from "@civfix/api/concurrency"
+import { MS_PER_SECOND } from "@civfix/api/time"
 
 const ORPHAN_SWEEP = "orphan.sweep"
 const ORPHAN_CONCURRENCY = 8
-const MS_PER_SECOND = 1000
 const LEGACY_PROCESSED_SUFFIXES = [".img", ".mp4"]
 
 export const LEAK_RETRY_MAX_ATTEMPTS = 5

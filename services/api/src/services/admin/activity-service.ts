@@ -12,7 +12,7 @@ import type {
   ActivityListQuery,
   ActivityListResponse,
 } from "@civfix/shared"
-import { ADMIN_DEFAULT_LIMIT, clampLimit } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
 
 export type ActivitySource = "audit" | "report" | "cleanup" | "mail_event"
 
@@ -276,7 +276,7 @@ export function makeActivityService(deps: ActivityServiceDeps): ActivityService 
         filter: parseActivityFilter(query.filter),
         sort: parseActivitySort(query.sort),
         cursor: query.cursor ?? null,
-        limit: clampLimit(query.limit ?? ADMIN_DEFAULT_LIMIT),
+        limit: clampLimit(query.limit),
       }
       const { records, nextCursor } = await deps.repo.list(args)
       return { items: records.map((r) => classifyActivity(r, ref)), nextCursor }

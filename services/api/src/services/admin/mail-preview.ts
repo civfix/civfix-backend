@@ -1,3 +1,5 @@
+import { collapseWhitespace } from "@civfix/shared"
+
 export const PREVIEW_LEN = 140
 
 export const PREVIEW_SOURCE_CHARS = 400
@@ -5,10 +7,10 @@ export const PREVIEW_SOURCE_CHARS = 400
 export const HTML_PREVIEW_SOURCE_CHARS = 4096
 
 export function toPreview(body: string | null | undefined, html?: string | null): string {
-  const fromText = collapse(body ?? "")
+  const fromText = collapseWhitespace(body ?? "")
   if (fromText.length > 0) return truncate(fromText)
   if (html === undefined || html === null || html.length === 0) return ""
-  return truncate(collapse(htmlToText(html)))
+  return truncate(collapseWhitespace(htmlToText(html)))
 }
 
 const RAW_TEXT_ELEMENTS = new Set(["script", "style"])
@@ -24,8 +26,6 @@ const HTML_TAG_NAME_RE = /[a-zA-Z][^\s/>]{0,16}/y
 const ABSOLUTE_HTTP_URL_RE = /^https?:\/\//i
 
 const EXTRA_BLANK_LINES_RE = /\n{3,}/g
-
-const WHITESPACE_RUN_RE = /\s+/g
 
 const MAX_CODE_POINT = 0x10ffff
 const SURROGATE_MIN = 0xd800
@@ -57,7 +57,7 @@ export function htmlToText(html: string): string {
   let href: string | null = null
   let anchorText = ""
   const breakLine = (): void => {
-    const text = collapse(line)
+    const text = collapseWhitespace(line)
     lines.push(quoteDepth > 0 && text !== "" ? `> ${text}` : text)
     line = ""
   }
@@ -164,10 +164,6 @@ function codePointText(code: number): string {
   const invalid =
     code === 0 || code > MAX_CODE_POINT || (code >= SURROGATE_MIN && code <= SURROGATE_MAX)
   return String.fromCodePoint(invalid ? REPLACEMENT_CHARACTER : code)
-}
-
-function collapse(value: string): string {
-  return value.replace(WHITESPACE_RUN_RE, " ").trim()
 }
 
 function truncate(value: string): string {

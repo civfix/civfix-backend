@@ -1,4 +1,5 @@
 import type { RedisClient } from "./redis.js"
+import { MS_PER_SECOND } from "../lib/time.js"
 
 // The window starts whenever the key has no expiry, not when the value equals the increment: a zero
 // increment would otherwise restart it, and a key whose TTL was lost would never expire again.
@@ -13,8 +14,6 @@ const DECRBY_FLOOR_LUA =
   "local n = tonumber(redis.call('GET', KEYS[1]) or '0'); if n <= 0 then return 0 end; return redis.call('DECRBY', KEYS[1], math.min(n, tonumber(ARGV[1])))"
 
 const DECRBY_COMMAND_NAME = "civfixDecrByFloor"
-
-const MS_PER_SECOND = 1000
 
 type IncrExpire = (key: string, ttlSeconds: number) => Promise<number>
 

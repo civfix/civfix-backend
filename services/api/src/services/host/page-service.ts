@@ -14,7 +14,9 @@ import { currentVersion } from "@civfix/shared"
 import { parseMarkdownSubset, MARKDOWN_SUBSET_MAX_CHARS } from "@civfix/shared/markdown"
 import { can, type HostStanding } from "@civfix/shared/host"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { SECONDS_PER_DAY } from "../../lib/time.js"
+import { PRESIGN_CONCURRENCY } from "../media-presign.js"
 import { assertSlugAllowed, RESERVED_SLUGS } from "./slugs.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import { toEventPageDTO, toEventQuestionDTO, toPublicTicketType } from "./registration-dto.js"
@@ -24,8 +26,6 @@ import type { RegistrationAudit } from "./registration-service.js"
 const HOST_PAGE_PUBLISH_COUNTER_KEY = "host:pagePublish"
 
 export const HOST_PAGE_PUBLISH_PER_DAY = 20
-
-const DAY_SECONDS = 24 * 60 * 60
 
 const EXTERNAL_LINK_SCHEME = "https://"
 
@@ -323,7 +323,10 @@ export function makePageService(deps: PageServiceDeps): PageService {
     if (deps.counters === undefined) return
     let used: number
     try {
-      used = await deps.counters.incr(`${HOST_PAGE_PUBLISH_COUNTER_KEY}:${actorId}`, DAY_SECONDS)
+      used = await deps.counters.incr(
+        `${HOST_PAGE_PUBLISH_COUNTER_KEY}:${actorId}`,
+        SECONDS_PER_DAY,
+      )
     } catch (err) {
       deps.logger?.warn({ err }, "event page: publish counter unavailable; refusing (fail closed)")
       throw AppError.rateLimited("Publishing is temporarily unavailable.")

@@ -1,4 +1,5 @@
 import { quantizeFeedScore, type FeedRankingConfig } from "@civfix/shared"
+import { MS_PER_HOUR, MS_PER_SECOND } from "../lib/time.js"
 
 export interface FeedCandidate {
   id: string
@@ -23,9 +24,6 @@ export interface RankedCandidate {
   authorId: string
   score: number
 }
-
-const MS_PER_HOUR = 3_600_000
-const MS_PER_SECOND = 1000
 
 export function quantizeClock(nowMs: number, clockBucketSeconds: number): number {
   const bucketMs = Math.max(1, Math.trunc(clockBucketSeconds)) * MS_PER_SECOND

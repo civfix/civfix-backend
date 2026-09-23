@@ -20,6 +20,7 @@ import { isPubliclyVisibleStatus } from "../report-visibility.js"
 import { toEventStatus } from "./event-status.js"
 import { CIVFIX_OFFICIAL_DISPLAY_NAME } from "../../auth/official-account.js"
 import { DEFAULT_EVENT_DURATION_MS, deriveCleanupStatus } from "../cleanup-rules.js"
+import { MS_PER_HOUR } from "../../lib/time.js"
 import type {
   AdminEventMessageRecord,
   AdminEventRecord,
@@ -32,10 +33,8 @@ import type {
 import type { LinkedReportView } from "../cleanup-service.js"
 import type { AdminEventCounts, EventKind, EventStatus, ReportCategory } from "@civfix/shared"
 
-const HOUR_MS = 3_600_000
-
-const IN_PROGRESS_SEED_OFFSET_MS = -HOUR_MS
-const UPCOMING_SEED_OFFSET_MS = 7 * 24 * HOUR_MS
+const IN_PROGRESS_SEED_OFFSET_MS = -MS_PER_HOUR
+const UPCOMING_SEED_OFFSET_MS = 7 * 24 * MS_PER_HOUR
 
 const SEEDED_ACTOR_NAME = "operator"
 

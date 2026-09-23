@@ -31,9 +31,8 @@ import {
 } from "./outbound-send-policy.js"
 import { clampLimit } from "./pagination.js"
 import { pageBeforeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 import type { MailDelivery, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
-
-const DAY_MS = 24 * 60 * 60 * 1000
 
 export interface StoredMailEvent {
   id: string
@@ -549,7 +548,7 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   stats7d(): Promise<MailStatsResponse> {
-    const cutoff = this.now.getTime() - MAIL_STATS_WINDOW_DAYS * DAY_MS
+    const cutoff = this.now.getTime() - MAIL_STATS_WINDOW_DAYS * MS_PER_DAY
     const counts = { sent: 0, bounced: 0, failed: 0 }
     for (const e of this.events) {
       if (e.createdAt.getTime() < cutoff) continue

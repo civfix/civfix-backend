@@ -48,7 +48,6 @@ import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
 import { ARRIVAL_SAMPLE_LIMIT } from "./analytics-service.js"
 import { METRIC_DONATION_CLICKS, METRIC_PAGE_VIEWS } from "./event-metric-names.js"
 import {
-  DAY_MS,
   clockPhase,
   closureAllowsTotal,
   emptyRate,
@@ -59,6 +58,7 @@ import {
   toRate,
   toSeries,
 } from "./host-analytics-shaping.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
 const EVENT_ANALYTICS_LIFECYCLE_DAYS = MAX_EVENT_ANALYTICS_SERIES_POINTS
 const EVENT_ANALYTICS_ARCHIVE_DAYS = 30
@@ -128,7 +128,7 @@ export function analyticsPhaseOf(clock: EventClockRecord, at: Date): EventAnalyt
   if (phase === "live") return "day_of"
   if (phase !== "ended") return "upcoming"
   const endedAt = clock.completedAt ?? clock.endsAt ?? clock.scheduledAt
-  return at.getTime() - endedAt.getTime() > EVENT_ANALYTICS_ARCHIVE_DAYS * DAY_MS
+  return at.getTime() - endedAt.getTime() > EVENT_ANALYTICS_ARCHIVE_DAYS * MS_PER_DAY
     ? "archived"
     : "completed"
 }

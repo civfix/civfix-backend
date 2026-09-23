@@ -28,8 +28,8 @@ import {
   type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
 import {
-  CHAT_HISTORY_DEFAULT_LIMIT,
   chatHistoryPayload,
+  clampChatHistoryLimit,
   DELETE_MESSAGE_FORBIDDEN,
   MESSAGE_ALREADY_DELETED,
 } from "./chat-route-helpers.js"
@@ -124,7 +124,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     const q = parse(DmHistoryQuerySchema, request.query)
     await authorizePeer(id, userId, "You can't view this conversation.")
 
-    const limit = q.limit ?? CHAT_HISTORY_DEFAULT_LIMIT
+    const limit = clampChatHistoryLimit(q.limit)
     const payload: ChatHistoryResponse = await chatHistoryPayload(
       {
         history: (before, pageLimit, around) =>

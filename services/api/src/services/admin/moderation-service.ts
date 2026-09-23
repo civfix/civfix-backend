@@ -16,7 +16,8 @@ import type {
 } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
 import { timelineKindForStatus } from "./admin-report-status.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY, type PresignMedia } from "../media-presign.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import type { MessageUpdateAnnouncer } from "./admin-report-chat-service.js"
 

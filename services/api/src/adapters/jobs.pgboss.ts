@@ -15,6 +15,7 @@ import {
   GUEST_RETENTION_SWEEP_JOB,
 } from "../services/guest-rsvp-service.js"
 import { CHAT_ROOM_FANOUT_JOB } from "../services/chat-fanout-jobs.js"
+import { SECONDS_PER_MINUTE } from "../lib/time.js"
 
 export interface PgBossJobsLogger {
   error(obj: unknown, msg?: string): void
@@ -59,7 +60,6 @@ type ApiQueueName = (typeof API_QUEUE_NAMES)[number]
 
 type QueueRetryPolicy = Required<Pick<PgBoss.Queue, "retryLimit" | "retryDelay" | "retryBackoff">>
 
-const SECONDS_PER_MINUTE = 60
 const DATA_EXPORT_RETRY_LIMIT = 10
 
 // A data export that fails on a mail credential or approved-sender fault has to wait for an operator to

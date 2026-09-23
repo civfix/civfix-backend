@@ -12,12 +12,11 @@ import {
   type RoomFanoutKind,
   type RoomFanoutNotifierDeps,
 } from "./chat-room-fanout-notifier.js"
+import { MS_PER_SECOND } from "../lib/time.js"
 
 export type RoomFanoutLogger = Pick<FastifyBaseLogger, "warn" | "error">
 
 export const ROOM_FANOUT_WINDOW_CLAIM_PREFIX = "chatfanout"
-
-const MS_PER_SECOND = 1000
 
 export type ContainerRoomFanoutDeps = Record<RoomFanoutKind, RoomFanoutNotifierDeps>
 

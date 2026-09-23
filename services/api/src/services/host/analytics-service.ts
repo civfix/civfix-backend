@@ -50,7 +50,7 @@ import {
   METRIC_UNSUBSCRIBES,
 } from "./event-metric-names.js"
 import {
-  DAY_MS,
+  PORTFOLIO_EVENT_LIMIT,
   closureAllowsTotal,
   emptyRate,
   isoDayOf,
@@ -62,8 +62,8 @@ import {
   toSeries,
   toSuppressedRate,
 } from "./host-analytics-shaping.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
-const PORTFOLIO_EVENT_LIMIT = 200
 export const ARRIVAL_SAMPLE_LIMIT = 20_000
 const PORTFOLIO_BY_EVENT_LIMIT = 50
 
@@ -139,7 +139,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
   function utcRangeWindow(days: number | null): { from: string; to: string } {
     const to = now()
     const span = days ?? ALL_RANGE_DAYS
-    const from = new Date(to.getTime() - (span - 1) * DAY_MS)
+    const from = new Date(to.getTime() - (span - 1) * MS_PER_DAY)
     return { from: isoDayOf(from), to: isoDayOf(to) }
   }
 
@@ -437,7 +437,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
 
 function dayBounds(window: DayRange): { from: Date; to: Date } {
   const from = new Date(`${window.from}T00:00:00.000Z`)
-  const to = new Date(Date.parse(`${window.to}T00:00:00.000Z`) + DAY_MS)
+  const to = new Date(Date.parse(`${window.to}T00:00:00.000Z`) + MS_PER_DAY)
   return { from, to }
 }
 

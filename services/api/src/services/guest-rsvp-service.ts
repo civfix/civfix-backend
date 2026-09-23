@@ -46,7 +46,8 @@ import { honeypotTripped } from "../abuse/honeypot.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { smsFailureKind } from "../errors/sms-failure.js"
-import { mapWithLimit } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { MS_PER_HOUR, MS_PER_SECOND, SECONDS_PER_DAY, SECONDS_PER_MINUTE } from "../lib/time.js"
 import { renderMessage } from "../i18n/renderMessage.js"
 import { parseKeysetCursor, type KeysetCursor } from "../db/cursor-helpers.js"
 import { eventEndedError, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
@@ -66,8 +67,6 @@ export const GUEST_CONTACT_MAX_PER_DAY = 5
 export const GUEST_IP_MAX_PER_HOUR = 10
 
 const GUEST_IP_WINDOW_SECONDS = 60 * 60
-
-const DAY_SECONDS = 24 * 60 * 60
 
 const GUESTS_DEFAULT_LIMIT = 25
 
@@ -92,12 +91,6 @@ const GUEST_CONTACT_READ_COUNTER_KEY = "host:guestContactReads"
 const GUEST_CONTACT_READS_PER_HOUR = 50
 
 const GUEST_CONTACT_READ_WINDOW_SECONDS = 60 * 60
-
-const MS_PER_SECOND = 1000
-
-const SECONDS_PER_MINUTE = 60
-
-const MS_PER_HOUR = 60 * 60 * MS_PER_SECOND
 
 const SMS_LOCALE = "en"
 
@@ -592,7 +585,10 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
   async function reserveSmsBudget(purpose: SmsPurpose): Promise<boolean> {
     let used: number
     try {
-      used = await deps.counters.incr(`${SMS_BUDGET_KEY_PREFIX}${utcDayKey(now())}`, DAY_SECONDS)
+      used = await deps.counters.incr(
+        `${SMS_BUDGET_KEY_PREFIX}${utcDayKey(now())}`,
+        SECONDS_PER_DAY,
+      )
     } catch (err) {
       deps.logger?.warn(
         { err, purpose },
@@ -990,7 +986,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         throw AppError.rateLimited("Too many code requests from this network.")
       }
     }
-    const daily = await deps.cache.incr(contactDayKey(digest), DAY_SECONDS)
+    const daily = await deps.cache.incr(contactDayKey(digest), SECONDS_PER_DAY)
     if (daily > GUEST_CONTACT_MAX_PER_DAY) {
       throw AppError.rateLimited("Too many code requests for this contact today.")
     }
@@ -1229,7 +1225,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     async runRetentionSweep(): Promise<GuestRetentionResult> {
       const at = new Date(now())
       const contactCutoff = new Date(
-        now() - GUEST_CONTACT_RETENTION_DAYS * DAY_SECONDS * MS_PER_SECOND,
+        now() - GUEST_CONTACT_RETENTION_DAYS * SECONDS_PER_DAY * MS_PER_SECOND,
       )
       const otpCutoff = new Date(now() - GUEST_OTP_RETENTION_HOURS * MS_PER_HOUR)
       const scrubbedGuests = await drainPages("guest contact scrub", (batchSize) =>

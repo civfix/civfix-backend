@@ -8,8 +8,9 @@ import {
 } from "@civfix/shared/host"
 import type { EventClockRecord } from "./analytics-repository.drizzle.js"
 import type { MetricRow } from "./metrics-repository.drizzle.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
-export const DAY_MS = 86_400_000
+export const PORTFOLIO_EVENT_LIMIT = 200
 
 const ISO_DAY_LENGTH = 10
 const EPOCH_YEAR = 1970
@@ -21,7 +22,7 @@ export function isoDayOf(at: Date): string {
 export function shiftDayKey(day: string, deltaDays: number): string {
   const [year, month, date] = day.split("-").map(Number)
   const shifted = new Date(
-    Date.UTC(year ?? EPOCH_YEAR, (month ?? 1) - 1, date ?? 1) + deltaDays * DAY_MS,
+    Date.UTC(year ?? EPOCH_YEAR, (month ?? 1) - 1, date ?? 1) + deltaDays * MS_PER_DAY,
   )
   return isoDayOf(shifted)
 }

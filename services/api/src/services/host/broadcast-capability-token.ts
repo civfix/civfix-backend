@@ -1,11 +1,10 @@
 import { createHmac } from "node:crypto"
 import { constantTimeStringEqual } from "../../auth/crypto.js"
+import { MS_PER_DAY, MS_PER_SECOND } from "../../lib/time.js"
 
 const UNSUBSCRIBE_TOKEN_VERSION = "u1"
 const TOKEN_PAYLOAD_VERSION = 1
 const TOKEN_PART_COUNT = 3
-const MS_PER_SECOND = 1000
-const MS_PER_DAY = 24 * 60 * 60 * MS_PER_SECOND
 
 export const UNSUBSCRIBE_TOKEN_TTL_DAYS = 400
 

@@ -17,7 +17,8 @@ import {
   MAX_PACKET_ATTACHMENT_BYTES,
   MAX_PACKET_TOTAL_BYTES,
 } from "./mail-format.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY } from "../media-presign.js"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 
 const MAIL_THREAD_NOT_FOUND = "Mail thread not found"

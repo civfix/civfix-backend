@@ -14,6 +14,7 @@ import type {
   UndoEventCheckInResponse,
 } from "@civfix/shared"
 import { sha256Hex } from "../../auth/crypto.js"
+import { stripTrailingSlashes } from "../../lib/base-url.js"
 import { toEventRegistrationDTO, toSeatDTO } from "./registration-dto.js"
 import type {
   CheckinResultRecord,
@@ -24,8 +25,6 @@ import type { RegistrationAudit, RegistrationService } from "./registration-serv
 import { normalizeTicketToken, type TicketTokenSigner } from "./ticket-token.js"
 
 const CHECKIN_NOSHOW_SWEEP_BATCH = 1000
-
-const TRAILING_SLASHES = /\/+$/
 
 export interface GuestTicketLookup {
   (
@@ -101,7 +100,7 @@ export function makeCheckinService(deps: CheckinServiceDeps): CheckinService {
       icsUrl:
         deps.publicApiUrl === undefined || deps.publicApiUrl.length === 0
           ? null
-          : `${deps.publicApiUrl.replace(TRAILING_SLASHES, "")}/v1/cleanups/${cleanupId}/ics`,
+          : `${stripTrailingSlashes(deps.publicApiUrl)}/v1/cleanups/${cleanupId}/ics`,
     }
   }
 

@@ -21,7 +21,9 @@ import type {
 import { toLinkedReportRef, type LinkedReportView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO, type AdminPersonRecord } from "./admin-person.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { clampLimit } from "./pagination.js"
 import {
   eventTimelineKind,
   eventStatusNote,
@@ -36,8 +38,6 @@ export {
   flaggedFromTimeline,
   eventTimelineKind,
 } from "./admin-event-helpers.js"
-
-const ADMIN_EVENTS_DEFAULT_LIMIT = 25
 
 const EVENT_NOT_FOUND = "Event not found"
 
@@ -215,7 +215,7 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
         status,
         flaggedOnly,
         cursor: query.cursor ?? null,
-        limit: query.limit ?? ADMIN_EVENTS_DEFAULT_LIMIT,
+        limit: clampLimit(query.limit),
       }
       // The counts describe the whole searched set rather than the page, so they are computed on page 1
       // only (the shared admin-list policy; the console reads them off the first page).

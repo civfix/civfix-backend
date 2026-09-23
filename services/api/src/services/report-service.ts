@@ -16,9 +16,11 @@ import type {
   ReportVisibility,
 } from "@civfix/shared"
 import { assertNoSlur } from "../abuse/slur-filter.js"
+import { isUuid } from "../db/cursor-helpers.js"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { toLinkedEventRef, type LinkedEventView } from "./cleanup-service.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY } from "./media-presign.js"
 import {
   clusterByZoom,
   countByCategory,
@@ -58,16 +60,11 @@ import {
 export * from "./report-service.types.js"
 export * from "./report-clustering.js"
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const REPORT_NOT_FOUND = "Report not found"
 const RESOLVED_BY_REPORTER_NOTE = "Marked resolved by the reporter"
 const REOPENED_BY_REPORTER_NOTE = "Reopened by the reporter"
 const HIDDEN_BY_REPORTER_NOTE = "Hidden from the public map by the reporter"
 const RELISTED_BY_REPORTER_NOTE = "Re-listed by the reporter"
-
-function isUuid(value: string): boolean {
-  return UUID_RE.test(value)
-}
 
 type PresignMedia = ReportServiceDeps["presignMedia"]
 

@@ -33,10 +33,9 @@ import type {
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
 } from "./volunteer-hours-service.js"
+import { MS_PER_SECOND } from "../lib/time.js"
 
 const MORE_PAGES = "more"
-
-const MS_PER_SECOND = 1000
 
 const HOURS_ROUNDING_FACTOR = 100
 

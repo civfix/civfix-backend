@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import type {
   BroadcastChannel,
@@ -19,6 +18,8 @@ import type { FastifyBaseLogger } from "fastify"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
+import { sha256HexSync } from "../../lib/hash.js"
+import { MS_PER_HOUR, SECONDS_PER_DAY } from "../../lib/time.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 import type {
   BroadcastDraftPatch,
@@ -40,8 +41,6 @@ import { audiencePages } from "./broadcast-audience.js"
 const BROADCAST_DEFAULT_LIMIT = 20
 const BROADCAST_TEST_SENDS_PER_HOUR = 5
 const TEST_SEND_WINDOW_SEC = 60 * 60
-export const DAY_SECONDS = 24 * 60 * 60
-const MS_PER_HOUR = 3_600_000
 const ISO_DAY_LENGTH = 10
 const COOLDOWN_SENDS = 1
 const PREVIEW_SAMPLE_FIRST_NAME = "Alex"
@@ -120,7 +119,7 @@ export function capError(kind: CapKind): AppError {
 }
 
 export function emailHashOf(email: string): string {
-  return createHash("sha256").update(email.trim().toLowerCase()).digest("hex")
+  return sha256HexSync(email.trim().toLowerCase())
 }
 
 export function utcDayKey(at: Date): string {
@@ -286,7 +285,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
     try {
       await reserve(
         `bcast:event:${cleanupId}:${utcDayKey(now())}`,
-        DAY_SECONDS,
+        SECONDS_PER_DAY,
         config.perEventPerDay,
         "per_event_per_day",
       )
@@ -660,7 +659,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       const chargedKey = `bcast:host:${actorId}:${utcDayKey(now())}`
       let used: number
       try {
-        used = await deps.counters.incrBy(chargedKey, recipients, DAY_SECONDS)
+        used = await deps.counters.incrBy(chargedKey, recipients, SECONDS_PER_DAY)
       } catch (err) {
         deps.logger?.warn(
           { err, actorId },

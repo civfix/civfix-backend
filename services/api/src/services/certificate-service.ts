@@ -19,7 +19,7 @@
  * not know about this table would silently break every issued transcript.
  */
 
-import { createHash, randomUUID } from "node:crypto"
+import { randomUUID } from "node:crypto"
 import {
   AppError,
   CERTIFICATE_GET_URL_TTL_SEC,
@@ -35,6 +35,8 @@ import type {
 } from "@civfix/shared"
 import type { StorageHead, StoragePutMeta } from "@civfix/shared/interfaces"
 import { resolveLocale } from "../i18n/locales.js"
+import { sha256HexSync } from "../lib/hash.js"
+import { MS_PER_SECOND } from "../lib/time.js"
 import { CERTIFICATE_CODE_MINT_ATTEMPTS, generateCertificateCode } from "./certificate-code.js"
 import {
   buildTranscriptModel,
@@ -51,7 +53,6 @@ import type {
 
 const CERTIFICATE_KEY_PREFIX = "certificates/service-hours"
 const PDF_CONTENT_TYPE = "application/pdf"
-const MS_PER_SECOND = 1000
 const HOLDER_REVOKED_REASON = "holder"
 const TOMBSTONE_REVOKED_REASON = "account_closed"
 
@@ -231,10 +232,6 @@ function certificateContentDisposition(code: string): string {
   return `inline; filename="civfix-service-hours-${formatCertificateCode(code)}.pdf"`
 }
 
-function sha256Hex(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex")
-}
-
 function toLedgerRow(view: VolunteerHoursEntryView): TranscriptLedgerRow {
   return {
     id: view.id,
@@ -315,7 +312,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
       fingerprint,
       ...(deps.verifyBaseUrl !== undefined ? { verifyBaseUrl: deps.verifyBaseUrl } : {}),
     })
-    const documentSha256 = sha256Hex(bytes)
+    const documentSha256 = sha256HexSync(bytes)
     await storage.put(key, bytes, {
       contentType: PDF_CONTENT_TYPE,
       contentDisposition: certificateContentDisposition(code),

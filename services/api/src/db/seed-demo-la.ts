@@ -50,6 +50,7 @@ import { DEMO_EMAIL_DOMAIN, DEMO_EMAIL_PATTERN } from "./seed-demo-domain.js"
 import { DEFAULT_EVENT_DURATION_MS, DEFAULT_EVENT_SLOT_TITLE } from "../services/cleanup-rules.js"
 import { demoTicketTokenHasher, mintDemoSignupSeats } from "./demo-signup-seats.js"
 import { touchUserActivity } from "./sql/user-activity.js"
+import { MINUTES_PER_HOUR, MS_PER_DAY, MS_PER_HOUR, MS_PER_MINUTE } from "../lib/time.js"
 import {
   DEMO_PRNG_SEED,
   chance,
@@ -162,10 +163,6 @@ const INSERT_CHUNK = {
 // Timestamps get an LA-plausible time-of-day (evenings and weekends heavier), stored as UTC. The
 // seeded window spans both PST and PDT, so the offset is resolved per date.
 
-const MINUTE = 60 * 1000
-const HOUR = 60 * MINUTE
-const DAY = 24 * HOUR
-const HOUR_MINUTES = 60
 const DAYS_PER_WEEK = 7
 const LA_TIME_ZONE = "America/Los_Angeles"
 const LA_STANDARD_OFFSET_HOURS = -8
@@ -197,8 +194,8 @@ export function laLocalToUtc(dayMs: number, hour: number, minute: number, second
     minute,
     second,
   )
-  const offset = laOffsetHoursAt(new Date(wallAsUtc - LA_STANDARD_OFFSET_HOURS * HOUR))
-  return new Date(wallAsUtc - offset * HOUR)
+  const offset = laOffsetHoursAt(new Date(wallAsUtc - LA_STANDARD_OFFSET_HOURS * MS_PER_HOUR))
+  return new Date(wallAsUtc - offset * MS_PER_HOUR)
 }
 
 function localHour(): number {
@@ -234,7 +231,7 @@ function atLocalTime(dayMs: number): Date {
 }
 
 function randTimestamp(start: Date, end: Date): Date {
-  const span = Math.max(end.getTime() - start.getTime(), MINUTE)
+  const span = Math.max(end.getTime() - start.getTime(), MS_PER_MINUTE)
   for (let attempt = 0; attempt < TIMESTAMP_ATTEMPTS; attempt++) {
     const t = atLocalTime(start.getTime() + rand() * span)
     if (t.getTime() < start.getTime() || t.getTime() > end.getTime()) continue
@@ -245,7 +242,7 @@ function randTimestamp(start: Date, end: Date): Date {
 }
 
 function minutesAfter(d: Date, min: number, max: number): Date {
-  return new Date(d.getTime() + rint(min, max) * MINUTE)
+  return new Date(d.getTime() + rint(min, max) * MS_PER_MINUTE)
 }
 function later(a: Date, b: Date): Date {
   return a.getTime() >= b.getTime() ? a : b
@@ -533,7 +530,10 @@ function eventScheduledAt(kind: SeedEvent["status"], organizer: SeedUser, now: D
   if (kind === "upcoming") return nextSaturdayish(now, rint(3, 21))
   return nextSaturdayish(
     new Date(
-      later(organizer.createdAt, new Date(now.getTime() - EVENT_HISTORY_DAYS * DAY)).getTime(),
+      later(
+        organizer.createdAt,
+        new Date(now.getTime() - EVENT_HISTORY_DAYS * MS_PER_DAY),
+      ).getTime(),
     ),
     rint(7, 120),
     now,
@@ -547,12 +547,15 @@ function eventScheduledAt(kind: SeedEvent["status"], organizer: SeedUser, now: D
 function eventCreatedAt(organizer: SeedUser, scheduledAt: Date, now: Date): Date {
   const createdCeiling = new Date(
     Math.min(
-      scheduledAt.getTime() - EVENT_MIN_CREATE_LEAD_DAYS * DAY,
-      now.getTime() - EVENT_MIN_AGE_HOURS * HOUR,
+      scheduledAt.getTime() - EVENT_MIN_CREATE_LEAD_DAYS * MS_PER_DAY,
+      now.getTime() - EVENT_MIN_AGE_HOURS * MS_PER_HOUR,
     ),
   )
   return randTimestamp(
-    later(organizer.createdAt, new Date(scheduledAt.getTime() - EVENT_MAX_CREATE_LEAD_DAYS * DAY)),
+    later(
+      organizer.createdAt,
+      new Date(scheduledAt.getTime() - EVENT_MAX_CREATE_LEAD_DAYS * MS_PER_DAY),
+    ),
     createdCeiling,
   )
 }
@@ -666,15 +669,15 @@ function makeEvents(users: SeedUser[], now: Date): SeedEvent[] {
 }
 
 function nextSaturdayish(base: Date, minDays: number, latest?: Date): Date {
-  let d = new Date(base.getTime() + minDays * DAY)
+  let d = new Date(base.getTime() + minDays * MS_PER_DAY)
   for (let i = 0; i < DAYS_PER_WEEK; i++) {
-    const dow = new Date(d.getTime() + i * DAY).getUTCDay()
+    const dow = new Date(d.getTime() + i * MS_PER_DAY).getUTCDay()
     if (dow === SATURDAY || (dow === SUNDAY && chance(0.4))) {
-      d = new Date(d.getTime() + i * DAY)
+      d = new Date(d.getTime() + i * MS_PER_DAY)
       break
     }
   }
-  if (latest && d.getTime() >= latest.getTime()) d = new Date(latest.getTime() - DAY)
+  if (latest && d.getTime() >= latest.getTime()) d = new Date(latest.getTime() - MS_PER_DAY)
   return laLocalToUtc(d.getTime(), EVENT_START_HOUR, pick([0, 0, 30]), 0)
 }
 
@@ -694,7 +697,10 @@ function reportTimeline(
   }
   let cursor = publishedAt ?? createdAt
   const nextStep = (maxDays: number): Date =>
-    randTimestamp(cursor, new Date(Math.min(cursor.getTime() + maxDays * DAY, now.getTime())))
+    randTimestamp(
+      cursor,
+      new Date(Math.min(cursor.getTime() + maxDays * MS_PER_DAY, now.getTime())),
+    )
   if (status === "acknowledged" || status === "in_progress" || status === "resolved") {
     cursor = nextStep(10)
     timeline.push({
@@ -875,7 +881,7 @@ function addEventPosts(events: SeedEvent[], now: Date, addTop: AddTopPost): void
       }
     }
     if (ev.status === "done" && chance(0.85)) {
-      const recapAt = minutesAfter(ev.scheduledAt, 3 * HOUR_MINUTES, 30 * HOUR_MINUTES)
+      const recapAt = minutesAfter(ev.scheduledAt, 3 * MINUTES_PER_HOUR, 30 * MINUTES_PER_HOUR)
       if (recapAt.getTime() < now.getTime()) {
         addTop(
           ev.organizer,
@@ -895,7 +901,7 @@ function addEventPosts(events: SeedEvent[], now: Date, addTop: AddTopPost): void
 function addReportPosts(reports: SeedReport[], now: Date, addTop: AddTopPost): void {
   for (const r of reports) {
     if (r.status === "submitted" || !chance(0.3)) continue
-    const at = minutesAfter(r.publishedAt ?? r.createdAt, 5, 36 * HOUR_MINUTES)
+    const at = minutesAfter(r.publishedAt ?? r.createdAt, 5, 36 * MINUTES_PER_HOUR)
     if (at.getTime() >= now.getTime()) continue
     addTop(
       r.reporter,
@@ -952,7 +958,7 @@ function addThreadReplies(
     if (replier.id !== root.author.id && threadRepliers.has(replier.id)) continue
     const start = later(replier.createdAt, parent.createdAt)
     const end = new Date(
-      Math.min(parent.createdAt.getTime() + REPLY_WINDOW_DAYS * DAY, now.getTime()),
+      Math.min(parent.createdAt.getTime() + REPLY_WINDOW_DAYS * MS_PER_DAY, now.getTime()),
     )
     if (start.getTime() >= end.getTime()) continue
     const [poolEn, poolEs] = replyPools(parent)
@@ -987,7 +993,7 @@ function reshareWindow(
 ): { start: Date; end: Date } | null {
   const start = later(sharer.createdAt, target.createdAt)
   const end = new Date(
-    Math.min(target.createdAt.getTime() + RESHARE_WINDOW_DAYS * DAY, now.getTime()),
+    Math.min(target.createdAt.getTime() + RESHARE_WINDOW_DAYS * MS_PER_DAY, now.getTime()),
   )
   return start.getTime() >= end.getTime() ? null : { start, end }
 }
@@ -1107,7 +1113,9 @@ function makeLikesAndSaves(
       const k = `${p.id}:${liker.id}`
       if (likeKeys.has(k)) continue
       const start = later(liker.createdAt, p.createdAt)
-      const end = new Date(Math.min(p.createdAt.getTime() + LIKE_WINDOW_DAYS * DAY, now.getTime()))
+      const end = new Date(
+        Math.min(p.createdAt.getTime() + LIKE_WINDOW_DAYS * MS_PER_DAY, now.getTime()),
+      )
       if (start.getTime() >= end.getTime()) continue
       likeKeys.add(k)
       likes.push({ postId: p.id, userId: liker.id, createdAt: randTimestamp(start, end) })
@@ -1126,7 +1134,7 @@ function makeHours(events: SeedEvent[], now: Date): SeedHours[] {
   const rows: SeedHours[] = []
   for (const ev of events) {
     if (ev.status !== "done") continue
-    const loggedAt = minutesAfter(ev.scheduledAt, 4 * HOUR_MINUTES, 48 * HOUR_MINUTES)
+    const loggedAt = minutesAfter(ev.scheduledAt, 4 * MINUTES_PER_HOUR, 48 * MINUTES_PER_HOUR)
     if (loggedAt.getTime() >= now.getTime()) continue
     for (const m of ev.members) {
       if (m.role !== "organizer" && !chance(0.85)) continue // a few no-shows never get credited
@@ -1884,8 +1892,12 @@ function generateCohort(
   now: Date,
   hashFor: (seatId: string) => string,
 ): SeedData {
-  const start = new Date(now.getTime() - COHORT_HISTORY_DAYS * DAY)
-  const users = makeUsers(userCount, start, new Date(now.getTime() - NEWEST_ACCOUNT_AGE_DAYS * DAY))
+  const start = new Date(now.getTime() - COHORT_HISTORY_DAYS * MS_PER_DAY)
+  const users = makeUsers(
+    userCount,
+    start,
+    new Date(now.getTime() - NEWEST_ACCOUNT_AGE_DAYS * MS_PER_DAY),
+  )
   const follows = makeFollows(users, now)
   const events = makeEvents(users, now)
   const reports = makeReports(users, Math.round(userCount * REPORTS_PER_USER), now)

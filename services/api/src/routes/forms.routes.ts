@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
@@ -12,6 +11,7 @@ import { renderEmailBody } from "../adapters/email-layout.js"
 import { sanitizeHeaderValue } from "../adapters/mail-text.js"
 import { parse } from "./_validate.js"
 import { exposeMessage } from "../errors/exposed-message.js"
+import { sha256HexSync } from "../lib/hash.js"
 
 const HOME_TURF_REQUESTS_PER_MINUTE = 5
 
@@ -100,7 +100,7 @@ export async function claimHomeTurfConfirmation(
   counters: CounterStore,
 ): Promise<boolean> {
   const canonical = canonicalizeHomeTurfEmail(email)
-  const digest = createHash("sha256").update(canonical).digest("hex")
+  const digest = sha256HexSync(canonical)
   const key = HOME_TURF_EMAIL_COUNTER_PREFIX + digest
   const count = await counters.incr(key, HOME_TURF_EMAIL_WINDOW_SECONDS)
   return count <= HOME_TURF_EMAIL_LIMIT_PER_DAY

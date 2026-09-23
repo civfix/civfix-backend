@@ -4,6 +4,7 @@ import type {
   ParsedMailAddress,
   ParsedMailAttachment,
 } from "@civfix/shared/interfaces"
+import { collapseWhitespace } from "@civfix/shared"
 import type { AddressObject, Attachment, EmailAddress, HeaderLines } from "mailparser"
 import { getDomain } from "tldts"
 import { domainOfOrNull } from "./mail-text.js"
@@ -264,10 +265,7 @@ function singleFromMailbox(
 }
 
 function headerLineValue(header: HeaderLines[number]): string {
-  return header.line
-    .slice(header.line.indexOf(":") + 1)
-    .replace(/\s+/g, " ")
-    .trim()
+  return collapseWhitespace(header.line.slice(header.line.indexOf(":") + 1))
 }
 
 function toAddress(value: EmailAddress): ParsedMailAddress {

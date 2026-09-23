@@ -5,7 +5,7 @@ import {
   type ChatMentionRecordSeam,
 } from "./chat-mention-resolver.js"
 import { neutralizeChatViewerFields } from "./chat-viewer-fields.js"
-import { mapWithLimit } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import type { GatewayChatMentions } from "../ws/types.js"
 

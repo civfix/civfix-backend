@@ -1,6 +1,7 @@
 import type { OrganizationRefDTO, PersonDTO } from "@civfix/shared"
 import type { Sql } from "../../db/client.js"
-import { PRESIGN_CONCURRENCY, mapWithLimit } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY } from "../media-presign.js"
 import { presentIds } from "../present-ids.js"
 import { publicAuthorIdentity } from "../public-author.js"
 import { publicServedKeyExpr } from "../media-served-key.js"

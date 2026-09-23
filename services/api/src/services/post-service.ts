@@ -36,7 +36,7 @@ import {
   type FeedCandidate,
   type RankedCandidate,
 } from "./feed-ranking.js"
-import { mapWithLimit } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 import { hiddenIdentity } from "./hidden-identity.js"
 import type { FeedPresence, FeedSnapshotEntry } from "./feed-presence.js"
 import type { PostNotifier } from "./notification-service.js"

@@ -4,6 +4,7 @@ import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
 import type { ChatMessageMeta, SoftDeleteOpts } from "../services/chat-repository.drizzle.js"
 import type { ResolveChatPowers } from "../services/chat-room-roles.js"
 import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
+import { clampPageLimit } from "../lib/page-limit.js"
 
 export { neutralizeChatViewerFields }
 
@@ -13,11 +14,11 @@ export const DELETE_MESSAGE_FORBIDDEN = "You can't delete this message."
 export const MESSAGE_ALREADY_DELETED = "This message was already deleted."
 export const REPORT_NOT_FOUND = "Report not found"
 
-export const CHAT_HISTORY_DEFAULT_LIMIT = 30
+const CHAT_HISTORY_DEFAULT_LIMIT = 30
 const CHAT_HISTORY_MAX_LIMIT = 50
 
 export function clampChatHistoryLimit(requested: number | undefined): number {
-  return Math.min(Math.max(requested ?? CHAT_HISTORY_DEFAULT_LIMIT, 1), CHAT_HISTORY_MAX_LIMIT)
+  return clampPageLimit(requested, CHAT_HISTORY_DEFAULT_LIMIT, CHAT_HISTORY_MAX_LIMIT)
 }
 
 export interface ChatHistorySource {

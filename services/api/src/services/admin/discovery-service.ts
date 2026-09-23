@@ -11,7 +11,8 @@
 
 import { AppError, REPORT_CATEGORY_LABELS, relativeAgo } from "@civfix/shared"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
-import { ADMIN_DEFAULT_LIMIT } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
+import { MS_PER_HOUR } from "../../lib/time.js"
 import type {
   DiscoveryContact,
   DiscoveryListQuery,
@@ -34,8 +35,6 @@ const DISCOVERY_CATEGORIES = ADMIN_CATEGORIES
 
 /** A task breaches when its oldest waiting report is older than this. */
 export const DISCOVERY_SLA_HOURS = 24
-
-const HOUR_MS = 60 * 60 * 1000
 
 const DISCOVERY_TASK_NOT_FOUND = "Discovery task not found"
 
@@ -195,7 +194,7 @@ export function computeContactState(record: DiscoveryTaskRecord): {
 export function isOverSla(oldestWaitingAt: Date | null, now: Date): boolean {
   if (oldestWaitingAt === null) return false
   const ageMs = now.getTime() - oldestWaitingAt.getTime()
-  return ageMs > DISCOVERY_SLA_HOURS * HOUR_MS
+  return ageMs > DISCOVERY_SLA_HOURS * MS_PER_HOUR
 }
 
 /**
@@ -287,7 +286,7 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
         filter: query.filter ?? "all",
         sort: query.sort ?? "pop",
         cursor: query.cursor ?? null,
-        limit: query.limit ?? ADMIN_DEFAULT_LIMIT,
+        limit: clampLimit(query.limit),
       }
       const { records, nextCursor } = await deps.repo.listTasks(args)
       // Only the detail renders notes, so list rows carry an empty notes[] rather than a note read

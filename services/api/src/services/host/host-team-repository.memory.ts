@@ -31,6 +31,7 @@ import type {
   RevokeTeamInviteOutcome,
 } from "./host-team-repository.types.js"
 import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.types.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
 interface StoredInvite {
   id: string
@@ -76,9 +77,7 @@ function teamRoleRank(role: string): number {
   return TEAM_ROLE_RANK[role] ?? 0
 }
 
-const DAY_MS = 86_400_000
-
-const SEED_EVENT_LEAD_MS = 30 * DAY_MS
+const SEED_EVENT_LEAD_MS = 30 * MS_PER_DAY
 
 const SEED_JOINED_AT = "2026-01-01T00:00:00.000Z"
 

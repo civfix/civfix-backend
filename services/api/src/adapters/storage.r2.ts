@@ -9,6 +9,7 @@ import type {
 } from "@civfix/shared/interfaces"
 import { normalizeEtag, type StorageHeadWithEtag } from "../services/media-etag.js"
 import { readProxySettings, shouldProxyHost } from "./proxy-egress.js"
+import { stripTrailingSlashes } from "../lib/base-url.js"
 import type { S3Client, S3ClientConfig } from "@aws-sdk/client-s3"
 
 export interface R2StorageConfig {
@@ -37,7 +38,6 @@ const DEFAULT_CONTENT_TYPE = "application/octet-stream"
 const HTTP_NOT_FOUND = 404
 const NOT_FOUND_ERROR_NAMES: ReadonlySet<string> = new Set(["NotFound", "NoSuchKey"])
 
-const TRAILING_SLASHES_RE = /\/+$/
 const LEADING_SLASHES_RE = /^\/+/
 const HTTP_SCHEME_RE = /^https?:\/\//i
 
@@ -245,7 +245,7 @@ async function boundedRequestHandler(host: string): Promise<S3ClientConfig["requ
 }
 
 function joinUrl(base: string, key: string): string {
-  const trimmedBase = base.replace(TRAILING_SLASHES_RE, "")
+  const trimmedBase = stripTrailingSlashes(base)
   const trimmedKey = key.replace(LEADING_SLASHES_RE, "")
   return `${trimmedBase}/${trimmedKey}`
 }

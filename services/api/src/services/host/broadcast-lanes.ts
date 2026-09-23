@@ -5,6 +5,7 @@ import type { BroadcastRepository } from "./broadcast-repository.js"
 import type { BroadcastCreateInput, EventBroadcastContext } from "./broadcast-types.js"
 import { verifiedReplyTo } from "./broadcast-render.js"
 import { eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
+import { MS_PER_HOUR, MS_PER_SECOND } from "../../lib/time.js"
 
 export const DEFAULT_REMINDER_OFFSETS_MIN = [1440, 180] as const
 
@@ -14,8 +15,6 @@ const REMINDER_SWEEP_LIMIT = 200
 
 const AUTOMATED_CHANNELS: BroadcastChannel[] = ["inapp", "push", "email"]
 
-const MS_PER_SECOND = 1000
-const MS_PER_HOUR = 3_600_000
 const EVENT_UPDATE_WINDOW_SEC = MS_PER_HOUR / MS_PER_SECOND
 // An ISO timestamp cut to "YYYY-MM-DDTHH" names the UTC hour the throttle window counts in.
 const ISO_HOUR_LENGTH = 13
