@@ -49,7 +49,8 @@ export const NOOP_REPORT_CHAT_EMITTER: ReportChatSystemEmitter = {
  */
 export function makeContainerReportChatEmitter(
   container: Container,
-  logger?: FastifyBaseLogger,
+  logger?: Pick<FastifyBaseLogger, "warn" | "error">,
+  opts: { propagateInsertFailure?: boolean } = {},
 ): ReportChatSystemEmitter {
   // Fake-chat: no DB + a no-op chat service, so mirror the other report side-effects and degrade to no-op.
   if (container.env.USE_FAKE_CHAT) return NOOP_REPORT_CHAT_EMITTER
@@ -117,5 +118,6 @@ export function makeContainerReportChatEmitter(
     notify,
     roomKeyFor,
     ...(logger !== undefined ? { logger } : {}),
+    ...(opts.propagateInsertFailure === true ? { propagateInsertFailure: true } : {}),
   })
 }
