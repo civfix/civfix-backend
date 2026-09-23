@@ -50,8 +50,9 @@ DATABASE_URL=postgres://... pnpm --filter @civfix/api db:backfill:signup-seats -
 DATABASE_URL=postgres://... pnpm --filter @civfix/api db:backfill:signup-seats -- --yes --batch 200
 ```
 
-On the box the built entrypoint is `pnpm start:backfill:signup-seats`
-(`node dist/db/backfill-signup-seats.js`), same flags. `TICKET_TOKEN_SECRET` must
+On the box run the built entrypoint inside the live API container, same flags:
+`sudo docker exec <api container> node dist/db/backfill-signup-seats.js --yes`.
+Never run `pnpm` in a runtime container. `TICKET_TOKEN_SECRET` must
 be the environment's real secret — a seat minted under a different secret can
 never be scanned.
 

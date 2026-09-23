@@ -50,7 +50,7 @@ Then backfill the two columns for existing rows (keyset-paged, idempotent,
 safe to re-run and safe to run while the API serves traffic):
 
 ```sh
-sudo -n docker exec compose-api-1 node dist/db/backfill-user-activity.js
+sudo -n docker exec $(sudo docker ps --format '{{.Names}}' | grep -m1 -E 'compose-api-(blue|green)') node dist/db/backfill-user-activity.js
 ```
 
 Verify — **against the real statement, with a viewer point that is an outer
@@ -118,7 +118,7 @@ Run it once the deploy is healthy — keyset-paged, idempotent, safe to re-run
 and safe while the API serves traffic:
 
 ```sh
-sudo -n docker exec compose-api-1 node dist/db/backfill-post-geom.js
+sudo -n docker exec $(sudo docker ps --format '{{.Names}}' | grep -m1 -E 'compose-api-(blue|green)') node dist/db/backfill-post-geom.js
 ```
 
 Nothing breaks without it: a `NULL` `posts.geom` yields a `NULL` `distance_km`,
