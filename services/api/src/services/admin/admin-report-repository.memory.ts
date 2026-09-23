@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { isUuid } from "../../db/cursor-helpers.js"
 import { pageInMemoryById } from "./pagination.js"
@@ -412,7 +411,10 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
         s.record.verificationVerdict === "approved" &&
         s.deletedAt === null,
     ).length
-    if (approvedCount >= REPORT_VERIFIED_THRESHOLD && this.reporterReportVerified.get(reporterId) !== true) {
+    if (
+      approvedCount >= REPORT_VERIFIED_THRESHOLD &&
+      this.reporterReportVerified.get(reporterId) !== true
+    ) {
       this.reporterReportVerified.set(reporterId, true)
     }
     return true

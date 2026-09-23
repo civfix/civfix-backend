@@ -31,7 +31,9 @@ beforeAll(async () => {
     },
   })
 })
-afterAll(async () => { await app.close() })
+afterAll(async () => {
+  await app.close()
+})
 
 describe("guest rsvp over HTTP", () => {
   it("accepts a real request body and merges the path id", async () => {

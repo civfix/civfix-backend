@@ -48,10 +48,7 @@ export async function registerGuestJobs(
   await container.jobs.work(CLEANUP_GUEST_UPDATE_FANOUT_JOB, async (job) => {
     const data = parseUpdateFanoutJob(job.data)
     if (data === null) {
-      logger?.warn(
-        { jobId: job.id },
-        "cleanup.guest.update.fanout: malformed job data (skipped)",
-      )
+      logger?.warn({ jobId: job.id }, "cleanup.guest.update.fanout: malformed job data (skipped)")
       return
     }
     await runGuestUpdateFanout(

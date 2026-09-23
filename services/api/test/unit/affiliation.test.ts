@@ -39,7 +39,15 @@ function fakeSql(rows: FakeRow[]): { sql: Sql; calls: Capture[]; fragments: Capt
 }
 
 function person(id: string): PersonDTO {
-  return { id, name: id, handle: null, avatar: null, followers: 0, following: 0, isFollowing: false }
+  return {
+    id,
+    name: id,
+    handle: null,
+    avatar: null,
+    followers: 0,
+    following: 0,
+    isFollowing: false,
+  }
 }
 
 function row(over: Partial<FakeRow> & { user_id: string; id: string }): FakeRow {

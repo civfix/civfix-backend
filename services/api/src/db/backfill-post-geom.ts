@@ -1,4 +1,3 @@
-
 import { runDbCli, runIfMain } from "./cli.js"
 import { backfillPostGeom } from "./backfill-post-geom-core.js"
 

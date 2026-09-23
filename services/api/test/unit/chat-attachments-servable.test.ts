@@ -24,7 +24,10 @@ const MESSAGE = "11111111-1111-4111-8111-111111111111"
 const OTHER_MESSAGE = "22222222-2222-4222-8222-222222222222"
 
 const PRESIGN = (r2Key: string, thumbKey: string | null) =>
-  Promise.resolve({ url: `memory://${r2Key}`, ...(thumbKey !== null ? { thumbUrl: `memory://${thumbKey}` } : {}) })
+  Promise.resolve({
+    url: `memory://${r2Key}`,
+    ...(thumbKey !== null ? { thumbUrl: `memory://${thumbKey}` } : {}),
+  })
 
 function row(over: Record<string, unknown> = {}) {
   return {
@@ -147,7 +150,11 @@ describe("loadServableAttachmentsFor", () => {
         match: /FROM media_assets/,
         rows: [
           row(),
-          row({ id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", message_id: OTHER_MESSAGE, status: "ready" }),
+          row({
+            id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            message_id: OTHER_MESSAGE,
+            status: "ready",
+          }),
         ],
       },
     ])

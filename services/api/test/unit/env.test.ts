@@ -33,7 +33,6 @@ function validProdEnv(): NodeJS.ProcessEnv {
   }
 }
 
-
 describe("loadEnv: outbound SMS", () => {
   it("defaults to the fake sender outside production and the real one in production", () => {
     expect(loadEnv({ NODE_ENV: "test" }).USE_FAKE_SMS).toBe(true)
@@ -160,7 +159,9 @@ describe("loadEnv", () => {
 
   it("H11: the guard covers every USE_FAKE_* key the loader exposes on Env (no flag left behind)", () => {
     const listed = new Set<string>(FAKE_SEAM_FLAGS.map((f) => f.flag))
-    const exposed = Object.keys(loadEnv({ NODE_ENV: "test" })).filter((k) => k.startsWith("USE_FAKE_"))
+    const exposed = Object.keys(loadEnv({ NODE_ENV: "test" })).filter((k) =>
+      k.startsWith("USE_FAKE_"),
+    )
     expect(exposed.length).toBeGreaterThan(0)
     for (const key of exposed) expect(listed.has(key), key).toBe(true)
   })
@@ -205,7 +206,6 @@ describe("loadEnv", () => {
     expect(env.PORT).toBe(8080)
   })
 
-
   it("defaults REVIEWER_OTP_BYPASS to false in every environment", () => {
     expect(loadEnv(validProdEnv()).REVIEWER_OTP_BYPASS).toBe(false)
     expect(loadEnv({ NODE_ENV: "development" }).REVIEWER_OTP_BYPASS).toBe(false)
@@ -248,7 +248,6 @@ describe("loadEnv", () => {
     expect(loadEnv(validProdEnv()).REVIEWER_OTP_CODE).toBeUndefined()
   })
 
-
   it("requires R2_INBOUND_BUCKET once R2_PUBLIC_BASE is set", () => {
     const source = validProdEnv()
     source.R2_PUBLIC_BASE = "https://cdn.civfix.org"
@@ -280,7 +279,6 @@ describe("loadEnv", () => {
     expect(env.R2_PUBLIC_BASE).toBe("https://cdn.civfix.org")
   })
 
-
   it.each(["require", "verify-ca", "verify-full"])(
     "accepts sslmode=%s on DATABASE_URL in production",
     (mode) => {
@@ -301,7 +299,6 @@ describe("loadEnv", () => {
       expect(() => loadEnv(source)).toThrow(/DATABASE_URL: production requires TLS/)
     },
   )
-
 
   it.each([
     ["compose service alias", "postgres://user:pass@postgres:5432/civfix"],
@@ -336,7 +333,6 @@ describe("loadEnv", () => {
     ).not.toThrow()
   })
 
-
   it("rejects TRUST_PROXY=true in production", () => {
     const source = validProdEnv()
     source.TRUST_PROXY = "true"
@@ -349,7 +345,9 @@ describe("loadEnv", () => {
 
   it("parses CF_TURNSTILE_HOSTNAMES as a lowercased, de-duplicated list and defaults to empty", () => {
     expect(loadEnv({ NODE_ENV: "test" }).CF_TURNSTILE_HOSTNAMES).toEqual([])
-    expect(loadEnv({ NODE_ENV: "test", CF_TURNSTILE_HOSTNAMES: "" }).CF_TURNSTILE_HOSTNAMES).toEqual([])
+    expect(
+      loadEnv({ NODE_ENV: "test", CF_TURNSTILE_HOSTNAMES: "" }).CF_TURNSTILE_HOSTNAMES,
+    ).toEqual([])
     const env = loadEnv({
       NODE_ENV: "test",
       CF_TURNSTILE_HOSTNAMES: " CivFix.org , www.civfix.org ,civfix.org",
@@ -396,9 +394,9 @@ describe("loadEnv: outbound send policy", () => {
   })
 
   it("REFUSES a throughput floor below the minimum", () => {
-    expect(() =>
-      loadEnv({ NODE_ENV: "test", OUTBOUND_SEND_MIN_THROUGHPUT_BPS: "48" }),
-    ).toThrow(/OUTBOUND_SEND_MIN_THROUGHPUT_BPS/)
+    expect(() => loadEnv({ NODE_ENV: "test", OUTBOUND_SEND_MIN_THROUGHPUT_BPS: "48" })).toThrow(
+      /OUTBOUND_SEND_MIN_THROUGHPUT_BPS/,
+    )
   })
 
   it("REFUSES an SMTP timeout above the ceiling", () => {

@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
@@ -64,11 +63,7 @@ async function insertGroupMessage(
   return rows[0]!.id
 }
 
-async function insertDmMessage(
-  h: PgHarness,
-  senderId: string,
-  peerId: string,
-): Promise<string> {
+async function insertDmMessage(h: PgHarness, senderId: string, peerId: string): Promise<string> {
   const thread = await h.sql<{ id: string }[]>`
     INSERT INTO dm_threads (user_lo, user_hi)
     VALUES (
@@ -288,7 +283,11 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
   it("remove strikes the reporter and createItem captures a real user snapshot", async () => {
     const userId = await insertUser(h, "rmreporter")
     const reportId = await insertReport(h, { status: "held", reporterUserId: userId })
-    const id = (await repo.createItem({ kind: "image", subjectType: "report", subjectId: reportId }))!
+    const id = (await repo.createItem({
+      kind: "image",
+      subjectType: "report",
+      subjectId: reportId,
+    }))!
 
     const detail = await repo.getItem(id)
     expect(detail?.user?.handle).toBe("rmreporter")

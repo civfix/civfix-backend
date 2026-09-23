@@ -1,4 +1,3 @@
-
 import type postgres from "postgres"
 import type { Queryable } from "../../db/client.js"
 import { likeContains } from "./like.js"
@@ -18,7 +17,9 @@ export function ilikeAnyOf(
   ]
   const first = branches[0]
   if (first === undefined) return sql`(false)`
-  const ored = branches.slice(1).reduce<SqlFragment>((acc, branch) => sql`${acc} OR ${branch}`, first)
+  const ored = branches
+    .slice(1)
+    .reduce<SqlFragment>((acc, branch) => sql`${acc} OR ${branch}`, first)
   return sql`(${ored})`
 }
 

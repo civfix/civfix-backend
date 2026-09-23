@@ -1,4 +1,3 @@
-
 export interface Env {
   R2_BUCKET: R2Bucket
   BACKEND_WEBHOOK_URL: string
@@ -36,7 +35,6 @@ export default {
   },
 }
 
-
 export async function deriveMessageId(headers: Headers, raw: ArrayBuffer): Promise<string> {
   const slug = slugify(headers.get("message-id") ?? "")
   if (slug.length > 0) return slug
@@ -53,7 +51,6 @@ export function slugify(messageId: string): string {
     .replace(/[^A-Za-z0-9._@-]+/g, "_")
     .slice(0, 200)
 }
-
 
 export async function nudgeBackend(env: Env, key: string): Promise<void> {
   const body = JSON.stringify({ key })

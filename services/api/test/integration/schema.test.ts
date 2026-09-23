@@ -1,4 +1,3 @@
-
 import { afterAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { getTableName, is } from "drizzle-orm"
@@ -120,10 +119,7 @@ const EXPECTED_TABLES = [
   "geocode_cache",
 ] as const
 
-const FOREIGN_TABLES = new Set([
-  "_civfix_migrations",
-  "spatial_ref_sys",
-])
+const FOREIGN_TABLES = new Set(["_civfix_migrations", "spatial_ref_sys"])
 
 const DROPPED_TABLES = [
   "report_discussion_messages",
@@ -350,7 +346,9 @@ describe.skipIf(!pg)("schema (0009): DM + privacy migration produces the expecte
   })
 
   it("added users.allow_direct_messages (NOT NULL default true)", async () => {
-    const rows = await h.sql<{ data_type: string; is_nullable: string; column_default: string | null }[]>`
+    const rows = await h.sql<
+      { data_type: string; is_nullable: string; column_default: string | null }[]
+    >`
       SELECT data_type, is_nullable, column_default FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'allow_direct_messages'
     `
@@ -511,7 +509,9 @@ describe.skipIf(!pg)("schema (0061): users.show_volunteer_hours is a NULLable tr
   const h = pg as PgHarness
 
   it("is boolean, NULLable, and carries NO column default", async () => {
-    const rows = await h.sql<{ data_type: string; is_nullable: string; column_default: string | null }[]>`
+    const rows = await h.sql<
+      { data_type: string; is_nullable: string; column_default: string | null }[]
+    >`
       SELECT data_type, is_nullable, column_default FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'show_volunteer_hours'
     `
@@ -542,7 +542,6 @@ describe.skipIf(!pg)("schema (0061): users.show_volunteer_hours is a NULLable tr
   })
 })
 
-
 describe.skipIf(!pg)("schema (0167): cleanup_slots carries an optional time window", () => {
   const h = pg as PgHarness
 
@@ -561,7 +560,12 @@ describe.skipIf(!pg)("schema (0167): cleanup_slots carries an optional time wind
 
   it("added starts_at and ends_at as NULLable timestamptz with no default", async () => {
     const rows = await h.sql<
-      { column_name: string; data_type: string; is_nullable: string; column_default: string | null }[]
+      {
+        column_name: string
+        data_type: string
+        is_nullable: string
+        column_default: string | null
+      }[]
     >`
       SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'cleanup_slots'
@@ -670,25 +674,53 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   { table: "moderation_items", column: "kind", mirror: schema.MODERATION_KIND_VALUES },
   { table: "moderation_items", column: "priority", mirror: schema.MODERATION_PRIORITY_VALUES },
   { table: "moderation_items", column: "status", mirror: schema.MODERATION_STATUS_VALUES },
-  { table: "moderation_items", column: "subject_type", mirror: schema.MODERATION_SUBJECT_TYPE_VALUES },
+  {
+    table: "moderation_items",
+    column: "subject_type",
+    mirror: schema.MODERATION_SUBJECT_TYPE_VALUES,
+  },
   { table: "user_moderation", column: "account_status", mirror: schema.USER_ACCOUNT_STATUS_VALUES },
   { table: "user_moderation", column: "risk", mirror: schema.USER_RISK_VALUES },
   { table: "cleanups", column: "visibility", mirror: schema.EVENT_VISIBILITY_VALUES },
-  { table: "organizations", column: "verified_status", mirror: schema.ORG_VERIFICATION_STATUS_VALUES },
+  {
+    table: "organizations",
+    column: "verified_status",
+    mirror: schema.ORG_VERIFICATION_STATUS_VALUES,
+  },
   { table: "organizations", column: "verified_kind", mirror: schema.ORG_VERIFICATION_KIND_VALUES },
   { table: "organization_members", column: "role", mirror: schema.ORGANIZATION_MEMBER_ROLE_VALUES },
   { table: "organization_invites", column: "role", mirror: schema.ORGANIZATION_INVITE_ROLE_VALUES },
-  { table: "organization_invites", column: "status", mirror: schema.ORGANIZATION_INVITE_STATUS_VALUES },
+  {
+    table: "organization_invites",
+    column: "status",
+    mirror: schema.ORGANIZATION_INVITE_STATUS_VALUES,
+  },
   { table: "org_verifications", column: "status", mirror: schema.ORG_VERIFICATION_STATUS_VALUES },
   { table: "org_verifications", column: "kind", mirror: schema.ORG_VERIFICATION_KIND_VALUES },
-  { table: "event_consents", column: "subject_type", mirror: schema.EVENT_CONSENT_SUBJECT_TYPE_VALUES },
+  {
+    table: "event_consents",
+    column: "subject_type",
+    mirror: schema.EVENT_CONSENT_SUBJECT_TYPE_VALUES,
+  },
   { table: "cleanup_team_invites", column: "role", mirror: schema.EVENT_TEAM_ROLE_VALUES },
-  { table: "cleanup_team_invites", column: "status", mirror: schema.EVENT_TEAM_INVITE_STATUS_VALUES },
-  { table: "cleanup_ticket_types", column: "visibility", mirror: schema.TICKET_TYPE_VISIBILITY_VALUES },
+  {
+    table: "cleanup_team_invites",
+    column: "status",
+    mirror: schema.EVENT_TEAM_INVITE_STATUS_VALUES,
+  },
+  {
+    table: "cleanup_ticket_types",
+    column: "visibility",
+    mirror: schema.TICKET_TYPE_VISIBILITY_VALUES,
+  },
   { table: "cleanup_registrations", column: "status", mirror: schema.REGISTRATION_STATUS_VALUES },
   { table: "cleanup_registrations", column: "source", mirror: schema.REGISTRATION_SOURCE_VALUES },
   { table: "cleanup_registration_seats", column: "status", mirror: schema.SEAT_STATUS_VALUES },
-  { table: "cleanup_registration_seats", column: "checkin_method", mirror: schema.CHECKIN_METHOD_VALUES },
+  {
+    table: "cleanup_registration_seats",
+    column: "checkin_method",
+    mirror: schema.CHECKIN_METHOD_VALUES,
+  },
   { table: "cleanup_waitlist", column: "status", mirror: schema.WAITLIST_STATUS_VALUES },
   { table: "cleanup_questions", column: "kind", mirror: schema.EVENT_QUESTION_KIND_VALUES },
   { table: "cleanup_pages", column: "status", mirror: schema.EVENT_PAGE_STATUS_VALUES },
@@ -697,13 +729,21 @@ const MIRRORED_CHECKS: readonly MirroredCheck[] = [
   { table: "broadcasts", column: "status", mirror: schema.BROADCAST_STATUS_VALUES },
   { table: "broadcast_deliveries", column: "channel", mirror: schema.BROADCAST_CHANNEL_VALUES },
   { table: "broadcast_deliveries", column: "status", mirror: schema.DELIVERY_STATUS_VALUES },
-  { table: "broadcast_deliveries", column: "recipient_kind", mirror: schema.BROADCAST_RECIPIENT_KIND_VALUES },
+  {
+    table: "broadcast_deliveries",
+    column: "recipient_kind",
+    mirror: schema.BROADCAST_RECIPIENT_KIND_VALUES,
+  },
   {
     table: "broadcast_deliveries",
     column: "suppression_reason",
     mirror: schema.DELIVERY_SUPPRESSION_REASON_VALUES,
   },
-  { table: "broadcast_deliveries", column: "failure_kind", mirror: schema.DELIVERY_FAILURE_KIND_VALUES },
+  {
+    table: "broadcast_deliveries",
+    column: "failure_kind",
+    mirror: schema.DELIVERY_FAILURE_KIND_VALUES,
+  },
   { table: "broadcast_unsubscribes", column: "scope", mirror: schema.UNSUBSCRIBE_SCOPE_VALUES },
   { table: "broadcast_unsubscribes", column: "reason", mirror: schema.UNSUBSCRIBE_REASON_VALUES },
   { table: "email_suppressions", column: "reason", mirror: schema.EMAIL_SUPPRESSION_REASON_VALUES },
@@ -752,7 +792,9 @@ function parseValueSet(def: string): { column: string; values: string[] } | null
   const expression = def.replace(CONSTRAINT_QUALIFIERS, "")
   const m = VALUE_SET_CHECK.exec(expression) ?? NULLABLE_VALUE_SET_CHECK.exec(expression)
   if (m === null) return null
-  const values = [...m[2]!.matchAll(/'((?:[^']|'')*)'::text/g)].map((x) => x[1]!.replace(/''/g, "'"))
+  const values = [...m[2]!.matchAll(/'((?:[^']|'')*)'::text/g)].map((x) =>
+    x[1]!.replace(/''/g, "'"),
+  )
   return { column: m[1]!, values }
 }
 
@@ -777,7 +819,10 @@ describe.skipIf(!pg)("schema: enum mirrors match the DDL CHECK constraints", () 
       if (RETIRED_PAYMENT_TABLES.has(r.tbl)) continue
       const key = `${r.tbl}.${parsed.column}`
       const prior = out.get(key)
-      out.set(key, prior === undefined ? parsed.values : prior.filter((v) => parsed.values.includes(v)))
+      out.set(
+        key,
+        prior === undefined ? parsed.values : prior.filter((v) => parsed.values.includes(v)),
+      )
     }
     return out
   }
@@ -798,7 +843,10 @@ describe.skipIf(!pg)("schema: enum mirrors match the DDL CHECK constraints", () 
     const inDb = await dbValueSets()
     for (const c of MIRRORED_CHECKS) {
       const key = `${c.table}.${c.column}`
-      const expected = [...c.mirror.filter((v) => !(c.omitted ?? []).includes(v)), ...(c.retired ?? [])].sort()
+      const expected = [
+        ...c.mirror.filter((v) => !(c.omitted ?? []).includes(v)),
+        ...(c.retired ?? []),
+      ].sort()
       expect(inDb.get(key)?.slice().sort(), `value-set drift on ${key}`).toEqual(expected)
     }
   })

@@ -32,7 +32,11 @@ describe.skipIf(!pg)("content-report subject gate (integration: real visibility)
     return u!.id
   }
 
-  async function seedReport(reporterId: string, status: string, visibility: string): Promise<string> {
+  async function seedReport(
+    reporterId: string,
+    status: string,
+    visibility: string,
+  ): Promise<string> {
     const [r] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (
         reporter_user_id, idempotency_key, geom, geom_source, category, status, visibility, h3_cell

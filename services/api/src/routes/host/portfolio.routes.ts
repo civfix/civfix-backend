@@ -1,7 +1,4 @@
-import {
-  ListMyHostedEventsRequestSchema,
-  type ListMyHostedEventsResponse,
-} from "@civfix/shared"
+import { ListMyHostedEventsRequestSchema, type ListMyHostedEventsResponse } from "@civfix/shared"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"

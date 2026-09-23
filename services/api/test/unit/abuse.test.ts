@@ -340,7 +340,9 @@ describe("issueAnonToken / resolveAnonToken", () => {
   it("does not resolve an unknown or unsigned token", async () => {
     const store = new MemTokenStore()
     expect(await resolveAnonToken(undefined, { store, signingKey: KEY })).toBeNull()
-    expect(await resolveAnonToken(signAnonToken("ghost", KEY), { store, signingKey: KEY })).toBeNull()
+    expect(
+      await resolveAnonToken(signAnonToken("ghost", KEY), { store, signingKey: KEY }),
+    ).toBeNull()
   })
 })
 

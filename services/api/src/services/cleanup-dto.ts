@@ -150,7 +150,10 @@ export function toCleanupDTO(
   }
 }
 
-export function toLinkedReportRef(view: LinkedReportView, thumbUrl: string | null): LinkedReportRef {
+export function toLinkedReportRef(
+  view: LinkedReportView,
+  thumbUrl: string | null,
+): LinkedReportRef {
   return {
     id: view.id,
     category: view.category,

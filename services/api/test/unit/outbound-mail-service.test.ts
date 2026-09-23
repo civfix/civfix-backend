@@ -20,7 +20,6 @@ import {
   type OutboundMailService,
 } from "../../src/services/admin/outbound-mail-service.js"
 
-
 const ENV: OutboundMailEnv = {
   MAIL_FROM_OUTREACH: "outreach@civfix.org",
   MAIL_REPLY_DOMAIN: "civfix.org",
@@ -43,7 +42,11 @@ function harness(): {
 
 describe("OutboundMailService.sendReportToJurisdiction", () => {
   function png(): OutboundAttachment {
-    return { filename: "photo.png", contentType: "image/png", content: new Uint8Array([1, 2, 3, 4]) }
+    return {
+      filename: "photo.png",
+      contentType: "image/png",
+      content: new Uint8Array([1, 2, 3, 4]),
+    }
   }
 
   it("sends a per-report packet via sendOutbound From the report- reply address, no Reply-To, + attachments", async () => {
@@ -303,7 +306,11 @@ describe("OutboundMailService.sendToCity (digest path: minted token)", () => {
 describe("OutboundMailService.compose / appendOutbound", () => {
   it("compose creates a new outbound thread + first message + sends From outreach via sendOutbound", async () => {
     const { repo, mailer, svc } = harness()
-    const thread = await svc.compose({ to: "mayor@city.gov", subject: "Intro", body: "Hello there." })
+    const thread = await svc.compose({
+      to: "mayor@city.gov",
+      subject: "Intro",
+      body: "Hello there.",
+    })
     expect(repo.threads.size).toBe(1)
     expect(thread.lastMessageAt).not.toBeNull()
     const dto = await repo.getThread(thread.id)
@@ -319,7 +326,12 @@ describe("OutboundMailService.compose / appendOutbound", () => {
   it("appendOutbound appends an OUT reply to an existing thread, defaulting the subject to Re:", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Question", org: "City of LA" })
-    await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "Q?" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@city.gov",
+      body: "Q?",
+    })
     expect((await repo.getThreadRecord(t.id))?.unread).toBe(true)
 
     const updated = await svc.appendOutbound(t.id, {
@@ -417,7 +429,12 @@ describe("OutboundMailService: the outbound row is a true snapshot of what was s
       text: "A pothole on Main St.",
       html: "<p>A pothole on Main St.</p>",
       attachments: [
-        { key: "media/r2/photo.jpg", filename: "photo.jpg", contentType: "image/jpeg", content: new Uint8Array([1, 2, 3]) },
+        {
+          key: "media/r2/photo.jpg",
+          filename: "photo.jpg",
+          contentType: "image/jpeg",
+          content: new Uint8Array([1, 2, 3]),
+        },
         { filename: "keyless.jpg", contentType: "image/jpeg", content: new Uint8Array([4]) },
       ],
     })
@@ -426,15 +443,26 @@ describe("OutboundMailService: the outbound row is a true snapshot of what was s
     expect(stored?.fromAddr).toBe(`"civfix Reports" <report-${thread.threadToken}@civfix.org>`)
     expect(stored?.html).toBe("<p>A pothole on Main St.</p>")
     expect(stored?.kind).toBe("packet")
-    expect(stored?.attachments).toEqual([{ key: "media/r2/photo.jpg", filename: "photo.jpg", size: 3 }])
+    expect(stored?.attachments).toEqual([
+      { key: "media/r2/photo.jpg", filename: "photo.jpg", size: 3 },
+    ])
   })
 
   it("stamps the kind each entry point owns", async () => {
     const { repo, svc } = harness()
-    const digest = await svc.sendToCity({ geoid: "0644000", toAddr: "clerk@lacity.gov", subject: "Digest", body: "d" })
+    const digest = await svc.sendToCity({
+      geoid: "0644000",
+      toAddr: "clerk@lacity.gov",
+      subject: "Digest",
+      body: "d",
+    })
     const composed = await svc.compose({ to: "mayor@city.gov", subject: "Intro", body: "hi" })
     await svc.appendOutbound(composed.id, { toAddr: "mayor@city.gov", body: "again" })
-    await svc.appendOutbound(composed.id, { toAddr: "mayor@city.gov", body: "again", kind: "resend" })
+    await svc.appendOutbound(composed.id, {
+      toAddr: "mayor@city.gov",
+      body: "again",
+      kind: "resend",
+    })
     const event = await svc.sendEventToJurisdiction({
       cleanupId: "cleanup-1",
       geoid: "0644000",
@@ -464,7 +492,9 @@ describe("OutboundMailService: the outbound row is a true snapshot of what was s
       subject: "civfix report: Pothole [ref-2]",
       text: "two",
     })
-    expect((await repo.getThreadRecord(first.thread.id))?.subject).toBe("civfix report: Pothole [ref-2]")
+    expect((await repo.getThreadRecord(first.thread.id))?.subject).toBe(
+      "civfix report: Pothole [ref-2]",
+    )
   })
 })
 
@@ -547,7 +577,9 @@ describe("OutboundMailService: a failed send is recorded as a failure", () => {
     mailer.sendOutbound = () => Promise.reject(new Error("smtp down"))
     const svc = makeOutboundMailService({ repo, mailer, env: ENV })
     const t = await repo.createThread({ subject: "S" })
-    await expect(svc.appendOutbound(t.id, { toAddr: "x@y.com", body: "b" })).rejects.toThrow(/smtp down/)
+    await expect(svc.appendOutbound(t.id, { toAddr: "x@y.com", body: "b" })).rejects.toThrow(
+      /smtp down/,
+    )
     expect(repo.threads.get(t.id)?.status).toBe("needs_action")
     expect(repo.audits).toHaveLength(0)
   })

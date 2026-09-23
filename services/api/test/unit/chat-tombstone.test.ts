@@ -41,7 +41,12 @@ function loadedMessage(): ChatMessageDTO {
     editedAt: "2026-06-01T11:30:00.000Z",
     pinnedAt: "2026-06-01T11:40:00.000Z",
     replyToId: "66666666-6666-4666-8666-666666666666",
-    replyTo: { id: "66666666-6666-4666-8666-666666666666", from: null, excerpt: "hi", kind: "text" },
+    replyTo: {
+      id: "66666666-6666-4666-8666-666666666666",
+      from: null,
+      excerpt: "hi",
+      kind: "text",
+    },
     forwardedToCity: true,
     cityMention: { handle: "losangeles", geoid: "0644000", name: "Los Angeles", forwarded: true },
     poll: {

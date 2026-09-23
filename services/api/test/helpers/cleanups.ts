@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import type { Sql } from "../../src/db/client.js"
@@ -273,8 +272,7 @@ export function haversineMeters(a: NearPoint, b: NearPoint): number {
   const dLng = toRad(b.lng - a.lng)
   const lat1 = toRad(a.lat)
   const lat2 = toRad(b.lat)
-  const h =
-    Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
 }
 
@@ -433,8 +431,14 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (!this.users.has(cleanup.organizerUserId)) {
       this.seedUser({ id: cleanup.organizerUserId })
     }
-    if (!this.members.some((m) => m.cleanupId === cleanup.id && m.userId === cleanup.organizerUserId)) {
-      this.members.push({ cleanupId: cleanup.id, userId: cleanup.organizerUserId, role: "organizer" })
+    if (
+      !this.members.some((m) => m.cleanupId === cleanup.id && m.userId === cleanup.organizerUserId)
+    ) {
+      this.members.push({
+        cleanupId: cleanup.id,
+        userId: cleanup.organizerUserId,
+        role: "organizer",
+      })
     }
     if (over.withDefaultSlot !== false) {
       this.seedSlot({
@@ -725,9 +729,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (cleanup === undefined) return NO_HOST_STANDING
     const eventRole = await this.roleOf(cleanupId, userId)
     const orgRole =
-      cleanup.organizationId === null
-        ? null
-        : await this.orgRoleOf(cleanup.organizationId, userId)
+      cleanup.organizationId === null ? null : await this.orgRoleOf(cleanup.organizationId, userId)
     if (eventRole === null && orgRole === null) return NO_HOST_STANDING
     return { eventRole, orgRole }
   }
@@ -883,9 +885,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const have = this.links.filter((l) => l.cleanupId === cleanupId).map((l) => l.reportId)
     const want = new Set(desiredIds)
     const toAdd = desiredIds.filter((id) => !have.includes(id))
-    const toRemove = have.filter(
-      (id) => !want.has(id) && this.reportVisible(this.reports.get(id)),
-    )
+    const toRemove = have.filter((id) => !want.has(id) && this.reportVisible(this.reports.get(id)))
     const added = this.linkInner(cleanupId, toAdd, actorId)
     for (const reportId of toRemove) {
       const idx = this.links.findIndex((l) => l.cleanupId === cleanupId && l.reportId === reportId)
@@ -960,9 +960,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   }
 
   filterVisibleReportIds(reportIds: string[]): Promise<Set<string>> {
-    const visible = new Set(
-      reportIds.filter((id) => this.reportVisible(this.reports.get(id))),
-    )
+    const visible = new Set(reportIds.filter((id) => this.reportVisible(this.reports.get(id))))
     return Promise.resolve(visible)
   }
 
@@ -1000,7 +998,10 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       }
       if (filters.when === "attending") {
         const viewerId = filters.viewerId ?? null
-        if (viewerId === null || !this.members.some((m) => m.cleanupId === c.id && m.userId === viewerId))
+        if (
+          viewerId === null ||
+          !this.members.some((m) => m.cleanupId === c.id && m.userId === viewerId)
+        )
           return false
       }
       if (filters.bbox !== undefined && !inBox(c, filters.bbox)) return false
@@ -1203,9 +1204,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
   }
 
   private deleteClaim(cleanupId: string, userId: string): string | null {
-    const idx = this.slotClaims.findIndex(
-      (c) => c.cleanupId === cleanupId && c.userId === userId,
-    )
+    const idx = this.slotClaims.findIndex((c) => c.cleanupId === cleanupId && c.userId === userId)
     if (idx < 0) return null
     const [claim] = this.slotClaims.splice(idx, 1)
     return claim?.slotId ?? null
@@ -1220,7 +1219,13 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     if (c.status === "cancelled") return Promise.resolve("already_cancelled")
     if (c.endsAt.getTime() <= this.now().getTime()) return Promise.resolve("already_ended")
     c.status = "cancelled"
-    this.timeline.push({ cleanupId: id, kind: "cancel", reportId: "", note: input.note, actorId: input.actorId })
+    this.timeline.push({
+      cleanupId: id,
+      kind: "cancel",
+      reportId: "",
+      note: input.note,
+      actorId: input.actorId,
+    })
     return Promise.resolve("cancelled")
   }
 
@@ -1257,11 +1262,12 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve(views.slice(0, limit))
   }
 
-
   private slotViews(cleanupId: string, viewerId: string | null): EventSlotView[] {
     return this.slots
       .filter((s) => s.cleanupId === cleanupId)
-      .sort((a, b) => (a.sortOrder !== b.sortOrder ? a.sortOrder - b.sortOrder : a.id < b.id ? -1 : 1))
+      .sort((a, b) =>
+        a.sortOrder !== b.sortOrder ? a.sortOrder - b.sortOrder : a.id < b.id ? -1 : 1,
+      )
       .map((s) => ({
         cleanupId: s.cleanupId,
         id: s.id,
@@ -1272,8 +1278,9 @@ export class InMemoryCleanupRepository implements CleanupRepository {
         endsAt: s.endsAt,
         sortOrder: s.sortOrder,
         claimed: this.slotClaims.filter((c) => c.slotId === s.id).length,
-        mine: viewerId !== null
-          && this.slotClaims.some((c) => c.slotId === s.id && c.userId === viewerId),
+        mine:
+          viewerId !== null &&
+          this.slotClaims.some((c) => c.slotId === s.id && c.userId === viewerId),
       }))
   }
 
@@ -1443,4 +1450,3 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     return Promise.resolve()
   }
 }
-

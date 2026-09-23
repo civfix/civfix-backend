@@ -143,9 +143,9 @@ export function broadcastLinkWarnings(
   return inspectBroadcastLinks(text, linkOptions(allowedHosts)).map((issue) => issueCopy(issue))
 }
 
-function linkOptions(
-  allowedHosts: readonly string[] | undefined,
-): { allowedHosts?: readonly string[] } {
+function linkOptions(allowedHosts: readonly string[] | undefined): {
+  allowedHosts?: readonly string[]
+} {
   return allowedHosts !== undefined && allowedHosts.length > 0 ? { allowedHosts } : {}
 }
 

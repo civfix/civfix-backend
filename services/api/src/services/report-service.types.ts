@@ -145,7 +145,10 @@ export interface ReportRepository {
   findReportByReferenceCode(code: string): Promise<ReportRecord | null>
   findMediaForReport(reportId: string, ownerView?: boolean): Promise<ReportMediaView[]>
   countValidatingMediaForReport(reportId: string): Promise<number>
-  findMediaForReports(reportIds: string[], ownerView?: boolean): Promise<Map<string, ReportMediaView[]>>
+  findMediaForReports(
+    reportIds: string[],
+    ownerView?: boolean,
+  ): Promise<Map<string, ReportMediaView[]>>
   findTimelineForReport(reportId: string): Promise<ReportTimelineView[]>
   findTimelineForReports(reportIds: string[]): Promise<Map<string, ReportTimelineView[]>>
   listMyReports(

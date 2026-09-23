@@ -1,4 +1,3 @@
-
 import type { Container } from "../../di.js"
 import type { Sql } from "../../db/client.js"
 import type { ParsedMail } from "@civfix/shared/interfaces"
@@ -116,7 +115,9 @@ export async function handleBounce(
   if (thread === null) return
 
   const sql = container.getDb().sql
-  const ownsRecipient = await threadSentTo(sql, thread.id, bounce.failedRecipient).catch(() => false)
+  const ownsRecipient = await threadSentTo(sql, thread.id, bounce.failedRecipient).catch(
+    () => false,
+  )
   if (!ownsRecipient) return
 
   await mailRepo

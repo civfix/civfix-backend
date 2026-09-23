@@ -30,9 +30,7 @@ describe("host capability matrix (backend realm)", () => {
 
   it("organizer holds every event-lane capability", () => {
     const caps = hostCapabilities({ eventRole: "organizer", orgRole: null })
-    const orgLaneOnly: HostCapability[] = [
-      "manage_org_members",
-    ]
+    const orgLaneOnly: HostCapability[] = ["manage_org_members"]
     for (const capability of HOST_CAPABILITY_VALUES) {
       expect(caps.has(capability), capability).toBe(!orgLaneOnly.includes(capability))
     }

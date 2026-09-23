@@ -3,7 +3,6 @@ import { AppError } from "@civfix/shared"
 import { makeChatGroupService } from "../../src/services/chat-group-service.js"
 import type { ChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 
-
 const GROUP = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const OWNER = "11111111-1111-1111-1111-111111111111"
 const MEMBER = "22222222-2222-2222-2222-222222222222"
@@ -56,7 +55,8 @@ function fakeRepo(opts: FakeOpts = {}): FakeRepo {
 
   return {
     findById: () => Promise.resolve(exists ? view : null),
-    roleOf: (_g: string, userId: string) => Promise.resolve(exists ? (roles[userId] ?? null) : null),
+    roleOf: (_g: string, userId: string) =>
+      Promise.resolve(exists ? (roles[userId] ?? null) : null),
     listMemberIds: () => Promise.resolve(members),
     invitableIdsOf: (actor: string, candidates: string[]) =>
       Promise.resolve(candidates.filter((c) => !blocked.has(`${actor}|${c}`))),
@@ -85,7 +85,10 @@ async function statusOf(run: () => Promise<unknown>): Promise<{ status: number; 
     return { status: 200 }
   } catch (err) {
     if (err instanceof AppError) {
-      return { status: err.httpStatus, ...(err.fields?.code ? { code: String(err.fields.code) } : {}) }
+      return {
+        status: err.httpStatus,
+        ...(err.fields?.code ? { code: String(err.fields.code) } : {}),
+      }
     }
     throw err
   }
@@ -147,7 +150,9 @@ describe("addMembers reports the ACCEPTED invitees, independently of the members
 
 describe("L8: unknown group and no-access answer identically (no existence oracle)", () => {
   it("readable surface: unknown group and private non-member both 403 not_a_member", async () => {
-    const unknown = await statusOf(() => svcOver(fakeRepo({ exists: false })).getGroup(STRANGER, GROUP))
+    const unknown = await statusOf(() =>
+      svcOver(fakeRepo({ exists: false })).getGroup(STRANGER, GROUP),
+    )
     const priv = await statusOf(() => svcOver(fakeRepo()).getGroup(STRANGER, GROUP))
     expect(unknown).toEqual({ status: 403, code: "not_a_member" })
     expect(priv).toEqual(unknown)
@@ -166,7 +171,10 @@ describe("L8: unknown group and no-access answer identically (no existence oracl
 
   it("addMembers: unknown group and a powerless caller both 403 add_members_forbidden", async () => {
     const unknown = await statusOf(() =>
-      svcOver(fakeRepo({ exists: false })).addMembers(STRANGER, { id: GROUP, memberIds: [INVITEE_OK] }),
+      svcOver(fakeRepo({ exists: false })).addMembers(STRANGER, {
+        id: GROUP,
+        memberIds: [INVITEE_OK],
+      }),
     )
     const powerless = await statusOf(() =>
       svcOver(fakeRepo()).addMembers(STRANGER, { id: GROUP, memberIds: [INVITEE_OK] }),
@@ -179,7 +187,9 @@ describe("L8: unknown group and no-access answer identically (no existence oracl
     const unknown = await statusOf(() =>
       svcOver(fakeRepo({ exists: false })).removeMember(STRANGER, GROUP, MEMBER),
     )
-    const powerless = await statusOf(() => svcOver(fakeRepo()).removeMember(STRANGER, GROUP, MEMBER))
+    const powerless = await statusOf(() =>
+      svcOver(fakeRepo()).removeMember(STRANGER, GROUP, MEMBER),
+    )
     expect(unknown).toEqual({ status: 403, code: "remove_forbidden" })
     expect(powerless).toEqual(unknown)
   })
@@ -196,7 +206,9 @@ describe("L8: unknown group and no-access answer identically (no existence oracl
   })
 
   it("joinGroup: unknown group and a private group both 403 not_public", async () => {
-    const unknown = await statusOf(() => svcOver(fakeRepo({ exists: false })).joinGroup(STRANGER, GROUP))
+    const unknown = await statusOf(() =>
+      svcOver(fakeRepo({ exists: false })).joinGroup(STRANGER, GROUP),
+    )
     const priv = await statusOf(() => svcOver(fakeRepo()).joinGroup(STRANGER, GROUP))
     expect(unknown).toEqual({ status: 403, code: "not_public" })
     expect(priv).toEqual(unknown)

@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { AppError, REPORT_TYPE_TO_CATEGORY } from "@civfix/shared"
 import type {
@@ -104,7 +103,11 @@ export interface AnonServiceDeps {
   resolveJurisdictionCode?: (geoid: string | null) => Promise<number>
   /** Structured twin of the signed-in path's dep - same resolver, same cache, same provenance rules. */
   resolveAddress?: AddressResolver
-  raiseAbuseFlag?: (subjectType: "report" | "anon_token", subjectId: string, reason: AnonAbuseReason) => Promise<void>
+  raiseAbuseFlag?: (
+    subjectType: "report" | "anon_token",
+    subjectId: string,
+    reason: AnonAbuseReason,
+  ) => Promise<void>
   enqueueMediaChecks?: (reportId: string, mediaUploadIds: string[]) => Promise<void>
   newId?: () => string
   newClaimCode?: () => string
@@ -260,10 +263,7 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
       }
     },
 
-    async anonReportStatus(
-      reportId: string,
-      claimCode: string,
-    ): Promise<AnonReportStatusResponse> {
+    async anonReportStatus(reportId: string, claimCode: string): Promise<AnonReportStatusResponse> {
       const row = await deps.repo.findAnonReportStatus(reportId)
       if (!row || row.claimCodeHash === null) {
         throw AppError.notFound("Report not found")

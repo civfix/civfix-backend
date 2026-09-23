@@ -1,4 +1,3 @@
-
 import type {
   InboundMail,
   ParsedMail,
@@ -117,11 +116,13 @@ const QUOTED_REMOTE_IP_RE = /smtp\.remote-ip\s*=\s*"[0-9a-f:.]+"/gi
 
 const FLAT_COMMENT_RE = /\([^()]*\)/g
 
-const ENVELOPE_ADDRESS_RE = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@([^@]+)$/
+const ENVELOPE_ADDRESS_RE =
+  /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@([^@]+)$/
 
 const REMOTE_IP_RE = /^[0-9a-f:.]+$/
 
-const HOSTNAME_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+const HOSTNAME_RE =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 
 const ORGANIZATIONAL_DOMAIN_OPTIONS = { allowPrivateDomains: true, extractHostname: false } as const
 
@@ -168,7 +169,11 @@ function parseStamp(stamp: string): AuthResult[] | null {
   if (/[()]/.test(uncommented)) return null
   const results: AuthResult[] = []
   for (const resinfo of uncommented.split(";").slice(1)) {
-    const [methodSpec = "", ...propSpecs] = resinfo.replace(/\s*=\s*/g, "=").trim().toLowerCase().split(/\s+/)
+    const [methodSpec = "", ...propSpecs] = resinfo
+      .replace(/\s*=\s*/g, "=")
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
     if (propSpecs.length === 0 && (methodSpec === "" || methodSpec === "none")) continue
     const [, method, result] = METHOD_SPEC_RE.exec(methodSpec) ?? []
     if (method === undefined || result === undefined) return null
@@ -209,7 +214,9 @@ function isEnvelopeAddress(value: string): boolean {
 
 function isBareArcResult(result: AuthResult): boolean {
   if (result.method !== "arc") return false
-  return [...result.props].every(([name, value]) => name === "smtp.remote-ip" && REMOTE_IP_RE.test(value))
+  return [...result.props].every(
+    ([name, value]) => name === "smtp.remote-ip" && REMOTE_IP_RE.test(value),
+  )
 }
 
 function isAlignedPass(result: AuthResult, identity: string | undefined, from: string): boolean {
@@ -245,7 +252,10 @@ function singleFromMailbox(
 }
 
 function headerLineValue(header: HeaderLines[number]): string {
-  return header.line.slice(header.line.indexOf(":") + 1).replace(/\s+/g, " ").trim()
+  return header.line
+    .slice(header.line.indexOf(":") + 1)
+    .replace(/\s+/g, " ")
+    .trim()
 }
 
 function toAddress(value: EmailAddress): ParsedMailAddress {

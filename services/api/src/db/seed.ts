@@ -1,4 +1,3 @@
-
 import type { Sql } from "./client.js"
 import { runDbCli, runIfMain } from "./cli.js"
 import { JURISDICTION_SEEDS } from "./seed-fixtures.js"
@@ -77,7 +76,9 @@ async function main(): Promise<void> {
     }
     const total = JURISDICTION_SEEDS.length + FEDERAL_LANDS.length
     const inserted = await seedJurisdictions(sql)
-    console.log(`seed: jurisdictions seeded (${inserted} inserted, ${total - inserted} already present)`)
+    console.log(
+      `seed: jurisdictions seeded (${inserted} inserted, ${total - inserted} already present)`,
+    )
   })
 }
 

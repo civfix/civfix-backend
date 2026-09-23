@@ -1,4 +1,3 @@
-
 import type { AdminAuditAction } from "./audit.js"
 import type {
   MailAttachment,

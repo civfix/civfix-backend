@@ -6,7 +6,6 @@ import {
   type ChatPollServiceDeps,
 } from "../../src/services/chat-poll-service.js"
 
-
 const CLEANUP = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const POLL_MSG = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 const AUTHOR = "cccccccc-cccc-cccc-cccc-cccccccccccc"
@@ -60,7 +59,8 @@ async function statusOf(run: () => Promise<unknown>): Promise<{ status: number; 
     await run()
     return { status: 200 }
   } catch (err) {
-    if (err instanceof AppError) return { status: err.httpStatus, code: err.fields?.["code"] as string }
+    if (err instanceof AppError)
+      return { status: err.httpStatus, code: err.fields?.["code"] as string }
     throw err
   }
 }

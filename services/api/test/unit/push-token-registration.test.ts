@@ -1,4 +1,3 @@
-
 import { describe, it, expect, vi } from "vitest"
 import { FakePushSender } from "@civfix/shared/fakes"
 import { makeNotificationService } from "../../src/services/notification-service.js"
@@ -53,7 +52,10 @@ describe("classifyPushToken", () => {
   })
 
   it("accepts a real browser PushSubscription JSON for platform web", () => {
-    const shape = classifyPushToken("web", subscription("https://fcm.googleapis.com/fcm/send/abc123"))
+    const shape = classifyPushToken(
+      "web",
+      subscription("https://fcm.googleapis.com/fcm/send/abc123"),
+    )
     expect(shape).toEqual({
       ok: true,
       kind: "web",
@@ -66,15 +68,20 @@ describe("classifyPushToken", () => {
     expect(classifyPushToken("web", JSON.stringify({ endpoint: "https://x/y" })).ok).toBe(false)
     expect(classifyPushToken("web", subscription("http://push.example/x")).ok).toBe(false)
     expect(classifyPushToken("web", subscription("not a url")).ok).toBe(false)
-    expect(classifyPushToken("web", subscription("https://push.example/x", { p256dh: "short" })).ok).toBe(
-      false,
-    )
     expect(
-      classifyPushToken("web", subscription("https://push.example/x", { auth: "!!!not-base64url!!!" })).ok,
+      classifyPushToken("web", subscription("https://push.example/x", { p256dh: "short" })).ok,
     ).toBe(false)
     expect(
-      classifyPushToken("web", subscription("https://push.example/x", { auth: Buffer.alloc(32).toString("base64url") }))
-        .ok,
+      classifyPushToken(
+        "web",
+        subscription("https://push.example/x", { auth: "!!!not-base64url!!!" }),
+      ).ok,
+    ).toBe(false)
+    expect(
+      classifyPushToken(
+        "web",
+        subscription("https://push.example/x", { auth: Buffer.alloc(32).toString("base64url") }),
+      ).ok,
     ).toBe(false)
   })
 
@@ -117,7 +124,10 @@ describe("registerPushToken validation (H15)", () => {
       throw new Error("endpoint check must not run for a structurally invalid token")
     })
     await expect(
-      service.registerPushToken(U, { platform: "web", token: subscription("http://push.example/x") }),
+      service.registerPushToken(U, {
+        platform: "web",
+        token: subscription("http://push.example/x"),
+      }),
     ).rejects.toMatchObject({ code: "VALIDATION" })
     await expect(
       service.registerPushToken(U, {

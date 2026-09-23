@@ -203,7 +203,9 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     expect(second.certificate.code).not.toBe(first.certificate.code)
     expect(second.reused).toBe(false)
 
-    const rows = await h.sql<{ code: string; revoked_at: Date | null; revoked_reason: string | null }[]>`
+    const rows = await h.sql<
+      { code: string; revoked_at: Date | null; revoked_reason: string | null }[]
+    >`
       SELECT code, revoked_at, revoked_reason FROM service_hours_certificates
       WHERE user_id = ${holder} ORDER BY issued_at ASC
     `
@@ -237,7 +239,12 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     const repo = makeDrizzleCertificateRepository(h.sql)
     const found = await repo.findByCode(issued.certificate.code)
     expect(found?.userId).toBe(holder)
-    const row = await repo.revoke(found!.userId, issued.certificate.code, "ledger_corrected", new Date())
+    const row = await repo.revoke(
+      found!.userId,
+      issued.certificate.code,
+      "ledger_corrected",
+      new Date(),
+    )
     expect(row?.revokedReason).toBe("ledger_corrected")
 
     // The person holding the paper is told WHY, and is not told the volunteer withdrew it.

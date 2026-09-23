@@ -1,4 +1,3 @@
-
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"
@@ -187,7 +186,9 @@ describe("video frame-grab failure => HELD (never published unscored)", () => {
     stub.grabFrameError = new Error("ffmpeg: no decodable frame")
     const bytes = await fx.makeValidMp4()
     const { deps, storage, repo } = makeEnv()
-    const { id, uploadId, r2Key } = await seedVideo(storage, repo, bytes, { reportId: "report-vid" })
+    const { id, uploadId, r2Key } = await seedVideo(storage, repo, bytes, {
+      reportId: "report-vid",
+    })
 
     const status = await runMediaChecksJob({ mediaId: id, uploadId, r2Key, kind: "video" }, deps)
 

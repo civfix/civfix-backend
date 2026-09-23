@@ -1,4 +1,3 @@
-
 import { AppError } from "@civfix/shared"
 import type {
   ListNotificationsResponse,
@@ -390,7 +389,10 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       try {
         return { prefs: await deps.repo.findPrefs(userId), readable: true }
       } catch (err) {
-        deps.logger?.warn({ err, userId }, "prefs lookup failed; suppressing push for this recipient")
+        deps.logger?.warn(
+          { err, userId },
+          "prefs lookup failed; suppressing push for this recipient",
+        )
         return { prefs: null, readable: false }
       }
     })
@@ -453,7 +455,10 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     try {
       await deps.userChannel.publishToUsers(userIds, { topic: "notifications" })
     } catch (err) {
-      deps.logger?.warn({ err, count: userIds.length }, "notification signal publish failed (suppressed)")
+      deps.logger?.warn(
+        { err, count: userIds.length },
+        "notification signal publish failed (suppressed)",
+      )
     }
   }
 
@@ -476,10 +481,15 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         return null
       }
     })
-    const created = persisted.filter((p): p is { userId: string; record: NotificationRecord } => p !== null)
+    const created = persisted.filter(
+      (p): p is { userId: string; record: NotificationRecord } => p !== null,
+    )
     if (created.length === 0) return
     void sendBatchedPush(created, input.push ?? "auto").catch((err: unknown) => {
-      deps.logger?.error({ err, count: created.length }, "batched push dispatch failed (suppressed)")
+      deps.logger?.error(
+        { err, count: created.length },
+        "batched push dispatch failed (suppressed)",
+      )
     })
     void signalMany(created.map((c) => c.userId))
   }
@@ -526,10 +536,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return toPrefsDTO(await deps.repo.upsertPrefs(userId, repoPatch))
     },
 
-    async registerPushToken(
-      userId: string,
-      req: RegisterPushTokenRequest,
-    ): Promise<{ ok: true }> {
+    async registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }> {
       const shape = classifyPushToken(req.platform, req.token)
       if (!shape.ok) {
         throw AppError.validation({ [shape.field]: shape.reason }, "Invalid push token")
@@ -558,7 +565,10 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       try {
         await deps.pushSender.registerToken(userId, req.token, req.platform, req.deviceId)
       } catch (err) {
-        deps.logger?.warn({ err, userId, platform: req.platform }, "pushSender.registerToken failed")
+        deps.logger?.warn(
+          { err, userId, platform: req.platform },
+          "pushSender.registerToken failed",
+        )
       }
       return { ok: true }
     },
@@ -579,11 +589,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       return doCreateNotifications(userIds, input)
     },
 
-    async clearByTypeAndLink(
-      userId: string,
-      type: NotificationType,
-      link: string,
-    ): Promise<void> {
+    async clearByTypeAndLink(userId: string, type: NotificationType, link: string): Promise<void> {
       await deps.repo.clearByTypeAndLink(userId, type, link)
       await maybeSignalNotification(userId)
     },
@@ -616,7 +622,11 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       })
     },
 
-    async onPostRepost(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
+    async onPostRepost(a: {
+      recipientId: string
+      actorName: string
+      postId: string
+    }): Promise<void> {
       await doCreateNotification(a.recipientId, {
         type: "post_repost",
         titleKey: "notification.post.repost.title",
@@ -627,7 +637,11 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       })
     },
 
-    async onPostReply(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
+    async onPostReply(a: {
+      recipientId: string
+      actorName: string
+      postId: string
+    }): Promise<void> {
       await doCreateNotification(a.recipientId, {
         type: "post_reply",
         titleKey: "notification.post.reply.title",
@@ -637,7 +651,11 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       })
     },
 
-    async onPostQuote(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
+    async onPostQuote(a: {
+      recipientId: string
+      actorName: string
+      postId: string
+    }): Promise<void> {
       await doCreateNotification(a.recipientId, {
         type: "post_quote",
         titleKey: "notification.post.quote.title",

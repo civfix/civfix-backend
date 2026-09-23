@@ -61,7 +61,11 @@ const LOG_EVENT_HOURS_RATE_LIMIT = { max: 10, timeWindow: "1 minute" } as const
 
 function appendVary(reply: FastifyReply, ...fields: readonly string[]): void {
   const existing = reply.getHeader("Vary")
-  const raw = Array.isArray(existing) ? existing.join(",") : typeof existing === "string" ? existing : ""
+  const raw = Array.isArray(existing)
+    ? existing.join(",")
+    : typeof existing === "string"
+      ? existing
+      : ""
   const current = raw
     .split(",")
     .map((s) => s.trim())
@@ -173,7 +177,10 @@ export async function registerVolunteerHoursRoutes(
   route(app, "getMyHoursEntries", async (request, reply) => {
     const userId = requireAuth(request)
     const query = parse(MyVolunteerHoursEntriesQuerySchema, request.query ?? {})
-    const payload: MyVolunteerHoursEntriesResponse = await service().getMyHoursEntries(userId, query)
+    const payload: MyVolunteerHoursEntriesResponse = await service().getMyHoursEntries(
+      userId,
+      query,
+    )
     reply.status(200).send(payload)
   })
 

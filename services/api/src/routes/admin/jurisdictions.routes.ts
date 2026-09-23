@@ -81,33 +81,28 @@ export async function registerAdminJurisdictionsRoutes(
     },
   )
 
-  route(
-    app,
-    "saveJurisdictionContacts",
-    { preHandler: csrfProtect },
-    async (request, reply) => {
-      const actorId = requireOperator(request)
-      const geoid = geoidParam(request)
-      const body = parse(SaveContactsRequestSchema, { ...(request.body as object), geoid })
-      await service().saveAndRoute(
-        geoid,
-        {
-          contacts: (body.contacts ?? {}) as Partial<Record<ReportCategory, string | null>>,
-          defaultEmails: body.defaultEmails ?? [],
-          // L7: reject javascript:/data: URIs the shared `.url()` schema lets through (see httpUrlField).
-          formUrl: httpUrlField(body.formUrl, "formUrl"),
-          ...(body.forwardSubjectTemplate !== undefined
-            ? { forwardSubjectTemplate: body.forwardSubjectTemplate }
-            : {}),
-          ...(body.forwardBodyTemplate !== undefined
-            ? { forwardBodyTemplate: body.forwardBodyTemplate }
-            : {}),
-        },
-        actorId,
-      )
-      sendOk(reply)
-    },
-  )
+  route(app, "saveJurisdictionContacts", { preHandler: csrfProtect }, async (request, reply) => {
+    const actorId = requireOperator(request)
+    const geoid = geoidParam(request)
+    const body = parse(SaveContactsRequestSchema, { ...(request.body as object), geoid })
+    await service().saveAndRoute(
+      geoid,
+      {
+        contacts: (body.contacts ?? {}) as Partial<Record<ReportCategory, string | null>>,
+        defaultEmails: body.defaultEmails ?? [],
+        // L7: reject javascript:/data: URIs the shared `.url()` schema lets through (see httpUrlField).
+        formUrl: httpUrlField(body.formUrl, "formUrl"),
+        ...(body.forwardSubjectTemplate !== undefined
+          ? { forwardSubjectTemplate: body.forwardSubjectTemplate }
+          : {}),
+        ...(body.forwardBodyTemplate !== undefined
+          ? { forwardBodyTemplate: body.forwardBodyTemplate }
+          : {}),
+      },
+      actorId,
+    )
+    sendOk(reply)
+  })
 
   route(app, "listJurisdictions", async (request, reply) => {
     const query = parse(JurisdictionListQuerySchema, request.query)

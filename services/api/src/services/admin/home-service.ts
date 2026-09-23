@@ -1,4 +1,3 @@
-
 import type {
   AnalyticsCoverageResponse,
   EventStatus,

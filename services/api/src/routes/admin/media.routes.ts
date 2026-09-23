@@ -1,8 +1,4 @@
-import {
-  AdminGetMediaRequestSchema,
-  AppError,
-  type AdminGetMediaResponse,
-} from "@civfix/shared"
+import { AdminGetMediaRequestSchema, AppError, type AdminGetMediaResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireOperator } from "../../auth/admin-guard.js"

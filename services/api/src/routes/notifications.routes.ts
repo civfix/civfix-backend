@@ -1,4 +1,3 @@
-
 import {
   PaginationQuerySchema,
   MarkReadRequestSchema,
@@ -95,7 +94,10 @@ export async function registerNotificationRoutes(
     async (request, reply) => {
       const userId = requireAuth(request)
       const pagination = parse(PaginationQuerySchema, request.query)
-      const payload: ListNotificationsResponse = await service().listNotifications(userId, pagination)
+      const payload: ListNotificationsResponse = await service().listNotifications(
+        userId,
+        pagination,
+      )
       reply.status(200).send(payload)
     },
   )
@@ -129,7 +131,10 @@ export async function registerNotificationRoutes(
       const body = parse(RegisterPushTokenRequestSchema, request.body)
       const deviceId = normalizeDeviceId(body.deviceId)
       if (body.deviceId !== undefined && deviceId === undefined) {
-        request.log.warn({ userId }, "registerPush: malformed deviceId dropped (device-claim skipped)")
+        request.log.warn(
+          { userId },
+          "registerPush: malformed deviceId dropped (device-claim skipped)",
+        )
       }
       const { deviceId: _raw, ...rest } = body
       const payload: RegisterPushTokenResponse = await service().registerPushToken(userId, {

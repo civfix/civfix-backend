@@ -142,7 +142,10 @@ export function toBroadcastDTO(record: BroadcastRecord): BroadcastDTO {
 }
 
 export interface BroadcastService {
-  list(cleanupId: string, query: ListEventBroadcastsRequest): Promise<{
+  list(
+    cleanupId: string,
+    query: ListEventBroadcastsRequest,
+  ): Promise<{
     items: BroadcastDTO[]
     nextCursor: string | null
   }>
@@ -215,7 +218,12 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
     }
   }
 
-  async function reserve(key: string, ttlSeconds: number, limit: number, kind: CapKind): Promise<void> {
+  async function reserve(
+    key: string,
+    ttlSeconds: number,
+    limit: number,
+    kind: CapKind,
+  ): Promise<void> {
     let used: number
     try {
       used = await deps.counters.incr(key, ttlSeconds)
@@ -230,11 +238,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
     return ctaUrl != null && ctaUrl.length > 0 ? `${bodyMd}\n${ctaUrl}` : bodyMd
   }
 
-  function assertContent(
-    subject: string,
-    bodyMd: string,
-    ctaUrl: string | null | undefined,
-  ): void {
+  function assertContent(subject: string, bodyMd: string, ctaUrl: string | null | undefined): void {
     assertNoSlur(subject, "subject")
     assertNoSlur(bodyMd, "bodyMd")
     assertBroadcastLinkPolicy(linkPolicyText(bodyMd, ctaUrl), config.linkAllowedHosts)
@@ -383,9 +387,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       const event = await repo.eventContext(cleanupId)
       if (event === null) throw notFound()
       const existing =
-        body.broadcastId !== undefined
-          ? await repo.findForEvent(cleanupId, body.broadcastId)
-          : null
+        body.broadcastId !== undefined ? await repo.findForEvent(cleanupId, body.broadcastId) : null
       const subject = body.subject ?? existing?.subject ?? ""
       const bodyMd = body.bodyMd ?? existing?.bodyMd ?? ""
       if (subject.length === 0 || bodyMd.length === 0) {
@@ -598,10 +600,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
   }
 }
 
-function previewVars(
-  event: EventBroadcastContext,
-  webBaseUrl: string,
-): Record<string, string> {
+function previewVars(event: EventBroadcastContext, webBaseUrl: string): Record<string, string> {
   return {
     first_name: "Alex",
     event_title: event.title,

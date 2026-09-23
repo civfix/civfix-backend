@@ -1,4 +1,3 @@
-
 import type { Sql } from "../../db/client.js"
 import { decodeCursor, clampLimit, paginate } from "./pagination.js"
 import { writeAudit } from "./audit.js"
@@ -137,10 +136,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       }))
     },
 
-    async setBags(
-      id: string,
-      input: { bags: number; actorId: string | null },
-    ): Promise<boolean> {
+    async setBags(id: string, input: { bags: number; actorId: string | null }): Promise<boolean> {
       return sql.begin(async (tx) => {
         const updated = await tx<{ id: string }[]>`
           UPDATE cleanups SET bags = ${input.bags} WHERE id = ${id} RETURNING id

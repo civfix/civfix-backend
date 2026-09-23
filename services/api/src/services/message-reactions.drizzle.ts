@@ -13,7 +13,10 @@ export interface MessageReactionRepo {
   // True when the reaction is now PRESENT (added), false when it was removed.
   toggle(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean>
   // Batched: one grouped query for the whole id set, never one query per message (the N+1 fix).
-  loadFor(messageIds: string[], viewerUserId: string | null): Promise<Map<string, ReactionSummaryDTO[]>>
+  loadFor(
+    messageIds: string[],
+    viewerUserId: string | null,
+  ): Promise<Map<string, ReactionSummaryDTO[]>>
 }
 
 export function makeReactionRepo(sql: Sql, table: ReactionTable): MessageReactionRepo {

@@ -1,8 +1,4 @@
-import type {
-  HostedEventDTO,
-  HostPortfolioKpis,
-  ListMyHostedEventsResponse,
-} from "@civfix/shared"
+import type { HostedEventDTO, HostPortfolioKpis, ListMyHostedEventsResponse } from "@civfix/shared"
 import { hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import type { EventMediaPresigner } from "./event-media.js"
 import type {
@@ -43,9 +39,7 @@ function standingOf(record: HostedEventRecord): HostStanding {
   return { eventRole: record.eventRole, orgRole: record.orgRole }
 }
 
-export function makeHostPortfolioService(
-  deps: HostPortfolioServiceDeps,
-): HostPortfolioService {
+export function makeHostPortfolioService(deps: HostPortfolioServiceDeps): HostPortfolioService {
   const now = deps.now ?? (() => new Date())
 
   return {

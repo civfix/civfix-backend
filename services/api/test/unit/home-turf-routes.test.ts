@@ -14,7 +14,6 @@ import {
   HOME_TURF_RATE_LIMIT,
 } from "../../src/routes/forms.routes.js"
 
-
 interface Harness {
   app: FastifyInstance
   mailer: FakeMailer
@@ -68,7 +67,11 @@ function outbounds(mailer: FakeMailer): OutboundEmail[] {
 describe("POST /forms/home-turf", () => {
   it("accepts a valid submit (200 {ok:true}) and sends notification + confirmation", async () => {
     const { app, mailer } = await makeHarness()
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
 
@@ -182,7 +185,11 @@ describe("POST /forms/home-turf", () => {
 
   it("is DISABLED when HOME_TURF_NOTIFY_TO is unset: 409, no mail, and NOT a captured 5xx", async () => {
     const { app, mailer } = await makeHarness({ HOME_TURF_NOTIFY_TO: "" })
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(409)
     expect(res.statusCode).toBeLessThan(500)
     expect(res.json().code).toBe("CONFLICT")
@@ -196,7 +203,11 @@ describe("POST /forms/home-turf", () => {
       calls += 1
       return Promise.reject(new Error("smtp down"))
     }
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(500)
     expect(calls).toBe(1)
   })
@@ -210,7 +221,11 @@ describe("POST /forms/home-turf", () => {
       if (calls === 2) return Promise.reject(new Error("smtp down"))
       return original(email)
     }
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ ok: true })
     expect(outbounds(mailer)).toHaveLength(1)
@@ -251,20 +266,24 @@ describe("POST /forms/home-turf", () => {
 
   it(`still charges the budget on SUCCESS: a same-address resubmit 429s (limit ${HOME_TURF_EMAIL_LIMIT_PER_DAY}/day)`, async () => {
     const { app, mailer } = await makeHarness()
-    const first = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const first = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(first.statusCode).toBe(200)
 
-    const second = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const second = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(second.statusCode).toBe(429)
     expect(second.json().code).toBe("RATE_LIMITED")
 
     const sent = outbounds(mailer)
     expect(sent).toHaveLength(3)
-    expect(sent.map((e) => e.to)).toEqual([
-      NOTIFY_TO,
-      "coach@example.org",
-      NOTIFY_TO,
-    ])
+    expect(sent.map((e) => e.to)).toEqual([NOTIFY_TO, "coach@example.org", NOTIFY_TO])
 
     const other = await app.inject({
       method: "POST",
@@ -309,7 +328,11 @@ describe("enforceHomeTurfIpCap", () => {
 describe("Turnstile action (F128)", () => {
   it("verifies the token with the 'home-turf' widget action", async () => {
     const { app, container } = await makeHarness()
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(200)
     expect((container.abuseChecks as FakeAbuseChecks).lastVerifyExpect?.action).toBe("home-turf")
   })
@@ -319,18 +342,26 @@ describe("enforceHomeTurfRecipientCap (M8)", () => {
   it(`allows ${HOME_TURF_EMAIL_LIMIT_PER_DAY} confirmation per address per day and 429s the next`, async () => {
     const counters = new InMemoryCounterStore(() => 0)
     for (let i = 0; i < HOME_TURF_EMAIL_LIMIT_PER_DAY; i++) {
-      await expect(enforceHomeTurfRecipientCap("victim@example.org", counters)).resolves.toBeUndefined()
+      await expect(
+        enforceHomeTurfRecipientCap("victim@example.org", counters),
+      ).resolves.toBeUndefined()
     }
-    await expect(enforceHomeTurfRecipientCap("victim@example.org", counters)).rejects.toMatchObject({
-      code: "RATE_LIMITED",
-    })
-    await expect(enforceHomeTurfRecipientCap("someone-else@example.org", counters)).resolves.toBeUndefined()
+    await expect(enforceHomeTurfRecipientCap("victim@example.org", counters)).rejects.toMatchObject(
+      {
+        code: "RATE_LIMITED",
+      },
+    )
+    await expect(
+      enforceHomeTurfRecipientCap("someone-else@example.org", counters),
+    ).resolves.toBeUndefined()
   })
 
   it("normalizes case and surrounding whitespace so the bucket cannot be trivially varied", async () => {
     const counters = new InMemoryCounterStore(() => 0)
     await enforceHomeTurfRecipientCap("Victim@Example.org", counters)
-    await expect(enforceHomeTurfRecipientCap("  victim@example.ORG ", counters)).rejects.toMatchObject({
+    await expect(
+      enforceHomeTurfRecipientCap("  victim@example.ORG ", counters),
+    ).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })
   })
@@ -338,7 +369,9 @@ describe("enforceHomeTurfRecipientCap (M8)", () => {
   it("folds gmail +tags, dots and googlemail into one recipient bucket (F138)", async () => {
     const counters = new InMemoryCounterStore(() => 0)
     await enforceHomeTurfRecipientCap("victim@gmail.com", counters)
-    await expect(enforceHomeTurfRecipientCap("victim+abc@gmail.com", counters)).rejects.toMatchObject({
+    await expect(
+      enforceHomeTurfRecipientCap("victim+abc@gmail.com", counters),
+    ).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })
     await expect(
@@ -349,10 +382,14 @@ describe("enforceHomeTurfRecipientCap (M8)", () => {
   it("strips +tags for non-gmail providers, but keeps dots significant (F138)", async () => {
     const counters = new InMemoryCounterStore(() => 0)
     await enforceHomeTurfRecipientCap("victim@example.org", counters)
-    await expect(enforceHomeTurfRecipientCap("victim+1@example.org", counters)).rejects.toMatchObject({
+    await expect(
+      enforceHomeTurfRecipientCap("victim+1@example.org", counters),
+    ).rejects.toMatchObject({
       code: "RATE_LIMITED",
     })
-    await expect(enforceHomeTurfRecipientCap("v.ictim@example.org", counters)).resolves.toBeUndefined()
+    await expect(
+      enforceHomeTurfRecipientCap("v.ictim@example.org", counters),
+    ).resolves.toBeUndefined()
   })
 })
 
@@ -363,7 +400,11 @@ describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
     const app = await buildServer({ env, container })
     current = { app, mailer: container.mailer as FakeMailer, container }
 
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
 
     expect(res.statusCode).toBeGreaterThanOrEqual(500)
     expect(outbounds(container.mailer as FakeMailer)).toHaveLength(0)
@@ -385,7 +426,11 @@ describe("home-turf abuse caps FAIL CLOSED (M8)", () => {
     const app = await buildServer({ env, container })
     current = { app, mailer: container.mailer as FakeMailer, container }
 
-    const res = await app.inject({ method: "POST", url: "/forms/home-turf", payload: formPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/forms/home-turf",
+      payload: formPayload(),
+    })
     expect(res.statusCode).toBe(200)
     expect(counted.some((k) => k.startsWith("abuse:home-turf:ip:"))).toBe(true)
     expect(counted.some((k) => k.startsWith("abuse:home-turf:email:"))).toBe(true)

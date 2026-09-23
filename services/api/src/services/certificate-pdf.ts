@@ -1,4 +1,3 @@
-
 import { formatCertificateCode } from "@civfix/shared"
 import { FONT, fontBuffer, fontFor } from "./certificate-fonts.js"
 import {
@@ -25,7 +24,6 @@ export interface ServiceHoursPdfInput {
   verifyBaseUrl?: string
   t?: CertificateTranslator
 }
-
 
 const PAGE = {
   left: 54,
@@ -145,7 +143,6 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
     if (pageNumber === 1) drawFirstPageChrome()
     else drawContinuationChrome()
   })
-
 
   function drawFirstPageChrome(): void {
     doc.rect(PAGE.left, 36, PAGE.contentWidth, 5).fill(COLOR.accent)
@@ -300,7 +297,6 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
       .stroke()
   }
 
-
   const rowHeights = model.rows.map((row) => {
     font(fontFor(row.activity, "regular"), 9.5)
     const twoLines = doc.currentLineHeight() * 2
@@ -366,7 +362,6 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
     )
   }
 
-
   if (!totalsFitsOnPage(cursorY)) {
     tableContinues = false
     doc.addPage()
@@ -409,7 +404,6 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
       .text(banner, PAGE.left, cursorY, { width: PAGE.contentWidth, height: 22 })
     cursorY += 22
   }
-
 
   if (issuerNeedsNewPage(cursorY)) {
     tableContinues = false
@@ -517,7 +511,6 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
       }
     }
   }
-
 
   const range = doc.bufferedPageRange()
   for (let i = range.start; i < range.start + range.count; i++) {

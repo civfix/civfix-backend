@@ -14,11 +14,7 @@ import {
   parseHostExportJob,
 } from "./broadcast-queues.js"
 import { makeCommsRuntime } from "./comms-wiring.js"
-import {
-  drainTable,
-  registerRetentionLane,
-  runRetentionLanes,
-} from "./retention-lanes.js"
+import { drainTable, registerRetentionLane, runRetentionLanes } from "./retention-lanes.js"
 import { makeDrizzleHostExportRepository } from "./export-repository.drizzle.js"
 import { makeDrizzleBroadcastRepository } from "./broadcast-repository.drizzle.js"
 import { makeDrizzleHostTeamRepository } from "./host-team-repository.drizzle.js"

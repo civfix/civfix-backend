@@ -4,7 +4,6 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { PgUserStore } from "../../src/auth/pg-stores.js"
 
-
 const pg = await withPg()
 
 async function user(h: PgHarness, name: string): Promise<string> {
@@ -178,7 +177,9 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     `
     expect(orgRows[0]!.deleted_at).not.toBeNull()
 
-    const eventRows = await h.sql<{ organization_id: string | null; donation_url: string | null }[]>`
+    const eventRows = await h.sql<
+      { organization_id: string | null; donation_url: string | null }[]
+    >`
       SELECT organization_id, donation_url FROM cleanups WHERE id = ${orgEvent}
     `
     expect(eventRows[0]!.organization_id).toBeNull()
@@ -289,7 +290,12 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     await new PgUserStore(h.db).softDeleteAndAnonymize(donor)
 
     const rows = await h.sql<
-      { id: string; user_id: string | null; profile_unlinked_at: Date | null; donor_email: string | null }[]
+      {
+        id: string
+        user_id: string | null
+        profile_unlinked_at: Date | null
+        donor_email: string | null
+      }[]
     >`SELECT id, user_id, profile_unlinked_at, donor_email FROM donations WHERE organization_id = ${org}`
     const byId = new Map(rows.map((row) => [row.id, row]))
 
@@ -415,7 +421,9 @@ describe.skipIf(!pg)("erasure: the host-transfer ladder", () => {
     expect(await eventRoleOf(h, staffed, leaving)).toBe("member")
     expect(await eventRoleOf(h, coordinated, leaving)).toBe("member")
 
-    const rows = await h.sql<{ target: string; actor_id: string | null; meta: Record<string, unknown> }[]>`
+    const rows = await h.sql<
+      { target: string; actor_id: string | null; meta: Record<string, unknown> }[]
+    >`
       SELECT target, actor_id, meta FROM audit_log
        WHERE action = 'event.team_role_changed'
          AND meta->>'targetUserId' = ${leaving}

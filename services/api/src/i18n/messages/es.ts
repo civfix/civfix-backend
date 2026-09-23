@@ -75,8 +75,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Tu código de acceso a civfix",
   "email.otp.body_line1": "Tu código de acceso a civfix es {{code}}.",
-  "email.otp.body_expiry":
-    "Caduca en 5 minutos. Si no lo solicitaste, puedes ignorar este correo.",
+  "email.otp.body_expiry": "Caduca en 5 minutos. Si no lo solicitaste, puedes ignorar este correo.",
   "email.otp.html_intro": "Tu código de acceso a civfix es:",
 
   "email.report_update.subject": "Tu reporte en civfix fue {{status}}",
@@ -114,7 +113,8 @@ export const es: Partial<Record<MessageKey, string>> = {
   "certificate.verify.prompt": "Verifica este registro en civfix.org/service-record",
   "certificate.verify.fingerprint": "Huella del documento",
   "certificate.footer.page": "Página {{page}} de {{total}}",
-  "certificate.footer.timezone": "Las fechas se muestran en hora del Pacífico (America/Los_Angeles).",
+  "certificate.footer.timezone":
+    "Las fechas se muestran en hora del Pacífico (America/Los_Angeles).",
   "certificate.error.no_hours": "Todavía no tienes horas de servicio registradas.",
 
   // ---- Guest event RSVP -------------------------------------------------------------------------
@@ -147,6 +147,6 @@ export const es: Partial<Record<MessageKey, string>> = {
     "Estás en la lista de {{title}}. Cancelar: {{link}} Responde STOP para darte de baja.",
   "sms.guest_updated.body":
     "{{title}} ha cambiado: ahora {{when}} en {{place}}. Responde STOP para darte de baja.",
-  "sms.guest_cancelled.body": "El organizador ha cancelado {{title}}. Responde STOP para darte de baja.",
-
+  "sms.guest_cancelled.body":
+    "El organizador ha cancelado {{title}}. Responde STOP para darte de baja.",
 }

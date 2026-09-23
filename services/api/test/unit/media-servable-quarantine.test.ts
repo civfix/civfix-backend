@@ -25,12 +25,42 @@ function asset(status: string, servedKey: string | null): PredicateRow {
 }
 
 const CASES: { label: string; row: PredicateRow; servable: boolean; moderatable: boolean }[] = [
-  { label: "validating, not yet processed", row: asset("validating", null), servable: true, moderatable: true },
-  { label: "validating, processed early", row: asset("validating", SERVED), servable: true, moderatable: true },
-  { label: "ready with a served copy", row: asset("ready", SERVED), servable: true, moderatable: true },
-  { label: "ready without a served copy", row: asset("ready", null), servable: false, moderatable: false },
-  { label: "held with a served copy", row: asset("held", SERVED), servable: false, moderatable: true },
-  { label: "held without a served copy", row: asset("held", null), servable: false, moderatable: true },
+  {
+    label: "validating, not yet processed",
+    row: asset("validating", null),
+    servable: true,
+    moderatable: true,
+  },
+  {
+    label: "validating, processed early",
+    row: asset("validating", SERVED),
+    servable: true,
+    moderatable: true,
+  },
+  {
+    label: "ready with a served copy",
+    row: asset("ready", SERVED),
+    servable: true,
+    moderatable: true,
+  },
+  {
+    label: "ready without a served copy",
+    row: asset("ready", null),
+    servable: false,
+    moderatable: false,
+  },
+  {
+    label: "held with a served copy",
+    row: asset("held", SERVED),
+    servable: false,
+    moderatable: true,
+  },
+  {
+    label: "held without a served copy",
+    row: asset("held", null),
+    servable: false,
+    moderatable: true,
+  },
   { label: "rejected", row: asset("rejected", null), servable: false, moderatable: true },
 ]
 

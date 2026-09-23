@@ -90,7 +90,11 @@ describe.skipIf(!pg)("report chat membership + system messages (integration)", (
 
     // Two report messages with distinct created_at (older, then newer).
     const older = await repo.insertSystemMessage({ reportId, status: "submitted", body: "older" })
-    const newer = await repo.insertSystemMessage({ reportId, status: "acknowledged", body: "newer" })
+    const newer = await repo.insertSystemMessage({
+      reportId,
+      status: "acknowledged",
+      body: "newer",
+    })
 
     await repo.advanceReadWatermark(reportId, userId, newer.id)
     const [afterNewer] = await h.sql<{ last_read_at: Date | null }[]>`
@@ -139,7 +143,9 @@ describe.skipIf(!pg)("report chat membership + system messages (integration)", (
     expect(dto.body).toBe("Report was acknowledged.")
 
     // The raw row is sender-less with a NULL cleanup_id (report/cleanup XOR holds).
-    const [raw] = await h.sql<{ sender_id: string | null; cleanup_id: string | null; kind: string }[]>`
+    const [raw] = await h.sql<
+      { sender_id: string | null; cleanup_id: string | null; kind: string }[]
+    >`
       SELECT sender_id, cleanup_id, kind FROM chat_messages WHERE id = ${dto.id}
     `
     expect(raw!.sender_id).toBeNull()

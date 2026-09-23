@@ -37,7 +37,9 @@ function assertOgr2ogr(): void {
   try {
     execFileSync("ogr2ogr", ["--version"], { stdio: "ignore" })
   } catch {
-    console.error(`${PREFIX}: ogr2ogr (GDAL) not found on PATH — install GDAL (e.g. \`brew install gdal\`) and re-run.`)
+    console.error(
+      `${PREFIX}: ogr2ogr (GDAL) not found on PATH — install GDAL (e.g. \`brew install gdal\`) and re-run.`,
+    )
     process.exit(2)
   }
 }

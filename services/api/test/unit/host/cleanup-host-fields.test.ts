@@ -197,11 +197,15 @@ describe("createCleanup with host fields", () => {
   })
 
   it("carries both donation links onto a read event: the host's own and the organization's", async () => {
-    repo.seedUser({ id: ORG, displayName: "Olive Organizer", handle: "olive", donationUrl: "https://give.example.org/olive" })
-    const solo = await service.getCleanup(
-      (await service.createCleanup(base(), ORG)).id,
-      { userId: ORG },
-    )
+    repo.seedUser({
+      id: ORG,
+      displayName: "Olive Organizer",
+      handle: "olive",
+      donationUrl: "https://give.example.org/olive",
+    })
+    const solo = await service.getCleanup((await service.createCleanup(base(), ORG)).id, {
+      userId: ORG,
+    })
     expect(solo.organizer.donationUrl).toBe("https://give.example.org/olive")
     expect(solo.organization).toBeNull()
 
@@ -281,9 +285,9 @@ describe("updateCleanup authorization", () => {
   it("staff may not edit the event at all", async () => {
     const created = await service.createCleanup(base(), ORG)
     repo.seedMember(created.id, STAFF, "staff")
-    await expect(
-      service.updateCleanup(created.id, { title: "Nope" }, STAFF),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    await expect(service.updateCleanup(created.id, { title: "Nope" }, STAFF)).rejects.toMatchObject(
+      { code: "FORBIDDEN" },
+    )
   })
 
   it("an org owner inherits the organizer's powers on the org's events", async () => {
@@ -324,12 +328,12 @@ describe("updateCleanup authorization", () => {
   it("409s a page slug already taken by another event", async () => {
     await service.createCleanup(base({ pageSlug: "taken" }), ORG)
     const other = await service.createCleanup(base({ title: "Other" }), ORG)
-    await expect(
-      service.updateCleanup(other.id, { pageSlug: "taken" }, ORG),
-    ).rejects.toMatchObject({ code: "CONFLICT" })
-    await expect(
-      service.updateCleanup(other.id, { pageSlug: "free" }, ORG),
-    ).resolves.toMatchObject({ pageSlug: "free" })
+    await expect(service.updateCleanup(other.id, { pageSlug: "taken" }, ORG)).rejects.toMatchObject(
+      { code: "CONFLICT" },
+    )
+    await expect(service.updateCleanup(other.id, { pageSlug: "free" }, ORG)).resolves.toMatchObject(
+      { pageSlug: "free" },
+    )
   })
 
   it("lets an event keep its own page slug on a re-save", async () => {
@@ -359,9 +363,9 @@ describe("updateCleanup authorization", () => {
     await expect(service.getCleanup(created.id, { userId: OUTSIDER })).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
-    await expect(
-      service.listAttendees(created.id, { userId: OUTSIDER }),
-    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+    await expect(service.listAttendees(created.id, { userId: OUTSIDER })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
   })
 
   it("an invited member of a private event may join, read and see the roster", async () => {
@@ -419,12 +423,17 @@ describe("cover and gallery URLs", () => {
 
   it("422s more gallery images than the cap and a repeated image", async () => {
     const many = Array.from({ length: 13 }, (_, i) => `aaaaaaaa-1111-4111-8111-00000000000${i}`)
-    await expect(
-      service.createCleanup(base({ galleryMediaIds: many }), ORG),
-    ).rejects.toMatchObject({ code: "VALIDATION" })
+    await expect(service.createCleanup(base({ galleryMediaIds: many }), ORG)).rejects.toMatchObject(
+      { code: "VALIDATION" },
+    )
     await expect(
       service.createCleanup(
-        base({ galleryMediaIds: ["aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"] }),
+        base({
+          galleryMediaIds: [
+            "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+            "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+          ],
+        }),
         ORG,
       ),
     ).rejects.toMatchObject({ code: "VALIDATION" })

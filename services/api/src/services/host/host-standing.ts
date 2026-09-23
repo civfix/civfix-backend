@@ -1,8 +1,4 @@
-import type {
-  CleanupMemberRole,
-  EventVisibility,
-  OrganizationMemberRole,
-} from "@civfix/shared"
+import type { CleanupMemberRole, EventVisibility, OrganizationMemberRole } from "@civfix/shared"
 import { NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import type { Queryable } from "../../db/client.js"
 

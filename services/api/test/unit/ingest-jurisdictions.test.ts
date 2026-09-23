@@ -99,7 +99,13 @@ describe("normalizeFeatures geoid prefix", () => {
     // 0644000 (LA city) keeps a leading "06" FIPS prefix so the geocoder's uspsFromGeoid shortcut stays
     // valid. Prefixing it would (wrongly) make uspsFromGeoid return null.
     const { rows } = normalizeFeatures(
-      fc([{ type: "Feature", properties: { geoid: "0644000", name: "Los Angeles" }, geometry: validPolygon }]),
+      fc([
+        {
+          type: "Feature",
+          properties: { geoid: "0644000", name: "Los Angeles" },
+          geometry: validPolygon,
+        },
+      ]),
       "place",
     )
     expect(rows[0]?.geoid).toBe("0644000")
@@ -110,7 +116,9 @@ describe("normalizeFeatures geoid prefix", () => {
     // PAD-US carries the id under OBJECTID; the alpha prefix makes uspsFromGeoid() return null so the
     // geocoder uses the spatial state query rather than misreading OBJECTID's first 2 digits as a FIPS.
     const { rows } = normalizeFeatures(
-      fc([{ type: "Feature", properties: { OBJECTID: "12345", name: "Fed" }, geometry: validPolygon }]),
+      fc([
+        { type: "Feature", properties: { OBJECTID: "12345", name: "Fed" }, geometry: validPolygon },
+      ]),
       "federal",
       "PADUS-",
     )

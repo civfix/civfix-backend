@@ -81,11 +81,13 @@ describe.skipIf(!pg)("admin activity repository (integration: real schema)", () 
       VALUES (${actor}, 'gov_claim.approved', 'gov_claim:1', now() - interval '1 hour')
     `
     // A mail thread + a bounced event (30m ago).
-    const threadId = (await h.sql<{ id: string }[]>`
+    const threadId = (
+      await h.sql<{ id: string }[]>`
       INSERT INTO mail_threads (thread_token, org, subject, status)
       VALUES ('tok-1', 'Waynesboro', 'Outreach', 'bounced')
       RETURNING id
-    `)[0]!.id
+    `
+    )[0]!.id
     await h.sql`
       INSERT INTO mail_events (thread_id, type, created_at)
       VALUES (${threadId}, 'bounced', now() - interval '30 minutes')

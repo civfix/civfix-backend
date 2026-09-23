@@ -63,9 +63,7 @@ export interface SharedPg {
   stop(): Promise<void>
 }
 
-export type StartSharedPgResult =
-  | { ok: true; pg: SharedPg }
-  | { ok: false; reason: string }
+export type StartSharedPgResult = { ok: true; pg: SharedPg } | { ok: false; reason: string }
 
 /** Values an environment variable uses to mean "on". Different CI providers pick different ones. */
 const TRUTHY = new Set(["1", "true", "yes", "on"])

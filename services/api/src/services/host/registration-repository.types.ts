@@ -432,7 +432,10 @@ export interface HostRegistrationRepository {
   registerWalkupTx(args: WalkupRegisterArgs): Promise<RegisterTxOutcome>
   registerTx(args: RegisterTxArgs): Promise<RegisterTxOutcome>
   findRegistration(cleanupId: string, registrationId: string): Promise<RegistrationRecord | null>
-  findMyRegistration(cleanupId: string, subject: RegistrationSubject): Promise<RegistrationRecord | null>
+  findMyRegistration(
+    cleanupId: string,
+    subject: RegistrationSubject,
+  ): Promise<RegistrationRecord | null>
   findRegistrationsFor(
     cleanupIds: readonly string[],
     userId: string,

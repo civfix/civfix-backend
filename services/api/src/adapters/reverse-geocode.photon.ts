@@ -160,9 +160,7 @@ export function composePhotonReverse(
   }
   candidates.sort((a, b) => a.meters - b.meters)
 
-  const exact = candidates.find(
-    (c) => !!c.props.housenumber?.trim() && !!c.props.street?.trim(),
-  )
+  const exact = candidates.find((c) => !!c.props.housenumber?.trim() && !!c.props.street?.trim())
   if (exact) {
     const line = formatPhotonReverse(exact.props)
     if (line) return { line, precision: "street" }

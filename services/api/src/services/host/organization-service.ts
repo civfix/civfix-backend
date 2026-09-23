@@ -30,11 +30,7 @@ import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { InMemoryCounterStore, type CounterStore } from "../../abuse/counter-store.js"
 import { generateToken, sha256Hex } from "../../auth/crypto.js"
 import { toAttendeePersonDTO, toOrganizationRef } from "../cleanup-dto.js"
-import {
-  NO_AFFILIATIONS,
-  withAffiliation,
-  type AffiliationLoader,
-} from "../affiliation.js"
+import { NO_AFFILIATIONS, withAffiliation, type AffiliationLoader } from "../affiliation.js"
 import { hostForbiddenCopy } from "./authz.js"
 import { assertSlugAllowed } from "./slugs.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
@@ -618,7 +614,10 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         link: "/dashboard",
       })
     } catch (err) {
-      deps.logger?.warn?.({ err, userId, organization: org.name }, "org invite notification failed (suppressed)")
+      deps.logger?.warn?.(
+        { err, userId, organization: org.name },
+        "org invite notification failed (suppressed)",
+      )
     }
   }
 
@@ -757,7 +756,8 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         now(),
       )
       if (updated === "not_found") notFoundOrganization()
-      if (updated === "slug_taken") throw AppError.conflict("That organization address is already taken.")
+      if (updated === "slug_taken")
+        throw AppError.conflict("That organization address is already taken.")
       const record = await deps.repo.findOrganizationById(id, actorId)
       if (record === null) notFoundOrganization()
       return dto(record)
@@ -1013,10 +1013,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       if (record.verifiedStatus === "verified") {
         throw AppError.conflict("This organization is already verified.")
       }
-      const applications = await counters.incr(
-        `org:verify:${id}`,
-        ORG_VERIFICATION_WINDOW_SEC,
-      )
+      const applications = await counters.incr(`org:verify:${id}`, ORG_VERIFICATION_WINDOW_SEC)
       if (applications > ORG_VERIFICATIONS_PER_DAY) {
         throw AppError.rateLimited(
           "This organization has submitted too many verification applications today.",
@@ -1062,7 +1059,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       verified?: OrgVerificationStatus
       kind?: OrgVerificationKind
       suspended?: boolean
-        cursor: string | null
+      cursor: string | null
       limit: number
     }): Promise<{ items: AdminOrgDTO[]; nextCursor: string | null; counts?: AdminOrgCounts }> {
       const page = await deps.repo.adminListOrganizations(query)

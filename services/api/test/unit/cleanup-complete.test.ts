@@ -26,7 +26,9 @@ let service: CleanupService
  * neither the stored status, `completed_at` nor the timeline moves.
  */
 
-function seedEvent(over: { scheduledAt?: Date; endsAt?: Date; status?: "upcoming" | "cancelled" } = {}): string {
+function seedEvent(
+  over: { scheduledAt?: Date; endsAt?: Date; status?: "upcoming" | "cancelled" } = {},
+): string {
   repo.seedCleanup({
     id: CLEANUP_ID,
     organizerUserId: ORG,
@@ -82,7 +84,10 @@ describe("completeCleanup — the deprecated no-op contract", () => {
   })
 
   it("no longer refuses an event that has not started — it simply does nothing", async () => {
-    const id = seedEvent({ scheduledAt: FUTURE, endsAt: new Date(FUTURE.getTime() + 4 * 3_600_000) })
+    const id = seedEvent({
+      scheduledAt: FUTURE,
+      endsAt: new Date(FUTURE.getTime() + 4 * 3_600_000),
+    })
 
     const dto = await service.completeCleanup(id, null, ORG)
 
@@ -189,7 +194,10 @@ describe("completeCleanup — B19: completion rings nobody", () => {
 
 describe("a past event's roster is frozen in BOTH directions", () => {
   it("still lets an attendee leave (and a host remove) while the event has not been cancelled", async () => {
-    const id = seedEvent({ scheduledAt: FUTURE, endsAt: new Date(FUTURE.getTime() + 4 * 3_600_000) })
+    const id = seedEvent({
+      scheduledAt: FUTURE,
+      endsAt: new Date(FUTURE.getTime() + 4 * 3_600_000),
+    })
 
     await expect(service.leaveCleanup(id, MEMBER)).resolves.toMatchObject({ joined: false })
     await expect(service.removeMember(id, ORG, COHOST)).resolves.toMatchObject({ ok: true })

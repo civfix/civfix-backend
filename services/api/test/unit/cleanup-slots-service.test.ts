@@ -280,10 +280,12 @@ describe("updateCleanup — the reconcile diff (B23)", () => {
       [false, "Sign-in", undefined],
     ])
     // "Cleanup crew" is absent from the desired set, so it is gone.
-    expect(repo.slots.filter((s) => s.cleanupId === id).map((s) => s.title).sort()).toEqual([
-      "Grill duty",
-      "Sign-in",
-    ])
+    expect(
+      repo.slots
+        .filter((s) => s.cleanupId === id)
+        .map((s) => s.title)
+        .sort(),
+    ).toEqual(["Grill duty", "Sign-in"])
   })
 
   it("sending [] is REFUSED; OMITTING the key still leaves the board untouched", async () => {
@@ -382,8 +384,22 @@ describe("updateCleanup — the reconcile diff (B23)", () => {
         repo.reconcileSlots(
           id,
           [
-            { title: "Grill", description: null, capacity: null, startsAt: null, endsAt: null, sortOrder: 0 },
-            { title: "GRILL", description: null, capacity: null, startsAt: null, endsAt: null, sortOrder: 1 },
+            {
+              title: "Grill",
+              description: null,
+              capacity: null,
+              startsAt: null,
+              endsAt: null,
+              sortOrder: 0,
+            },
+            {
+              title: "GRILL",
+              description: null,
+              capacity: null,
+              startsAt: null,
+              endsAt: null,
+              sortOrder: 1,
+            },
           ],
           ORG,
         ))(),
@@ -738,9 +754,7 @@ describe("slot windows (0167)", () => {
       { slots: [{ title: "Sweep", startsAt: at(0), endsAt: at(2) }] },
       ORG,
     )
-    expect(dto.slots.map((s) => [s.title, s.startsAt, s.endsAt])).toEqual([
-      ["Sweep", at(0), at(2)],
-    ])
+    expect(dto.slots.map((s) => [s.title, s.startsAt, s.endsAt])).toEqual([["Sweep", at(0), at(2)]])
   })
 
   it("leaves an untimed slot's window keys OFF the DTO entirely", async () => {
@@ -788,9 +802,14 @@ describe("slot windows (0167)", () => {
   it("422s a window that starts before the event does, naming the slot", async () => {
     const id = seedTimedEvent()
     await expect(
-      service.updateCleanup(id, { slots: [{ title: "Sweep", startsAt: at(-1), endsAt: at(1) }] }, ORG),
+      service.updateCleanup(
+        id,
+        { slots: [{ title: "Sweep", startsAt: at(-1), endsAt: at(1) }] },
+        ORG,
+      ),
     ).rejects.toSatisfy(
-      (err: unknown) => fieldsOf(err).slots === `slot "Sweep" falls outside the event's start and end`,
+      (err: unknown) =>
+        fieldsOf(err).slots === `slot "Sweep" falls outside the event's start and end`,
     )
     expect(repo.slots).toEqual([])
   })
@@ -798,9 +817,14 @@ describe("slot windows (0167)", () => {
   it("422s a window that runs past the event's end", async () => {
     const id = seedTimedEvent()
     await expect(
-      service.updateCleanup(id, { slots: [{ title: "Sweep", startsAt: at(3), endsAt: at(5) }] }, ORG),
+      service.updateCleanup(
+        id,
+        { slots: [{ title: "Sweep", startsAt: at(3), endsAt: at(5) }] },
+        ORG,
+      ),
     ).rejects.toSatisfy(
-      (err: unknown) => fieldsOf(err).slots === `slot "Sweep" falls outside the event's start and end`,
+      (err: unknown) =>
+        fieldsOf(err).slots === `slot "Sweep" falls outside the event's start and end`,
     )
   })
 
@@ -919,9 +943,7 @@ describe("slot windows (0167)", () => {
       endsAt: new Date(at(4)),
     })
 
-    await expect(
-      service.updateCleanup(id, { endsAt: at(2) }, ORG),
-    ).rejects.toSatisfy(
+    await expect(service.updateCleanup(id, { endsAt: at(2) }, ORG)).rejects.toSatisfy(
       (err: unknown) =>
         fieldsOf(err).scheduledAt ===
         "timed slots would fall outside the new start and end; update the slots in the same save",
@@ -1035,7 +1057,11 @@ describe("slot windows (0167)", () => {
 
     await notified.updateCleanup(
       id,
-      { slots: [{ id: slot.id, title: "Morning sweep", startsAt: at(0), endsAt: at(2), capacity: 9 }] },
+      {
+        slots: [
+          { id: slot.id, title: "Morning sweep", startsAt: at(0), endsAt: at(2), capacity: 9 },
+        ],
+      },
       ORG,
     )
     expect(bells).toEqual([])

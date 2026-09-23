@@ -52,14 +52,16 @@ export function makeContainerGuestRsvpService(
         subject,
       ),
     assertInputValid: (cleanupId, fields) =>
-      makeContainerRegistrationServices(container, undefined, logger).registrations.assertInputValid(
-        {
-          id: cleanupId,
-          ...(fields.ticketTypeId !== undefined ? { ticketTypeId: fields.ticketTypeId } : {}),
-          ...(fields.answers !== undefined ? { answers: fields.answers } : {}),
-          ...(fields.consent !== undefined ? { consent: fields.consent } : {}),
-        },
-      ),
+      makeContainerRegistrationServices(
+        container,
+        undefined,
+        logger,
+      ).registrations.assertInputValid({
+        id: cleanupId,
+        ...(fields.ticketTypeId !== undefined ? { ticketTypeId: fields.ticketTypeId } : {}),
+        ...(fields.answers !== undefined ? { answers: fields.answers } : {}),
+        ...(fields.consent !== undefined ? { consent: fields.consent } : {}),
+      }),
   }
   const audit: GuestRsvpServiceDeps["audit"] =
     overrides?.audit ??

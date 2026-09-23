@@ -1,4 +1,3 @@
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { link, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
@@ -119,12 +118,10 @@ describe("image-lane child protocol", () => {
       const inputPath = join(dir, "input.bin")
       await writeFile(inputPath, await fx.makeValidPng())
       const written: string[] = []
-      const spy = vi
-        .spyOn(process.stdout, "write")
-        .mockImplementation(((chunk: string) => {
-          written.push(String(chunk))
-          return true
-        }) as typeof process.stdout.write)
+      const spy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string) => {
+        written.push(String(chunk))
+        return true
+      }) as typeof process.stdout.write)
       const errSpy = vi.spyOn(process.stderr, "write").mockImplementation((() => true) as never)
 
       const okCode = await laneMain.main([
@@ -229,10 +226,15 @@ describe("B3': the parent trusts nothing the child says", () => {
   it("refuses an envelope that tries to name its own output paths", async () => {
     withSandboxIdentity()
     runToolMock.mockImplementation(
-      childReturning({ strippedFile: "../../../proc/self/environ", thumbFile: "../../etc/hostname" }),
+      childReturning({
+        strippedFile: "../../../proc/self/environ",
+        thumbFile: "../../etc/hostname",
+      }),
     )
 
-    await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(/invalid result/)
+    await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(
+      /invalid result/,
+    )
   })
 
   it("reads the two FIXED names inside the scratch dir it created", async () => {
@@ -249,7 +251,9 @@ describe("B3': the parent trusts nothing the child says", () => {
     withSandboxIdentity()
     runToolMock.mockImplementation(childReturning({ strippedContentType: "text/html" }))
 
-    await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(/invalid result/)
+    await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(
+      /invalid result/,
+    )
   })
 
   it("refuses NaN / non-positive / over-budget dimensions", async () => {
@@ -271,10 +275,14 @@ describe("B3': the parent trusts nothing the child says", () => {
   it("refuses a malformed phash or a non-finite exifGps", async () => {
     withSandboxIdentity()
     runToolMock.mockImplementation(childReturning({ phash: "not-a-hash" }))
-    await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(/invalid result/)
+    await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(
+      /invalid result/,
+    )
 
     runToolMock.mockImplementation(childReturning({ exifGps: { lat: "37", lng: 1 } }))
-    await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(/invalid result/)
+    await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(
+      /invalid result/,
+    )
   })
 
   it("refuses a SYMLINK at the fixed name (it never resolves the path twice)", async () => {
@@ -303,14 +311,11 @@ describe("B3': the parent trusts nothing the child says", () => {
     })
 
     try {
-      await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(
-        /hard-linked/,
-      )
+      await expect(processImageLane(await fx.makeValidPng(), limits)).rejects.toThrow(/hard-linked/)
     } finally {
       await rm(outside, { force: true })
     }
   })
-
 
   it("refuses when the child wrote no output at all", async () => {
     withSandboxIdentity()

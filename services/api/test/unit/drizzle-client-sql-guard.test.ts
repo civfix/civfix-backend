@@ -9,7 +9,9 @@ describe("check:sql — raw SQL on drizzle's own client", () => {
 
   it("flags a direct tagged template and a client handed to a helper", () => {
     expect(findDrizzleClientUses("await db.$client`DELETE FROM media_assets`")).toHaveLength(1)
-    expect(findDrizzleClientUses("resolveAvatarMediaOrThrow(this.db.$client, uploadId)")).toHaveLength(1)
+    expect(
+      findDrizzleClientUses("resolveAvatarMediaOrThrow(this.db.$client, uploadId)"),
+    ).toHaveLength(1)
   })
 
   it("leaves the fully-serializing raw tag alone", () => {

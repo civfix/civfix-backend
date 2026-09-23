@@ -43,7 +43,12 @@ let repo: InMemoryChatRepository
 function spySeams() {
   const recorded: Array<{ messageId: string; ids: string[] }> = []
   const mentionBells: string[] = []
-  const replyBells: Array<{ kind: string; roomId: string; actorUserId: string; targetUserId: string }> = []
+  const replyBells: Array<{
+    kind: string
+    roomId: string
+    actorUserId: string
+    targetUserId: string
+  }> = []
   const dir: Record<string, UserMentionDTO> = {
     bob: { id: BOB, handle: "bob", displayName: "Bob" },
     cara: { id: CARA, handle: "cara", displayName: "Cara" },
@@ -89,7 +94,13 @@ function sessionFor(
     chatMentions: seams.chatMentions,
     onChatReply: seams.onChatReply,
   }
-  return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+  return {
+    userId,
+    conn,
+    joined: new Set<string>(),
+    typingThrottle: new Map<string, number>(),
+    deps,
+  }
 }
 
 /** Flush the fire-and-forget bell microtasks queued by handleSend. */
@@ -171,7 +182,13 @@ describe("replies over the gateway send path (P2 2.5)", () => {
     const mineId = (aConn.framesOfType("ack").at(-1) as { message: ChatMessageDTO }).message.id
     await handleClientFrame(
       aSession,
-      JSON.stringify({ type: "send", cleanupId: ROOM, body: "self reply", clientId: "c2", replyToId: mineId }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: ROOM,
+        body: "self reply",
+        clientId: "c2",
+        replyToId: mineId,
+      }),
     )
     await flush()
 

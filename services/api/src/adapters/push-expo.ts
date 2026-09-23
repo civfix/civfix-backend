@@ -1,7 +1,6 @@
 import type { PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { fetchJsonWithTimeout, type FetchJsonResult } from "./http-fetch.js"
 
-
 export interface ExpoPushConfig {
   accessToken?: string
   endpoint?: string

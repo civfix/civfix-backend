@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { avatarGradient, AppError } from "@civfix/shared"
 import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
@@ -124,7 +123,9 @@ export class InMemoryChatRepository implements ChatRepository {
       const idx = allDesc.findIndex((m) => m.dto.id === before)
       if (idx >= 0) afterAnchor = allDesc.slice(idx + 1)
     }
-    const ordered = afterAnchor.filter((m) => !m.deleted).map((m) => this.withReply(cleanupId, m.dto))
+    const ordered = afterAnchor
+      .filter((m) => !m.deleted)
+      .map((m) => this.withReply(cleanupId, m.dto))
     const page = ordered.slice(0, limit)
     const nextCursor = ordered.length > limit ? (page[page.length - 1]?.id ?? null) : null
     return Promise.resolve({ items: page, nextCursor })
@@ -179,7 +180,10 @@ export class InMemoryChatRepository implements ChatRepository {
     const stored = (this.log.get(cleanupId) ?? []).find((m) => m.dto.id === messageId && !m.deleted)
     if (!stored) return Promise.resolve(null)
     return Promise.resolve(
-      this.withReply(cleanupId, { ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) }),
+      this.withReply(cleanupId, {
+        ...stored.dto,
+        reactions: this.reactionsFor(messageId, viewerUserId),
+      }),
     )
   }
 
@@ -434,9 +438,7 @@ export class InMemoryThreadsRepository implements ThreadsRepository {
     cleanupId: string,
     msg: { senderId: string; body: string | null; createdAt: Date; deleted?: boolean },
   ): void {
-    this.cleanups
-      .get(cleanupId)
-      ?.messages.push({ ...msg, deleted: msg.deleted ?? false })
+    this.cleanups.get(cleanupId)?.messages.push({ ...msg, deleted: msg.deleted ?? false })
   }
 
   async listThreadsFor(

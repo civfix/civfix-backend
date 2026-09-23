@@ -95,7 +95,12 @@ export function makeChatPollRepository(sql: Sql): ChatPollRepository {
 
     async findPollMeta(messageId: string): Promise<PollMeta | null> {
       const rows = await sql<
-        { message_id: string; created_by: string; closed_at: Date | null; allow_multiple: boolean }[]
+        {
+          message_id: string
+          created_by: string
+          closed_at: Date | null
+          allow_multiple: boolean
+        }[]
       >`
         SELECT message_id, created_by, closed_at, allow_multiple
         FROM chat_polls
@@ -133,7 +138,11 @@ export function makeChatPollRepository(sql: Sql): ChatPollRepository {
           DELETE FROM chat_poll_votes WHERE poll_id = ${pollId} AND user_id = ${userId}
         `
         if (optionIdxs.length > 0) {
-          const rows = optionIdxs.map((idx) => ({ poll_id: pollId, option_idx: idx, user_id: userId }))
+          const rows = optionIdxs.map((idx) => ({
+            poll_id: pollId,
+            option_idx: idx,
+            user_id: userId,
+          }))
           await tx`INSERT INTO chat_poll_votes ${tx(rows, "poll_id", "option_idx", "user_id")}`
         }
       })

@@ -261,7 +261,10 @@ export function classifyWebPushError(err: unknown): {
   prune: boolean
   statusCode: number | undefined
 } {
-  const raw = typeof err === "object" && err !== null ? (err as { statusCode?: unknown }).statusCode : undefined
+  const raw =
+    typeof err === "object" && err !== null
+      ? (err as { statusCode?: unknown }).statusCode
+      : undefined
   const statusCode = typeof raw === "number" ? raw : undefined
   return { prune: statusCode === 404 || statusCode === 410, statusCode }
 }

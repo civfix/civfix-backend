@@ -1,4 +1,3 @@
-
 import type { Queryable, Sql } from "../../db/client.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import { PREVIEW_SOURCE_CHARS } from "./mail-preview.js"
@@ -80,7 +79,6 @@ interface PendingEffectsRowSelect extends MessageRowSelect {
   t_last_message_at: Date | null
   t_created_at: Date
 }
-
 
 function threadColumns(sql: Queryable, alias?: string): SqlFragment {
   const p = alias === undefined ? sql`` : sql`${sql(alias)}.`
@@ -268,9 +266,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       return rows[0] ? toThreadRecord(rows[0]) : null
     },
 
-    async findThreadByOutboundMessageIds(
-      messageIds: string[],
-    ): Promise<MailThreadRecord | null> {
+    async findThreadByOutboundMessageIds(messageIds: string[]): Promise<MailThreadRecord | null> {
       const ids = messageIds.filter((m) => typeof m === "string" && m.length > 0)
       if (ids.length === 0) return null
       const rows = await sql<ThreadRowSelect[]>`
@@ -594,7 +590,11 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       return rows.length > 0
     },
 
-    async setThreadStatus(id: string, status: MailStatus, audit?: MailAuditInput): Promise<boolean> {
+    async setThreadStatus(
+      id: string,
+      status: MailStatus,
+      audit?: MailAuditInput,
+    ): Promise<boolean> {
       return sql.begin(async (tx) => {
         const rows = await tx<{ id: string }[]>`
           UPDATE mail_threads SET status = ${status} WHERE id = ${id} RETURNING id

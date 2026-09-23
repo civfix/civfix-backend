@@ -41,8 +41,7 @@ function hasExtension(name: string): boolean {
 }
 
 export function attachmentFilename(r2Key: string, index: number, contentType?: string): string {
-  const ext =
-    ATTACHMENT_EXTENSIONS[(contentType ?? "").trim().toLowerCase()] ?? EXTENSION_FALLBACK
+  const ext = ATTACHMENT_EXTENSIONS[(contentType ?? "").trim().toLowerCase()] ?? EXTENSION_FALLBACK
   const tail = r2Key.split("/").pop() ?? ""
   const cleaned = tail.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "")
   if (cleaned.length === 0) return `photo-${index + 1}${ext}`
@@ -237,7 +236,8 @@ export interface EventPacketInput {
 export function buildEventPacket(event: EventPacketInput, message: string): ReportPacket {
   const safeTitle = sanitizeHeaderValue(event.title)
   const ref = event.referenceCode ?? null
-  const subject = ref !== null ? `civfix event: ${safeTitle} [${ref}]` : `civfix event: ${safeTitle}`
+  const subject =
+    ref !== null ? `civfix event: ${safeTitle} [${ref}]` : `civfix event: ${safeTitle}`
   const place = event.place ?? "the area"
   const address = event.address && event.address.trim() !== "" ? event.address : place
   const msgText = message.trim() !== "" ? message.trim() : "(no message provided)"

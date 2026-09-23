@@ -1,4 +1,3 @@
-
 import { describe, it, expect } from "vitest"
 import {
   buildWorker,
@@ -78,10 +77,16 @@ describe("media-worker wiring", () => {
 
     const mediaQueue = calls.find((c) => c.name === MEDIA_CHECKS_JOB)
     expect(mediaQueue?.options).toEqual({ policy: "short", retryLimit: 5, retryBackoff: true })
-    expect(calls.find((c) => c.name === ANON_HOLD_RELEASE_JOB)?.options).toEqual({ policy: "short" })
+    expect(calls.find((c) => c.name === ANON_HOLD_RELEASE_JOB)?.options).toEqual({
+      policy: "short",
+    })
     expect(calls.find((c) => c.name === ORPHAN_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
-    expect(calls.find((c) => c.name === RETENTION_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
-    expect(calls.find((c) => c.name === MEDIA_STUCK_SWEEP_JOB)?.options).toEqual({ policy: "singleton" })
+    expect(calls.find((c) => c.name === RETENTION_SWEEP_JOB)?.options).toEqual({
+      policy: "singleton",
+    })
+    expect(calls.find((c) => c.name === MEDIA_STUCK_SWEEP_JOB)?.options).toEqual({
+      policy: "singleton",
+    })
 
     await worker.stop()
   })

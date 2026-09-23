@@ -215,10 +215,7 @@ function resolveGetGrant(
   return { storage, key }
 }
 
-function assertDeclaredUploadMatchesGrant(
-  request: FastifyRequest,
-  grant: ResolvedPutGrant,
-): void {
+function assertDeclaredUploadMatchesGrant(request: FastifyRequest, grant: ResolvedPutGrant): void {
   if (contentTypeOf(request) !== grant.contentType.trim().toLowerCase()) {
     throw AppError.mediaRejected("Content-Type does not match the presigned upload")
   }

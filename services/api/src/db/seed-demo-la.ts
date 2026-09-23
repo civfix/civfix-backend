@@ -47,10 +47,7 @@ import { resolveJurisdiction } from "./sql/jurisdiction.js"
 import { reportH3Cell } from "../services/report-clustering.js"
 import { runIfMain } from "./cli.js"
 import { DEMO_EMAIL_DOMAIN } from "./seed-demo-domain.js"
-import {
-  DEFAULT_EVENT_DURATION_MS,
-  DEFAULT_EVENT_SLOT_TITLE,
-} from "../services/cleanup-rules.js"
+import { DEFAULT_EVENT_DURATION_MS, DEFAULT_EVENT_SLOT_TITLE } from "../services/cleanup-rules.js"
 
 // ---------------------------------------------------------------------------------------------------
 // Deterministic PRNG (mulberry32) + sampling helpers. Seeded so a rehearsal and the committed run (or
@@ -136,8 +133,26 @@ const LA_UTC_OFFSET_HOURS = 7
 /** Weighted local hour: mornings light, lunchtime medium, evenings heavy, small overnight tail. */
 function localHour(): number {
   return pickWeighted<number>([
-    [6, 1], [7, 3], [8, 4], [9, 4], [10, 4], [11, 5], [12, 6], [13, 5], [14, 4], [15, 4],
-    [16, 5], [17, 7], [18, 9], [19, 10], [20, 10], [21, 8], [22, 5], [23, 2], [0, 1], [1, 1],
+    [6, 1],
+    [7, 3],
+    [8, 4],
+    [9, 4],
+    [10, 4],
+    [11, 5],
+    [12, 6],
+    [13, 5],
+    [14, 4],
+    [15, 4],
+    [16, 5],
+    [17, 7],
+    [18, 9],
+    [19, 10],
+    [20, 10],
+    [21, 8],
+    [22, 5],
+    [23, 2],
+    [0, 1],
+    [1, 1],
   ])
 }
 
@@ -179,40 +194,201 @@ function later(a: Date, b: Date): Date {
 // ---------------------------------------------------------------------------------------------------
 
 const HISPANIC_FIRST_M = [
-  "Jose", "Juan", "Carlos", "Luis", "Jorge", "Miguel", "Pedro", "Rafael", "Javier",
-  "Alejandro", "Fernando", "Ricardo", "Eduardo", "Sergio", "Hector", "Oscar", "Raul", "Marco",
-  "Cesar", "Diego", "Emiliano", "Mateo", "Santiago", "Sebastian", "Andres",
-  "Cristian", "Ivan", "Erick", "Kevin", "Brandon", "Anthony", "Angel", "Jesus", "Ernesto",
-  "Gerardo", "Rodrigo", "Ruben", "Salvador", "Armando", "Alfredo", "Enrique",
+  "Jose",
+  "Juan",
+  "Carlos",
+  "Luis",
+  "Jorge",
+  "Miguel",
+  "Pedro",
+  "Rafael",
+  "Javier",
+  "Alejandro",
+  "Fernando",
+  "Ricardo",
+  "Eduardo",
+  "Sergio",
+  "Hector",
+  "Oscar",
+  "Raul",
+  "Marco",
+  "Cesar",
+  "Diego",
+  "Emiliano",
+  "Mateo",
+  "Santiago",
+  "Sebastian",
+  "Andres",
+  "Cristian",
+  "Ivan",
+  "Erick",
+  "Kevin",
+  "Brandon",
+  "Anthony",
+  "Angel",
+  "Jesus",
+  "Ernesto",
+  "Gerardo",
+  "Rodrigo",
+  "Ruben",
+  "Salvador",
+  "Armando",
+  "Alfredo",
+  "Enrique",
 ] as const
 
 const HISPANIC_FIRST_F = [
-  "Maria", "Guadalupe", "Rosa", "Carmen", "Ana", "Leticia", "Veronica", "Claudia", "Adriana",
-  "Gabriela", "Alejandra", "Daniela", "Mariana", "Valeria", "Ximena", "Camila", "Lucia", "Elena",
-  "Isabel", "Sofia", "Paola", "Yesenia", "Marisol", "Araceli", "Esmeralda", "Karina", "Brenda",
-  "Jessica", "Jasmine", "Vanessa", "Lorena", "Norma", "Silvia", "Patricia", "Sandra", "Monica",
-  "Angelica", "Maribel", "Rocio", "Beatriz", "Josefina", "Cindy", "Nayeli", "Itzel", "Fatima",
-  "Alondra", "Giselle", "Ashley", "Destiny", "Selena",
+  "Maria",
+  "Guadalupe",
+  "Rosa",
+  "Carmen",
+  "Ana",
+  "Leticia",
+  "Veronica",
+  "Claudia",
+  "Adriana",
+  "Gabriela",
+  "Alejandra",
+  "Daniela",
+  "Mariana",
+  "Valeria",
+  "Ximena",
+  "Camila",
+  "Lucia",
+  "Elena",
+  "Isabel",
+  "Sofia",
+  "Paola",
+  "Yesenia",
+  "Marisol",
+  "Araceli",
+  "Esmeralda",
+  "Karina",
+  "Brenda",
+  "Jessica",
+  "Jasmine",
+  "Vanessa",
+  "Lorena",
+  "Norma",
+  "Silvia",
+  "Patricia",
+  "Sandra",
+  "Monica",
+  "Angelica",
+  "Maribel",
+  "Rocio",
+  "Beatriz",
+  "Josefina",
+  "Cindy",
+  "Nayeli",
+  "Itzel",
+  "Fatima",
+  "Alondra",
+  "Giselle",
+  "Ashley",
+  "Destiny",
+  "Selena",
 ] as const
 
 const HISPANIC_LAST = [
-  "Garcia", "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Perez", "Sanchez",
-  "Ramirez", "Torres", "Flores", "Rivera", "Gomez", "Diaz", "Reyes", "Morales", "Cruz", "Ortiz",
-  "Gutierrez", "Chavez", "Ramos", "Ruiz", "Alvarez", "Mendoza", "Vasquez", "Castillo", "Jimenez",
-  "Moreno", "Romero", "Herrera", "Medina", "Aguilar", "Vargas", "Guzman", "Castro", "Fernandez",
-  "Munoz", "Rojas", "Soto", "Contreras", "Silva", "Delgado", "Pena", "Rios", "Salazar", "Estrada",
-  "Ortega", "Nunez", "Maldonado", "Vega", "Dominguez", "Cabrera", "Velasquez", "Ibarra", "Zavala",
-  "Cervantes", "Fuentes", "Carrillo", "Trejo", "Solis", "Cardenas", "Villanueva", "Escobar",
-  "Quintero", "Barrera", "Rosales", "Camacho", "Arellano", "Meza", "Palacios", "Navarro",
-  "Padilla", "Miranda", "Bautista", "Orozco", "Zuniga", "Ochoa", "Duran", "Macias", "Renteria",
+  "Garcia",
+  "Rodriguez",
+  "Martinez",
+  "Hernandez",
+  "Lopez",
+  "Gonzalez",
+  "Perez",
+  "Sanchez",
+  "Ramirez",
+  "Torres",
+  "Flores",
+  "Rivera",
+  "Gomez",
+  "Diaz",
+  "Reyes",
+  "Morales",
+  "Cruz",
+  "Ortiz",
+  "Gutierrez",
+  "Chavez",
+  "Ramos",
+  "Ruiz",
+  "Alvarez",
+  "Mendoza",
+  "Vasquez",
+  "Castillo",
+  "Jimenez",
+  "Moreno",
+  "Romero",
+  "Herrera",
+  "Medina",
+  "Aguilar",
+  "Vargas",
+  "Guzman",
+  "Castro",
+  "Fernandez",
+  "Munoz",
+  "Rojas",
+  "Soto",
+  "Contreras",
+  "Silva",
+  "Delgado",
+  "Pena",
+  "Rios",
+  "Salazar",
+  "Estrada",
+  "Ortega",
+  "Nunez",
+  "Maldonado",
+  "Vega",
+  "Dominguez",
+  "Cabrera",
+  "Velasquez",
+  "Ibarra",
+  "Zavala",
+  "Cervantes",
+  "Fuentes",
+  "Carrillo",
+  "Trejo",
+  "Solis",
+  "Cardenas",
+  "Villanueva",
+  "Escobar",
+  "Quintero",
+  "Barrera",
+  "Rosales",
+  "Camacho",
+  "Arellano",
+  "Meza",
+  "Palacios",
+  "Navarro",
+  "Padilla",
+  "Miranda",
+  "Bautista",
+  "Orozco",
+  "Zuniga",
+  "Ochoa",
+  "Duran",
+  "Macias",
+  "Renteria",
 ] as const
 
 /** Accent variants for display names only (handles and emails stay ASCII). */
 const ACCENTED: Record<string, string> = {
-  Jose: "José", Maria: "María", Jesus: "Jesús", Andres: "Andrés",
-  Cesar: "César", Angel: "Ángel", Lucia: "Lucía", Sofia: "Sofía",
-  Ivan: "Iván", Fatima: "Fátima", Munoz: "Muñoz", Nunez: "Núñez",
-  Pena: "Peña", Zuniga: "Zúñiga",
+  Jose: "José",
+  Maria: "María",
+  Jesus: "Jesús",
+  Andres: "Andrés",
+  Cesar: "César",
+  Angel: "Ángel",
+  Lucia: "Lucía",
+  Sofia: "Sofía",
+  Ivan: "Iván",
+  Fatima: "Fátima",
+  Munoz: "Muñoz",
+  Nunez: "Núñez",
+  Pena: "Peña",
+  Zuniga: "Zúñiga",
 }
 
 const OTHER_POOLS: readonly {
@@ -221,38 +397,58 @@ const OTHER_POOLS: readonly {
   last: readonly string[]
   weight: number
 }[] = [
-  { // Korean American
+  {
+    // Korean American
     firstM: ["Daniel", "Brian", "Eric", "Andrew", "Joon", "David"],
     firstF: ["Grace", "Esther", "Hannah", "Julie", "Minji", "Susan"],
     last: ["Kim", "Park", "Lee", "Choi", "Kang", "Yoon", "Shin", "Cho"],
     weight: 5,
   },
-  { // Armenian American
+  {
+    // Armenian American
     firstM: ["Armen", "Narek", "Tigran", "Vahe"],
     firstF: ["Ani", "Lilit", "Mariam", "Sona"],
     last: ["Hakobyan", "Grigoryan", "Sarkissian", "Petrosyan", "Avetisyan", "Kasparian"],
     weight: 3,
   },
-  { // Filipino American
+  {
+    // Filipino American
     firstM: ["Angelo", "Mark", "JR", "Paolo"],
     firstF: ["Kristine", "Joanna", "Camille", "Divine"],
     last: ["Santos", "Dela Cruz", "Mercado", "Aquino", "Ocampo", "Villareal", "Manalo"],
     weight: 4,
   },
-  { // Black and White American
+  {
+    // Black and White American
     firstM: ["Marcus", "Darnell", "James", "Mike", "Tyler", "Jordan", "Chris", "Devin"],
     firstF: ["Keisha", "Tiffany", "Sarah", "Emily", "Aaliyah", "Megan", "Lauren", "Renee"],
-    last: ["Johnson", "Williams", "Brown", "Smith", "Miller", "Davis", "Jackson", "Harris",
-      "Thompson", "Robinson", "Walker", "Carter", "Mitchell", "Turner"],
+    last: [
+      "Johnson",
+      "Williams",
+      "Brown",
+      "Smith",
+      "Miller",
+      "Davis",
+      "Jackson",
+      "Harris",
+      "Thompson",
+      "Robinson",
+      "Walker",
+      "Carter",
+      "Mitchell",
+      "Turner",
+    ],
     weight: 10,
   },
-  { // Chinese American
+  {
+    // Chinese American
     firstM: ["Wei", "Kevin", "Jason", "Alan"],
     firstF: ["Amy", "Cindy", "Michelle", "Tina"],
     last: ["Chen", "Wang", "Liu", "Huang", "Lin", "Wu", "Zhang"],
     weight: 4,
   },
-  { // Vietnamese American
+  {
+    // Vietnamese American
     firstM: ["Minh", "Vincent", "Phong", "Tuan"],
     firstF: ["Linh", "Thao", "Kim-Ly", "Vy"],
     last: ["Nguyen", "Tran", "Pham", "Le", "Vo", "Dang"],
@@ -275,58 +471,237 @@ interface Hood {
 }
 
 const HOODS: readonly Hood[] = [
-  { name: "Boyle Heights", lat: 34.0397, lng: -118.2077, r: 0.010, weight: 10,
-    streets: ["Cesar Chavez Ave", "Soto St", "1st St", "4th St", "Whittier Blvd", "Lorena St", "Evergreen Ave", "St Louis St"] },
-  { name: "East LA", lat: 34.0239, lng: -118.1721, r: 0.012, weight: 9,
-    streets: ["Whittier Blvd", "Atlantic Blvd", "3rd St", "Mednik Ave", "Arizona Ave", "Hammel St"] },
-  { name: "Highland Park", lat: 34.1115, lng: -118.1870, r: 0.010, weight: 7,
-    streets: ["York Blvd", "Figueroa St", "Avenue 56", "Monte Vista St", "Marmion Way"] },
-  { name: "El Sereno", lat: 34.0806, lng: -118.1763, r: 0.010, weight: 6,
-    streets: ["Huntington Dr", "Eastern Ave", "Alhambra Ave", "Valley Blvd"] },
-  { name: "Lincoln Heights", lat: 34.0700, lng: -118.2000, r: 0.008, weight: 6,
-    streets: ["N Broadway", "Daly St", "Main St", "Avenue 26", "Workman St"] },
-  { name: "City Terrace", lat: 34.0570, lng: -118.1830, r: 0.007, weight: 4,
-    streets: ["City Terrace Dr", "Eastern Ave", "Herbert Ave"] },
-  { name: "Huntington Park", lat: 33.9817, lng: -118.2251, r: 0.009, weight: 7,
-    streets: ["Pacific Blvd", "Gage Ave", "Slauson Ave", "Florence Ave", "Santa Fe Ave"] },
-  { name: "South Gate", lat: 33.9547, lng: -118.2120, r: 0.010, weight: 5,
-    streets: ["Tweedy Blvd", "Long Beach Blvd", "Firestone Blvd", "Atlantic Ave"] },
-  { name: "Pacoima", lat: 34.2728, lng: -118.4201, r: 0.012, weight: 6,
-    streets: ["Van Nuys Blvd", "Glenoaks Blvd", "Laurel Canyon Blvd", "Foothill Blvd", "Paxton St"] },
-  { name: "Van Nuys", lat: 34.1899, lng: -118.4514, r: 0.012, weight: 5,
-    streets: ["Van Nuys Blvd", "Victory Blvd", "Sherman Way", "Sepulveda Blvd", "Kester Ave"] },
-  { name: "Sylmar", lat: 34.3078, lng: -118.4453, r: 0.012, weight: 3,
-    streets: ["San Fernando Rd", "Maclay Ave", "Glenoaks Blvd", "Hubbard St"] },
-  { name: "Sun Valley", lat: 34.2170, lng: -118.3700, r: 0.010, weight: 3,
-    streets: ["San Fernando Rd", "Sunland Blvd", "Vineland Ave", "Lankershim Blvd"] },
-  { name: "Wilmington", lat: 33.7801, lng: -118.2646, r: 0.010, weight: 5,
-    streets: ["Avalon Blvd", "Anaheim St", "Pacific Coast Hwy", "Wilmington Blvd", "L St"] },
-  { name: "San Pedro", lat: 33.7361, lng: -118.2922, r: 0.010, weight: 4,
-    streets: ["Gaffey St", "Pacific Ave", "25th St", "Western Ave", "6th St"] },
-  { name: "Watts", lat: 33.9425, lng: -118.2417, r: 0.008, weight: 5,
-    streets: ["103rd St", "Central Ave", "Compton Ave", "Wilmington Ave", "Grandee Ave"] },
-  { name: "South LA", lat: 34.0000, lng: -118.2920, r: 0.014, weight: 7,
-    streets: ["Vermont Ave", "Western Ave", "Normandie Ave", "Slauson Ave", "Manchester Ave", "Figueroa St"] },
-  { name: "Koreatown", lat: 34.0577, lng: -118.3009, r: 0.009, weight: 5,
-    streets: ["Wilshire Blvd", "Olympic Blvd", "Western Ave", "Vermont Ave", "8th St", "Normandie Ave"] },
-  { name: "Westlake", lat: 34.0570, lng: -118.2760, r: 0.007, weight: 5,
-    streets: ["Alvarado St", "7th St", "Wilshire Blvd", "Union Ave", "Bonnie Brae St"] },
-  { name: "Pico-Union", lat: 34.0470, lng: -118.2830, r: 0.007, weight: 5,
-    streets: ["Pico Blvd", "Union Ave", "Hoover St", "Venice Blvd", "Alvarado St"] },
-  { name: "Cypress Park", lat: 34.0930, lng: -118.2240, r: 0.006, weight: 3,
-    streets: ["Cypress Ave", "Figueroa St", "San Fernando Rd", "Division St"] },
-  { name: "Glassell Park", lat: 34.1130, lng: -118.2320, r: 0.007, weight: 3,
-    streets: ["Eagle Rock Blvd", "Verdugo Rd", "San Fernando Rd", "Fletcher Dr"] },
-  { name: "Echo Park", lat: 34.0782, lng: -118.2606, r: 0.007, weight: 4,
-    streets: ["Sunset Blvd", "Echo Park Ave", "Glendale Blvd", "Alvarado St"] },
-  { name: "Hollywood", lat: 34.0928, lng: -118.3287, r: 0.010, weight: 3,
-    streets: ["Hollywood Blvd", "Sunset Blvd", "Santa Monica Blvd", "Western Ave", "Gower St"] },
-  { name: "North Hollywood", lat: 34.1720, lng: -118.3770, r: 0.010, weight: 4,
-    streets: ["Lankershim Blvd", "Magnolia Blvd", "Victory Blvd", "Vineland Ave"] },
-  { name: "Panorama City", lat: 34.2270, lng: -118.4490, r: 0.009, weight: 4,
-    streets: ["Van Nuys Blvd", "Roscoe Blvd", "Nordhoff St", "Woodman Ave"] },
-  { name: "Harbor Gateway", lat: 33.8600, lng: -118.2900, r: 0.010, weight: 2,
-    streets: ["Vermont Ave", "Figueroa St", "Gardena Blvd", "190th St"] },
+  {
+    name: "Boyle Heights",
+    lat: 34.0397,
+    lng: -118.2077,
+    r: 0.01,
+    weight: 10,
+    streets: [
+      "Cesar Chavez Ave",
+      "Soto St",
+      "1st St",
+      "4th St",
+      "Whittier Blvd",
+      "Lorena St",
+      "Evergreen Ave",
+      "St Louis St",
+    ],
+  },
+  {
+    name: "East LA",
+    lat: 34.0239,
+    lng: -118.1721,
+    r: 0.012,
+    weight: 9,
+    streets: ["Whittier Blvd", "Atlantic Blvd", "3rd St", "Mednik Ave", "Arizona Ave", "Hammel St"],
+  },
+  {
+    name: "Highland Park",
+    lat: 34.1115,
+    lng: -118.187,
+    r: 0.01,
+    weight: 7,
+    streets: ["York Blvd", "Figueroa St", "Avenue 56", "Monte Vista St", "Marmion Way"],
+  },
+  {
+    name: "El Sereno",
+    lat: 34.0806,
+    lng: -118.1763,
+    r: 0.01,
+    weight: 6,
+    streets: ["Huntington Dr", "Eastern Ave", "Alhambra Ave", "Valley Blvd"],
+  },
+  {
+    name: "Lincoln Heights",
+    lat: 34.07,
+    lng: -118.2,
+    r: 0.008,
+    weight: 6,
+    streets: ["N Broadway", "Daly St", "Main St", "Avenue 26", "Workman St"],
+  },
+  {
+    name: "City Terrace",
+    lat: 34.057,
+    lng: -118.183,
+    r: 0.007,
+    weight: 4,
+    streets: ["City Terrace Dr", "Eastern Ave", "Herbert Ave"],
+  },
+  {
+    name: "Huntington Park",
+    lat: 33.9817,
+    lng: -118.2251,
+    r: 0.009,
+    weight: 7,
+    streets: ["Pacific Blvd", "Gage Ave", "Slauson Ave", "Florence Ave", "Santa Fe Ave"],
+  },
+  {
+    name: "South Gate",
+    lat: 33.9547,
+    lng: -118.212,
+    r: 0.01,
+    weight: 5,
+    streets: ["Tweedy Blvd", "Long Beach Blvd", "Firestone Blvd", "Atlantic Ave"],
+  },
+  {
+    name: "Pacoima",
+    lat: 34.2728,
+    lng: -118.4201,
+    r: 0.012,
+    weight: 6,
+    streets: ["Van Nuys Blvd", "Glenoaks Blvd", "Laurel Canyon Blvd", "Foothill Blvd", "Paxton St"],
+  },
+  {
+    name: "Van Nuys",
+    lat: 34.1899,
+    lng: -118.4514,
+    r: 0.012,
+    weight: 5,
+    streets: ["Van Nuys Blvd", "Victory Blvd", "Sherman Way", "Sepulveda Blvd", "Kester Ave"],
+  },
+  {
+    name: "Sylmar",
+    lat: 34.3078,
+    lng: -118.4453,
+    r: 0.012,
+    weight: 3,
+    streets: ["San Fernando Rd", "Maclay Ave", "Glenoaks Blvd", "Hubbard St"],
+  },
+  {
+    name: "Sun Valley",
+    lat: 34.217,
+    lng: -118.37,
+    r: 0.01,
+    weight: 3,
+    streets: ["San Fernando Rd", "Sunland Blvd", "Vineland Ave", "Lankershim Blvd"],
+  },
+  {
+    name: "Wilmington",
+    lat: 33.7801,
+    lng: -118.2646,
+    r: 0.01,
+    weight: 5,
+    streets: ["Avalon Blvd", "Anaheim St", "Pacific Coast Hwy", "Wilmington Blvd", "L St"],
+  },
+  {
+    name: "San Pedro",
+    lat: 33.7361,
+    lng: -118.2922,
+    r: 0.01,
+    weight: 4,
+    streets: ["Gaffey St", "Pacific Ave", "25th St", "Western Ave", "6th St"],
+  },
+  {
+    name: "Watts",
+    lat: 33.9425,
+    lng: -118.2417,
+    r: 0.008,
+    weight: 5,
+    streets: ["103rd St", "Central Ave", "Compton Ave", "Wilmington Ave", "Grandee Ave"],
+  },
+  {
+    name: "South LA",
+    lat: 34.0,
+    lng: -118.292,
+    r: 0.014,
+    weight: 7,
+    streets: [
+      "Vermont Ave",
+      "Western Ave",
+      "Normandie Ave",
+      "Slauson Ave",
+      "Manchester Ave",
+      "Figueroa St",
+    ],
+  },
+  {
+    name: "Koreatown",
+    lat: 34.0577,
+    lng: -118.3009,
+    r: 0.009,
+    weight: 5,
+    streets: [
+      "Wilshire Blvd",
+      "Olympic Blvd",
+      "Western Ave",
+      "Vermont Ave",
+      "8th St",
+      "Normandie Ave",
+    ],
+  },
+  {
+    name: "Westlake",
+    lat: 34.057,
+    lng: -118.276,
+    r: 0.007,
+    weight: 5,
+    streets: ["Alvarado St", "7th St", "Wilshire Blvd", "Union Ave", "Bonnie Brae St"],
+  },
+  {
+    name: "Pico-Union",
+    lat: 34.047,
+    lng: -118.283,
+    r: 0.007,
+    weight: 5,
+    streets: ["Pico Blvd", "Union Ave", "Hoover St", "Venice Blvd", "Alvarado St"],
+  },
+  {
+    name: "Cypress Park",
+    lat: 34.093,
+    lng: -118.224,
+    r: 0.006,
+    weight: 3,
+    streets: ["Cypress Ave", "Figueroa St", "San Fernando Rd", "Division St"],
+  },
+  {
+    name: "Glassell Park",
+    lat: 34.113,
+    lng: -118.232,
+    r: 0.007,
+    weight: 3,
+    streets: ["Eagle Rock Blvd", "Verdugo Rd", "San Fernando Rd", "Fletcher Dr"],
+  },
+  {
+    name: "Echo Park",
+    lat: 34.0782,
+    lng: -118.2606,
+    r: 0.007,
+    weight: 4,
+    streets: ["Sunset Blvd", "Echo Park Ave", "Glendale Blvd", "Alvarado St"],
+  },
+  {
+    name: "Hollywood",
+    lat: 34.0928,
+    lng: -118.3287,
+    r: 0.01,
+    weight: 3,
+    streets: ["Hollywood Blvd", "Sunset Blvd", "Santa Monica Blvd", "Western Ave", "Gower St"],
+  },
+  {
+    name: "North Hollywood",
+    lat: 34.172,
+    lng: -118.377,
+    r: 0.01,
+    weight: 4,
+    streets: ["Lankershim Blvd", "Magnolia Blvd", "Victory Blvd", "Vineland Ave"],
+  },
+  {
+    name: "Panorama City",
+    lat: 34.227,
+    lng: -118.449,
+    r: 0.009,
+    weight: 4,
+    streets: ["Van Nuys Blvd", "Roscoe Blvd", "Nordhoff St", "Woodman Ave"],
+  },
+  {
+    name: "Harbor Gateway",
+    lat: 33.86,
+    lng: -118.29,
+    r: 0.01,
+    weight: 2,
+    streets: ["Vermont Ave", "Figueroa St", "Gardena Blvd", "190th St"],
+  },
 ]
 
 const PARKS: readonly { name: string; hood: string; lat: number; lng: number }[] = [
@@ -336,14 +711,14 @@ const PARKS: readonly { name: string; hood: string; lat: number; lng: number }[]
   { name: "Hazard Park", hood: "Boyle Heights", lat: 34.0645, lng: -118.2005 },
   { name: "Lincoln Park", hood: "Lincoln Heights", lat: 34.0705, lng: -118.2028 },
   { name: "Sycamore Grove Park", hood: "Highland Park", lat: 34.0996, lng: -118.1998 },
-  { name: "Ted Watkins Memorial Park", hood: "Watts", lat: 33.9330, lng: -118.2379 },
-  { name: "MacArthur Park", hood: "Westlake", lat: 34.0590, lng: -118.2785 },
+  { name: "Ted Watkins Memorial Park", hood: "Watts", lat: 33.933, lng: -118.2379 },
+  { name: "MacArthur Park", hood: "Westlake", lat: 34.059, lng: -118.2785 },
   { name: "Rio de Los Angeles State Park", hood: "Cypress Park", lat: 34.0994, lng: -118.2273 },
   { name: "Ernest E. Debs Regional Park", hood: "El Sereno", lat: 34.0873, lng: -118.1935 },
   { name: "Ken Malloy Harbor Regional Park", hood: "Wilmington", lat: 33.7863, lng: -118.2879 },
   { name: "Hansen Dam Recreation Area", hood: "Pacoima", lat: 34.2612, lng: -118.3898 },
   { name: "Sepulveda Basin", hood: "Van Nuys", lat: 34.1755, lng: -118.4838 },
-  { name: "Point Fermin Park", hood: "San Pedro", lat: 33.7060, lng: -118.2936 },
+  { name: "Point Fermin Park", hood: "San Pedro", lat: 33.706, lng: -118.2936 },
   { name: "Normandie Recreation Center", hood: "South LA", lat: 34.0261, lng: -118.3003 },
   { name: "Seoul International Park", hood: "Koreatown", lat: 34.0546, lng: -118.3082 },
   { name: "North Hollywood Park", hood: "North Hollywood", lat: 34.1638, lng: -118.3801 },
@@ -560,11 +935,7 @@ const REPLY_EVENT_EN: readonly string[] = [
   "my whole family is coming lol",
   "first time doing one of these, excited",
 ]
-const REPLY_EVENT_ES: readonly string[] = [
-  "yo tambien voy",
-  "ahi estare",
-  "llevare bolsas extra",
-]
+const REPLY_EVENT_ES: readonly string[] = ["yo tambien voy", "ahi estare", "llevare bolsas extra"]
 
 /** Replies to report posts. */
 const REPLY_REPORT_EN: readonly string[] = [
@@ -577,10 +948,7 @@ const REPLY_REPORT_EN: readonly string[] = [
   "this intersection is always bad",
   "sad that it takes an app for the city to do their job",
 ]
-const REPLY_REPORT_ES: readonly string[] = [
-  "eso esta a una cuadra de mi casa",
-  "gracias vecino",
-]
+const REPLY_REPORT_ES: readonly string[] = ["eso esta a una cuadra de mi casa", "gracias vecino"]
 
 /** Quote-post bodies. */
 const QUOTE_EN: readonly string[] = [
@@ -591,10 +959,7 @@ const QUOTE_EN: readonly string[] = [
   "this is the kind of stuff that keeps me on this app",
   "proof that reporting works yall",
 ]
-const QUOTE_ES: readonly string[] = [
-  "lo que siempre digo",
-  "mi gente 💪",
-]
+const QUOTE_ES: readonly string[] = ["lo que siempre digo", "mi gente 💪"]
 
 /** Report content per type: [titles, descriptions]. Slots: {street} {street2}. */
 const REPORT_CONTENT: Record<
@@ -750,12 +1115,26 @@ const EVENT_DESC_ES: readonly string[] = [
 ]
 
 const BRING_POOL: readonly string[] = [
-  "gloves", "water", "sunscreen", "hat", "trash grabbers", "closed toe shoes", "reusable water bottle",
+  "gloves",
+  "water",
+  "sunscreen",
+  "hat",
+  "trash grabbers",
+  "closed toe shoes",
+  "reusable water bottle",
 ]
 
-const SLOT_SETS: readonly (readonly { title: string; description: string | null; capacity: number | null }[])[] = [
+const SLOT_SETS: readonly (readonly {
+  title: string
+  description: string | null
+  capacity: number | null
+}[])[] = [
   [
-    { title: "Registration table", description: "check people in and hand out supplies", capacity: 2 },
+    {
+      title: "Registration table",
+      description: "check people in and hand out supplies",
+      capacity: 2,
+    },
     { title: "Supplies and water", description: "keep the water station stocked", capacity: 2 },
     { title: "Street team", description: "cover the blocks around the park", capacity: null },
   ],
@@ -764,7 +1143,11 @@ const SLOT_SETS: readonly (readonly { title: string; description: string | null;
     { title: "10-12 shift", description: null, capacity: 12 },
   ],
   [
-    { title: "Heavy lifting crew", description: "for the big stuff, bring work gloves", capacity: 6 },
+    {
+      title: "Heavy lifting crew",
+      description: "for the big stuff, bring work gloves",
+      capacity: 6,
+    },
     { title: "General cleanup", description: null, capacity: null },
     { title: "Kids zone", description: "light duty for families with little ones", capacity: 8 },
   ],
@@ -829,7 +1212,13 @@ interface SeedEvent {
   capacity: number | null
   bags: number
   members: { user: SeedUser; role: "organizer" | "cohost" | "member"; joinedAt: Date }[]
-  slots: { id: string; title: string; description: string | null; capacity: number | null; sortOrder: number }[]
+  slots: {
+    id: string
+    title: string
+    description: string | null
+    capacity: number | null
+    sortOrder: number
+  }[]
   claims: { userId: string; slotId: string; claimedAt: Date }[]
   hood: Hood
 }
@@ -928,7 +1317,12 @@ function makeUsers(count: number, start: Date, end: Date): SeedUser[] {
       [`${dFirst} ${dLast[0]}.`, 15],
       [dFirst, 10],
       [`${dFirst.toLowerCase()} ${dLast.toLowerCase()}`, 10],
-      [`${dFirst} ${dLast}`.toUpperCase() === `${dFirst} ${dLast}` ? `${dFirst} ${dLast}` : `${dFirst} ${dLast}`, 10],
+      [
+        `${dFirst} ${dLast}`.toUpperCase() === `${dFirst} ${dLast}`
+          ? `${dFirst} ${dLast}`
+          : `${dFirst} ${dLast}`,
+        10,
+      ],
     ])
 
     // Handle: ASCII, matches HANDLE_REGEX (3-20 of [A-Za-z0-9_]).
@@ -966,7 +1360,8 @@ function makeUsers(count: number, start: Date, end: Date): SeedUser[] {
       ["lurker", 12],
     ])
     const popularity =
-      Math.exp((rand() + rand() + rand() - 1.5) * 1.6) * (tier === "power" ? 3 : tier === "casual" ? 1.2 : 0.6)
+      Math.exp((rand() + rand() + rand() - 1.5) * 1.6) *
+      (tier === "power" ? 3 : tier === "casual" ? 1.2 : 0.6)
 
     const user: SeedUser = {
       id: randomUUID(),
@@ -979,7 +1374,10 @@ function makeUsers(count: number, start: Date, end: Date): SeedUser[] {
       tier,
       popularity,
       hispanic,
-      createdAt: randTimestamp(start, new Date(start.getTime() + Math.pow(rand(), 0.65) * (end.getTime() - start.getTime()))),
+      createdAt: randTimestamp(
+        start,
+        new Date(start.getTime() + Math.pow(rand(), 0.65) * (end.getTime() - start.getTime())),
+      ),
       showVolunteerHours: chance(0.85) ? null : chance(0.8) ? true : false,
       allowDirectMessages: chance(0.95),
       instagram: chance(0.15) ? handle.toLowerCase() : null,
@@ -1006,7 +1404,13 @@ function makeFollows(users: SeedUser[], now: Date): SeedFollow[] {
 
   for (const u of users) {
     const target =
-      u.tier === "power" ? rint(15, 40) : u.tier === "casual" ? rint(6, 18) : u.tier === "light" ? rint(3, 10) : rint(0, 4)
+      u.tier === "power"
+        ? rint(15, 40)
+        : u.tier === "casual"
+          ? rint(6, 18)
+          : u.tier === "light"
+            ? rint(3, 10)
+            : rint(0, 4)
     const followees = sampleWeighted(users, weightFor(u), target, new Set([u]))
     for (const f of followees) {
       const at = randTimestamp(later(u.createdAt, f.createdAt), now)
@@ -1047,16 +1451,26 @@ function makeEvents(users: SeedUser[], now: Date): SeedEvent[] {
     const scheduledAt =
       kind === "upcoming"
         ? nextSaturdayish(now, rint(3, 21))
-        : nextSaturdayish(new Date(later(organizer.createdAt, new Date(now.getTime() - 150 * DAY)).getTime()), rint(7, 120), now)
+        : nextSaturdayish(
+            new Date(later(organizer.createdAt, new Date(now.getTime() - 150 * DAY)).getTime()),
+            rint(7, 120),
+            now,
+          )
     // The create must land in the PAST even for upcoming events (scheduled_at - 2d can exceed now
     // when the event is less than 2 days out, which would backdate joins into the future).
-    const createdCeiling = new Date(Math.min(scheduledAt.getTime() - 2 * DAY, now.getTime() - 6 * 3600_000))
+    const createdCeiling = new Date(
+      Math.min(scheduledAt.getTime() - 2 * DAY, now.getTime() - 6 * 3600_000),
+    )
     const createdAt = randTimestamp(
       later(organizer.createdAt, new Date(scheduledAt.getTime() - 28 * DAY)),
       createdCeiling,
     )
     const { lat, lng } = jitterPoint(park.lat, park.lng, 0.0015)
-    const title = fill(bilingual(organizer, EVENT_TITLE_EN, EVENT_TITLE_ES), organizer, { park: park.name, hood: hood.name, street: pick(hood.streets) })
+    const title = fill(bilingual(organizer, EVENT_TITLE_EN, EVENT_TITLE_ES), organizer, {
+      park: park.name,
+      hood: hood.name,
+      street: pick(hood.streets),
+    })
     const ev: SeedEvent = {
       id: randomUUID(),
       organizer,
@@ -1082,7 +1496,9 @@ function makeEvents(users: SeedUser[], now: Date): SeedEvent[] {
     // Members: neighbors + followers-of-organizer flavored sample.
     const memberTarget = kind === "cancelled" ? rint(3, 8) : rint(6, 26)
     const weight = (c: SeedUser) =>
-      (c.hood.name === hood.name ? 4 : 1) * (c.tier === "lurker" ? 0.3 : 1) * Math.sqrt(c.popularity)
+      (c.hood.name === hood.name ? 4 : 1) *
+      (c.tier === "lurker" ? 0.3 : 1) *
+      Math.sqrt(c.popularity)
     const joiners = sampleWeighted(users, weight, memberTarget, new Set([organizer]))
     const joinEnd = kind === "upcoming" ? now : scheduledAt
     for (const [j, u] of joiners.entries()) {
@@ -1113,12 +1529,17 @@ function makeEvents(users: SeedUser[], now: Date): SeedEvent[] {
       for (const m of ev.members) {
         if (m.role === "organizer" || !chance(0.5)) continue
         const open = ev.slots.filter(
-          (s) => s.capacity === null || ev.claims.filter((c) => c.slotId === s.id).length < s.capacity,
+          (s) =>
+            s.capacity === null || ev.claims.filter((c) => c.slotId === s.id).length < s.capacity,
         )
         if (open.length === 0 || claimed.has(m.user.id)) continue
         const slot = pick(open)
         claimed.add(m.user.id)
-        ev.claims.push({ userId: m.user.id, slotId: slot.id, claimedAt: randTimestamp(m.joinedAt, joinEnd) })
+        ev.claims.push({
+          userId: m.user.id,
+          slotId: slot.id,
+          claimedAt: randTimestamp(m.joinedAt, joinEnd),
+        })
       }
     }
     events.push(ev)
@@ -1145,12 +1566,25 @@ function makeReports(users: SeedUser[], count: number, now: Date): SeedReport[] 
   const reports: SeedReport[] = []
   for (let i = 0; i < count; i++) {
     const reporter = pickWeighted(
-      users.map((u) => [u, u.tier === "power" ? 4 : u.tier === "casual" ? 2 : u.tier === "light" ? 1 : 0.2] as const),
+      users.map(
+        (u) =>
+          [
+            u,
+            u.tier === "power" ? 4 : u.tier === "casual" ? 2 : u.tier === "light" ? 1 : 0.2,
+          ] as const,
+      ),
     )
-    const hood = chance(0.85) ? reporter.hood : pickWeighted(HOODS.map((h) => [h, h.weight] as const))
+    const hood = chance(0.85)
+      ? reporter.hood
+      : pickWeighted(HOODS.map((h) => [h, h.weight] as const))
     const type = pickWeighted<ReportType>([
-      ["dump", 38], ["graffiti", 16], ["pavement", 14], ["vegetation", 9],
-      ["infrastructure", 9], ["encampment", 6], ["other", 8],
+      ["dump", 38],
+      ["graffiti", 16],
+      ["pavement", 14],
+      ["vegetation", 9],
+      ["infrastructure", 9],
+      ["encampment", 6],
+      ["other", 8],
     ])
     const { lat, lng } = jitterPoint(hood.lat, hood.lng, hood.r)
     const content = REPORT_CONTENT[type]
@@ -1158,7 +1592,11 @@ function makeReports(users: SeedUser[], count: number, now: Date): SeedReport[] 
     const street2 = pick(hood.streets.filter((s) => s !== street)) ?? street
     const createdAt = randTimestamp(reporter.createdAt, now)
     const status = pickWeighted<SeedReport["status"]>([
-      ["published", 52], ["acknowledged", 15], ["in_progress", 8], ["resolved", 20], ["submitted", 5],
+      ["published", 52],
+      ["acknowledged", 15],
+      ["in_progress", 8],
+      ["resolved", 20],
+      ["submitted", 5],
     ])
 
     const timeline: SeedReport["timeline"] = [
@@ -1172,7 +1610,12 @@ function makeReports(users: SeedUser[], count: number, now: Date): SeedReport[] 
     let cursor = publishedAt ?? createdAt
     if (status === "acknowledged" || status === "in_progress" || status === "resolved") {
       cursor = randTimestamp(cursor, new Date(Math.min(cursor.getTime() + 10 * DAY, now.getTime())))
-      timeline.push({ status: "acknowledged", note: pick(TIMELINE_ACK_NOTES), createdAt: cursor, actorId: null })
+      timeline.push({
+        status: "acknowledged",
+        note: pick(TIMELINE_ACK_NOTES),
+        createdAt: cursor,
+        actorId: null,
+      })
     }
     if (status === "in_progress" || (status === "resolved" && chance(0.5))) {
       cursor = randTimestamp(cursor, new Date(Math.min(cursor.getTime() + 12 * DAY, now.getTime())))
@@ -1180,7 +1623,12 @@ function makeReports(users: SeedUser[], count: number, now: Date): SeedReport[] 
     }
     if (status === "resolved") {
       cursor = randTimestamp(cursor, new Date(Math.min(cursor.getTime() + 15 * DAY, now.getTime())))
-      timeline.push({ status: "resolved", note: chance(0.6) ? pick(TIMELINE_RESOLVE_NOTES) : null, createdAt: cursor, actorId: null })
+      timeline.push({
+        status: "resolved",
+        note: chance(0.6) ? pick(TIMELINE_RESOLVE_NOTES) : null,
+        createdAt: cursor,
+        actorId: null,
+      })
     }
 
     reports.push({
@@ -1221,10 +1669,29 @@ function makePosts(
     followersOf.set(f.followeeId, arr)
   }
 
-  const addTop = (author: SeedUser, body: string, createdAt: Date, eventId: string | null, reportId: string | null) => {
+  const addTop = (
+    author: SeedUser,
+    body: string,
+    createdAt: Date,
+    eventId: string | null,
+    reportId: string | null,
+  ) => {
     const p: SeedPost = {
-      id: randomUUID(), author, kind: "post", body, replyTo: null, threadRoot: null, repostOf: null,
-      eventId, reportId, createdAt, depth: 0, likeCount: 0, replyCount: 0, repostCount: 0, saveCount: 0,
+      id: randomUUID(),
+      author,
+      kind: "post",
+      body,
+      replyTo: null,
+      threadRoot: null,
+      repostOf: null,
+      eventId,
+      reportId,
+      createdAt,
+      depth: 0,
+      likeCount: 0,
+      replyCount: 0,
+      repostCount: 0,
+      saveCount: 0,
       mentions: [],
     }
     posts.push(p)
@@ -1233,27 +1700,69 @@ function makePosts(
 
   // 1) Plain top-level posts, volume by tier.
   for (const u of users) {
-    const n = u.tier === "power" ? rint(4, 10) : u.tier === "casual" ? rint(1, 4) : u.tier === "light" ? rint(0, 2) : 0
+    const n =
+      u.tier === "power"
+        ? rint(4, 10)
+        : u.tier === "casual"
+          ? rint(1, 4)
+          : u.tier === "light"
+            ? rint(0, 2)
+            : 0
     for (let i = 0; i < n; i++) {
-      addTop(u, fill(bilingual(u, POST_TEMPLATES_EN, POST_TEMPLATES_ES), u), randTimestamp(u.createdAt, now), null, null)
+      addTop(
+        u,
+        fill(bilingual(u, POST_TEMPLATES_EN, POST_TEMPLATES_ES), u),
+        randTimestamp(u.createdAt, now),
+        null,
+        null,
+      )
     }
   }
 
   // 2) Event promo + recap posts by organizers (and some cohosts).
   for (const ev of events) {
     if (ev.status !== "cancelled") {
-      const promoAt = randTimestamp(ev.createdAt, new Date(Math.min(ev.scheduledAt.getTime(), now.getTime())))
-      addTop(ev.organizer, fill(bilingual(ev.organizer, EVENT_POST_EN, EVENT_POST_ES), ev.organizer, { hood: ev.hood.name }), promoAt, ev.id, null)
+      const promoAt = randTimestamp(
+        ev.createdAt,
+        new Date(Math.min(ev.scheduledAt.getTime(), now.getTime())),
+      )
+      addTop(
+        ev.organizer,
+        fill(bilingual(ev.organizer, EVENT_POST_EN, EVENT_POST_ES), ev.organizer, {
+          hood: ev.hood.name,
+        }),
+        promoAt,
+        ev.id,
+        null,
+      )
       if (ev.cohost && chance(0.4)) {
-        addTop(ev.cohost, fill(bilingual(ev.cohost, EVENT_POST_EN, EVENT_POST_ES), ev.cohost, { hood: ev.hood.name }),
-          randTimestamp(later(ev.cohost.createdAt, ev.createdAt), new Date(Math.min(ev.scheduledAt.getTime(), now.getTime()))), ev.id, null)
+        addTop(
+          ev.cohost,
+          fill(bilingual(ev.cohost, EVENT_POST_EN, EVENT_POST_ES), ev.cohost, {
+            hood: ev.hood.name,
+          }),
+          randTimestamp(
+            later(ev.cohost.createdAt, ev.createdAt),
+            new Date(Math.min(ev.scheduledAt.getTime(), now.getTime())),
+          ),
+          ev.id,
+          null,
+        )
       }
     }
     if (ev.status === "done" && chance(0.85)) {
       const recapAt = minutesAfter(ev.scheduledAt, 3 * 60, 30 * 60)
       if (recapAt.getTime() < now.getTime()) {
-        addTop(ev.organizer, fill(bilingual(ev.organizer, EVENT_RECAP_EN, EVENT_RECAP_ES), ev.organizer,
-          { bags: String(ev.bags), n: String(ev.members.length) }), recapAt, ev.id, null)
+        addTop(
+          ev.organizer,
+          fill(bilingual(ev.organizer, EVENT_RECAP_EN, EVENT_RECAP_ES), ev.organizer, {
+            bags: String(ev.bags),
+            n: String(ev.members.length),
+          }),
+          recapAt,
+          ev.id,
+          null,
+        )
       }
     }
   }
@@ -1263,21 +1772,36 @@ function makePosts(
     if (r.status === "submitted" || !chance(0.3)) continue
     const at = minutesAfter(r.publishedAt ?? r.createdAt, 5, 36 * 60)
     if (at.getTime() >= now.getTime()) continue
-    addTop(r.reporter, fill(bilingual(r.reporter, REPORT_POST_EN, REPORT_POST_ES), r.reporter, { street: r.hood.streets[0]! }), at, null, r.id)
+    addTop(
+      r.reporter,
+      fill(bilingual(r.reporter, REPORT_POST_EN, REPORT_POST_ES), r.reporter, {
+        street: r.hood.streets[0]!,
+      }),
+      at,
+      null,
+      r.id,
+    )
   }
 
   // 4) Replies (threaded). Popular posts attract more; repliers lean followers + neighbors.
   const topLevel = posts.filter((p) => p.depth === 0)
   for (const p of topLevel) {
     const base = p.eventId ? 2.2 : p.reportId ? 1.6 : 1
-    const n = Math.min(14, Math.floor(Math.pow(rand(), 1.8) * 7 * base * Math.sqrt(p.author.popularity)))
+    const n = Math.min(
+      14,
+      Math.floor(Math.pow(rand(), 1.8) * 7 * base * Math.sqrt(p.author.popularity)),
+    )
     // One reply per person per thread (the root author may answer their own thread), and no
     // repeated body text within a thread; both read as bots otherwise.
     const threadRepliers = new Set<string>()
     const threadBodies = new Set<string>()
     let parent: SeedPost = p
     for (let i = 0; i < n; i++) {
-      parent = chance(0.75) ? p : posts[posts.length - 1]!.depth > 0 && chance(0.5) ? posts[posts.length - 1]! : p
+      parent = chance(0.75)
+        ? p
+        : posts[posts.length - 1]!.depth > 0 && chance(0.5)
+          ? posts[posts.length - 1]!
+          : p
       if (parent.depth >= 3) parent = p
       const followerPool = followersOf.get(parent.author.id) ?? []
       const replier =
@@ -1306,11 +1830,22 @@ function makePosts(
         mentions.push(parent.author.id)
       }
       const reply: SeedPost = {
-        id: randomUUID(), author: replier, kind: "reply", body, replyTo: parent,
+        id: randomUUID(),
+        author: replier,
+        kind: "reply",
+        body,
+        replyTo: parent,
         threadRoot: parent.depth === 0 ? parent : (parent.threadRoot ?? parent),
-        repostOf: null, eventId: null, reportId: null,
-        createdAt: randTimestamp(start, end), depth: parent.depth + 1,
-        likeCount: 0, replyCount: 0, repostCount: 0, saveCount: 0, mentions,
+        repostOf: null,
+        eventId: null,
+        reportId: null,
+        createdAt: randTimestamp(start, end),
+        depth: parent.depth + 1,
+        likeCount: 0,
+        replyCount: 0,
+        repostCount: 0,
+        saveCount: 0,
+        mentions,
       }
       parent.replyCount++
       posts.push(reply)
@@ -1333,9 +1868,22 @@ function makePosts(
       if (start.getTime() >= end.getTime()) continue
       repostKeys.add(k)
       posts.push({
-        id: randomUUID(), author: reposter, kind: "repost", body: null, replyTo: null, threadRoot: null,
-        repostOf: target, eventId: null, reportId: null, createdAt: randTimestamp(start, end), depth: 1,
-        likeCount: 0, replyCount: 0, repostCount: 0, saveCount: 0, mentions: [],
+        id: randomUUID(),
+        author: reposter,
+        kind: "repost",
+        body: null,
+        replyTo: null,
+        threadRoot: null,
+        repostOf: target,
+        eventId: null,
+        reportId: null,
+        createdAt: randTimestamp(start, end),
+        depth: 1,
+        likeCount: 0,
+        replyCount: 0,
+        repostCount: 0,
+        saveCount: 0,
+        mentions: [],
       })
       target.repostCount++ // pure reposts only, matching the live repost() path
     }
@@ -1346,10 +1894,22 @@ function makePosts(
       const end = new Date(Math.min(target.createdAt.getTime() + 7 * DAY, now.getTime()))
       if (start.getTime() >= end.getTime()) continue
       posts.push({
-        id: randomUUID(), author: quoter, kind: "quote", body: fill(bilingual(quoter, QUOTE_EN, QUOTE_ES), quoter),
-        replyTo: null, threadRoot: null, repostOf: target, eventId: null, reportId: null,
-        createdAt: randTimestamp(start, end), depth: 1,
-        likeCount: 0, replyCount: 0, repostCount: 0, saveCount: 0, mentions: [],
+        id: randomUUID(),
+        author: quoter,
+        kind: "quote",
+        body: fill(bilingual(quoter, QUOTE_EN, QUOTE_ES), quoter),
+        replyTo: null,
+        threadRoot: null,
+        repostOf: target,
+        eventId: null,
+        reportId: null,
+        createdAt: randTimestamp(start, end),
+        depth: 1,
+        likeCount: 0,
+        replyCount: 0,
+        repostCount: 0,
+        saveCount: 0,
+        mentions: [],
       })
       // Quotes do NOT bump repost_count (createPost has no bump for kind='quote').
     }
@@ -1386,7 +1946,11 @@ function makeLikesAndSaves(
     if (p.kind === "repost") continue // the app shows the original; likes land on it
     const followerPool = followersOf.get(p.author.id) ?? []
     const reach = followerPool.length
-    const base = Math.pow(rand(), 1.5) * (3 + reach * 0.7) * (p.eventId || p.reportId ? 1.4 : 1) * (p.depth === 0 ? 1 : 0.35)
+    const base =
+      Math.pow(rand(), 1.5) *
+      (3 + reach * 0.7) *
+      (p.eventId || p.reportId ? 1.4 : 1) *
+      (p.depth === 0 ? 1 : 0.35)
     const n = Math.min(Math.floor(base), 60)
     for (let i = 0; i < n; i++) {
       const liker =
@@ -1462,7 +2026,8 @@ function validate(
     handles.add(u.handle.toLowerCase())
     if (emails.has(u.email)) errors.push(`dup email: ${u.email}`)
     emails.add(u.email)
-    if (!u.email.endsWith(`@${DEMO_EMAIL_DOMAIN}`)) errors.push(`email outside demo domain: ${u.email}`)
+    if (!u.email.endsWith(`@${DEMO_EMAIL_DOMAIN}`))
+      errors.push(`email outside demo domain: ${u.email}`)
   }
   // Closed world + counter consistency.
   const followerCounts = new Map<string, number>()
@@ -1478,8 +2043,10 @@ function validate(
     followingCounts.set(f.followerId, (followingCounts.get(f.followerId) ?? 0) + 1)
   }
   for (const u of users) {
-    if ((followerCounts.get(u.id) ?? 0) !== u.followerCount) errors.push(`followerCount drift for @${u.handle}`)
-    if ((followingCounts.get(u.id) ?? 0) !== u.followingCount) errors.push(`followingCount drift for @${u.handle}`)
+    if ((followerCounts.get(u.id) ?? 0) !== u.followerCount)
+      errors.push(`followerCount drift for @${u.handle}`)
+    if ((followingCounts.get(u.id) ?? 0) !== u.followingCount)
+      errors.push(`followingCount drift for @${u.handle}`)
   }
   // Posts: thread + counter integrity, no em dashes anywhere, repost uniqueness, ordering.
   const likeAgg = new Map<string, number>()
@@ -1494,7 +2061,8 @@ function validate(
     if (p.kind === "reply") {
       if (!p.replyTo || !p.threadRoot) errors.push("reply missing parent/root")
       else {
-        if (p.createdAt.getTime() < p.replyTo.createdAt.getTime()) errors.push("reply predates parent")
+        if (p.createdAt.getTime() < p.replyTo.createdAt.getTime())
+          errors.push("reply predates parent")
         replyAgg.set(p.replyTo.id, (replyAgg.get(p.replyTo.id) ?? 0) + 1)
       }
     }
@@ -1504,7 +2072,8 @@ function validate(
       repostKeys.add(k)
       repostAgg.set(p.repostOf!.id, (repostAgg.get(p.repostOf!.id) ?? 0) + 1)
     }
-    if (p.createdAt.getTime() < p.author.createdAt.getTime()) errors.push("post predates its author")
+    if (p.createdAt.getTime() < p.author.createdAt.getTime())
+      errors.push("post predates its author")
   }
   for (const p of posts) {
     if ((likeAgg.get(p.id) ?? 0) !== p.likeCount) errors.push("likeCount drift")
@@ -1518,7 +2087,8 @@ function validate(
     for (const m of ev.members) {
       if (seen.has(m.user.id)) errors.push(`dup member in ${ev.title}`)
       seen.add(m.user.id)
-      if (m.joinedAt.getTime() < ev.createdAt.getTime()) errors.push("member joined before event existed")
+      if (m.joinedAt.getTime() < ev.createdAt.getTime())
+        errors.push("member joined before event existed")
     }
     const claimants = new Set<string>()
     for (const c of ev.claims) {
@@ -1539,7 +2109,9 @@ function validate(
     if (r.description.includes("—") || r.title.includes("—")) errors.push("em dash in report")
   }
   if (errors.length > 0) {
-    throw new Error(`seed validation failed (${errors.length}):\n  ${[...new Set(errors)].slice(0, 25).join("\n  ")}`)
+    throw new Error(
+      `seed validation failed (${errors.length}):\n  ${[...new Set(errors)].slice(0, 25).join("\n  ")}`,
+    )
   }
 }
 
@@ -1611,7 +2183,11 @@ async function writeAll(
 
   for (const rows of chunk(follows, 500)) {
     await tx`INSERT INTO follows_people ${tx(
-      rows.map((f) => ({ follower_id: f.followerId, followee_id: f.followeeId, created_at: f.createdAt })),
+      rows.map((f) => ({
+        follower_id: f.followerId,
+        followee_id: f.followeeId,
+        created_at: f.createdAt,
+      })),
     )}`
   }
 
@@ -1638,19 +2214,34 @@ async function writeAll(
   }
   for (const ev of events) {
     await tx`INSERT INTO cleanup_members ${tx(
-      ev.members.map((m) => ({ cleanup_id: ev.id, user_id: m.user.id, role: m.role, joined_at: m.joinedAt })),
+      ev.members.map((m) => ({
+        cleanup_id: ev.id,
+        user_id: m.user.id,
+        role: m.role,
+        joined_at: m.joinedAt,
+      })),
     )}`
     if (ev.slots.length > 0) {
       await tx`INSERT INTO cleanup_slots ${tx(
         ev.slots.map((s) => ({
-          id: s.id, cleanup_id: ev.id, title: s.title, description: s.description,
-          capacity: s.capacity, sort_order: s.sortOrder, created_at: ev.createdAt,
+          id: s.id,
+          cleanup_id: ev.id,
+          title: s.title,
+          description: s.description,
+          capacity: s.capacity,
+          sort_order: s.sortOrder,
+          created_at: ev.createdAt,
         })),
       )}`
     }
     if (ev.claims.length > 0) {
       await tx`INSERT INTO cleanup_slot_claims ${tx(
-        ev.claims.map((c) => ({ cleanup_id: ev.id, user_id: c.userId, slot_id: c.slotId, claimed_at: c.claimedAt })),
+        ev.claims.map((c) => ({
+          cleanup_id: ev.id,
+          user_id: c.userId,
+          slot_id: c.slotId,
+          claimed_at: c.claimedAt,
+        })),
       )}`
     }
   }
@@ -1675,7 +2266,11 @@ async function writeAll(
   }
   const timelineRows = reports.flatMap((r) =>
     r.timeline.map((t) => ({
-      report_id: r.id, status: t.status, note: t.note, actor_id: t.actorId, created_at: t.createdAt,
+      report_id: r.id,
+      status: t.status,
+      note: t.note,
+      actor_id: t.actorId,
+      created_at: t.createdAt,
     })),
   )
   for (const rows of chunk(timelineRows, 500)) {
@@ -1683,18 +2278,28 @@ async function writeAll(
   }
 
   // Link a few nearby reports to cleanup events (the "reports we'll handle" gallery).
-  const linkRows: { cleanup_id: string; report_id: string; linked_by_user_id: string; linked_at: Date }[] = []
+  const linkRows: {
+    cleanup_id: string
+    report_id: string
+    linked_by_user_id: string
+    linked_at: Date
+  }[] = []
   const linkedReportIds = new Set<string>()
   for (const ev of events) {
     if (ev.status === "cancelled" || !chance(0.5)) continue
     const nearby = reports.filter(
-      (r) => r.hood.name === ev.hood.name && !linkedReportIds.has(r.id) &&
-        r.createdAt.getTime() < ev.scheduledAt.getTime() && r.status !== "submitted",
+      (r) =>
+        r.hood.name === ev.hood.name &&
+        !linkedReportIds.has(r.id) &&
+        r.createdAt.getTime() < ev.scheduledAt.getTime() &&
+        r.status !== "submitted",
     )
     for (const r of shuffle(nearby).slice(0, rint(1, 3))) {
       linkedReportIds.add(r.id)
       linkRows.push({
-        cleanup_id: ev.id, report_id: r.id, linked_by_user_id: ev.organizer.id,
+        cleanup_id: ev.id,
+        report_id: r.id,
+        linked_by_user_id: ev.organizer.id,
         linked_at: later(ev.createdAt, r.createdAt),
       })
     }
@@ -1712,16 +2317,29 @@ async function writeAll(
     for (const rows of chunk(waves.get(depth)!, 300)) {
       await tx`INSERT INTO posts ${tx(
         rows.map((p) => ({
-          id: p.id, author_id: p.author.id, kind: p.kind, body: p.body, visibility: "public",
-          reply_to_id: p.replyTo?.id ?? null, thread_root_id: p.threadRoot?.id ?? null,
-          repost_of_id: p.repostOf?.id ?? null, event_id: p.eventId, report_id: p.reportId,
-          like_count: p.likeCount, repost_count: p.repostCount, reply_count: p.replyCount,
-          save_count: p.saveCount, created_at: p.createdAt, updated_at: p.createdAt,
+          id: p.id,
+          author_id: p.author.id,
+          kind: p.kind,
+          body: p.body,
+          visibility: "public",
+          reply_to_id: p.replyTo?.id ?? null,
+          thread_root_id: p.threadRoot?.id ?? null,
+          repost_of_id: p.repostOf?.id ?? null,
+          event_id: p.eventId,
+          report_id: p.reportId,
+          like_count: p.likeCount,
+          repost_count: p.repostCount,
+          reply_count: p.replyCount,
+          save_count: p.saveCount,
+          created_at: p.createdAt,
+          updated_at: p.createdAt,
         })),
       )}`
     }
   }
-  const mentionRows = posts.flatMap((p) => p.mentions.map((m) => ({ post_id: p.id, mentioned_user_id: m })))
+  const mentionRows = posts.flatMap((p) =>
+    p.mentions.map((m) => ({ post_id: p.id, mentioned_user_id: m })),
+  )
   for (const rows of chunk(mentionRows, 500)) {
     await tx`INSERT INTO post_mentions ${tx(rows)}`
   }
@@ -1740,14 +2358,23 @@ async function writeAll(
   for (const rows of chunk(hours, 300)) {
     await tx`INSERT INTO volunteer_hours ${tx(
       rows.map((h) => ({
-        user_id: h.userId, hours: h.hours, source: "event", cleanup_id: h.cleanupId,
-        jurisdiction_geoid: h.jurisdictionGeoid, logged_by_user_id: h.loggedBy, created_at: h.createdAt,
+        user_id: h.userId,
+        hours: h.hours,
+        source: "event",
+        cleanup_id: h.cleanupId,
+        jurisdiction_geoid: h.jurisdictionGeoid,
+        logged_by_user_id: h.loggedBy,
+        created_at: h.createdAt,
       })),
     )}`
     await tx`INSERT INTO volunteer_hours_audit ${tx(
       rows.map((h) => ({
-        cleanup_id: h.cleanupId, user_id: h.userId, actor_user_id: h.loggedBy,
-        previous_hours: null, new_hours: h.hours, created_at: h.createdAt,
+        cleanup_id: h.cleanupId,
+        user_id: h.userId,
+        actor_user_id: h.loggedBy,
+        previous_hours: null,
+        new_hours: h.hours,
+        created_at: h.createdAt,
       })),
     )}`
   }
@@ -1760,7 +2387,9 @@ async function writeAll(
     rollups.set(k, cur)
   }
   const rollupRows = [...rollups.values()].map((r) => ({
-    user_id: r.userId, jurisdiction_geoid: r.geoid, total_hours: r.total.toFixed(2),
+    user_id: r.userId,
+    jurisdiction_geoid: r.geoid,
+    total_hours: r.total.toFixed(2),
   }))
   for (const rows of chunk(rollupRows, 500)) {
     await tx`
@@ -1848,17 +2477,47 @@ async function purge(tx: TransactionSql): Promise<Record<string, number>> {
     counts[label] = (await q).length
   }
   const demo = tx`SELECT id FROM users WHERE email LIKE ${"%@" + DEMO_EMAIL_DOMAIN}`
-  await del("volunteer_hours_audit", tx`DELETE FROM volunteer_hours_audit WHERE user_id IN (${demo}) RETURNING 1 AS one`)
-  await del("volunteer_hours", tx`DELETE FROM volunteer_hours WHERE user_id IN (${demo}) RETURNING 1 AS one`)
-  await del("user_jurisdiction_hours", tx`DELETE FROM user_jurisdiction_hours WHERE user_id IN (${demo}) RETURNING 1 AS one`)
-  await del("cleanup_slot_claims", tx`DELETE FROM cleanup_slot_claims WHERE user_id IN (${demo}) RETURNING 1 AS one`)
-  await del("cleanup_members", tx`DELETE FROM cleanup_members WHERE user_id IN (${demo}) RETURNING 1 AS one`)
-  await del("cleanups", tx`DELETE FROM cleanups WHERE organizer_user_id IN (${demo}) RETURNING 1 AS one`)
-  await del("reports", tx`DELETE FROM reports WHERE reporter_user_id IN (${demo}) RETURNING 1 AS one`)
-  await del("follows_people", tx`DELETE FROM follows_people WHERE follower_id IN (${demo}) OR followee_id IN (${demo}) RETURNING 1 AS one`)
-  await del("notification_prefs", tx`DELETE FROM notification_prefs WHERE user_id IN (${demo}) RETURNING 1 AS one`)
+  await del(
+    "volunteer_hours_audit",
+    tx`DELETE FROM volunteer_hours_audit WHERE user_id IN (${demo}) RETURNING 1 AS one`,
+  )
+  await del(
+    "volunteer_hours",
+    tx`DELETE FROM volunteer_hours WHERE user_id IN (${demo}) RETURNING 1 AS one`,
+  )
+  await del(
+    "user_jurisdiction_hours",
+    tx`DELETE FROM user_jurisdiction_hours WHERE user_id IN (${demo}) RETURNING 1 AS one`,
+  )
+  await del(
+    "cleanup_slot_claims",
+    tx`DELETE FROM cleanup_slot_claims WHERE user_id IN (${demo}) RETURNING 1 AS one`,
+  )
+  await del(
+    "cleanup_members",
+    tx`DELETE FROM cleanup_members WHERE user_id IN (${demo}) RETURNING 1 AS one`,
+  )
+  await del(
+    "cleanups",
+    tx`DELETE FROM cleanups WHERE organizer_user_id IN (${demo}) RETURNING 1 AS one`,
+  )
+  await del(
+    "reports",
+    tx`DELETE FROM reports WHERE reporter_user_id IN (${demo}) RETURNING 1 AS one`,
+  )
+  await del(
+    "follows_people",
+    tx`DELETE FROM follows_people WHERE follower_id IN (${demo}) OR followee_id IN (${demo}) RETURNING 1 AS one`,
+  )
+  await del(
+    "notification_prefs",
+    tx`DELETE FROM notification_prefs WHERE user_id IN (${demo}) RETURNING 1 AS one`,
+  )
   // posts / likes / saves / mentions / timeline cascade from users + reports + cleanups.
-  await del("users", tx`DELETE FROM users WHERE email LIKE ${"%@" + DEMO_EMAIL_DOMAIN} RETURNING 1 AS one`)
+  await del(
+    "users",
+    tx`DELETE FROM users WHERE email LIKE ${"%@" + DEMO_EMAIL_DOMAIN} RETURNING 1 AS one`,
+  )
   return counts
 }
 
@@ -1884,7 +2543,11 @@ export async function main(): Promise<void> {
   }
   const host = new URL(databaseUrl).host
   console.log(`target database: ${host}`)
-  console.log(commit ? "mode: COMMIT" : "mode: rehearsal (full run + verification, then ROLLBACK; pass --yes to commit)")
+  console.log(
+    commit
+      ? "mode: COMMIT"
+      : "mode: rehearsal (full run + verification, then ROLLBACK; pass --yes to commit)",
+  )
 
   const handle = makeDb(databaseUrl, { max: 1, statementTimeoutMs: 0, idleInTxTimeoutMs: 0 })
   const ROLLBACK = Symbol("rollback")

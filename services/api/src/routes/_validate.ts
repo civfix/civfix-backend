@@ -11,8 +11,9 @@ export function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S
       err.name === "ZodError" &&
       Array.isArray((err as unknown as { issues?: unknown }).issues)
     ) {
-      const issues = (err as unknown as { issues: { path: (string | number)[]; message: string }[] })
-        .issues
+      const issues = (
+        err as unknown as { issues: { path: (string | number)[]; message: string }[] }
+      ).issues
       const fields: Record<string, string> = {}
       for (const issue of issues) {
         const key = issue.path.length > 0 ? issue.path.join(".") : "_"
@@ -47,9 +48,15 @@ export function trimTextFields<S extends ZodTypeAny>(
   }, schema)
 }
 
-export const validateBody = <S extends ZodTypeAny>(schema: S, request: FastifyRequest): z.infer<S> =>
-  parse(schema, request.body)
-export const validateQuery = <S extends ZodTypeAny>(schema: S, request: FastifyRequest): z.infer<S> =>
-  parse(schema, request.query)
-export const validateParams = <S extends ZodTypeAny>(schema: S, request: FastifyRequest): z.infer<S> =>
-  parse(schema, request.params)
+export const validateBody = <S extends ZodTypeAny>(
+  schema: S,
+  request: FastifyRequest,
+): z.infer<S> => parse(schema, request.body)
+export const validateQuery = <S extends ZodTypeAny>(
+  schema: S,
+  request: FastifyRequest,
+): z.infer<S> => parse(schema, request.query)
+export const validateParams = <S extends ZodTypeAny>(
+  schema: S,
+  request: FastifyRequest,
+): z.infer<S> => parse(schema, request.params)

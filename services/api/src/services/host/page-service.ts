@@ -17,17 +17,9 @@ import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
 import { RESERVED_SLUGS } from "./slugs.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
-import {
-  toEventPageDTO,
-  toEventQuestionDTO,
-  toPublicTicketType,
-} from "./registration-dto.js"
-import type {
-  HostRegistrationRepository,
-  PageRecord,
-} from "./registration-repository.types.js"
+import { toEventPageDTO, toEventQuestionDTO, toPublicTicketType } from "./registration-dto.js"
+import type { HostRegistrationRepository, PageRecord } from "./registration-repository.types.js"
 import type { RegistrationAudit } from "./registration-service.js"
-
 
 export const HOST_PAGE_PUBLISH_COUNTER_KEY = "host:pagePublish"
 
@@ -260,7 +252,10 @@ export function makePageService(deps: PageServiceDeps): PageService {
     const urls = new Map<string, string>()
     await mapWithLimit([...keys.entries()], PRESIGN_CONCURRENCY, async ([id, key]) => {
       try {
-        urls.set(id, (await (deps.presignCover as (k: string) => Promise<{ url: string }>)(key)).url)
+        urls.set(
+          id,
+          (await (deps.presignCover as (k: string) => Promise<{ url: string }>)(key)).url,
+        )
       } catch (err) {
         deps.logger?.warn({ err }, "event page: block media presign failed (suppressed)")
       }
@@ -306,10 +301,7 @@ export function makePageService(deps: PageServiceDeps): PageService {
     try {
       used = await deps.counters.incr(`${HOST_PAGE_PUBLISH_COUNTER_KEY}:${actorId}`, DAY_SECONDS)
     } catch (err) {
-      deps.logger?.warn(
-        { err },
-        "event page: publish counter unavailable; refusing (fail closed)",
-      )
+      deps.logger?.warn({ err }, "event page: publish counter unavailable; refusing (fail closed)")
       throw AppError.rateLimited("Publishing is temporarily unavailable.")
     }
     if (used > HOST_PAGE_PUBLISH_PER_DAY) {
@@ -408,8 +400,7 @@ export function makePageService(deps: PageServiceDeps): PageService {
       const canManagePage = standing !== null && can(standing, "manage_page")
       const canViewPrivate = standing !== null && can(standing, "view_event_private")
 
-      const publiclyReadable =
-        record.page.status === "published" && record.page.flaggedAt === null
+      const publiclyReadable = record.page.status === "published" && record.page.flaggedAt === null
       if (!publiclyReadable && !canManagePage) throw notFound
       if (record.event.visibility === "private" && !canViewPrivate) throw notFound
 

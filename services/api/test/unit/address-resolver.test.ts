@@ -216,7 +216,11 @@ describe("makeAddressResolver caching", () => {
   })
 
   it("keys on the SHARED 5-decimal point key, so a sub-metre pin nudge is a hit", async () => {
-    const provider = chain({ line: "Main St, Inglewood, CA", precision: "intersection", provider: "photon" })
+    const provider = chain({
+      line: "Main St, Inglewood, CA",
+      precision: "intersection",
+      provider: "photon",
+    })
     const cache = memoryCache()
     const resolve = makeAddressResolver({
       streetReverseGeocode: provider,
@@ -346,7 +350,11 @@ describe("makeAddressResolver caching", () => {
   })
 
   it("an UNREACHABLE cache degrades to no caching, never to an error", async () => {
-    const provider = chain({ line: "123 Main St, Inglewood, CA", precision: "street", provider: "photon" })
+    const provider = chain({
+      line: "123 Main St, Inglewood, CA",
+      precision: "street",
+      provider: "photon",
+    })
     const resolve = makeAddressResolver({
       streetReverseGeocode: provider,
       geocoder: new FakeGeocoder(),
@@ -515,7 +523,11 @@ describe("addressProvenance", () => {
 
   it("keeps a locality-grade snapshot, labelled honestly rather than dropped", () => {
     expect(
-      addressProvenance("", { address: "Los Angeles, CA", precision: "locality", cityStateLabel: "Los Angeles, CA" }),
+      addressProvenance("", {
+        address: "Los Angeles, CA",
+        precision: "locality",
+        cityStateLabel: "Los Angeles, CA",
+      }),
     ).toEqual({ addr: "Los Angeles, CA", addrSource: "resolved", addrPrecision: "locality" })
   })
 

@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest"
 import {
   FEDERAL_LANDS,
@@ -96,10 +95,12 @@ describe("federal lands dataset", () => {
   it("the Angeles-over-city probe lies inside BOTH the forest and the seeded LA city box", () => {
     const angeles = FEDERAL_LANDS.find((l) => l.geoid === "USFS-ANGELES")!
     expect(PROBE_ANGELES_OVER_CITY.expectGeoid).toBe("USFS-ANGELES")
-    expect(pointInRing(PROBE_ANGELES_OVER_CITY.lng, PROBE_ANGELES_OVER_CITY.lat, ringOf(angeles))).toBe(
+    expect(
+      pointInRing(PROBE_ANGELES_OVER_CITY.lng, PROBE_ANGELES_OVER_CITY.lat, ringOf(angeles)),
+    ).toBe(true)
+    expect(inBbox(PROBE_ANGELES_OVER_CITY.lng, PROBE_ANGELES_OVER_CITY.lat, LA_CITY.bbox)).toBe(
       true,
     )
-    expect(inBbox(PROBE_ANGELES_OVER_CITY.lng, PROBE_ANGELES_OVER_CITY.lat, LA_CITY.bbox)).toBe(true)
   })
 
   it("carries ONLY example.* placeholder contacts so no real agency address can ship as a routing target", () => {

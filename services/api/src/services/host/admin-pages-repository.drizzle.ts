@@ -117,7 +117,8 @@ export function makeDrizzleAdminEventPageRepository(sql: Sql): AdminEventPageRep
 
   return {
     async list(params: AdminEventPageListParams): Promise<AdminEventPageRow[]> {
-      const statusFilter = params.status !== undefined ? sql`AND p.status = ${params.status}` : sql``
+      const statusFilter =
+        params.status !== undefined ? sql`AND p.status = ${params.status}` : sql``
       const flaggedFilter =
         params.flagged === undefined
           ? sql``

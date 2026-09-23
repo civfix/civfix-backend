@@ -34,11 +34,7 @@ import type {
   ReleaseMediaView,
 } from "../../src/services/anon-hold-release.js"
 import type { ClaimRepository, PendingAnonReport } from "../../src/services/claim-service.js"
-import {
-  formatReferenceCode,
-  reportScopeKey,
-  typeCodeFor,
-} from "../../src/db/reference-code.js"
+import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
 import type { ReportType } from "@civfix/shared"
 
 /** A stored anon report row (the subset the anon flow reads). */
@@ -398,12 +394,16 @@ export class InMemoryAnonStore {
         report.claimCodeHash = claimCodeHash
         return Promise.resolve({ reportId: report.id })
       },
-      claimByCode: (claimCodeHash: string, userId: string): Promise<{ reportId: string } | null> => {
+      claimByCode: (
+        claimCodeHash: string,
+        userId: string,
+      ): Promise<{ reportId: string } | null> => {
         // Match the report whose stored DIGEST equals the hash of the presented code (0091), not the
         // token. Single-use: a cleared digest no longer matches. anon_session_id is kept as an audit
         // trail.
         const report = [...this.reports.values()].find(
-          (r) => r.claimCodeHash === claimCodeHash && r.reporterUserId === null && r.deletedAt === null,
+          (r) =>
+            r.claimCodeHash === claimCodeHash && r.reporterUserId === null && r.deletedAt === null,
         )
         if (!report) return Promise.resolve(null)
         report.reporterUserId = userId

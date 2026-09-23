@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { AppError, DELETED_USER_LABEL } from "@civfix/shared"
 import type { Role, SocialLinks } from "@civfix/shared"
@@ -174,7 +173,6 @@ export interface UpdateSettingsInput {
 
 export const PRIMARY_ORGANIZATION_NOT_A_MEMBER =
   "Pick an organization you belong to, or clear the selection."
-
 
 export class InMemoryUserStore implements UserStore {
   private readonly byId = new Map<string, UserRecord>()

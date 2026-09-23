@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { CleanupStatus } from "@civfix/shared"
@@ -188,7 +187,10 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
     expect(strip!.going).toBe(3)
 
     await repo.cancelGuest(guestId, new Date())
-    const afterCancel = await social.upcomingEventsFor(hostId, { limit: 10, includeAttending: true })
+    const afterCancel = await social.upcomingEventsFor(hostId, {
+      limit: 10,
+      includeAttending: true,
+    })
     expect(afterCancel.find((r) => r.id === cleanupId)!.going).toBe(2)
 
     await h.sql`UPDATE cleanups SET scheduled_at = now() - interval '2 days' WHERE id = ${cleanupId}`
@@ -266,7 +268,11 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
     await verifyGuest(upcoming, "fresh@example.org", "s3")
 
     const cutoff = new Date(Date.now() - 30 * 86_400_000)
-    const firstBatch = await repo.scrubExpiredGuestContacts({ cutoff, now: new Date(), batchSize: 1 })
+    const firstBatch = await repo.scrubExpiredGuestContacts({
+      cutoff,
+      now: new Date(),
+      batchSize: 1,
+    })
     expect(firstBatch).toBe(1)
 
     const rest = await repo.scrubExpiredGuestContacts({ cutoff, now: new Date(), batchSize: 50 })

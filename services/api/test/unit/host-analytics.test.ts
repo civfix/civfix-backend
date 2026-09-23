@@ -82,8 +82,7 @@ function analyticsRepo(overrides: Partial<AnalyticsRepository> = {}): AnalyticsR
         reportsResolved: 1,
         postsCreated: 7,
       }),
-    heldEventTotals: () =>
-      Promise.resolve({ events: 2, registered: 20, checkedIn: 12, noShow: 1 }),
+    heldEventTotals: () => Promise.resolve({ events: 2, registered: 20, checkedIn: 12, noShow: 1 }),
     signupsByDayAcross: () =>
       Promise.resolve({
         daily: [
@@ -101,7 +100,9 @@ function analyticsRepo(overrides: Partial<AnalyticsRepository> = {}): AnalyticsR
   }
 }
 
-function metricsRepo(rows: Parameters<MetricsRepository["upsertExact"]>[0] = []): MetricsRepository {
+function metricsRepo(
+  rows: Parameters<MetricsRepository["upsertExact"]>[0] = [],
+): MetricsRepository {
   return {
     resolveSlug: () => Promise.resolve(null),
     eventTimezone: () => Promise.resolve("UTC"),
@@ -110,13 +111,20 @@ function metricsRepo(rows: Parameters<MetricsRepository["upsertExact"]>[0] = [])
     upsertExact: () => Promise.resolve(),
     upsertGreatest: () => Promise.resolve(),
     read: () =>
-      Promise.resolve(rows.map((r) => ({ day: r.day, metric: r.metric, bucket: r.bucket, value: r.value }))),
+      Promise.resolve(
+        rows.map((r) => ({ day: r.day, metric: r.metric, bucket: r.bucket, value: r.value })),
+      ),
     readMany: () =>
-      Promise.resolve(rows.map((r) => ({ day: r.day, metric: r.metric, bucket: r.bucket, value: r.value }))),
+      Promise.resolve(
+        rows.map((r) => ({ day: r.day, metric: r.metric, bucket: r.bucket, value: r.value })),
+      ),
   }
 }
 
-function build(overrides: Partial<AnalyticsRepository> = {}, metricRows: Parameters<MetricsRepository["upsertExact"]>[0] = []) {
+function build(
+  overrides: Partial<AnalyticsRepository> = {},
+  metricRows: Parameters<MetricsRepository["upsertExact"]>[0] = [],
+) {
   const cache = new InMemoryCacheClient()
   const service = makeAnalyticsService({
     analytics: analyticsRepo(overrides),
@@ -854,8 +862,7 @@ describe("hosted-events analytics summary", () => {
 
   it("keeps a sub-k held-event rate exact rather than hiding it", async () => {
     const { service } = build({
-      heldEventTotals: () =>
-        Promise.resolve({ events: 1, registered: 3, checkedIn: 2, noShow: 1 }),
+      heldEventTotals: () => Promise.resolve({ events: 1, registered: 3, checkedIn: 2, noShow: 1 }),
     })
     const payload = await service.summary(OWNER, null, "30d", "self")
     expect(payload.eventsHeld.checkInRate.value).toBeCloseTo(2 / 3, 4)
@@ -864,8 +871,7 @@ describe("hosted-events analytics summary", () => {
 
   it("leaves the rate null when nobody registered", async () => {
     const { service } = build({
-      heldEventTotals: () =>
-        Promise.resolve({ events: 1, registered: 0, checkedIn: 0, noShow: 0 }),
+      heldEventTotals: () => Promise.resolve({ events: 1, registered: 0, checkedIn: 0, noShow: 0 }),
     })
     const payload = await service.summary(OWNER, null, "30d", "self")
     expect(payload.eventsHeld.checkInRate.value).toBeNull()

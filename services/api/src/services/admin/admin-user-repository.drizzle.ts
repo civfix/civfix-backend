@@ -1,4 +1,3 @@
-
 import type { Queryable, Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
 import { clampLimit, decodeCursor } from "./pagination.js"
@@ -172,7 +171,12 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       const extraWhere = andAll(sql, conds)
       const orderLimit = sql`ORDER BY u.created_at DESC, u.id DESC LIMIT ${limit + 1}`
 
-      const rows = (await userSelect(sql, extraWhere, orderLimit, false)) as unknown as UserRowSelect[]
+      const rows = (await userSelect(
+        sql,
+        extraWhere,
+        orderLimit,
+        false,
+      )) as unknown as UserRowSelect[]
       const { items, nextCursor } = paginate(rows, limit, (r) => ({
         createdAt: r.created_at ?? EPOCH,
         id: r.id,
@@ -529,7 +533,9 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     },
 
     async listUserOrganizations(id: string): Promise<AdminUserOrganizationRecord[]> {
-      const rows = await sql<{ id: string; slug: string; name: string; role: OrganizationMemberRole }[]>`
+      const rows = await sql<
+        { id: string; slug: string; name: string; role: OrganizationMemberRole }[]
+      >`
         SELECT o.id, o.slug, o.name, m.role
         FROM organization_members m
         JOIN organizations o ON o.id = m.organization_id

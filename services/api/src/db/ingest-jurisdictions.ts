@@ -30,11 +30,15 @@ async function main(): Promise<void> {
   const defaultLayer = (process.argv[3] ?? "federal") as IngestRow["layer"]
   const geoidPrefix = (process.argv[4] ?? "").trim()
   if (!file) {
-    console.error("usage: tsx src/db/ingest-jurisdictions.ts <boundaries.geojson> [layer] [geoid-prefix]")
+    console.error(
+      "usage: tsx src/db/ingest-jurisdictions.ts <boundaries.geojson> [layer] [geoid-prefix]",
+    )
     process.exit(2)
   }
   if (!(defaultLayer in LAYER_RANK)) {
-    console.error(`ingest: unknown layer "${defaultLayer}" (expected one of ${Object.keys(LAYER_RANK).join(", ")})`)
+    console.error(
+      `ingest: unknown layer "${defaultLayer}" (expected one of ${Object.keys(LAYER_RANK).join(", ")})`,
+    )
     process.exit(2)
   }
 
@@ -48,7 +52,9 @@ async function main(): Promise<void> {
 
   await runDbCli(async (_db, sql) => {
     const { upserted, skipped } = await ingestGeoJsonFile(sql, text, defaultLayer, geoidPrefix)
-    console.log(`ingest: ${upserted} jurisdictions upserted from ${file} (${skipped} features skipped)`)
+    console.log(
+      `ingest: ${upserted} jurisdictions upserted from ${file} (${skipped} features skipped)`,
+    )
   })
 }
 

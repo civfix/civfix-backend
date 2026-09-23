@@ -60,5 +60,4 @@ export function loadRegistrationEnv(
   }
 }
 
-export const DEVELOPMENT_TICKET_TOKEN_SECRET =
-  "dev-insecure-ticket-token-secret-do-not-use-in-prod"
+export const DEVELOPMENT_TICKET_TOKEN_SECRET = "dev-insecure-ticket-token-secret-do-not-use-in-prod"

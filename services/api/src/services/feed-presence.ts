@@ -26,7 +26,11 @@ export interface FeedSnapshotEntry {
 export interface FeedPresence {
   readonly snapshotsAvailable: boolean
   readSnapshot(userId: string, filter: string): Promise<FeedSnapshotEntry[] | null>
-  writeSnapshot(userId: string, filter: string, ranked: readonly RankedCandidate[]): Promise<boolean>
+  writeSnapshot(
+    userId: string,
+    filter: string,
+    ranked: readonly RankedCandidate[],
+  ): Promise<boolean>
   touchSnapshot(userId: string, filter: string): Promise<void>
   seenBy(userId: string, postIds: readonly string[]): Promise<Set<string>>
   recordServed(userId: string, postIds: readonly string[]): Promise<void>

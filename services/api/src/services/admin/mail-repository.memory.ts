@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import {
   MAIL_STATS_WINDOW_DAYS,
@@ -21,12 +20,7 @@ import {
   type RecordSendFailureInput,
   type ThreadInit,
 } from "./mail-repository.js"
-import {
-  deriveWho,
-  mintThreadToken,
-  toMessageDTO,
-  toThreadListItem,
-} from "./mail-mappers.js"
+import { deriveWho, mintThreadToken, toMessageDTO, toThreadListItem } from "./mail-mappers.js"
 import { buildMailStats } from "./mail-stats.js"
 import { ROUTE_DEADLINE_INFLIGHT_SECONDS } from "./outbound-send-policy.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"

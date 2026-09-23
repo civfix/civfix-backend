@@ -24,7 +24,9 @@ function domainOf(address: string): string {
 function rfc822(opts: { from: string; to: string; body?: string; messageId?: string }): Buffer {
   const lines = [`From: ${opts.from}`, `To: ${opts.to}`]
   if (opts.messageId !== undefined) lines.push(`Message-ID: ${opts.messageId}`)
-  lines.push(`Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=${domainOf(opts.from)}`)
+  lines.push(
+    `Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=${domainOf(opts.from)}`,
+  )
   lines.push("", opts.body ?? "")
   return Buffer.from(lines.join("\n"), "utf8")
 }
@@ -53,7 +55,10 @@ interface Ctx {
   db: FakeSqlControl
 }
 
-function ctx(inboundMail: InboundMail = new FakeInboundMail(), sqlHandlers: SqlHandler[] = []): Ctx {
+function ctx(
+  inboundMail: InboundMail = new FakeInboundMail(),
+  sqlHandlers: SqlHandler[] = [],
+): Ctx {
   const storage = new FakeStorage()
   const mailRepo = new InMemoryMailRepository()
   const inboundRepo = new InMemoryInboundRepository()

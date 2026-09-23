@@ -28,7 +28,11 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { InMemoryChatRepository, InMemoryThreadsRepository, MockConnection } from "../helpers/chat.js"
+import {
+  InMemoryChatRepository,
+  InMemoryThreadsRepository,
+  MockConnection,
+} from "../helpers/chat.js"
 import { roomKeyFor } from "../../src/ws/gateway.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
@@ -131,7 +135,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     const organizerId = await newUser("Edit Org")
     const cleanupId = await newCleanup(organizerId)
     const chat = makeDrizzleChatRepository(h.sql)
-    const msg = await chat.insertMessage({ cleanupId, userId: organizerId, body: "first draft" }, randomUUID())
+    const msg = await chat.insertMessage(
+      { cleanupId, userId: organizerId, body: "first draft" },
+      randomUUID(),
+    )
 
     const frames: { roomKey: string; frame: WsServerMessage }[] = []
     const service = makeService(frames)
@@ -184,14 +191,21 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     expect(updated.body).toBe("typo here")
     expect(updated.editedAt).toBeTruthy()
     expect(frames[0]!.roomKey).toBe(`report:${reportId}`)
-    expect(frames[0]!.frame).toMatchObject({ type: "message_update", roomKind: "report", roomId: reportId })
+    expect(frames[0]!.frame).toMatchObject({
+      type: "message_update",
+      roomKind: "report",
+      roomId: reportId,
+    })
   })
 
   it("rejects a non-sender with 403 code not_sender", async () => {
     const organizerId = await newUser("Edit Org NotSender")
     const cleanupId = await newCleanup(organizerId)
     const chat = makeDrizzleChatRepository(h.sql)
-    const msg = await chat.insertMessage({ cleanupId, userId: organizerId, body: "mine" }, randomUUID())
+    const msg = await chat.insertMessage(
+      { cleanupId, userId: organizerId, body: "mine" },
+      randomUUID(),
+    )
 
     const mallory = await newUser("Edit Mallory")
     await makeCleanupService({
@@ -214,7 +228,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     const organizerId = await newUser("Edit Org Old")
     const cleanupId = await newCleanup(organizerId)
     const chat = makeDrizzleChatRepository(h.sql)
-    const msg = await chat.insertMessage({ cleanupId, userId: organizerId, body: "old" }, randomUUID())
+    const msg = await chat.insertMessage(
+      { cleanupId, userId: organizerId, body: "old" },
+      randomUUID(),
+    )
     // Backdate past the 48h window (60h). The DEFAULT partition catches any out-of-range month.
     await h.sql`UPDATE chat_messages SET created_at = ${new Date(Date.now() - 60 * 3_600_000)} WHERE id = ${msg.id}`
 
@@ -233,7 +250,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     const organizerId = await newUser("Edit Org Deleted")
     const cleanupId = await newCleanup(organizerId)
     const chat = makeDrizzleChatRepository(h.sql)
-    const msg = await chat.insertMessage({ cleanupId, userId: organizerId, body: "gone" }, randomUUID())
+    const msg = await chat.insertMessage(
+      { cleanupId, userId: organizerId, body: "gone" },
+      randomUUID(),
+    )
     await chat.softDelete(cleanupId, msg.id, organizerId)
 
     await expect(
@@ -293,7 +313,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     const cleanupA = await newCleanup(organizerId)
     const cleanupB = await newCleanup(organizerId)
     const chat = makeDrizzleChatRepository(h.sql)
-    const msg = await chat.insertMessage({ cleanupId: cleanupA, userId: organizerId, body: "in A" }, randomUUID())
+    const msg = await chat.insertMessage(
+      { cleanupId: cleanupA, userId: organizerId, body: "in A" },
+      randomUUID(),
+    )
 
     await expect(
       makeService().editMessage({
@@ -321,7 +344,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     const organizerId = await newUser("Edit Org Left")
     const cleanupId = await newCleanup(organizerId)
     const chat = makeDrizzleChatRepository(h.sql)
-    const msg = await chat.insertMessage({ cleanupId, userId: organizerId, body: "was member" }, randomUUID())
+    const msg = await chat.insertMessage(
+      { cleanupId, userId: organizerId, body: "was member" },
+      randomUUID(),
+    )
     // Revoke the membership out from under the sender (same check the WS send path uses).
     await h.sql`DELETE FROM cleanup_members WHERE cleanup_id = ${cleanupId} AND user_id = ${organizerId}`
 
@@ -514,7 +540,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       const organizerId = await newUser("Route Del Org")
       const cleanupId = await newCleanup(organizerId)
       const chat = makeDrizzleChatRepository(h.sql)
-      const msg = await chat.insertMessage({ cleanupId, userId: organizerId, body: "delete me" }, randomUUID())
+      const msg = await chat.insertMessage(
+        { cleanupId, userId: organizerId, body: "delete me" },
+        randomUUID(),
+      )
 
       // Cleanup rooms use the BARE cleanupId as their room key.
       const watcher = new MockConnection("del-watcher")
@@ -545,7 +574,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       const organizerId = await newUser("Route Edit Limit")
       const cleanupId = await newCleanup(organizerId)
       const chat = makeDrizzleChatRepository(h.sql)
-      const msg = await chat.insertMessage({ cleanupId, userId: organizerId, body: "v0" }, randomUUID())
+      const msg = await chat.insertMessage(
+        { cleanupId, userId: organizerId, body: "v0" },
+        randomUUID(),
+      )
       const token = await authServices.sessions.createSession(organizerId, [])
 
       // Same pattern as the anon-routes 30/min test: earlier tests in this app already consumed a few
@@ -669,7 +701,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     }): Promise<Array<[string, Awaited<ReturnType<typeof call>>]>> {
       const ref = { roomKind: "report", roomId: room.reportId, messageId: room.messageId }
       return [
-        ["PATCH /messages", await call(room.tok, "PATCH", "/v1/messages", { ...ref, body: "edited" })],
+        [
+          "PATCH /messages",
+          await call(room.tok, "PATCH", "/v1/messages", { ...ref, body: "edited" }),
+        ],
         [
           "POST /messages/reactions",
           await call(room.tok, "POST", "/v1/messages/reactions", { ...ref, emoji: "like" }),

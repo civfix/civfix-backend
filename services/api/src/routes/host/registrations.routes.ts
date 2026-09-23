@@ -145,9 +145,7 @@ export function registerHostRegistrationRoutes(
       const { id, registrationId } = parse(RegistrationParamsSchema, request.params)
       const byHost = await ctx.guards().canManage(id, userId, "manage_event")
       if (!byHost) {
-        const mine = await ctx
-          .services()
-          .repo.findRegistration(id, registrationId)
+        const mine = await ctx.services().repo.findRegistration(id, registrationId)
         if (mine === null || mine.userId !== userId) {
           await ctx.guards().requireCapability(id, userId, "manage_event")
         }

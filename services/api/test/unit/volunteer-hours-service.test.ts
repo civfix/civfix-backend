@@ -42,7 +42,8 @@ function makeCleanups(
     load: () => Promise.resolve(view),
     listMemberIds: () => Promise.resolve(members),
     roleOf: (_cleanupId: string, userId: string) => {
-      if (view !== null && view.organizerUserId === userId) return Promise.resolve("organizer" as const)
+      if (view !== null && view.organizerUserId === userId)
+        return Promise.resolve("organizer" as const)
       if (cohosts.includes(userId)) return Promise.resolve("cohost" as const)
       if (members.includes(userId)) return Promise.resolve("member" as const)
       return Promise.resolve(null)
@@ -270,8 +271,16 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({ repo, view: doneEvent, members: [HOST, BOB, CAROL] })
 
-    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([CAROL, BOB], 2) })
-    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: [{ userId: BOB, hours: 3 }] })
+    await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: flat([CAROL, BOB], 2),
+    })
+    await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: [{ userId: BOB, hours: 3 }],
+    })
 
     expect((await repo.totalsFor(BOB)).totalHours).toBe(3)
     expect((await repo.totalsFor(CAROL)).totalHours).toBe(2)
@@ -368,14 +377,24 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
     const repo = new InMemoryVolunteerHoursRepository()
     const service = makeService({ repo, view: doneEvent, members: [HOST, BOB] })
     await expect(
-      service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: [{ userId: BOB, hours: 0.001 }] }),
+      service.logEventHours({
+        cleanupId: CLEANUP,
+        actorId: HOST,
+        entries: [{ userId: BOB, hours: 0.001 }],
+      }),
     ).rejects.toMatchObject({ code: "VALIDATION" })
     await service.logEventHours({
       cleanupId: CLEANUP,
       actorId: HOST,
       entries: [{ userId: BOB, hours: 3.14159 }],
     })
-    const page = await repo.entriesForCertificate({ userId: BOB, geoid: null, from: null, to: null, limit: 10 })
+    const page = await repo.entriesForCertificate({
+      userId: BOB,
+      geoid: null,
+      from: null,
+      to: null,
+      limit: 10,
+    })
     expect(page.items[0]?.hours).toBe(3.14)
   })
 
@@ -1187,7 +1206,12 @@ describe("#110: hours grouped by the organization that hosted the event", () => 
   it("hides a soft-deleted or suspended organization without changing the total", async () => {
     const repo = new InMemoryVolunteerHoursRepository()
     repo.seedOrganization({ id: ORG_A, slug: "coast-guard", name: "Coast Guard", deleted: true })
-    repo.seedOrganization({ id: ORG_B, slug: "river-keepers", name: "River Keepers", suspended: true })
+    repo.seedOrganization({
+      id: ORG_B,
+      slug: "river-keepers",
+      name: "River Keepers",
+      suspended: true,
+    })
     repo.seedCleanup(CLEANUP_A1, {
       title: "Sweep",
       referenceCode: null,

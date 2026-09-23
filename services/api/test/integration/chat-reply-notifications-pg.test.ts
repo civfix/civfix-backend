@@ -94,8 +94,12 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
   }
 
   /** All notification rows for a user, oldest-first. */
-  async function bellsFor(userId: string): Promise<Array<{ type: string; title: string; body: string | null; link: string | null }>> {
-    return await h.sql<Array<{ type: string; title: string; body: string | null; link: string | null }>>`
+  async function bellsFor(
+    userId: string,
+  ): Promise<Array<{ type: string; title: string; body: string | null; link: string | null }>> {
+    return await h.sql<
+      Array<{ type: string; title: string; body: string | null; link: string | null }>
+    >`
       SELECT type, title, body, link FROM notifications WHERE user_id = ${userId} ORDER BY created_at ASC
     `
   }
@@ -224,7 +228,13 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
       randomUUID(),
     )
     const reply = await chatRepo.insertMessage(
-      { cleanupId: reportId, roomKind: "report", userId: actor, body: "report reply", replyToId: original.id },
+      {
+        cleanupId: reportId,
+        roomKind: "report",
+        userId: actor,
+        body: "report reply",
+        replyToId: original.id,
+      },
       randomUUID(),
     )
 
@@ -312,7 +322,11 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
       { cleanupId: reportId, roomKind: "report", userId: author, body: `hey @${memberHandle}` },
       randomUUID(),
     )
-    await recordChatMentions(h.sql, message.id, resolved.map((m) => m.id))
+    await recordChatMentions(
+      h.sql,
+      message.id,
+      resolved.map((m) => m.id),
+    )
     const rows = await h.sql<{ mentioned_user_id: string }[]>`
       SELECT mentioned_user_id FROM chat_message_mentions WHERE message_id = ${message.id}
     `
@@ -351,7 +365,12 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
 
     // Reply to B's message: pierces the mute, reply-flavored title.
     const bMsg = await dm.persist({ threadId: thread.id, senderId: b, body: "b's message" })
-    const reply = await dm.persist({ threadId: thread.id, senderId: a, body: "re: b", replyToId: bMsg.id })
+    const reply = await dm.persist({
+      threadId: thread.id,
+      senderId: a,
+      body: "re: b",
+      replyToId: bMsg.id,
+    })
     await onDmDelivered(thread.id, b, reply)
     const bells = await bellsFor(b)
     expect(bells).toHaveLength(1)
@@ -399,7 +418,12 @@ describe.skipIf(!pg)("reply notifications + report @mentions (integration)", () 
 
     const onDmDelivered = makeDmBellNotifier(makeBellDeps())
     const bMsg = await dm.persist({ threadId: thread.id, senderId: b, body: "hello" })
-    const reply = await dm.persist({ threadId: thread.id, senderId: a, body: "re: hello", replyToId: bMsg.id })
+    const reply = await dm.persist({
+      threadId: thread.id,
+      senderId: a,
+      body: "re: hello",
+      replyToId: bMsg.id,
+    })
     await onDmDelivered(thread.id, b, reply)
 
     const bells = await bellsFor(b)

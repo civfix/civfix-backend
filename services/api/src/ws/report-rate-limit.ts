@@ -1,4 +1,3 @@
-
 export interface RateLimiter {
   tryConsume(key: string): boolean
 }
@@ -30,7 +29,10 @@ export function makeTokenBucketLimiter(opts: TokenBucketOptions): RateLimiter {
       for (const [k, b] of buckets) {
         if (scanned >= EVICT_PREFER_FULL_WINDOW) break
         scanned += 1
-        const refilled = Math.min(opts.capacity, b.tokens + ((t - b.last) / 1000) * opts.refillPerSec)
+        const refilled = Math.min(
+          opts.capacity,
+          b.tokens + ((t - b.last) / 1000) * opts.refillPerSec,
+        )
         if (refilled >= opts.capacity) {
           victim = k
           break

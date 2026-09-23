@@ -20,7 +20,6 @@ import { clientQuery } from "../helpers/query.js"
 import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
 import type { ReportOwner } from "../../src/services/report-service.js"
 
-
 const SIGNING_KEY = "test-anon-signing-key"
 const KEY_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
@@ -170,7 +169,11 @@ function mirrorHeldIntoReportRepo(h: Harness, reportId: string): void {
 describe("POST /anon/reports", () => {
   it("creates a HELD report (202) with a claim code and issues an anon token", async () => {
     const { app } = await makeHarness()
-    const res = await app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     expect(res.statusCode).toBe(202)
     const body = res.json()
     expect(body.status).toBe("held")
@@ -209,7 +212,11 @@ describe("POST /anon/reports", () => {
 
   it("replays the original response for a duplicate idempotency key (still 202, same report)", async () => {
     const { app, anonStore } = await makeHarness()
-    const first = await app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const firstBody = first.json()
     // The replay is the SAME anon session retrying: it carries the token the first submit issued,
     // which is what the snapshot is keyed by (F028).
@@ -227,7 +234,11 @@ describe("POST /anon/reports", () => {
 
   it("F028: a DIFFERENT anon session reusing the key gets 409, never the first submitter's snapshot", async () => {
     const { app, anonStore } = await makeHarness()
-    const first = await app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const firstBody = first.json()
 
     const other = await app.inject({
@@ -352,7 +363,11 @@ describe("held anon report stays hidden", () => {
 
   it("GET /anon/reports/:id/status 404s a wrong claim code (no enumeration)", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const { reportId } = submit.json()
     const status = await h.app.inject({
       method: "GET",
@@ -363,7 +378,11 @@ describe("held anon report stays hidden", () => {
 
   it("GET /anon/reports/:id/status 422s a missing claim code", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const { reportId } = submit.json()
     const status = await h.app.inject({ method: "GET", url: `/v1/anon/reports/${reportId}/status` })
     expect(status.statusCode).toBe(422)
@@ -371,7 +390,11 @@ describe("held anon report stays hidden", () => {
 
   it("P2-7: the status endpoint has a dedicated tighter per-IP limit (429 past 30/min)", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const { reportId } = submit.json()
     let saw429 = false
     for (let i = 0; i < 40; i++) {
@@ -392,7 +415,11 @@ describe("held anon report stays hidden", () => {
 describe("claim flow", () => {
   it("nudge -> sign-in -> claim links the report to the user (mine=true), single-use", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const { reportId } = submit.json()
     const anonToken = submit.headers["x-anon-token"] as string
     mirrorHeldIntoReportRepo(h, reportId)
@@ -445,7 +472,11 @@ describe("claim flow", () => {
 
   it("POST /claim/nudge falls back to the civfix_anon cookie when the body omits anonToken", async () => {
     const h = await makeHarness()
-    const submit = await h.app.inject({ method: "POST", url: "/v1/anon/reports", payload: anonPayload() })
+    const submit = await h.app.inject({
+      method: "POST",
+      url: "/v1/anon/reports",
+      payload: anonPayload(),
+    })
     const { reportId } = submit.json()
     const anonToken = submit.headers["x-anon-token"] as string
     mirrorHeldIntoReportRepo(h, reportId)

@@ -107,7 +107,9 @@ describe("OAuthService", () => {
   })
 
   it("accepts a native Apple token whose aud is the bundle id via extraAudiences", async () => {
-    const verifier = new CapturingVerifier(claims("apple-native-sub", "native@example.com", "Native User"))
+    const verifier = new CapturingVerifier(
+      claims("apple-native-sub", "native@example.com", "Native User"),
+    )
     const service = new OAuthService({
       config: {
         apple: {
@@ -130,9 +132,13 @@ describe("OAuthService", () => {
   })
 
   it("threads an expectedNonce through Google native sign-in to the verifier, and omits it when absent", async () => {
-    const verifier = new CapturingVerifier(claims("google-nonce-sub", "nonce@example.com", "Nonce User"))
+    const verifier = new CapturingVerifier(
+      claims("google-nonce-sub", "nonce@example.com", "Nonce User"),
+    )
     const service = new OAuthService({
-      config: { google: { clientId: "gid", clientSecret: "gsecret", redirectUri: "http://localhost/cb" } },
+      config: {
+        google: { clientId: "gid", clientSecret: "gsecret", redirectUri: "http://localhost/cb" },
+      },
       oauthStore: new InMemoryOAuthIdentityStore(),
       users: new InMemoryUserStore(),
       verifier,

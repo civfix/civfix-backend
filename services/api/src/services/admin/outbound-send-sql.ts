@@ -1,6 +1,9 @@
 import type { Queryable } from "../../db/client.js"
 import type { SqlFragment } from "./sql-fragments.js"
-import { ROUTE_CLAIM_STALE_SECONDS, ROUTE_DEADLINE_INFLIGHT_SECONDS } from "./outbound-send-policy.js"
+import {
+  ROUTE_CLAIM_STALE_SECONDS,
+  ROUTE_DEADLINE_INFLIGHT_SECONDS,
+} from "./outbound-send-policy.js"
 
 export function latestOutboundAttempt(sql: Queryable, threadRef: SqlFragment): SqlFragment {
   return sql`

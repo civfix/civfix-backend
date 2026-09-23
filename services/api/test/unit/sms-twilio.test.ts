@@ -14,9 +14,10 @@ function jsonResponse(status: number, body: unknown): Response {
   })
 }
 
-function senderWith(
-  respond: (recorded: Recorded) => Response | Promise<Response>,
-): { sender: TwilioSmsSender; calls: Recorded[] } {
+function senderWith(respond: (recorded: Recorded) => Response | Promise<Response>): {
+  sender: TwilioSmsSender
+  calls: Recorded[]
+} {
   const calls: Recorded[] = []
   const fetchImpl = ((url: string, init: RequestInit) => {
     const recorded = { url, init }
@@ -34,16 +35,16 @@ function senderWith(
 
 describe("TwilioSmsSender", () => {
   it("posts a form-encoded message with basic auth and returns the provider message id", async () => {
-    const { sender, calls } = senderWith(() => jsonResponse(201, { sid: "SM123", status: "queued" }))
+    const { sender, calls } = senderWith(() =>
+      jsonResponse(201, { sid: "SM123", status: "queued" }),
+    )
 
     await expect(sender.send("+15552223333", "your code is 424242")).resolves.toEqual({
       id: "SM123",
     })
 
     const call = calls[0]
-    expect(call?.url).toBe(
-      "https://api.twilio.com/2010-04-01/Accounts/AC0123456789/Messages.json",
-    )
+    expect(call?.url).toBe("https://api.twilio.com/2010-04-01/Accounts/AC0123456789/Messages.json")
     expect(call?.init.method).toBe("POST")
     const headers = call?.init.headers as Record<string, string>
     const expected = Buffer.from("AC0123456789:super-secret-token", "utf8").toString("base64")

@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import type {
   CreateNotificationInput,
@@ -325,4 +324,3 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve(out)
   }
 }
-

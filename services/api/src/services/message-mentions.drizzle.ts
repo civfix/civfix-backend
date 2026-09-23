@@ -57,7 +57,9 @@ export async function loadMentionsFor(
 ): Promise<Map<string, UserMentionDTO[]>> {
   const byMessage = new Map<string, UserMentionDTO[]>()
   if (messageIds.length === 0) return byMessage
-  const rows = await tag<{ mkey: string; id: string; handle: string | null; display_name: string }[]>`
+  const rows = await tag<
+    { mkey: string; id: string; handle: string | null; display_name: string }[]
+  >`
     SELECT m.${tag(idColumn)} AS mkey, u.id, u.handle, u.display_name
     FROM ${tag(table)} m
     JOIN users u ON u.id = m.mentioned_user_id

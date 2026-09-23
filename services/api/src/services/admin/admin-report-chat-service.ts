@@ -5,10 +5,7 @@ import {
   type ReportChatHistoryRequest,
 } from "@civfix/shared"
 import { chatHistoryPayload, type ChatHistorySource } from "../../routes/chat-route-helpers.js"
-import {
-  sendReportChatMessage,
-  type ReportChatSendDeps,
-} from "../report-chat-send.js"
+import { sendReportChatMessage, type ReportChatSendDeps } from "../report-chat-send.js"
 import type { AdminReportChatRepository } from "./admin-report-chat-repository.drizzle.js"
 
 export const ADMIN_REPORT_CHAT_HISTORY_DEFAULT = 30

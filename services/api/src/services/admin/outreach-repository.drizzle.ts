@@ -1,4 +1,3 @@
-
 import type { Sql } from "../../db/client.js"
 import {
   OUTREACH_CATEGORIES,

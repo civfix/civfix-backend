@@ -79,11 +79,18 @@ export function makeErrorHandler() {
     // @civfix/shared's zod and the API's zod: a ZodError thrown outside a route parse() (service-level
     // parse / .transform / nested parse) reaches the handler and must render as 422, never 500.
     if (error.name === "ZodError" && Array.isArray((error as { issues?: unknown }).issues)) {
-      const issues = (error as unknown as { issues: { path: (string | number)[]; message: string }[] }).issues
+      const issues = (
+        error as unknown as { issues: { path: (string | number)[]; message: string }[] }
+      ).issues
       const fields: Record<string, string> = {}
       for (const i of issues) fields[i.path.length ? i.path.join(".") : "_"] = i.message
       request.log.info({ requestId, fields }, "zod validation error")
-      const body: ErrorBody = { code: ErrorCode.VALIDATION, message: "Validation failed", requestId, fields }
+      const body: ErrorBody = {
+        code: ErrorCode.VALIDATION,
+        message: "Validation failed",
+        requestId,
+        fields,
+      }
       reply.status(422).send(body)
       return
     }
@@ -128,7 +135,10 @@ export function makeErrorHandler() {
 
 export function makeNotFoundHandler() {
   return function notFoundHandler(request: FastifyRequest, reply: FastifyReply): void {
-    request.log.info({ method: request.method, url: request.url, requestId: request.id }, "route not found")
+    request.log.info(
+      { method: request.method, url: request.url, requestId: request.id },
+      "route not found",
+    )
     const body: ErrorBody = {
       code: ErrorCode.NOT_FOUND,
       // Prod: static (stealth). Dev/test: echo method+url so route-coverage can tell an

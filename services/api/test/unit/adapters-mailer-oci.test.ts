@@ -1,11 +1,7 @@
-
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { AppError, ErrorCode, MailSendError } from "@civfix/shared"
 import type { OutboundEmail } from "@civfix/shared/interfaces"
-import {
-  OciMailer,
-  OCI_MAILER_DEFAULT_TIMEOUT_MS,
-} from "../../src/adapters/mailer.oci.js"
+import { OciMailer, OCI_MAILER_DEFAULT_TIMEOUT_MS } from "../../src/adapters/mailer.oci.js"
 import { mailFailure } from "../../src/adapters/mail-failure.js"
 
 interface SentMailArgs {

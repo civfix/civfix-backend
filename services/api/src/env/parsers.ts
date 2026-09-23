@@ -61,7 +61,10 @@ export function parseBounds(
 
 export function isCronish(raw: string | undefined): boolean {
   if (raw === undefined) return false
-  const fields = raw.trim().split(/\s+/).filter((f) => f.length > 0)
+  const fields = raw
+    .trim()
+    .split(/\s+/)
+    .filter((f) => f.length > 0)
   if (fields.length !== 5 && fields.length !== 6) return false
   return fields.every((f) => /^[\dA-Za-z*/,\-?#]+$/.test(f))
 }

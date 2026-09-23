@@ -25,7 +25,6 @@ import {
   type AnalyticsService,
 } from "../../src/services/admin/analytics-service.js"
 
-
 const NOW = new Date("2026-06-15T12:00:00.000Z")
 
 function harness(): { repo: InMemoryAnalyticsRepository; svc: AnalyticsService } {

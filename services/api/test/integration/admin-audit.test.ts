@@ -51,7 +51,13 @@ describe.skipIf(!pg)("admin audit repository (integration: real schema)", () => 
     })
     await writeAudit(h.sql, { actorId: actor, action: "user.banned", target: "user:222" })
 
-    const page = await repo.list({ actor: null, action: null, target: null, cursor: null, limit: 25 })
+    const page = await repo.list({
+      actor: null,
+      action: null,
+      target: null,
+      cursor: null,
+      limit: 25,
+    })
     expect(page.records).toHaveLength(2)
     // Newest first.
     expect(page.records[0]?.action).toBe("user.banned")
@@ -119,7 +125,13 @@ describe.skipIf(!pg)("admin audit repository (integration: real schema)", () => 
     for (let i = 0; i < 5; i++) {
       await writeAudit(h.sql, { actorId: actor, action: `a${i}`, target: `t${i}` })
     }
-    const first = await repo.list({ actor: null, action: null, target: null, cursor: null, limit: 2 })
+    const first = await repo.list({
+      actor: null,
+      action: null,
+      target: null,
+      cursor: null,
+      limit: 2,
+    })
     expect(first.records).toHaveLength(2)
     expect(first.nextCursor).not.toBeNull()
     const second = await repo.list({

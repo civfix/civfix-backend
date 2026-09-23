@@ -47,7 +47,10 @@ export async function resolveAndRecordChatMentions(
       roomId: input.roomId,
     })
     if (mentions.length > 0) {
-      await seam.recordChatMentions(input.messageId, mentions.map((m) => m.id))
+      await seam.recordChatMentions(
+        input.messageId,
+        mentions.map((m) => m.id),
+      )
     }
     return mentions
   } catch {
@@ -95,7 +98,9 @@ export function makeChatMentionResolver(
       const memberIds = new Set(await deps.listGroupMemberIds(input.roomId))
       return resolved.filter((m) => memberIds.has(m.id))
     }
-    const memberIds = new Set(await deps.listCleanupMemberIds(input.roomId, THREAD_SIGNAL_MEMBER_CAP))
+    const memberIds = new Set(
+      await deps.listCleanupMemberIds(input.roomId, THREAD_SIGNAL_MEMBER_CAP),
+    )
     return resolved.filter((m) => memberIds.has(m.id))
   }
 }

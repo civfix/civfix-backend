@@ -65,7 +65,9 @@ const ARRIVAL_BUCKET_MS = ARRIVAL_BUCKET_MINUTES * 60_000
 
 const SEEDED_EVENT_LEAD_MS = 7 * 24 * 60 * 60 * 1000
 
-function arrivalBuckets(seats: readonly { checkedInAt: Date | null }[]): { at: Date; count: number }[] {
+function arrivalBuckets(
+  seats: readonly { checkedInAt: Date | null }[],
+): { at: Date; count: number }[] {
   const byBucket = new Map<number, number>()
   for (const seat of seats) {
     if (seat.checkedInAt === null) continue
@@ -77,8 +79,13 @@ function arrivalBuckets(seats: readonly { checkedInAt: Date | null }[]): { at: D
     .map(([at, count]) => ({ at: new Date(at), count }))
 }
 
-function subjectMatches(record: { userId: string | null; guestId: string | null }, subject: RegistrationSubject): boolean {
-  return subject.kind === "user" ? record.userId === subject.userId : record.guestId === subject.guestId
+function subjectMatches(
+  record: { userId: string | null; guestId: string | null },
+  subject: RegistrationSubject,
+): boolean {
+  return subject.kind === "user"
+    ? record.userId === subject.userId
+    : record.guestId === subject.guestId
 }
 
 function withinWindow(now: Date, opensAt: Date | null, closesAt: Date | null): boolean {
@@ -101,7 +108,9 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
 
   constructor(private readonly newId: () => string = () => randomUUID()) {}
 
-  seedEvent(partial: Partial<EventRegistrationContext> & { cleanupId: string }): EventRegistrationContext {
+  seedEvent(
+    partial: Partial<EventRegistrationContext> & { cleanupId: string },
+  ): EventRegistrationContext {
     const event: EventRegistrationContext = {
       status: "upcoming",
       visibility: "public",
@@ -184,7 +193,9 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     return this.typesOf(cleanupId).map((t) => ({ ...t }))
   }
 
-  async listTicketTypesFor(cleanupIds: readonly string[]): Promise<Map<string, TicketTypeRecord[]>> {
+  async listTicketTypesFor(
+    cleanupIds: readonly string[],
+  ): Promise<Map<string, TicketTypeRecord[]>> {
     const out = new Map<string, TicketTypeRecord[]>()
     for (const id of cleanupIds) out.set(id, await this.listTicketTypes(id))
     return out
@@ -303,7 +314,10 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     return { kind: "updated", record: { ...record } }
   }
 
-  async deleteTicketType(cleanupId: string, ticketTypeId: string): Promise<DeleteTicketTypeOutcome> {
+  async deleteTicketType(
+    cleanupId: string,
+    ticketTypeId: string,
+  ): Promise<DeleteTicketTypeOutcome> {
     const record = this.ticketTypes.get(ticketTypeId)
     if (record === undefined || record.cleanupId !== cleanupId) return { kind: "not_found" }
     const referenced =
@@ -338,7 +352,9 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       .filter((q) => {
         if (opts === undefined || !("ticketTypeId" in opts)) return true
         const wanted = opts.ticketTypeId ?? null
-        return wanted === null ? q.ticketTypeId === null : q.ticketTypeId === null || q.ticketTypeId === wanted
+        return wanted === null
+          ? q.ticketTypeId === null
+          : q.ticketTypeId === null || q.ticketTypeId === wanted
       })
       .sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id))
       .map((q) => ({ ...q }))
@@ -404,7 +420,8 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
   }): RegistrationRecord | null {
     if ([...this.ticketTypes.values()].some((t) => t.cleanupId === args.cleanupId)) return null
     const active = [...this.registrations.values()].find(
-      (r) => r.cleanupId === args.cleanupId && r.status === "registered" && r.userId === args.userId,
+      (r) =>
+        r.cleanupId === args.cleanupId && r.status === "registered" && r.userId === args.userId,
     )
     if (active !== undefined) return null
     const id = this.newId()
@@ -471,7 +488,8 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
   }
 
   private toRecord(registration: MemoryRegistration): RegistrationRecord {
-    const type = registration.ticketTypeId === null ? null : this.ticketTypes.get(registration.ticketTypeId)
+    const type =
+      registration.ticketTypeId === null ? null : this.ticketTypes.get(registration.ticketTypeId)
     return {
       ...registration,
       ticketTypeName: type?.name ?? null,
@@ -504,11 +522,17 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     const replayed = this.idempotency.get(idempotencyKey)
     if (replayed !== undefined) {
       const existing = this.registrations.get(replayed)
-      return { kind: "replayed", registration: existing === undefined ? null : this.toRecord(existing) }
+      return {
+        kind: "replayed",
+        registration: existing === undefined ? null : this.toRecord(existing),
+      }
     }
 
     const active = [...this.registrations.values()].find(
-      (r) => r.cleanupId === args.cleanupId && r.status === "registered" && subjectMatches(r, args.subject),
+      (r) =>
+        r.cleanupId === args.cleanupId &&
+        r.status === "registered" &&
+        subjectMatches(r, args.subject),
     )
     if (active !== undefined) return { kind: "already_registered" }
 
@@ -531,7 +555,10 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
         if (args.accessCodeHash !== expected) return { kind: "access_code_invalid" }
       }
       if (partySize > type.maxPartySize) return { kind: "party_too_large" }
-      if (args.waitlistId === null && !withinWindow(args.now, type.salesOpensAt, type.salesClosesAt)) {
+      if (
+        args.waitlistId === null &&
+        !withinWindow(args.now, type.salesOpensAt, type.salesClosesAt)
+      ) {
         return { kind: "sales_closed" }
       }
       if (
@@ -596,7 +623,11 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       slotId: args.slotId,
       slotTitle: null,
       seats,
-      answersPreview: args.answers.map((a) => a.valueText).filter((v) => v !== null).join(" | ") || null,
+      answersPreview:
+        args.answers
+          .map((a) => a.valueText)
+          .filter((v) => v !== null)
+          .join(" | ") || null,
       answers: args.answers.map((a) => ({
         questionId: a.questionId,
         prompt: this.questions.get(a.questionId)?.prompt ?? "",
@@ -609,11 +640,13 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     this.idempotency.set(idempotencyKey, id)
     if (type !== null) this.recomputeSold(type.id)
 
-
     return { kind: "registered", registration: this.toRecord(registration) }
   }
 
-  async findRegistration(cleanupId: string, registrationId: string): Promise<RegistrationRecord | null> {
+  async findRegistration(
+    cleanupId: string,
+    registrationId: string,
+  ): Promise<RegistrationRecord | null> {
     const record = this.registrations.get(registrationId)
     if (record === undefined || record.cleanupId !== cleanupId) return null
     return this.toRecord(record)
@@ -671,7 +704,9 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
         rows = rows.filter((r) => r.seats.some((s) => s.checkedInAt !== null))
         break
       case "not_checked_in":
-        rows = rows.filter((r) => r.status === "registered" && r.seats.every((s) => s.checkedInAt === null))
+        rows = rows.filter(
+          (r) => r.status === "registered" && r.seats.every((s) => s.checkedInAt === null),
+        )
         break
       case "no_show":
         rows = rows.filter((r) => r.seats.some((s) => s.noShowAt !== null))
@@ -679,8 +714,11 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       default:
         break
     }
-    if (query.ticketTypeId !== null) rows = rows.filter((r) => r.ticketTypeId === query.ticketTypeId)
-    rows.sort((a, b) => b.registeredAt.getTime() - a.registeredAt.getTime() || b.id.localeCompare(a.id))
+    if (query.ticketTypeId !== null)
+      rows = rows.filter((r) => r.ticketTypeId === query.ticketTypeId)
+    rows.sort(
+      (a, b) => b.registeredAt.getTime() - a.registeredAt.getTime() || b.id.localeCompare(a.id),
+    )
     const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
     if (cursor !== null) {
       rows = rows.filter(
@@ -710,7 +748,11 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     return record.answers.map((a) => ({ ...a }))
   }
 
-  async setHostNote(cleanupId: string, registrationId: string, note: string | null): Promise<boolean> {
+  async setHostNote(
+    cleanupId: string,
+    registrationId: string,
+    note: string | null,
+  ): Promise<boolean> {
     const record = this.registrations.get(registrationId)
     if (record === undefined || record.cleanupId !== cleanupId) return false
     record.hostNote = note
@@ -736,7 +778,11 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
         this.recomputeSold(type.id)
       }
     }
-    return { kind: "cancelled", registration: this.toRecord(record), ticketTypeId: record.ticketTypeId }
+    return {
+      kind: "cancelled",
+      registration: this.toRecord(record),
+      ticketTypeId: record.ticketTypeId,
+    }
   }
 
   async removeRegistration(args: {
@@ -763,7 +809,11 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     now: Date
   }): Promise<TransferRegistrationOutcome> {
     const record = this.registrations.get(args.registrationId)
-    if (record === undefined || record.cleanupId !== args.cleanupId || record.status !== "registered") {
+    if (
+      record === undefined ||
+      record.cleanupId !== args.cleanupId ||
+      record.status !== "registered"
+    ) {
       return { kind: "not_found" }
     }
     if (record.ticketTypeId === args.ticketTypeId) return { kind: "same_type" }
@@ -828,7 +878,10 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       if (args.accessCodeHash !== expected) return { kind: "access_code_invalid" }
     }
     const registered = [...this.registrations.values()].some(
-      (r) => r.cleanupId === args.cleanupId && r.status === "registered" && subjectMatches(r, args.subject),
+      (r) =>
+        r.cleanupId === args.cleanupId &&
+        r.status === "registered" &&
+        subjectMatches(r, args.subject),
     )
     if (registered) return { kind: "already_registered" }
     const existing = [...this.waitlist.values()].find(
@@ -837,7 +890,8 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
         (w.status === "waiting" || w.status === "offered") &&
         subjectMatches(w, args.subject),
     )
-    if (existing !== undefined) return { kind: "already_waiting", entry: this.waitlistView(existing) }
+    if (existing !== undefined)
+      return { kind: "already_waiting", entry: this.waitlistView(existing) }
     const entry: WaitlistRecord = {
       id: this.newId(),
       cleanupId: args.cleanupId,
@@ -894,7 +948,9 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     let rows = [...this.waitlist.values()].filter((w) => w.cleanupId === args.cleanupId)
     if (args.ticketTypeId !== null) rows = rows.filter((w) => w.ticketTypeId === args.ticketTypeId)
     rows = rows.filter((w) =>
-      args.status === null ? w.status === "waiting" || w.status === "offered" : w.status === args.status,
+      args.status === null
+        ? w.status === "waiting" || w.status === "offered"
+        : w.status === args.status,
     )
     rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
     const page = rows.slice(0, args.limit)
@@ -934,7 +990,8 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     if (candidate === undefined) return null
     const type = this.ticketTypes.get(args.ticketTypeId)
     if (type === undefined) return null
-    if (type.capacity !== null && type.reservedSeats + candidate.partySize > type.capacity) return null
+    if (type.capacity !== null && type.reservedSeats + candidate.partySize > type.capacity)
+      return null
     type.reservedSeats += candidate.partySize
     const claimExpiresAt = new Date(args.now.getTime() + args.claimWindowMs)
     candidate.status = "offered"
@@ -1036,7 +1093,8 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       waitlistId: entry.id,
       now: args.now,
     })
-    if (outcome.kind === "registered") return { kind: "claimed", registration: outcome.registration }
+    if (outcome.kind === "registered")
+      return { kind: "claimed", registration: outcome.registration }
     if (outcome.kind === "replayed" && outcome.registration !== null) {
       return { kind: "claimed", registration: outcome.registration }
     }
@@ -1044,7 +1102,10 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     return { kind: "not_offered" }
   }
 
-  private seatById(cleanupId: string, seatId: string): { seat: SeatRecord; registration: MemoryRegistration } | null {
+  private seatById(
+    cleanupId: string,
+    seatId: string,
+  ): { seat: SeatRecord; registration: MemoryRegistration } | null {
     for (const registration of this.registrations.values()) {
       if (registration.cleanupId !== cleanupId) continue
       const seat = registration.seats.find((s) => s.id === seatId)
@@ -1136,7 +1197,8 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     for (const registration of this.registrations.values()) {
       if (registration.cleanupId !== args.cleanupId) continue
       for (const seat of registration.seats) {
-        if (seat.status !== "active" || seat.checkedInAt !== null || seat.noShowAt !== null) continue
+        if (seat.status !== "active" || seat.checkedInAt !== null || seat.noShowAt !== null)
+          continue
         if (args.seatIds !== null && !args.seatIds.includes(seat.id)) continue
         seat.noShowAt = args.now
         marked += 1
@@ -1154,7 +1216,8 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       if (endsAtMs === null || endsAtMs + LIVE_TAIL_MS > args.now.getTime()) continue
       for (const seat of registration.seats) {
         if (marked >= args.limit) return marked
-        if (seat.status !== "active" || seat.checkedInAt !== null || seat.noShowAt !== null) continue
+        if (seat.status !== "active" || seat.checkedInAt !== null || seat.noShowAt !== null)
+          continue
         seat.noShowAt = args.now
         marked += 1
       }
@@ -1171,7 +1234,9 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       registered: active.reduce((sum, r) => sum + r.partySize, 0),
       checkedIn: seats.filter((s) => s.status === "active" && s.checkedInAt !== null).length,
       waitlisted: [...this.waitlist.values()]
-        .filter((w) => w.cleanupId === cleanupId && (w.status === "waiting" || w.status === "offered"))
+        .filter(
+          (w) => w.cleanupId === cleanupId && (w.status === "waiting" || w.status === "offered"),
+        )
         .reduce((sum, w) => sum + w.partySize, 0),
       noShow: seats.filter((s) => s.status === "active" && s.noShowAt !== null).length,
       capacity:
@@ -1191,7 +1256,9 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
           .flatMap((r) => r.seats)
           .filter((s) => s.checkedInAt !== null).length,
         waitlisted: [...this.waitlist.values()]
-          .filter((w) => w.ticketTypeId === type.id && (w.status === "waiting" || w.status === "offered"))
+          .filter(
+            (w) => w.ticketTypeId === type.id && (w.status === "waiting" || w.status === "offered"),
+          )
           .reduce((sum, w) => sum + w.partySize, 0),
         capacity: type.capacity,
       })),
@@ -1274,10 +1341,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
   readonly mediaKeys = new Map<string, string>()
   readonly pageMedia = new Map<string, Set<string>>()
 
-  async mediaKeysFor(
-    cleanupId: string,
-    mediaIds: readonly string[],
-  ): Promise<Map<string, string>> {
+  async mediaKeysFor(cleanupId: string, mediaIds: readonly string[]): Promise<Map<string, string>> {
     const out = new Map<string, string>()
     const bound = this.pageMedia.get(cleanupId) ?? new Set<string>()
     const cover = this.pages.get(cleanupId)?.coverMediaId ?? null

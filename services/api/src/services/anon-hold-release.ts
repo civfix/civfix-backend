@@ -1,4 +1,3 @@
-
 import type { AbuseChecks } from "@civfix/shared/interfaces"
 import type { LatLng } from "@civfix/shared"
 

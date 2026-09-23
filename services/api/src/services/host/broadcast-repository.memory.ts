@@ -117,11 +117,17 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   }
 
   seedMembers(cleanupId: string, rows: readonly MemoryMember[]): void {
-    this.members.set(cleanupId, rows.map((row) => ({ registered: true, ...row })))
+    this.members.set(
+      cleanupId,
+      rows.map((row) => ({ registered: true, ...row })),
+    )
   }
 
   seedGuests(cleanupId: string, rows: readonly MemoryGuest[]): void {
-    this.guests.set(cleanupId, rows.map((row) => ({ registered: true, ...row })))
+    this.guests.set(
+      cleanupId,
+      rows.map((row) => ({ registered: true, ...row })),
+    )
   }
 
   forceCreatedAt(broadcastId: string, at: Date): void {
@@ -370,7 +376,10 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     return Promise.resolve(next)
   }
 
-  markPlanned(broadcastId: string, args: { recipientCount: number; plannedAt: Date }): Promise<boolean> {
+  markPlanned(
+    broadcastId: string,
+    args: { recipientCount: number; plannedAt: Date },
+  ): Promise<boolean> {
     const found = this.broadcasts.get(broadcastId)
     if (!found || found.plannedAt !== null) return Promise.resolve(false)
     let highestChunk = -1
@@ -413,7 +422,9 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   listStaleSending(staleBefore: Date, limit: number): Promise<string[]> {
     return Promise.resolve(
       [...this.broadcasts.values()]
-        .filter((b) => b.status === "sending" && (b.updatedAt?.getTime() ?? 0) < staleBefore.getTime())
+        .filter(
+          (b) => b.status === "sending" && (b.updatedAt?.getTime() ?? 0) < staleBefore.getTime(),
+        )
         .slice(0, limit)
         .map((b) => b.id),
     )
@@ -473,7 +484,8 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
       if (claimed.length >= args.limit) break
       if (row.broadcastId !== args.broadcastId || row.chunkNo !== args.chunkNo) continue
       if (row.attempts >= args.maxAttempts) continue
-      const stale = row.status === "in_flight" && row.updatedAt.getTime() < args.staleBefore.getTime()
+      const stale =
+        row.status === "in_flight" && row.updatedAt.getTime() < args.staleBefore.getTime()
       if (row.status !== "pending" && !stale) continue
       row.status = "in_flight"
       row.attempts += 1
@@ -689,7 +701,9 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     subjectKind: "user" | "guest"
     subjectId: string
   }): Promise<void> {
-    this.unsubscribes.add(`${args.scope}|${args.cleanupId ?? ""}|${args.subjectKind}|${args.subjectId}`)
+    this.unsubscribes.add(
+      `${args.scope}|${args.cleanupId ?? ""}|${args.subjectKind}|${args.subjectId}`,
+    )
     return Promise.resolve()
   }
 

@@ -119,7 +119,10 @@ function repoOver(over: Partial<PostRepository>): PostRepository {
   } as PostRepository
 }
 
-function recordingChannel(): { channel: UserChannel; sent: Array<{ users: string[]; signal: UserSignal }> } {
+function recordingChannel(): {
+  channel: UserChannel
+  sent: Array<{ users: string[]; signal: UserSignal }>
+} {
   const sent: Array<{ users: string[]; signal: UserSignal }> = []
   const channel = {
     subscribeUser: () => Promise.resolve(() => Promise.resolve()),
@@ -524,11 +527,13 @@ describe("ranked feed: a signed-out reader keeps scrolling", () => {
     let cursor: string | undefined = first.nextCursor ?? undefined
     seen.push(...first.items.map((item) => item.id))
     while (cursor !== undefined) {
-      const page: { items: PostDTO[]; nextCursor: string | null } = await guestService().publicFeed({
-        filter: "all",
-        limit: 20,
-        cursor,
-      })
+      const page: { items: PostDTO[]; nextCursor: string | null } = await guestService().publicFeed(
+        {
+          filter: "all",
+          limit: 20,
+          cursor,
+        },
+      )
       seen.push(...page.items.map((item) => item.id))
       cursor = page.nextCursor ?? undefined
     }
@@ -996,7 +1001,13 @@ describe("ranked feed: realtime fanout never blocks the request path", () => {
     })
 
     await svc.createPost(
-      { kind: "post", body: "reply", replyToId: REPOST, mediaUploadIds: [], mentionedUserIds: [] } as never,
+      {
+        kind: "post",
+        body: "reply",
+        replyToId: REPOST,
+        mediaUploadIds: [],
+        mentionedUserIds: [],
+      } as never,
       VIEWER,
     )
 

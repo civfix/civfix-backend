@@ -107,13 +107,19 @@ export async function main(): Promise<void> {
   const prngSeed = Number(argValue("--seed") ?? 20260902)
   rand = mulberry32(prngSeed)
 
-  if (!eventRef) throw new Error("--event <reference-code|uuid> is required (e.g. --event 1695-000006)")
-  if (!Number.isInteger(count) || count < 1 || count > 200) throw new Error("--count must be 1..200")
+  if (!eventRef)
+    throw new Error("--event <reference-code|uuid> is required (e.g. --event 1695-000006)")
+  if (!Number.isInteger(count) || count < 1 || count > 200)
+    throw new Error("--count must be 1..200")
   const databaseUrl = process.env.DATABASE_URL
   if (!databaseUrl) throw new Error("DATABASE_URL is required")
 
   console.log(`target database: ${new URL(databaseUrl).host}`)
-  console.log(commit ? "mode: COMMIT" : "mode: rehearsal (runs everything, then ROLLBACK; pass --yes to commit)")
+  console.log(
+    commit
+      ? "mode: COMMIT"
+      : "mode: rehearsal (runs everything, then ROLLBACK; pass --yes to commit)",
+  )
 
   const handle = makeDb(databaseUrl, { max: 1, statementTimeoutMs: 0, idleInTxTimeoutMs: 0 })
   const ROLLBACK = Symbol("rollback")
@@ -133,9 +139,13 @@ export async function main(): Promise<void> {
           Date.now(),
         )
         if (derived === "done" || derived === "cancelled") {
-          throw new Error(`event "${event.title}" is ${derived}; the live join path refuses closed events`)
+          throw new Error(
+            `event "${event.title}" is ${derived}; the live join path refuses closed events`,
+          )
         }
-        console.log(`event: ${event.title} (${derived}, scheduled ${event.scheduled_at.toISOString()})`)
+        console.log(
+          `event: ${event.title} (${derived}, scheduled ${event.scheduled_at.toISOString()})`,
+        )
 
         // Demo users not already members, not banned, not the organizer; skip soft-deleted.
         const candidates = await tx<{ id: string; handle: string; created_at: Date }[]>`
@@ -148,7 +158,9 @@ export async function main(): Promise<void> {
             AND NOT EXISTS (SELECT 1 FROM cleanup_bans b WHERE b.cleanup_id = ${event.id} AND b.user_id = u.id)
         `
         if (candidates.length === 0) {
-          throw new Error(`no eligible demo users found (@${DEMO_EMAIL_DOMAIN}); run seed-demo-la first`)
+          throw new Error(
+            `no eligible demo users found (@${DEMO_EMAIL_DOMAIN}); run seed-demo-la first`,
+          )
         }
 
         // Respect the RSVP capacity the way goingCount measures it: members + non-cancelled guests.
@@ -177,12 +189,19 @@ export async function main(): Promise<void> {
         )
 
         const memberRows = joiners
-          .map((u) => ({ cleanup_id: event.id, user_id: u.id, role: "member", joined_at: joinTimestamp(windowStart, now) }))
+          .map((u) => ({
+            cleanup_id: event.id,
+            user_id: u.id,
+            role: "member",
+            joined_at: joinTimestamp(windowStart, now),
+          }))
           .sort((a, b) => a.joined_at.getTime() - b.joined_at.getTime())
         await tx`INSERT INTO cleanup_members ${tx(memberRows)}`
 
         // Some joiners claim an open signup slot, respecting per-slot capacity + one-claim-per-person.
-        const slots = await tx<{ id: string; title: string; capacity: number | null; claims: number }[]>`
+        const slots = await tx<
+          { id: string; title: string; capacity: number | null; claims: number }[]
+        >`
           SELECT s.id, s.title, s.capacity,
                  (SELECT count(*)::int FROM cleanup_slot_claims c WHERE c.slot_id = s.id) AS claims
           FROM cleanup_slots s WHERE s.cleanup_id = ${event.id}
@@ -193,7 +212,9 @@ export async function main(): Promise<void> {
           const open = slots.map((s) => ({ ...s, claims: Number(s.claims) }))
           for (const m of memberRows) {
             if (!chance(0.45)) continue
-            const slot = shuffle(open.filter((s) => s.capacity === null || s.claims < s.capacity))[0]
+            const slot = shuffle(
+              open.filter((s) => s.capacity === null || s.claims < s.capacity),
+            )[0]
             if (!slot) break
             slot.claims++
             claimed++
@@ -206,7 +227,9 @@ export async function main(): Promise<void> {
         }
 
         const handles = joiners.map((u) => `@${u.handle}`).join(", ")
-        console.log(`joining ${memberRows.length} demo users${claimed > 0 ? ` (${claimed} slot claims)` : ""}:`)
+        console.log(
+          `joining ${memberRows.length} demo users${claimed > 0 ? ` (${claimed} slot claims)` : ""}:`,
+        )
         console.log(`  ${handles}`)
 
         // Verify: capacity + slot invariants still hold after the writes.
@@ -215,14 +238,16 @@ export async function main(): Promise<void> {
           WHERE s.cleanup_id = ${event.id} AND s.capacity IS NOT NULL
             AND (SELECT count(*) FROM cleanup_slot_claims c WHERE c.slot_id = s.id) > s.capacity
         `
-        if (Number(overCap?.n ?? 0) > 0) throw new Error("verification failed: a slot is over capacity")
+        if (Number(overCap?.n ?? 0) > 0)
+          throw new Error("verification failed: a slot is over capacity")
         if (event.capacity !== null) {
           const [going] = await tx<{ n: number }[]>`
             SELECT (SELECT count(*)::int FROM cleanup_members m WHERE m.cleanup_id = ${event.id})
                  + (SELECT count(*)::int FROM cleanup_guests g
                     WHERE g.cleanup_id = ${event.id} AND g.cancelled_at IS NULL) AS n
           `
-          if (Number(going?.n ?? 0) > event.capacity) throw new Error("verification failed: event over capacity")
+          if (Number(going?.n ?? 0) > event.capacity)
+            throw new Error("verification failed: event over capacity")
         }
 
         if (!commit) throw ROLLBACK

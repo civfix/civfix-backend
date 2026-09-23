@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import {
@@ -246,7 +245,9 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
       messageId: "<lease@lacity.gov>",
     })
 
-    expect(await repo.claimMessageEffects(msg!.id, { leaseBefore: new Date(Date.now() - 600_000) })).toBe(0)
+    expect(
+      await repo.claimMessageEffects(msg!.id, { leaseBefore: new Date(Date.now() - 600_000) }),
+    ).toBe(0)
     await repo.setMessageEffectsStage(msg!.id, 1)
 
     expect(

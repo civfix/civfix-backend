@@ -86,10 +86,7 @@ export function assertOutboundSendPolicy(input: {
         `(a larger phase budget lets one send outlive the ${ROUTE_DEADLINE_INFLIGHT_SECONDS}s in-flight guard)`,
     )
   }
-  if (
-    errors.length === 0 &&
-    inflightWindowSeconds(input) > ROUTE_DEADLINE_INFLIGHT_SECONDS
-  ) {
+  if (errors.length === 0 && inflightWindowSeconds(input) > ROUTE_DEADLINE_INFLIGHT_SECONDS) {
     errors.push(
       `OCI_EMAIL_SMTP_TIMEOUT_MS / OUTBOUND_SEND_MIN_THROUGHPUT_BPS: the largest computable send ` +
         `deadline exceeds the ${ROUTE_DEADLINE_INFLIGHT_SECONDS}s in-flight guard`,

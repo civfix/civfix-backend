@@ -1,4 +1,3 @@
-
 import { createHash } from "node:crypto"
 import { MAX_CERTIFICATE_ENTRIES } from "@civfix/shared"
 import type { VolunteerHoursSource } from "@civfix/shared"

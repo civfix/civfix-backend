@@ -3,12 +3,14 @@ import { FakeInboundMail, FakeStorage } from "@civfix/shared/fakes"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
 import { runInboundSweep } from "../../src/services/admin/inbound-sweep.js"
-import { INBOUND_PENDING_PREFIX, type InboundProcessorDeps } from "../../src/services/admin/inbound-processor.js"
+import {
+  INBOUND_PENDING_PREFIX,
+  type InboundProcessorDeps,
+} from "../../src/services/admin/inbound-processor.js"
 import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
 import { RecordingNotifier } from "../helpers/notifications.js"
 import { JURISDICTION_REPLY_NOTE } from "../../src/services/admin/inbound-thread-correlation.js"
 import type { Container } from "../../src/di.js"
-
 
 function rfc822(to: string, body = "x", messageId?: string): Buffer {
   const lines = [`From: c@city.gov`, `To: ${to}`]
@@ -21,7 +23,12 @@ function harness() {
   const storage = new FakeStorage()
   const mailRepo = new InMemoryMailRepository()
   const inboundRepo = new InMemoryInboundRepository()
-  const deps: InboundProcessorDeps = { storage, inboundMail: new FakeInboundMail(), mailRepo, inboundRepo }
+  const deps: InboundProcessorDeps = {
+    storage,
+    inboundMail: new FakeInboundMail(),
+    mailRepo,
+    inboundRepo,
+  }
   const container = { env: {}, storage } as unknown as Container
   return { storage, mailRepo, inboundRepo, deps, container }
 }
@@ -30,7 +37,10 @@ describe("runInboundSweep", () => {
   it("drains all pending catch-all objects and deletes each", async () => {
     const h = harness()
     for (let i = 0; i < 4; i++) {
-      await h.storage.put(`${INBOUND_PENDING_PREFIX}m${i}.eml`, rfc822("support@civfix.org", `q${i}`, `<m${i}@x>`))
+      await h.storage.put(
+        `${INBOUND_PENDING_PREFIX}m${i}.eml`,
+        rfc822("support@civfix.org", `q${i}`, `<m${i}@x>`),
+      )
     }
     const result = await runInboundSweep(h.container, { deps: h.deps })
     expect(result.scanned).toBe(4)
@@ -42,7 +52,10 @@ describe("runInboundSweep", () => {
   it("honors a bounded batch so a backlog drains across runs", async () => {
     const h = harness()
     for (let i = 0; i < 5; i++) {
-      await h.storage.put(`${INBOUND_PENDING_PREFIX}m${i}.eml`, rfc822("hi@civfix.org", `q${i}`, `<b${i}@x>`))
+      await h.storage.put(
+        `${INBOUND_PENDING_PREFIX}m${i}.eml`,
+        rfc822("hi@civfix.org", `q${i}`, `<b${i}@x>`),
+      )
     }
     const result = await runInboundSweep(h.container, { batch: 2, deps: h.deps })
     expect(result.scanned).toBe(2)
@@ -90,8 +103,14 @@ describe("runInboundSweep", () => {
 
   it("isolates a poison object: it is parked under failed/ while the rest process", async () => {
     const h = harness()
-    await h.storage.put(`${INBOUND_PENDING_PREFIX}good.eml`, rfc822("support@civfix.org", "ok", "<g@x>"))
-    await h.storage.put(`${INBOUND_PENDING_PREFIX}good2.eml`, rfc822("hello@civfix.org", "ok2", "<g2@x>"))
+    await h.storage.put(
+      `${INBOUND_PENDING_PREFIX}good.eml`,
+      rfc822("support@civfix.org", "ok", "<g@x>"),
+    )
+    await h.storage.put(
+      `${INBOUND_PENDING_PREFIX}good2.eml`,
+      rfc822("hello@civfix.org", "ok2", "<g2@x>"),
+    )
     const result = await runInboundSweep(h.container, { deps: h.deps })
     expect(result.scanned).toBe(2)
     expect(result.errors).toBe(0)
@@ -240,7 +259,9 @@ describe("runInboundSweep: side-effect re-drive", () => {
       now: () => new Date(Date.UTC(2030, 0, 1)),
     })
 
-    expect(warnings).toContainEqual(expect.objectContaining({ threadId: thread.id, err: "db down" }))
+    expect(warnings).toContainEqual(
+      expect.objectContaining({ threadId: thread.id, err: "db down" }),
+    )
     expect(res.effectsErrors).toBe(1)
     expect(res.effectsRedriven).toBe(0)
     const stored = h.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")

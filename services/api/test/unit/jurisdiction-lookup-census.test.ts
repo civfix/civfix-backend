@@ -10,7 +10,6 @@ import {
   type JurisdictionLookupResult,
 } from "../../src/adapters/jurisdiction-lookup.census.js"
 
-
 const BASE_URL = "https://example.test/geocoder/geographies/coordinates"
 
 function body(geographies: Record<string, unknown>): unknown {
@@ -62,9 +61,7 @@ describe("parseCensusGeographies (pure)", () => {
 
   it("returns null when all three collections are present but empty", () => {
     expect(
-      parseCensusGeographies(
-        body({ "Incorporated Places": [], Counties: [], States: [] }),
-      ),
+      parseCensusGeographies(body({ "Incorporated Places": [], Counties: [], States: [] })),
     ).toBeNull()
   })
 
@@ -78,9 +75,7 @@ describe("parseCensusGeographies (pure)", () => {
       ),
     ).toBeNull()
     expect(
-      parseCensusGeographies(
-        body({ "Incorporated Places": [{ GEOID: "0644000", NAME: "   " }] }),
-      ),
+      parseCensusGeographies(body({ "Incorporated Places": [{ GEOID: "0644000", NAME: "   " }] })),
     ).toBeNull()
   })
 

@@ -25,7 +25,11 @@ export function domainOfOrNull(addr: string | null | undefined): string | null {
   if (!addr) return null
   const at = addr.lastIndexOf("@")
   if (at < 0) return null
-  const domain = addr.slice(at + 1).replace(/>.*$/, "").trim().toLowerCase()
+  const domain = addr
+    .slice(at + 1)
+    .replace(/>.*$/, "")
+    .trim()
+    .toLowerCase()
   return domain.length > 0 ? domain : null
 }
 

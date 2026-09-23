@@ -89,5 +89,4 @@ export async function registerUnsubscribeRoutes(
       },
     )
   })
-
 }

@@ -125,8 +125,7 @@ export async function registerMediaRoutes(
   }
 
   function service(): MediaIntakeService {
-    const repo: MediaRepository =
-      app.mediaRepo ?? makeDrizzleMediaRepository(container.getDb().db)
+    const repo: MediaRepository = app.mediaRepo ?? makeDrizzleMediaRepository(container.getDb().db)
     // An injected authorizer wins (tests). Otherwise: the DB-backed one when there is no injected repo
     // (i.e. production), and the service's fail-closed default when an in-memory repo is in play.
     const authorizer =
@@ -151,7 +150,10 @@ export async function registerMediaRoutes(
     { config: { rateLimit: MEDIA_WRITE_RATE_LIMIT } },
     async (request, reply) => {
       const body = parse(CreateMediaUploadRequestSchema, request.body)
-      const payload: CreateMediaUploadResponse = await service().createUpload(body, ownerOf(request))
+      const payload: CreateMediaUploadResponse = await service().createUpload(
+        body,
+        ownerOf(request),
+      )
       reply.status(200).send(payload)
     },
   )

@@ -1,4 +1,3 @@
-
 import { describe, it, expect } from "vitest"
 import { readdirSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
@@ -48,7 +47,11 @@ import {
   CERTIFICATE_REVOKE_RATE_LIMIT,
   CERTIFICATE_VERIFY_RATE_LIMIT,
 } from "../../src/routes/service-hours-certificates.routes.js"
-import { OTP_REQUEST_RATE_LIMIT, OTP_VERIFY_RATE_LIMIT, OAUTH_RATE_LIMIT } from "../../src/routes/auth.routes.js"
+import {
+  OTP_REQUEST_RATE_LIMIT,
+  OTP_VERIFY_RATE_LIMIT,
+  OAUTH_RATE_LIMIT,
+} from "../../src/routes/auth.routes.js"
 import { HOME_TURF_RATE_LIMIT } from "../../src/routes/forms.routes.js"
 import {
   GUEST_RSVP_REQUEST_RATE_LIMIT,
@@ -185,11 +188,9 @@ async function buildApp(
     { config: { rateLimit: ADMIN_OUTBOUND_MAIL_RATE_LIMIT } },
     async () => ({ ok: true }),
   )
-  app.post(
-    "/v1/me/data-export",
-    { config: { rateLimit: DATA_EXPORT_RATE_LIMIT } },
-    async () => ({ ok: true }),
-  )
+  app.post("/v1/me/data-export", { config: { rateLimit: DATA_EXPORT_RATE_LIMIT } }, async () => ({
+    ok: true,
+  }))
   await app.ready()
   return app
 }
@@ -736,7 +737,9 @@ describe("rate limiter: authenticated route buckets key by user (CVX-012)", () =
     expect(() =>
       app.post(
         "/v1/hand-rolled",
-        { config: { rateLimit: { max: 100, timeWindow: "1 minute", keyGenerator: () => "user:x" } } },
+        {
+          config: { rateLimit: { max: 100, timeWindow: "1 minute", keyGenerator: () => "user:x" } },
+        },
         async () => ({ ok: true }),
       ),
     ).toThrow(/perIdentity\(\) or perHost\(\)/)

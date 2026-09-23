@@ -1,4 +1,3 @@
-
 import {
   OpenDmRequestSchema,
   DmHistoryQuerySchema,
@@ -136,7 +135,11 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     async (request, reply) => {
       const userId = requireAuth(request)
       const { threadId, messageId } = parse(ThreadMessageParamsSchema, request.params)
-      const body = parse(EditDmMessageBodySchema, { ...(request.body as object), threadId, messageId })
+      const body = parse(EditDmMessageBodySchema, {
+        ...(request.body as object),
+        threadId,
+        messageId,
+      })
 
       const edits = makeChatEditService({
         dm: dmRepo(),
@@ -203,7 +206,11 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
       const { threadId, messageId } = parse(ThreadMessageParamsSchema, request.params)
       await authorizePeer(threadId, userId, "You can't delete this message.")
 
-      const tombstone: ChatMessageDTO | null = await dmRepo().softDelete(threadId, messageId, userId)
+      const tombstone: ChatMessageDTO | null = await dmRepo().softDelete(
+        threadId,
+        messageId,
+        userId,
+      )
       if (tombstone === null) {
         const meta = await dmRepo().findMessageMeta(messageId)
         if (

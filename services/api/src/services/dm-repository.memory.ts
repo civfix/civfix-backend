@@ -1,13 +1,8 @@
-
 import { randomUUID } from "node:crypto"
 import { avatarGradient, AppError } from "@civfix/shared"
 import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
-import {
-  REPLY_EXCERPT_MAX,
-  replyDeletedTarget,
-  replyWrongRoom,
-} from "./chat-reply-hydration.js"
+import { REPLY_EXCERPT_MAX, replyDeletedTarget, replyWrongRoom } from "./chat-reply-hydration.js"
 import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { aroundLimits } from "./chat-history-window.js"
@@ -75,7 +70,9 @@ export class InMemoryDmRepository implements DmRepository {
   }
 
   private userOf(id: string): DmUser {
-    return this.users.get(id) ?? { id, displayName: `User ${id.slice(0, 4)}`, handle: null, bio: null }
+    return (
+      this.users.get(id) ?? { id, displayName: `User ${id.slice(0, 4)}`, handle: null, bio: null }
+    )
   }
 
   private nextDate(): Date {
@@ -105,7 +102,12 @@ export class InMemoryDmRepository implements DmRepository {
     const key = `${lo}:${hi}`
     const existingId = this.byPair.get(key)
     if (existingId) return Promise.resolve(this.threads.get(existingId)!)
-    const thread: DmThread = { id: randomUUID(), userLo: lo, userHi: hi, createdAt: this.nextDate() }
+    const thread: DmThread = {
+      id: randomUUID(),
+      userLo: lo,
+      userHi: hi,
+      createdAt: this.nextDate(),
+    }
     this.threads.set(thread.id, thread)
     this.byPair.set(key, thread.id)
     return Promise.resolve(thread)
@@ -251,7 +253,10 @@ export class InMemoryDmRepository implements DmRepository {
       })
       .slice(0, PIN_LIST_CAP)
       .map((m) =>
-        this.withReply(threadId, { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }),
+        this.withReply(threadId, {
+          ...m.dto,
+          reactions: this.reactionsFor(m.dto.id, viewerUserId),
+        }),
       )
     return Promise.resolve(pins)
   }
@@ -273,7 +278,10 @@ export class InMemoryDmRepository implements DmRepository {
     const ordered = afterAnchor
       .filter((m) => !m.deleted)
       .map((m) =>
-        this.withReply(threadId, { ...m.dto, reactions: this.reactionsFor(m.dto.id, viewerUserId) }),
+        this.withReply(threadId, {
+          ...m.dto,
+          reactions: this.reactionsFor(m.dto.id, viewerUserId),
+        }),
       )
     const page = ordered.slice(0, limit)
     const nextCursor = ordered.length > limit ? (page[page.length - 1]?.id ?? null) : null
@@ -336,7 +344,10 @@ export class InMemoryDmRepository implements DmRepository {
     const stored = (this.log.get(threadId) ?? []).find((m) => m.dto.id === messageId && !m.deleted)
     if (!stored) return Promise.resolve(null)
     return Promise.resolve(
-      this.withReply(threadId, { ...stored.dto, reactions: this.reactionsFor(messageId, viewerUserId) }),
+      this.withReply(threadId, {
+        ...stored.dto,
+        reactions: this.reactionsFor(messageId, viewerUserId),
+      }),
     )
   }
 
@@ -380,9 +391,7 @@ export class InMemoryDmRepository implements DmRepository {
     )
     const unread = (this.log.get(threadId) ?? []).filter(
       (m) =>
-        !m.deleted &&
-        m.dto.from?.id !== userId &&
-        new Date(m.dto.createdAt).getTime() > baseline,
+        !m.deleted && m.dto.from?.id !== userId && new Date(m.dto.createdAt).getTime() > baseline,
     ).length
     return Promise.resolve(unread)
   }
@@ -432,7 +441,11 @@ export class InMemoryDmRepository implements DmRepository {
         },
         last:
           last !== null
-            ? { body: last.body ?? null, createdAt: new Date(last.createdAt), senderId: lastSenderId(last) }
+            ? {
+                body: last.body ?? null,
+                createdAt: new Date(last.createdAt),
+                senderId: lastSenderId(last),
+              }
             : null,
         unread,
       })

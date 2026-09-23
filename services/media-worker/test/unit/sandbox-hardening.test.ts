@@ -1,4 +1,3 @@
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const execaMock = vi.fn()
@@ -41,7 +40,13 @@ let saved: NodeJS.ProcessEnv
 beforeEach(() => {
   saved = envSnapshot()
   execaMock.mockReset()
-  execaMock.mockResolvedValue({ stdout: "", stderr: "", exitCode: 0, failed: false, timedOut: false })
+  execaMock.mockResolvedValue({
+    stdout: "",
+    stderr: "",
+    exitCode: 0,
+    failed: false,
+    timedOut: false,
+  })
   resetSandboxIdentity()
   resetMediaToolPaths()
 })
@@ -139,9 +144,9 @@ describe("H7: MEDIA_SANDBOX_UID/GID are required in production", () => {
   })
 
   it("throws when only one of the pair is set, in any environment", () => {
-    expect(() =>
-      loadSandboxIdentity({ MEDIA_SANDBOX_UID: "1001" } as NodeJS.ProcessEnv),
-    ).toThrow(/must be set together/)
+    expect(() => loadSandboxIdentity({ MEDIA_SANDBOX_UID: "1001" } as NodeJS.ProcessEnv)).toThrow(
+      /must be set together/,
+    )
   })
 
   it("returns null outside production when neither is set", () => {

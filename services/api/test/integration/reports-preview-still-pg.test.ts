@@ -96,7 +96,9 @@ describe.skipIf(!pg)("first-visible-still preview policy (integration)", () => {
   }
 
   /** The map pin's view of the same report (selectPublicPins -> firstReadyStillLateral). */
-  async function pinKeys(reportId: string): Promise<{ thumbKey: string | null; r2Key: string | null }> {
+  async function pinKeys(
+    reportId: string,
+  ): Promise<{ thumbKey: string | null; r2Key: string | null }> {
     const repo = makeDrizzleReportRepository(h.sql)
     const [west, south, east, north] = LA_CITY.bbox
     const pins = await repo.findMapCandidates({ west, south, east, north }, null, null, 500)

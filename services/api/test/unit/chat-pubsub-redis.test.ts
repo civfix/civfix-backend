@@ -42,7 +42,10 @@ describe("RedisChatPubSub over ioredis-mock", () => {
     const received: string[] = []
     const unsubscribe = await pubsub.subscribe(chatChannel(ROOM), (p) => received.push(p))
 
-    await pubsub.publish(chatChannel(ROOM), JSON.stringify({ type: "message", message: { body: "hi" } }))
+    await pubsub.publish(
+      chatChannel(ROOM),
+      JSON.stringify({ type: "message", message: { body: "hi" } }),
+    )
     // Allow the mock's async message delivery to flush.
     await new Promise((r) => setTimeout(r, 20))
 
@@ -83,7 +86,12 @@ describe("RedisChatPubSub over ioredis-mock", () => {
     await new Promise((r) => setTimeout(r, 20))
 
     // Alice sends from worker 1.
-    const msg = await worker1.persist({ cleanupId: ROOM, userId: ALICE, body: "cross-node", clientId: "c1" })
+    const msg = await worker1.persist({
+      cleanupId: ROOM,
+      userId: ALICE,
+      body: "cross-node",
+      clientId: "c1",
+    })
     await worker1.broadcast(ROOM, msg)
     await new Promise((r) => setTimeout(r, 20))
 

@@ -10,15 +10,19 @@ import { buildAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryChatRepository, InMemoryThreadsRepository } from "../helpers/chat.js"
 import { InMemoryDiscussionRepository } from "../helpers/discussion.js"
-import { InMemoryBlocksRepository, InMemoryDmRepository } from "../../src/services/dm-repository.memory.js"
+import {
+  InMemoryBlocksRepository,
+  InMemoryDmRepository,
+} from "../../src/services/dm-repository.memory.js"
 import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
-
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-function makeFakeReportChat(over: {
-  isMember?: boolean
-} = {}): ReportChatRepository & {
+function makeFakeReportChat(
+  over: {
+    isMember?: boolean
+  } = {},
+): ReportChatRepository & {
   join: ReturnType<typeof vi.fn>
   leave: ReturnType<typeof vi.fn>
   isMember: ReturnType<typeof vi.fn>
@@ -55,7 +59,10 @@ interface Harness {
 let current: Harness | undefined
 
 async function makeHarness(
-  opts: { isMember?: boolean; seedChat?: (chatRepo: InMemoryChatRepository, userId: string) => void } = {},
+  opts: {
+    isMember?: boolean
+    seedChat?: (chatRepo: InMemoryChatRepository, userId: string) => void
+  } = {},
 ): Promise<Harness> {
   const env = loadEnv({ NODE_ENV: "test" })
   const stores = makeInMemoryStores()
@@ -71,10 +78,17 @@ async function makeHarness(
   })
 
   const discussionRepo = new InMemoryDiscussionRepository()
-  discussionRepo.seedReport({ id: REPORT, status: "published", visibility: "public", reporterUserId: null })
+  discussionRepo.seedReport({
+    id: REPORT,
+    status: "published",
+    visibility: "public",
+    reporterUserId: null,
+  })
   const chatRepo = new InMemoryChatRepository()
   const blocks = new InMemoryBlocksRepository()
-  const reportChat = makeFakeReportChat({ ...(opts.isMember !== undefined ? { isMember: opts.isMember } : {}) })
+  const reportChat = makeFakeReportChat({
+    ...(opts.isMember !== undefined ? { isMember: opts.isMember } : {}),
+  })
 
   const app = await buildServer({
     env,
@@ -112,7 +126,10 @@ function auth(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}` }
 }
 
-async function seedReportMessage(chatRepo: InMemoryChatRepository, userId: string): Promise<string> {
+async function seedReportMessage(
+  chatRepo: InMemoryChatRepository,
+  userId: string,
+): Promise<string> {
   const id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
   const msg: ChatMessageDTO = await chatRepo.insertMessage(
     { cleanupId: REPORT, userId, body: "hello", roomKind: "report", kind: "text" },
@@ -231,9 +248,16 @@ describe("POST /reports/:id/messages/:messageId/reactions — membership gate", 
   })
 
   it("404s (never 403) when the report is no longer visible — visibility gates before membership", async () => {
-    const { app, token, chatRepo, discussionRepo, reportChat } = await makeHarness({ isMember: true })
+    const { app, token, chatRepo, discussionRepo, reportChat } = await makeHarness({
+      isMember: true,
+    })
     const messageId = await seedReportMessage(chatRepo, "someone-else")
-    discussionRepo.seedReport({ id: REPORT, status: "held", visibility: "public", reporterUserId: null })
+    discussionRepo.seedReport({
+      id: REPORT,
+      status: "held",
+      visibility: "public",
+      reporterUserId: null,
+    })
     const res = await app.inject({
       method: "POST",
       url: `/v1/reports/${REPORT}/messages/${messageId}/reactions`,

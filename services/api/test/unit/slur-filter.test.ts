@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest"
 import { assertNoSlur, containsSlur } from "../../src/abuse/slur-filter.js"
 

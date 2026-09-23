@@ -1,4 +1,3 @@
-
 import {
   AppError,
   ErrorCode,
@@ -15,14 +14,13 @@ import { SUSPENDED_MESSAGE } from "../../auth/account-status.js"
 import type { Env } from "../../env.js"
 import { resolveLocale } from "../../i18n/locales.js"
 import { isAdminEmail } from "../../auth/admin-allowlist.js"
-import { createAccessVerifier, type AccessIdentity, type VerifyAccessJwt } from "../../auth/cf-access.js"
-import { writeAudit, type WriteAuditInput } from "../../services/admin/audit.js"
 import {
-  generateCsrfToken,
-  setCsrfCookie,
-  clearCsrfCookie,
-  type Csrf,
-} from "../../auth/csrf.js"
+  createAccessVerifier,
+  type AccessIdentity,
+  type VerifyAccessJwt,
+} from "../../auth/cf-access.js"
+import { writeAudit, type WriteAuditInput } from "../../services/admin/audit.js"
+import { generateCsrfToken, setCsrfCookie, clearCsrfCookie, type Csrf } from "../../auth/csrf.js"
 import {
   presentedSessionToken,
   setSessionCookie,
@@ -77,50 +75,60 @@ export async function registerAdminAuthRoutes(
     return operator
   }
 
-  route(app, "adminAccessExchange", { config: { rateLimit: ADMIN_AUTH_RATE_LIMIT } }, async (request, reply) => {
-    const verify = app.adminAuthOverrides?.verifyAccessJwt ?? defaultVerify
-    if (!verify) {
-      throw new AppError(ErrorCode.INTERNAL, "Cloudflare Access is not configured.", {
-        httpStatus: 503,
-      })
-    }
-    const identity = await verifyHeader(verify, request)
-    const email = identity.email?.toLowerCase()
-    if (!email || !isAdminEmail(env, email)) {
-      throw AppError.forbidden("This account is not authorized for the operator dashboard.")
-    }
-    const operator = await provisionOperator(email)
-    const payload = await establishOperatorSession(services, csrf, request, reply, operator)
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "adminAccessExchange",
+    { config: { rateLimit: ADMIN_AUTH_RATE_LIMIT } },
+    async (request, reply) => {
+      const verify = app.adminAuthOverrides?.verifyAccessJwt ?? defaultVerify
+      if (!verify) {
+        throw new AppError(ErrorCode.INTERNAL, "Cloudflare Access is not configured.", {
+          httpStatus: 503,
+        })
+      }
+      const identity = await verifyHeader(verify, request)
+      const email = identity.email?.toLowerCase()
+      if (!email || !isAdminEmail(env, email)) {
+        throw AppError.forbidden("This account is not authorized for the operator dashboard.")
+      }
+      const operator = await provisionOperator(email)
+      const payload = await establishOperatorSession(services, csrf, request, reply, operator)
+      reply.status(200).send(payload)
+    },
+  )
 
   route(app, "adminSession", async (request, reply) => {
     const payload = await buildAdminSession(services, csrf, env, request, reply)
     reply.status(200).send(payload)
   })
 
-  route(app, "adminLogout", { preHandler: csrfProtect, config: { rateLimit: ADMIN_AUTH_RATE_LIMIT } }, async (request, reply) => {
-    const token = presentedSessionToken(request)
-    if (token === null) {
-      throw AppError.unauthorized()
-    }
-    const { userId, roles } = request.auth
-    await services.sessions.revokeSession(token)
-    clearSessionCookie(reply)
-    clearCsrfCookie(reply)
-    if (userId !== null && roles.includes("operator")) {
-      await auditOperatorAuth(app, container, {
-        actorId: userId,
-        action: "operator.logout",
-        target: `user:${userId}`,
-        meta: { sessionRevoked: true },
-      }).catch((err: unknown) => {
-        request.log.warn({ err }, "operator.logout audit write failed")
-      })
-    }
-    const payload: AdminLogoutResponse = { ok: true }
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "adminLogout",
+    { preHandler: csrfProtect, config: { rateLimit: ADMIN_AUTH_RATE_LIMIT } },
+    async (request, reply) => {
+      const token = presentedSessionToken(request)
+      if (token === null) {
+        throw AppError.unauthorized()
+      }
+      const { userId, roles } = request.auth
+      await services.sessions.revokeSession(token)
+      clearSessionCookie(reply)
+      clearCsrfCookie(reply)
+      if (userId !== null && roles.includes("operator")) {
+        await auditOperatorAuth(app, container, {
+          actorId: userId,
+          action: "operator.logout",
+          target: `user:${userId}`,
+          meta: { sessionRevoked: true },
+        }).catch((err: unknown) => {
+          request.log.warn({ err }, "operator.logout audit write failed")
+        })
+      }
+      const payload: AdminLogoutResponse = { ok: true }
+      reply.status(200).send(payload)
+    },
+  )
 }
 
 async function verifyHeader(

@@ -148,7 +148,9 @@ export interface DiscoveryRepository {
    * the next cursor (null when exhausted). The repo is responsible for the filter + sort semantics so
    * the service stays a pure projector.
    */
-  listTasks(args: ListDiscoveryArgs): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }>
+  listTasks(
+    args: ListDiscoveryArgs,
+  ): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }>
   /** Load one task's full detail by task id, or null when the task does not exist. */
   getDetail(id: string): Promise<DiscoveryDetailRecord | null>
   /** Load the notes for a task, oldest first. */
@@ -164,7 +166,10 @@ export interface DiscoveryRepository {
    * Append an operator note for a task (persisted as an audit_log discovery.note_added row). `who` is
    * the operator display label stored in the note. Returns the stored note.
    */
-  addNote(id: string, input: { text: string; actorId: string | null; who: string }): Promise<DiscoveryNoteRecord>
+  addNote(
+    id: string,
+    input: { text: string; actorId: string | null; who: string },
+  ): Promise<DiscoveryNoteRecord>
   /**
    * Flag a task for review: open an abuse_flag against the triggering sample report (subject_type
    * 'report') when one is on file, and mark the task status 'in_progress'. Returns false when the task
@@ -319,7 +324,11 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
   }
 
   /** Project a task record (+ its notes) into the list/detail base DTO. */
-  function toTaskDTO(record: DiscoveryTaskRecord, notes: DiscoveryNoteRecord[], ref: Date): DiscoveryTaskDTO {
+  function toTaskDTO(
+    record: DiscoveryTaskRecord,
+    notes: DiscoveryNoteRecord[],
+    ref: Date,
+  ): DiscoveryTaskDTO {
     const category = dominantCategory(record.perCategory)
     return {
       id: record.id,

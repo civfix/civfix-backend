@@ -1,4 +1,3 @@
-
 import type { Storage } from "@civfix/shared/interfaces"
 import { normalizeEtag, readEtag } from "@civfix/api/media-repo"
 import { loadHttpsProxy } from "./config.js"

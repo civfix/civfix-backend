@@ -1,4 +1,9 @@
-import { AppError, ErrorCode, type LegalDocumentType, type LegalDocumentVersionDTO } from "@civfix/shared"
+import {
+  AppError,
+  ErrorCode,
+  type LegalDocumentType,
+  type LegalDocumentVersionDTO,
+} from "@civfix/shared"
 import { LEGAL_DOCUMENTS, legalDocument } from "@civfix/shared/legal"
 
 export const LEGAL_VERSIONS_CACHE_SECONDS = 300

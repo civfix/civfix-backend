@@ -16,7 +16,9 @@ describe("check:sql — uncast parameter in a NULL test", () => {
 
   it("accepts an explicitly cast parameter", () => {
     expect(
-      findParamNullTests("sql`WHERE (${claimantUserId}::uuid IS NULL OR u.id <> ${claimantUserId}::uuid)`"),
+      findParamNullTests(
+        "sql`WHERE (${claimantUserId}::uuid IS NULL OR u.id <> ${claimantUserId}::uuid)`",
+      ),
     ).toEqual([])
     expect(findParamNullTests("sql`WHERE ${ids}::uuid[] IS NOT NULL`")).toEqual([])
   })

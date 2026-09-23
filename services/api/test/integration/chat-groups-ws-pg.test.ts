@@ -52,7 +52,10 @@ import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzl
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
-import { canPostToGroup, makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
+import {
+  canPostToGroup,
+  makeChatGroupRepository,
+} from "../../src/services/chat-group-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeChatMentionResolver } from "../../src/services/chat-mention-resolver.js"
 import { recordChatMentions } from "../../src/services/chat-mentions.drizzle.js"
@@ -147,7 +150,13 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
     }
 
     function sessionFor(userId: string, conn: MockConnection, deps: GatewayDeps): GatewaySession {
-      return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+      return {
+        userId,
+        conn,
+        joined: new Set<string>(),
+        typingThrottle: new Map<string, number>(),
+        deps,
+      }
     }
 
     const frame = (f: Record<string, unknown>) => JSON.stringify(f)
@@ -162,19 +171,32 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       const bConn = new MockConnection("B")
       const aSession = sessionFor(aId, aConn, deps)
       const bSession = sessionFor(bId, bConn, deps)
-      await handleClientFrame(aSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
-      await handleClientFrame(bSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        aSession,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
+      await handleClientFrame(
+        bSession,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
       expect(aConn.framesOfType("error")).toHaveLength(0)
       expect(aSession.joined.has(`group:${groupId}`)).toBe(true)
 
       await handleClientFrame(
         aSession,
-        frame({ type: "send", cleanupId: groupId, roomKind: "group", clientId: "c1", body: "hello group" }),
+        frame({
+          type: "send",
+          cleanupId: groupId,
+          roomKind: "group",
+          clientId: "c1",
+          body: "hello group",
+        }),
       )
 
       const acks = aConn.framesOfType("ack")
       expect(acks).toHaveLength(1)
-      const acked = (acks[0] as { message: { id: string; roomKind?: string; body: string } }).message
+      const acked = (acks[0] as { message: { id: string; roomKind?: string; body: string } })
+        .message
       expect(acked.roomKind).toBe("group")
       expect(acked.body).toBe("hello group")
 
@@ -197,7 +219,10 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
 
       const conn = new MockConnection("S")
       const session = sessionFor(strangerId, conn, deps)
-      await handleClientFrame(session, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        session,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
 
       const errors = conn.framesOfType("error")
       expect(errors).toHaveLength(1)
@@ -215,7 +240,13 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       const session = sessionFor(strangerId, conn, deps)
       await handleClientFrame(
         session,
-        frame({ type: "send", cleanupId: groupId, roomKind: "group", clientId: "cx", body: "let me in" }),
+        frame({
+          type: "send",
+          cleanupId: groupId,
+          roomKind: "group",
+          clientId: "cx",
+          body: "let me in",
+        }),
       )
 
       expect(conn.framesOfType("ack")).toHaveLength(0)
@@ -239,17 +270,29 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       const bConn = new MockConnection("B")
       const aSession = sessionFor(aId, aConn, deps)
       const bSession = sessionFor(bId, bConn, deps)
-      await handleClientFrame(aSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
-      await handleClientFrame(bSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        aSession,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
+      await handleClientFrame(
+        bSession,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
 
-      await handleClientFrame(aSession, frame({ type: "typing", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        aSession,
+        frame({ type: "typing", cleanupId: groupId, roomKind: "group" }),
+      )
       const typing = bConn.framesOfType("typing")
       expect(typing).toHaveLength(1)
       expect(typing[0]).toMatchObject({ cleanupId: groupId, roomKind: "group", userId: aId })
 
       const sConn = new MockConnection("S")
       const sSession = sessionFor(strangerId, sConn, deps)
-      await handleClientFrame(sSession, frame({ type: "typing", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        sSession,
+        frame({ type: "typing", cleanupId: groupId, roomKind: "group" }),
+      )
       expect(sConn.framesOfType("error")).toHaveLength(1)
     })
 
@@ -265,7 +308,10 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       const bConn = new MockConnection("B")
       const aSession = sessionFor(aId, aConn, deps)
       const bSession = sessionFor(bId, bConn, deps)
-      await handleClientFrame(bSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        bSession,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
       // Mark-read-on-join (mirrors the cleanup lane) is FIRE-AND-FORGET behind a real SQL round-trip,
       // so poll briefly rather than racing a single microtask flush.
       let afterJoin: Date | null = null
@@ -276,12 +322,22 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       expect(afterJoin).not.toBeNull()
 
       // A message lands AFTER the join stamp; B acks it -> watermark advances to its created_at.
-      await handleClientFrame(aSession, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
       await handleClientFrame(
         aSession,
-        frame({ type: "send", cleanupId: groupId, roomKind: "group", clientId: "c1", body: "new msg" }),
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
       )
-      const acked = (aConn.framesOfType("ack")[0] as { message: { id: string; createdAt: string } }).message
+      await handleClientFrame(
+        aSession,
+        frame({
+          type: "send",
+          cleanupId: groupId,
+          roomKind: "group",
+          clientId: "c1",
+          body: "new msg",
+        }),
+      )
+      const acked = (aConn.framesOfType("ack")[0] as { message: { id: string; createdAt: string } })
+        .message
       await handleClientFrame(
         bSession,
         frame({ type: "ack", cleanupId: groupId, roomKind: "group", upToId: acked.id }),
@@ -303,7 +359,10 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
 
       const conn = new MockConnection("A")
       const session = sessionFor(authorId, conn, deps)
-      await handleClientFrame(session, frame({ type: "join", cleanupId: groupId, roomKind: "group" }))
+      await handleClientFrame(
+        session,
+        frame({ type: "join", cleanupId: groupId, roomKind: "group" }),
+      )
 
       // Member mention: resolved (scoped to chat_group_members), recorded, and riding the ack DTO.
       await handleClientFrame(

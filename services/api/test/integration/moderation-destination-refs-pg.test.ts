@@ -96,10 +96,7 @@ describe.skipIf(!pg)("F160: batched destination refs match the per-item lookup",
     return m!.id
   }
 
-  async function newMedia(binding: {
-    reportId?: string
-    chatMessageId?: string
-  }): Promise<string> {
+  async function newMedia(binding: { reportId?: string; chatMessageId?: string }): Promise<string> {
     const [m] = await h.sql<{ id: string }[]>`
       INSERT INTO media_assets (upload_id, kind, r2_key, status, purpose, report_id, chat_message_id)
       VALUES (
@@ -152,7 +149,10 @@ describe.skipIf(!pg)("F160: batched destination refs match the per-item lookup",
     }
 
     const bySubject = new Map(records.map((r) => [r.subjectId, r]))
-    expect(bySubject.get(reportId)).toMatchObject({ destinationKind: "report", destinationId: reportId })
+    expect(bySubject.get(reportId)).toMatchObject({
+      destinationKind: "report",
+      destinationId: reportId,
+    })
     expect(bySubject.get(reportChat)).toMatchObject({
       destinationKind: "report",
       destinationId: reportId,
@@ -187,8 +187,10 @@ describe.skipIf(!pg)("F160: batched destination refs match the per-item lookup",
     const seen = new Map<string, string | null>()
     let cursor: string | null = null
     for (let page = 0; page < 10; page++) {
-      const res: { records: Array<{ id: string; destinationId: string | null }>; nextCursor: string | null } =
-        await repo.listOpen({ q: null, filter: "all", cursor, limit: 2 })
+      const res: {
+        records: Array<{ id: string; destinationId: string | null }>
+        nextCursor: string | null
+      } = await repo.listOpen({ q: null, filter: "all", cursor, limit: 2 })
       for (const r of res.records) seen.set(r.id, r.destinationId)
       if (res.nextCursor === null) break
       cursor = res.nextCursor
@@ -302,9 +304,7 @@ describe.skipIf(!pg)("F160: batched destination refs match the per-item lookup",
       await spy.end()
     }
 
-    const batched = statements.filter(
-      (q) => /=\s*ANY\(/i.test(q) && /chat_messages/i.test(q),
-    )
+    const batched = statements.filter((q) => /=\s*ANY\(/i.test(q) && /chat_messages/i.test(q))
     expect(batched).toHaveLength(1)
   })
 

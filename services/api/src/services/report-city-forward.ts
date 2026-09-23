@@ -72,7 +72,8 @@ export async function forwardReportCityMention(
   opts: CityForwardOptions = {},
 ): Promise<CityForwardResult> {
   const jurisdiction = ctx.jurisdiction
-  if (jurisdiction === null) return { mentioned: false, geoid: null, forwarded: false, forwardedAt: null }
+  if (jurisdiction === null)
+    return { mentioned: false, geoid: null, forwarded: false, forwardedAt: null }
   const handle = effectiveJurisdictionHandle(jurisdiction)
   if (handle === null || parseCityMention(body, handle) === null) {
     return { mentioned: false, geoid: jurisdiction.geoid, forwarded: false, forwardedAt: null }
@@ -87,7 +88,10 @@ export async function forwardReportCityMention(
   if (thread === null) {
     return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
   }
-  if (opts.canForward !== undefined && !(await opts.canForward(ctx.reportId, geoid, ctx.actorUserId))) {
+  if (
+    opts.canForward !== undefined &&
+    !(await opts.canForward(ctx.reportId, geoid, ctx.actorUserId))
+  ) {
     return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
   }
   const packet = buildDiscussionForwardPacket(

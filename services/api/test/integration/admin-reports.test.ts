@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeDrizzleAdminReportRepository } from "../../src/services/admin/admin-report-repository.drizzle.js"
@@ -144,7 +143,11 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
       addr: "1200 S Figueroa St",
       referenceCode: "PD-42-000001",
     })
-    await insertReport(h, { title: "Graffiti", addr: "44 Sunset Blvd", referenceCode: "GR-42-000007" })
+    await insertReport(h, {
+      title: "Graffiti",
+      addr: "44 Sunset Blvd",
+      referenceCode: "GR-42-000007",
+    })
 
     const list = async (q: string): Promise<string[]> =>
       (

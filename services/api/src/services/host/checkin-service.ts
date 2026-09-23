@@ -26,7 +26,9 @@ import { normalizeTicketToken, type TicketTokenSigner } from "./ticket-token.js"
 export const CHECKIN_NOSHOW_SWEEP_BATCH = 1000
 
 export interface GuestTicketLookup {
-  (manageTokenHash: string): Promise<{ id: string; cleanupId: string; cancelledAt: Date | null } | null>
+  (
+    manageTokenHash: string,
+  ): Promise<{ id: string; cleanupId: string; cancelledAt: Date | null } | null>
 }
 
 export interface CheckinServiceDeps {
@@ -44,10 +46,7 @@ export interface CheckinService {
   scan(input: ScanEventTicketRequest, actorId: string): Promise<CheckinResultDTO>
   checkIn(input: CheckInEventSeatRequest, actorId: string): Promise<CheckinResultDTO>
   undo(input: UndoEventCheckInRequest, actorId: string): Promise<UndoEventCheckInResponse>
-  markNoShows(
-    input: MarkEventNoShowsRequest,
-    actorId: string,
-  ): Promise<MarkEventNoShowsResponse>
+  markNoShows(input: MarkEventNoShowsRequest, actorId: string): Promise<MarkEventNoShowsResponse>
   counters(query: GetEventCheckinCountersRequest): Promise<EventCheckinCountersDTO>
   myTicket(query: GetMyEventTicketRequest, userId: string): Promise<MyEventTicketDTO>
   guestTicket(input: GetGuestEventTicketRequest): Promise<MyEventTicketDTO>
@@ -59,8 +58,7 @@ function toCheckinResultDTO(record: CheckinResultRecord): CheckinResultDTO {
     outcome: record.outcome,
     firstTime: record.firstTime,
     seat: record.seat === null ? null : toSeatDTO(record.seat),
-    registration:
-      record.registration === null ? null : toEventRegistrationDTO(record.registration),
+    registration: record.registration === null ? null : toEventRegistrationDTO(record.registration),
     attendeeName: record.attendeeName,
     ticketTypeName: record.ticketTypeName,
     partySize: record.partySize,

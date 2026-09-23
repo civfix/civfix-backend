@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import {
@@ -69,7 +68,7 @@ export class InMemoryInboundRepository implements InboundRepository {
     })
     filtered = filtered.sort((a, b) => {
       const d = b.receivedAt.getTime() - a.receivedAt.getTime()
-      return d !== 0 ? d : (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
+      return d !== 0 ? d : a.id < b.id ? 1 : a.id > b.id ? -1 : 0
     })
     if (anchor) {
       filtered = filtered.filter((r) => {

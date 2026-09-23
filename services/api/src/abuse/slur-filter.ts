@@ -1,4 +1,3 @@
-
 import { AppError } from "@civfix/shared"
 
 const SLUR_BASES: readonly string[] = [
@@ -35,7 +34,13 @@ function buildPatterns(bases: readonly string[]): readonly RegExp[] {
 
 const RAW_PATTERNS = buildPatterns(SLUR_BASES)
 
-const DIGIT_LEET: Readonly<Record<string, string>> = { "0": "o", "1": "i", "3": "e", "4": "a", "5": "s" }
+const DIGIT_LEET: Readonly<Record<string, string>> = {
+  "0": "o",
+  "1": "i",
+  "3": "e",
+  "4": "a",
+  "5": "s",
+}
 const SYMBOL_LEET: Readonly<Record<string, string>> = { "!": "i", "|": "i", "@": "a" }
 
 function deLeet(s: string): string {

@@ -418,7 +418,9 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     })
     return {
       thread,
-      async deliver(opts?: DeliverOptions): Promise<{ thread: MailThreadRecord; messageId: string }> {
+      async deliver(
+        opts?: DeliverOptions,
+      ): Promise<{ thread: MailThreadRecord; messageId: string }> {
         const messageId = await deliverAndRecord({
           ...(opts?.onLateSuccess !== undefined ? { onLateSuccess: opts.onLateSuccess } : {}),
           threadId: thread.id,
@@ -598,7 +600,10 @@ type OutboundMailContainer = {
   mailer: Mailer
   env: Pick<
     Env,
-    "MAIL_FROM_OUTREACH" | "MAIL_REPLY_DOMAIN" | "OCI_EMAIL_SMTP_TIMEOUT_MS" | "OUTBOUND_SEND_MIN_THROUGHPUT_BPS"
+    | "MAIL_FROM_OUTREACH"
+    | "MAIL_REPLY_DOMAIN"
+    | "OCI_EMAIL_SMTP_TIMEOUT_MS"
+    | "OUTBOUND_SEND_MIN_THROUGHPUT_BPS"
   >
 }
 

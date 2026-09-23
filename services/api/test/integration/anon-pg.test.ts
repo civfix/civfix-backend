@@ -60,7 +60,9 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     }
     const presignMedia = (r2Key: string, thumbKey: string | null) =>
       Promise.resolve(
-        thumbKey === null ? { url: `memory://${r2Key}` } : { url: `memory://${r2Key}`, thumbUrl: `memory://${thumbKey}` },
+        thumbKey === null
+          ? { url: `memory://${r2Key}` }
+          : { url: `memory://${r2Key}`, thumbUrl: `memory://${thumbKey}` },
       )
 
     reports = makeReportService({
@@ -120,7 +122,13 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
 
     // The row is held, anon, not published, jurisdiction resolved.
     const [row] = await h.sql<
-      { reporter_user_id: string | null; anon_session_id: string | null; status: string; published_at: Date | null; jurisdiction_geoid: string | null }[]
+      {
+        reporter_user_id: string | null
+        anon_session_id: string | null
+        status: string
+        published_at: Date | null
+        jurisdiction_geoid: string | null
+      }[]
     >`
       SELECT reporter_user_id, anon_session_id, status, published_at, jurisdiction_geoid
       FROM reports WHERE id = ${response.reportId}
@@ -138,12 +146,19 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     expect(tl.map((t) => t.status)).toEqual(["submitted", "held"])
 
     // Absent from the public map candidates (a wide bbox around the point).
-    const bbox = { west: PROBE_INSIDE_CITY.lng - 0.5, south: PROBE_INSIDE_CITY.lat - 0.5, east: PROBE_INSIDE_CITY.lng + 0.5, north: PROBE_INSIDE_CITY.lat + 0.5 }
+    const bbox = {
+      west: PROBE_INSIDE_CITY.lng - 0.5,
+      south: PROBE_INSIDE_CITY.lat - 0.5,
+      east: PROBE_INSIDE_CITY.lng + 0.5,
+      north: PROBE_INSIDE_CITY.lat + 0.5,
+    }
     const map = await reports.listReportsInBBox(bbox, null, null, 16)
     expect(map.pins.some((p) => p.id === response.reportId)).toBe(false)
 
     // 404 to a stranger via getReport.
-    await expect(reports.getReport(response.reportId, { userId: "stranger" })).rejects.toMatchObject({
+    await expect(
+      reports.getReport(response.reportId, { userId: "stranger" }),
+    ).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
 
@@ -242,13 +257,17 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
       abuseChecks: new FakeAbuseChecks(),
     })
     expect(result.outcome).toBe("media_blocked")
-    const [row] = await h.sql<{ status: string }[]>`SELECT status FROM reports WHERE id = ${response.reportId}`
+    const [row] = await h.sql<
+      { status: string }[]
+    >`SELECT status FROM reports WHERE id = ${response.reportId}`
     expect(row!.status).toBe("held")
   })
 
   it("claims a held anon report into a user (single-use) by hash match, then mine=true", async () => {
     const submit = await anon.submitAnonReport(req(), { ip: "203.0.113.8", cfGeo: {} })
-    const [u] = await h.sql<{ id: string }[]>`INSERT INTO users (display_name) VALUES ('Claimer') RETURNING id`
+    const [u] = await h.sql<
+      { id: string }[]
+    >`INSERT INTO users (display_name) VALUES ('Claimer') RETURNING id`
     const userId = u!.id
 
     const res = await claim.claimReport(submit.response.claimCode, userId)
@@ -268,7 +287,10 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
 
   it("replays the original response for a duplicate idempotency key from the SAME anon session", async () => {
     const key = randomUUID()
-    const first = await anon.submitAnonReport(req({ idempotencyKey: key }), { ip: "203.0.113.9", cfGeo: {} })
+    const first = await anon.submitAnonReport(req({ idempotencyKey: key }), {
+      ip: "203.0.113.9",
+      cfGeo: {},
+    })
     // The retry carries the token the first submit issued: the stored snapshot is owner-scoped by it.
     const second = await anon.submitAnonReport(
       req({ idempotencyKey: key, anonToken: first.issuedAnonToken! }),
@@ -283,7 +305,10 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
 
   it("F028: a DIFFERENT anon session reusing the key gets a 409, never the first session's snapshot", async () => {
     const key = randomUUID()
-    const first = await anon.submitAnonReport(req({ idempotencyKey: key }), { ip: "203.0.113.20", cfGeo: {} })
+    const first = await anon.submitAnonReport(req({ idempotencyKey: key }), {
+      ip: "203.0.113.20",
+      cfGeo: {},
+    })
 
     // A second session (its own freshly issued token) presenting the squatted key must NOT be handed
     // the first submitter's reportId + claim code; the owner-scoped snapshot read misses and the
@@ -330,7 +355,9 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
   })
 
   it("F150: a pre-0091 plaintext row whose hash was BACKFILLED stays claimable by its old code", async () => {
-    const [u] = await h.sql<{ id: string }[]>`INSERT INTO users (display_name) VALUES ('Legacy') RETURNING id`
+    const [u] = await h.sql<
+      { id: string }[]
+    >`INSERT INTO users (display_name) VALUES ('Legacy') RETURNING id`
     const legacyCode = `legacy-${randomUUID()}`
     const [seeded] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell, claim_code)
@@ -362,7 +389,9 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
 
   it("F150: the nudge mints a FRESH code (it cannot read one back) and that code claims the report", async () => {
     const submit = await anon.submitAnonReport(req(), { ip: "203.0.113.23", cfGeo: {} })
-    const [u] = await h.sql<{ id: string }[]>`INSERT INTO users (display_name) VALUES ('Nudged') RETURNING id`
+    const [u] = await h.sql<
+      { id: string }[]
+    >`INSERT INTO users (display_name) VALUES ('Nudged') RETURNING id`
 
     const nudge = await claim.claimNudge(submit.issuedAnonToken!)
     expect(nudge.reportId).toBe(submit.response.reportId)

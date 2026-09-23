@@ -62,16 +62,16 @@ describe("event page service", () => {
       AppError,
     )
     await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [] })
-    await expect(
-      h.service.publish({ id: EVENT, published: true }, HOST),
-    ).rejects.toMatchObject({ fields: { blocks: "add at least one block before publishing" } })
+    await expect(h.service.publish({ id: EVENT, published: true }, HOST)).rejects.toMatchObject({
+      fields: { blocks: "add at least one block before publishing" },
+    })
   })
 
   it("refuses a reserved slug and a slug another event already holds", async () => {
     const reserved = [...RESERVED_SLUGS][0] as string
-    await expect(
-      h.service.save({ id: EVENT, slug: reserved, blocks: [] }),
-    ).rejects.toMatchObject({ fields: { slug: "that address is reserved" } })
+    await expect(h.service.save({ id: EVENT, slug: reserved, blocks: [] })).rejects.toMatchObject({
+      fields: { slug: "that address is reserved" },
+    })
 
     h.repo.seedEvent({ cleanupId: OTHER_EVENT, pageSlug: "taken-slug" })
     await expect(
@@ -237,7 +237,11 @@ describe("event page service", () => {
   it("accepts the markdown subset the contract allows", () => {
     expect(() =>
       validatePageBlocks([
-        { id: "b1", kind: "about", body: "Bring **gloves** and see [the map](https://civfix.org)." },
+        {
+          id: "b1",
+          kind: "about",
+          body: "Bring **gloves** and see [the map](https://civfix.org).",
+        },
       ]),
     ).not.toThrow()
   })
@@ -247,9 +251,7 @@ describe("event page service", () => {
     await expect(
       h.service.getPublicEventPage({ slug: "beach-sweep" }, STRANGER),
     ).rejects.toBeInstanceOf(AppError)
-    await expect(
-      h.service.getPublicEventPage({ slug: "beach-sweep" }, HOST),
-    ).resolves.toBeDefined()
+    await expect(h.service.getPublicEventPage({ slug: "beach-sweep" }, HOST)).resolves.toBeDefined()
   })
 
   it("404s a draft and a flagged page for a plain member standing", async () => {
@@ -299,9 +301,9 @@ describe("event page service", () => {
     await expect(
       h.service.getPublicEventPage({ slug: "beach-sweep" }, STRANGER),
     ).rejects.toBeInstanceOf(AppError)
-    await expect(h.service.getPublicEventPage({ slug: "beach-sweep" }, null)).rejects.toBeInstanceOf(
-      AppError,
-    )
+    await expect(
+      h.service.getPublicEventPage({ slug: "beach-sweep" }, null),
+    ).rejects.toBeInstanceOf(AppError)
   })
 
   it("serves an unlisted event's page with noindex", async () => {

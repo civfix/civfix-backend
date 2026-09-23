@@ -265,7 +265,11 @@ export async function registerHostOrgRoutes(
         ...(request.body as object),
         id,
       })
-      const payload: InviteOrganizationMemberResponse = await service().inviteMember(id, userId, body)
+      const payload: InviteOrganizationMemberResponse = await service().inviteMember(
+        id,
+        userId,
+        body,
+      )
       reply.status(200).send(payload)
     },
   )

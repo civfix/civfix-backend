@@ -1,4 +1,3 @@
-
 import type { JurisdictionDTO } from "@civfix/shared"
 import type { Geocoder, Jobs } from "@civfix/shared/interfaces"
 import type { Sql } from "../db/client.js"

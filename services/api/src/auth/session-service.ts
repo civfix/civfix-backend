@@ -1,4 +1,3 @@
-
 import { AppError, type Role } from "@civfix/shared"
 import { generateToken, sha256Hex } from "./crypto.js"
 import type { CacheClient } from "./cache.js"
@@ -122,7 +121,9 @@ export class SessionService {
 
     const [epoch, mintStatus] = await Promise.all([
       this.currentEpoch(userId),
-      this.users ? this.users.accountStatus(userId) : Promise.resolve(meta.accountStatus ?? "active"),
+      this.users
+        ? this.users.accountStatus(userId)
+        : Promise.resolve(meta.accountStatus ?? "active"),
     ])
     if (mintStatus === "banned" || mintStatus === "suspended") {
       throw AppError.forbidden("This account cannot start a new session.")

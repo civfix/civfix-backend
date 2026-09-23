@@ -43,9 +43,7 @@ export class InMemoryAuditRepository implements AuditRepository {
     return record
   }
 
-  async list(
-    args: ListAuditArgs,
-  ): Promise<{ records: AuditRecord[]; nextCursor: string | null }> {
+  async list(args: ListAuditArgs): Promise<{ records: AuditRecord[]; nextCursor: string | null }> {
     const anchor = decodeCursor(args.cursor)
     const actor = args.actor?.toLowerCase() ?? null
     const action = args.action?.toLowerCase() ?? null
@@ -64,8 +62,7 @@ export class InMemoryAuditRepository implements AuditRepository {
 
     // Newest first (createdAt DESC, id DESC), then drop anything not strictly before the cursor anchor.
     const sorted = [...filtered].sort(compareDesc)
-    const windowed =
-      anchor !== null ? sorted.filter((r) => beforeAnchor(r, anchor)) : sorted
+    const windowed = anchor !== null ? sorted.filter((r) => beforeAnchor(r, anchor)) : sorted
 
     const { items, nextCursor } = paginate(windowed, args.limit, (r) => ({
       createdAt: r.createdAt,

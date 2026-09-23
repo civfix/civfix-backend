@@ -1,4 +1,3 @@
-
 import { Apple, Google, generateCodeVerifier, generateState } from "arctic"
 import { AppError } from "@civfix/shared"
 import type { OAuthIdentityStore, UserRecord, UserStore } from "./stores.js"
@@ -102,10 +101,7 @@ export class OAuthService {
     return this.upsertFromClaims(PROVIDER_APPLE, claims, fullName)
   }
 
-  async verifyGoogleIdToken(
-    idToken: string,
-    expectedNonce?: string,
-  ): Promise<VerifiedIdToken> {
+  async verifyGoogleIdToken(idToken: string, expectedNonce?: string): Promise<VerifiedIdToken> {
     const google = this.requireGoogleConfig()
     return this.verifier.verify(idToken, {
       jwksUrl: GOOGLE_JWKS_URL,

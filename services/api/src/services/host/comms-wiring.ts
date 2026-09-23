@@ -7,10 +7,7 @@ import { makeRouteNotificationService } from "../route-notifier.js"
 import { makeDrizzleAnalyticsRepository } from "./analytics-repository.drizzle.js"
 import { makeAnalyticsService, type AnalyticsService } from "./analytics-service.js"
 import { makeDrizzleEventAnalyticsRepository } from "./event-analytics-repository.drizzle.js"
-import {
-  makeEventAnalyticsService,
-  type EventAnalyticsService,
-} from "./event-analytics-service.js"
+import { makeEventAnalyticsService, type EventAnalyticsService } from "./event-analytics-service.js"
 import { makeDrizzleAnnouncementIdentityRepository } from "./announcement-repository.drizzle.js"
 import { makeAnnouncementService, type AnnouncementService } from "./announcement-service.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../media-intake-service.js"
@@ -26,11 +23,11 @@ import {
 } from "./broadcast-service.js"
 import { makeBroadcastPipeline, type BroadcastPipeline } from "./broadcast-pipeline.js"
 import { makeBroadcastLanes, type BroadcastLanes } from "./broadcast-lanes.js"
+import { BROADCAST_CHUNK_JOB, BROADCAST_PLAN_JOB } from "./broadcast-queues.js"
 import {
-  BROADCAST_CHUNK_JOB,
-  BROADCAST_PLAN_JOB,
-} from "./broadcast-queues.js"
-import { makeDrizzleMetricsRepository, type MetricsRepository } from "./metrics-repository.drizzle.js"
+  makeDrizzleMetricsRepository,
+  type MetricsRepository,
+} from "./metrics-repository.drizzle.js"
 import { makeMetricsService, type MetricsService } from "./metrics-service.js"
 import { makeDrizzleHostExportRepository } from "./export-repository.drizzle.js"
 import {

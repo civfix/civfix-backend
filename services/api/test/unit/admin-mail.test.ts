@@ -8,7 +8,6 @@ import {
   type MailService,
 } from "../../src/services/admin/mail-service.js"
 
-
 const FROM_OUTREACH = "outreach@civfix.org"
 
 interface Harness {
@@ -39,9 +38,39 @@ describe("mail-service recipient-resolution helpers", () => {
   it("resolveCorrespondent picks the latest non-civfix from address, else null", () => {
     expect(resolveCorrespondent([], FROM_OUTREACH)).toBeNull()
     const msgs = [
-      { id: "a", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "hi", ts: "t", attachments: [], delivery: "sent" as const },
-      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [], delivery: null },
-      { id: "c", who: "civfix", from: FROM_OUTREACH, to: "clerk@city.gov", dir: "out" as const, body: "ok", ts: "t", attachments: [], delivery: "sent" as const },
+      {
+        id: "a",
+        who: "civfix",
+        from: FROM_OUTREACH,
+        to: "clerk@city.gov",
+        dir: "out" as const,
+        body: "hi",
+        ts: "t",
+        attachments: [],
+        delivery: "sent" as const,
+      },
+      {
+        id: "b",
+        who: "clerk",
+        from: "clerk@city.gov",
+        to: "",
+        dir: "in" as const,
+        body: "re",
+        ts: "t",
+        attachments: [],
+        delivery: null,
+      },
+      {
+        id: "c",
+        who: "civfix",
+        from: FROM_OUTREACH,
+        to: "clerk@city.gov",
+        dir: "out" as const,
+        body: "ok",
+        ts: "t",
+        attachments: [],
+        delivery: "sent" as const,
+      },
     ]
     expect(resolveCorrespondent(msgs, FROM_OUTREACH)).toBe("clerk@city.gov")
     expect(resolveCorrespondent(msgs, "OUTREACH@CIVFIX.ORG")).toBe("clerk@city.gov")
@@ -49,9 +78,39 @@ describe("mail-service recipient-resolution helpers", () => {
 
   it("resolveCorrespondent treats every civfix reply address as ours, not as a correspondent", () => {
     const msgs = [
-      { id: "a", who: "civfix", from: '"civfix Reports" <report-abcd2345wxyz@civfix.org>', to: "clerk@city.gov", dir: "out" as const, body: "packet", ts: "t", attachments: [], delivery: "sent" as const },
-      { id: "b", who: "clerk", from: "clerk@city.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [], delivery: null },
-      { id: "c", who: "civfix", from: "reply-abcd2345wxyz@civfix.org", to: "clerk@city.gov", dir: "out" as const, body: "ok", ts: "t", attachments: [], delivery: "sent" as const },
+      {
+        id: "a",
+        who: "civfix",
+        from: '"civfix Reports" <report-abcd2345wxyz@civfix.org>',
+        to: "clerk@city.gov",
+        dir: "out" as const,
+        body: "packet",
+        ts: "t",
+        attachments: [],
+        delivery: "sent" as const,
+      },
+      {
+        id: "b",
+        who: "clerk",
+        from: "clerk@city.gov",
+        to: "",
+        dir: "in" as const,
+        body: "re",
+        ts: "t",
+        attachments: [],
+        delivery: null,
+      },
+      {
+        id: "c",
+        who: "civfix",
+        from: "reply-abcd2345wxyz@civfix.org",
+        to: "clerk@city.gov",
+        dir: "out" as const,
+        body: "ok",
+        ts: "t",
+        attachments: [],
+        delivery: "sent" as const,
+      },
     ]
     expect(resolveCorrespondent(msgs, FROM_OUTREACH, "civfix.org")).toBe("clerk@city.gov")
     expect(resolveCorrespondent(msgs, FROM_OUTREACH)).toBe("clerk@city.gov")
@@ -59,18 +118,36 @@ describe("mail-service recipient-resolution helpers", () => {
 
   it("resolveCorrespondent keeps a real municipal sender on a civfix-shaped local part", () => {
     const msgs = [
-      { id: "a", who: "clerk", from: "report-desk@lacity.gov", to: "", dir: "in" as const, body: "re", ts: "t", attachments: [], delivery: null },
+      {
+        id: "a",
+        who: "clerk",
+        from: "report-desk@lacity.gov",
+        to: "",
+        dir: "in" as const,
+        body: "re",
+        ts: "t",
+        attachments: [],
+        delivery: null,
+      },
     ]
     expect(resolveCorrespondent(msgs, FROM_OUTREACH, "civfix.org")).toBe("report-desk@lacity.gov")
   })
-
 })
 
 describe("mail-service: list + getThread", () => {
   it("lists threads newest-first and reads a thread + messages, 404 on unknown", async () => {
     const { repo, svc } = harness()
-    const t = await repo.createThread({ subject: "Pothole", org: "City of LA", jurisdictionGeoid: "0644000" })
-    await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "please review" })
+    const t = await repo.createThread({
+      subject: "Pothole",
+      org: "City of LA",
+      jurisdictionGeoid: "0644000",
+    })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      body: "please review",
+    })
 
     const page = await svc.list({})
     expect(page.items.map((i) => i.id)).toEqual([t.id])
@@ -85,10 +162,30 @@ describe("mail-service: list + getThread", () => {
   it("reports per-message delivery: sent / failed / pending outbound, null inbound", async () => {
     const { repo, svc } = harness()
     const t = await repo.createThread({ subject: "Pothole", org: "City of LA" })
-    const sent = await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "one" })
-    const failed = await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "two" })
-    await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "three" })
-    await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "four" })
+    const sent = await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      body: "one",
+    })
+    const failed = await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      body: "two",
+    })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      body: "three",
+    })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@city.gov",
+      body: "four",
+    })
     await repo.recordEvent({ threadId: t.id, messageId: sent?.id ?? "", type: "sent" })
     await repo.recordEvent({ threadId: t.id, messageId: failed?.id ?? "", type: "failed" })
 
@@ -98,10 +195,28 @@ describe("mail-service: list + getThread", () => {
 
   it("passes through the dir / attn / geoid / q filters", async () => {
     const { repo, svc } = harness()
-    const la = await repo.createThread({ subject: "Trash", org: "City of LA", jurisdictionGeoid: "0644000" })
-    await repo.insertMessage({ threadId: la.id, direction: "out", fromAddr: FROM_OUTREACH, body: "x" })
-    const sf = await repo.createThread({ subject: "Graffiti", org: "City of SF", jurisdictionGeoid: "0667000" })
-    await repo.insertMessage({ threadId: sf.id, direction: "in", fromAddr: "clerk@sf.gov", body: "y" })
+    const la = await repo.createThread({
+      subject: "Trash",
+      org: "City of LA",
+      jurisdictionGeoid: "0644000",
+    })
+    await repo.insertMessage({
+      threadId: la.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      body: "x",
+    })
+    const sf = await repo.createThread({
+      subject: "Graffiti",
+      org: "City of SF",
+      jurisdictionGeoid: "0667000",
+    })
+    await repo.insertMessage({
+      threadId: sf.id,
+      direction: "in",
+      fromAddr: "clerk@sf.gov",
+      body: "y",
+    })
 
     expect((await svc.list({ dir: "in" })).items.map((i) => i.id)).toEqual([sf.id])
     expect((await svc.list({ geoid: "0644000" })).items.map((i) => i.id)).toEqual([la.id])
@@ -145,7 +260,12 @@ describe("mail-service: reply", () => {
       toAddr: "clerk@city.gov",
       body: "Original packet.",
     })
-    await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "Q?" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@city.gov",
+      body: "Q?",
+    })
     expect((await repo.getThreadRecord(t.id))?.unread).toBe(true)
 
     const updated = await svc.reply(t.id, { body: "Here is the answer." }, "op-1")
@@ -156,7 +276,9 @@ describe("mail-service: reply", () => {
     expect(dto?.messages[2]?.dir).toBe("out")
     expect(dto?.messages[2]?.body).toBe("Here is the answer.")
     expect(mailer.sent.at(-1)?.to).toBe("clerk@city.gov")
-    expect(mailer.sent.at(-1)?.outbound?.from).toMatch(/^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/)
+    expect(mailer.sent.at(-1)?.outbound?.from).toMatch(
+      /^"civfix" <reply-[a-z2-7]{12}@civfix\.org>$/,
+    )
     expect(repo.audits.at(-1)).toMatchObject({ action: "mail.replied", target: `mail:${t.id}` })
   })
 
@@ -238,14 +360,24 @@ describe("mail-service: reply", () => {
     })
     await expect(svc.resend(t.id, "op-1")).rejects.toMatchObject({ httpStatus: 409 })
 
-    await repo.recordEvent({ threadId: t.id, messageId: out!.id, type: "sent", meta: { late: true } })
+    await repo.recordEvent({
+      threadId: t.id,
+      messageId: out!.id,
+      type: "sent",
+      meta: { late: true },
+    })
     await expect(svc.reply(t.id, { body: "any update?" }, "op-1")).resolves.toBeDefined()
   })
 
   it("H5: a thread with ONLY an inbound message has no jurisdiction contact, so Reply is refused", async () => {
     const { repo, svc } = harness()
     const t = await repo.createThread({ subject: "Cold inbound" })
-    await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "Q?" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@city.gov",
+      body: "Q?",
+    })
     await expect(svc.reply(t.id, { body: "b" }, "op-1")).rejects.toMatchObject({ httpStatus: 422 })
   })
 
@@ -274,7 +406,12 @@ describe("mail-service: reply", () => {
       toAddr: "clerk@city.gov",
       body: "Original packet.",
     })
-    await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "Q?" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@city.gov",
+      body: "Q?",
+    })
     const getThread = vi.spyOn(repo, "getThread")
     const lastOutbound = vi.spyOn(repo, "getLastOutboundRecipient")
 
@@ -291,7 +428,12 @@ describe("mail-service: reply", () => {
       httpStatus: 404,
     })
     const t = await repo.createThread({ subject: "S" })
-    await repo.insertMessage({ threadId: t.id, direction: "out", fromAddr: FROM_OUTREACH, body: "hi" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      body: "hi",
+    })
     await expect(svc.reply(t.id, { body: "b" }, "op-1")).rejects.toMatchObject({ httpStatus: 422 })
   })
 })
@@ -325,7 +467,12 @@ describe("mail-service: resend", () => {
   it("re-delivers the latest outbound body as a fresh OUT message to the correspondent", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Follow-up", org: "City of LA" })
-    await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "Q?" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@city.gov",
+      body: "Q?",
+    })
     await repo.insertMessage({
       threadId: t.id,
       direction: "out",
@@ -390,14 +537,21 @@ describe("mail-service: resend", () => {
     const replayed = h.repo.messagesOf(t.id).at(-1)
     expect(replayed?.kind).toBe("resend")
     expect(replayed?.html).toBe("<p>packet</p>")
-    expect(replayed?.attachments).toEqual([{ key: "media/r2/photo.jpg", filename: "photo.jpg", size: 4 }])
+    expect(replayed?.attachments).toEqual([
+      { key: "media/r2/photo.jpg", filename: "photo.jpg", size: 4 },
+    ])
   })
 
   it("404s an unknown thread and 422s a thread with no outbound message to resend", async () => {
     const { repo, svc } = harness()
     await expect(svc.resend("missing", "op-1")).rejects.toMatchObject({ httpStatus: 404 })
     const t = await repo.createThread({ subject: "S" })
-    await repo.insertMessage({ threadId: t.id, direction: "in", fromAddr: "clerk@city.gov", body: "Q?" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "in",
+      fromAddr: "clerk@city.gov",
+      body: "Q?",
+    })
     await expect(svc.resend(t.id, "op-1")).rejects.toMatchObject({ httpStatus: 422 })
   })
 })

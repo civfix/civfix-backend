@@ -1,4 +1,3 @@
-
 import sharp from "sharp"
 import ffmpegPath from "ffmpeg-static"
 import { execa } from "execa"

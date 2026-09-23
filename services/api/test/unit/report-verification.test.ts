@@ -24,9 +24,7 @@ import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js
 import { makeReportService, REPORT_AUTOFORWARD_JOB } from "../../src/services/report-service.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 
-
 const NOW = new Date("2026-06-22T00:00:00.000Z")
-
 
 function reporter(id: string) {
   return {
@@ -56,7 +54,6 @@ function verdictHarness(): VerdictHarness {
   const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })
   return { repo, svc }
 }
-
 
 describe("setVerdict (D7) — verdict write + count + flip", () => {
   it("approve-once: records the verdict but leaves report_verified false (count=1 < threshold)", async () => {
@@ -169,7 +166,6 @@ describe("setVerdict (D7) — verdict write + count + flip", () => {
   })
 })
 
-
 describe("setUserReportVerified (D18) — manual override/revoke", () => {
   function userHarness(): { repo: InMemoryAdminUserRepository; svc: AdminUserService } {
     const repo = new InMemoryAdminUserRepository()
@@ -194,7 +190,10 @@ describe("setUserReportVerified (D18) — manual override/revoke", () => {
 
     await svc.setReportVerified("u1", { value: false, actorId: "op-1" })
     expect(repo.users.get("u1")?.reportVerified).toBe(false)
-    expect(repo.audits.at(-1)).toMatchObject({ action: "user.report_unverified", target: "user:u1" })
+    expect(repo.audits.at(-1)).toMatchObject({
+      action: "user.report_unverified",
+      target: "user:u1",
+    })
 
     const dto = await svc.get("u1")
     expect(dto.reportVerified).toBe(false)
@@ -207,7 +206,6 @@ describe("setUserReportVerified (D18) — manual override/revoke", () => {
     ).rejects.toMatchObject({ httpStatus: 404 })
   })
 })
-
 
 describe("createReport auto-forward enqueue gate (D9)", () => {
   const VERIFIED_UID = "11111111-1111-1111-1111-111111111111"
@@ -294,7 +292,6 @@ describe("createReport auto-forward enqueue gate (D9)", () => {
     expect(jobs.jobsFor(REPORT_AUTOFORWARD_JOB)).toHaveLength(0)
   })
 })
-
 
 describe("report.autoforward handler (D9) — runAutoForwardWith", () => {
   function handlerHarness(opts: { sendError?: unknown } = {}) {

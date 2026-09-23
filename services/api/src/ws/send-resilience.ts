@@ -267,7 +267,11 @@ export function makeSendResilience(deps: SendResilienceDeps = {}): SendResilienc
       let localRecipients = 0
       if (deps.deliverLocally) {
         try {
-          localRecipients = deps.deliverLocally(roomKey, { type: "message", message }, excludeConnId)
+          localRecipients = deps.deliverLocally(
+            roomKey,
+            { type: "message", message },
+            excludeConnId,
+          )
         } catch {
           localRecipients = 0
         }

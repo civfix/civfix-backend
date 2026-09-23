@@ -1,11 +1,14 @@
-
 import type { Container } from "../../di.js"
 import { writeAudit } from "./audit.js"
 import { OUTREACH_DIGEST_JOB } from "./jurisdiction-contacts-types.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
 import { makeContainerOutboundMailService } from "./outbound-mail-service.js"
 import { makeDrizzleOutreachRepository } from "./outreach-repository.drizzle.js"
-import { makeOutreachService, type OutreachRunResult, type OutreachService } from "./outreach-service.js"
+import {
+  makeOutreachService,
+  type OutreachRunResult,
+  type OutreachService,
+} from "./outreach-service.js"
 
 export { OUTREACH_DIGEST_JOB }
 

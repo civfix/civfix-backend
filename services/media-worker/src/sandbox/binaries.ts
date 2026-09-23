@@ -1,4 +1,3 @@
-
 import { accessSync, constants } from "node:fs"
 
 export type MediaTool = "ffmpeg" | "ffprobe"

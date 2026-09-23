@@ -1,4 +1,3 @@
-
 import type { CursorAnchor } from "./pagination.js"
 import { toPreview } from "./mail-preview.js"
 import type {

@@ -41,9 +41,11 @@ describe("B1: moderation 'remove' can never suspend an operator account", () => 
     repo.userRoles.set("OP-1", "operator")
     repo.seedItem({ id: "MOD-OP2", subjectType: "profile", subjectId: "OP-1", status: "open" })
 
-    await expect(svc.remove("MOD-OP2", { actorId: "op-2", reason: "abuse" })).rejects.toMatchObject({
-      httpStatus: 403,
-    })
+    await expect(svc.remove("MOD-OP2", { actorId: "op-2", reason: "abuse" })).rejects.toMatchObject(
+      {
+        httpStatus: 403,
+      },
+    )
     expect(repo.accountStatus.get("OP-1")).toBeUndefined()
     expect(applied).toEqual([])
   })

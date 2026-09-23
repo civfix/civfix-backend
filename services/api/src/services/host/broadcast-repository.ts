@@ -1,4 +1,9 @@
-import type { BroadcastKind, BroadcastSegment, BroadcastStatus, DeliveryStatus } from "@civfix/shared"
+import type {
+  BroadcastKind,
+  BroadcastSegment,
+  BroadcastStatus,
+  DeliveryStatus,
+} from "@civfix/shared"
 import type { NotificationPrefsRecord } from "../notification-service.js"
 import type {
   AdminBroadcastRow,

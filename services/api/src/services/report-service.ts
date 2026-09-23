@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { AppError, REPORT_TYPE_TO_CATEGORY } from "@civfix/shared"
 import type {
@@ -128,8 +127,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       chatMeta?: ReportChatMeta | null
     },
   ): Promise<ReportDTO> {
-    const reportIsPublic =
-      isPubliclyVisibleStatus(record.status) && record.visibility === "public"
+    const reportIsPublic = isPubliclyVisibleStatus(record.status) && record.visibility === "public"
     const mediaDTOs = await mapWithLimit(media, PRESIGN_CONCURRENCY, (view) => {
       const usePrivate = !reportIsPublic || view.status === "validating"
       return toMediaDTO(view, usePrivate ? privatePresign : publicPresign)
@@ -195,7 +193,10 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     }
   }
 
-  async function chatMetaFor(reportId: string, viewerId: string | null): Promise<ReportChatMeta | null> {
+  async function chatMetaFor(
+    reportId: string,
+    viewerId: string | null,
+  ): Promise<ReportChatMeta | null> {
     if (deps.loadReportChatMeta === undefined) return null
     try {
       return await deps.loadReportChatMeta(reportId, viewerId)
@@ -261,7 +262,11 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         publishedAt,
         mediaUploadIds: input.mediaUploadIds,
         timelineNote: null,
-        idempotency: { key: input.idempotencyKey, scope: REPORT_CREATE_SCOPE, userOrAnon: owner.userId },
+        idempotency: {
+          key: input.idempotencyKey,
+          scope: REPORT_CREATE_SCOPE,
+          userOrAnon: owner.userId,
+        },
         buildSnapshot: (record, media, timeline) =>
           toReportDTO(record, media, timeline, { mine: true }),
       })
@@ -313,7 +318,10 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       })
     },
 
-    async listMyReports(userId: string, pagination: PaginationQuery): Promise<ListMyReportsResponse> {
+    async listMyReports(
+      userId: string,
+      pagination: PaginationQuery,
+    ): Promise<ListMyReportsResponse> {
       const cursor = pagination.cursor ?? null
       const limit = pagination.limit ?? REPORTS_DEFAULT_LIMIT
       const { records, nextCursor } = await deps.repo.listMyReports(userId, cursor, limit)
@@ -343,11 +351,20 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       types: ReportType[] | null,
       zoom: number,
     ): Promise<ReportClusterResponse> {
-      const points = await deps.repo.findMapCandidates(bbox, categories, types, MAP_REPORTS_CANDIDATE_CAP)
+      const points = await deps.repo.findMapCandidates(
+        bbox,
+        categories,
+        types,
+        MAP_REPORTS_CANDIDATE_CAP,
+      )
       const { clusters, pins: unsignedPins } = clusterByZoom(points, effectiveMapZoom(bbox, zoom))
       const counts = countByCategory(points)
 
-      const pins: ReportPinDTO[] = await mapWithLimit(unsignedPins, PRESIGN_CONCURRENCY, toMapPinDTO)
+      const pins: ReportPinDTO[] = await mapWithLimit(
+        unsignedPins,
+        PRESIGN_CONCURRENCY,
+        toMapPinDTO,
+      )
 
       return {
         clusters,
@@ -359,12 +376,20 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     async searchReports(request: ReportSearchInput): Promise<ListReportsSearchResponse> {
       const q = request.q?.trim() ? request.q.trim() : null
       const categories =
-        request.categories !== undefined && request.categories.length > 0 ? request.categories : null
+        request.categories !== undefined && request.categories.length > 0
+          ? request.categories
+          : null
       const types = request.types !== undefined && request.types.length > 0 ? request.types : null
       const cursor = request.cursor ?? null
       const limit = request.limit ?? REPORTS_SEARCH_DEFAULT_LIMIT
 
-      const { points, nextCursor } = await deps.repo.searchReports({ q, categories, types, cursor, limit })
+      const { points, nextCursor } = await deps.repo.searchReports({
+        q,
+        categories,
+        types,
+        cursor,
+        limit,
+      })
 
       const items: ReportPinDTO[] = await mapWithLimit(points, PRESIGN_CONCURRENCY, (p) =>
         toMapPinDTO(mapPointToUnsignedPin(p)),
@@ -391,7 +416,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     async unlistReport(userId: string, reportId: string, unlisted: boolean): Promise<ReportDTO> {
       const visibility: ReportVisibility = unlisted ? "hidden" : "public"
       const kind = REPORT_VISIBILITY_TIMELINE_KIND[visibility]
-      const note = unlisted ? "Hidden from the public map by the reporter" : "Re-listed by the reporter"
+      const note = unlisted
+        ? "Hidden from the public map by the reporter"
+        : "Re-listed by the reporter"
       const outcome = await deps.repo.setVisibilityByOwner(reportId, userId, {
         visibility,
         note,
@@ -420,11 +447,9 @@ async function maybeEnqueueAutoForward(
   try {
     const verified = await deps.isReportVerified(reporterUserId)
     if (!verified) return
-    await deps.jobs.enqueue(
-      REPORT_AUTOFORWARD_JOB,
-      { reportId } satisfies ReportAutoForwardJob,
-      { singletonKey: reportId },
-    )
+    await deps.jobs.enqueue(REPORT_AUTOFORWARD_JOB, { reportId } satisfies ReportAutoForwardJob, {
+      singletonKey: reportId,
+    })
   } catch (err) {
     deps.logger?.warn({ err, reportId }, "report.autoforward enqueue failed")
   }

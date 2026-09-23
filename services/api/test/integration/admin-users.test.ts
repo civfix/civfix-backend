@@ -258,7 +258,12 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     const messages = await repo.listUserMessages(u, null, 20)
     expect(messages.records).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ text: "hello", source: "chat", sourceId: cleanupId, thread: "Park" }),
+        expect.objectContaining({
+          text: "hello",
+          source: "chat",
+          sourceId: cleanupId,
+          thread: "Park",
+        }),
         expect.objectContaining({
           text: "group hello",
           source: "group",

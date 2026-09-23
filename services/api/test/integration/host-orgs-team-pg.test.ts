@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { testHandle, withPg, type PgHarness } from "../helpers/pg.js"
@@ -134,17 +133,19 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
     const b = await newUser("B")
     const slug = `slug-race-${randomUUID().slice(0, 8)}`
     const first = await newOrg(a, slug)
-    expect(await orgs.createOrganizationTx({
-      organizationId: randomUUID(),
-      slug,
-      name: "Duplicate",
-      description: null,
-      websiteUrl: null,
-      logoMediaId: null,
-      socialLinks: null,
-      createdBy: b,
-      now: new Date(),
-    })).toBe("slug_taken")
+    expect(
+      await orgs.createOrganizationTx({
+        organizationId: randomUUID(),
+        slug,
+        name: "Duplicate",
+        description: null,
+        websiteUrl: null,
+        logoMediaId: null,
+        socialLinks: null,
+        createdBy: b,
+        now: new Date(),
+      }),
+    ).toBe("slug_taken")
 
     await h.sql`UPDATE organizations SET deleted_at = now() WHERE id = ${first}`
     const reused = await orgs.createOrganizationTx({
@@ -267,7 +268,8 @@ describe.skipIf(!pg)("host organizations + team (integration)", () => {
       CHECK_VIOLATION,
     )
     await expectPgError(
-      () => h.sql`UPDATE cleanups SET donation_url = 'http://give.example.org' WHERE id = ${eventId}`,
+      () =>
+        h.sql`UPDATE cleanups SET donation_url = 'http://give.example.org' WHERE id = ${eventId}`,
       CHECK_VIOLATION,
     )
     await expectPgError(

@@ -22,7 +22,12 @@ export interface MetricsRepository {
   recomputeFromSource(cleanupId: string, timezone: string, since: Date): Promise<MetricUpsert[]>
   upsertExact(rows: readonly MetricUpsert[]): Promise<void>
   upsertGreatest(rows: readonly MetricUpsert[]): Promise<void>
-  read(cleanupId: string, metrics: readonly string[], from: string, to: string): Promise<MetricRow[]>
+  read(
+    cleanupId: string,
+    metrics: readonly string[],
+    from: string,
+    to: string,
+  ): Promise<MetricRow[]>
   readMany(
     cleanupIds: readonly string[],
     metrics: readonly string[],

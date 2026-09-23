@@ -79,10 +79,7 @@ import { makeDrizzleNotificationRepository } from "./services/notification-repos
 import { MEDIA_GET_URL_TTL_SEC } from "./services/media-intake-service.js"
 import { makeAffiliationLoader, type AffiliationLoader } from "./services/affiliation.js"
 import { RedisByteMeter, type ByteMeter } from "./services/media-byte-quota.js"
-import {
-  makeTicketTokenSigner,
-  type TicketTokenSigner,
-} from "./services/host/ticket-token.js"
+import { makeTicketTokenSigner, type TicketTokenSigner } from "./services/host/ticket-token.js"
 import { RedisCounterStore, type CounterStore } from "./abuse/counter-store.js"
 import { InMemoryBlocksRepository, InMemoryDmRepository } from "./services/dm-repository.memory.js"
 import { MultiPushSender } from "./adapters/push-sender.js"
@@ -281,7 +278,8 @@ export function buildContainer(env: Env): Container {
 
   let redisByteMeter: ByteMeter | undefined
   const lazyByteMeter: ByteMeter = {
-    add: (subject, bytes) => (redisByteMeter ??= new RedisByteMeter(getRedis())).add(subject, bytes),
+    add: (subject, bytes) =>
+      (redisByteMeter ??= new RedisByteMeter(getRedis())).add(subject, bytes),
   }
   function getByteMeter(): ByteMeter {
     return lazyByteMeter
@@ -421,7 +419,10 @@ export function buildContainer(env: Env): Container {
   function getSharedPubSub(): RedisChatPubSub {
     if (!sharedPubSub) {
       sharedPubSub = new RedisChatPubSub(getRedis(), (err) =>
-        serverLogger?.error({ err, component: "redis", role: "subscriber" }, "redis subscriber error"),
+        serverLogger?.error(
+          { err, component: "redis", role: "subscriber" },
+          "redis subscriber error",
+        ),
       )
     }
     return sharedPubSub

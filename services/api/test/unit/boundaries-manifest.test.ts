@@ -157,6 +157,8 @@ describe("vintageTag", () => {
   it("is the canonical 'tiger<year>-padus<version>' identity shared by CI + the on-box cron", () => {
     expect(vintageTag(2025, "4.1")).toBe("tiger2025-padus4.1")
     // Defaults to the manifest's PAD-US version when omitted (the value CI + cron both derive).
-    expect(vintageTag(DEFAULT_TIGER_VINTAGE)).toBe(`tiger${DEFAULT_TIGER_VINTAGE}-padus${PADUS_VERSION}`)
+    expect(vintageTag(DEFAULT_TIGER_VINTAGE)).toBe(
+      `tiger${DEFAULT_TIGER_VINTAGE}-padus${PADUS_VERSION}`,
+    )
   })
 })

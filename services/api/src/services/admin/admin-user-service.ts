@@ -1,4 +1,3 @@
-
 import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   AdminUserCounts,
@@ -123,10 +122,7 @@ export interface AdminUserRepository {
   ): Promise<boolean>
   applyRole(id: string, input: { role: Role; actorId: string | null }): Promise<boolean>
   listUserOrganizations(id: string): Promise<AdminUserOrganizationRecord[]>
-  setReportVerified(
-    id: string,
-    input: { value: boolean; actorId: string | null },
-  ): Promise<boolean>
+  setReportVerified(id: string, input: { value: boolean; actorId: string | null }): Promise<boolean>
   removeUserMessage(
     userId: string,
     messageId: string,
@@ -336,7 +332,6 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
     },
 
     async setRole(id: string, input: { role: Role; actorId: string | null }): Promise<void> {
-
       if (!GRANTABLE_ROLES.has(input.role)) {
         throw AppError.forbidden(
           "Operator access is granted only through ADMIN_EMAILS and Cloudflare Access, not this endpoint.",

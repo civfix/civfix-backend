@@ -1,4 +1,3 @@
-
 import { AppError, ErrorCode } from "@civfix/shared"
 import type {
   AddGroupMembersRequest,
@@ -127,9 +126,7 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
       .filter((id) => !candidates.includes(id))
       .slice(0, INVITE_BLOCK_SCAN_MEMBERS)
     const blocked = await groups.blockedPairsAmong([...candidates, ...existing])
-    const rosterOk = candidates.filter(
-      (c) => !existing.some((m) => blocked.has(blockedKey(c, m))),
-    )
+    const rosterOk = candidates.filter((c) => !existing.some((m) => blocked.has(blockedKey(c, m))))
     return greedyPairwise(rosterOk, blocked)
   }
 
@@ -143,18 +140,27 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
     viewerId: string,
     groupId: string,
   ): Promise<{ view: ChatGroupView; role: GroupMemberRole | null }> {
-    const [view, role] = await Promise.all([groups.findById(groupId), groups.roleOf(groupId, viewerId)])
+    const [view, role] = await Promise.all([
+      groups.findById(groupId),
+      groups.roleOf(groupId, viewerId),
+    ])
     if (view === null || (role === null && view.visibility === "private")) {
       throw forbidden("You aren't a member of this group.", "not_a_member")
     }
     return { view, role }
   }
 
-  async function requireReadable(viewerId: string, groupId: string): Promise<GroupMemberRole | null> {
+  async function requireReadable(
+    viewerId: string,
+    groupId: string,
+  ): Promise<GroupMemberRole | null> {
     return (await readableGroup(viewerId, groupId)).role
   }
 
-  async function firstMembersPage(groupId: string, viewerId: string): Promise<ListGroupMembersResponse> {
+  async function firstMembersPage(
+    groupId: string,
+    viewerId: string,
+  ): Promise<ListGroupMembersResponse> {
     const page = await groups.listMembers(groupId, viewerId, null, GROUP_MEMBERS_DEFAULT_LIMIT)
     return { members: page.members.map(toMemberDTO), nextCursor: page.nextCursor }
   }
@@ -172,7 +178,8 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
         {
           kind: req.kind,
           name: req.name,
-          description: req.description !== undefined && req.description !== "" ? req.description : null,
+          description:
+            req.description !== undefined && req.description !== "" ? req.description : null,
           avatarMediaId,
           ownerId,
           visibility: req.visibility,
@@ -200,7 +207,10 @@ export function makeChatGroupService(deps: ChatGroupServiceDeps): ChatGroupServi
       assertNoSlur(req.description ?? null, "description")
       const view = await requireGroup(req.id)
       if (req.visibility !== undefined && req.visibility !== view.visibility && role !== "owner") {
-        throw forbidden("Only the owner can change this group's visibility.", "visibility_owner_only")
+        throw forbidden(
+          "Only the owner can change this group's visibility.",
+          "visibility_owner_only",
+        )
       }
       await groups.update(req.id, {
         ...(req.name !== undefined ? { name: req.name } : {}),

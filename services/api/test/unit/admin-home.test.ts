@@ -14,7 +14,6 @@ import {
   type AnalyticsRepository,
 } from "../../src/services/admin/analytics-types.js"
 
-
 const NOW = new Date("2026-06-15T12:00:00.000Z")
 
 function harness(): {

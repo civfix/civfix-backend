@@ -38,8 +38,16 @@ async function routeWith(status: AdminReportStatus, visibility: ReportVisibility
     id: "rep-1",
     status,
     visibility,
-    routing: { geoid: "0644000", dept: "Public Works", place: "Los Angeles", contact: "311@lacity.gov", routed: false },
-    media: [{ id: "m1", kind: "image", r2Key: "processed/uploads/a", thumbKey: "processed/thumbs/a" }],
+    routing: {
+      geoid: "0644000",
+      dept: "Public Works",
+      place: "Los Angeles",
+      contact: "311@lacity.gov",
+      routed: false,
+    },
+    media: [
+      { id: "m1", kind: "image", r2Key: "processed/uploads/a", thumbKey: "processed/thumbs/a" },
+    ],
   })
   await svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
   const outbound = mailer.sent.find((m) => m.outbound !== undefined)?.outbound
@@ -74,11 +82,14 @@ describe("packet photo links", () => {
     ["submitted", "public"],
     ["held", "public"],
     ["published", "hidden"],
-  ] as const)("keeps signed links for a %s %s report, which the public cannot see", async (status, visibility) => {
-    const { calls, text } = await routeWith(status, visibility)
-    expect(calls).toEqual([
-      { key: "processed/uploads/a", ttlSec: PACKET_MEDIA_URL_TTL_SEC, forceSigned: true },
-    ])
-    expect(text).not.toContain("https://cdn.test/")
-  })
+  ] as const)(
+    "keeps signed links for a %s %s report, which the public cannot see",
+    async (status, visibility) => {
+      const { calls, text } = await routeWith(status, visibility)
+      expect(calls).toEqual([
+        { key: "processed/uploads/a", ttlSec: PACKET_MEDIA_URL_TTL_SEC, forceSigned: true },
+      ])
+      expect(text).not.toContain("https://cdn.test/")
+    },
+  )
 })

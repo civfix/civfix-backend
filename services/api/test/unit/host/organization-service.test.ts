@@ -106,7 +106,9 @@ describe("createOrganization", () => {
   })
 
   it("applies the reserved-word check to the NORMALIZED slug", async () => {
-    await expect(service.createOrganization(base({ slug: " ADMIN " }), OWNER)).rejects.toMatchObject({
+    await expect(
+      service.createOrganization(base({ slug: " ADMIN " }), OWNER),
+    ).rejects.toMatchObject({
       code: "VALIDATION",
     })
     expect(repo.organizations.size).toBe(0)
@@ -298,9 +300,9 @@ describe("membership", () => {
 
   it("403s a plain member trying to change a role", async () => {
     const id = await seeded()
-    await expect(
-      service.setMemberRole(id, MEMBER, ADMIN, "member"),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" })
+    await expect(service.setMemberRole(id, MEMBER, ADMIN, "member")).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
   })
 
   it("refuses to change or remove the owner", async () => {
@@ -427,9 +429,9 @@ describe("last-admin guard", () => {
   it("the owner seat alone already makes the invariant unreachable through the normal paths", async () => {
     const id = await seeded()
     await service.setMemberRole(id, OWNER, ADMIN, "member")
-    expect(
-      repo.members.filter((m) => m.organizationId === id && m.role !== "member"),
-    ).toHaveLength(1)
+    expect(repo.members.filter((m) => m.organizationId === id && m.role !== "member")).toHaveLength(
+      1,
+    )
     await expect(service.removeMember(id, OWNER, OWNER)).rejects.toMatchObject({
       code: "FORBIDDEN",
     })
@@ -449,7 +451,12 @@ describe("last-admin guard", () => {
   it("allows the removal once a second admin seat exists", async () => {
     const id = await seeded()
     dropOwnerSeat(id)
-    await repo.setMemberRoleTx({ organizationId: id, userId: MEMBER, role: "admin", actorId: ADMIN })
+    await repo.setMemberRoleTx({
+      organizationId: id,
+      userId: MEMBER,
+      role: "admin",
+      actorId: ADMIN,
+    })
 
     await expect(service.removeMember(id, ADMIN, ADMIN)).resolves.toEqual({ ok: true })
   })
@@ -469,7 +476,12 @@ describe("last-admin guard", () => {
   it("lets an admin be demoted while another owner-or-admin seat remains", async () => {
     const id = await seeded()
     dropOwnerSeat(id)
-    await repo.setMemberRoleTx({ organizationId: id, userId: MEMBER, role: "admin", actorId: ADMIN })
+    await repo.setMemberRoleTx({
+      organizationId: id,
+      userId: MEMBER,
+      role: "admin",
+      actorId: ADMIN,
+    })
 
     await expect(
       repo.setMemberRoleTx({ organizationId: id, userId: ADMIN, role: "member", actorId: ADMIN }),
@@ -490,7 +502,9 @@ describe("last-admin guard", () => {
   }
 
   function countIndex(statements: { sql: string }[]): number {
-    return statements.findIndex((s) => /count\(\*\)::int AS n\s+FROM organization_members/.test(s.sql))
+    return statements.findIndex((s) =>
+      /count\(\*\)::int AS n\s+FROM organization_members/.test(s.sql),
+    )
   }
 
   it("serializes a demotion on the organizations row before it counts the seats", async () => {
@@ -643,9 +657,12 @@ describe("verification", () => {
       input: { type: string; title: string; body?: string; link?: string }
     }
 
-    function notifying(
-      over: { mailer?: boolean; notifier?: boolean; failing?: boolean } = {},
-    ): { svc: OrganizationService; mails: Sent[]; notes: Notified[]; warnings: unknown[] } {
+    function notifying(over: { mailer?: boolean; notifier?: boolean; failing?: boolean } = {}): {
+      svc: OrganizationService
+      mails: Sent[]
+      notes: Notified[]
+      warnings: unknown[]
+    } {
       const mails: Sent[] = []
       const notes: Notified[] = []
       const warnings: unknown[] = []
@@ -698,7 +715,11 @@ describe("verification", () => {
       expect(notes).toHaveLength(1)
       expect(notes[0]).toMatchObject({
         userId: OWNER,
-        input: { type: "system", title: "Ballona Creek Trust is now verified", link: "/orgs/ballona-creek-trust" },
+        input: {
+          type: "system",
+          title: "Ballona Creek Trust is now verified",
+          link: "/orgs/ballona-creek-trust",
+        },
       })
       expect(notes[0]?.userId).not.toBe(ADMIN)
     })
@@ -846,7 +867,9 @@ describe("org invites (0.41.0)", () => {
     expect(stored?.expiresAt.getTime()).toBe(clock.getTime() + 14 * 24 * 60 * 60 * 1000)
     expect(mails).toHaveLength(1)
     expect(mails[0]?.to).toBe("newcomer@example.com")
-    expect(String(mails[0]?.vars.subject)).toContain("Olive Owner invited you to join Ballona Creek Trust")
+    expect(String(mails[0]?.vars.subject)).toContain(
+      "Olive Owner invited you to join Ballona Creek Trust",
+    )
     // The token rides the URL FRAGMENT, never the query string (DECISIONS §32).
     expect(mails[0]?.vars.ctaUrl).toBe(
       `https://civfix.test/manage/org-invites/accept#token=${OPERATOR_TOKEN}`,
@@ -866,7 +889,12 @@ describe("org invites (0.41.0)", () => {
       role: "member",
     })
     expect(again).toMatchObject({ ok: true, member: null, invited: true })
-    expect(again.invite).toMatchObject({ id: inviteId, role: "admin", status: "pending", user: null })
+    expect(again.invite).toMatchObject({
+      id: inviteId,
+      role: "admin",
+      status: "pending",
+      user: null,
+    })
     expect(repo.invites).toHaveLength(1)
     expect(mails).toHaveLength(1)
   })
@@ -890,18 +918,30 @@ describe("org invites (0.41.0)", () => {
     // Both got the email; the account additionally got a best-effort in-app note.
     expect(mails.map((m) => m.to).sort()).toEqual(["mel@x.org", "nobody@example.com"])
     expect(notes).toEqual([
-      { userId: MEMBER, type: "org_invite", title: "You've been invited to join Ballona Creek Trust" },
+      {
+        userId: MEMBER,
+        type: "org_invite",
+        title: "You've been invited to join Ballona Creek Trust",
+      },
     ])
     // Re-inviting either is the same silent success.
     for (const identifier of ["mel@x.org", "nobody@example.com"]) {
-      const again = await service.inviteMember(dto.id, OWNER, { identifierKind: "email", identifier, role: "member" })
+      const again = await service.inviteMember(dto.id, OWNER, {
+        identifierKind: "email",
+        identifier,
+        role: "member",
+      })
       expect(again.invite?.status).toBe("pending")
     }
     // Once suspended, both are refused with the same code.
     await service.adminSetSuspended(dto.id, OPERATOR, { suspended: true, reason: "spam" })
     for (const identifier of ["olive@x.org", "other@example.com"]) {
       await expect(
-        service.inviteMember(dto.id, OWNER, { identifierKind: "email", identifier, role: "member" }),
+        service.inviteMember(dto.id, OWNER, {
+          identifierKind: "email",
+          identifier,
+          role: "member",
+        }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" })
     }
   })
@@ -927,7 +967,11 @@ describe("org invites (0.41.0)", () => {
 
   it("an existing member who accepts keeps their seated role (no upgrade)", async () => {
     const dto = await service.createOrganization(base(), OWNER)
-    await service.inviteMember(dto.id, OWNER, { identifierKind: "handle", identifier: "mel", role: "member" })
+    await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "handle",
+      identifier: "mel",
+      role: "member",
+    })
     await service.inviteMember(dto.id, OWNER, {
       identifierKind: "email",
       identifier: "mel@x.org",
@@ -989,7 +1033,9 @@ describe("org invites (0.41.0)", () => {
     expect(repo.invites[0]?.status).toBe("pending")
     expect(repo.members.some((m) => m.userId === newcomer.id)).toBe(false)
     await service.adminSetSuspended(orgId, OPERATOR, { suspended: false, reason: "resolved" })
-    await expect(service.acceptInvite(newcomer.id, OPERATOR_TOKEN)).resolves.toMatchObject({ role: "admin" })
+    await expect(service.acceptInvite(newcomer.id, OPERATOR_TOKEN)).resolves.toMatchObject({
+      role: "admin",
+    })
   })
 
   it("still sends the invite with a generic inviter name when the inviter lookup fails", async () => {
@@ -1068,7 +1114,11 @@ describe("org invites (0.41.0)", () => {
 
   it("listing invites is owner|admin; a plain member is refused", async () => {
     const { orgId } = await invited()
-    await service.inviteMember(orgId, OWNER, { identifierKind: "handle", identifier: "mel", role: "member" })
+    await service.inviteMember(orgId, OWNER, {
+      identifierKind: "handle",
+      identifier: "mel",
+      role: "member",
+    })
     await expect(service.listInvites(orgId, MEMBER)).rejects.toMatchObject({ code: "FORBIDDEN" })
   })
 
@@ -1101,7 +1151,11 @@ describe("org invites (0.41.0)", () => {
 
   it("notifies a member added by handle in-app", async () => {
     const dto = await service.createOrganization(base(), OWNER)
-    await service.inviteMember(dto.id, OWNER, { identifierKind: "handle", identifier: "adam", role: "admin" })
+    await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "handle",
+      identifier: "adam",
+      role: "admin",
+    })
     expect(notes).toEqual([
       { userId: ADMIN, type: "org_invite", title: "You've been added to Ballona Creek Trust" },
     ])
@@ -1111,7 +1165,11 @@ describe("org invites (0.41.0)", () => {
 describe("suspension (0.41.0)", () => {
   async function suspended(): Promise<string> {
     const dto = await service.createOrganization(base(), OWNER)
-    await service.inviteMember(dto.id, OWNER, { identifierKind: "handle", identifier: "mel", role: "member" })
+    await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "handle",
+      identifier: "mel",
+      role: "member",
+    })
     await service.adminSetSuspended(dto.id, OPERATOR, { suspended: true, reason: "impersonation" })
     return dto.id
   }
@@ -1121,7 +1179,9 @@ describe("suspension (0.41.0)", () => {
     await expect(service.getOrganizationBySlug("ballona-creek-trust", null)).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
-    await expect(service.getOrganizationBySlug("ballona-creek-trust", STRANGER)).rejects.toMatchObject({
+    await expect(
+      service.getOrganizationBySlug("ballona-creek-trust", STRANGER),
+    ).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
     const asMember = await service.getOrganizationBySlug("ballona-creek-trust", MEMBER)
@@ -1132,11 +1192,17 @@ describe("suspension (0.41.0)", () => {
 
   it("refuses self-service writes while suspended, and lifts cleanly", async () => {
     const id = await suspended()
-    await expect(service.updateOrganization(id, { name: "New name" }, OWNER)).rejects.toMatchObject({
-      code: "FORBIDDEN",
-    })
+    await expect(service.updateOrganization(id, { name: "New name" }, OWNER)).rejects.toMatchObject(
+      {
+        code: "FORBIDDEN",
+      },
+    )
     await expect(
-      service.inviteMember(id, OWNER, { identifierKind: "handle", identifier: "adam", role: "admin" }),
+      service.inviteMember(id, OWNER, {
+        identifierKind: "handle",
+        identifier: "adam",
+        role: "admin",
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
     await expect(
       service.applyVerification(id, OWNER, { kind: "nonprofit", documents: [] }),
@@ -1144,10 +1210,15 @@ describe("suspension (0.41.0)", () => {
     // A member can still leave.
     await expect(service.removeMember(id, MEMBER, MEMBER)).resolves.toEqual({ ok: true })
 
-    const lifted = await service.adminSetSuspended(id, OPERATOR, { suspended: false, reason: "resolved" })
+    const lifted = await service.adminSetSuspended(id, OPERATOR, {
+      suspended: false,
+      reason: "resolved",
+    })
     expect(lifted.suspendedAt).toBeNull()
     expect(lifted.verifiedStatus).toBe("unverified")
-    await expect(service.updateOrganization(id, { name: "New name" }, OWNER)).resolves.toMatchObject({
+    await expect(
+      service.updateOrganization(id, { name: "New name" }, OWNER),
+    ).resolves.toMatchObject({
       name: "New name",
       suspended: false,
     })
@@ -1237,14 +1308,26 @@ describe("admin org management (0.41.0)", () => {
     expect(all.items).toHaveLength(3)
     expect(all.counts).toEqual({ all: 3, verified: 1, pending: 1, suspended: 1 })
 
-    const verified = await service.adminListOrganizations({ verified: "verified", cursor: null, limit: 25 })
+    const verified = await service.adminListOrganizations({
+      verified: "verified",
+      cursor: null,
+      limit: 25,
+    })
     expect(verified.items.map((o) => o.slug)).toEqual(["city-of-playa"])
-    const kind = await service.adminListOrganizations({ kind: "nonprofit", cursor: null, limit: 25 })
+    const kind = await service.adminListOrganizations({
+      kind: "nonprofit",
+      cursor: null,
+      limit: 25,
+    })
     expect(kind.items.map((o) => o.slug)).toEqual(["city-of-playa"])
     const q = await service.adminListOrganizations({ q: "third", cursor: null, limit: 25 })
     expect(q.items.map((o) => o.slug)).toEqual(["third"])
     expect(q.counts).toEqual({ all: 1, verified: 0, pending: 0, suspended: 1 })
-    const notSuspended = await service.adminListOrganizations({ suspended: false, cursor: null, limit: 25 })
+    const notSuspended = await service.adminListOrganizations({
+      suspended: false,
+      cursor: null,
+      limit: 25,
+    })
     expect(notSuspended.items).toHaveLength(2)
 
     const paged = await service.adminListOrganizations({ cursor: null, limit: 2 })
@@ -1281,7 +1364,11 @@ describe("admin org management (0.41.0)", () => {
 
   it("lists members with operator actor refs", async () => {
     const dto = await created()
-    await service.adminAddMember(dto.id, OPERATOR, { userId: ADMIN, role: "admin", reason: "staff" })
+    await service.adminAddMember(dto.id, OPERATOR, {
+      userId: ADMIN,
+      role: "admin",
+      reason: "staff",
+    })
     const page = await service.adminListMembers(dto.id, { cursor: null, limit: 25 })
     expect(page.items.map((m) => [m.user.handle, m.role])).toEqual([
       ["olive", "owner"],
@@ -1303,7 +1390,11 @@ describe("admin org management (0.41.0)", () => {
       service.adminAddMember(dto.id, OPERATOR, { userId: MEMBER, role: "admin", reason: "again" }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
     await expect(
-      service.adminAddMember(dto.id, OPERATOR, { userId: randomUUID(), role: "member", reason: "x" }),
+      service.adminAddMember(dto.id, OPERATOR, {
+        userId: randomUUID(),
+        role: "member",
+        reason: "x",
+      }),
     ).rejects.toMatchObject({ code: "VALIDATION" })
   })
 
@@ -1315,7 +1406,9 @@ describe("admin org management (0.41.0)", () => {
     await expect(
       service.adminAddMember(dto.id, OPERATOR, { userId: ADMIN, role: "owner", reason: "repair" }),
     ).resolves.toEqual({ ok: true })
-    const roles = repo.members.filter((m) => m.organizationId === dto.id).map((m) => [m.userId, m.role])
+    const roles = repo.members
+      .filter((m) => m.organizationId === dto.id)
+      .map((m) => [m.userId, m.role])
     expect(roles).toEqual([[ADMIN, "owner"]])
     expect(repo.audits.filter((a) => a.action === "org.ownership_transferred")[0]?.meta).toEqual({
       from: null,
@@ -1340,7 +1433,11 @@ describe("admin org management (0.41.0)", () => {
 
   it("adding as owner transfers ownership: the previous owner becomes admin", async () => {
     const dto = await created()
-    await service.adminAddMember(dto.id, OPERATOR, { userId: ADMIN, role: "owner", reason: "handover" })
+    await service.adminAddMember(dto.id, OPERATOR, {
+      userId: ADMIN,
+      role: "owner",
+      reason: "handover",
+    })
     const roles = repo.members
       .filter((m) => m.organizationId === dto.id)
       .map((m) => [m.userId, m.role])
@@ -1362,7 +1459,11 @@ describe("admin org management (0.41.0)", () => {
       service.adminSetMemberRole(dto.id, OPERATOR, { userId: OWNER, role: "admin", reason: "x" }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
     await expect(
-      service.adminSetMemberRole(dto.id, OPERATOR, { userId: ADMIN, role: "owner", reason: "handover" }),
+      service.adminSetMemberRole(dto.id, OPERATOR, {
+        userId: ADMIN,
+        role: "owner",
+        reason: "handover",
+      }),
     ).resolves.toEqual({ ok: true })
     expect(repo.members.find((m) => m.userId === OWNER)?.role).toBe("admin")
     expect(repo.members.find((m) => m.userId === ADMIN)?.role).toBe("owner")
@@ -1371,7 +1472,11 @@ describe("admin org management (0.41.0)", () => {
       service.adminSetMemberRole(dto.id, OPERATOR, { userId: OWNER, role: "member", reason: "x" }),
     ).resolves.toEqual({ ok: true })
     await expect(
-      service.adminSetMemberRole(dto.id, OPERATOR, { userId: STRANGER, role: "member", reason: "x" }),
+      service.adminSetMemberRole(dto.id, OPERATOR, {
+        userId: STRANGER,
+        role: "member",
+        reason: "x",
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 

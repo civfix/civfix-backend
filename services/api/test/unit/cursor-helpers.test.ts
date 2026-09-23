@@ -1,4 +1,3 @@
-
 import { describe, it, expect } from "vitest"
 import {
   CURSOR_UUID_RE,
@@ -93,7 +92,9 @@ describe("parseTimeCursor", () => {
 
   it("splits on the FIRST '|' (unlike parseNameCursor, which splits on the last)", () => {
     expect(parseTimeCursor(`${ISO}|${UUID}|extra`)).toBeNull()
-    expect(parseTimeCursor(`${ISO}|${UUID}|extra`, { requireUuid: false })!.id).toBe(`${UUID}|extra`)
+    expect(parseTimeCursor(`${ISO}|${UUID}|extra`, { requireUuid: false })!.id).toBe(
+      `${UUID}|extra`,
+    )
   })
 
   it("rejects a forged out-of-range timestamp that JS parses but Postgres would 22008 on", () => {
@@ -236,7 +237,10 @@ describe("paginate", () => {
   })
 
   it("falls back to `createdAt` when the anchor has no `at`", () => {
-    const rows = [{ id: UUID, createdAt: new Date(ISO) }, { id: UUID_2, createdAt: new Date(ISO) }]
+    const rows = [
+      { id: UUID, createdAt: new Date(ISO) },
+      { id: UUID_2, createdAt: new Date(ISO) },
+    ]
     const page = paginate(rows, 1, (r) => ({ createdAt: r.createdAt, id: r.id }))
     expect(page.nextCursor).toBe(`${ISO}|${UUID}`)
   })

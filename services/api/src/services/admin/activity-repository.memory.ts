@@ -25,7 +25,13 @@ const READ_ACTIONS: ReadonlySet<string> = new Set(AUDIT_READ_ACTIONS)
 
 /** The columns the SQL branches search, flattened into the text a record contributes to `q`. */
 function searchText(record: ActivitySourceRecord): string {
-  return [record.who, record.where, record.action ?? "", record.eventType ?? "", record.subject ?? ""]
+  return [
+    record.who,
+    record.where,
+    record.action ?? "",
+    record.eventType ?? "",
+    record.subject ?? "",
+  ]
     .join(" ")
     .toLowerCase()
 }

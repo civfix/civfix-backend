@@ -123,7 +123,10 @@ describe("forward-template service: preview", () => {
 
   it("appends the operator note WITHOUT a heading when the body does not render {operatorNote}", async () => {
     const { svc } = harness()
-    const preview = await svc.preview({ subjectTemplate: null, bodyTemplate: "A {category} report." })
+    const preview = await svc.preview({
+      subjectTemplate: null,
+      bodyTemplate: "A {category} report.",
+    })
     expect(preview.text).toContain(`> ${sample("operatorNote")}`)
     expect(preview.text).not.toContain("Note from the civfix team")
     expect(preview.html).not.toContain("Note from the civfix team")

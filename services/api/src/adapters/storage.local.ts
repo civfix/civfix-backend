@@ -384,7 +384,5 @@ export function nowSec(): number {
 }
 
 function isNotFound(err: unknown): boolean {
-  return (
-    typeof err === "object" && err !== null && (err as { code?: unknown }).code === "ENOENT"
-  )
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "ENOENT"
 }

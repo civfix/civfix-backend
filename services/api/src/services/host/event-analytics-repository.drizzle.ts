@@ -46,9 +46,7 @@ export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRep
   return {
     async previousCompletedEventIds(args) {
       const orgFilter = (): Fragment =>
-        args.organizationId !== null
-          ? sql`AND c.organization_id = ${args.organizationId}`
-          : sql``
+        args.organizationId !== null ? sql`AND c.organization_id = ${args.organizationId}` : sql``
       const rows = await sql<{ id: string }[]>`
         WITH hosted AS (
           SELECT c.id, c.completed_at

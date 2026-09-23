@@ -45,7 +45,8 @@ function conflictKind(err: unknown): "code" | "fingerprint" | null {
   if (e.code !== PG_UNIQUE_VIOLATION) return null
   const constraint = typeof e.constraint_name === "string" ? e.constraint_name : ""
   const detail = typeof e.detail === "string" ? e.detail : ""
-  if (constraint === FINGERPRINT_INDEX || detail.includes("ledger_fingerprint")) return "fingerprint"
+  if (constraint === FINGERPRINT_INDEX || detail.includes("ledger_fingerprint"))
+    return "fingerprint"
   if (constraint === CODE_INDEX || detail.includes("(code)")) return "code"
   return null
 }
@@ -234,9 +235,7 @@ export function makeDrizzleCertificateRepository(sql: Sql): CertificateRepositor
 
     /** Holder identity frozen onto the document. A tombstoned account cannot issue. */
     async findHolder(userId: string): Promise<CertificateHolder | null> {
-      const rows = await sql<
-        { display_name: string; handle: string | null; locale: string }[]
-      >`
+      const rows = await sql<{ display_name: string; handle: string | null; locale: string }[]>`
         SELECT
           u.display_name,
           u.handle,

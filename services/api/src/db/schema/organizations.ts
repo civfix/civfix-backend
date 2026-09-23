@@ -1,11 +1,17 @@
 import { sql } from "drizzle-orm"
-import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core"
+import {
+  check,
+  index,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core"
 import { users } from "./users.js"
 import { citext } from "./types.js"
-import type {
-  ORG_VERIFICATION_KIND_VALUES,
-  ORG_VERIFICATION_STATUS_VALUES,
-} from "./types-host.js"
+import type { ORG_VERIFICATION_KIND_VALUES, ORG_VERIFICATION_STATUS_VALUES } from "./types-host.js"
 
 type OrgVerificationStatus = (typeof ORG_VERIFICATION_STATUS_VALUES)[number]
 type OrgVerificationKind = (typeof ORG_VERIFICATION_KIND_VALUES)[number]
