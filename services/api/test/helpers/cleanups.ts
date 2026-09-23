@@ -4,6 +4,8 @@ import type { Sql } from "../../src/db/client.js"
 import type {
   AttendeeView,
   CancelCleanupOutcome,
+  CleanupEditOutcome,
+  CleanupEdits,
   CleanupOrganizationView,
   CreateCleanupOutcome,
   ClaimSlotOutcome,
@@ -866,6 +868,52 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       c.hostReplyToVerifiedAt = null
     }
     return Promise.resolve(true)
+  }
+
+  async updateCleanupWithEdits(
+    id: string,
+    patch: UpdateCleanupPatch,
+    edits: CleanupEdits,
+  ): Promise<CleanupEditOutcome> {
+    const cleanup = this.cleanups.get(id)
+    if (!cleanup) return { kind: "not_found" }
+    if (cleanup.status === "cancelled") return { kind: "cancelled" }
+    if (
+      edits.refusalOnceEnded !== null &&
+      hasEventEnded(eventWindowOf(cleanup), this.now().getTime())
+    ) {
+      throw edits.refusalOnceEnded
+    }
+    const rollBack = this.snapshotEditState(cleanup)
+    try {
+      await this.updateCleanup(id, patch)
+      if (edits.links !== null) {
+        await this.reconcileLinkedReports(id, edits.links, edits.actorUserId)
+      }
+      const slotDiff =
+        edits.slots === null ? null : await this.reconcileSlots(id, edits.slots, edits.actorUserId)
+      return { kind: "updated", slotDiff }
+    } catch (err) {
+      rollBack()
+      throw err
+    }
+  }
+
+  /** Stands in for the Postgres transaction: every store one edit can touch goes back as it was. */
+  private snapshotEditState(cleanup: StoredCleanup): () => void {
+    const cleanupFields = { ...cleanup }
+    const links = [...this.links]
+    const timeline = [...this.timeline]
+    const slots = this.slots.map((slot) => [slot, { ...slot }] as const)
+    const slotClaims = [...this.slotClaims]
+    return () => {
+      Object.assign(cleanup, cleanupFields)
+      this.links.splice(0, this.links.length, ...links)
+      this.timeline.splice(0, this.timeline.length, ...timeline)
+      for (const [slot, fields] of slots) Object.assign(slot, fields)
+      this.slots.splice(0, this.slots.length, ...slots.map(([slot]) => slot))
+      this.slotClaims.splice(0, this.slotClaims.length, ...slotClaims)
+    }
   }
 
   linkReports(cleanupId: string, reportIds: string[], actorId: string | null): Promise<string[]> {

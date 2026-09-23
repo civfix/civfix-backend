@@ -29,6 +29,8 @@ import type {
   CancelCleanupOutcome,
   ClaimSlotOutcome,
   CleanupOrganizationView,
+  CleanupEditOutcome,
+  CleanupEdits,
   CleanupIdempotency,
   CleanupRecord,
   CleanupRepository,
@@ -282,7 +284,7 @@ async function privateEventBlocksJoin(
   return standing.length === 0
 }
 
-function hostSetFragments(sql: Sql, patch: EventHostWrite): postgres.Fragment[] {
+function hostSetFragments(sql: Queryable, patch: EventHostWrite): postgres.Fragment[] {
   const sets: postgres.Fragment[] = []
   if (patch.endsAt !== undefined) sets.push(sql`ends_at = ${patch.endsAt}`)
   if (patch.timezone !== undefined) sets.push(sql`timezone = ${patch.timezone}`)
@@ -309,6 +311,80 @@ function hostSetFragments(sql: Sql, patch: EventHostWrite): postgres.Fragment[] 
     sets.push(sql`host_reply_to = ${patch.hostReplyTo}, host_reply_to_verified_at = NULL`)
   }
   return sets
+}
+
+function cleanupSetList(sql: Queryable, patch: UpdateCleanupPatch): postgres.Fragment | null {
+  const sets: postgres.Fragment[] = hostSetFragments(sql, patch)
+  if (patch.title !== undefined) sets.push(sql`title = ${patch.title}`)
+  if (patch.description !== undefined) sets.push(sql`description = ${patch.description}`)
+  if (patch.eventKind !== undefined) sets.push(sql`event_kind = ${patch.eventKind}`)
+  if (patch.type !== undefined) sets.push(sql`type = ${patch.type}`)
+  if (patch.scheduledAt !== undefined) sets.push(sql`scheduled_at = ${patch.scheduledAt}`)
+  if (patch.lat !== undefined && patch.lng !== undefined) {
+    sets.push(sql`geom = ST_SetSRID(ST_MakePoint(${patch.lng}, ${patch.lat}), 4326)`)
+  }
+  if (patch.address !== undefined) sets.push(sql`address = ${patch.address}`)
+  if (patch.addressSource !== undefined) {
+    sets.push(sql`address_source = ${patch.addressSource}`)
+  }
+  if (patch.bring !== undefined) {
+    sets.push(sql`bring = ${patch.bring as unknown as string[] | null}`)
+  }
+  if (patch.jurisdictionGeoid !== undefined) {
+    sets.push(sql`jurisdiction_geoid = ${patch.jurisdictionGeoid}`)
+  }
+  if (sets.length === 0) return null
+  return sets.reduce((acc, frag) => sql`${acc}, ${frag}`)
+}
+
+async function updateCleanupInTx(
+  tx: Queryable,
+  id: string,
+  setList: postgres.Fragment,
+  patch: UpdateCleanupPatch,
+  actorUserId: string,
+): Promise<boolean> {
+  const updated = await tx<{ id: string }[]>`
+    UPDATE cleanups SET ${setList} WHERE id = ${id} RETURNING id
+  `
+  if (updated.length === 0) return false
+  await claimEventMediaInTx(tx, id, patch, actorUserId)
+  return true
+}
+
+async function reconcileLinkedReportsInTx(
+  tx: Queryable,
+  cleanupId: string,
+  desiredIds: string[],
+  actorId: string | null,
+): Promise<{ added: string[]; removed: string[] }> {
+  const existing = await tx<{ report_id: string }[]>`
+    SELECT report_id FROM cleanup_reports WHERE cleanup_id = ${cleanupId}
+  `
+  const have = new Set(existing.map((r) => r.report_id))
+  const want = new Set(desiredIds)
+  const toAdd = desiredIds.filter((id) => !have.has(id))
+  const droppable = [...have].filter((id) => !want.has(id))
+  const visible = await selectVisibleReportIds(tx, droppable)
+  const toRemove = droppable.filter((id) => visible.has(id))
+
+  const added = await linkReportsInTx(tx, cleanupId, toAdd, actorId)
+  if (toRemove.length > 0) {
+    await tx`
+      DELETE FROM cleanup_reports
+      WHERE cleanup_id = ${cleanupId} AND report_id = ANY(${toRemove}::uuid[])
+    `
+    await tx`
+      INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
+      SELECT ${cleanupId}, 'report_unlinked', 'Unlinked report ' || rid, ${actorId}
+      FROM unnest(${toRemove}::uuid[]) AS rid
+    `
+  }
+  return { added, removed: toRemove }
+}
+
+function slotConflictAsValidation(err: unknown): unknown {
+  return isSlotTitleConflict(err) ? AppError.validation({ slots: "duplicate slot title" }) : err
 }
 
 export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
@@ -444,39 +520,57 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       patch: UpdateCleanupPatch,
       actorUserId: string,
     ): Promise<boolean> {
-      const sets: postgres.Fragment[] = hostSetFragments(sql, patch)
-      if (patch.title !== undefined) sets.push(sql`title = ${patch.title}`)
-      if (patch.description !== undefined) sets.push(sql`description = ${patch.description}`)
-      if (patch.eventKind !== undefined) sets.push(sql`event_kind = ${patch.eventKind}`)
-      if (patch.type !== undefined) sets.push(sql`type = ${patch.type}`)
-      if (patch.scheduledAt !== undefined) sets.push(sql`scheduled_at = ${patch.scheduledAt}`)
-      if (patch.lat !== undefined && patch.lng !== undefined) {
-        sets.push(sql`geom = ST_SetSRID(ST_MakePoint(${patch.lng}, ${patch.lat}), 4326)`)
-      }
-      if (patch.address !== undefined) sets.push(sql`address = ${patch.address}`)
-      if (patch.addressSource !== undefined) {
-        sets.push(sql`address_source = ${patch.addressSource}`)
-      }
-      if (patch.bring !== undefined) {
-        sets.push(sql`bring = ${patch.bring as unknown as string[] | null}`)
-      }
-      if (patch.jurisdictionGeoid !== undefined) {
-        sets.push(sql`jurisdiction_geoid = ${patch.jurisdictionGeoid}`)
-      }
-
-      if (sets.length === 0) {
+      const setList = cleanupSetList(sql, patch)
+      if (setList === null) {
         const rows = await sql<{ id: string }[]>`SELECT id FROM cleanups WHERE id = ${id} LIMIT 1`
         return rows.length > 0
       }
-      const setList = sets.reduce((acc, frag, i) => (i === 0 ? frag : sql`${acc}, ${frag}`))
-      return sql.begin(async (tx) => {
-        const updated = await tx<{ id: string }[]>`
-          UPDATE cleanups SET ${setList} WHERE id = ${id} RETURNING id
-        `
-        if (updated.length === 0) return false
-        await claimEventMediaInTx(tx, id, patch, actorUserId)
-        return true
-      })
+      return sql.begin((tx) => updateCleanupInTx(tx, id, setList, patch, actorUserId))
+    },
+
+    async updateCleanupWithEdits(
+      id: string,
+      patch: UpdateCleanupPatch,
+      edits: CleanupEdits,
+    ): Promise<CleanupEditOutcome> {
+      try {
+        return await sql.begin(async (tx): Promise<CleanupEditOutcome> => {
+          // NO KEY UPDATE is the lock the UPDATE below takes anyway; taking it first makes the
+          // cancelled and ended checks hold until commit, and it still waits for the FOR SHARE a
+          // concurrent join or slot claim holds. It is taken before any slot row, the same order
+          // a slot claim uses.
+          const locked = await tx<
+            { status: CleanupStatus; scheduled_at: Date; ends_at: Date | null; now: Date }[]
+          >`
+            SELECT status, scheduled_at, ends_at, now() AS now
+            FROM cleanups
+            WHERE id = ${id} LIMIT 1 FOR NO KEY UPDATE
+          `
+          const cleanup = locked[0]
+          if (cleanup === undefined) return { kind: "not_found" }
+          if (cleanup.status === "cancelled") return { kind: "cancelled" }
+          if (
+            edits.refusalOnceEnded !== null &&
+            hasEventEnded(eventWindowOfRow(cleanup), cleanup.now.getTime())
+          ) {
+            throw edits.refusalOnceEnded
+          }
+          const setList = cleanupSetList(tx, patch)
+          if (setList !== null) {
+            await updateCleanupInTx(tx, id, setList, patch, edits.actorUserId)
+          }
+          if (edits.links !== null) {
+            await reconcileLinkedReportsInTx(tx, id, edits.links, edits.actorUserId)
+          }
+          const slotDiff =
+            edits.slots === null
+              ? null
+              : await reconcileSlotsInTx(tx, id, edits.slots, edits.actorUserId)
+          return { kind: "updated", slotDiff }
+        })
+      } catch (err) {
+        throw slotConflictAsValidation(err)
+      }
     },
 
     async linkReports(
@@ -513,31 +607,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       desiredIds: string[],
       actorId: string | null,
     ): Promise<{ added: string[]; removed: string[] }> {
-      return sql.begin(async (tx) => {
-        const existing = await tx<{ report_id: string }[]>`
-          SELECT report_id FROM cleanup_reports WHERE cleanup_id = ${cleanupId}
-        `
-        const have = new Set(existing.map((r) => r.report_id))
-        const want = new Set(desiredIds)
-        const toAdd = desiredIds.filter((id) => !have.has(id))
-        const droppable = [...have].filter((id) => !want.has(id))
-        const visible = await selectVisibleReportIds(tx, droppable)
-        const toRemove = droppable.filter((id) => visible.has(id))
-
-        const added = await linkReportsInTx(tx, cleanupId, toAdd, actorId)
-        if (toRemove.length > 0) {
-          await tx`
-            DELETE FROM cleanup_reports
-            WHERE cleanup_id = ${cleanupId} AND report_id = ANY(${toRemove}::uuid[])
-          `
-          await tx`
-            INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
-            SELECT ${cleanupId}, 'report_unlinked', 'Unlinked report ' || rid, ${actorId}
-            FROM unnest(${toRemove}::uuid[]) AS rid
-          `
-        }
-        return { added, removed: toRemove }
-      })
+      return sql.begin((tx) => reconcileLinkedReportsInTx(tx, cleanupId, desiredIds, actorId))
     },
 
     async loadLinkedReportsForCleanups(
@@ -1275,125 +1345,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       actorId: string | null,
     ): Promise<SlotReconcileResult> {
       try {
-        return await sql.begin(async (tx) => {
-          const existing = await tx<
-            { id: string; title: string; starts_at: Date | null; ends_at: Date | null }[]
-          >`
-            SELECT id, title, starts_at, ends_at FROM cleanup_slots WHERE cleanup_id = ${cleanupId}
-          `
-          const have = new Map<string, SlotIdentity>(
-            existing.map((r) => [
-              r.id,
-              { title: r.title, startsAt: r.starts_at, endsAt: r.ends_at },
-            ]),
-          )
-
-          for (const slot of desired) {
-            if (slot.id !== undefined && !have.has(slot.id)) {
-              throw AppError.validation({ slots: `unknown slot: ${slot.id}` })
-            }
-          }
-
-          const keep = new Set(
-            desired.map((s) => s.id).filter((id): id is string => id !== undefined),
-          )
-          const toRemove = [...have.keys()].filter((id) => !keep.has(id))
-          const removed: SlotReconcileResult["removed"] = []
-          if (toRemove.length > 0) {
-            const claimants = await tx<{ slot_id: string; user_id: string }[]>`
-              SELECT slot_id, user_id FROM cleanup_slot_claims
-              WHERE cleanup_id = ${cleanupId} AND slot_id = ANY(${toRemove}::uuid[])
-            `
-            const bySlot = new Map<string, string[]>()
-            for (const c of claimants) {
-              const list = bySlot.get(c.slot_id)
-              if (list) list.push(c.user_id)
-              else bySlot.set(c.slot_id, [c.user_id])
-            }
-            await tx`
-              DELETE FROM cleanup_slots
-              WHERE cleanup_id = ${cleanupId} AND id = ANY(${toRemove}::uuid[])
-            `
-            for (const slotId of toRemove) {
-              removed.push({
-                slotId,
-                title: have.get(slotId)?.title ?? "",
-                claimantUserIds: (bySlot.get(slotId) ?? []).filter((u) => u !== actorId),
-              })
-            }
-          }
-
-          const kept = desired.filter((s): s is DesiredSlot & { id: string } => s.id !== undefined)
-          const changed = (
-            slot: DesiredSlot & { id: string },
-            keyOf: (s: SlotIdentity) => string,
-          ): boolean => {
-            const before = have.get(slot.id)
-            return before === undefined || keyOf(before) !== keyOf(slot)
-          }
-          const rekeying = kept.filter((s) => changed(s, slotIdentityKey)).map((s) => s.id)
-          if (rekeying.length > 0) {
-            await tx`
-              UPDATE cleanup_slots SET title = id::text
-              WHERE cleanup_id = ${cleanupId} AND id = ANY(${rekeying}::uuid[])
-            `
-          }
-
-          const movedIds = kept.filter((s) => changed(s, slotWindowKey)).map((s) => s.id)
-          const rescheduled: SlotReconcileResult["rescheduled"] = []
-          if (movedIds.length > 0) {
-            const claimants = await tx<{ slot_id: string; user_id: string }[]>`
-              SELECT slot_id, user_id FROM cleanup_slot_claims
-              WHERE cleanup_id = ${cleanupId} AND slot_id = ANY(${movedIds}::uuid[])
-            `
-            const bySlot = new Map<string, string[]>()
-            for (const c of claimants) {
-              if (c.user_id === actorId) continue
-              const list = bySlot.get(c.slot_id)
-              if (list) list.push(c.user_id)
-              else bySlot.set(c.slot_id, [c.user_id])
-            }
-            for (const slot of kept) {
-              const userIds = bySlot.get(slot.id)
-              if (userIds === undefined || userIds.length === 0) continue
-              rescheduled.push({ slotId: slot.id, title: slot.title, claimantUserIds: userIds })
-            }
-          }
-
-          const added: string[] = []
-          const updated: string[] = []
-          for (const slot of desired) {
-            if (slot.id !== undefined) {
-              await tx`
-                UPDATE cleanup_slots SET
-                  title = ${slot.title},
-                  description = ${slot.description},
-                  capacity = ${slot.capacity},
-                  starts_at = ${slot.startsAt},
-                  ends_at = ${slot.endsAt},
-                  sort_order = ${slot.sortOrder}
-                WHERE id = ${slot.id} AND cleanup_id = ${cleanupId}
-              `
-              updated.push(slot.id)
-            } else {
-              const [row] = await tx<{ id: string }[]>`
-                INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, starts_at, ends_at, sort_order)
-                VALUES (
-                  ${cleanupId}, ${slot.title}, ${slot.description}, ${slot.capacity},
-                  ${slot.startsAt}, ${slot.endsAt}, ${slot.sortOrder}
-                )
-                RETURNING id
-              `
-              if (row) added.push(row.id)
-            }
-          }
-          return { added, updated, removed, rescheduled }
-        })
+        return await sql.begin((tx) => reconcileSlotsInTx(tx, cleanupId, desired, actorId))
       } catch (err) {
-        if (isSlotTitleConflict(err)) {
-          throw AppError.validation({ slots: "duplicate slot title" })
-        }
-        throw err
+        throw slotConflictAsValidation(err)
       }
     },
 
@@ -1662,6 +1616,121 @@ async function linkReportsInTx(
     `
   }
   return newlyLinked
+}
+
+async function reconcileSlotsInTx(
+  tx: Queryable,
+  cleanupId: string,
+  desired: DesiredSlot[],
+  actorId: string | null,
+): Promise<SlotReconcileResult> {
+  const existing = await tx<
+    { id: string; title: string; starts_at: Date | null; ends_at: Date | null }[]
+  >`
+    SELECT id, title, starts_at, ends_at FROM cleanup_slots WHERE cleanup_id = ${cleanupId}
+  `
+  const have = new Map<string, SlotIdentity>(
+    existing.map((r) => [r.id, { title: r.title, startsAt: r.starts_at, endsAt: r.ends_at }]),
+  )
+
+  for (const slot of desired) {
+    if (slot.id !== undefined && !have.has(slot.id)) {
+      throw AppError.validation({ slots: `unknown slot: ${slot.id}` })
+    }
+  }
+
+  const keep = new Set(desired.map((s) => s.id).filter((id): id is string => id !== undefined))
+  const toRemove = [...have.keys()].filter((id) => !keep.has(id))
+  const removed: SlotReconcileResult["removed"] = []
+  if (toRemove.length > 0) {
+    const claimants = await tx<{ slot_id: string; user_id: string }[]>`
+      SELECT slot_id, user_id FROM cleanup_slot_claims
+      WHERE cleanup_id = ${cleanupId} AND slot_id = ANY(${toRemove}::uuid[])
+    `
+    const bySlot = new Map<string, string[]>()
+    for (const c of claimants) {
+      const list = bySlot.get(c.slot_id)
+      if (list) list.push(c.user_id)
+      else bySlot.set(c.slot_id, [c.user_id])
+    }
+    await tx`
+      DELETE FROM cleanup_slots
+      WHERE cleanup_id = ${cleanupId} AND id = ANY(${toRemove}::uuid[])
+    `
+    for (const slotId of toRemove) {
+      removed.push({
+        slotId,
+        title: have.get(slotId)?.title ?? "",
+        claimantUserIds: (bySlot.get(slotId) ?? []).filter((u) => u !== actorId),
+      })
+    }
+  }
+
+  const kept = desired.filter((s): s is DesiredSlot & { id: string } => s.id !== undefined)
+  const changed = (
+    slot: DesiredSlot & { id: string },
+    keyOf: (s: SlotIdentity) => string,
+  ): boolean => {
+    const before = have.get(slot.id)
+    return before === undefined || keyOf(before) !== keyOf(slot)
+  }
+  const rekeying = kept.filter((s) => changed(s, slotIdentityKey)).map((s) => s.id)
+  if (rekeying.length > 0) {
+    await tx`
+      UPDATE cleanup_slots SET title = id::text
+      WHERE cleanup_id = ${cleanupId} AND id = ANY(${rekeying}::uuid[])
+    `
+  }
+
+  const movedIds = kept.filter((s) => changed(s, slotWindowKey)).map((s) => s.id)
+  const rescheduled: SlotReconcileResult["rescheduled"] = []
+  if (movedIds.length > 0) {
+    const claimants = await tx<{ slot_id: string; user_id: string }[]>`
+      SELECT slot_id, user_id FROM cleanup_slot_claims
+      WHERE cleanup_id = ${cleanupId} AND slot_id = ANY(${movedIds}::uuid[])
+    `
+    const bySlot = new Map<string, string[]>()
+    for (const c of claimants) {
+      if (c.user_id === actorId) continue
+      const list = bySlot.get(c.slot_id)
+      if (list) list.push(c.user_id)
+      else bySlot.set(c.slot_id, [c.user_id])
+    }
+    for (const slot of kept) {
+      const userIds = bySlot.get(slot.id)
+      if (userIds === undefined || userIds.length === 0) continue
+      rescheduled.push({ slotId: slot.id, title: slot.title, claimantUserIds: userIds })
+    }
+  }
+
+  const added: string[] = []
+  const updated: string[] = []
+  for (const slot of desired) {
+    if (slot.id !== undefined) {
+      await tx`
+        UPDATE cleanup_slots SET
+          title = ${slot.title},
+          description = ${slot.description},
+          capacity = ${slot.capacity},
+          starts_at = ${slot.startsAt},
+          ends_at = ${slot.endsAt},
+          sort_order = ${slot.sortOrder}
+        WHERE id = ${slot.id} AND cleanup_id = ${cleanupId}
+      `
+      updated.push(slot.id)
+    } else {
+      const [row] = await tx<{ id: string }[]>`
+        INSERT INTO cleanup_slots (cleanup_id, title, description, capacity, starts_at, ends_at, sort_order)
+        VALUES (
+          ${cleanupId}, ${slot.title}, ${slot.description}, ${slot.capacity},
+          ${slot.startsAt}, ${slot.endsAt}, ${slot.sortOrder}
+        )
+        RETURNING id
+      `
+      if (row) added.push(row.id)
+    }
+  }
+  return { added, updated, removed, rescheduled }
 }
 
 async function insertSlotsInTx(

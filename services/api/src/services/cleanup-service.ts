@@ -169,6 +169,37 @@ const EVENT_CLOSED_MESSAGE = "This event is closed."
  */
 const MIN_EVENT_ADDRESS_LENGTH = 3
 
+const CANCELLED_EVENT_EDIT_MESSAGE = "This event has been cancelled and can no longer be edited."
+
+function refusalOnceEnded(
+  patch: UpdateCleanupPatchRequest,
+  current: CleanupRecord,
+): AppError | null {
+  const frozen =
+    patch.title !== undefined ||
+    patch.scheduledAt !== undefined ||
+    patch.lat !== undefined ||
+    patch.lng !== undefined ||
+    patch.type !== undefined ||
+    patch.eventKind !== undefined
+  if (frozen) {
+    return AppError.conflict(
+      "An event that has ended can't change its date, title, location or type.",
+    )
+  }
+  if (
+    patch.endsAt !== undefined &&
+    patch.endsAt !== null &&
+    new Date(patch.endsAt).getTime() !== current.endsAt.getTime()
+  ) {
+    return AppError.conflict("An event that has ended can't change its end time.")
+  }
+  if (patch.slots !== undefined) {
+    return AppError.validation({ slots: "Slots can't be changed after an event has ended." })
+  }
+  return null
+}
+
 function assertScheduledAtNotBackdated(next: string | undefined, stored: Date): void {
   if (next === undefined) return
   const nextMs = Date.parse(next)
@@ -1160,23 +1191,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       }
       const requesterRole = standing.eventRole
       if (current.status === "cancelled") {
-        throw AppError.conflict("This event has been cancelled and can no longer be edited.")
+        throw AppError.conflict(CANCELLED_EVENT_EDIT_MESSAGE)
       }
       const hasEnded = deriveCleanupStatus(eventWindowOf(current), Date.now()) === "done"
-      if (hasEnded) {
-        const frozen =
-          patch.title !== undefined ||
-          patch.scheduledAt !== undefined ||
-          patch.lat !== undefined ||
-          patch.lng !== undefined ||
-          patch.type !== undefined ||
-          patch.eventKind !== undefined
-        if (frozen) {
-          throw AppError.conflict(
-            "An event that has ended can't change its date, title, location or type.",
-          )
-        }
-      }
+      const endedRefusal = refusalOnceEnded(patch, current)
+      if (hasEnded && endedRefusal !== null) throw endedRefusal
       assertScheduledAtNotBackdated(patch.scheduledAt, current.scheduledAt)
       const effectiveKind = patch.eventKind ?? current.eventKind
 
@@ -1197,13 +1216,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (patch.endsAt === null) {
         throw AppError.validation({ endsAt: "an event must have an end time" })
       }
-      if (
-        hasEnded &&
-        patch.endsAt !== undefined &&
-        new Date(patch.endsAt).getTime() !== current.endsAt.getTime()
-      ) {
-        throw AppError.conflict("An event that has ended can't change its end time.")
-      }
       const effectiveWindow: EventWindow = {
         status: current.status,
         scheduledAt:
@@ -1214,9 +1226,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         effectiveWindow.scheduledAt.getTime() !== current.scheduledAt.getTime() ||
         (effectiveWindow.endsAt?.getTime() ?? null) !== (current.endsAt?.getTime() ?? null)
 
-      if (patch.slots !== undefined && hasEnded) {
-        throw AppError.validation({ slots: "Slots can't be changed after an event has ended." })
-      }
       if (patch.slots !== undefined && patch.slots.length === 0) {
         throw AppError.validation({ slots: EVENT_NEEDS_A_SLOT_MESSAGE })
       }
@@ -1283,16 +1292,15 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         ...(patch.bring !== undefined ? { bring: patch.bring } : {}),
         ...(reresolvedGeoid !== undefined ? { jurisdictionGeoid: reresolvedGeoid } : {}),
       }
-      const updated = await deps.repo.updateCleanup(id, scalarPatch, requesterUserId)
-      if (!updated) notFoundCleanup()
-
-      if (desiredLinks !== null) {
-        await deps.repo.reconcileLinkedReports(id, desiredLinks, requesterUserId)
-      }
-      const slotDiff =
-        desiredSlots !== null
-          ? await deps.repo.reconcileSlots(id, desiredSlots, requesterUserId)
-          : null
+      const outcome = await deps.repo.updateCleanupWithEdits(id, scalarPatch, {
+        actorUserId: requesterUserId,
+        links: desiredLinks,
+        slots: desiredSlots,
+        refusalOnceEnded: endedRefusal,
+      })
+      if (outcome.kind === "not_found") notFoundCleanup()
+      if (outcome.kind === "cancelled") throw AppError.conflict(CANCELLED_EVENT_EDIT_MESSAGE)
+      const { slotDiff } = outcome
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
