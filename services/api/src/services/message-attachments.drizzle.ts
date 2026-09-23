@@ -1,5 +1,6 @@
 import type { Queryable } from "../db/client.js"
 import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/shared"
+import { claimableAsAttachment } from "./media-bindings.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { servableMediaFilter, servedKeyExpr } from "./media-served-key.js"
 
@@ -45,6 +46,7 @@ export function makeAttachmentRepo(column: MessageMediaColumn): MessageAttachmen
         WHERE upload_id IN ${tx(uploadIds)}
           AND (${tx(column)} IS NULL OR ${tx(column)} = ${messageId})
           ${nullGuards}
+          AND ${claimableAsAttachment(tx)}
           AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
       `
     },

@@ -32,6 +32,20 @@ export function mediaBoundElsewhere(tag: Queryable, exceptCleanupId: string | nu
   `
 }
 
+// Only report-purpose rows can be attached by uploadId, and the purpose check alone is not enough:
+// avatars keep purpose 'report' while users.avatar_media_id and chat_groups.avatar_media_id bind them.
+// The uploadId is readable from every served URL, so it is no proof of ownership.
+export function claimableAsReportMedia(tag: Queryable) {
+  return tag`purpose = 'report' AND NOT (${mediaBoundElsewhere(tag, null)})`
+}
+
+// createUpload stores every upload with the default purpose 'report' and only a binding re-purposes it,
+// so an author's fresh post or chat upload sits in exactly the pool a report may claim. An UPDATE's
+// WHERE reads the row before its SET, so the post path's purpose = 'post' cannot satisfy this check.
+export function claimableAsAttachment(tag: Queryable) {
+  return claimableAsReportMedia(tag)
+}
+
 export function eventsBindingMedia(tag: Queryable, mediaId: string) {
   return tag`
     SELECT c.id, c.visibility, c.organization_id

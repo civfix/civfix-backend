@@ -25,6 +25,7 @@ import type {
 } from "./report-service.types.js"
 import { REPORT_CREATE_SCOPE } from "./report-service.types.js"
 import { servedKeyExpr, servableMediaFilter } from "./media-served-key.js"
+import { claimableAsReportMedia } from "./media-bindings.js"
 import {
   reportColumns,
   selectPublicPins,
@@ -182,15 +183,16 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
           `
 
           if (args.mediaUploadIds.length > 0) {
+            // An asset bound to a post, a chat/DM message or any other owner is never re-bindable to a
+            // report, or the holder of an uploadId could cross-publish private media into a public
+            // report gallery.
             const claimed = await tx<{ upload_id: string }[]>`
               UPDATE media_assets
               SET report_id = ${args.reportId}
               WHERE upload_id IN ${tx(args.mediaUploadIds)}
                 AND (report_id IS NULL OR report_id = ${args.reportId})
-                -- L18: an asset already bound to a post or a chat/DM message must NOT be re-bindable to a
-                -- report. Guarding only report_id let the holder of an uploadId cross-publish an image from
-                -- a private DM into a public report gallery. Mirrors the post path's claim predicate.
                 AND post_id IS NULL AND chat_message_id IS NULL
+                AND ${claimableAsReportMedia(tx)}
                 AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
               RETURNING upload_id
             `
