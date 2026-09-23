@@ -1,6 +1,7 @@
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
-import { decodeCursor, clampLimit, paginate } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
+import { paginate, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import { writeAudit } from "./audit.js"
 import { andAll, ilikeAnyOf, legacyContactEmailUsable } from "./sql-fragments.js"
 import {
@@ -161,7 +162,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       args: ListDiscoveryArgs,
     ): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor, true)
+      const anchor = parseKeysetCursor(args.cursor)
       const sortValue = sortValueExpr(sql, args.sort)
 
       const conds: SqlFragment[] = []
@@ -175,7 +176,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       }
       if (anchor !== null) {
         conds.push(
-          sql`AND (${sortValue}, t.id) < (${anchor.createdAt.getTime()}::bigint, ${anchor.id}::uuid)`,
+          sql`AND (${sortValue}, t.id) < (${anchor.at.getTime()}::bigint, ${anchor.id}::uuid)`,
         )
       }
 
@@ -185,7 +186,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         sql`ORDER BY ${sortValue} DESC, t.id DESC LIMIT ${limit + 1}`,
       )
       const { items, nextCursor } = paginate(rows.map(toTaskRecord), limit, (r) => ({
-        createdAt: new Date(args.sort === "reports" ? r.total : (r.population ?? 0)),
+        at: new Date(args.sort === "reports" ? r.total : (r.population ?? 0)),
         id: r.id,
       }))
       return { records: items, nextCursor }

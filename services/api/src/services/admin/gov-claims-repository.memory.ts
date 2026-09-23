@@ -71,7 +71,7 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
     })
 
     return pageInMemoryById(rows, args.cursor, args.limit, (r) => ({
-      createdAt: r.createdAt,
+      at: r.createdAt,
       id: r.id,
     }))
   }

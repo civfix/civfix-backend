@@ -54,6 +54,7 @@ import {
   roleChangeWithdrawsInvites,
 } from "./organization-repository.types.js"
 import { ORG_INVITE_CAP_MESSAGE } from "./organization-repository.types.js"
+import { encodeTimeCursor } from "../../db/cursor-helpers.js"
 
 const SEED_DISPLAY_NAME = "Member"
 
@@ -146,7 +147,7 @@ function pageAfterCursor<T>(
 }
 
 function memberCursorKey(member: StoredMember): string {
-  return `${member.joinedAt.toISOString()}|${member.userId}`
+  return encodeTimeCursor({ at: member.joinedAt, id: member.userId })
 }
 
 export class InMemoryOrganizationRepository implements OrganizationRepository {
@@ -671,11 +672,8 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       .filter((v) => query.status === undefined || v.status === query.status)
       .filter((v) => query.kind === undefined || v.kind === query.kind)
       .sort((a, b) => b.submittedAt.getTime() - a.submittedAt.getTime())
-    const { page, nextCursor } = pageAfterCursor(
-      rows,
-      query.cursor,
-      query.limit,
-      (v) => `${v.submittedAt.toISOString()}|${v.id}`,
+    const { page, nextCursor } = pageAfterCursor(rows, query.cursor, query.limit, (v) =>
+      encodeTimeCursor({ at: v.submittedAt, id: v.id }),
     )
     return Promise.resolve({
       items: page.map((row) => this.toAdminRecord(row)),
@@ -734,11 +732,8 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       .filter((o) => query.kind === undefined || o.verifiedKind === query.kind)
       .filter((o) => query.suspended === undefined || (o.suspendedAt !== null) === query.suspended)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
-    const { page, nextCursor } = pageAfterCursor(
-      rows,
-      query.cursor,
-      query.limit,
-      (o) => `${o.createdAt.toISOString()}|${o.id}`,
+    const { page, nextCursor } = pageAfterCursor(rows, query.cursor, query.limit, (o) =>
+      encodeTimeCursor({ at: o.createdAt, id: o.id }),
     )
     const counts: AdminOrganizationCounts | null =
       query.cursor === null

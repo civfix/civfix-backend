@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
+import { pageBeforeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import {
   localPartOf,
   type InboundEmailInsert,
@@ -55,7 +56,7 @@ export class InMemoryInboundRepository implements InboundRepository {
 
   list(query: InboxListQuery): Promise<InboxListResponse> {
     const limit = clampLimit(query.limit)
-    const anchor = decodeCursor(query.cursor)
+    const anchor = parseKeysetCursor(query.cursor, { requireUuid: false })
     const q = query.q?.trim().toLowerCase()
     let filtered = this.rows.filter((r) => {
       if (query.status === "unread" && r.status !== "unread") return false
@@ -71,18 +72,10 @@ export class InMemoryInboundRepository implements InboundRepository {
       const d = b.receivedAt.getTime() - a.receivedAt.getTime()
       return d !== 0 ? d : a.id < b.id ? 1 : a.id > b.id ? -1 : 0
     })
-    if (anchor) {
-      filtered = filtered.filter((r) => {
-        const t = r.receivedAt.getTime()
-        const at = anchor.createdAt.getTime()
-        return t < at || (t === at && r.id < anchor.id)
-      })
-    }
-    const page = filtered.slice(0, limit)
-    const hasMore = filtered.length > limit
-    const last = page[page.length - 1]
-    const nextCursor =
-      hasMore && last ? encodeCursor({ createdAt: last.receivedAt, id: last.id }) : null
+    const { items: page, nextCursor } = pageBeforeTimeCursor(filtered, anchor, limit, (r) => ({
+      at: r.receivedAt,
+      id: r.id,
+    }))
     return Promise.resolve({ items: page.map(toListItem), nextCursor })
   }
 

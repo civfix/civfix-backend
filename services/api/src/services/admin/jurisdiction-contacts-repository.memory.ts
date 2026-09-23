@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { clampLimit, decodeOffsetCursor, encodeOffsetCursor } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
+import { decodeOffsetCursor, encodeOffsetCursor } from "../../db/cursor-helpers.js"
 import type { OutreachStateRecord } from "./mail-repository.drizzle.js"
 import {
   buildUnmappedRecord,

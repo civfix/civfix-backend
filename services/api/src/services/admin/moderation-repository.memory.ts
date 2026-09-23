@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
+import { pageBeforeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import {
   assertTargetIsNotOfficialAccount,
   assertTargetIsNotOperatorRole,
@@ -128,21 +129,11 @@ export class InMemoryModerationRepository implements ModerationRepository {
     })
 
     const limit = clampLimit(args.limit)
-    const anchor = decodeCursor(args.cursor)
-    const remaining =
-      anchor === null
-        ? rows
-        : rows.filter((r) => {
-            const d = r.createdAt.getTime() - anchor.createdAt.getTime()
-            return d !== 0 ? d < 0 : r.id < anchor.id
-          })
-    const slice = remaining.slice(0, limit + 1)
-    if (slice.length <= limit) {
-      return { records: slice, nextCursor: null }
-    }
-    const records = slice.slice(0, limit)
-    const last = records[records.length - 1]
-    const nextCursor = last ? encodeCursor({ createdAt: last.createdAt, id: last.id }) : null
+    const anchor = parseKeysetCursor(args.cursor, { requireUuid: false })
+    const { items: records, nextCursor } = pageBeforeTimeCursor(rows, anchor, limit, (r) => ({
+      at: r.createdAt,
+      id: r.id,
+    }))
     return { records, nextCursor }
   }
 

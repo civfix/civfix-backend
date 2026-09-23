@@ -1,13 +1,13 @@
 import type { FastifyBaseLogger } from "fastify"
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
 import {
-  decodeCursor,
-  clampLimit,
+  isUuid,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-} from "./pagination.js"
-import { isUuid } from "../../db/cursor-helpers.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { writeAudit } from "./audit.js"
 import {
   andAll,
@@ -208,7 +208,7 @@ export function makeDrizzleAdminReportRepository(
       args: ListReportsArgs,
     ): Promise<{ records: AdminReportRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor, true)
+      const anchor = parseKeysetCursor(args.cursor)
 
       const conds: SqlFragment[] = []
       if (args.statuses !== null && args.statuses.length > 0) {

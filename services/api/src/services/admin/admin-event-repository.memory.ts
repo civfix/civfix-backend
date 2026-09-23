@@ -252,7 +252,7 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
     // The anchor is the row's scheduled_at (the list's sort key), carried in the cursor's createdAt slot
     // exactly as the Drizzle repo does.
     return pageInMemoryById(rows, args.cursor, args.limit, (r) => ({
-      createdAt: r.scheduledAt,
+      at: r.scheduledAt,
       id: r.id,
     }))
   }

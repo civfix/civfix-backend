@@ -29,7 +29,8 @@ import {
   ROUTE_CLAIM_STALE_SECONDS,
   ROUTE_DEADLINE_INFLIGHT_SECONDS,
 } from "./outbound-send-policy.js"
-import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
+import { pageBeforeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import type { MailDelivery, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -295,19 +296,11 @@ export class InMemoryMailRepository implements MailRepository {
 
   listThreads(input: ListThreadsInput): Promise<ListThreadsResult> {
     const limit = clampLimit(input.limit)
-    const anchor = decodeCursor(input.cursor)
+    const anchor = parseKeysetCursor(input.cursor, { requireUuid: false })
     const q = input.q !== undefined ? input.q.trim().toLowerCase() : ""
     const latestByThread = this.latestByThread()
 
     const sortKey = (t: MailThreadRecord): number => (t.lastMessageAt ?? t.createdAt).getTime()
-
-    const isBefore = (t: MailThreadRecord): boolean => {
-      if (anchor === null) return true
-      const k = sortKey(t)
-      const a = anchor.createdAt.getTime()
-      if (k !== a) return k < a
-      return t.id < anchor.id
-    }
 
     const rows = [...this.threads.values()].filter((t) => {
       const latest = latestByThread.get(t.id) ?? null
@@ -328,7 +321,7 @@ export class InMemoryMailRepository implements MailRepository {
         const hay = `${t.org ?? ""} ${t.subject ?? ""} ${latest?.fromAddr ?? ""}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
-      return isBefore(t)
+      return true
     })
 
     rows.sort((a, b) => {
@@ -337,14 +330,11 @@ export class InMemoryMailRepository implements MailRepository {
       return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
     })
 
-    const hasMore = rows.length > limit
-    const page = hasMore ? rows.slice(0, limit) : rows
+    const { items: page, nextCursor } = pageBeforeTimeCursor(rows, anchor, limit, (t) => ({
+      at: t.lastMessageAt ?? t.createdAt,
+      id: t.id,
+    }))
     const items = page.map((t) => toThreadListItem(t, latestByThread.get(t.id) ?? null))
-    const last = page[page.length - 1]
-    const nextCursor =
-      hasMore && last
-        ? encodeCursor({ createdAt: last.lastMessageAt ?? last.createdAt, id: last.id })
-        : null
     return Promise.resolve({ items, nextCursor })
   }
 

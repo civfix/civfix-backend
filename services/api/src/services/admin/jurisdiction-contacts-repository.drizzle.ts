@@ -1,5 +1,6 @@
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
-import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
+import { decodeOffsetCursor, encodeOffsetCursor } from "../../db/cursor-helpers.js"
 import { writeAudit } from "./audit.js"
 import { buildUnmappedRecord, shouldIncludeUnmapped } from "./jurisdiction-directory-projection.js"
 import {

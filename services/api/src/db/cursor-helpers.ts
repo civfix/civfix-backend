@@ -160,6 +160,22 @@ export function keysetPredicate(
     : sql`(${ts}, ${id}) < (${anchorAt}, ${anchorId})`
 }
 
+// `activity` must already be truncated to milliseconds, the precision of the Date cursor; the two clauses
+// together are `(activity, id) < cursor`.
+export function msKeysetFilter(
+  sql: Queryable,
+  activity: postgres.Fragment,
+  id: postgres.Fragment,
+  cursor: TimeCursor | null | undefined,
+): postgres.Fragment {
+  if (cursor === null || cursor === undefined) return sql``
+  const msCeiling = new Date(cursor.at.getTime() + 1)
+  return sql`
+    AND ${activity} < ${msCeiling}
+    AND (${activity} < ${cursor.at} OR ${id} < ${cursor.id}::uuid)
+  `
+}
+
 export interface NameCursor {
   name: string
   id: string
@@ -196,6 +212,36 @@ export function parseNearCursor(cursor: string | null | undefined): NearCursor |
 
 export function encodeNearCursor(c: NearCursor): string {
   return `${c.dist}|${c.id}`
+}
+
+/**
+ * Offset paging serves the jurisdictions directory: static reference data browsed under an arbitrary sort
+ * (population / reports / name), where keyset's drift-immunity buys nothing and a free choice of ORDER BY
+ * is worth more. The cursor stays opaque so the wire `nextCursor` contract is unchanged.
+ */
+export function encodeOffsetCursor(offset: number): string {
+  return Buffer.from(JSON.stringify({ o: Math.max(0, Math.floor(offset)) }), "utf8").toString(
+    "base64url",
+  )
+}
+
+/**
+ * The cursor is opaque but not authenticated, so a caller can mint one carrying any integer, and an
+ * unbounded OFFSET makes Postgres walk and discard that many rows per request. Mirrors clampOffset in
+ * services/volunteer-hours-service.ts. The directory is in the low thousands of rows, so a legitimate
+ * deep page is never near this.
+ */
+export const ADMIN_MAX_OFFSET = 100_000
+
+export function decodeOffsetCursor(cursor: string | null | undefined): number {
+  if (!cursor) return 0
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { o?: unknown }
+    const o = typeof parsed.o === "number" && Number.isFinite(parsed.o) ? Math.floor(parsed.o) : 0
+    return Math.min(Math.max(0, o), ADMIN_MAX_OFFSET)
+  } catch {
+    return 0
+  }
 }
 
 export function pageWith<T>(
@@ -237,4 +283,30 @@ export function paginateKeyset<T>(
     const anchor = pick(last)
     return anchor.atText !== null ? encodeKeysetCursor(anchor.atText, anchor.id) : null
   })
+}
+
+export function isBeforeTimeCursor(atMs: number, id: string, anchor: TimeCursor | null): boolean {
+  if (anchor === null) return true
+  const anchorMs = anchor.at.getTime()
+  return atMs < anchorMs || (atMs === anchorMs && id < anchor.id)
+}
+
+/**
+ * Pages rows pre-sorted (at DESC, id DESC). An anchor row that has since left the list does not end
+ * paging, unlike pageInMemoryById: the page continues from the anchor's instant.
+ */
+export function pageBeforeTimeCursor<T>(
+  rows: readonly T[],
+  anchor: TimeCursor | null,
+  limit: number,
+  keyOf: (row: T) => TimeCursor,
+): { items: T[]; nextCursor: string | null } {
+  return pageWith(
+    rows.filter((row) => {
+      const key = keyOf(row)
+      return isBeforeTimeCursor(key.at.getTime(), key.id, anchor)
+    }),
+    limit,
+    (last) => encodeTimeCursor(keyOf(last)),
+  )
 }

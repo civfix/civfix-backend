@@ -57,6 +57,6 @@ export class InMemoryActivityRepository implements ActivityRepository {
       // The same (ts, id) total order the SQL keyset uses, so a page boundary lands identically.
       return byTs !== 0 ? byTs : a.id < b.id ? dir : a.id > b.id ? -dir : 0
     })
-    return pageInMemoryById(sorted, args.cursor, args.limit, (r) => ({ createdAt: r.ts, id: r.id }))
+    return pageInMemoryById(sorted, args.cursor, args.limit, (r) => ({ at: r.ts, id: r.id }))
   }
 }

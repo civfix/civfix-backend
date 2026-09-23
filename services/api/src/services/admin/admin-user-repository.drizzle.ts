@@ -1,14 +1,13 @@
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
 import { assertTargetIsNotOperatorRole } from "../../auth/operator-target.js"
+import { clampLimit } from "./pagination.js"
 import {
-  clampLimit,
-  decodeCursor,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-  type KeysetAnchor,
-} from "./pagination.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { andAll, ilikeAnyOf } from "./sql-fragments.js"
 import type {
   AdminUserOrganizationRecord,
@@ -186,7 +185,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       args: ListUsersArgs,
     ): Promise<{ records: AdminUserRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeKeyset(args.cursor)
+      const anchor = parseKeysetCursor(args.cursor)
 
       const conds: SqlFragment[] = []
       if (args.status !== null) {
@@ -272,7 +271,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       limit: number,
     ): Promise<{ records: UserReportRecord[]; nextCursor: string | null }> {
       const lim = clampLimit(limit)
-      const anchor = decodeKeyset(cursor)
+      const anchor = parseKeysetCursor(cursor)
       const cursorFilter =
         anchor !== null
           ? sql`AND ${keysetPredicate(sql, sql`r.created_at`, sql`r.id`, anchor)}`
@@ -320,7 +319,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       limit: number,
     ): Promise<{ records: UserEventRecord[]; nextCursor: string | null }> {
       const lim = clampLimit(limit)
-      const anchor = decodeKeyset(cursor)
+      const anchor = parseKeysetCursor(cursor)
       const cursorFilter =
         anchor !== null
           ? sql`AND ${keysetPredicate(sql, sql`cm.joined_at`, sql`c.id`, anchor)}`
@@ -374,7 +373,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       limit: number,
     ): Promise<{ records: UserMessageRecord[]; nextCursor: string | null }> {
       const lim = clampLimit(limit)
-      const anchor = decodeKeyset(cursor)
+      const anchor = parseKeysetCursor(cursor)
       const branchCursor = (createdAt: SqlFragment, id2: SqlFragment): SqlFragment =>
         anchor !== null ? sql`AND ${keysetPredicate(sql, createdAt, id2, anchor)}` : sql``
       const probe = lim + 1
@@ -623,9 +622,6 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     },
   }
 }
-
-const decodeKeyset = (cursor: string | null | undefined): KeysetAnchor | null =>
-  decodeCursor(cursor, true)
 
 function threadFallback(source: "chat" | "group" | "dm" | "report"): string {
   switch (source) {

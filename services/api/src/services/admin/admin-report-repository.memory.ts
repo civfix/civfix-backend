@@ -172,7 +172,7 @@ export class InMemoryAdminReportRepository implements AdminReportRepository {
     })
 
     return pageInMemoryById(rows, args.cursor, args.limit, (r) => ({
-      createdAt: r.createdAt,
+      at: r.createdAt,
       id: r.id,
     }))
   }

@@ -1,12 +1,12 @@
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
-import { isUuid } from "../../db/cursor-helpers.js"
+import { clampLimit } from "./pagination.js"
 import {
-  decodeCursor,
-  clampLimit,
+  isUuid,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-} from "./pagination.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { writeAudit } from "./audit.js"
 import { adminEventStatusExpr } from "../cleanup-sql.js"
 import { personSelect } from "./admin-person-sql.js"
@@ -152,7 +152,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       args: ListEventsArgs,
     ): Promise<{ records: AdminEventRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor, true)
+      const anchor = parseKeysetCursor(args.cursor)
 
       const conds: SqlFragment[] = []
       if (args.status !== null) {

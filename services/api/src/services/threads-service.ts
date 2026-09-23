@@ -2,6 +2,7 @@ import { relativeAgo, avatarGradient } from "@civfix/shared"
 import type { MessageThreadDTO, PersonDTO, RoomKind } from "@civfix/shared"
 import {
   encodeTimeCursor,
+  isBeforeTimeCursor,
   pageWith,
   parseTimeCursor,
   type TimeCursor,
@@ -219,12 +220,6 @@ function dmThreadTitle(peer: DmThreadAggregateView["peer"]): string {
   return peer.handle !== null ? `@${peer.handle}` : peer.displayName
 }
 
-function beforeCursor(cursor: TimeCursor | null, activity: number, id: string): boolean {
-  if (cursor === null) return true
-  const at = cursor.at.getTime()
-  return activity < at || (activity === at && id < cursor.id)
-}
-
 export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
   const now = deps.now ?? (() => new Date())
 
@@ -357,7 +352,7 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
     )
 
     const merged = [...cleanupEntries, ...dmEntries, ...reportEntries, ...groupEntries]
-      .filter((e) => beforeCursor(cursor, e.activity, e.dto.id))
+      .filter((e) => isBeforeTimeCursor(e.activity, e.dto.id, cursor))
       .sort(
         (a, b) =>
           b.activity - a.activity || (a.dto.id < b.dto.id ? 1 : a.dto.id > b.dto.id ? -1 : 0),

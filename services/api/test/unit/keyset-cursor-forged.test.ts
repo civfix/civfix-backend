@@ -13,7 +13,6 @@ import { loadEnv } from "../../src/env.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
 import { parseKeysetCursor } from "../../src/db/cursor-helpers.js"
-import { decodeCursor } from "../../src/services/admin/pagination.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
 import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
@@ -37,7 +36,7 @@ describe("parseKeysetCursor refuses instants Postgres would not accept", () => {
   it.each(FORGED_INSTANTS)("%s gives the first page", (_label, instant) => {
     expect(parseKeysetCursor(`${instant}|${ID}`)).toBeNull()
     expect(parseKeysetCursor(instant)).toBeNull()
-    expect(decodeCursor(`${instant}|${ID}`, true)).toBeNull()
+    expect(parseKeysetCursor(`${instant}|${ID}`, { requireUuid: true })).toBeNull()
   })
 })
 

@@ -114,7 +114,7 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
       return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
     })
 
-    // The shared cursor carries a Date, so the sort value rides in its createdAt slot as epoch-ms; the
+    // The shared cursor carries a Date, so the sort value rides in its `at` slot as epoch-ms; the
     // Drizzle repository's SQL keyset consumes the same encoding.
     const sortValue = (r: DiscoveryTaskRecord): number =>
       args.sort === "reports" ? r.total : (r.population ?? 0)
@@ -124,7 +124,7 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
       rows,
       args.cursor,
       args.limit,
-      (r) => ({ createdAt: new Date(sortValue(r)), id: r.id }),
+      (r) => ({ at: new Date(sortValue(r)), id: r.id }),
       true,
     )
   }

@@ -1,13 +1,13 @@
 import type { ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
+import { clampLimit } from "./pagination.js"
 import {
-  clampLimit,
-  decodeCursor,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-} from "./pagination.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
 import { ilikeAnyOf } from "./sql-fragments.js"
 import { tombstonePostInTx } from "../post-repository.drizzle.js"
@@ -298,7 +298,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       args: ListModerationArgs,
     ): Promise<{ records: ModerationItemRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor, true)
+      const anchor = parseKeysetCursor(args.cursor)
       const keyset = anchor
         ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, anchor)}`
         : sql``

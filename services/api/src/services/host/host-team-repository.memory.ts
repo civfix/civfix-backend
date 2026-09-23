@@ -7,7 +7,12 @@ import type {
   EventTeamRole,
   EventVisibility,
 } from "@civfix/shared"
-import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
+import {
+  encodeTimeCursor,
+  isBeforeTimeCursor,
+  pageWith,
+  parseTimeCursor,
+} from "../../db/cursor-helpers.js"
 import { eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
 import type { CleanupPersonView } from "../cleanup-repository.types.js"
 import type {
@@ -404,12 +409,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
           !this.isClosed(i.cleanupId),
       )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || compareIds(b.id, a.id))
-      .filter(
-        (i) =>
-          cursor === null ||
-          i.createdAt.getTime() < cursor.at.getTime() ||
-          (i.createdAt.getTime() === cursor.at.getTime() && i.id < cursor.id),
-      )
+      .filter((i) => isBeforeTimeCursor(i.createdAt.getTime(), i.id, cursor))
       .slice(0, args.limit + 1)
       .map(
         (i): PendingInviteForUserRecord => ({

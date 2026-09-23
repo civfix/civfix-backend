@@ -1,11 +1,11 @@
 import type { Sql } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
 import {
-  clampLimit,
-  decodeCursor,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-} from "./pagination.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { likeContains } from "./like.js"
 import { writeAudit } from "./audit.js"
 import { HTML_PREVIEW_SOURCE_CHARS, PREVIEW_SOURCE_CHARS, toPreview } from "./mail-preview.js"
@@ -128,7 +128,7 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
 
     async list(query: InboxListQuery): Promise<InboxListResponse> {
       const limit = clampLimit(query.limit)
-      const anchor = decodeCursor(query.cursor, true)
+      const anchor = parseKeysetCursor(query.cursor)
       const cursorFilter =
         anchor !== null
           ? sql`AND ${keysetPredicate(sql, sql`received_at`, sql`id`, anchor)}`

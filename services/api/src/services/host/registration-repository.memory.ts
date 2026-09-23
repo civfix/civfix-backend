@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto"
 import type { CheckinMethod } from "@civfix/shared"
-import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
+import {
+  encodeTimeCursor,
+  pageBeforeTimeCursor,
+  pageWith,
+  parseTimeCursor,
+} from "../../db/cursor-helpers.js"
 import {
   DEFAULT_EVENT_DURATION_MS,
   eventEndsAtMs,
@@ -769,20 +774,14 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       (a, b) => b.registeredAt.getTime() - a.registeredAt.getTime() || b.id.localeCompare(a.id),
     )
     const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
-    if (cursor !== null) {
-      rows = rows.filter(
-        (r) =>
-          r.registeredAt.getTime() < cursor.at.getTime() ||
-          (r.registeredAt.getTime() === cursor.at.getTime() && r.id < cursor.id),
-      )
+    const page = pageBeforeTimeCursor(rows, cursor, query.limit, (r) => ({
+      at: r.registeredAt,
+      id: r.id,
+    }))
+    const out: RosterPage = {
+      rows: page.items.map((r) => this.toRecord(r)),
+      nextCursor: page.nextCursor,
     }
-    const page = rows.slice(0, query.limit)
-    const last = page[page.length - 1]
-    const nextCursor =
-      rows.length > query.limit && last !== undefined
-        ? encodeTimeCursor({ at: last.registeredAt, id: last.id })
-        : null
-    const out: RosterPage = { rows: page.map((r) => this.toRecord(r)), nextCursor }
     if (query.withTotal) {
       out.total = [...this.registrations.values()].filter(
         (r) => r.cleanupId === query.cleanupId && r.status === "registered",
@@ -1089,13 +1088,13 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
         : w.status === args.status,
     )
     rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
-    const page = rows.slice(0, args.limit)
-    const last = page[page.length - 1]
-    const nextCursor =
-      rows.length > args.limit && last !== undefined
-        ? encodeTimeCursor({ at: last.createdAt, id: last.id })
-        : null
-    return { rows: page.map((entry) => this.waitlistView(entry)), nextCursor }
+    const page = pageWith(rows, args.limit, (last) =>
+      encodeTimeCursor({ at: last.createdAt, id: last.id }),
+    )
+    return {
+      rows: page.items.map((entry) => this.waitlistView(entry)),
+      nextCursor: page.nextCursor,
+    }
   }
 
   async findWaitlistEntry(cleanupId: string, waitlistId: string): Promise<WaitlistRecord | null> {

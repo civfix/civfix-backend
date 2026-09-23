@@ -220,8 +220,8 @@ describe("discovery list", () => {
       repo.seedTask({ id: randomUUID(), geoid: `${i}`, place: `Place ${i}`, population: 100 - i })
     }
     // A forged/legacy cursor carrying a non-uuid id would raise a Postgres 22P02 -> 500 against the real
-    // keyset, so decodeCursor drops it and the query pages from the top. The fake must agree, or an offline
-    // test proves a paging behavior production does not have.
+    // keyset, so parseKeysetCursor drops it and the query pages from the top. The fake must agree, or an
+    // offline test proves a paging behavior production does not have.
     const page = await svc.list({ limit: 2, cursor: "2026-06-06T00:00:00.000Z|not-a-uuid" })
     expect(page.items.map((i) => i.place)).toEqual(["Place 0", "Place 1"])
   })

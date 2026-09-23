@@ -1,11 +1,11 @@
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
 import {
-  clampLimit,
-  decodeCursor,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-} from "./pagination.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { PREVIEW_SOURCE_CHARS } from "./mail-preview.js"
 import { writeAudit } from "./audit.js"
 import { ilikeAnyOf } from "./sql-fragments.js"
@@ -468,7 +468,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async listThreads(input: ListThreadsInput): Promise<ListThreadsResult> {
       const limit = clampLimit(input.limit)
-      const anchor = decodeCursor(input.cursor, true)
+      const anchor = parseKeysetCursor(input.cursor)
       const activityAt = sql`COALESCE(t.last_message_at, t.created_at)`
       const cursorFilter =
         anchor !== null ? sql`AND ${keysetPredicate(sql, activityAt, sql`t.id`, anchor)}` : sql``

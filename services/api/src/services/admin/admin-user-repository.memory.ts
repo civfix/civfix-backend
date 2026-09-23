@@ -132,7 +132,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     })
 
     return pageInMemoryById(rows, args.cursor, args.limit, (r) => ({
-      createdAt: r.joinedAt ?? new Date(0),
+      at: r.joinedAt ?? new Date(0),
       id: r.id,
     }))
   }
@@ -178,7 +178,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       ),
       cursor,
       limit,
-      (r) => ({ createdAt: r.createdAt, id: r.id }),
+      (r) => ({ at: r.createdAt, id: r.id }),
     )
   }
 
@@ -191,7 +191,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       [...(this.events.get(id) ?? [])].sort((a, b) => b.whenAt.getTime() - a.whenAt.getTime()),
       cursor,
       limit,
-      (r) => ({ createdAt: r.whenAt, id: r.id }),
+      (r) => ({ at: r.whenAt, id: r.id }),
     )
   }
 
@@ -206,7 +206,7 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
       ),
       cursor,
       limit,
-      (r) => ({ createdAt: r.createdAt, id: r.id }),
+      (r) => ({ at: r.createdAt, id: r.id }),
     )
   }
 

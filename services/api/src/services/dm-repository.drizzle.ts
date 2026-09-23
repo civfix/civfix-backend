@@ -19,7 +19,7 @@ import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions-repositor
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
 import { monotonicReadWatermark } from "./read-watermark-repository.drizzle.js"
 import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
-import type { TimeCursor } from "../db/cursor-helpers.js"
+import { msKeysetFilter, type TimeCursor } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
 import {
   makeDrizzleRoomMessagesRepository,
@@ -576,14 +576,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       const limitClause = limit !== undefined ? sql`LIMIT ${limit}` : sql``
       const rawActivity = sql`COALESCE(last_msg.created_at, t.created_at)`
       const activity = sql`date_trunc('milliseconds', ${rawActivity})`
-      let cursorFilter = sql``
-      if (cursor !== null && cursor !== undefined) {
-        const msCeiling = new Date(cursor.at.getTime() + 1)
-        cursorFilter = sql`
-          AND ${activity} < ${msCeiling}
-          AND (${activity} < ${cursor.at} OR t.id < ${cursor.id}::uuid)
-        `
-      }
+      const cursorFilter = msKeysetFilter(sql, activity, sql`t.id`, cursor)
       const rows = await sql<
         {
           thread_id: string

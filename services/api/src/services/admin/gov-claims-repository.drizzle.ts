@@ -5,13 +5,13 @@
 
 import type { Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
+import { clampLimit } from "./pagination.js"
 import {
-  decodeCursor,
-  clampLimit,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-} from "./pagination.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { ilikeAnyOf } from "./sql-fragments.js"
 import {
   GOV_CHECKS,
@@ -91,7 +91,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
       args: ListGovClaimsArgs,
     ): Promise<{ records: GovClaimRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor, true)
+      const anchor = parseKeysetCursor(args.cursor)
       const newestFirst = args.sort === "newest"
 
       const facet = args.filter === "all" ? sql`` : sql`AND status = ${args.filter}`

@@ -1,5 +1,5 @@
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
-import { decodeCursor, paginate, type CursorAnchor } from "./pagination.js"
+import { pageBeforeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
 
 export interface SeedAuditInput {
   id?: string
@@ -32,7 +32,7 @@ export class InMemoryAuditRepository implements AuditRepository {
   }
 
   async list(args: ListAuditArgs): Promise<{ records: AuditRecord[]; nextCursor: string | null }> {
-    const anchor = decodeCursor(args.cursor)
+    const anchor = parseKeysetCursor(args.cursor, { requireUuid: false })
     const actor = args.actor?.toLowerCase() ?? null
     const action = args.action?.toLowerCase() ?? null
     const target = args.target?.toLowerCase() ?? null
@@ -49,10 +49,8 @@ export class InMemoryAuditRepository implements AuditRepository {
     })
 
     const sorted = [...filtered].sort(compareDesc)
-    const windowed = anchor !== null ? sorted.filter((r) => beforeAnchor(r, anchor)) : sorted
-
-    const { items, nextCursor } = paginate(windowed, args.limit, (r) => ({
-      createdAt: r.createdAt,
+    const { items, nextCursor } = pageBeforeTimeCursor(sorted, anchor, args.limit, (r) => ({
+      at: r.createdAt,
       id: r.id,
     }))
     return { records: items, nextCursor }
@@ -63,12 +61,4 @@ function compareDesc(a: AuditRecord, b: AuditRecord): number {
   const at = b.createdAt.getTime() - a.createdAt.getTime()
   if (at !== 0) return at
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
-}
-
-// Strictly older than the anchor in the DESC order, i.e. on a later page.
-function beforeAnchor(record: AuditRecord, anchor: CursorAnchor): boolean {
-  const t = record.createdAt.getTime()
-  const at = anchor.createdAt.getTime()
-  if (t !== at) return t < at
-  return record.id < anchor.id
 }

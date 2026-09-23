@@ -6,7 +6,7 @@ import type {
   OrganizationRefDTO,
   VolunteerHoursSource,
 } from "@civfix/shared"
-import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
+import { encodeTimeCursor, isBeforeTimeCursor, pageWith } from "../db/cursor-helpers.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
 import { eventDayKey } from "./host/event-day.js"
 import {
@@ -419,12 +419,7 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
         (e) => e.userId === args.userId && e.voidedAt === undefined && sources.includes(e.source),
       )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
-      .filter((e) => {
-        if (args.cursor === null) return true
-        const at = e.createdAt.getTime()
-        const anchor = args.cursor.at.getTime()
-        return at < anchor || (at === anchor && e.id < args.cursor.id)
-      })
+      .filter((e) => isBeforeTimeCursor(e.createdAt.getTime(), e.id, args.cursor))
       .slice(0, args.limit + 1)
 
     const { items, nextCursor } = pageWith(rows, args.limit, (last) =>
