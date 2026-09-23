@@ -852,7 +852,7 @@ describe("processInboundObject: self-originated mail (loop guard)", () => {
       rfc822({
         from: "outreach@civfix.org",
         to: "contact@civfix.org",
-        messageId: "<out-2@civfix.org>",
+        messageId: "<out-0f5c2a4e-8b1d-4c3a-9e2f-6d7b8a9c0e1f@civfix.org>",
         inReplyTo: "<out-1@civfix.org>",
       }),
       rfc822({ from: `report-${TOKEN}@civfix.org`, to: `report-${TOKEN}@civfix.org` }),

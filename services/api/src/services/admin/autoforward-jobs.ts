@@ -22,9 +22,13 @@ export interface AutoForwardLogger {
   warn: (obj: unknown, msg?: string) => void
 }
 
+export interface AutoForwardJobLogger extends AutoForwardLogger {
+  error: (obj: unknown, msg?: string) => void
+}
+
 export async function registerAutoForwardJobs(
   container: Container,
-  logger?: AutoForwardLogger,
+  logger?: AutoForwardJobLogger,
 ): Promise<void> {
   await container.jobs.work(REPORT_AUTOFORWARD_JOB, async (job) => {
     const reportId = extractReportId(job.data)
@@ -36,9 +40,9 @@ export async function registerAutoForwardJobs(
 export async function runAutoForward(
   container: Container,
   reportId: string,
-  logger?: AutoForwardLogger,
+  logger?: AutoForwardJobLogger,
 ): Promise<void> {
-  await runAutoForwardWith(makeAutoForwardService(container), reportId, logger)
+  await runAutoForwardWith(makeAutoForwardService(container, logger), reportId, logger)
 }
 
 export async function runAutoForwardWith(
@@ -81,16 +85,22 @@ function isTransientInfraError(err: unknown): boolean {
   return true
 }
 
-function makeAutoForwardService(container: Container): AdminReportService {
+function makeAutoForwardService(
+  container: Container,
+  logger: AutoForwardJobLogger | undefined,
+): AdminReportService {
   const sql = container.getDb().sql
-  const outboundMail = makeContainerOutboundMailService(container)
+  const outboundMail = makeContainerOutboundMailService(
+    container,
+    logger === undefined ? {} : { logger },
+  )
   return makeAdminReportService({
     repo: makeDrizzleAdminReportRepository(sql),
     outboundMail,
     presignMedia: makePrivateMediaPresigner(container.storage),
     presignPacketMedia: makePacketMediaPresigner(container.storage),
     loadMediaBytes: (k) => container.storage.getObject(k),
-    reportChatEmitter: makeContainerReportChatEmitter(container),
+    reportChatEmitter: makeContainerReportChatEmitter(container, logger),
     forwardTemplates: makeDrizzleForwardTemplateRepository(sql),
   })
 }
