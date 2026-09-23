@@ -62,6 +62,7 @@ interface StoredPost {
   mentionedUserIds: string[]
   createdAt: Date
   deletedAt: Date | null
+  visibility: "public" | "hidden"
   likes: Set<string>
   reposts: Set<string>
   saves: Set<string>
@@ -99,6 +100,7 @@ class InMemoryPostRepository implements PostRepository {
       mentionedUserIds: post.mentionedUserIds ?? [],
       createdAt: post.createdAt ?? new Date(Date.UTC(2026, 6, 24, 0, 0, this.seq)),
       deletedAt: post.deletedAt ?? null,
+      visibility: post.visibility ?? "public",
       likes: post.likes ?? new Set(),
       reposts: post.reposts ?? new Set(),
       saves: post.saves ?? new Set(),
@@ -108,7 +110,7 @@ class InMemoryPostRepository implements PostRepository {
 
   private live(id: string): StoredPost | null {
     const p = this.posts.get(id)
-    return p && p.deletedAt === null ? p : null
+    return p && p.deletedAt === null && p.visibility === "public" ? p : null
   }
 
   private replyCount(id: string): number {
@@ -192,7 +194,7 @@ class InMemoryPostRepository implements PostRepository {
       replyToId: p.replyToId,
       repostOfId: p.repostOfId,
       deletedAt: p.deletedAt,
-      visibility: "public",
+      visibility: p.visibility,
     })
   }
 
@@ -525,18 +527,17 @@ const MUTATIONS = (id: string): ReadonlyArray<{
 ]
 
 /**
- * The auth-REQUIRED reads only. `homeFeed` and `listUserPosts` are both `auth: "optional"` in the shared
- * registry — a public profile has to be readable signed-out (P10), so its "Posts" tab does too — and each
- * has its own signed-out test below.
+ * The auth-REQUIRED reads only. `homeFeed`, `listUserPosts` and `getPost` are `auth: "optional"` in the
+ * shared registry — a public profile has to be readable signed-out (P10), so its "Posts" tab does too, and
+ * a shared post link must preview signed-out (#136) — and each has its own signed-out test.
  */
 const READS = (id: string, _authorId: string): ReadonlyArray<{ method: "GET"; url: string }> => [
-  { method: "GET", url: `/v1/posts/${id}` },
   { method: "GET", url: `/v1/posts/${id}/replies` },
   { method: "GET", url: "/v1/me/saves" },
 ]
 
 describe("posts routes: auth", () => {
-  it("401s every auth-required post endpoint anonymously (11 of 13)", async () => {
+  it("401s every auth-required post endpoint anonymously (10 of 13)", async () => {
     const h = await makeHarness()
     const id = h.repo.seed({ authorId: UNKNOWN_ID })
     for (const r of [...MUTATIONS(id), ...READS(id, UNKNOWN_ID)]) {
@@ -956,6 +957,82 @@ describe("GET /posts/:id (getPost) + DELETE /posts/:id (deletePost)", () => {
       (await h.app.inject({ method: "GET", url: `/v1/posts/${id}`, headers: bearer(author) }))
         .statusCode,
     ).toBe(404)
+  })
+})
+
+describe("GET /posts/:id signed out (auth: optional)", () => {
+  it("200s a public post to a signed-out reader with every viewer flag false", async () => {
+    const h = await makeHarness()
+    const author = await h.signIn("guest-read-author@example.com", "GuestReadAuthor")
+    const id = h.repo.seed({ authorId: author.userId, body: "shareable" })
+    h.repo.posts.get(id)!.likes.add(author.userId)
+    h.repo.posts.get(id)!.saves.add(author.userId)
+
+    const res = await h.app.inject({ method: "GET", url: `/v1/posts/${id}` })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ id, body: "shareable" })
+    expect(res.json().viewer).toEqual({ liked: false, reposted: false, saved: false })
+    expect(res.json().counts.likes).toBe(1)
+  })
+
+  it("404s a hidden post signed out with the exact body an unknown id gets", async () => {
+    const h = await makeHarness()
+    const id = h.repo.seed({ authorId: UNKNOWN_ID, visibility: "hidden" })
+
+    const unknown = await h.app.inject({ method: "GET", url: `/v1/posts/${UNKNOWN_ID}` })
+    const hidden = await h.app.inject({ method: "GET", url: `/v1/posts/${id}` })
+    expect(unknown.statusCode).toBe(404)
+    expect(hidden.statusCode).toBe(404)
+    const { requestId: _unknownRequestId, ...unknownBody } = unknown.json()
+    const { requestId: _hiddenRequestId, ...hiddenBody } = hidden.json()
+    expect(hiddenBody).toEqual(unknownBody)
+    expect(hiddenBody).toEqual({ code: "NOT_FOUND", message: "Post not found" })
+  })
+
+  it("404s a hidden post for a signed-in stranger and for its own author alike", async () => {
+    const h = await makeHarness()
+    const author = await h.signIn("hidden-author@example.com", "HiddenAuthor")
+    const other = await h.signIn("hidden-stranger@example.com", "HiddenStranger")
+    const id = h.repo.seed({ authorId: author.userId, visibility: "hidden" })
+
+    for (const s of [other, author]) {
+      const res = await h.app.inject({ method: "GET", url: `/v1/posts/${id}`, headers: bearer(s) })
+      expect(res.statusCode).toBe(404)
+      expect(res.json().code).toBe("NOT_FOUND")
+    }
+  })
+
+  it("404s a deleted post signed out", async () => {
+    const h = await makeHarness()
+    const id = h.repo.seed({ authorId: UNKNOWN_ID, deletedAt: new Date() })
+
+    const res = await h.app.inject({ method: "GET", url: `/v1/posts/${id}` })
+    expect(res.statusCode).toBe(404)
+    expect(res.json().code).toBe("NOT_FOUND")
+  })
+
+  it("404s a repost or quote of a hidden or deleted original signed out with the exact body an unknown id gets", async () => {
+    const h = await makeHarness()
+    const sharer = await h.signIn("guest-repost-sharer@example.com", "GuestRepostSharer")
+    const unknown = await h.app.inject({ method: "GET", url: `/v1/posts/${UNKNOWN_ID}` })
+    const { requestId: _unknownRequestId, ...unknownBody } = unknown.json()
+
+    const originals = [
+      h.repo.seed({ authorId: UNKNOWN_ID, visibility: "hidden" }),
+      h.repo.seed({ authorId: UNKNOWN_ID, deletedAt: new Date() }),
+    ]
+    for (const original of originals) {
+      const shares = [
+        h.repo.seed({ authorId: sharer.userId, kind: "repost", repostOfId: original, body: null }),
+        h.repo.seed({ authorId: sharer.userId, kind: "quote", repostOfId: original, body: "look" }),
+      ]
+      for (const share of shares) {
+        const res = await h.app.inject({ method: "GET", url: `/v1/posts/${share}` })
+        expect(res.statusCode).toBe(404)
+        const { requestId: _requestId, ...body } = res.json()
+        expect(body).toEqual(unknownBody)
+      }
+    }
   })
 })
 
