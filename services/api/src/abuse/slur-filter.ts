@@ -74,11 +74,18 @@ function deobfuscate(text: string): string {
   return collapsed.replace(/\b[a-z0-9](?: [a-z0-9])+\b/gi, (run) => run.replace(/ /g, ""))
 }
 
+// Combining marks survive NFKD as separate code points and format characters (zero-width joiners, soft
+// hyphen, bidi marks, BOM) render as nothing, so either one wedged inside a word hides it from the
+// patterns. The unstripped variants stay because a zero-width space can also be the only word gap.
+const COMBINING_MARK_RE = /\p{M}/gu
+const FORMAT_CHAR_RE = /\p{Cf}/gu
+
 export function containsSlur(text: string | null | undefined): boolean {
   if (text === null || text === undefined) return false
   const normalized = text.normalize("NFKD").toLowerCase()
   if (normalized.trim() === "") return false
-  const variants = [normalized, deobfuscate(normalized)]
+  const stripped = normalized.replace(COMBINING_MARK_RE, "").replace(FORMAT_CHAR_RE, "")
+  const variants = [normalized, deobfuscate(normalized), stripped, deobfuscate(stripped)]
   for (const variant of variants) {
     for (const pattern of RAW_PATTERNS) {
       if (pattern.test(variant)) return true
