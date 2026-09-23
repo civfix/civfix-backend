@@ -46,7 +46,7 @@ import { makeDrizzleDiscussionRepository } from "../../src/services/discussion-r
 import { makeChatPollRepository } from "../../src/services/chat-poll-repository.drizzle.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
-import { globalRoleOf } from "../../src/routes/chat-powers-wiring.js"
+import { chatAuthorityRoleOf } from "../../src/routes/chat-powers-wiring.js"
 
 const pg = await withPg()
 
@@ -641,7 +641,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
           isDmParticipant: (threadId, userId) => dm.isParticipant(threadId, userId),
           cleanupRoleOf: (cleanupId, userId) => cleanups.roleOf(cleanupId, userId),
           reportChatRoleOf: (reportId, userId) => reportChat.roleOf(reportId, userId),
-          globalRoleOf: (userId) => globalRoleOf(h.sql, userId),
+          globalRoleOf: (userId) => chatAuthorityRoleOf(h.sql, env, userId),
           groupRoleOf: (groupId, userId) => groups.roleOf(groupId, userId),
         }),
       }

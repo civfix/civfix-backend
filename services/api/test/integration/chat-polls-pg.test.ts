@@ -50,7 +50,7 @@ import { makeReportChatRepository } from "../../src/services/report-chat-reposit
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeChatPollRepository } from "../../src/services/chat-poll-repository.drizzle.js"
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
-import { globalRoleOf } from "../../src/routes/chat-powers-wiring.js"
+import { chatAuthorityRoleOf } from "../../src/routes/chat-powers-wiring.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import { makeContainerPollNotifier } from "../../src/services/chat-poll-notifier.js"
 import { makeChatPollService } from "../../src/services/chat-poll-service.js"
@@ -84,7 +84,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       isDmParticipant: (t, u) => dmRepo.isParticipant(t, u),
       cleanupRoleOf: (c, u) => cleanups.roleOf(c, u),
       reportChatRoleOf: (r, u) => reportChat.roleOf(r, u),
-      globalRoleOf: (u) => globalRoleOf(h.sql, u),
+      globalRoleOf: (u) => chatAuthorityRoleOf(h.sql, env, u),
       groupRoleOf: (g, u) => groups.roleOf(g, u),
     })
     const overrides: ChatGatewayOverrides = {

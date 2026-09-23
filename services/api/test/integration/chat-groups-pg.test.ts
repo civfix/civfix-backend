@@ -47,7 +47,7 @@ import { makeReportChatRepository } from "../../src/services/report-chat-reposit
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
-import { globalRoleOf } from "../../src/routes/chat-powers-wiring.js"
+import { chatAuthorityRoleOf } from "../../src/routes/chat-powers-wiring.js"
 import type { PresignMedia } from "../../src/services/media-presign.js"
 
 const pg = await withPg()
@@ -94,7 +94,7 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
         isDmParticipant: (threadId, userId) => dm.isParticipant(threadId, userId),
         cleanupRoleOf: (cleanupId, userId) => cleanups.roleOf(cleanupId, userId),
         reportChatRoleOf: (reportId, userId) => reportChat.roleOf(reportId, userId),
-        globalRoleOf: (userId) => globalRoleOf(h.sql, userId),
+        globalRoleOf: (userId) => chatAuthorityRoleOf(h.sql, env, userId),
         groupRoleOf: (groupId, userId) => groups.roleOf(groupId, userId),
       }),
     }
