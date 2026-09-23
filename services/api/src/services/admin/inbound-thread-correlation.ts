@@ -62,7 +62,7 @@ const ATTRIBUTION_MAX_CHARS = 400
 const ATTRIBUTION_MAX_LINES = 3
 const TRAILING_SEPARATOR_RE = /^[_-]{3,}$/
 const OUTBOUND_MESSAGE_ID_PATTERN = "out-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}@"
-const OUTLOOK_ORIGINAL_MESSAGE_RE = /^-{2,}\s*Original Message\s*-{2,}$/i
+const QUOTED_MESSAGE_SEPARATOR_RE = /^-{2,}\s*(?:Original|Forwarded) Message\s*-{2,}$/i
 const OUTLOOK_HEADER_FROM_RE = /^From:\s.+$/
 const OUTLOOK_HEADER_FOLLOW_RE = /^(?:Sent|Date|To):\s/
 const OUTLOOK_HEADER_LOOKAHEAD = 2
@@ -97,7 +97,7 @@ function ownMailIdentifierRe(replyDomain: string): RegExp {
 function isQuotedHistoryStart(lines: string[], index: number): boolean {
   const line = lines[index]!.trim()
   if (isQuotedAttributionAt(lines, index)) return true
-  if (OUTLOOK_ORIGINAL_MESSAGE_RE.test(line)) return true
+  if (QUOTED_MESSAGE_SEPARATOR_RE.test(line)) return true
   if (!OUTLOOK_HEADER_FROM_RE.test(line)) return false
   if (!hasReplyTextBefore(lines, index)) return false
   for (let ahead = 1; ahead <= OUTLOOK_HEADER_LOOKAHEAD; ahead++) {
@@ -173,7 +173,7 @@ export function parseMessageIdList(value: string | undefined): string[] {
   return out
 }
 
-const OUTBOUND_MESSAGE_ID_RE = /^<out-[^@>]+@([^@>]+)>$/i
+const OUTBOUND_MESSAGE_ID_RE = new RegExp(`^<${OUTBOUND_MESSAGE_ID_PATTERN}([^@>]+)>$`, "i")
 
 export function isSelfOriginated(
   container: Container,

@@ -26,6 +26,8 @@ describe("cityReplyChatBody: quoted history in every client's shape", () => {
     ["Outlook es", reply("________________________________", `De: civfix Reports <${ADDR}>`, "Enviado: martes")],
     ["an unknown locale", reply(`2026年9月22日(火) 20:47 civfix Reports <${ADDR}>:`)],
     ["a header block with our Message-ID", reply(`In-Reply-To: ${OUT_ID}`, "Subject: couch")],
+    ["Gmail forward", reply("---------- Forwarded message ---------", `From: civfix Reports <${ADDR}>`)],
+    ["a forward of other mail", reply("---------- Forwarded message ---------", "From: Crew <c@x.gov>")],
   ])("%s: publishes only the reply", (_client, body) => {
     expect(cityReplyChatBody(body)).toBe("Crew en route.")
   })
