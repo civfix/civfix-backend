@@ -4,14 +4,14 @@ import { MEDIA_CHECKS_JOB } from "@civfix/api/queue-names"
 import { loadLimits } from "../../src/config.js"
 import { parsePayload } from "../../src/jobs/media-checks.js"
 import { runStuckSweep } from "../../src/jobs/stuck-sweep.js"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 
 const limits = loadLimits({})
 const NOW = new Date("2026-06-01T12:00:00Z")
 const STUCK_SINCE = new Date(NOW.getTime() - limits.stuckMediaTtlMs - 60_000)
 const FINALIZED_ETAG = "5d41402abc4b2a76b9719d911017c592"
 
-async function sweepOnce(repo: InMemoryWorkerRepo): Promise<unknown[]> {
+async function sweepOnce(repo: InMemoryMediaWorkerRepository): Promise<unknown[]> {
   const payloads: unknown[] = []
   await runStuckSweep({
     repo,
@@ -29,7 +29,7 @@ async function sweepOnce(repo: InMemoryWorkerRepo): Promise<unknown[]> {
   return payloads
 }
 
-function seedStuck(repo: InMemoryWorkerRepo, uploadEtag: string | null): void {
+function seedStuck(repo: InMemoryMediaWorkerRepository, uploadEtag: string | null): void {
   repo.now = () => NOW
   repo.seed({
     id: "stuck-1",
@@ -45,7 +45,7 @@ function seedStuck(repo: InMemoryWorkerRepo, uploadEtag: string | null): void {
 
 describe("media.stuck.sweep keeps the finalize-time overwrite check", () => {
   it("requeues media.checks with the upload etag recorded at finalize", async () => {
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     seedStuck(repo, FINALIZED_ETAG)
 
     const payloads = await sweepOnce(repo)
@@ -63,7 +63,7 @@ describe("media.stuck.sweep keeps the finalize-time overwrite check", () => {
   })
 
   it("a row finalized before the etag was stored requeues with no etag, as before", async () => {
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     seedStuck(repo, null)
 
     const payloads = await sweepOnce(repo)

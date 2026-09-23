@@ -21,9 +21,9 @@ import {
   loadLimits,
 } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
-import type { AnonHoldReleaseRepo, HeldReportView } from "@civfix/api/anon-hold-release"
+import type { AnonHoldReleaseRepository, HeldReportView } from "@civfix/api/anon-hold-release"
 import { FakeJobs, FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 import * as fx from "../fixtures/make.js"
 
 describe("media-worker wiring", () => {
@@ -195,7 +195,7 @@ describe("F25: post-success hold-release hook is gated on anon+held report state
     }
   }
 
-  function makeAnonHoldRepo(report: HeldReportView): AnonHoldReleaseRepo {
+  function makeAnonHoldRepo(report: HeldReportView): AnonHoldReleaseRepository {
     return {
       findReport: () => Promise.resolve(report),
       findMedia: () => Promise.resolve([{ id: "m1", status: "ready" }]),
@@ -206,12 +206,12 @@ describe("F25: post-success hold-release hook is gated on anon+held report state
   }
 
   async function runMediaJobWith(
-    anonHoldRepo: AnonHoldReleaseRepo,
-  ): Promise<{ fake: FakeJobs; repo: InMemoryWorkerRepo }> {
+    anonHoldRepo: AnonHoldReleaseRepository,
+  ): Promise<{ fake: FakeJobs; repo: InMemoryMediaWorkerRepository }> {
     const handle = makeJobs()
     const fake = handle.jobs as unknown as FakeJobs
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const reportId = "report-1"
     repo.seed({
       id: "m1",

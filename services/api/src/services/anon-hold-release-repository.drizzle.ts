@@ -1,5 +1,9 @@
 import type { Queryable, Sql } from "../db/client.js"
-import type { AnonHoldReleaseRepo, HeldReportView, ReleaseMediaView } from "./anon-hold-release.js"
+import type {
+  AnonHoldReleaseRepository,
+  HeldReportView,
+  ReleaseMediaView,
+} from "./anon-hold-release.js"
 
 const RELEASE_TIMELINE_NOTE = "Released after automated review"
 
@@ -24,7 +28,7 @@ async function countOpenFlags(
   return rows[0]?.n ?? 0
 }
 
-export function makeDrizzleAnonHoldReleaseRepo(sql: Sql): AnonHoldReleaseRepo {
+export function makeDrizzleAnonHoldReleaseRepository(sql: Sql): AnonHoldReleaseRepository {
   return {
     async findReport(reportId: string): Promise<HeldReportView | null> {
       const rows = await sql<

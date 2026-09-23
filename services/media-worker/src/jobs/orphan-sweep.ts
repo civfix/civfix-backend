@@ -1,5 +1,5 @@
 import type { Storage } from "@civfix/shared/interfaces"
-import type { LeakedObjectRow, MediaWorkerRepo, OrphanRow } from "@civfix/api/media-repo"
+import type { LeakedObjectRow, MediaWorkerRepository, OrphanRow } from "@civfix/api/media-repo"
 import type { WorkerLimits } from "../config.js"
 import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps, type JobLogFn, type JobReportFn } from "./obs.js"
@@ -17,7 +17,7 @@ export const LEAK_RETRY_MAX_ATTEMPTS = 5
 const LEAK_RETRY_LIMIT = 200
 
 export interface OrphanSweepDeps extends JobObsDeps {
-  repo: MediaWorkerRepo
+  repo: MediaWorkerRepository
   storage: Storage
   limits: WorkerLimits
 }
@@ -156,7 +156,7 @@ async function retryTombstonedLeaks(
 async function recordLeakRetryFailure(
   row: LeakedObjectRow,
   err: unknown,
-  repo: MediaWorkerRepo,
+  repo: MediaWorkerRepository,
   log: JobLogFn,
   report: JobReportFn,
 ): Promise<void> {

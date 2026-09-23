@@ -2,9 +2,12 @@ import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import type { AbuseChecks, Storage } from "@civfix/shared/interfaces"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import { makeDb, type DbHandle } from "@civfix/api/db"
-import { makeDrizzleMediaWorkerRepo, type MediaWorkerRepo } from "@civfix/api/media-repo"
-import { makeDrizzleAnonHoldReleaseRepo } from "@civfix/api/anon-hold-repo"
-import type { AnonHoldReleaseRepo } from "@civfix/api/anon-hold-release"
+import {
+  makeDrizzleMediaWorkerRepository,
+  type MediaWorkerRepository,
+} from "@civfix/api/media-repo"
+import { makeDrizzleAnonHoldReleaseRepository } from "@civfix/api/anon-hold-repo"
+import type { AnonHoldReleaseRepository } from "@civfix/api/anon-hold-release"
 import { R2Storage } from "@civfix/api/adapters/storage"
 import { LOCAL_STORAGE_DEV_SIGNING_KEY, LocalDiskStorage } from "@civfix/api/adapters/storage-local"
 import { captureError, initErrorReporting, flushErrorReporting } from "@civfix/api/errors"
@@ -21,8 +24,8 @@ export interface WorkerSeams {
   limits: WorkerLimits
   download: DownloadFn
   dbHandle: DbHandle | undefined
-  repo: MediaWorkerRepo | undefined
-  anonHoldRepo: AnonHoldReleaseRepo | undefined
+  repo: MediaWorkerRepository | undefined
+  anonHoldRepo: AnonHoldReleaseRepository | undefined
   findPhashDuplicate: FindPhashDuplicateFn | undefined
   report: (err: unknown, context?: Record<string, unknown>) => void
   close(): Promise<void>
@@ -146,8 +149,8 @@ function makeDbSeams(
     const dbHandle = makeDb(databaseUrl)
     return {
       dbHandle,
-      repo: makeDrizzleMediaWorkerRepo(dbHandle.db, dbHandle.sql),
-      anonHoldRepo: makeDrizzleAnonHoldReleaseRepo(dbHandle.sql),
+      repo: makeDrizzleMediaWorkerRepository(dbHandle.db, dbHandle.sql),
+      anonHoldRepo: makeDrizzleAnonHoldReleaseRepository(dbHandle.sql),
     }
   }
   if (source.NODE_ENV === "production") {

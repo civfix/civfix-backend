@@ -172,7 +172,7 @@ through the exported `explainFeedCandidates` and requires
 ### `media_assets_orphan_sweep_idx` (migration 0098, audit H13)
 
 Back the hourly orphan sweep's candidate scan (`findOrphans` /`deleteOrphan` in
-`services/api/src/services/media-worker-repo.ts`), which looks for media rows
+`services/api/src/services/media-worker-repository.drizzle.ts`), which looks for media rows
 with no binding older than the orphan TTL. Without it every run sequentially
 scans `media_assets`.
 

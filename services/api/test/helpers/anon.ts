@@ -29,7 +29,7 @@ import type {
   CreateAnonReportTxResult,
 } from "../../src/services/anon-service.js"
 import type {
-  AnonHoldReleaseRepo,
+  AnonHoldReleaseRepository,
   HeldReportView,
   ReleaseMediaView,
 } from "../../src/services/anon-hold-release.js"
@@ -295,7 +295,7 @@ export class InMemoryAnonStore {
     }
   }
 
-  holdReleaseRepo(): AnonHoldReleaseRepo {
+  holdReleaseRepo(): AnonHoldReleaseRepository {
     // Arrow-function properties so `this` is the store instance (no this-aliasing).
     return {
       findReport: (reportId: string): Promise<HeldReportView | null> => {

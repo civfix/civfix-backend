@@ -9,7 +9,7 @@ import {
 import { runPartitionMaintenance } from "../../src/jobs/partition-maintenance.js"
 import { runStuckSweep } from "../../src/jobs/stuck-sweep.js"
 import { MEDIA_CHECKS_JOB, MEDIA_UPLOAD_REAP_JOB } from "@civfix/api/queue-names"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 import { uploadReapDelaySec } from "../../src/jobs/upload-reap.js"
 
 const limits = loadLimits({})
@@ -17,7 +17,7 @@ const limits = loadLimits({})
 describe("orphan.sweep", () => {
   it("deletes only never-attached rows older than the TTL, removing their objects", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
     const fresh = new Date(now.getTime() - 60_000)
@@ -67,7 +67,7 @@ describe("orphan.sweep", () => {
 
   it("never reaps a BOUND row: chat/DM, post, avatar and verification lanes all survive", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
 
@@ -108,7 +108,7 @@ describe("orphan.sweep", () => {
 
   it("M10: DRAINS the backlog across pages instead of reaping one bounded batch per run", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
 
@@ -141,7 +141,7 @@ describe("orphan.sweep", () => {
 
   it("M10: stops at orphanSweepMaxPages so one run cannot monopolize the worker", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
 
@@ -172,7 +172,7 @@ describe("orphan.sweep", () => {
 
   it("never throws: a per-row delete failure is counted, not propagated", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     repo.seed({
       id: "boom",
@@ -200,7 +200,7 @@ describe("orphan.sweep", () => {
 
   it("tombstones objects whose delete failed, then reclaims them on the next run", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const realDelete = storage.delete.bind(storage)
     let r2Down = true
@@ -233,7 +233,7 @@ describe("orphan.sweep", () => {
   })
 
   it("counts a key repeated inside ONE call as a single attempt (mirrors the real upsert)", async () => {
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
 
     await repo.recordLeakedObjects({
       mediaId: "dup-1",
@@ -248,7 +248,7 @@ describe("orphan.sweep", () => {
 
   it("stops retrying a tombstone at the attempt cap and reports it as permanent", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     storage.delete = () => Promise.reject(new Error("R2 unavailable"))
     await repo.recordLeakedObjects({ mediaId: "gone-1", keys: ["uploads/stuck"], error: "first" })
@@ -276,7 +276,7 @@ describe("orphan.sweep: legacy served-key adoption stops once drained", () => {
   it("adopts pre-0097 rows, then never scans again in this process", async () => {
     resetLegacyServedKeyAdoption()
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
     const old = new Date(now.getTime() - limits.orphanTtlMs - 60_000)
 
@@ -297,7 +297,7 @@ describe("orphan.sweep: legacy served-key adoption stops once drained", () => {
         scans += 1
         return repo.adoptLegacyServedKeys(olderThan, limit)
       },
-    }) as InMemoryWorkerRepo
+    }) as InMemoryMediaWorkerRepository
 
     await runOrphanSweep({ repo: counting, storage, limits, now: () => now, log: () => {} })
     expect(scans).toBe(1)
@@ -313,7 +313,7 @@ describe("orphan.sweep: legacy served-key adoption stops once drained", () => {
   it("keeps scanning while a row still needs adoption", async () => {
     resetLegacyServedKeyAdoption()
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const now = new Date("2026-06-01T12:00:00Z")
 
     const pending = repo.seed({
@@ -420,8 +420,8 @@ describe("media.stuck.sweep", () => {
     return { jobs, enqueued }
   }
 
-  function makeRepo(): InMemoryWorkerRepo {
-    const repo = new InMemoryWorkerRepo()
+  function makeRepo(): InMemoryMediaWorkerRepository {
+    const repo = new InMemoryMediaWorkerRepository()
     repo.now = () => now
     return repo
   }
@@ -429,7 +429,7 @@ describe("media.stuck.sweep", () => {
   let storage: FakeStorage
 
   function run(
-    repo: InMemoryWorkerRepo,
+    repo: InMemoryMediaWorkerRepository,
     jobs: { enqueue: (n: string, d: unknown, o?: unknown) => Promise<string> },
     overrides: Partial<typeof limits> = {},
     report?: (e: unknown) => void,

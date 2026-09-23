@@ -3,7 +3,7 @@ import type {
   LegacyServedKeyAdoption,
   MediaResultPatch,
   MediaWorkerAsset,
-  MediaWorkerRepo,
+  MediaWorkerRepository,
   NewAbuseFlag,
   OrphanRow,
   StuckMediaRow,
@@ -33,7 +33,7 @@ export interface RecordedModerationEnqueue {
   note?: string | null
 }
 
-export class InMemoryWorkerRepo implements MediaWorkerRepo {
+export class InMemoryMediaWorkerRepository implements MediaWorkerRepository {
   readonly byId = new Map<string, StoredWorkerMedia>()
   readonly flags: RecordedFlag[] = []
   readonly moderationEnqueues: RecordedModerationEnqueue[] = []

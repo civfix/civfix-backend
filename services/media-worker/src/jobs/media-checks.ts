@@ -1,6 +1,10 @@
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 import type { AbuseChecks, Storage, StorageHead } from "@civfix/shared/interfaces"
-import type { MediaResultPatch, MediaWorkerAsset, MediaWorkerRepo } from "@civfix/api/media-repo"
+import type {
+  MediaResultPatch,
+  MediaWorkerAsset,
+  MediaWorkerRepository,
+} from "@civfix/api/media-repo"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import { settleWithin } from "@civfix/api/timeout"
 import type { WorkerLimits } from "../config.js"
@@ -50,7 +54,7 @@ function withJobTimeout<T>(p: Promise<T>, ms: number, onTimeout?: () => void): P
 }
 
 export interface MediaChecksDeps extends JobObsDeps {
-  repo: MediaWorkerRepo
+  repo: MediaWorkerRepository
   storage: Storage
   abuseChecks: AbuseChecks
   limits: WorkerLimits

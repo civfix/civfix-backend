@@ -9,21 +9,21 @@ import type { WorkerSeams } from "../../src/seams.js"
 import { runHoldReleaseSweep } from "../../src/jobs/hold-release-sweep.js"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/queue-names"
 import type {
-  AnonHoldReleaseRepo,
+  AnonHoldReleaseRepository,
   HeldReportView,
   ReleaseMediaView,
 } from "@civfix/api/anon-hold-release"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 import * as fx from "../fixtures/make.js"
 
-class MemHoldRepo implements AnonHoldReleaseRepo {
+class MemHoldRepo implements AnonHoldReleaseRepository {
   report: HeldReportView
   openFlags = 0
   published = false
 
   constructor(
     report: HeldReportView,
-    private readonly mediaRepo: InMemoryWorkerRepo,
+    private readonly mediaRepo: InMemoryMediaWorkerRepository,
   ) {
     this.report = report
   }
@@ -55,8 +55,8 @@ class MemHoldRepo implements AnonHoldReleaseRepo {
 }
 
 function makeSeams(opts: {
-  repo: InMemoryWorkerRepo
-  anonHoldRepo: AnonHoldReleaseRepo
+  repo: InMemoryMediaWorkerRepository
+  anonHoldRepo: AnonHoldReleaseRepository
   abuse: FakeAbuseChecks
   storage: FakeStorage
 }): WorkerSeams {
@@ -94,7 +94,7 @@ function heldReport(id: string): HeldReportView {
 
 async function seedMedia(
   storage: FakeStorage,
-  repo: InMemoryWorkerRepo,
+  repo: InMemoryMediaWorkerRepository,
   reportId: string,
   bytes: Buffer,
 ): Promise<{ mediaId: string; uploadId: string; r2Key: string }> {
@@ -109,7 +109,7 @@ async function seedMedia(
 describe("media-worker hold-release wiring", () => {
   it("publishes a held anon report once its media goes ready and is clean", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const abuse = new FakeAbuseChecks()
     const reportId = "anon-report-ready"
     const holdRepo = new MemHoldRepo(heldReport(reportId), repo)
@@ -133,7 +133,7 @@ describe("media-worker hold-release wiring", () => {
 
   it("keeps the report held when the media is NSFW (held), even though the hook fires", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const abuse = new FakeAbuseChecks()
     const reportId = "anon-report-nsfw"
     const holdRepo = new MemHoldRepo(heldReport(reportId), repo)
@@ -157,7 +157,7 @@ describe("media-worker hold-release wiring", () => {
 
 describe("hold-release self-healing sweep (P2-8)", () => {
   it("publishes a held anon report whose media are ready even if NO inline enqueue ever fired", async () => {
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const reportId = "anon-report-stuck"
     repo.seed({ id: "m1", uploadId: "u1", kind: "image", r2Key: "k1", reportId, status: "ready" })
     const holdRepo = new MemHoldRepo(heldReport(reportId), repo)
@@ -187,7 +187,7 @@ describe("hold-release self-healing sweep (P2-8)", () => {
   })
 
   it("leaves a held report held when its media are NOT yet ready (re-checked next run)", async () => {
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const reportId = "anon-report-pending"
     repo.seed({
       id: "m1",

@@ -31,7 +31,7 @@ import {
   makeDrizzleAnonReportRepository,
   makeDrizzleClaimRepository,
 } from "../../src/services/anon-repository.drizzle.js"
-import { makeDrizzleAnonHoldReleaseRepo } from "../../src/services/anon-hold-release-repo.drizzle.js"
+import { makeDrizzleAnonHoldReleaseRepository } from "../../src/services/anon-hold-release-repository.drizzle.js"
 import { releaseAnonHoldIfReady } from "../../src/services/anon-hold-release.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
 import { makeReportService, type ReportService } from "../../src/services/report-service.js"
@@ -204,7 +204,7 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     const { response } = await anon.submitAnonReport(req(), { ip: "203.0.113.6", cfGeo: {} })
     await attachMedia(response.reportId, "ready")
 
-    const holdRepo = makeDrizzleAnonHoldReleaseRepo(h.sql)
+    const holdRepo = makeDrizzleAnonHoldReleaseRepository(h.sql)
     const result = await releaseAnonHoldIfReady(response.reportId, {
       repo: holdRepo,
       abuseChecks: new FakeAbuseChecks(),
@@ -249,7 +249,7 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     const { response } = await anon.submitAnonReport(req(), { ip: "203.0.113.7", cfGeo: {} })
     await attachMedia(response.reportId, "rejected")
     const result = await releaseAnonHoldIfReady(response.reportId, {
-      repo: makeDrizzleAnonHoldReleaseRepo(h.sql),
+      repo: makeDrizzleAnonHoldReleaseRepository(h.sql),
       abuseChecks: new FakeAbuseChecks(),
     })
     expect(result.outcome).toBe("media_blocked")

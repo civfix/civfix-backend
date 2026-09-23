@@ -1,6 +1,6 @@
 /**
  * Postgres implementations of the anonymous-reporting seams: AnonReportRepository (held create, status,
- * the anon_tokens store), AnonHoldReleaseRepo (the worker's release gate) and ClaimRepository
+ * the anon_tokens store), AnonHoldReleaseRepository (the worker's release gate) and ClaimRepository
  * (claim-by-code linking and the nudge lookup).
  *
  * Raw postgres-js rather than the Drizzle query builder, because every report row carries PostGIS geometry

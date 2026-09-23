@@ -1,5 +1,5 @@
 import type { Storage } from "@civfix/shared/interfaces"
-import type { MediaWorkerRepo } from "@civfix/api/media-repo"
+import type { MediaWorkerRepository } from "@civfix/api/media-repo"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/queue-names"
 import type { JobLogFn, JobReportFn } from "./obs.js"
 import { servedKey, thumbnailKey } from "./media-keys.js"
@@ -12,7 +12,7 @@ export interface RejectedAsset {
 }
 
 export interface RejectCleanupDeps {
-  repo: Pick<MediaWorkerRepo, "r2KeyReferencedByOthers" | "recordLeakedObjects">
+  repo: Pick<MediaWorkerRepository, "r2KeyReferencedByOthers" | "recordLeakedObjects">
   storage: Pick<Storage, "delete">
 }
 

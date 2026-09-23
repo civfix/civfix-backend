@@ -5,7 +5,7 @@ import {
   mediaBoundElsewhere,
   mediaBoundToCleanup,
 } from "../../src/services/media-bindings.js"
-import { orphanPredicate } from "../../src/services/media-worker-repo.js"
+import { orphanPredicate } from "../../src/services/media-worker-repository.drizzle.js"
 
 const sql = postgres("postgres://user:pass@127.0.0.1:1/unused", { max: 1 })
 

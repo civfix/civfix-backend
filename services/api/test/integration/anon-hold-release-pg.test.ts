@@ -14,8 +14,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import { makeDrizzleAnonHoldReleaseRepo } from "../../src/services/anon-hold-release-repo.drizzle.js"
-import type { AnonHoldReleaseRepo } from "../../src/services/anon-hold-release.js"
+import { makeDrizzleAnonHoldReleaseRepository } from "../../src/services/anon-hold-release-repository.drizzle.js"
+import type { AnonHoldReleaseRepository } from "../../src/services/anon-hold-release.js"
 
 const pg = await withPg()
 
@@ -23,11 +23,11 @@ const PUBLISHED_AT = new Date("2026-08-01T00:00:00.000Z")
 
 describe.skipIf(!pg)("F132: releasing a held anon report closes its moderation item", () => {
   let h: PgHarness
-  let repo: AnonHoldReleaseRepo
+  let repo: AnonHoldReleaseRepository
 
   beforeAll(() => {
     h = pg as PgHarness
-    repo = makeDrizzleAnonHoldReleaseRepo(h.sql)
+    repo = makeDrizzleAnonHoldReleaseRepository(h.sql)
   })
 
   beforeEach(async () => {

@@ -1,5 +1,5 @@
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
-import type { MediaChecksJob, MediaWorkerRepo, StuckMediaRow } from "@civfix/api/media-repo"
+import type { MediaChecksJob, MediaWorkerRepository, StuckMediaRow } from "@civfix/api/media-repo"
 import {
   MEDIA_CHECKS_JOB,
   MEDIA_STUCK_SWEEP_JOB,
@@ -11,7 +11,7 @@ import { deleteRejectedObjects } from "./reject-cleanup.js"
 import { uploadReapDelaySec } from "./upload-reap.js"
 
 export interface StuckSweepDeps extends JobObsDeps {
-  repo: MediaWorkerRepo
+  repo: MediaWorkerRepository
   jobs: Pick<Jobs, "enqueue">
   storage: Storage
   limits: WorkerLimits

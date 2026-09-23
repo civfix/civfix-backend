@@ -1,7 +1,7 @@
 /**
  * Storage keys whose physical delete failed after the orphan sweep had already deleted their
  * media_assets row. The sweep deletes the row before the objects on purpose (a TOCTOU fix, see
- * MediaWorkerRepo.findOrphans), so without a tombstone a failed delete would strand the object with
+ * MediaWorkerRepository.findOrphans), so without a tombstone a failed delete would strand the object with
  * nothing left to rediscover it. `attempts` caps the retries, and a row at the cap is deliberately kept
  * as the operator-visible record of a permanent leak.
  */

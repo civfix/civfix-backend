@@ -4,7 +4,7 @@ import { FakeJobs, FakeStorage } from "@civfix/shared/fakes"
 import type { Db, Sql } from "../../src/db/client.js"
 import { makeMediaIntakeService } from "../../src/services/media-intake-service.js"
 import { makeDrizzleMediaRepository } from "../../src/services/media-repository.drizzle.js"
-import { makeDrizzleMediaWorkerRepo } from "../../src/services/media-worker-repo.js"
+import { makeDrizzleMediaWorkerRepository } from "../../src/services/media-worker-repository.drizzle.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 
 const SHA = "b".repeat(64)
@@ -94,7 +94,7 @@ describe("the stuck sweep reads the stored upload etag", () => {
         ? [[MEDIA_ID]]
         : [[MEDIA_ID, UPLOAD_ID, "uploads/2026/09/x", null, null, "image", 2, NORMALIZED_ETAG]],
     )
-    const repo = makeDrizzleMediaWorkerRepo(db, {} as Sql)
+    const repo = makeDrizzleMediaWorkerRepository(db, {} as Sql)
 
     const rows = await repo.findStuckValidating(new Date(), 10)
 

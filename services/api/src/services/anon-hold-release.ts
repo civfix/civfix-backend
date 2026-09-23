@@ -18,7 +18,7 @@ export interface ReleaseMediaView {
   exifGeo?: LatLng | null
 }
 
-export interface AnonHoldReleaseRepo {
+export interface AnonHoldReleaseRepository {
   findReport(reportId: string): Promise<HeldReportView | null>
   findMedia(reportId: string): Promise<ReleaseMediaView[]>
   countOpenAbuseFlags(reportId: string, mediaIds: string[]): Promise<number>
@@ -27,7 +27,7 @@ export interface AnonHoldReleaseRepo {
 }
 
 export interface AnonHoldReleaseDeps {
-  repo: AnonHoldReleaseRepo
+  repo: AnonHoldReleaseRepository
   abuseChecks: AbuseChecks
   now?: () => Date
   log?: (line: string, extra?: Record<string, unknown>) => void

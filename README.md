@@ -125,7 +125,7 @@ postgres-js client, the R2 adapter, or the GlitchTip reporter. It depends on `@c
 `services/api/package.json`:
 
 - `@civfix/api/db` - the schema barrel + `makeDb` + `Db`/`Sql` types.
-- `@civfix/api/media-repo` - the richer media-worker persistence seam (`MediaWorkerRepo`:
+- `@civfix/api/media-repo` - the richer media-worker persistence seam (`MediaWorkerRepository`:
   find / applyResult / insertAbuseFlag / findOrphans / deleteById), its Drizzle impl, and
   `ensureNextMonthChatPartition` (so partition bounds/naming have one source shared with the
   migrations).

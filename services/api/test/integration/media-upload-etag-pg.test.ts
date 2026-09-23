@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleMediaRepository } from "../../src/services/media-repository.drizzle.js"
-import { makeDrizzleMediaWorkerRepo } from "../../src/services/media-worker-repo.js"
+import { makeDrizzleMediaWorkerRepository } from "../../src/services/media-worker-repository.drizzle.js"
 
 const pg = await withPg()
 
@@ -83,7 +83,7 @@ describe.skipIf(!pg)("media_assets.upload_etag (integration)", () => {
       WHERE id IN (${withEtag.id}, ${legacy.id})
     `
 
-    const worker = makeDrizzleMediaWorkerRepo(h.db, h.sql)
+    const worker = makeDrizzleMediaWorkerRepository(h.db, h.sql)
     const picked = await worker.findStuckValidating(new Date(Date.now() - HOUR_MS), 100)
     const byId = new Map(picked.map((row) => [row.id, row]))
 

@@ -21,12 +21,15 @@
  */
 
 import type { AbuseChecks } from "@civfix/shared/interfaces"
-import { releaseAnonHoldIfReady, type AnonHoldReleaseRepo } from "@civfix/api/anon-hold-release"
+import {
+  releaseAnonHoldIfReady,
+  type AnonHoldReleaseRepository,
+} from "@civfix/api/anon-hold-release"
 import { ANON_HOLD_RELEASE_SWEEP_JOB } from "@civfix/api/queue-names"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 
 export interface HoldReleaseSweepDeps extends JobObsDeps {
-  repo: AnonHoldReleaseRepo
+  repo: AnonHoldReleaseRepository
   abuseChecks: AbuseChecks
   batchSize: number
 }

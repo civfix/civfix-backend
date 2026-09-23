@@ -47,7 +47,8 @@ const { makeScratch, ScratchSetupError } = await import("../../src/sandbox/tmp.j
 const { mediaToolPath, resetMediaToolPaths } = await import("../../src/sandbox/binaries.js")
 const { processMedia } = await import("../../src/jobs/media-pipeline.js")
 const { runMediaChecksJob, MediaInfraError } = await import("../../src/jobs/media-checks.js")
-const { InMemoryWorkerRepo } = await import("../helpers/in-memory-repo.js")
+const { InMemoryMediaWorkerRepository } =
+  await import("../helpers/in-memory-media-worker-repository.js")
 const { makeDownloader } = await import("../../src/download.js")
 const fx = await import("../fixtures/make.js")
 
@@ -176,7 +177,7 @@ describe("scratch setup failures are infrastructure, not a verdict on the bytes"
   it("media.checks retries a scratch failure and keeps the asset validating with its upload intact", async () => {
     lane.impl = () => Promise.reject(scratchInfraError())
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const r2Key = "uploads/2026/09/scratch"
     repo.seed({ id: "m1", uploadId: "u1", kind: "image", r2Key })
     await storage.put(r2Key, Buffer.from(await fx.makeValidPng()), { contentType: "image/png" })

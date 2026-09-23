@@ -81,7 +81,7 @@ export interface LegacyServedKeyAdoption {
   remaining: number
 }
 
-export interface MediaWorkerRepo {
+export interface MediaWorkerRepository {
   findById(id: string): Promise<MediaWorkerAsset | null>
   findByUploadId(uploadId: string): Promise<MediaWorkerAsset | null>
   applyResult(id: string, patch: MediaResultPatch): Promise<MediaWorkerAsset | null>
@@ -127,7 +127,7 @@ function toAsset(row: typeof mediaAssets.$inferSelect): MediaWorkerAsset {
   }
 }
 
-export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
+export function makeDrizzleMediaWorkerRepository(db: Db, tag: Sql): MediaWorkerRepository {
   return {
     async findById(id: string): Promise<MediaWorkerAsset | null> {
       const rows = await db.select().from(mediaAssets).where(eq(mediaAssets.id, id)).limit(1)

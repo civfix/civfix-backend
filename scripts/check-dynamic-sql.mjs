@@ -9,7 +9,7 @@ const ALLOW_DYNAMIC_SQL = new Set([
   "services/api/src/db/migrate.ts:unsafe",
   "services/api/src/db/backfill-keyset.ts:unsafe",
   "services/api/src/db/sql/jurisdiction.ts:unsafe",
-  "services/api/src/services/media-worker-repo.ts:unsafe",
+  "services/api/src/services/media-worker-repository.drizzle.ts:unsafe",
 ])
 
 const NOT_SQL = new Set(["services/media-worker/src/sandbox/phash.ts:raw"])
