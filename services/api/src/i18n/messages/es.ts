@@ -81,7 +81,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   "email.generic.subject": "Una notificación de civfix",
   "email.generic.body": "Tienes una nueva notificación de civfix.",
   "certificate.doc.title": "Registro de servicio voluntario",
-  "certificate.doc.pdf_title": "horas de servicio civfix — {{name}} — {{code}}",
+  "certificate.doc.pdf_title": "Horas de servicio en civfix: {{name}}, {{code}}",
   "certificate.header.number": "Certificado n.º",
   "certificate.holder.eyebrow": "Emitido a",
   "certificate.holder.period": "Periodo de servicio",

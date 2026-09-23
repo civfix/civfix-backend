@@ -406,7 +406,7 @@ export async function registerCleanupRoutes(
       const payload: GetEventIcsResponse = {
         ics: buildIcs({
           uid: `cleanup-${event.id}@civfix.org`,
-          title: mine !== undefined ? `${event.title} — ${mine.title}` : event.title,
+          title: mine !== undefined ? `${event.title} (${mine.title})` : event.title,
           startsAt: mine !== undefined ? mine.startsAt : event.scheduledAt,
           ...(event.description !== undefined && event.description !== null
             ? { description: event.description }

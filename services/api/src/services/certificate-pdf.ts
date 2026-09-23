@@ -10,6 +10,7 @@ import {
   CERTIFICATE_TIME_ZONE,
   certificateTranslator,
   communitiesLabel,
+  EMPTY_VALUE,
   type CertificateTranslator,
   type TranscriptModel,
 } from "./certificate-model.js"
@@ -221,7 +222,7 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
     const period =
       model.periodStart && model.periodEnd
         ? `${formatDate(new Date(model.periodStart), locale)} – ${formatDate(new Date(model.periodEnd), locale)}`
-        : "—"
+        : EMPTY_VALUE
     labelledValue(rx, top + 14, rw, t("certificate.holder.period"), period)
     labelledValue(rx, top + 48, rw, t("certificate.holder.issued"), issuedLabel)
   }

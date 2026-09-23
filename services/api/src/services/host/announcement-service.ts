@@ -61,7 +61,7 @@ export interface AnnouncementService {
 
 export function announcementRateLimited(): AppError {
   return AppError.rateLimited(
-    "Announcement limit reached for today — use the group chat for ongoing discussion.",
+    "Announcement limit reached for today. Use the group chat for ongoing discussion.",
   )
 }
 

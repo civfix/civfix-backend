@@ -101,7 +101,7 @@ export const en = {
   // certificate.footer.timezone states.
   "certificate.doc.title": "Record of Volunteer Service",
   // PDF /Title in the Info dictionary. {{code}} = the CFX-XXXX-XXXX-XXXX display code.
-  "certificate.doc.pdf_title": "civfix service hours — {{name}} — {{code}}",
+  "certificate.doc.pdf_title": "civfix service hours: {{name}}, {{code}}",
   "certificate.header.number": "Certificate No.",
   "certificate.holder.eyebrow": "Issued to",
   "certificate.holder.period": "Period of service",

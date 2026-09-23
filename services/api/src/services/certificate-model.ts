@@ -101,7 +101,8 @@ export interface BuildTranscriptModelInput {
   t?: CertificateTranslator
 }
 
-const EMPTY_CELL = "—"
+// An en dash, not a hyphen: it reads as "no value" in print and matches the period range glyph.
+export const EMPTY_VALUE = "–"
 
 function toIso(value: Date | string): string {
   return typeof value === "string" ? new Date(value).toISOString() : value.toISOString()
@@ -125,7 +126,7 @@ function activityLabel(row: TranscriptLedgerRow, t: CertificateTranslator): stri
     case "manual":
       return t("certificate.activity.manual")
     case "event":
-      return row.eventTitle?.trim() || row.eventReferenceCode?.trim() || EMPTY_CELL
+      return row.eventTitle?.trim() || row.eventReferenceCode?.trim() || EMPTY_VALUE
   }
 }
 
@@ -150,7 +151,7 @@ export function buildTranscriptModel(input: BuildTranscriptModelInput): Transcri
 
   const rows: TranscriptModelRow[] = included.map((row) => {
     const occurredAt = toIso(row.occurredAt)
-    const community = row.jurisdictionName?.trim() || EMPTY_CELL
+    const community = row.jurisdictionName?.trim() || EMPTY_VALUE
     return {
       id: row.id,
       source: row.source,
@@ -165,7 +166,7 @@ export function buildTranscriptModel(input: BuildTranscriptModelInput): Transcri
 
   const jurisdictions: string[] = []
   for (const row of rows) {
-    if (row.community !== EMPTY_CELL && !jurisdictions.includes(row.community)) {
+    if (row.community !== EMPTY_VALUE && !jurisdictions.includes(row.community)) {
       jurisdictions.push(row.community)
     }
   }

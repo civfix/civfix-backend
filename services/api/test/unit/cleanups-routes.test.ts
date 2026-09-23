@@ -1344,7 +1344,7 @@ describe("GET /cleanups/:id/ics", () => {
       const ics = (res.json() as { ics: string }).ics
       expect(ics).toContain(`DTSTART:${stamp(slotStart)}`)
       expect(ics).toContain(`DTEND:${stamp(slotEnd)}`)
-      expect(ics).toContain("SUMMARY:Sweep — Morning sweep")
+      expect(ics).toContain("SUMMARY:Sweep (Morning sweep)")
     })
 
     it("gives anyone WITHOUT that claim the event's own window and plain title", async () => {

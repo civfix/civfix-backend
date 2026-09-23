@@ -206,7 +206,7 @@ export function suggestionToNote(s: DiscoveryContactSuggestionRecord): Discovery
   const head = `Suggested contact: ${contact || "(none provided)"}`
   return {
     who: "Reporter",
-    text: s.note && s.note.trim() !== "" ? `${head} — ${s.note.trim()}` : head,
+    text: s.note && s.note.trim() !== "" ? `${head} (note: ${s.note.trim()})` : head,
     createdAt: s.createdAt,
   }
 }

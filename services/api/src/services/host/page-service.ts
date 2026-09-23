@@ -231,7 +231,7 @@ export function validatePageBlocks(
       if (mediaUrlPrefixes.some((prefix) => media.url.startsWith(prefix))) continue
       throw AppError.validation({
         [`blocks.${index}.${media.field}`]:
-          "must reference platform media — upload the image and send its mediaId",
+          "must reference platform media: upload the image and send its mediaId",
       })
     }
   }

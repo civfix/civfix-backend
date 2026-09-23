@@ -192,11 +192,11 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
   function consentWriteOf(consent: EventConsentInput | undefined): ConsentWrite | null {
     if (consent === undefined) return null
     if (consent.termsVersion !== currentVersion("terms")) {
-      throw AppError.validation({ "consent.termsVersion": "out of date — re-accept the terms" })
+      throw AppError.validation({ "consent.termsVersion": "out of date, so re-accept the terms" })
     }
     if (consent.disclosureVersion !== currentVersion("privacy")) {
       throw AppError.validation({
-        "consent.disclosureVersion": "out of date — re-accept the privacy notice",
+        "consent.disclosureVersion": "out of date, so re-accept the privacy notice",
       })
     }
     return {

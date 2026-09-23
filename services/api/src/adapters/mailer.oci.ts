@@ -91,7 +91,7 @@ function classifyMailError(err: unknown, from: string): MailSendError {
         : new MailSendError(
             ErrorCode.CONFLICT,
             `Email not sent: the sending address is not an approved sender. In OCI Email Delivery, ` +
-              `add an Approved Sender for the whole domain (@${domainOf(from)}) once DKIM is active — this covers ` +
+              `add an Approved Sender for the whole domain (@${domainOf(from)}) once DKIM is active. That covers ` +
               `every per-thread reply address.${detail}`,
             smtp,
             { cause: err },
@@ -100,7 +100,7 @@ function classifyMailError(err: unknown, from: string): MailSendError {
       return new MailSendError(
         ErrorCode.CONFLICT,
         `Email not sent: the message (with its attachments) is too large for the mail provider. ` +
-          `Send fewer or smaller photos — the rest remain available as links.${detail}`,
+          `Send fewer or smaller photos. The rest remain available as links.${detail}`,
         smtp,
         { cause: err },
       )

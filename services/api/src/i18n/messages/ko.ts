@@ -81,7 +81,7 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "email.generic.subject": "civfix 알림",
   "email.generic.body": "새로운 civfix 알림이 있어요.",
   "certificate.doc.title": "자원봉사 활동 증명서",
-  "certificate.doc.pdf_title": "civfix 봉사 시간 — {{name}} — {{code}}",
+  "certificate.doc.pdf_title": "civfix 봉사 시간: {{name}}, {{code}}",
   "certificate.header.number": "증명서 번호",
   "certificate.holder.eyebrow": "발급 대상",
   "certificate.holder.period": "봉사 기간",

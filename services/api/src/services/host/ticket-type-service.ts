@@ -48,7 +48,7 @@ function capacityExceededError(eventCapacity: number, used: number): AppError {
   return AppError.validation({
     capacity:
       `the ticket types on this event may hold at most ${eventCapacity} seats in total ` +
-      `(${used} already allocated) — raise the event capacity first`,
+      `(${used} already allocated), so raise the event capacity first`,
   })
 }
 
@@ -216,7 +216,7 @@ export function makeTicketTypeService(deps: TicketTypeServiceDeps): TicketTypeSe
           throw nameTakenError()
         case "capacity_below_reserved":
           throw AppError.validation({
-            capacity: `already holding ${outcome.reservedSeats} seats — cancel registrations before lowering it`,
+            capacity: `already holding ${outcome.reservedSeats} seats, so cancel registrations before lowering it`,
           })
         case "capacity_exceeded":
           throw capacityExceededError(outcome.eventCapacity, outcome.used)

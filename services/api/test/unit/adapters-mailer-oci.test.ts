@@ -126,7 +126,7 @@ describe("OciMailer error classification", () => {
     await mailer.sendOutbound(outbound()).catch((err: AppError) => {
       expect(err.message).toBe(
         "Email not sent: the sending address is not an approved sender. In OCI Email Delivery, " +
-          "add an Approved Sender for the whole domain (@civfix.org) once DKIM is active — this covers " +
+          "add an Approved Sender for the whole domain (@civfix.org) once DKIM is active. That covers " +
           "every per-thread reply address. (550 5.7.1 relay access denied)",
       )
     })

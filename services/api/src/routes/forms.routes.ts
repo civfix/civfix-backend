@@ -233,7 +233,7 @@ export function buildConfirmationEmail(
   const { text, html } = renderEmailBody({
     preheader: subject,
     blocks: [
-      paragraph("Thanks — we received your Home Turf sign-up."),
+      paragraph("Thanks! We received your Home Turf sign-up."),
       paragraph(
         "The civfix event coordination team will call you soon to find a date that works for your season.",
       ),

@@ -1641,7 +1641,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     ): Promise<RemoveMemberResponse> {
       const { record, standing } = await requireCapabilityOn(id, actorId, "manage_event")
       if (targetUserId === actorId) {
-        throw AppError.conflict("You can't remove yourself — leave the event instead.")
+        throw AppError.conflict("You can't remove yourself. Leave the event instead.")
       }
       if (targetUserId === record.organizerUserId) {
         throw AppError.forbidden("The organizer can't be removed from their own event.")
@@ -1832,5 +1832,5 @@ function guestVisibleChange(
 function resourceRequestNote(message: string): string {
   const collapsed = message.replace(/\s+/g, " ").trim()
   const preview = collapsed.length > 140 ? `${collapsed.slice(0, 140)}…` : collapsed
-  return preview.length > 0 ? `Resources requested — ${preview}` : "Resources requested"
+  return preview.length > 0 ? `Resources requested: ${preview}` : "Resources requested"
 }

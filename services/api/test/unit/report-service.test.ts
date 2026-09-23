@@ -671,11 +671,11 @@ describe("getReport: visibility / held hiding", () => {
       createdAt: new Date(Date.now() - 1000),
     })
     const fullBody =
-      "We've scheduled a crew and will follow up after the visit — thanks for the report."
+      "We've scheduled a crew and will follow up after the visit \u2014 thanks for the report."
     repo.timeline.push({
       reportId: r.id,
       status: "published",
-      note: "Jurisdiction replied — We've scheduled a crew…",
+      note: "Jurisdiction replied: We've scheduled a crew…",
       kind: "reply",
       body: fullBody,
       createdAt: new Date(),

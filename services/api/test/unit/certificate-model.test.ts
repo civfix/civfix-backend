@@ -6,6 +6,7 @@ import {
   buildTranscriptModel,
   certificateTranslator,
   communitiesLabel,
+  EMPTY_VALUE,
   ledgerFingerprint,
   type CertificateTranslator,
   type TranscriptLedgerRow,
@@ -133,7 +134,7 @@ describe("buildTranscriptModel", () => {
     expect(model.rows[0]?.creditedBy).toBe("certificate.credited_by.automatic")
   })
 
-  it("prints an em dash rather than inventing a name for a titleless event row", () => {
+  it("prints the empty placeholder rather than inventing a name for a titleless event row", () => {
     const model = buildTranscriptModel({
       holder: HOLDER,
       locale: "en",
@@ -149,10 +150,10 @@ describe("buildTranscriptModel", () => {
       ],
     })
     expect(model.rows[0]?.activity).toBe("E-2026-0007")
-    expect(model.rows[1]?.activity).toBe("—")
+    expect(model.rows[1]?.activity).toBe(EMPTY_VALUE)
   })
 
-  it("prints an em dash for a row with no community and lists distinct communities", () => {
+  it("prints the empty placeholder for a row with no community and lists distinct communities", () => {
     const model = buildTranscriptModel({
       holder: HOLDER,
       locale: "en",
@@ -165,8 +166,8 @@ describe("buildTranscriptModel", () => {
         row({ id: "e", jurisdictionName: "Los Angeles", occurredAt: "2026-01-05T00:00:00.000Z" }),
       ],
     })
-    expect(model.rows[0]?.community).toBe("—")
-    expect(model.rows[1]?.community).toBe("—")
+    expect(model.rows[0]?.community).toBe(EMPTY_VALUE)
+    expect(model.rows[1]?.community).toBe(EMPTY_VALUE)
     expect(model.jurisdictions).toEqual(["Santa Monica", "Los Angeles"])
   })
 

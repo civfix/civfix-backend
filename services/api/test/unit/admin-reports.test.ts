@@ -745,7 +745,7 @@ describe("admin reports mutations", () => {
     const thread = mailRepo.seedThread({
       reportId: "rep-1",
       jurisdictionGeoid: "0644000",
-      subject: "Hazard report — Los Angeles",
+      subject: "[civfix: DU-42-000123] Hazard report",
       status: "sent",
     })
     mailRepo.seedMessage({ threadId: thread.id, direction: "out", toAddr: "311@lacity.gov" })
@@ -775,7 +775,7 @@ describe("admin reports mutations", () => {
     expect(mailRepo.messagesOf(thread.id).at(-1)).toMatchObject({
       direction: "out",
       toAddr: "311@lacity.gov",
-      subject: "Re: Hazard report — Los Angeles",
+      subject: "Re: [civfix: DU-42-000123] Hazard report",
     })
     expect([...mailRepo.threads.values()]).toHaveLength(1)
     expect(mailer.sent.at(-1)?.to).toBe("311@lacity.gov")

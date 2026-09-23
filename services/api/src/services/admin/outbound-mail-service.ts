@@ -135,8 +135,8 @@ export class OutboundSendDeadlineError extends AppError {
   constructor(deadlineMs: number) {
     super(
       ErrorCode.CONFLICT,
-      "The send to this jurisdiction is still in progress. Check back shortly — the outcome will " +
-        "appear on the outreach trail once the mail server answers.",
+      "The send to this jurisdiction is still in progress. Its outcome will appear on the outreach " +
+        "trail once the mail server answers, so check back shortly.",
     )
     this.deadlineMs = deadlineMs
   }

@@ -24,7 +24,7 @@ const ISSUED_AT = new Date("2026-07-27T18:22:04.000Z")
 const t: CertificateTranslator = (key, vars) => {
   switch (key) {
     case "certificate.doc.pdf_title":
-      return `civfix service hours — ${String(vars?.name)} — ${String(vars?.code)}`
+      return `civfix service hours: ${String(vars?.name)}, ${String(vars?.code)}`
     case "certificate.doc.title":
       return "Record of Volunteer Service"
     case "certificate.attestation.body":
@@ -147,7 +147,7 @@ describe("buildServiceHoursPdf", () => {
     // /Keywords
     expect(buf.includes(pdfString(DISPLAY_CODE))).toBe(true)
     // /Title
-    expect(buf.includes(pdfString(`civfix service hours — Jane Doe — ${DISPLAY_CODE}`))).toBe(true)
+    expect(buf.includes(pdfString(`civfix service hours: Jane Doe, ${DISPLAY_CODE}`))).toBe(true)
   })
 
   it("writes a non-ASCII Title as UTF-16BE behind a BOM", async () => {
@@ -163,7 +163,7 @@ describe("buildServiceHoursPdf", () => {
     })
     const bytes = await buildServiceHoursPdf({ model, code: CODE, issuedAt: ISSUED_AT, t })
     const buf = Buffer.from(bytes)
-    expect(buf.includes(pdfString(`civfix service hours — 홍길동 — ${DISPLAY_CODE}`))).toBe(true)
+    expect(buf.includes(pdfString(`civfix service hours: 홍길동, ${DISPLAY_CODE}`))).toBe(true)
   })
 
   it("renders a Hangul transcript without throwing (the lazy CJK registration path)", async () => {

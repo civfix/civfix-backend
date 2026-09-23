@@ -121,7 +121,7 @@ describe("cityReplyChatBody: HTML-only replies go through htmlToText, not mailpa
     const out = await publishedFromHtml(
       `<div>Pickup&nbsp;scheduled&#8212;Tuesday.</div><hr><div id="divRplyFwdMsg"><b>From:</b> civfix Reports &lt;${ADDR}&gt;<br><b>Sent:</b> Tuesday<br></div><div>A resident reported a Trash issue.</div>`,
     )
-    expect(out).toBe("Pickup scheduled—Tuesday.")
+    expect(out).toBe("Pickup scheduled\u2014Tuesday.")
   })
 
   it("Apple Mail: keeps inline links and drops an unattributed trailing blockquote", async () => {
