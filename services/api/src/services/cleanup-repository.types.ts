@@ -236,7 +236,7 @@ export type JoinCleanupOutcome = "joined" | "not_found" | "banned" | "closed" | 
 export type LeaveCleanupOutcome = "left" | "not_found" | "closed"
 
 export type RemoveMemberOutcome =
-  | { kind: "removed"; going: number }
+  | { kind: "removed"; going: number; releasedWaitlistTicketTypeIds: string[] }
   | { kind: "not_member"; going: number }
   | { kind: "closed" }
   | { kind: "not_found" }

@@ -29,6 +29,7 @@ function makeRepo(opts?: { frozenClock?: boolean }): InMemoryVolunteerHoursRepos
 const doneEvent = (title: string): CleanupHoursView => ({
   organizerUserId: HOST,
   status: "done",
+  visibility: "public",
   jurisdictionGeoid: GEOID_A,
   title,
   scheduledAt: new Date("2026-07-04T08:00:00.000Z"),

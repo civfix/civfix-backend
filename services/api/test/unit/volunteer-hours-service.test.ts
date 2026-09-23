@@ -125,6 +125,7 @@ function eventOfLength(hours: number): CleanupHoursView {
   return {
     organizerUserId: HOST,
     status: "done",
+    visibility: "public",
     jurisdictionGeoid: GEOID_A,
     title: "Ocean Beach sweep",
     scheduledAt: SCHEDULED_AT,
@@ -175,6 +176,7 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
   const doneEvent: CleanupHoursView = {
     organizerUserId: HOST,
     status: "done",
+    visibility: "public",
     jurisdictionGeoid: GEOID_A,
     title: "Ocean Beach sweep",
     scheduledAt: SCHEDULED_AT,
@@ -405,6 +407,7 @@ describe("volunteer hours: logEventHours (service gating + crediting)", () => {
       view: {
         organizerUserId: HOST,
         status: "upcoming",
+        visibility: "public",
         jurisdictionGeoid: GEOID_A,
         title: "Ocean Beach sweep",
         scheduledAt: FUTURE_SCHEDULED_AT,
@@ -825,6 +828,7 @@ describe("volunteer hours: hours_logged notifications", () => {
   const doneEvent: CleanupHoursView = {
     organizerUserId: HOST,
     status: "done",
+    visibility: "public",
     jurisdictionGeoid: GEOID_A,
     title: "Ocean Beach sweep",
     scheduledAt: SCHEDULED_AT,

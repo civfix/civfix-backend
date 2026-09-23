@@ -6,6 +6,7 @@ import {
   MAX_GUEST_NAME,
   type CleanupGuestDTO,
   type CleanupStatus,
+  type EventVisibility,
   type GetCleanupGuestsRequest,
   type GetCleanupGuestsResponse,
   type GuestContactChannel,
@@ -47,6 +48,7 @@ import { mapWithLimit } from "./media-presign.js"
 import { renderMessage } from "../i18n/renderMessage.js"
 import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
 import { eventEndedError, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
+import { isEventPubliclyVisible } from "./host/authz.js"
 import { enqueueWaitlistPromotion } from "./host/waitlist-promotion.js"
 import { formatEventWhen } from "./host/broadcast-render.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
@@ -145,6 +147,7 @@ export interface GuestEventView {
   id: string
   title: string
   status: CleanupStatus
+  visibility: EventVisibility
   scheduledAt: Date
   endsAt: Date | null
   address: string | null
@@ -485,7 +488,11 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
 
   async function loadOpenEvent(cleanupId: string): Promise<GuestEventView> {
     const event = await deps.repo.findEvent(cleanupId)
-    if (event === null) throw AppError.notFound("Event not found")
+    // A guest never has standing on a private event, so it must be indistinguishable from an
+    // unknown id, and that check runs first so its cancelled or ended state does not leak either.
+    if (event === null || !isEventPubliclyVisible(event.visibility)) {
+      throw AppError.notFound("Event not found")
+    }
     if (event.status === "cancelled") throw eventClosedError()
     if (hasEventEnded(eventWindowOf(event), now())) throw eventEndedError()
     return event

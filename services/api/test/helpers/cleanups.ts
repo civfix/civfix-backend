@@ -1131,7 +1131,11 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       this.deleteClaim(cleanupId, userId)
     }
     const going = this.goingOf(cleanupId)
-    return Promise.resolve(idx >= 0 ? { kind: "removed", going } : { kind: "not_member", going })
+    return Promise.resolve(
+      idx >= 0
+        ? { kind: "removed", going, releasedWaitlistTicketTypeIds: [] }
+        : { kind: "not_member", going },
+    )
   }
 
   isBanned(cleanupId: string, userId: string): Promise<boolean> {

@@ -79,6 +79,7 @@ import { assertSlugAllowed } from "./host/slugs.js"
 import type { TicketTokenSigner } from "./host/ticket-token.js"
 import { NULL_HOST_AUDIT_SINK, type HostAuditSink } from "./host/host-audit.js"
 import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
+import { enqueueWaitlistPromotion } from "./host/waitlist-promotion.js"
 import {
   DEFAULT_EVENT_DURATION_MS,
   EVENT_NEEDS_A_SLOT_MESSAGE,
@@ -1641,6 +1642,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         throw AppError.notFound("That person isn't attending this event.")
       }
 
+      await enqueueWaitlistPromotion(deps.jobs, outcome.releasedWaitlistTicketTypeIds, deps.logger)
       await deps.insightsInvalidator?.bumpInsightsGeneration(id)
 
       await audit.record({
@@ -1743,15 +1745,17 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         `cleanup:res-req:host:${input.actorId}`,
         RESOURCE_REQUEST_HOST_WINDOW_SEC,
       )
-      const jurisdictionSends = await counters.incr(
-        `cleanup:res-req:jur:${record.jurisdictionGeoid ?? "unknown"}`,
-        RESOURCE_REQUEST_JURISDICTION_WINDOW_SEC,
-      )
+      // The shared jurisdiction budget is charged only after the host's own cap passes, so one
+      // host hammering past its limit cannot exhaust the area for every other host.
       if (hostSends > RESOURCE_REQUEST_PER_HOST_PER_DAY) {
         throw AppError.rateLimited(
           "You've sent the maximum number of resource requests for today. Please try again tomorrow.",
         )
       }
+      const jurisdictionSends = await counters.incr(
+        `cleanup:res-req:jur:${record.jurisdictionGeoid ?? "unknown"}`,
+        RESOURCE_REQUEST_JURISDICTION_WINDOW_SEC,
+      )
       if (jurisdictionSends > RESOURCE_REQUEST_PER_JURISDICTION_PER_HOUR) {
         throw AppError.rateLimited(
           "This area has received too many resource requests in the past hour. Please try again later.",

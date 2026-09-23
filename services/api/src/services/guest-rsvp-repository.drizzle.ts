@@ -1,4 +1,4 @@
-import type { CleanupStatus, GuestContactChannel } from "@civfix/shared"
+import type { CleanupStatus, EventVisibility, GuestContactChannel } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
 import { encodeTimeCursor, pageWith, type TimeCursor } from "../db/cursor-helpers.js"
 import type {
@@ -43,6 +43,7 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
           id: string
           title: string
           status: CleanupStatus
+          visibility: EventVisibility
           scheduled_at: Date
           ends_at: Date | null
           address: string | null
@@ -55,6 +56,7 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
           c.id,
           c.title,
           c.status,
+          c.visibility,
           c.scheduled_at,
           c.ends_at,
           c.address,
@@ -71,6 +73,7 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
         id: row.id,
         title: row.title,
         status: row.status,
+        visibility: row.visibility,
         scheduledAt: row.scheduled_at,
         endsAt: row.ends_at,
         address: row.address,
