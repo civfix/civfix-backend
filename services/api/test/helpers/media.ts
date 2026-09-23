@@ -31,6 +31,7 @@ export class InMemoryMediaRepository implements MediaRepository {
       postId: null,
       finalizedAt: null,
       createdAt: new Date(),
+      uploader: row.uploader,
     }
     this.byId.set(row.id, stored)
     this.uploadIndex.set(row.uploadId, row.id)

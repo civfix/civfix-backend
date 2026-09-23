@@ -22,6 +22,7 @@ function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
     postId: row.postId,
     finalizedAt: row.finalizedAt,
     createdAt: row.createdAt,
+    uploader: row.uploader,
   }
 }
 

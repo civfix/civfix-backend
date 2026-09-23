@@ -15,7 +15,8 @@ import type { MEDIA_PURPOSE_VALUES } from "../db/schema/types-host.js"
 type MediaPurpose = (typeof MEDIA_PURPOSE_VALUES)[number]
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
 import { readEtag } from "./media-etag.js"
-import { uploaderOf } from "./media-uploader.js"
+import { uploaderOf, uploadersOf } from "./media-uploader.js"
+import { MEDIA_CLAIM_WINDOW_SEC } from "./host/event-media.js"
 import { makeMediaPresigner, makePrivateMediaPresigner } from "./media-presign.js"
 import {
   makeUnboundOnlyMediaViewAuthorizer,
@@ -76,6 +77,7 @@ export interface MediaAssetView {
   postId?: string | null
   createdAt?: Date | null
   finalizedAt?: Date | null
+  uploader?: string | null
 }
 
 export interface NewMediaAsset {
@@ -164,6 +166,17 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
   const presignPrivate = makePrivateMediaPresigner(deps.storage)
   const authorizer = deps.authorizer ?? makeUnboundOnlyMediaViewAuthorizer(now)
 
+  // The uploadId is readable from every served URL, so only the session that created the upload may
+  // finalize it and set the worker on its bytes. A NULL uploader predates attribution and passes only
+  // inside the claim window, after which the orphan sweep has already reclaimed it.
+  function finalizableBy(asset: MediaAssetView, owner: MediaOwner): boolean {
+    if (asset.uploader == null) {
+      const createdAt = asset.createdAt?.getTime()
+      return createdAt !== undefined && now().getTime() - createdAt < MEDIA_CLAIM_WINDOW_SEC * 1000
+    }
+    return uploadersOf(owner).includes(asset.uploader)
+  }
+
   return {
     async createUpload(
       input: CreateMediaUploadRequest,
@@ -212,12 +225,10 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
       }
     },
 
-    async finalize(
-      input: FinalizeMediaRequest,
-      _owner: MediaOwner,
-    ): Promise<FinalizeMediaResponse> {
+    async finalize(input: FinalizeMediaRequest, owner: MediaOwner): Promise<FinalizeMediaResponse> {
       const asset = await deps.repo.findByUploadId(input.uploadId)
-      if (!asset) {
+      // A foreign upload answers exactly like a missing one, so the uploadId never confirms it exists.
+      if (!asset || !finalizableBy(asset, owner)) {
         throw AppError.notFound("Unknown upload")
       }
 

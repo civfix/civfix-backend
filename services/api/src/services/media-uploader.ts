@@ -18,3 +18,15 @@ export function uploaderOf(owner: {
   if (owner.anonSessionId) return anonUploader(owner.anonSessionId)
   return UNSESSIONED_UPLOADER
 }
+
+// Every subject this caller's request proves, where uploaderOf picks the one a new upload is stored under:
+// a guest who signs in between presign and finalize still owns the upload its anon cookie created.
+export function uploadersOf(owner: {
+  userId?: string | undefined
+  anonSessionId?: string | undefined
+}): string[] {
+  const subjects: string[] = []
+  if (owner.userId) subjects.push(userUploader(owner.userId))
+  if (owner.anonSessionId) subjects.push(anonUploader(owner.anonSessionId))
+  return subjects.length > 0 ? subjects : [UNSESSIONED_UPLOADER]
+}
