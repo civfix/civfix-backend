@@ -160,7 +160,13 @@ describe("buildReportPacket", () => {
   })
 
   it("uses the real links, not the (none) placeholder, as soon as the report has media", () => {
-    const packet = buildReportPacket(reportRecord(), null, photos("https://r2/a?t=1"), null, NO_TEMPLATES)
+    const packet = buildReportPacket(
+      reportRecord(),
+      null,
+      photos("https://r2/a?t=1"),
+      null,
+      NO_TEMPLATES,
+    )
     expect(packet.text).not.toContain(NO_PHOTO_LINKS)
   })
 
@@ -362,17 +368,12 @@ describe("buildReportPacket", () => {
       null,
       NO_TEMPLATES,
     )
-<<<<<<< HEAD
     expect(packet.html).toContain(
       "Location: 100 Main St<br>Coordinates: 39.5, -98.35<br>View the exact location",
     )
     expect(packet.html).toContain(
-      'a.jpg</a><br><a class="cv-link" href="https://cdn.example.org/b.jpg"',
+      'a.jpg</a><br>- Photo 2: <a class="cv-link" href="https://cdn.example.org/b.jpg"',
     )
-=======
-    expect(packet.html).toContain("Location: 100 Main St<br>Coordinates: 39.5, -98.35<br>View the exact location")
-    expect(packet.html).toContain('a.jpg</a><br>- Photo 2: <a class="cv-link" href="https://cdn.example.org/b.jpg"')
->>>>>>> origin/main
     expect(packet.text).toContain("Location: 100 Main St\nCoordinates: 39.5, -98.35\n")
   })
 
@@ -401,20 +402,32 @@ describe("{photoLinks} and the appended media list", () => {
     expect(packet.text).toContain(
       "Links (3):\n- Photo 1: https://cdn.test/a.jpg\n- Video 1: https://cdn.test/v.mp4\n- Photo 2: https://cdn.test/b.jpg?X-Amz-Signature=s&x=1\n\nEnd.",
     )
-    expect(packet.html).toContain('Links (3):<br>- Photo 1: <a class="cv-link" href="https://cdn.test/a.jpg"')
-    expect(packet.html).toContain('>https://cdn.test/a.jpg</a><br>- Video 1: <a class="cv-link" href="https://cdn.test/v.mp4"')
-    expect(packet.html).toContain('>https://cdn.test/v.mp4</a><br>- Photo 2: <a class="cv-link" href="https://cdn.test/b.jpg?X-Amz-Signature=s&amp;x=1"')
+    expect(packet.html).toContain(
+      'Links (3):<br>- Photo 1: <a class="cv-link" href="https://cdn.test/a.jpg"',
+    )
+    expect(packet.html).toContain(
+      '>https://cdn.test/a.jpg</a><br>- Video 1: <a class="cv-link" href="https://cdn.test/v.mp4"',
+    )
+    expect(packet.html).toContain(
+      '>https://cdn.test/v.mp4</a><br>- Photo 2: <a class="cv-link" href="https://cdn.test/b.jpg?X-Amz-Signature=s&amp;x=1"',
+    )
     expect(packet.html).not.toContain("<ul")
   })
 
   it("keeps (none) on its own line when the report has no media", () => {
-    const packet = buildReportPacket(reportRecord(), null, [], null, { subject: null, body: "Links:\n{photoLinks}" })
+    const packet = buildReportPacket(reportRecord(), null, [], null, {
+      subject: null,
+      body: "Links:\n{photoLinks}",
+    })
     expect(packet.text).toContain("Links:\n(none)")
     expect(packet.html).toContain("Links:<br>(none)")
   })
 
   it("labels the appended list per kind and names videos in its heading", () => {
-    const packet = buildReportPacket(reportRecord(), null, mixed, null, { subject: null, body: "Filed." })
+    const packet = buildReportPacket(reportRecord(), null, mixed, null, {
+      subject: null,
+      body: "Filed.",
+    })
     expect(packet.text).toContain(
       "Photos and videos (3):\n  Photo 1: https://cdn.test/a.jpg\n  Video 1: https://cdn.test/v.mp4\n  Photo 2: https://cdn.test/b.jpg",
     )
