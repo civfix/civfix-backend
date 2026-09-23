@@ -3,6 +3,7 @@ import { AppError, relativeAgo, avatarGradient } from "@civfix/shared"
 import type { ChatMessageDTO, MessageThreadDTO, PersonDTO } from "@civfix/shared"
 import type { BlocksRepository } from "./blocks-repository.drizzle.js"
 import type { DmRepository } from "./dm-repository.drizzle.js"
+import { officialPersonFlag } from "../auth/official-account.js"
 
 export const DM_FORBIDDEN_MESSAGE = "You can't message this account."
 
@@ -48,6 +49,7 @@ function peerOf(target: DmTargetUser): PersonDTO {
     followers: 0,
     following: 0,
     isFollowing: false,
+    ...officialPersonFlag(target.id),
   }
 }
 

@@ -28,6 +28,7 @@ import type {
   WaitlistRecord,
 } from "./registration-repository.types.js"
 import { eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
+import { officialPersonFlag } from "../../auth/official-account.js"
 
 export const REGISTRATION_ROSTER_DEFAULT_LIMIT = 25
 
@@ -56,6 +57,7 @@ export function toRegistrantPerson(identity: RegistrantIdentity): PersonDTO {
     followers: 0,
     following: 0,
     isFollowing: false,
+    ...officialPersonFlag(userId),
   }
 }
 

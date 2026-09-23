@@ -7,6 +7,7 @@ import {
   parseTimeCursor,
   type TimeCursor,
 } from "../db/cursor-helpers.js"
+import { officialPersonFlag } from "../auth/official-account.js"
 
 export interface ChatReadState {
   markRead(cleanupId: string, userId: string, at: Date): Promise<void>
@@ -152,7 +153,7 @@ function peerOf(p: DmThreadAggregateView["peer"]): PersonDTO {
     followers: 0,
     following: 0,
     isFollowing: false,
-    ...(p.deleted ? { deleted: true } : {}),
+    ...(p.deleted ? { deleted: true } : officialPersonFlag(p.id)),
   }
 }
 

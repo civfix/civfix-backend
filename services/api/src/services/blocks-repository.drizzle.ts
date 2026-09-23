@@ -3,6 +3,7 @@ import type { Sql } from "../db/client.js"
 import { avatarGradient } from "@civfix/shared"
 import type { PersonDTO } from "@civfix/shared"
 import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
+import { officialPersonFlag } from "../auth/official-account.js"
 
 export const LIST_BLOCKS_DEFAULT_LIMIT = 50
 
@@ -116,6 +117,7 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
           followers: 0,
           following: 0,
           isFollowing: false,
+          ...officialPersonFlag(r.id),
         })),
         nextCursor,
       }

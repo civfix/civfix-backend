@@ -19,6 +19,7 @@ import type {
   LinkedEventView,
   LinkedReportView,
 } from "./cleanup-repository.types.js"
+import { officialPersonFlag } from "../auth/official-account.js"
 
 export const CLEANUPS_DEFAULT_LIMIT = 20
 
@@ -44,6 +45,7 @@ export function toAttendeePersonDTO(view: CleanupPersonView, isFollowing: boolea
     ...(view.donationUrl !== undefined && view.donationUrl !== null
       ? { donationUrl: view.donationUrl }
       : {}),
+    ...officialPersonFlag(view.id),
   }
 }
 
