@@ -23,10 +23,10 @@ describe("csv cells", () => {
 
   it("prefixes formula-injection cells", () => {
     expect(csvCell('=HYPERLINK("https://evil.example")')).toContain("'=")
-    expect(csvCell("+1")).toBe("'+1")
-    expect(csvCell("-1")).toBe("'-1")
-    expect(csvCell("@x")).toBe("'@x")
-    expect(csvCell("\tx")).toBe("'\tx")
+    expect(csvCell("+1")).toBe(`"'+1"`)
+    expect(csvCell("-1")).toBe(`"'-1"`)
+    expect(csvCell("@x")).toBe(`"'@x"`)
+    expect(csvCell("\tx")).toBe(`"'\tx"`)
   })
 
   it("renders empty for null and undefined", () => {
@@ -35,8 +35,8 @@ describe("csv cells", () => {
   })
 
   it("writes rows and provenance lines", () => {
-    expect(csvRow(["a", "b"])).toBe("a,b\n")
-    expect(csvProvenanceRow("note")).toBe("# note\n")
+    expect(csvRow(["a", "b"])).toBe('"a","b"\n')
+    expect(csvProvenanceRow("note")).toBe('"# note"\n')
   })
 })
 
@@ -168,8 +168,8 @@ describe("host export build", () => {
     const text = put.body.toString("utf8")
     expect(text).toContain("# member email is never included")
     expect(text).toContain("# k=5 note")
-    expect(text).toContain("a,b\n")
-    expect(text).toContain("1,Alex\n")
+    expect(text).toContain('"a","b"\n')
+    expect(text).toContain('"1","Alex"\n')
     expect(h.current().rowCount).toBe(2)
     expect(h.current().truncated).toBe(false)
   })

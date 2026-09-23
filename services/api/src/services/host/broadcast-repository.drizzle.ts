@@ -7,6 +7,8 @@ import type {
   DeliveryStatus,
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
+import { writeAudit, type WriteAuditInput } from "../admin/audit.js"
+import { likeContains } from "../admin/like.js"
 import { listGuestAudiencePage, listMemberAudiencePage } from "./broadcast-audience-sql.js"
 import type {
   AdminBroadcastListQuery,
@@ -310,7 +312,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
             : sql`AND NOT COALESCE(m.host_messaging_suspended, false)`
       const search =
         params.q !== undefined && params.q.length > 0
-          ? sql`AND (u.display_name ILIKE ${`%${params.q}%`} OR u.handle ILIKE ${`%${params.q}%`})`
+          ? sql`AND (u.display_name ILIKE ${likeContains(params.q)} ESCAPE '\\' OR u.handle ILIKE ${likeContains(params.q)} ESCAPE '\\')`
           : sql``
       const cursorFilter =
         params.cursor !== null
@@ -873,14 +875,22 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       }
     },
 
-    async setHostMessagingSuspended(userId: string, suspended: boolean): Promise<boolean> {
-      const rows = await sql<{ user_id: string }[]>`
-        INSERT INTO user_moderation (user_id, host_messaging_suspended)
-        VALUES (${userId}, ${suspended})
-        ON CONFLICT (user_id) DO UPDATE
-          SET host_messaging_suspended = ${suspended}, updated_at = now()
-        RETURNING user_id`
-      return rows.length > 0
+    setHostMessagingSuspended(
+      userId: string,
+      suspended: boolean,
+      audit: WriteAuditInput,
+    ): Promise<boolean> {
+      return sql.begin(async (tx) => {
+        const rows = await tx<{ user_id: string }[]>`
+          INSERT INTO user_moderation (user_id, host_messaging_suspended)
+          SELECT u.id, ${suspended} FROM users u WHERE u.id = ${userId}
+          ON CONFLICT (user_id) DO UPDATE
+            SET host_messaging_suspended = ${suspended}, updated_at = now()
+          RETURNING user_id`
+        if (rows.length === 0) return false
+        await writeAudit(tx, audit)
+        return true
+      }) as Promise<boolean>
     },
 
     async isEmailSuppressed(emailHash: string): Promise<boolean> {

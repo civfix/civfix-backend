@@ -1,8 +1,10 @@
 import { AppError } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../../di.js"
+import type { Queryable } from "../../db/client.js"
 import { domainOf } from "../../adapters/mail-text.js"
-import { writeAudit } from "../admin/audit.js"
+import { apiBaseUrlOf, webBaseUrlOf } from "../../lib/base-url.js"
+import { writeAudit, type WriteAuditInput } from "../admin/audit.js"
 import { makeRouteNotificationService } from "../route-notifier.js"
 import { makeDrizzleAnalyticsRepository } from "./analytics-repository.drizzle.js"
 import { makeAnalyticsService, type AnalyticsService } from "./analytics-service.js"
@@ -54,16 +56,26 @@ export interface CommsRuntime {
   exports: HostExportService
 }
 
-export function webBaseUrlOf(webOrigins: readonly string[]): string {
-  const origin = webOrigins[0]
-  return origin !== undefined && origin.length > 0
-    ? origin.replace(/\/+$/, "")
-    : "https://civfix.org"
-}
+export { apiBaseUrlOf, webBaseUrlOf } from "../../lib/base-url.js"
 
-export function apiBaseUrlOf(publicApiUrl: string): string {
-  const trimmed = publicApiUrl.trim().replace(/\/+$/, "")
-  return trimmed.length > 0 ? trimmed : "https://api.civfix.org"
+/**
+ * The effect this row records has already happened (a send, an export enqueue), so a failed audit
+ * write must not turn it into an error the caller would retry. It is logged instead of dropped so the
+ * gap in the trail is visible.
+ */
+export async function auditBestEffort(
+  sql: Queryable,
+  entry: WriteAuditInput,
+  logger: Pick<CommsLogger, "warn"> | undefined,
+): Promise<void> {
+  try {
+    await writeAudit(sql, entry)
+  } catch (err) {
+    logger?.warn(
+      { err, action: entry.action, target: entry.target ?? null },
+      "audit write failed (suppressed)",
+    )
+  }
 }
 
 function selfHostsOf(webOrigins: readonly string[]): string[] {
@@ -93,8 +105,8 @@ export function broadcastConfigOf(container: Container): BroadcastConfig {
     linkAllowedHosts: env.BROADCAST_LINK_ALLOWED_HOSTS,
     mailFromEvents: env.MAIL_FROM_EVENTS,
     unsubscribeSigningKey: env.UNSUBSCRIBE_SIGNING_KEY,
-    webBaseUrl: webBaseUrlOf(container.env.WEB_ORIGINS),
-    apiBaseUrl: apiBaseUrlOf(container.env.PUBLIC_API_URL),
+    webBaseUrl: webBaseUrlOf(env),
+    apiBaseUrl: apiBaseUrlOf(env),
     eventUpdatePerEventPerHour: env.HOST_EVENT_UPDATE_PER_EVENT_PER_HOUR,
   }
 }
@@ -157,13 +169,8 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
         },
       )
     },
-    audit: async (action, actorId, target, meta) => {
-      try {
-        await writeAudit(sql, { action, actorId, target, meta })
-      } catch (err) {
-        logger?.warn({ err, action }, "broadcast audit write failed (suppressed)")
-      }
-    },
+    audit: (action, actorId, target, meta) =>
+      auditBestEffort(sql, { action, actorId, target, meta }, logger),
     ...(logger !== undefined ? { logger } : {}),
   })
 

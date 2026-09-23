@@ -5,6 +5,7 @@ import type {
   DeliveryStatus,
 } from "@civfix/shared"
 import type { NotificationPrefsRecord } from "../notification-service.js"
+import type { WriteAuditInput } from "../admin/audit.js"
 import type {
   AdminBroadcastRow,
   AdminHostListParams,
@@ -152,7 +153,12 @@ export interface BroadcastRepository {
 
   eventContext(cleanupId: string): Promise<EventBroadcastContext | null>
   hostMessagingState(userId: string): Promise<HostMessagingState | null>
-  setHostMessagingSuspended(userId: string, suspended: boolean): Promise<boolean>
+  /** Writes `audit` in the same transaction as the flag; false (and no audit row) for an unknown user. */
+  setHostMessagingSuspended(
+    userId: string,
+    suspended: boolean,
+    audit: WriteAuditInput,
+  ): Promise<boolean>
 
   isEmailSuppressed(emailHash: string): Promise<boolean>
   suppressedEmailHashes(emailHashes: readonly string[]): Promise<Set<string>>

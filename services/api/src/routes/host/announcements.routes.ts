@@ -13,9 +13,8 @@ import { perIdentity } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
 import { parse, trimTextFields } from "../_validate.js"
 import { requireCapability, resolveVisibleStanding } from "../../services/host/authz.js"
-import { writeAudit } from "../../services/admin/audit.js"
 import { BroadcastCapError, capError } from "../../services/host/broadcast-service.js"
-import { makeCommsRuntime } from "../../services/host/comms-wiring.js"
+import { auditBestEffort, makeCommsRuntime } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
 import type {
   AnnouncementProjection,
@@ -78,10 +77,16 @@ export async function registerHostAnnouncementRoutes(
         if (err instanceof BroadcastCapError) throw capError(err.kind)
         throw err
       }
-      await audit(container, "event.announcement_sent", userId, payload.id, {
-        cleanupId: body.id,
-        audience: body.audience.kind,
-      })
+      await auditBestEffort(
+        container.getDb().sql,
+        {
+          action: "event.announcement_sent",
+          actorId: userId,
+          target: `broadcast:${payload.id}`,
+          meta: { cleanupId: body.id, audience: body.audience.kind },
+        },
+        request.log,
+      )
       reply.status(200).send(payload)
     },
   )
@@ -119,23 +124,4 @@ export async function registerHostAnnouncementRoutes(
       reply.status(200).send(payload)
     },
   )
-}
-
-async function audit(
-  container: Container,
-  action: string,
-  actorId: string,
-  announcementId: string,
-  meta: Record<string, unknown>,
-): Promise<void> {
-  try {
-    await writeAudit(container.getDb().sql, {
-      action,
-      actorId,
-      target: `broadcast:${announcementId}`,
-      meta,
-    })
-  } catch {
-    return
-  }
 }

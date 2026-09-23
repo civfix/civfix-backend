@@ -13,7 +13,7 @@ import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"
 import { route } from "../../versioning/route.js"
 import { parse } from "../_validate.js"
-import { writeAudit } from "../../services/admin/audit.js"
+import { writeAudit, type WriteAuditInput } from "../../services/admin/audit.js"
 import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
 import {
   makeDrizzleAdminEventPageRepository,
@@ -26,8 +26,11 @@ import { makeEventMediaPresigner } from "../../services/host/event-media.js"
 
 export const ADMIN_EVENT_PAGE_DEFAULT_LIMIT = 50
 
+type RecordAudit = (entry: WriteAuditInput) => Promise<unknown>
+
 export interface AdminEventPageOverrides {
   repo: AdminEventPageRepository
+  audit?: RecordAudit
 }
 
 declare module "fastify" {
@@ -83,6 +86,22 @@ export async function registerAdminEventPageRoutes(
   const repo = (): AdminEventPageRepository =>
     app.adminEventPageOverrides?.repo ?? makeDrizzleAdminEventPageRepository(container.getDb().sql)
 
+  /**
+   * A moderation effect and its audit row commit together: a failed audit rolls the flag or unpublish
+   * back instead of leaving an operator action applied with no record of who took it.
+   */
+  function moderate<T>(
+    fn: (pages: AdminEventPageRepository, recordAudit: RecordAudit) => Promise<T>,
+  ): Promise<T> {
+    const overrides = app.adminEventPageOverrides
+    if (overrides) return fn(overrides.repo, overrides.audit ?? (() => Promise.resolve()))
+    return container
+      .getDb()
+      .sql.begin((tx) =>
+        fn(makeDrizzleAdminEventPageRepository(tx), (entry) => writeAudit(tx, entry)),
+      ) as Promise<T>
+  }
+
   route(app, "adminListEventPages", async (request, reply) => {
     requireAuth(request)
     const query = parse(AdminEventPageListQuerySchema, request.query)
@@ -123,32 +142,40 @@ export async function registerAdminEventPageRoutes(
   route(app, "adminFlagEventPage", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireAuth(request)
     const body = parse(FlagEventPageRequestSchema, mergeParams(request))
-    const row = await repo().setFlagged(body.id, {
-      flagged: body.flagged,
-      reason: body.reason ?? null,
-      operatorId,
+    const row = await moderate(async (pages, recordAudit) => {
+      const flagged = await pages.setFlagged(body.id, {
+        flagged: body.flagged,
+        reason: body.reason ?? null,
+        operatorId,
+      })
+      if (flagged === null) return null
+      await recordAudit({
+        action: body.flagged ? "event_page.flagged" : "event_page.unflagged",
+        actorId: operatorId,
+        target: `cleanup:${body.id}`,
+        meta: { reason: body.reason ?? null },
+      })
+      return flagged
     })
     if (row === null) throw AppError.notFound("Signup page not found.")
-    await writeAudit(container.getDb().sql, {
-      action: body.flagged ? "event_page.flagged" : "event_page.unflagged",
-      actorId: operatorId,
-      target: `cleanup:${body.id}`,
-      meta: { reason: body.reason ?? null },
-    })
     reply.status(200).send(toDTO(row))
   })
 
   route(app, "adminUnpublishEventPage", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireAuth(request)
     const body = parse(UnpublishEventPageRequestSchema, mergeParams(request))
-    const row = await repo().unpublish(body.id)
-    if (row === null) throw AppError.notFound("Signup page not found.")
-    await writeAudit(container.getDb().sql, {
-      action: "event_page.unpublished",
-      actorId: operatorId,
-      target: `cleanup:${body.id}`,
-      meta: { reason: body.reason },
+    const row = await moderate(async (pages, recordAudit) => {
+      const unpublished = await pages.unpublish(body.id)
+      if (unpublished === null) return null
+      await recordAudit({
+        action: "event_page.unpublished",
+        actorId: operatorId,
+        target: `cleanup:${body.id}`,
+        meta: { reason: body.reason },
+      })
+      return unpublished
     })
+    if (row === null) throw AppError.notFound("Signup page not found.")
     reply.status(200).send(toDTO(row))
   })
 }

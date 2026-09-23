@@ -1,4 +1,5 @@
 import {
+  AppError,
   AdminBroadcastListQuerySchema,
   AdminHostListQuerySchema,
   SetHostMessagingSuspendedRequestSchema,
@@ -12,7 +13,6 @@ import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"
 import { route } from "../../versioning/route.js"
 import { parse } from "../_validate.js"
-import { writeAudit } from "../../services/admin/audit.js"
 import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
 import { makeDrizzleBroadcastRepository } from "../../services/host/broadcast-repository.drizzle.js"
 import type { BroadcastRepository } from "../../services/host/broadcast-repository.js"
@@ -158,13 +158,13 @@ export async function registerAdminBroadcastRoutes(
     async (request, reply) => {
       const operatorId = requireAuth(request)
       const body = parse(SetHostMessagingSuspendedRequestSchema, mergeParams(request))
-      await broadcastRepo().setHostMessagingSuspended(body.id, body.suspended)
-      await writeAudit(container.getDb().sql, {
+      const found = await broadcastRepo().setHostMessagingSuspended(body.id, body.suspended, {
         action: body.suspended ? "host.messaging_suspended" : "host.messaging_restored",
         actorId: operatorId,
         target: `user:${body.id}`,
         meta: { reason: body.reason },
       })
+      if (!found) throw AppError.notFound("User not found.")
       const payload: SetHostMessagingSuspendedResponse = { ok: true, suspended: body.suspended }
       reply.status(200).send(payload)
     },

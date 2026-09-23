@@ -1,4 +1,6 @@
 import {
+  AppError,
+  ErrorCode,
   OpenUnsubscribeBroadcastsRequestSchema,
   UnsubscribeBroadcastsRequestSchema,
   type UnsubscribeBroadcastsResponse,
@@ -7,12 +9,15 @@ import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../../di.js"
 import { perHost } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
+import { exposeMessage } from "../../errors/exposed-message.js"
 import { makeCommsRuntime, webBaseUrlOf } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
 
 export const UNSUBSCRIBE_RATE_LIMIT = perHost({ max: 60, timeWindow: "1 minute" })
 
 const OK: UnsubscribeBroadcastsResponse = { ok: true }
+
+const UNSUBSCRIBE_UNAVAILABLE_COPY = "We couldn't save your unsubscribe. Please try again."
 
 function tokenFrom(request: FastifyRequest): string | null {
   const body = (request.body ?? {}) as Record<string, unknown>
@@ -35,7 +40,7 @@ export async function registerUnsubscribeRoutes(
   }
 
   function webBaseUrl(): string {
-    return webBaseUrlOf(container.env?.WEB_ORIGINS ?? [])
+    return webBaseUrlOf(container.env ?? {})
   }
 
   await app.register(async (unsubscribeScope) => {
@@ -69,7 +74,15 @@ export async function registerUnsubscribeRoutes(
         try {
           await runtime().broadcasts.unsubscribe(parsed.data.token)
         } catch (err) {
-          request.log.error({ err }, "unsubscribe: write failed (answering 200 regardless)")
+          // Only a verified token reaches the write, so a failure here reveals nothing about token
+          // validity. 5xx is the retry signal RFC 8058 senders and the web confirmation page act on;
+          // a 200 would drop the opt-out for good.
+          throw exposeMessage(
+            new AppError(ErrorCode.INTERNAL, UNSUBSCRIBE_UNAVAILABLE_COPY, {
+              httpStatus: 503,
+              cause: err,
+            }),
+          )
         }
         reply.status(200).send(OK)
       },
