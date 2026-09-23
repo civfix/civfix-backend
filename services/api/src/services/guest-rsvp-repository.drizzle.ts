@@ -187,8 +187,8 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
       return rows.length > 0
     },
 
-    async upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string }> {
-      const rows = await sql<{ id: string }[]>`
+    async upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string; created: boolean }> {
+      const rows = await sql<{ id: string; created: boolean }[]>`
         INSERT INTO cleanup_guests (
           cleanup_id, name, channel, email, phone, contact_key, manage_token_hash, verified_at
         ) VALUES (
@@ -204,11 +204,11 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
           manage_token_hash = EXCLUDED.manage_token_hash,
           verified_at = EXCLUDED.verified_at,
           contact_scrubbed_at = NULL
-        RETURNING id
+        RETURNING id, (xmax = 0) AS created
       `
       const row = rows[0]
       if (row === undefined) throw new Error("guest rsvp: upsert returned no row")
-      return { id: row.id }
+      return { id: row.id, created: row.created }
     },
 
     async findGuestByManageTokenHash(

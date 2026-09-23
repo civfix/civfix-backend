@@ -14,7 +14,9 @@ import {
   type TranscriptModel,
 } from "./certificate-model.js"
 
-export const CERTIFICATE_VERIFY_BASE_URL = "https://civfix.org/service-record"
+export const CERTIFICATE_VERIFY_PATH = "/service-record"
+
+export const CERTIFICATE_VERIFY_BASE_URL = `https://civfix.org${CERTIFICATE_VERIFY_PATH}`
 
 export interface ServiceHoursPdfInput {
   model: TranscriptModel
@@ -84,7 +86,9 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
   const locale = model.locale
   const displayCode = formatCertificateCode(input.code)
   const issuedAt = toDate(input.issuedAt)
-  const verifyUrl = `${input.verifyBaseUrl ?? CERTIFICATE_VERIFY_BASE_URL}/${displayCode}`
+  const verifyBaseUrl = input.verifyBaseUrl ?? CERTIFICATE_VERIFY_BASE_URL
+  const verifyUrl = `${verifyBaseUrl}/${displayCode}`
+  const verifyLabel = verifyBaseUrl.replace(/^https?:\/\//, "")
   const holderName = model.holder.displayName
   const issuedLabel = formatDate(issuedAt, locale)
 
@@ -437,7 +441,7 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
       align: "center",
       characterSpacing: 0.2,
     })
-    line(FONT.mono, 8, COLOR.ink3, String(issuedAt.getUTCFullYear()), sealX, cy + 8, {
+    line(FONT.mono, 8, COLOR.ink3, formatYear(issuedAt), sealX, cy + 8, {
       width: 68,
       align: "center",
     })
@@ -539,7 +543,7 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
         width: 200,
       },
     )
-    line(FONT.body, 7.5, COLOR.ink3, "civfix.org/service-record", 206, PAGE.footerText, {
+    line(FONT.body, 7.5, COLOR.ink3, verifyLabel, 206, PAGE.footerText, {
       width: 200,
       align: "center",
     })
@@ -568,6 +572,14 @@ export async function buildServiceHoursPdf(input: ServiceHoursPdfInput): Promise
 function formatDate(value: Date, locale: string): string {
   return new Intl.DateTimeFormat(locale, {
     dateStyle: "medium",
+    timeZone: CERTIFICATE_TIME_ZONE,
+  }).format(value)
+}
+
+// The seal year must agree with the Issued date printed beside it, which is in the certificate zone.
+function formatYear(value: Date): string {
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
     timeZone: CERTIFICATE_TIME_ZONE,
   }).format(value)
 }

@@ -82,6 +82,7 @@ export async function registerClaimRoutes(
           { singletonKey: reportId },
         )
       },
+      logger: app.log,
     })
   }
 

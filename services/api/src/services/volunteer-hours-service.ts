@@ -293,6 +293,12 @@ function clampOffset(offset: number | undefined): number {
   return Math.min(Math.max(0, Math.floor(offset)), LEADERBOARD_MAX_OFFSET)
 }
 
+// An offset past the ceiling clamps back onto the page just served, so a client following it would
+// loop on that page forever.
+function reachableNextOffset(next: number | null): number | null {
+  return next !== null && next <= LEADERBOARD_MAX_OFFSET ? next : null
+}
+
 function clampEntriesLimit(limit: number | undefined): number {
   if (limit === undefined) return HOURS_ENTRIES_DEFAULT_LIMIT
   return Math.min(Math.max(1, Math.floor(limit)), HOURS_ENTRIES_MAX_LIMIT)
@@ -670,7 +676,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         geoid,
         jurisdictionName: page.jurisdictionName,
         entries: page.entries,
-        nextOffset: page.nextOffset,
+        nextOffset: reachableNextOffset(page.nextOffset),
         ...(page.participantCount !== null ? { participantCount: page.participantCount } : {}),
         ...(viewerId !== null && withExtras
           ? { viewerRank: page.viewerRank, viewerHours: page.viewerHours }

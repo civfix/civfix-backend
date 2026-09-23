@@ -192,7 +192,8 @@ export interface GuestRsvpRepository {
   findLatestActiveOtp(cleanupId: string, contact: string, now: Date): Promise<GuestOtpRecord | null>
   incrementOtpAttempts(otpId: string): Promise<number>
   markOtpConsumed(otpId: string, now: Date): Promise<boolean>
-  upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string }>
+  /** `created` is true when this call inserted the row rather than re-verifying an active one. */
+  upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string; created?: boolean }>
   findGuestByManageTokenHash(
     hash: string,
   ): Promise<{ id: string; cleanupId: string; cancelledAt: Date | null } | null>
@@ -288,6 +289,54 @@ export function smsOptedOutError(): AppError {
 
 function eventClosedError(): AppError {
   return AppError.conflict("This event is closed.")
+}
+
+const RETRY_WITH_NEW_CODE = "Check your details, then request a new code to try again."
+
+type GuestSeat = Pick<
+  GuestRsvpVerifyResponse,
+  "registration" | "registrationOutcome" | "ticketTokens"
+> & { refusal: AppError | null }
+
+function registrationRefusalError(response: RegisterForEventResponse): AppError | null {
+  switch (response.outcome) {
+    case "registered":
+    case "replayed":
+    case "already_registered":
+      return null
+    case "full":
+    case "waitlisted":
+      return AppError.conflict("This event has no seats left.")
+    case "registration_closed":
+      return AppError.conflict("Registration for this event is closed.")
+    case "sales_closed":
+      return AppError.conflict("Ticket sales for this event are closed.")
+    case "closed":
+      return eventClosedError()
+    case "party_too_large":
+      return AppError.validation({ partySize: "more people than seats left" }, RETRY_WITH_NEW_CODE)
+    case "ticket_type_not_found":
+      return AppError.validation(
+        { ticketTypeId: "that ticket type is not available" },
+        RETRY_WITH_NEW_CODE,
+      )
+    case "access_code_required":
+      return AppError.validation(
+        { accessCode: "required for this ticket type" },
+        RETRY_WITH_NEW_CODE,
+      )
+    case "access_code_invalid":
+      return AppError.validation(
+        { accessCode: "that code is not valid for this ticket type" },
+        RETRY_WITH_NEW_CODE,
+      )
+    case "answers_invalid":
+      return AppError.validation(response.fields ?? { answers: "invalid" }, RETRY_WITH_NEW_CODE)
+    // A host ban reads exactly like an unknown event, as it does for every other guest refusal.
+    case "banned":
+    case "not_found":
+      return AppError.notFound("Event not found")
+  }
 }
 
 function invalidCodeError(): AppError {
@@ -558,7 +607,12 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         sent += 1
       } catch (err) {
         if (smsFailureKind(err) === "opted_out" && recipient.phone !== null) {
-          await deps.repo.recordPhoneOptOut(recipient.phone).catch(() => {})
+          await deps.repo.recordPhoneOptOut(recipient.phone).catch((recordErr: unknown) => {
+            deps.logger?.warn(
+              { err: recordErr, cleanupId, guestId: recipient.id },
+              "guest sms: failed to record SMS opt-out",
+            )
+          })
         }
         deps.logger?.warn({ err, cleanupId, guestId: recipient.id, kind }, "guest sms: send failed")
       }
@@ -570,12 +624,10 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     cleanupId: string,
     guestId: string,
     registration: GuestRegistrationFields,
-  ): Promise<
-    Pick<GuestRsvpVerifyResponse, "registration" | "registrationOutcome" | "ticketTokens">
-  > {
+  ): Promise<GuestSeat> {
     const bridge = deps.registrations
     if (bridge === undefined) {
-      return { registration: null, registrationOutcome: null, ticketTokens: [] }
+      return { registration: null, registrationOutcome: null, ticketTokens: [], refusal: null }
     }
     try {
       const response = await bridge.register(
@@ -597,6 +649,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         registration: response.registration,
         registrationOutcome: response.outcome,
         ticketTokens: response.ticketTokens,
+        refusal: registrationRefusalError(response),
       }
     } catch (err) {
       if (err instanceof AppError && err.code === ErrorCode.VALIDATION) throw err
@@ -604,7 +657,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         { err, cleanupId },
         "guest rsvp: registration failed (suppressed; the RSVP stands)",
       )
-      return { registration: null, registrationOutcome: null, ticketTokens: [] }
+      return { registration: null, registrationOutcome: null, ticketTokens: [], refusal: null }
     }
   }
 
@@ -628,7 +681,24 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       manageTokenHash,
       now: new Date(now()),
     })
-    const seat = await registerVerifiedGuest(args.event.id, guest.id, args.registration ?? {})
+    // Only a row this verify inserted is rolled back: a re-verifying guest already held the RSVP
+    // (possibly with a live registration that cancelGuest would also cancel).
+    const rollBack = async (): Promise<void> => {
+      if (guest.created !== true) return
+      const released = await deps.repo.cancelGuest(guest.id, new Date(now()))
+      await enqueueWaitlistPromotion(deps.jobs, released, deps.logger)
+    }
+    let seat: GuestSeat
+    try {
+      seat = await registerVerifiedGuest(args.event.id, guest.id, args.registration ?? {})
+    } catch (err) {
+      await rollBack()
+      throw err
+    }
+    if (seat.refusal !== null && guest.created === true) {
+      await rollBack()
+      throw seat.refusal
+    }
     const going = await deps.repo.goingCount(args.event.id)
     if (args.confirm) {
       await sendConfirmation({ ...args, rawToken }).catch((err: unknown) => {
@@ -891,7 +961,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       return joinAsGuest({
         event,
         name: record.name,
-        channel: input.channel,
+        channel: record.channel,
         contact,
         confirm: true,
         registration: registrationFieldsOf(input),

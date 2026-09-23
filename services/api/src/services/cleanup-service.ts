@@ -130,6 +130,12 @@ export type HostEventPatch = Pick<
   | "hostReplyTo"
 > & { scheduledAt?: string }
 
+// `joined` means an RSVP (a cleanup_members row, which the organizer always has). Org standing
+// grants host powers and visibility, not attendance: clients key Join/Leave off this flag.
+function isAttending(standing: HostStanding): boolean {
+  return standing.eventRole !== null
+}
+
 function toDateOrNull(value: string | null | undefined): Date | null {
   if (value === null || value === undefined) return null
   return new Date(value)
@@ -1053,7 +1059,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       eventMediaUrls(record, { gallery: true }),
     ])
     return enrichOne(
-      toCleanupDTO(record, standing.eventRole !== null, linkedReports, standing.eventRole, {
+      toCleanupDTO(record, isAttending(standing), linkedReports, standing.eventRole, {
         slots: slotBoard,
         myCapabilities: capabilityList(standing),
         ...media,
@@ -1272,8 +1278,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         ...(patch.eventKind !== undefined ? { eventKind: patch.eventKind } : {}),
         ...(patch.type !== undefined ? { type: patch.type } : {}),
         ...(patch.scheduledAt !== undefined ? { scheduledAt: new Date(patch.scheduledAt) } : {}),
-        ...(patch.lat !== undefined ? { lat: patch.lat } : {}),
-        ...(patch.lng !== undefined ? { lng: patch.lng } : {}),
+        ...(movedTo ?? {}),
         ...addressPatch,
         ...(patch.bring !== undefined ? { bring: patch.bring } : {}),
         ...(reresolvedGeoid !== undefined ? { jurisdictionGeoid: reresolvedGeoid } : {}),
@@ -1306,7 +1311,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         eventMediaUrls(record, { gallery: true }),
       ])
       return enrichOne(
-        toCleanupDTO(record, standing.eventRole !== null, linkedReports, requesterRole, {
+        toCleanupDTO(record, isAttending(standing), linkedReports, requesterRole, {
           slots: slotBoard,
           myCapabilities: capabilityList(standing),
           ...media,
@@ -1350,11 +1355,17 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         eventMediaUrls(record, { gallery: true }),
       ])
       return enrichOne(
-        toCleanupDTO(record, true, linkedReports, standing.eventRole ?? "organizer", {
-          slots: slotBoard,
-          myCapabilities: capabilityList(standing),
-          ...media,
-        }),
+        toCleanupDTO(
+          record,
+          isAttending(standing),
+          linkedReports,
+          standing.eventRole ?? "organizer",
+          {
+            slots: slotBoard,
+            myCapabilities: capabilityList(standing),
+            ...media,
+          },
+        ),
         requesterUserId,
       )
     },
@@ -1379,7 +1390,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         eventMediaUrls(record, { gallery: true }),
       ])
       return enrichOne(
-        toCleanupDTO(record, standing.eventRole !== null, linkedReports, requesterRole, {
+        toCleanupDTO(record, isAttending(standing), linkedReports, requesterRole, {
           slots: slotBoard,
           myCapabilities: capabilityList(standing),
           ...media,
@@ -1416,7 +1427,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         const standing = standingsById.get(record.id) ?? NO_HOST_STANDING
         return toCleanupDTO(
           record,
-          hasHostStanding(standing),
+          isAttending(standing),
           linkedByCleanup.get(record.id) ?? [],
           standing.eventRole,
           {
@@ -1460,7 +1471,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         const standing = standingsById.get(record.id) ?? NO_HOST_STANDING
         return toCleanupDTO(
           record,
-          hasHostStanding(standing),
+          isAttending(standing),
           linkedByCleanup.get(record.id) ?? [],
           standing.eventRole,
           {
@@ -1488,7 +1499,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         eventMediaUrls(record, { gallery: true }),
       ])
       return enrichOne(
-        toCleanupDTO(record, hasHostStanding(standing), linkedReports, standing.eventRole, {
+        toCleanupDTO(record, isAttending(standing), linkedReports, standing.eventRole, {
           slots: slotBoard,
           myCapabilities: capabilityList(standing),
           ...media,
@@ -1697,17 +1708,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         eventMediaUrls(updated, { gallery: true }),
       ])
       return enrichOne(
-        toCleanupDTO(
-          updated,
-          hasHostStanding(nextStanding),
-          linkedReports,
-          nextStanding.eventRole,
-          {
-            slots: slotBoard,
-            myCapabilities: capabilityList(nextStanding),
-            ...media,
-          },
-        ),
+        toCleanupDTO(updated, isAttending(nextStanding), linkedReports, nextStanding.eventRole, {
+          slots: slotBoard,
+          myCapabilities: capabilityList(nextStanding),
+          ...media,
+        }),
         userId,
       )
     },
@@ -1809,8 +1814,10 @@ function guestVisibleChange(
     if (!Number.isNaN(next) && next !== current.scheduledAt.getTime()) return true
   }
   if (patch.address !== undefined && (patch.address ?? null) !== current.address) return true
-  if (patch.lat !== undefined && patch.lat !== current.lat) return true
-  if (patch.lng !== undefined && patch.lng !== current.lng) return true
+  // The contract lets lat and lng arrive alone, but the location only moves when both do.
+  if (patch.lat !== undefined && patch.lng !== undefined) {
+    if (patch.lat !== current.lat || patch.lng !== current.lng) return true
+  }
   return false
 }
 
