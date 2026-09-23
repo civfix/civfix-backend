@@ -12,7 +12,7 @@ Four values, one meaning each. The console (`POST /v1/admin/users/:id/status`) a
 
 `banned` is enforced from **Postgres truth**, not only from the Redis marker: `resolveSessionByHash`
 treats a session row (or a cached projection) whose `account_status` is `banned` as dead, deletes it, and
-re-sets the ban marker from that read — so a marker lost to a Redis flush or a partially-failed ban
+re-sets the ban marker from that read, so a marker lost to a Redis flush or a partially-failed ban
 cannot resurrect a banned account.
 
 ## Transitions

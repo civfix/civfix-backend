@@ -1,4 +1,4 @@
-# Reviewer-OTP bypass (backend) — design
+# Reviewer-OTP bypass (backend): design
 
 Date: 2026-06-24
 Status: approved
@@ -50,11 +50,11 @@ no code redeploy. The offline/test wiring leaves the bypass off unless a test op
    - `OtpService` constructor accepts optional `reviewer?: { email: string; code: string }`
      (email stored normalized). When absent, behavior is unchanged.
    - `issueOtp`: if the bypass is configured and the normalized email equals the reviewer
-     email, return `{ resendAfterSec: OTP_EMAIL_WINDOW_SECONDS }` immediately — before any
+     email, return `{ resendAfterSec: OTP_EMAIL_WINDOW_SECONDS }` immediately, before any
      rate-limit, store, or mailer work.
    - `verifyOtp`: if configured and the normalized email equals the reviewer email, accept
      only the reviewer code (find-or-create the reviewer account, return userId) and reject
-     anything else with `AppError.unauthorized("Invalid or expired code.")` — before any
+     anything else with `AppError.unauthorized("Invalid or expired code.")`, before any
      throttle/store work.
    - Private `ensureReviewerUser()`: `findByEmail` → return existing id, else `create(...)`
      with the full reviewer profile.
@@ -82,7 +82,7 @@ no code redeploy. The offline/test wiring leaves the bypass off unless a test op
 - `000000` only ever works for exactly `reviewer@civfix.org` (normalized compare).
 - `reviewer@civfix.org` only ever accepts `000000`; no real code is ever mailed/stored for it.
 - Disabling is one env flip, no code redeploy.
-- The reviewer account is an ordinary citizen — monitor or soft-delete anytime.
+- The reviewer account is an ordinary citizen; monitor or soft-delete anytime.
 
 ## Tests (TDD, in-memory stores)
 
