@@ -32,7 +32,7 @@ import { liveMessageIds, toTombstoneDTO } from "./chat-tombstone.js"
 
 // dm_messages is range-partitioned on created_at and an ack carries only the message id, so the bound
 // lets the planner prune the lookup to recent partitions instead of probing every month ever created.
-export const DM_ACK_LOOKUP_WINDOW_DAYS = 90
+const DM_ACK_LOOKUP_WINDOW_DAYS = 90
 
 export interface DmThread {
   id: string
@@ -144,27 +144,30 @@ interface DmRowSelect {
   sender_deleted_at: Date | null
 }
 
-function toMessageDTO(
-  r: DmRowSelect,
-  reactions: ReactionSummaryDTO[],
-  mentions: UserMentionDTO[],
-  viewerUserId?: string | null,
-  clientId?: string,
-  attachments: MediaDTO[] = [],
-  replyTo?: ReplyToDTO | null,
-): ChatMessageDTO {
-  const dto = buildMessageDTO(r, reactions, mentions, viewerUserId, clientId, attachments, replyTo)
+interface MessageExtras {
+  reactions?: ReactionSummaryDTO[]
+  mentions?: UserMentionDTO[]
+  viewerUserId?: string | null
+  clientId?: string
+  attachments?: MediaDTO[]
+  replyTo?: ReplyToDTO | null
+}
+
+function toMessageDTO(r: DmRowSelect, extras: MessageExtras = {}): ChatMessageDTO {
+  const dto = buildMessageDTO(r, extras)
   return r.deleted_at !== null ? toTombstoneDTO(dto, r.deleted_at) : dto
 }
 
 function buildMessageDTO(
   r: DmRowSelect,
-  reactions: ReactionSummaryDTO[],
-  mentions: UserMentionDTO[],
-  viewerUserId?: string | null,
-  clientId?: string,
-  attachments: MediaDTO[] = [],
-  replyTo?: ReplyToDTO | null,
+  {
+    reactions = [],
+    mentions = [],
+    viewerUserId,
+    clientId,
+    attachments = [],
+    replyTo,
+  }: MessageExtras,
 ): ChatMessageDTO {
   const author = publicAuthorIdentity({
     id: r.sender_id,
@@ -202,6 +205,18 @@ function buildMessageDTO(
     mine: viewerUserId != null && r.sender_id === viewerUserId,
     ...(clientId !== undefined ? { clientId } : {}),
   }
+}
+
+function replyFor(
+  row: Pick<DmRowSelect, "reply_to_id">,
+  replyByTarget: Map<string, ReplyToDTO>,
+): ReplyToDTO | null {
+  return row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null
+}
+
+// dm_threads stores each pair once as (user_lo, user_hi), so both lookups and the insert order the ids.
+function orderedPair(userA: string, userB: string): [string, string] {
+  return userA < userB ? [userA, userB] : [userB, userA]
 }
 
 function selectDmRowFrom(tag: Queryable, cte: string) {
@@ -263,15 +278,13 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         replyMapForRows(sql, "dm_messages", page),
       ])
     return page.map((r) =>
-      toMessageDTO(
-        r,
-        reactionsByMessage.get(r.id) ?? [],
-        mentionsByMessage.get(r.id) ?? [],
+      toMessageDTO(r, {
+        reactions: reactionsByMessage.get(r.id) ?? [],
+        mentions: mentionsByMessage.get(r.id) ?? [],
         viewerUserId,
-        undefined,
-        attachmentsByMessage.get(r.id) ?? [],
-        r.reply_to_id !== null ? (replyByTarget.get(r.reply_to_id) ?? null) : null,
-      ),
+        attachments: attachmentsByMessage.get(r.id) ?? [],
+        replyTo: replyFor(r, replyByTarget),
+      }),
     )
   }
 
@@ -288,15 +301,13 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         : Promise.resolve(new Map<string, MediaDTO[]>()),
       replyMapForRows(sql, "dm_messages", [row]),
     ])
-    return toMessageDTO(
-      row,
+    return toMessageDTO(row, {
       reactions,
       mentions,
       viewerUserId,
-      undefined,
-      attachmentsByMessage.get(row.id) ?? [],
-      row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null,
-    )
+      attachments: attachmentsByMessage.get(row.id) ?? [],
+      replyTo: replyFor(row, replyByTarget),
+    })
   }
 
   function roomSql(threadId: string): RoomScopeSql<DmRowSelect, null> {
@@ -317,8 +328,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
 
   return {
     async openOrCreateThread(userA: string, userB: string): Promise<DmThread> {
-      const lo = userA < userB ? userA : userB
-      const hi = userA < userB ? userB : userA
+      const [lo, hi] = orderedPair(userA, userB)
 
       const inserted = await sql<{ id: string; created_at: Date }[]>`
         INSERT INTO dm_threads (user_lo, user_hi)
@@ -337,8 +347,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     },
 
     async getThreadForPair(userA: string, userB: string): Promise<DmThread | null> {
-      const lo = userA < userB ? userA : userB
-      const hi = userA < userB ? userB : userA
+      const [lo, hi] = orderedPair(userA, userB)
       const rows = await sql<{ id: string; created_at: Date }[]>`
         SELECT id, created_at FROM dm_threads WHERE user_lo = ${lo} AND user_hi = ${hi} LIMIT 1
       `
@@ -409,7 +418,12 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         ? ((await loadChatAttachments(sql, [messageId], presign!, input.senderId)).get(messageId) ??
           [])
         : []
-      return toMessageDTO(rows[0]!, [], [], input.senderId, input.clientId, attachments, replyTo)
+      return toMessageDTO(rows[0]!, {
+        viewerUserId: input.senderId,
+        clientId: input.clientId,
+        attachments,
+        replyTo,
+      })
     },
 
     async editMessage(
@@ -483,15 +497,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       const row = rows[0]
       if (!row) return null
       const replyByTarget = await replyMapForRows(sql, "dm_messages", [row])
-      return toMessageDTO(
-        row,
-        [],
-        [],
-        senderId,
-        undefined,
-        [],
-        row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null,
-      )
+      return toMessageDTO(row, { viewerUserId: senderId, replyTo: replyFor(row, replyByTarget) })
     },
 
     history(

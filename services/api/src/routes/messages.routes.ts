@@ -8,6 +8,7 @@ import {
   ToggleMessageReactionRequestSchema,
   VotePollRequestSchema,
   type ChatMessageDTO,
+  type SetMessagePinnedRequest,
 } from "@civfix/shared"
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
@@ -37,7 +38,8 @@ import { makeDrizzleDiscussionRepository } from "../services/discussion-reposito
 import type { DiscussionRepository } from "../services/discussion-types.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makeDmPeerOf } from "../services/dm-peer.js"
-import { messageRoomMatches, neutralizeChatViewerFields } from "./chat-route-helpers.js"
+import { messageRoomMatches, REPORT_NOT_FOUND } from "./chat-route-helpers.js"
+import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { chatMentionDeps, type ChatMentionSeam } from "./chat-gateway-wiring.js"
 import type { DmRepository } from "../services/dm-repository.drizzle.js"
@@ -79,12 +81,26 @@ export const VOTE_POLL_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute
 
 export const CLOSE_POLL_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
 
-export async function registerMessagesRoutes(
-  app: FastifyInstance,
-  container: Container,
-): Promise<void> {
-  const csrfProtect = container.csrf.protect
+const MESSAGE_NOT_FOUND = "Message not found"
+const MESSAGE_DELETED = "This message was deleted."
+const PIN_FORBIDDEN_FIELD_CODE = "pin_forbidden"
 
+interface MessagesDeps {
+  getChatRepo(): ChatRepository
+  getReportChatRepo(): ReportChatRepository
+  dmRepo(): DmRepository
+  isBlockedEitherWay(a: string, b: string): Promise<boolean>
+  dmPeerOf: ReturnType<typeof makeDmPeerOf>
+  isCleanupMember: IsRoomMemberFn
+  isGroupMember: IsRoomMemberFn
+  canSendGroup: IsRoomMemberFn
+  isReportChatMember: IsRoomMemberFn
+  isReportVisible(reportId: string, userId: string): Promise<boolean>
+  requireVisibleReport(reportId: string, userId: string): Promise<void>
+  chatMentions: ChatMentionSeam | undefined
+}
+
+function makeMessagesDeps(app: FastifyInstance, container: Container): MessagesDeps {
   const overrides = app.chatOverrides
   const useFakeChat = container.env.USE_FAKE_CHAT
 
@@ -98,11 +114,7 @@ export async function registerMessagesRoutes(
 
   let reportChatRepo: ReportChatRepository | undefined
   const getReportChatRepo = (): ReportChatRepository =>
-    overrides?.reportChat ??
-    (reportChatRepo ??= makeReportChatRepository(
-      container.getDb().sql,
-      makePrivateMediaPresigner(container.storage),
-    ))
+    overrides?.reportChat ?? (reportChatRepo ??= makeReportChatRepository(container.getDb().sql))
 
   let cleanupRepo: ReturnType<typeof makeDrizzleCleanupRepository> | undefined
   const getCleanupRepo = (): ReturnType<typeof makeDrizzleCleanupRepository> =>
@@ -134,8 +146,6 @@ export async function registerMessagesRoutes(
   const dmRepo = (): DmRepository => overrides?.dmRepo ?? container.getDmRepo()
   const blocksRepo = (): BlocksRepository => overrides?.blocksRepo ?? container.getBlocksRepo()
 
-  const dmPeerOf = makeDmPeerOf({ getThread: (threadId) => dmRepo().getThread(threadId) })
-
   let discussionRepo: DiscussionRepository | undefined
   const getReportLookup = (): DiscussionRepository | undefined =>
     app.discussionOverrides?.repo ??
@@ -151,12 +161,79 @@ export async function registerMessagesRoutes(
     return isReportVisibleTo(await repo.findReportForDiscussion(reportId), userId)
   }
 
-  const requireVisibleReport = async (reportId: string, userId: string): Promise<void> => {
-    if (!(await isReportVisible(reportId, userId))) throw AppError.notFound("Report not found")
+  return {
+    getChatRepo,
+    getReportChatRepo,
+    dmRepo,
+    isBlockedEitherWay: (a, b) => blocksRepo().isBlockedEitherWay(a, b),
+    dmPeerOf: makeDmPeerOf({ getThread: (threadId) => dmRepo().getThread(threadId) }),
+    isCleanupMember,
+    isGroupMember,
+    canSendGroup,
+    isReportChatMember: (roomId, userId) => getReportChatRepo().isMember(roomId, userId),
+    isReportVisible,
+    requireVisibleReport: async (reportId, userId) => {
+      if (!(await isReportVisible(reportId, userId))) throw AppError.notFound(REPORT_NOT_FOUND)
+    },
+    chatMentions:
+      overrides?.chatMentions ?? (useFakeChat ? undefined : chatMentionDeps(app, container)),
   }
+}
 
-  const chatMentions: ChatMentionSeam | undefined =
-    overrides?.chatMentions ?? (useFakeChat ? undefined : chatMentionDeps(app, container))
+type PinRoomKind = SetMessagePinnedRequest["roomKind"]
+
+async function loadPinTarget(
+  deps: MessagesDeps,
+  roomKind: PinRoomKind,
+  roomId: string,
+  messageId: string,
+): Promise<{ kind: string; deletedAt: Date | null }> {
+  if (roomKind === "dm") {
+    const meta = await deps.dmRepo().findMessageMeta(messageId)
+    if (meta === null || meta.threadId !== roomId) throw AppError.notFound(MESSAGE_NOT_FOUND)
+    return { kind: meta.kind, deletedAt: meta.deletedAt }
+  }
+  const meta = await deps.getChatRepo().findMessageMeta(messageId)
+  if (!messageRoomMatches(meta, roomKind, roomId)) throw AppError.notFound(MESSAGE_NOT_FOUND)
+  return { kind: meta.kind, deletedAt: meta.deletedAt }
+}
+
+function setPinnedIn(
+  deps: MessagesDeps,
+  roomKind: PinRoomKind,
+  roomId: string,
+  messageId: string,
+  userId: string,
+  pinned: boolean,
+): Promise<ChatMessageDTO | null> {
+  if (roomKind === "dm") return deps.dmRepo().setPinned(roomId, messageId, userId, pinned)
+  const chat = deps.getChatRepo()
+  if (roomKind === "report") return chat.setReportPinned(roomId, messageId, userId, pinned)
+  if (roomKind === "group") return chat.setGroupPinned(roomId, messageId, userId, pinned)
+  return chat.setPinned(roomId, messageId, userId, pinned)
+}
+
+export async function registerMessagesRoutes(
+  app: FastifyInstance,
+  container: Container,
+): Promise<void> {
+  const csrfProtect = container.csrf.protect
+  const overrides = app.chatOverrides
+  const deps = makeMessagesDeps(app, container)
+  const {
+    getChatRepo,
+    getReportChatRepo,
+    dmRepo,
+    isBlockedEitherWay,
+    dmPeerOf,
+    isCleanupMember,
+    isGroupMember,
+    canSendGroup,
+    isReportChatMember,
+    isReportVisible,
+    requireVisibleReport,
+    chatMentions,
+  } = deps
 
   route(
     app,
@@ -175,7 +252,7 @@ export async function registerMessagesRoutes(
         isReportVisible,
         isGroupMember: canSendGroup,
         dmPeerOf,
-        isBlockedEitherWay: (a, b) => blocksRepo().isBlockedEitherWay(a, b),
+        isBlockedEitherWay,
         ...(chatMentions ? { chatMentions } : {}),
         broadcastEvent: (roomKey, frame) => container.chatService.broadcastEvent?.(roomKey, frame),
       })
@@ -208,37 +285,18 @@ export async function registerMessagesRoutes(
       const powers = await resolveChatPowers({ roomKind, roomId, userId })
       if (!powers.canPin) {
         throw new AppError(ErrorCode.FORBIDDEN, "You can't pin messages in this chat.", {
-          fields: { code: "pin_forbidden" },
+          fields: { code: PIN_FORBIDDEN_FIELD_CODE },
         })
       }
 
-      let kind: string
-      let deletedAt: Date | null
-      if (roomKind === "dm") {
-        const meta = await dmRepo().findMessageMeta(messageId)
-        if (meta === null || meta.threadId !== roomId) throw AppError.notFound("Message not found")
-        ;({ kind, deletedAt } = meta)
-      } else {
-        const meta = await getChatRepo().findMessageMeta(messageId)
-        if (!messageRoomMatches(meta, roomKind, roomId)) {
-          throw AppError.notFound("Message not found")
-        }
-        ;({ kind, deletedAt } = meta)
-      }
-
-      if (kind === "system")
+      const { kind, deletedAt } = await loadPinTarget(deps, roomKind, roomId, messageId)
+      if (kind === "system") {
         throw AppError.validation({ messageId: "System messages can't be pinned." })
-      if (deletedAt !== null) throw AppError.validation({ messageId: "This message was deleted." })
+      }
+      if (deletedAt !== null) throw AppError.validation({ messageId: MESSAGE_DELETED })
 
-      const updated: ChatMessageDTO | null =
-        roomKind === "dm"
-          ? await dmRepo().setPinned(roomId, messageId, userId, pinned)
-          : roomKind === "report"
-            ? await getChatRepo().setReportPinned(roomId, messageId, userId, pinned)
-            : roomKind === "group"
-              ? await getChatRepo().setGroupPinned(roomId, messageId, userId, pinned)
-              : await getChatRepo().setPinned(roomId, messageId, userId, pinned)
-      if (updated === null) throw AppError.validation({ messageId: "This message was deleted." })
+      const updated = await setPinnedIn(deps, roomKind, roomId, messageId, userId, pinned)
+      if (updated === null) throw AppError.validation({ messageId: MESSAGE_DELETED })
 
       broadcastMessageUpdate(
         container.chatService,
@@ -267,7 +325,7 @@ export async function registerMessagesRoutes(
         isReportChatMember: (reportId, uid) => getReportChatRepo().isMember(reportId, uid),
         isChatGroupMember: isGroupMember,
         dmPeerOf,
-        isBlockedEitherWay: (a, b) => blocksRepo().isBlockedEitherWay(a, b),
+        isBlockedEitherWay,
         isReportVisible,
       })
       const updated: ChatMessageDTO = await reactions.toggleReaction({
@@ -294,8 +352,6 @@ export async function registerMessagesRoutes(
 
   let pollService: ReturnType<typeof makeChatPollService> | undefined
   const pollNotifier = makeContainerPollNotifier(container, app.log)
-  const isReportChatMember = (roomId: string, userId: string): Promise<boolean> =>
-    getReportChatRepo().isMember(roomId, userId)
   const getPollService = (): ReturnType<typeof makeChatPollService> =>
     (pollService ??= makeChatPollService({
       chat: getChatRepo(),

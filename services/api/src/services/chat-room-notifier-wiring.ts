@@ -17,6 +17,8 @@ export type RoomFanoutLogger = Pick<FastifyBaseLogger, "warn" | "error">
 
 export const ROOM_FANOUT_WINDOW_CLAIM_PREFIX = "chatfanout"
 
+const MS_PER_SECOND = 1000
+
 export type ContainerRoomFanoutDeps = Record<RoomFanoutKind, RoomFanoutNotifierDeps>
 
 export function makeContainerRoomFanoutDeps(
@@ -89,7 +91,7 @@ export function makeWindowClaim(
   logger?: RoomFanoutLogger,
 ): (kind: RoomFanoutKind, roomId: string, windowMs: number) => Promise<boolean> {
   return async (kind, roomId, windowMs) => {
-    const ttlSeconds = Math.max(1, Math.ceil((windowMs || ROOM_FANOUT_THROTTLE_MS) / 1000))
+    const ttlSeconds = Math.max(1, Math.ceil((windowMs || ROOM_FANOUT_THROTTLE_MS) / MS_PER_SECOND))
     try {
       const hits = await container
         .getCounterStore()

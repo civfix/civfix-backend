@@ -10,6 +10,15 @@ export { neutralizeChatViewerFields }
 export type ChatRoomKind = "cleanup" | "report" | "group"
 
 export const DELETE_MESSAGE_FORBIDDEN = "You can't delete this message."
+export const MESSAGE_ALREADY_DELETED = "This message was already deleted."
+export const REPORT_NOT_FOUND = "Report not found"
+
+export const CHAT_HISTORY_DEFAULT_LIMIT = 30
+const CHAT_HISTORY_MAX_LIMIT = 50
+
+export function clampChatHistoryLimit(requested: number | undefined): number {
+  return Math.min(Math.max(requested ?? CHAT_HISTORY_DEFAULT_LIMIT, 1), CHAT_HISTORY_MAX_LIMIT)
+}
 
 export interface ChatHistorySource {
   history(
@@ -79,13 +88,13 @@ export async function deleteMessageWithPowers(
   if (tombstone === null) {
     const state = input.senderPath ? await stateInRoom() : null
     if (state !== null && state.deletedAt !== null && state.senderId === userId) {
-      throw AppError.conflict("This message was already deleted.")
+      throw AppError.conflict(MESSAGE_ALREADY_DELETED)
     }
     const powers = await input.resolveChatPowers({ roomKind, roomId, userId })
     if (!powers.canDeleteOthers) throw AppError.forbidden(DELETE_MESSAGE_FORBIDDEN)
     const current = state ?? (await stateInRoom())
     if (current !== null && current.deletedAt !== null) {
-      throw AppError.conflict("This message was already deleted.")
+      throw AppError.conflict(MESSAGE_ALREADY_DELETED)
     }
     tombstone = await input.softDelete({ bypassSenderGate: true })
     if (tombstone === null) throw AppError.forbidden(DELETE_MESSAGE_FORBIDDEN)

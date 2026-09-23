@@ -2,16 +2,15 @@ import type { Sql } from "../db/client.js"
 import {
   ReportStatusSchema,
   type ChatMessageDTO,
-  type PersonDTO,
   type ReportChatParticipantDTO,
 } from "@civfix/shared"
 import type { PresignMedia } from "./media-presign.js"
 import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
-import { publicAuthorIdentity } from "./public-author.js"
-import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
+import { blockedPairExpr } from "./hidden-identity.js"
+import { toRoomMemberPerson, type RoomMemberIdentityRow } from "./room-member-person.js"
 
-export type ChatSystemPayload = NonNullable<NonNullable<ChatMessageDTO["system"]>>
-export type ReportSystemStatus = ChatSystemPayload["status"]
+type ChatSystemPayload = NonNullable<NonNullable<ChatMessageDTO["system"]>>
+type ReportSystemStatus = ChatSystemPayload["status"]
 
 export interface SystemChatRow {
   id: string
@@ -23,41 +22,15 @@ export interface SystemChatRow {
   system_body: string | null
 }
 
-export interface ReportMemberRowSelect {
-  user_id: string
-  role: "owner" | "member"
+export type ReportChatRole = "owner" | "member"
+
+export interface ReportMemberRowSelect extends RoomMemberIdentityRow {
+  role: ReportChatRole
   joined_at: Date
-  display_name: string | null
-  handle: string | null
-  bio: string | null
-  avatar_url: string | null
-  user_deleted_at: Date | null
-  is_following: boolean
-  blocked_pair: boolean
 }
 
 export function toReportParticipantDTO(r: ReportMemberRowSelect): ReportChatParticipantDTO {
-  const author = publicAuthorIdentity({
-    id: r.user_id,
-    displayName: r.display_name ?? "",
-    handle: r.handle,
-    avatarUrl: r.avatar_url,
-    deletedAt: r.user_deleted_at,
-  })
-  const hidden = r.blocked_pair && !author.deleted ? hiddenIdentity(r.user_id) : null
-  const user: PersonDTO = {
-    id: r.user_id,
-    name: hidden?.name ?? author.name,
-    handle: hidden !== null ? null : author.handle,
-    bio: author.deleted || hidden !== null ? null : r.bio,
-    avatar: author.avatar,
-    ...(hidden === null && author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
-    followers: 0,
-    following: 0,
-    isFollowing: r.is_following,
-    ...(author.deleted ? { deleted: true } : {}),
-  }
-  return { user, role: r.role, joinedAt: r.joined_at.toISOString() }
+  return { user: toRoomMemberPerson(r), role: r.role, joinedAt: r.joined_at.toISOString() }
 }
 
 export const REPORT_CHAT_ROSTER_CAP = 200
@@ -86,8 +59,8 @@ export function mapSystemRow(row: SystemChatRow): ChatMessageDTO {
 
 export interface ReportChatRepository {
   isMember(reportId: string, userId: string): Promise<boolean>
-  roleOf(reportId: string, userId: string): Promise<"owner" | "member" | null>
-  join(reportId: string, userId: string, role?: "owner" | "member"): Promise<void>
+  roleOf(reportId: string, userId: string): Promise<ReportChatRole | null>
+  join(reportId: string, userId: string, role?: ReportChatRole): Promise<void>
   leave(reportId: string, userId: string): Promise<void>
   advanceReadWatermark(reportId: string, userId: string, upToMessageId: string): Promise<void>
   markRead(reportId: string, userId: string, at: Date): Promise<void>
@@ -118,8 +91,8 @@ export function makeReportChatRepository(
       return rows[0]?.exists ?? false
     },
 
-    async roleOf(reportId: string, userId: string): Promise<"owner" | "member" | null> {
-      const rows = await sql<{ role: "owner" | "member" }[]>`
+    async roleOf(reportId: string, userId: string): Promise<ReportChatRole | null> {
+      const rows = await sql<{ role: ReportChatRole }[]>`
         SELECT role FROM report_chat_members
         WHERE report_id = ${reportId} AND user_id = ${userId}
         LIMIT 1
@@ -127,11 +100,7 @@ export function makeReportChatRepository(
       return rows[0]?.role ?? null
     },
 
-    async join(
-      reportId: string,
-      userId: string,
-      role: "owner" | "member" = "member",
-    ): Promise<void> {
+    async join(reportId: string, userId: string, role: ReportChatRole = "member"): Promise<void> {
       await sql`
         INSERT INTO report_chat_members (report_id, user_id, role)
         VALUES (${reportId}, ${userId}, ${role})

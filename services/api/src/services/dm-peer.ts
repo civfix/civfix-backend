@@ -3,7 +3,7 @@
 
 import type { DmRepository, DmThread } from "./dm-repository.drizzle.js"
 
-export function dmPeerOfThread(thread: DmThread, userId: string): string | null {
+function dmPeerOfThread(thread: DmThread, userId: string): string | null {
   if (thread.userLo === userId) return thread.userHi
   if (thread.userHi === userId) return thread.userLo
   return null

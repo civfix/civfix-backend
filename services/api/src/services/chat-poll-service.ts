@@ -47,8 +47,24 @@ const ROOM_COLUMN: Record<PollRoomKind, PollRoomColumn> = {
   group: "group_id",
 }
 
+const POLL_ERROR_CODE = {
+  closed: "poll_closed",
+  forbidden: "poll_forbidden",
+  notMember: "poll_not_member",
+  closeForbidden: "poll_close_forbidden",
+} as const
+
+const pollNotFound = (): AppError => AppError.notFound("Poll not found")
+
 const pollClosed = (): AppError =>
-  new AppError(ErrorCode.CONFLICT, "This poll is closed.", { fields: { code: "poll_closed" } })
+  new AppError(ErrorCode.CONFLICT, "This poll is closed.", {
+    fields: { code: POLL_ERROR_CODE.closed },
+  })
+
+const pollCloseForbidden = (): AppError =>
+  new AppError(ErrorCode.FORBIDDEN, "You can't close this poll.", {
+    fields: { code: POLL_ERROR_CODE.closeForbidden },
+  })
 
 export interface ChatPollService {
   createPoll(input: CreatePollInput): Promise<ChatMessageDTO>
@@ -66,19 +82,25 @@ export function makeChatPollService(deps: ChatPollServiceDeps): ChatPollService 
     if (!(await deps.isReportVisible(roomId, userId))) throw AppError.notFound("Report not found")
   }
 
+  function findRoomMessage(
+    roomKind: PollRoomKind,
+    roomId: string,
+    messageId: string,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO | null> {
+    if (roomKind === "report") return deps.chat.findReportMessage(roomId, messageId, viewerUserId)
+    if (roomKind === "group") return deps.chat.findGroupMessage(roomId, messageId, viewerUserId)
+    return deps.chat.findMessage(roomId, messageId, viewerUserId)
+  }
+
   async function readMessage(
     roomKind: PollRoomKind,
     roomId: string,
     messageId: string,
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO> {
-    const dto =
-      roomKind === "report"
-        ? await deps.chat.findReportMessage(roomId, messageId, viewerUserId)
-        : roomKind === "group"
-          ? await deps.chat.findGroupMessage(roomId, messageId, viewerUserId)
-          : await deps.chat.findMessage(roomId, messageId, viewerUserId)
-    if (dto === null) throw AppError.notFound("Poll not found")
+    const dto = await findRoomMessage(roomKind, roomId, messageId, viewerUserId)
+    if (dto === null) throw pollNotFound()
     return dto
   }
 
@@ -87,11 +109,26 @@ export function makeChatPollService(deps: ChatPollServiceDeps): ChatPollService 
   ): Promise<{ roomKind: PollRoomKind; roomId: string }> {
     const meta = await deps.chat.findMessageMeta(messageId)
     if (meta === null || meta.kind !== "poll" || meta.deletedAt !== null) {
-      throw AppError.notFound("Poll not found")
+      throw pollNotFound()
     }
     if (meta.reportId !== null) return { roomKind: "report", roomId: meta.reportId }
     if (meta.groupId !== null) return { roomKind: "group", roomId: meta.groupId }
     return { roomKind: "cleanup", roomId: meta.cleanupId! }
+  }
+
+  /** Everyone else gets the viewer-neutral read; the caller gets their own vote state back. */
+  async function rereadAndBroadcastUpdate(
+    roomKind: PollRoomKind,
+    roomId: string,
+    messageId: string,
+    userId: string,
+  ): Promise<ChatMessageDTO> {
+    const [message, roomView] = await Promise.all([
+      readMessage(roomKind, roomId, messageId, userId),
+      readMessage(roomKind, roomId, messageId, null),
+    ])
+    deps.broadcastUpdate(roomKind, roomId, roomView)
+    return message
   }
 
   return {
@@ -100,7 +137,7 @@ export function makeChatPollService(deps: ChatPollServiceDeps): ChatPollService 
       await requireVisibleRoom(roomKind, roomId, userId)
       if (!(await deps.canSend(roomKind, roomId, userId))) {
         throw new AppError(ErrorCode.FORBIDDEN, "You can't create a poll in this chat.", {
-          fields: { code: "poll_forbidden" },
+          fields: { code: POLL_ERROR_CODE.forbidden },
         })
       }
       assertNoSlur(input.question, "question")
@@ -131,11 +168,11 @@ export function makeChatPollService(deps: ChatPollServiceDeps): ChatPollService 
       await requireVisibleRoom(roomKind, roomId, userId)
       if (!(await deps.isMember(roomKind, roomId, userId))) {
         throw new AppError(ErrorCode.FORBIDDEN, "You must be a member to vote.", {
-          fields: { code: "poll_not_member" },
+          fields: { code: POLL_ERROR_CODE.notMember },
         })
       }
       const pollMeta = await deps.chatPolls.findPollMeta(messageId)
-      if (pollMeta === null) throw AppError.notFound("Poll not found")
+      if (pollMeta === null) throw pollNotFound()
       if (pollMeta.closedAt !== null) throw pollClosed()
       if (optionIdxs.length > 1 && !pollMeta.allowMultiple) {
         throw AppError.validation({ optionIdxs: "This poll allows only one choice." })
@@ -145,12 +182,7 @@ export function makeChatPollService(deps: ChatPollServiceDeps): ChatPollService 
         throw AppError.validation({ optionIdxs: "Unknown poll option." })
       }
       await deps.chatPolls.replaceVotes(messageId, userId, optionIdxs)
-      const [message, roomView] = await Promise.all([
-        readMessage(roomKind, roomId, messageId, userId),
-        readMessage(roomKind, roomId, messageId, null),
-      ])
-      deps.broadcastUpdate(roomKind, roomId, roomView)
-      return message
+      return rereadAndBroadcastUpdate(roomKind, roomId, messageId, userId)
     },
 
     async closePoll(input: ClosePollInput): Promise<ChatMessageDTO> {
@@ -158,13 +190,9 @@ export function makeChatPollService(deps: ChatPollServiceDeps): ChatPollService 
       const { roomKind, roomId } = await resolvePollRoom(messageId)
       await requireVisibleRoom(roomKind, roomId, userId)
       const pollMeta = await deps.chatPolls.findPollMeta(messageId)
-      if (pollMeta === null) throw AppError.notFound("Poll not found")
+      if (pollMeta === null) throw pollNotFound()
       const isAuthor = pollMeta.createdBy === userId
       const isModerator = await deps.isModerator(roomKind, roomId, userId)
-      const pollCloseForbidden = (): AppError =>
-        new AppError(ErrorCode.FORBIDDEN, "You can't close this poll.", {
-          fields: { code: "poll_close_forbidden" },
-        })
       if (!(await deps.isMember(roomKind, roomId, userId)) && !isModerator) {
         throw pollCloseForbidden()
       }
@@ -172,12 +200,7 @@ export function makeChatPollService(deps: ChatPollServiceDeps): ChatPollService 
         throw pollCloseForbidden()
       }
       await deps.chatPolls.close(messageId)
-      const [message, roomView] = await Promise.all([
-        readMessage(roomKind, roomId, messageId, userId),
-        readMessage(roomKind, roomId, messageId, null),
-      ])
-      deps.broadcastUpdate(roomKind, roomId, roomView)
-      return message
+      return rereadAndBroadcastUpdate(roomKind, roomId, messageId, userId)
     },
   }
 }

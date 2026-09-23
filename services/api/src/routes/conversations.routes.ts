@@ -114,6 +114,12 @@ export async function registerConversationRoutes(
   const getMarkRoomRead = (): MarkRoomRead =>
     overrides?.markRoomRead ?? (markRoomRead ??= conversationReadSeam(app, container).markRoomRead)
 
+  const nudgeThread = (userId: string, roomId: string): void => {
+    void Promise.resolve(
+      container.userChannel?.publishToUser(userId, { topic: "threads", id: roomId }),
+    ).catch(() => {})
+  }
+
   route(
     app,
     "toggleConversationMute",
@@ -147,9 +153,7 @@ export async function registerConversationRoutes(
         throw AppError.forbidden("You can't change this conversation.")
       }
       await getHidesRepo().setHidden(userId, body.roomKind, body.roomId, body.hidden)
-      void Promise.resolve(
-        container.userChannel?.publishToUser(userId, { topic: "threads", id: body.roomId }),
-      ).catch(() => {})
+      nudgeThread(userId, body.roomId)
       const payload: ToggleHiddenResponse = { hidden: body.hidden }
       reply.status(200).send(payload)
     },
@@ -166,9 +170,7 @@ export async function registerConversationRoutes(
         throw AppError.forbidden("You can't open this conversation.")
       }
       await getMarkRoomRead()(body.roomKind, body.roomId, userId)
-      void Promise.resolve(
-        container.userChannel?.publishToUser(userId, { topic: "threads", id: body.roomId }),
-      ).catch(() => {})
+      nudgeThread(userId, body.roomId)
       const payload: MarkThreadReadResponse = { ok: true }
       reply.status(200).send(payload)
     },

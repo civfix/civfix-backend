@@ -8,8 +8,6 @@ import { userUploader } from "./media-uploader.js"
 
 export type MessageMediaColumn = "chat_message_id"
 
-const ALL_COLUMNS: readonly MessageMediaColumn[] = ["chat_message_id"]
-
 const CLAIM_GUARD_COLUMNS: readonly string[] = ["report_id", "post_id"]
 
 export interface MessageAttachmentRepo {
@@ -35,11 +33,10 @@ interface MediaRow {
 }
 
 export function makeAttachmentRepo(column: MessageMediaColumn): MessageAttachmentRepo {
-  const otherCols = ALL_COLUMNS.filter((c) => c !== column)
   return {
     async attach(tx, messageId, uploadIds, messageCreatedAt, senderId) {
       if (uploadIds.length === 0) return
-      const nullGuards = [...otherCols, ...CLAIM_GUARD_COLUMNS].reduce(
+      const nullGuards = CLAIM_GUARD_COLUMNS.reduce(
         (acc, c) => tx`${acc} AND ${tx(c)} IS NULL`,
         tx``,
       )

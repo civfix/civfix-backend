@@ -93,7 +93,7 @@ export async function runChatRoomFanout(
   await runRoomFanout(ROOM_FANOUT_SPEC[data.kind], deps.fanoutDeps[data.kind], data.roomId, message)
 }
 
-export async function runChatRoomFanoutJob(
+async function runChatRoomFanoutJob(
   container: Container,
   data: ChatRoomFanoutJob,
   logger?: RoomFanoutLogger,

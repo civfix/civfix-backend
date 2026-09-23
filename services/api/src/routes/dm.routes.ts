@@ -27,7 +27,13 @@ import {
   makeConversationMutesRepository,
   type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
-import { chatHistoryPayload, neutralizeChatViewerFields } from "./chat-route-helpers.js"
+import {
+  CHAT_HISTORY_DEFAULT_LIMIT,
+  chatHistoryPayload,
+  DELETE_MESSAGE_FORBIDDEN,
+  MESSAGE_ALREADY_DELETED,
+} from "./chat-route-helpers.js"
+import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
 import { chatMentionDeps, type ChatMentionSeam } from "./chat-gateway-wiring.js"
 
 const DmIdParamsSchema = z.object({ id: IdSchema }).strict()
@@ -40,8 +46,6 @@ export const DM_OPEN_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" 
 
 export const DM_REACTION_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 export const DM_MESSAGE_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
-
-const DM_HISTORY_DEFAULT_LIMIT = 30
 
 export async function registerDmRoutes(app: FastifyInstance, container: Container): Promise<void> {
   const csrfProtect = container.csrf.protect
@@ -120,7 +124,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     const q = parse(DmHistoryQuerySchema, request.query)
     await authorizePeer(id, userId, "You can't view this conversation.")
 
-    const limit = q.limit ?? DM_HISTORY_DEFAULT_LIMIT
+    const limit = q.limit ?? CHAT_HISTORY_DEFAULT_LIMIT
     const payload: ChatHistoryResponse = await chatHistoryPayload(
       {
         history: (before, pageLimit, around) =>
@@ -210,7 +214,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     async (request, reply) => {
       const userId = requireAuth(request)
       const { threadId, messageId } = parse(ThreadMessageParamsSchema, request.params)
-      await authorizePeer(threadId, userId, "You can't delete this message.")
+      await authorizePeer(threadId, userId, DELETE_MESSAGE_FORBIDDEN)
 
       const tombstone: ChatMessageDTO | null = await dmRepo().softDelete(
         threadId,
@@ -225,9 +229,9 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
           meta.deletedAt !== null &&
           meta.senderId === userId
         ) {
-          throw AppError.conflict("This message was already deleted.")
+          throw AppError.conflict(MESSAGE_ALREADY_DELETED)
         }
-        throw AppError.forbidden("You can't delete this message.")
+        throw AppError.forbidden(DELETE_MESSAGE_FORBIDDEN)
       }
 
       const roomView = neutralizeChatViewerFields(tombstone)

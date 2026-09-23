@@ -13,13 +13,13 @@ import type { ChatMessageDTO, ReactionEmoji } from "@civfix/shared"
 import type { ChatMessageMeta, ChatRepository } from "./chat-repository.drizzle.js"
 import type { DmRepository } from "./dm-repository.drizzle.js"
 
-export const CHAT_REACTION_FORBIDDEN = "You can't react in this conversation."
+const CHAT_REACTION_FORBIDDEN = "You can't react in this conversation."
 
 /**
  * Report chat is view-only until you Join, which is actionable, so the refusal says how to fix it. It
  * lives beside the gate so the legacy and unified routes never answer the same refusal differently.
  */
-export const REPORT_CHAT_REACTION_FORBIDDEN = "Join the chat to react to messages."
+const REPORT_CHAT_REACTION_FORBIDDEN = "Join the chat to react to messages."
 
 export type IsCleanupMemberFn = (cleanupId: string, userId: string) => Promise<boolean>
 

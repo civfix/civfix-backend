@@ -19,6 +19,8 @@ import type { ReportChatSendDeps } from "./report-chat-send.js"
 import type { ChatRepository } from "./chat-repository.drizzle.js"
 import { writeAudit } from "./admin/audit.js"
 
+const REPORT_MESSAGE_POSTED_AUDIT_ACTION = "report.message_posted"
+
 export interface ContainerReportChatSendOptions {
   chatRepo: () => ChatRepository
   mentions?: ChatMentionRecordSeam | undefined
@@ -33,7 +35,7 @@ export function makeAuditedReportChatPersist(
       inTx: async (tx, row) => {
         await writeAudit(tx, {
           actorId: actingUserId,
-          action: "report.message_posted",
+          action: REPORT_MESSAGE_POSTED_AUDIT_ACTION,
           target: `report:${input.cleanupId}`,
           meta: { messageId: row.id },
         })

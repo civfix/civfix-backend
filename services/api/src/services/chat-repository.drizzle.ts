@@ -194,41 +194,34 @@ interface ChatRowSelect {
   forwarded_to_city?: boolean
 }
 
-function toMessageDTO(
-  r: ChatRowSelect,
-  reactions: ReactionSummaryDTO[],
-  mentions: UserMentionDTO[],
-  viewerUserId?: string | null,
-  clientId?: string,
-  attachments: MediaDTO[] = [],
-  reportCity?: ReportCityContext | null,
-  replyTo?: ReplyToDTO | null,
-  poll?: PollDTO | null,
-): ChatMessageDTO {
-  const dto = buildMessageDTO(
-    r,
-    reactions,
-    mentions,
-    viewerUserId,
-    clientId,
-    attachments,
-    reportCity,
-    replyTo,
-    poll,
-  )
+interface MessageExtras {
+  reactions?: ReactionSummaryDTO[]
+  mentions?: UserMentionDTO[]
+  viewerUserId?: string | null
+  clientId?: string
+  attachments?: MediaDTO[]
+  reportCity?: ReportCityContext | null
+  replyTo?: ReplyToDTO | null
+  poll?: PollDTO | null
+}
+
+function toMessageDTO(r: ChatRowSelect, extras: MessageExtras = {}): ChatMessageDTO {
+  const dto = buildMessageDTO(r, extras)
   return r.deleted_at !== null ? toTombstoneDTO(dto, r.deleted_at) : dto
 }
 
 function buildMessageDTO(
   r: ChatRowSelect,
-  reactions: ReactionSummaryDTO[],
-  mentions: UserMentionDTO[],
-  viewerUserId?: string | null,
-  clientId?: string,
-  attachments: MediaDTO[] = [],
-  reportCity?: ReportCityContext | null,
-  replyTo?: ReplyToDTO | null,
-  poll?: PollDTO | null,
+  {
+    reactions = [],
+    mentions = [],
+    viewerUserId,
+    clientId,
+    attachments = [],
+    reportCity,
+    replyTo,
+    poll,
+  }: MessageExtras,
 ): ChatMessageDTO {
   if (r.sender_id === null && r.report_id !== null) {
     return mapSystemRow({
@@ -301,6 +294,13 @@ export function cityForwardFields(
         }
       : null
   return { forwardedToCity, cityMention }
+}
+
+function replyFor(
+  row: Pick<ChatRowSelect, "reply_to_id">,
+  replyByTarget: Map<string, ReplyToDTO>,
+): ReplyToDTO | null {
+  return row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null
 }
 
 function forwardedColumn(sql: Queryable, alias: string) {
@@ -411,17 +411,15 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       loadPollsFor(sql, pollIds, viewerUserId),
     ])
     return page.map((r) =>
-      toMessageDTO(
-        r,
-        reactionsByMessage.get(r.id) ?? [],
-        mentionsByMessage.get(r.id) ?? [],
+      toMessageDTO(r, {
+        reactions: reactionsByMessage.get(r.id) ?? [],
+        mentions: mentionsByMessage.get(r.id) ?? [],
         viewerUserId,
-        undefined,
-        attachmentsByMessage.get(r.id) ?? [],
+        attachments: attachmentsByMessage.get(r.id) ?? [],
         reportCity,
-        r.reply_to_id !== null ? (replyByTarget.get(r.reply_to_id) ?? null) : null,
-        pollsByMessage.get(r.id) ?? null,
-      ),
+        replyTo: replyFor(r, replyByTarget),
+        poll: pollsByMessage.get(r.id) ?? null,
+      }),
     )
   }
 
@@ -443,17 +441,15 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
         replyMapForRows(sql, "chat_messages", [row]),
         loadPollsFor(sql, pollIds, viewerUserId),
       ])
-    return toMessageDTO(
-      row,
+    return toMessageDTO(row, {
       reactions,
       mentions,
       viewerUserId,
-      undefined,
-      attachmentsByMessage.get(row.id) ?? [],
+      attachments: attachmentsByMessage.get(row.id) ?? [],
       reportCity,
-      row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null,
-      pollsByMessage.get(row.id) ?? null,
-    )
+      replyTo: replyFor(row, replyByTarget),
+      poll: pollsByMessage.get(row.id) ?? null,
+    })
   }
 
   function roomSql(scope: RoomScope): RoomScopeSql<ChatRowSelect, ReportCityContext | null> {
@@ -554,16 +550,11 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     const row = rows[0]
     if (!row) return null
     const replyByTarget = await replyMapForRows(sql, "chat_messages", [row])
-    return toMessageDTO(
-      row,
-      [],
-      [],
-      senderId,
-      undefined,
-      [],
+    return toMessageDTO(row, {
+      viewerUserId: senderId,
       reportCity,
-      row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null,
-    )
+      replyTo: replyFor(row, replyByTarget),
+    })
   }
 
   return {
@@ -628,16 +619,13 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       const attachments = wantsMedia
         ? ((await loadChatAttachments(sql, [id], presign!, input.userId)).get(id) ?? [])
         : []
-      return toMessageDTO(
-        rows[0]!,
-        [],
-        [],
-        input.userId,
-        input.clientId,
+      return toMessageDTO(rows[0]!, {
+        viewerUserId: input.userId,
+        clientId: input.clientId,
         attachments,
         reportCity,
         replyTo,
-      )
+      })
     },
 
     async findMessageMeta(messageId: string): Promise<ChatMessageMeta | null> {

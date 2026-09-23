@@ -5,6 +5,8 @@ import type { DmRepository } from "./dm-repository.drizzle.js"
 
 export const DM_FORBIDDEN_MESSAGE = "You can't message this account."
 
+const DM_MEMBER_COUNT = 2
+
 export interface DmTargetUser {
   id: string
   displayName: string
@@ -50,6 +52,11 @@ function peerOf(target: DmTargetUser): PersonDTO {
   }
 }
 
+function dmTitle(target: DmTargetUser): string {
+  if (target.displayName.trim() !== "") return target.displayName
+  return target.handle !== null ? `@${target.handle}` : target.displayName
+}
+
 export function makeDmService(deps: DmServiceDeps): DmService {
   const now = deps.now ?? (() => new Date())
 
@@ -83,12 +90,7 @@ export function makeDmService(deps: DmServiceDeps): DmService {
       const lastAt = last !== null ? new Date(last.createdAt) : null
 
       const peer = peerOf(target)
-      const title =
-        target.displayName.trim() !== ""
-          ? target.displayName
-          : target.handle !== null
-            ? `@${target.handle}`
-            : target.displayName
+      const title = dmTitle(target)
 
       return {
         id: thread.id,
@@ -101,7 +103,7 @@ export function makeDmService(deps: DmServiceDeps): DmService {
         lastMessageAt: lastAt !== null ? lastAt.toISOString() : null,
         lastFromMe: last !== null && last.from?.id === viewerId,
         unread,
-        members: 2,
+        members: DM_MEMBER_COUNT,
         muted,
       }
     },

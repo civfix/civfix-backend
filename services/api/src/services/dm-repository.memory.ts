@@ -3,7 +3,7 @@ import { avatarGradient, AppError } from "@civfix/shared"
 import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
 import { REPLY_EXCERPT_MAX, replyDeletedTarget, replyWrongRoom } from "./chat-reply-hydration.js"
-import { PIN_LIST_CAP } from "./chat-repository.drizzle.js"
+import { PIN_LIST_CAP } from "./chat-room-scope.drizzle.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { aroundLimits } from "./chat-history-window.js"
 import { toTombstoneDTO } from "./chat-tombstone.js"
@@ -42,8 +42,27 @@ interface StoredDmMessage {
   insertedAtMs: number
 }
 
+// Writes are stamped at fixed one-millisecond steps so ordering is deterministic.
+const SYNTHETIC_EPOCH_MS = Date.UTC(2026, 0, 1)
+
+const PLACEHOLDER_NAME_ID_CHARS = 4
+
 function orderPair(a: string, b: string): [string, string] {
   return a < b ? [a, b] : [b, a]
+}
+
+function placeholderDisplayName(id: string): string {
+  return `User ${id.slice(0, PLACEHOLDER_NAME_ID_CHARS)}`
+}
+
+function readKey(threadId: string, userId: string): string {
+  return `${threadId}:${userId}`
+}
+
+function peerIn(thread: DmThread, userId: string): string | null {
+  if (thread.userLo === userId) return thread.userHi
+  if (thread.userHi === userId) return thread.userLo
+  return null
 }
 
 function lastSenderId(message: ChatMessageDTO): string {
@@ -71,13 +90,13 @@ export class InMemoryDmRepository implements DmRepository {
 
   private userOf(id: string): DmUser {
     return (
-      this.users.get(id) ?? { id, displayName: `User ${id.slice(0, 4)}`, handle: null, bio: null }
+      this.users.get(id) ?? { id, displayName: placeholderDisplayName(id), handle: null, bio: null }
     )
   }
 
   private nextDate(): Date {
     this.tick += 1
-    return new Date(Date.UTC(2026, 0, 1, 0, 0, 0, this.tick))
+    return new Date(SYNTHETIC_EPOCH_MS + this.tick)
   }
 
   private replyToFor(threadId: string, replyToId: string): ReplyToDTO | null {
@@ -130,10 +149,7 @@ export class InMemoryDmRepository implements DmRepository {
 
   peerOf(threadId: string, userId: string): string | null {
     const t = this.threads.get(threadId)
-    if (!t) return null
-    if (t.userLo === userId) return t.userHi
-    if (t.userHi === userId) return t.userLo
-    return null
+    return t ? peerIn(t, userId) : null
   }
 
   persist(input: DmPersistInput): Promise<ChatMessageDTO> {
@@ -371,14 +387,14 @@ export class InMemoryDmRepository implements DmRepository {
   }
 
   markRead(threadId: string, userId: string, at: Date): Promise<void> {
-    const key = `${threadId}:${userId}`
+    const key = readKey(threadId, userId)
     const prev = this.reads.get(key) ?? 0
     if (at.getTime() > prev) this.reads.set(key, at.getTime())
     return Promise.resolve()
   }
 
   lastReadAt(threadId: string, userId: string): Promise<Date | null> {
-    const ms = this.reads.get(`${threadId}:${userId}`)
+    const ms = this.reads.get(readKey(threadId, userId))
     return Promise.resolve(ms !== undefined ? new Date(ms) : null)
   }
 
@@ -387,7 +403,7 @@ export class InMemoryDmRepository implements DmRepository {
     if (!thread) return Promise.resolve(0)
     const baseline = Math.max(
       thread.createdAt.getTime(),
-      this.reads.get(`${threadId}:${userId}`) ?? 0,
+      this.reads.get(readKey(threadId, userId)) ?? 0,
     )
     const unread = (this.log.get(threadId) ?? []).filter(
       (m) =>
@@ -408,7 +424,7 @@ export class InMemoryDmRepository implements DmRepository {
   ): Promise<DmThreadAggregate[]> {
     const out: DmThreadAggregate[] = []
     for (const t of this.threads.values()) {
-      const peerId = t.userLo === userId ? t.userHi : t.userHi === userId ? t.userLo : null
+      const peerId = peerIn(t, userId)
       if (peerId === null) continue
       if (this.isBlockedEitherWay && (await this.isBlockedEitherWay(userId, peerId))) continue
 
@@ -422,7 +438,7 @@ export class InMemoryDmRepository implements DmRepository {
       })
       const live = (this.log.get(t.id) ?? []).filter((m) => !m.deleted).map((m) => m.dto)
       const last = live.length > 0 ? live[live.length - 1]! : null
-      const lastReadMs = this.reads.get(`${t.id}:${userId}`) ?? 0
+      const lastReadMs = this.reads.get(readKey(t.id, userId)) ?? 0
       const baseline = Math.max(t.createdAt.getTime(), lastReadMs)
       const unread = live.filter(
         (m) => m.from?.id === peerId && new Date(m.createdAt).getTime() > baseline,
@@ -514,7 +530,7 @@ export class InMemoryBlocksRepository implements BlocksRepository {
     const limit = args?.limit ?? LIST_BLOCKS_DEFAULT_LIMIT
     const ids = [...(this.edges.get(blockerId) ?? [])].slice(0, limit)
     const blocked: PersonDTO[] = ids.map((id) => {
-      const u = this.users.get(id) ?? { id, displayName: `User ${id.slice(0, 4)}` }
+      const u = this.users.get(id) ?? { id, displayName: placeholderDisplayName(id) }
       return {
         id: u.id,
         name: u.displayName,
