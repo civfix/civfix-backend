@@ -50,6 +50,7 @@ import { makeContainerCleanupService } from "../cleanups.routes.js"
 import { CLEANUPS_DEFAULT_LIMIT } from "../../services/cleanup-service.js"
 import { makeDrizzleOrganizationRepository } from "../../services/host/organization-repository.drizzle.js"
 import type { OrganizationRepository } from "../../services/host/organization-repository.types.js"
+import { webBaseUrlOf } from "../../lib/base-url.js"
 
 export interface OrganizationOverrides {
   repo: OrganizationRepository
@@ -144,9 +145,7 @@ export function makeContainerOrganizationService(
       createNotification: (userId, input) =>
         container.getNotificationService(app.log).createNotification(userId, input),
     },
-    ...(container.env.WEB_ORIGINS[0] !== undefined
-      ? { webOrigin: container.env.WEB_ORIGINS[0] }
-      : {}),
+    webOrigin: webBaseUrlOf(container.env),
     logger: app.log,
   })
 }

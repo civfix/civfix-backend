@@ -41,6 +41,7 @@ import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.dri
 import { makeHostAuditSink } from "../services/host/host-audit.js"
 import { enrichCleanupDTOs } from "../services/cleanup-enrichment.js"
 import { makeCommsRuntime } from "../services/host/comms-wiring.js"
+import { webBaseUrlOf } from "../lib/base-url.js"
 import { makeInsightsGeneration } from "../services/host/host-analytics-cache.js"
 import { makeEventMediaPresigner } from "../services/host/event-media.js"
 import { SCHEDULE_MAX_AHEAD_MS, SCHEDULE_MAX_BACKDATE_MS } from "../services/cleanup-rules.js"
@@ -234,7 +235,7 @@ export async function registerCleanupRoutes(
   container: Container,
 ): Promise<void> {
   const csrfProtect = container.csrf.protect
-  const webOrigin = (container.env.WEB_ORIGINS[0] ?? "https://civfix.org").replace(/\/+$/, "")
+  const webOrigin = webBaseUrlOf(container.env)
 
   function repo(): CleanupRepository {
     const overrides = app.cleanupOverrides

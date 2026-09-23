@@ -2,7 +2,8 @@ import type { CounterStore } from "../../abuse/counter-store.js"
 import type { Container } from "../../di.js"
 import type { Sql } from "../../db/client.js"
 import { makeMediaPresigner } from "../media-presign.js"
-import { guestManageLinkBase, makeGuestPromotionNotifier } from "../guest-notify.js"
+import { makeGuestPromotionNotifier } from "../guest-notify.js"
+import { webBaseUrlOf } from "../../lib/base-url.js"
 import { makeDrizzleGuestRsvpRepository } from "../guest-rsvp-repository.drizzle.js"
 import { writeAudit } from "../admin/audit.js"
 import type { HostCapability } from "@civfix/shared"
@@ -140,7 +141,7 @@ export function makeContainerRegistrationServices(
       : makeGuestPromotionNotifier({
           repo: makeDrizzleGuestRsvpRepository(sql),
           mailer: container.mailer,
-          linkBase: guestManageLinkBase(container.env.WEB_ORIGINS),
+          linkBase: webBaseUrlOf(container.env),
         })
   const counters = overrides?.counters ?? container.getCounterStore()
   const insightsInvalidator: InsightsInvalidator =
