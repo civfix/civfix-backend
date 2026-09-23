@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { buildSeams } from "../../src/seams.js"
+import { makeSeams } from "../../src/seams.js"
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -9,7 +9,7 @@ describe("media-worker abuse-checks seam logging", () => {
   it("routes the real abuse checks' log lines to the worker's injected logger, not console", async () => {
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {})
     const lines: { line: string; extra?: Record<string, unknown> }[] = []
-    const seams = await buildSeams(
+    const seams = await makeSeams(
       { NODE_ENV: "test", USE_FAKE_ABUSE_NSFW: "0" },
       { log: (line, extra) => lines.push({ line, ...(extra ? { extra } : {}) }) },
     )

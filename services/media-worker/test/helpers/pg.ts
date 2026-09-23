@@ -80,7 +80,7 @@ function assertSkipAllowed(reason: string, env: NodeJS.ProcessEnv = process.env)
 export interface WorkerPgHarness {
   sql: Sql
   db: Db
-  /** The container's connection URI, for code under test that takes a DATABASE_URL (e.g. buildSeams). */
+  /** The container's connection URI, for code under test that takes a DATABASE_URL (e.g. makeSeams). */
   uri: string
   teardown(): Promise<void>
 }

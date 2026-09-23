@@ -44,7 +44,7 @@ const defaultSeamLog: JobLogFn = (line, extra) => console.warn(line, extra ?? {}
 const DEFAULT_NODE_ENV = "development"
 const DEFAULT_SERVICE_VERSION = "0.0.0"
 
-export async function buildSeams(
+export async function makeSeams(
   source: NodeJS.ProcessEnv = process.env,
   options: BuildSeamsOptions = {},
 ): Promise<WorkerSeams> {
@@ -77,17 +77,17 @@ export async function buildSeams(
         ? new FakeStorage()
         : r2Storage(source, () => req(source, "R2_BUCKET"))
 
-  const { dbHandle, repo, anonHoldRepo } = buildDbSeams(source)
+  const { dbHandle, repo, anonHoldRepo } = makeDbSeams(source)
 
   const findPhashDuplicate: FindPhashDuplicateFn | undefined = repo?.findPhashDuplicate
 
   const abuseChecks: AbuseChecks = fakeAbuse
     ? new FakeAbuseChecks()
-    : await buildRealAbuseChecks(source, limits, findPhashDuplicate, log)
+    : await makeRealAbuseChecks(source, limits, findPhashDuplicate, log)
 
   const download = makeDownloader(storage)
 
-  const inboundStorage = buildInboundStorage(source, {
+  const inboundStorage = makeInboundStorage(source, {
     storage,
     localStorageDir,
     usesR2: localStorageDir.length === 0 && !fakeStorage,
@@ -138,7 +138,7 @@ function r2Storage(source: NodeJS.ProcessEnv, bucket: () => string): R2Storage {
   })
 }
 
-function buildDbSeams(
+function makeDbSeams(
   source: NodeJS.ProcessEnv,
 ): Pick<WorkerSeams, "dbHandle" | "repo" | "anonHoldRepo"> {
   const databaseUrl = (source.DATABASE_URL ?? "").trim()
@@ -156,7 +156,7 @@ function buildDbSeams(
   return { dbHandle: undefined, repo: undefined, anonHoldRepo: undefined }
 }
 
-function buildInboundStorage(
+function makeInboundStorage(
   source: NodeJS.ProcessEnv,
   media: { storage: Storage; localStorageDir: string; usesR2: boolean },
 ): Storage | undefined {
@@ -185,7 +185,7 @@ function req(source: NodeJS.ProcessEnv, key: string): string {
   return v
 }
 
-async function buildRealAbuseChecks(
+async function makeRealAbuseChecks(
   source: NodeJS.ProcessEnv,
   limits: WorkerLimits,
   findPhashDuplicate: FindPhashDuplicateFn | undefined,

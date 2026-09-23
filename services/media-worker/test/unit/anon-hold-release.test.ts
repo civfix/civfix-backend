@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest"
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import type { LatLng } from "@civfix/shared"
-import { buildWorker } from "../../src/worker.js"
-import { buildJobs } from "../../src/jobs.js"
+import { makeWorker } from "../../src/worker.js"
+import { makeJobs } from "../../src/worker-jobs.js"
 import { loadLimits } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
 import type { WorkerSeams } from "../../src/seams.js"
@@ -114,9 +114,9 @@ describe("media-worker hold-release wiring", () => {
     const reportId = "anon-report-ready"
     const holdRepo = new MemHoldRepo(heldReport(reportId), repo)
 
-    const handle = buildJobs()
+    const handle = makeJobs()
     const seams = makeSeams({ repo, anonHoldRepo: holdRepo, abuse, storage })
-    const worker = await buildWorker(handle, seams)
+    const worker = await makeWorker(handle, seams)
     await worker.start()
 
     const valid = await fx.makeValidPng()
@@ -138,9 +138,9 @@ describe("media-worker hold-release wiring", () => {
     const reportId = "anon-report-nsfw"
     const holdRepo = new MemHoldRepo(heldReport(reportId), repo)
 
-    const handle = buildJobs()
+    const handle = makeJobs()
     const seams = makeSeams({ repo, anonHoldRepo: holdRepo, abuse, storage })
-    const worker = await buildWorker(handle, seams)
+    const worker = await makeWorker(handle, seams)
     await worker.start()
 
     const nsfw = await fx.makeNsfwJpeg()

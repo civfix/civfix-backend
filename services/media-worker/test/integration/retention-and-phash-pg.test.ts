@@ -12,7 +12,7 @@
  * Both are also failure-tolerant in production - the retention sweep counts and continues, the dedupe
  * error is downgraded to a note - so drift would surface as silently-doing-nothing, not as an incident.
  *
- * The phash lookup is reached through buildSeams(), i.e. the real production wiring, because how seams.ts
+ * The phash lookup is reached through makeSeams(), i.e. the real production wiring, because how seams.ts
  * wires it (only when DATABASE_URL is set) is part of what should not break.
  */
 
@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
 import { runRetentionSweep } from "../../src/jobs/retention-sweep.js"
-import { buildSeams, type WorkerSeams } from "../../src/seams.js"
+import { makeSeams, type WorkerSeams } from "../../src/seams.js"
 import { withWorkerPg, type WorkerPgHarness } from "../helpers/pg.js"
 
 const pg = await withWorkerPg()
@@ -43,8 +43,8 @@ beforeAll(async () => {
     RETURNING id
   `
   userId = user!.id
-  // The REAL production wiring: a DATABASE_URL is what makes buildSeams construct the phash lookup at all.
-  seams = await buildSeams({
+  // The REAL production wiring: a DATABASE_URL is what makes makeSeams construct the phash lookup at all.
+  seams = await makeSeams({
     NODE_ENV: "test",
     DATABASE_URL: h.uri,
     USE_FAKE_STORAGE: "1",
@@ -369,13 +369,13 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
 })
 
 describe.skipIf(!pg)("phash near-duplicate lookup against the real media_assets", () => {
-  /** The lookup buildSeams wired; asserted present because `undefined` here would skip every case. */
+  /** The lookup makeSeams wired; asserted present because `undefined` here would skip every case. */
   function lookup(
     hash: string,
     opts?: { excludeAssetId?: string; excludeReportId?: string },
   ): Promise<{ dup: boolean; ofReportId?: string | null }> {
     const fn = seams?.findPhashDuplicate
-    expect(fn, "buildSeams must wire findPhashDuplicate when DATABASE_URL is set").toBeDefined()
+    expect(fn, "makeSeams must wire findPhashDuplicate when DATABASE_URL is set").toBeDefined()
     return fn!(hash, opts)
   }
 

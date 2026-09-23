@@ -300,9 +300,9 @@ class FakeWorkerJobs extends FakeJobs implements WorkerJobs {
   }
 }
 
-export function buildJobs(source: NodeJS.ProcessEnv = process.env): JobsHandle {
+export function makeJobs(source: NodeJS.ProcessEnv = process.env): JobsHandle {
   const fakeJobs = useFakeJobs(source)
-  // Mirrors buildSeams' USE_FAKE_STORAGE guard: FakeJobs consumes NOTHING from
+  // Mirrors makeSeams' USE_FAKE_STORAGE guard: FakeJobs consumes NOTHING from
   // pg-boss, so a worker booted with it in production starts cleanly, reports healthy, and every uploaded
   // media stays `validating` forever with no error anywhere - the silent no-op the storage guard exists
   // to prevent, in the one seam that makes the whole process pointless.

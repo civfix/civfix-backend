@@ -12,13 +12,13 @@ import {
 } from "@civfix/api/queue-names"
 import { releaseAnonHoldIfReady, type HeldReportView } from "@civfix/api/anon-hold-release"
 import {
-  buildJobs,
+  makeJobs,
   stopGraceMsFor,
   type JobsHandle,
   type QueueOptions,
   type WorkerJobs,
-} from "./jobs.js"
-import { buildSeams, type WorkerSeams } from "./seams.js"
+} from "./worker-jobs.js"
+import { makeSeams, type WorkerSeams } from "./seams.js"
 import {
   CHAT_PARTITION_CRON,
   HOLD_RELEASE_SWEEP_CRON,
@@ -348,11 +348,11 @@ async function runBootPartitionMaintenance(seams: WorkerSeams): Promise<void> {
   }
 }
 
-export async function buildWorker(
-  handle: JobsHandle = buildJobs(),
+export async function makeWorker(
+  handle: JobsHandle = makeJobs(),
   seams?: WorkerSeams,
 ): Promise<Worker> {
-  const resolvedSeams = seams ?? (await buildSeams())
+  const resolvedSeams = seams ?? (await makeSeams())
   let started = false
 
   async function start(): Promise<void> {
@@ -406,7 +406,7 @@ export function makeShutdown(
 }
 
 export async function start(): Promise<Worker> {
-  const worker = await buildWorker()
+  const worker = await makeWorker()
   await worker.start()
   console.log("civfix media-worker started")
 

@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { FakeStorage } from "@civfix/shared/fakes"
 import { LocalDiskStorage } from "@civfix/api/adapters/storage-local"
-import { buildSeams } from "../../src/seams.js"
+import { makeSeams } from "../../src/seams.js"
 
 const PUBLIC_API_URL = "http://localhost:8080"
 const SIGNING_KEY = "worker-test-local-storage-signing-key"
@@ -42,7 +42,7 @@ afterEach(async () => {
 
 describe("media-worker local-disk storage seam", () => {
   it("selects the local-disk adapter over the in-memory fake", async () => {
-    const seams = await buildSeams(source())
+    const seams = await makeSeams(source())
     try {
       expect(seams.storage).toBeInstanceOf(LocalDiskStorage)
     } finally {
@@ -51,7 +51,7 @@ describe("media-worker local-disk storage seam", () => {
   })
 
   it("falls back to the fake when no local directory is configured", async () => {
-    const seams = await buildSeams({ NODE_ENV: "test", USE_FAKE_ABUSE_NSFW: "1" })
+    const seams = await makeSeams({ NODE_ENV: "test", USE_FAKE_ABUSE_NSFW: "1" })
     try {
       expect(seams.storage).toBeInstanceOf(FakeStorage)
     } finally {
@@ -65,7 +65,7 @@ describe("media-worker local-disk storage seam", () => {
       contentType: "image/jpeg",
     })
 
-    const seams = await buildSeams(source())
+    const seams = await makeSeams(source())
     try {
       const bytes = await seams.storage.getObject("uploads/2026/07/cross-process")
       expect(Buffer.from(bytes ?? new Uint8Array()).toString()).toBe("shared bytes")
@@ -87,7 +87,7 @@ describe("media-worker local-disk storage seam", () => {
 
   it("mints a presigned GET the API can verify, so download.ts keeps working", async () => {
     const api = makeApiMediaStore()
-    const seams = await buildSeams(source())
+    const seams = await makeSeams(source())
     try {
       const url = new URL(await seams.storage.presignGet("uploads/2026/07/downloadable", 120))
       expect(url.origin).toBe(PUBLIC_API_URL)
@@ -110,7 +110,7 @@ describe("media-worker local-disk storage seam", () => {
   })
 
   it("refuses to build the local-disk seam in production", async () => {
-    await expect(buildSeams(source({ NODE_ENV: "production" }))).rejects.toThrow(
+    await expect(makeSeams(source({ NODE_ENV: "production" }))).rejects.toThrow(
       /DEVELOPMENT ONLY|production/i,
     )
   })
