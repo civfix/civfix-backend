@@ -114,6 +114,58 @@ describe("provider sign-in with an unverified email", () => {
   })
 })
 
+describe("provider sign-in onto an account whose email was never verified", () => {
+  const ACCOUNT_EXISTS_MESSAGE =
+    "An account already uses this email address. Sign in the way you did before, for example with a code sent to your email."
+
+  async function plantedAccount(users: InMemoryUserStore) {
+    return users.create(VICTIM_EMAIL, {
+      displayName: "Planted",
+      role: "citizen",
+      emailVerified: false,
+    })
+  }
+
+  it("refuses to adopt the row instead of linking the verified identity to it", async () => {
+    const { oauth, users, oauthStore, verifier } = makeServices()
+    const planted = await plantedAccount(users)
+    verifier.register("t", claims("owner-sub", VICTIM_EMAIL))
+
+    const attempt = oauth.signInWithGoogleIdToken("t")
+
+    await expect(attempt).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: ACCOUNT_EXISTS_MESSAGE,
+    })
+    expect(await oauthStore.findByProvider("google", "owner-sub")).toBeNull()
+    const after = await users.findById(planted.id)
+    expect(after).toMatchObject({
+      email: VICTIM_EMAIL,
+      emailVerified: false,
+      displayName: "Planted",
+      deletedAt: null,
+    })
+  })
+
+  it("refuses the same row when a concurrent insert surfaces it", async () => {
+    const { oauth, users, oauthStore, verifier } = makeServices()
+    const planted = await plantedAccount(users)
+    verifier.register("t", claims("owner-sub", VICTIM_EMAIL))
+    const findByEmail = users.findByEmail.bind(users)
+    let calls = 0
+    users.findByEmail = (email: string) => {
+      calls += 1
+      return calls === 1 ? Promise.resolve(null) : findByEmail(email)
+    }
+
+    await expect(oauth.signInWithAppleIdToken("t", undefined)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(await oauthStore.findByProvider("apple", "owner-sub")).toBeNull()
+    expect((await users.findById(planted.id))?.emailVerified).toBe(false)
+  })
+})
+
 describe("strict user creation for provider sign-in", () => {
   it("rejects an email that another account holds instead of returning that account", async () => {
     const users = new InMemoryUserStore()
