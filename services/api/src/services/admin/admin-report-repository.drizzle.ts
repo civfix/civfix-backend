@@ -9,7 +9,13 @@ import {
 } from "./pagination.js"
 import { isUuid } from "../../db/cursor-helpers.js"
 import { writeAudit } from "./audit.js"
-import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import {
+  andAll,
+  firstUsableLegacyContactExpr,
+  ilikeAnyOf,
+  usableContactRowExpr,
+  type SqlFragment,
+} from "./sql-fragments.js"
 import { personSelect, toPersonRecord } from "./admin-person.js"
 import { STATUS_BUCKETS, toTimelineKind } from "./admin-report-status.js"
 import {
@@ -328,13 +334,11 @@ export function makeDrizzleAdminReportRepository(
           j.forward_body_template,
           (SELECT jc.email FROM jurisdiction_contacts jc
              WHERE jc.geoid = j.geoid AND jc.category = r.category
-               AND jc.email IS NOT NULL AND jc.email <> ''
-               AND jc.bounced_at IS NULL LIMIT 1) AS cat_email,
+               AND ${usableContactRowExpr(sql, "jc")} LIMIT 1) AS cat_email,
           (SELECT jc.email FROM jurisdiction_contacts jc
              WHERE jc.geoid = j.geoid AND jc.category IS NULL
-               AND jc.email IS NOT NULL AND jc.email <> ''
-               AND jc.bounced_at IS NULL LIMIT 1) AS default_email,
-          (SELECT j.contact_emails[1]) AS legacy_email
+               AND ${usableContactRowExpr(sql, "jc")} LIMIT 1) AS default_email,
+          ${firstUsableLegacyContactExpr(sql, "j")} AS legacy_email
         FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
         WHERE r.id = ${id}
@@ -520,7 +524,7 @@ export function makeDrizzleAdminReportRepository(
     ): Promise<boolean | null> {
       return sql.begin(async (tx) => {
         const exists = await tx<{ status: AdminReportStatus }[]>`
-          SELECT status FROM reports WHERE id = ${id} AND deleted_at IS NULL FOR UPDATE
+          SELECT status FROM reports WHERE id = ${id} AND deleted_at IS NULL FOR NO KEY UPDATE
         `
         const report = exists[0]
         if (!report) return null

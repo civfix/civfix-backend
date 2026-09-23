@@ -2,7 +2,7 @@ import type { JurisdictionDTO } from "@civfix/shared"
 import type { Geocoder, Jobs } from "@civfix/shared/interfaces"
 import type { Sql } from "../db/client.js"
 import { resolveJurisdiction } from "../db/sql/jurisdiction.js"
-import { legacyContactEmailUsable } from "./admin/jurisdiction-contacts-repository.drizzle.js"
+import { legacyContactEmailUsable } from "./admin/sql-fragments.js"
 import { formatCityStateLabel, uspsFromGeoid } from "../adapters/geocoder.tiger.js"
 import type {
   JurisdictionLookup,

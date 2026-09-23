@@ -14,7 +14,7 @@ import {
   type JurisdictionDiscoveryJob,
 } from "../../services/jurisdiction-service.js"
 import { makeDrizzleDiscoveryRepository } from "./discovery-repository.drizzle.js"
-import { legacyContactEmailUsable } from "./jurisdiction-contacts-repository.drizzle.js"
+import { legacyContactEmailUsable } from "./sql-fragments.js"
 
 export async function registerDiscoveryJobs(container: Container): Promise<void> {
   await container.jobs.work(JURISDICTION_DISCOVERY_JOB, async (job) => {

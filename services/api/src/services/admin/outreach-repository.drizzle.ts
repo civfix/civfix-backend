@@ -11,7 +11,7 @@ import {
   parseCount,
   type CategoryCountRow,
 } from "./category-counts.js"
-import { legacyContactEmailUsable } from "./jurisdiction-contacts-repository.drizzle.js"
+import { legacyContactEmailUsable } from "./sql-fragments.js"
 
 interface DigestRow extends CategoryCountRow {
   org: string | null

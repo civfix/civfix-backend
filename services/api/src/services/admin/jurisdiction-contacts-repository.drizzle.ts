@@ -1,4 +1,4 @@
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Sql } from "../../db/client.js"
 import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination.js"
 import { writeAudit } from "./audit.js"
 import {
@@ -27,31 +27,7 @@ import type {
 } from "./jurisdiction-contacts-types.js"
 import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
-import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
-
-// A legacy contact_emails address has no bounce column: the bounce handler leaves only a 'bounced'
-// mail_events row on the jurisdiction's thread (or a bounced_at on a matching per-category row). Events
-// older than the last contact save are ignored, the same scoping the directory's bounced flag uses, so
-// re-entering a fixed address makes it usable again.
-export function legacyContactEmailUsable(
-  sql: Queryable,
-  refs: { email: SqlFragment; geoid: SqlFragment; contactUpdatedAt: SqlFragment },
-): SqlFragment {
-  return sql`
-    NOT EXISTS (
-      SELECT 1 FROM jurisdiction_contacts bc
-      WHERE bc.geoid = ${refs.geoid} AND bc.bounced_at IS NOT NULL
-        AND lower(bc.email) = lower(${refs.email})
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM mail_events me
-      JOIN mail_threads mt ON mt.id = me.thread_id
-      WHERE mt.jurisdiction_geoid = ${refs.geoid} AND me.type = 'bounced'
-        AND lower(me.meta->>'failedRecipient') = lower(${refs.email})
-        AND me.created_at > COALESCE(${refs.contactUpdatedAt}, '-infinity'::timestamptz)
-    )
-  `
-}
+import { ilikeAnyOf } from "./sql-fragments.js"
 
 const PG_UNIQUE_VIOLATION = "23505"
 const JURISDICTION_HANDLE_CONSTRAINT = "jurisdictions_handle_lower_key"
