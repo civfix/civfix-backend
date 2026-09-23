@@ -288,6 +288,9 @@ export interface SignupRegistrationSink {
     now: Date
   }): unknown
   cancelSignupRegistration(args: { cleanupId: string; userId: string; now: Date }): unknown
+  applyBan(args: { cleanupId: string; userId: string; actorId: string; now: Date }): {
+    releasedTicketTypeIds: string[]
+  }
 }
 
 export function signupSeat(): SignupSeat {
@@ -1122,9 +1125,11 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const idx = this.members.findIndex(
       (m) => m.cleanupId === cleanupId && m.userId === userId && m.role !== "organizer",
     )
+    let releasedWaitlistTicketTypeIds: string[] = []
     if (idx >= 0) {
       this.members.splice(idx, 1)
-      this.cancelSignupRegistration(cleanupId, userId)
+      const ban = this.registrationSink?.applyBan({ cleanupId, userId, actorId, now: this.now() })
+      releasedWaitlistTicketTypeIds = ban?.releasedTicketTypeIds ?? []
       if (!this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)) {
         this.bans.push({ cleanupId, userId, bannedByUserId: actorId })
       }
@@ -1133,7 +1138,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
     const going = this.goingOf(cleanupId)
     return Promise.resolve(
       idx >= 0
-        ? { kind: "removed", going, releasedWaitlistTicketTypeIds: [] }
+        ? { kind: "removed", going, releasedWaitlistTicketTypeIds }
         : { kind: "not_member", going },
     )
   }

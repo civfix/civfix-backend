@@ -224,6 +224,38 @@ describe("a ticketed event", () => {
   })
 })
 
+describe("a host removing an attendee who holds a ticket", () => {
+  it("cancels the ticketed registration, releases its seats and kills the ticket", async () => {
+    const id = seedEvent()
+    const type = seedTicketType(id)
+    const seatId = randomUUID()
+    const registered = await registrations.registerTx({
+      cleanupId: id,
+      subject: { kind: "user", userId: MEMBER },
+      ticketTypeId: type.id,
+      seats: [{ id: seatId, attendeeName: null, tokenHash: TEST_TICKET_SIGNER.hashFor(seatId) }],
+      accessCodeHash: null,
+      answers: [],
+      consent: null,
+      slotId: null,
+      source: "self",
+      idempotencyKey: "ticketed-ban",
+      waitlistId: null,
+      now: new Date(),
+    })
+    expect(registered.kind).toBe("registered")
+    repo.seedMember(id, MEMBER, "member")
+
+    await service.removeMember(id, ORG, MEMBER)
+
+    expect(activeRegistrationsOf(id, MEMBER)).toHaveLength(0)
+    expect(registrations.ticketTypes.get(type.id)?.reservedSeats).toBe(0)
+    expect(await rosterUserIds(id)).toEqual([])
+    const scanned = await checkin.scan({ id, token: TEST_TICKET_SIGNER.tokenFor(seatId) }, ORG)
+    expect(scanned.outcome).toBe("cancelled")
+  })
+})
+
 describe("a ticket type added after plain sign-ups already exist", () => {
   it("still lets leaving cancel the seat and kills the token", async () => {
     const id = seedEvent()

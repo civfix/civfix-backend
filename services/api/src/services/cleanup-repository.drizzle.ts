@@ -22,7 +22,7 @@ import { publicServedKeyExpr } from "./media-served-key.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./host/event-media.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup } from "./media-bindings.js"
 import { isUniqueViolationOn } from "./host/registration-sql.js"
-import { cancelWaitlistEntriesIn } from "./host/registration-repository.drizzle.js"
+import { applyBanIn } from "./host/registration-repository.drizzle.js"
 import { deterministicUuid } from "./deterministic-uuid.js"
 import type {
   AttendeeView,
@@ -1004,28 +1004,8 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           RETURNING user_id
         `
         if (deleted.length > 0) {
-          await cancelSignupRegistrationIn(tx, {
-            cleanupId,
-            userId,
-            actorId,
-            now: cleanup.now,
-          })
-          await tx`
-            INSERT INTO cleanup_bans (cleanup_id, user_id, banned_by_user_id)
-            VALUES (${cleanupId}, ${userId}, ${actorId})
-            ON CONFLICT (cleanup_id, user_id) DO NOTHING
-          `
-          await tx`
-            DELETE FROM cleanup_slot_claims
-            WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
-          `
-          const cancelled = await cancelWaitlistEntriesIn(tx, {
-            cleanupId,
-            ticketTypeId: null,
-            subject: { kind: "user", userId },
-            now: cleanup.now,
-          })
-          releasedWaitlistTicketTypeIds = cancelled.releasedTicketTypeIds
+          const ban = await applyBanIn(tx, { cleanupId, userId, actorId, now: cleanup.now })
+          releasedWaitlistTicketTypeIds = ban.releasedTicketTypeIds
         }
         const counted = await tx<{ count: number }[]>`
           SELECT
