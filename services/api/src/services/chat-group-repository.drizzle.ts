@@ -3,11 +3,11 @@ import type { MediaDTO, MediaKind, MediaStatus, PersonDTO } from "@civfix/shared
 import type { ChatGroupKind, ChatGroupVisibility } from "../db/schema/chat-groups.js"
 import type { GROUP_MEMBER_ROLE_VALUES } from "../db/schema/types.js"
 import type { PresignMedia } from "./media-presign.js"
-import { blockedPairExpr } from "./hidden-identity.js"
+import { blockedPairExpr } from "./blocks-sql.js"
 import { toRoomMemberPerson, type RoomMemberIdentityRow } from "./room-member-person.js"
 import { resolveAvatarMediaOrThrow } from "./avatar-media.js"
 import { userUploader } from "./media-uploader.js"
-import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
+import { monotonicReadWatermarkUpdate } from "./read-watermark-repository.drizzle.js"
 import { isUuid } from "../db/cursor-helpers.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 

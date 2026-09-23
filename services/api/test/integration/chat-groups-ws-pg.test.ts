@@ -58,8 +58,8 @@ import {
 } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeChatMentionResolver } from "../../src/services/chat-mention-resolver.js"
-import { recordChatMentions } from "../../src/services/chat-mentions.drizzle.js"
-import { resolveMentionTargets } from "../../src/services/mention-resolver.drizzle.js"
+import { recordChatMentions } from "../../src/services/chat-mentions-repository.drizzle.js"
+import { resolveMentionTargets } from "../../src/services/mention-targets-repository.drizzle.js"
 
 const pg = await withPg()
 

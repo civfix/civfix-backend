@@ -4,7 +4,7 @@ import {
   resolveHandles,
   resolveUserIdsToMentions,
   resolveMentionTargets,
-} from "../../src/services/social-repository.drizzle.js"
+} from "../../src/services/mention-targets-repository.drizzle.js"
 
 const AUTHOR = "22222222-2222-2222-2222-222222222222"
 const ALICE = "44444444-4444-4444-4444-444444444444"

@@ -28,7 +28,7 @@ import {
   type ReportVisibleFn,
   type ThreadRecipientsOf,
 } from "../ws/gateway.js"
-import { resolveMentionTargets } from "../services/mention-resolver.drizzle.js"
+import { resolveMentionTargets } from "../services/mention-targets-repository.drizzle.js"
 import { makeChatMentionResolver } from "../services/chat-mention-resolver.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
@@ -53,11 +53,14 @@ import {
   type ChatRepository,
 } from "../services/chat-repository.drizzle.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
-import { recordChatMentions, roomMemberIdsAmong } from "../services/chat-mentions.drizzle.js"
+import {
+  recordChatMentions,
+  roomMemberIdsAmong,
+} from "../services/chat-mentions-repository.drizzle.js"
 import {
   makeDrizzleChatReadState,
   monotonicReadWatermarkUpdate,
-} from "../services/chat-read-state.drizzle.js"
+} from "../services/read-watermark-repository.drizzle.js"
 import {
   makeNotificationService,
   type NotificationService,

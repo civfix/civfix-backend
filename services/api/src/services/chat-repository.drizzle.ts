@@ -16,7 +16,7 @@ import {
   loadChatReactionsFor,
   toggleChatReaction,
 } from "./chat-reactions.drizzle.js"
-import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.js"
+import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions-repository.drizzle.js"
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
 import type { PresignMedia } from "./media-presign.js"
 import { mapSystemRow } from "./report-chat-repository.drizzle.js"
@@ -24,13 +24,10 @@ import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-ment
 import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
 import { loadPollsFor } from "./chat-poll-repository.drizzle.js"
 import {
+  makeDrizzleRoomMessagesRepository,
   PIN_LIST_CAP,
-  roomFindMessage,
-  roomHistory,
-  roomListPins,
-  roomSetPinned,
   type RoomScopeSql,
-} from "./chat-room-scope.drizzle.js"
+} from "./room-messages-repository.drizzle.js"
 import { liveMessageIds, toTombstoneDTO } from "./chat-tombstone.js"
 
 export interface ReportCityContext {
@@ -476,7 +473,12 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     viewerUserId: string | null,
     around?: string,
   ): Promise<ChatHistoryPage> {
-    return roomHistory(sql, roomSql(scope), before, limit, viewerUserId, around)
+    return makeDrizzleRoomMessagesRepository(sql, roomSql(scope)).history(
+      before,
+      limit,
+      viewerUserId,
+      around,
+    )
   }
 
   function findMessageScoped(
@@ -484,7 +486,10 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     messageId: string,
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO | null> {
-    return roomFindMessage(sql, roomSql(scope), messageId, viewerUserId)
+    return makeDrizzleRoomMessagesRepository(sql, roomSql(scope)).findMessage(
+      messageId,
+      viewerUserId,
+    )
   }
 
   async function editScoped(
@@ -512,14 +517,18 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     userId: string,
     pinned: boolean,
   ): Promise<ChatMessageDTO | null> {
-    return roomSetPinned(sql, roomSql(scope), messageId, userId, pinned)
+    return makeDrizzleRoomMessagesRepository(sql, roomSql(scope)).setPinned(
+      messageId,
+      userId,
+      pinned,
+    )
   }
 
   function listPinsScoped(
     scope: RoomScope,
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO[]> {
-    return roomListPins(sql, roomSql(scope), viewerUserId)
+    return makeDrizzleRoomMessagesRepository(sql, roomSql(scope)).listPins(viewerUserId)
   }
 
   async function softDeleteScoped(

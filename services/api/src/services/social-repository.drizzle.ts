@@ -16,6 +16,7 @@ import type {
   EventKind,
   EventVisibility,
   SocialLinks,
+  UserSearchResultDTO,
 } from "@civfix/shared"
 import {
   encodeNameCursor,
@@ -32,13 +33,23 @@ import { escapeLike } from "./admin/like.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
+import { makeDrizzleUserSearchRepository } from "./user-search-repository.drizzle.js"
 
-export { searchByHandlePrefix, searchMentionable } from "./user-search.drizzle.js"
-export {
-  resolveHandles,
-  resolveMentionTargets,
-  resolveUserIdsToMentions,
-} from "./mention-resolver.drizzle.js"
+export const searchByHandlePrefix = (
+  sql: Sql,
+  q: string,
+  viewerId: string,
+  limit: number,
+): Promise<UserSearchResultDTO[]> =>
+  makeDrizzleUserSearchRepository(sql).searchByHandlePrefix(q, viewerId, limit)
+
+export const searchMentionable = (
+  sql: Sql,
+  q: string,
+  viewerId: string,
+  limit: number,
+): Promise<UserSearchResultDTO[]> =>
+  makeDrizzleUserSearchRepository(sql).searchMentionable(q, viewerId, limit)
 
 const SUGGEST_NEARBY_METERS = 25_000
 

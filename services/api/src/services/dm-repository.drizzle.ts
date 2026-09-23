@@ -15,19 +15,16 @@ import {
   loadChatReactionsFor,
   toggleChatReaction,
 } from "./chat-reactions.drizzle.js"
-import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.js"
+import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions-repository.drizzle.js"
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
-import { monotonicReadWatermark } from "./chat-read-state.drizzle.js"
+import { monotonicReadWatermark } from "./read-watermark-repository.drizzle.js"
 import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
 import type { TimeCursor } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
 import {
-  roomFindMessage,
-  roomHistory,
-  roomListPins,
-  roomSetPinned,
+  makeDrizzleRoomMessagesRepository,
   type RoomScopeSql,
-} from "./chat-room-scope.drizzle.js"
+} from "./room-messages-repository.drizzle.js"
 import { liveMessageIds, toTombstoneDTO } from "./chat-tombstone.js"
 
 // dm_messages is range-partitioned on created_at and an ack carries only the message id, so the bound
@@ -507,7 +504,12 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       viewerUserId: string | null = null,
       around?: string,
     ): Promise<ChatHistoryPage> {
-      return roomHistory(sql, roomSql(threadId), before, limit, viewerUserId, around)
+      return makeDrizzleRoomMessagesRepository(sql, roomSql(threadId)).history(
+        before,
+        limit,
+        viewerUserId,
+        around,
+      )
     },
 
     findMessage(
@@ -515,7 +517,10 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       messageId: string,
       viewerUserId: string | null,
     ): Promise<ChatMessageDTO | null> {
-      return roomFindMessage(sql, roomSql(threadId), messageId, viewerUserId)
+      return makeDrizzleRoomMessagesRepository(sql, roomSql(threadId)).findMessage(
+        messageId,
+        viewerUserId,
+      )
     },
 
     toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean> {
@@ -673,11 +678,15 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       userId: string,
       pinned: boolean,
     ): Promise<ChatMessageDTO | null> {
-      return roomSetPinned(sql, roomSql(threadId), messageId, userId, pinned)
+      return makeDrizzleRoomMessagesRepository(sql, roomSql(threadId)).setPinned(
+        messageId,
+        userId,
+        pinned,
+      )
     },
 
     listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
-      return roomListPins(sql, roomSql(threadId), viewerUserId)
+      return makeDrizzleRoomMessagesRepository(sql, roomSql(threadId)).listPins(viewerUserId)
     },
   }
 }
