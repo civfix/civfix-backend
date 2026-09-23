@@ -12,30 +12,31 @@
 #     docker build -f services/media-worker/Dockerfile -t civfix/media-worker:latest .
 #
 # FFMPEG / SHARP IN-CONTAINER (the key correctness point):
-#   * FFMPEG IS PINNED AND CHECKSUMMED HERE, not taken from npm (audit H8). ffprobe-static@3.1.0 ships
-#     an FFmpeg 4.0.2 binary from 2018 — the tool that must interpret untrusted container bytes — with
-#     no channel for the demuxer memory-safety fixes released since. The `ffmpeg` stage below downloads
-#     ONE pinned release per CPU architecture (FFMPEG_URL_/FFMPEG_SHA256_{AMD64,ARM64} ARGs, selected
-#     by BuildKit's TARGETARCH — the boxes are arm64), verifies its SHA-256 and fails the build on a
+#   * FFMPEG IS PINNED AND CHECKSUMMED HERE, not taken from npm. ffprobe-static@3.1.0 ships an FFmpeg
+#     4.0.2 binary from 2018 (the tool that must interpret untrusted container bytes) with no channel
+#     for the demuxer memory-safety fixes released since. The `ffmpeg` stage below downloads ONE pinned
+#     release per CPU architecture (FFMPEG_URL_/FFMPEG_SHA256_{AMD64,ARM64} ARGs, selected
+#     by BuildKit's TARGETARCH; the boxes are arm64), verifies its SHA-256 and fails the build on a
 #     mismatch. The runtime stage exports FFMPEG_PATH/FFPROBE_PATH, which sandbox/binaries.ts REQUIRES
 #     in production (the npm static packages are devDependencies and are pruned out of this image by
 #     `pnpm --prod deploy`, so there is no silent fallback to the 2018 build).
 #     BUMPING IT: pick the linux64 AND linuxarm64 assets of one newer autobuild, put their URLs in the
-#     two FFMPEG_URL_* ARGs, and set each FFMPEG_SHA256_* to the `sha256sum` of its download. BtbN prunes old dated autobuild tags, so
-#     a stale pin eventually 404s the build — that is a loud failure, never a silent downgrade.
-#   * sharp 0.33.x ships prebuilt linux-x64 binaries (@img/sharp-linux-x64) that run on glibc, which the
+#     two FFMPEG_URL_* ARGs, and set each FFMPEG_SHA256_* to the `sha256sum` of its download. BtbN
+#     prunes old dated autobuild tags, so a stale pin eventually 404s the build: a loud failure, never a
+#     silent downgrade.
+#   * sharp 0.33.x ships prebuilt linux binaries (@img/sharp-linux-*) that run on glibc, which the
 #     Debian bookworm base provides. No build toolchain or libvips apt package is required.
 #   Both are installed INSIDE this linux image (never copied from the host), so the platform is correct.
 #
-# DECODER PRIVILEGE SEPARATION (audit H7): the runtime stage provisions a SECOND, credential-less user
+# DECODER PRIVILEGE SEPARATION: the runtime stage provisions a SECOND, credential-less user
 # (mediatools, uid/gid 1001) and puts `node` in its group. Node holds DATABASE_URL and the R2 keys; every
-# untrusted-byte parser — ffmpeg, ffprobe AND the sharp/libvips image lane (dist/image-lane.js) — runs as
+# untrusted-byte parser (ffmpeg, ffprobe AND the sharp/libvips image lane, dist/image-lane.js) runs as
 # uid 1001 with an empty environment (src/sandbox/exec.ts), so a decoder RCE can read neither the Node
 # process's /proc/<pid>/environ nor its descriptors.
 #
 # The uid switch is done by /usr/bin/setpriv (util-linux, installed below), NOT by spawn's uid/gid: this
 # process must hold ambient CAP_SETUID/CAP_SETGID to change a child's uid at all, and ambient caps
-# survive execve — a plain uid-1000-to-1001 spawn would leave CAP_SETUID in the decoder, which could then
+# survive execve: a plain uid-1000-to-1001 spawn would leave CAP_SETUID in the decoder, which could then
 # setuid() back to `node`. setpriv switches, then clears the ambient + inheritable sets and sets
 # no_new_privs before exec'ing, so the decoder has no capabilities at all. The container therefore starts
 # as root ONLY to run docker-entrypoint.sh, which setpriv's to `node` keeping exactly those two caps
@@ -51,7 +52,6 @@
 #           entrypoint, run the worker. (No port / no HTTP healthcheck: the worker is a queue consumer;
 #           liveness is observed via pg-boss + logs. Docker restarts it on exit.)
 
-# ----------------------------------------------------------------------------------------------------
 FROM node:22-bookworm-slim AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
@@ -59,7 +59,6 @@ ENV PNPM_HOME="/pnpm" \
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 WORKDIR /app
 
-# ----------------------------------------------------------------------------------------------------
 FROM base AS ffmpeg
 ARG TARGETARCH
 ARG FFMPEG_VERSION=n8.1.2
@@ -86,7 +85,6 @@ RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
  && /opt/ffmpeg/bin/ffprobe -version | head -n 1 | grep -q "$FFMPEG_VERSION" \
  && /opt/ffmpeg/bin/ffmpeg -version | head -n 1 | grep -q "$FFMPEG_VERSION"
 
-# ----------------------------------------------------------------------------------------------------
 FROM base AS build
 COPY . .
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
@@ -95,13 +93,12 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 # selects the worker AND its workspace dependencies, built in order.
 RUN pnpm --filter @civfix/media-worker... build
 # Production-pruned, self-contained deployment of just the worker at /out. The native/external deps
-# (sharp, ...) are installed here for linux-x64 and carried into runtime. ffmpeg-static/ffprobe-static
-# are devDependencies and are pruned out on purpose (H8): the runtime ffmpeg is the pinned, checksummed
+# (sharp, ...) are installed here for the target platform and carried into runtime.
+# ffmpeg-static/ffprobe-static are devDependencies and are pruned out on purpose: the runtime ffmpeg is the pinned, checksummed
 # one from the `ffmpeg` stage.
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/media-worker --prod deploy /out
 
-# ----------------------------------------------------------------------------------------------------
 FROM base AS runtime
 # Same contract as the api image: the release identity is a property of the promoted artifact, not of the
 # deploy that placed it. Read by src/seams.ts as the GlitchTip `release`.

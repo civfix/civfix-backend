@@ -3,9 +3,9 @@ name: Deploy (production)
 # Deploys the civfix backend to the production VPS by SSHing in and running the on-box deploy script
 # (/opt/civfix/ops/deploy.sh, a shim that execs /opt/civfix/infra/ops/deploy.sh). That script git-pulls
 # the infra repo (single `main` branch; the box's env marker at /etc/civfix/env selects env/prod.sh and
-# secrets/prod/) + this backend (origin/main), SOPS-decrypts the secrets, then rebuilds and blue/green
-# swaps the docker compose stack. The build happens ON the VPS (4-vCPU arm64 box); this workflow only
-# triggers it and then proves the public API stayed up.
+# secrets/prod/) + this backend, SOPS-decrypts the secrets, PULLS the promoted release images and
+# blue/green swaps the docker compose stack. This workflow only triggers it and then proves the public
+# API stayed up.
 #
 # PRODUCTION IS PROMOTED, NOT BUILT. A merge to main deploys STAGING (deploy-staging.yml) and publishes
 # the release images; this workflow takes those exact digests and puts them in front of production.
@@ -14,15 +14,15 @@ name: Deploy (production)
 # Triggers:
 #   - A PUBLISHED GitHub release whose tag matches `v*`. Cutting a release IS the production deploy.
 #   - Manually via the Actions "Run workflow" button (workflow_dispatch), which re-deploys the current
-#     newest release — the recovery path when a deploy failed after the release was already published.
+#     newest release: the recovery path when a deploy failed after the release was already published.
 # Neither carries a ref: the SSH forced command discards any client-sent command, and the on-box
 # deploy.sh resolves env/prod.sh's CIVFIX_REF=@latest-release to the highest `v*` tag MERGED INTO
 # origin/main. Production therefore cannot run code that did not go through the staging lane.
 #
 # BECAUSE THE BOX RESOLVES "NEWEST RELEASE" ITSELF, the promote job below refuses to run when the tag
 # being released is not the newest one. Publishing a release for an older tag would otherwise deploy the
-# NEWER code while reporting success against the older tag — a silent wrong-deploy, and exactly the shape
-# a panicked "re-release the last good version" rollback takes. Roll back on the box instead:
+# NEWER code while reporting success against the older tag: a silent wrong-deploy, and exactly the
+# shape a panicked "re-release the last good version" rollback takes. Roll back on the box instead:
 #   sudo -u civfix CIVFIX_REF=<tag|sha> /opt/civfix/infra/ops/deploy.sh
 # or, for a bad-but-healthy release, ops/rollback.sh (~10s, flips back to the retired color).
 #
@@ -47,18 +47,19 @@ name: Deploy (production)
 # memoized 5s server-side.
 #
 # STEP ORDER IS LOAD-BEARING: the probe step only measures and records; the readiness gate runs next
-# with `if: always()`; the availability + deploy-rc assertion runs LAST, also `if: always()`. A red
-# availability result therefore can never skip /readyz, and a failed ssh still fails the job.
+# with `if: success() || failure()`; the availability + deploy-rc assertion runs LAST, with the same
+# condition. A red availability result therefore can never skip /readyz, and a failed ssh still
+# fails the job.
 #
-# It all runs AFTER the flip, so it cannot prevent a bad deploy — it fails the job loudly. Rolling back
-# is still `CIVFIX_REF=<sha>` on the box (or `docker compose start api-<previous color>`).
+# It all runs AFTER the flip, so it cannot prevent a bad deploy; it fails the job loudly. Roll back on
+# the box as described above.
 #
 # Required repo secret:
 #   DEPLOY_SSH_KEY  Private half of the dedicated CI deploy key (ed25519). Its public half is the
 #                   `deployer` user on the VPS, whose authorized_keys forces this key to run ONLY
 #                   `sudo -n -u civfix -H /opt/civfix/ops/deploy.sh` (sudoers-scoped to that one
-#                   command). A leaked key can at most trigger a deploy of origin/main — never a
-#                   shell, other commands, or root.
+#                   command). A leaked key can at most trigger a deploy of the newest release, never
+#                   a shell, other commands, or root.
 #
 # The VPS origin IP and its SSH host key are pinned in the job below (neither is secret; SSH 22 is
 # firewalled to key-only/no-root and ingress 80/443 is Cloudflare-only).
@@ -108,19 +109,19 @@ jobs:
           # compare against.
           git fetch --quiet --force --tags origin '+refs/heads/main:refs/remotes/origin/main'
 
-          # THE SAME SELECTION THE BOX MAKES — civfix-infra env/prod.sh CIVFIX_RELEASE_TAG_REGEX and
+          # THE SAME SELECTION THE BOX MAKES: civfix-infra env/prod.sh CIVFIX_RELEASE_TAG_REGEX and
           # ops/deploy.sh. Keep this regex byte-identical to that one: the box resolves the release
           # independently, so if the two rules disagree this job blesses one commit and the box deploys
           # another.
           #
           # git sorts the whole `v*` set and the grep filters afterwards; that is sound because
           # filtering preserves relative order, so the first surviving line is still the highest. The
-          # regex is what excludes prereleases — git's -v:refname ranks `v2.0.0-beta.1` ABOVE `v2.0.0`,
+          # regex is what excludes prereleases: git's -v:refname ranks `v2.0.0-beta.1` ABOVE `v2.0.0`,
           # the opposite of semver. The glob alone is not a release rule either: `v*` also matches
           # `vtest` and `v1.2`, which would outrank every real release and wedge this job permanently.
           RELEASE_RE='^v[0-9]+\.[0-9]+\.[0-9]+$'
           # `|| true`: under `set -euo pipefail` a grep that matches nothing exits 1 and errexit kills
-          # the step AT THIS ASSIGNMENT, making the ::error:: annotation below unreachable — the job
+          # the step AT THIS ASSIGNMENT, making the ::error:: annotation below unreachable, so the job
           # would fail with a bare exit code and no explanation. The guard reports it instead.
           newest="$(git tag --list 'v*' --sort=-v:refname --merged origin/main | grep -E "$RELEASE_RE" | head -n 1)" || true
           [ -n "$newest" ] || { echo "::error::no release tag matching $RELEASE_RE is merged into origin/main." >&2; exit 1; }
@@ -129,7 +130,7 @@ jobs:
 
           if ! printf '%s' "$tag" | grep -qE "$RELEASE_RE"; then
             echo "::error::'$tag' is not a vMAJOR.MINOR.PATCH release tag; refusing to deploy production." >&2
-            echo "::error::Prereleases are excluded by design — they never reach prod." >&2
+            echo "::error::Prereleases are excluded by design; they never reach prod." >&2
             exit 1
           fi
 
@@ -161,7 +162,7 @@ jobs:
 
       - name: Promote the staging images to this release
         # NO REBUILD, BY DESIGN. `imagetools create` adds a tag to a manifest that already exists in the
-        # registry — a registry-side operation, no pull, no push of layers — so the bytes production runs
+        # registry (a registry-side operation, no pull, no push of layers), so the bytes production runs
         # are provably the bytes staging exercised. A missing image means this commit never completed a
         # staging build, and the deploy is refused here rather than half-way through on the box.
         env:
@@ -186,7 +187,7 @@ jobs:
             fi
             echo "$image: $digest"
             # `:$TAG` is the durable, immutable record of this release. `:prod` is a MOVING tag and is
-            # for humans reading the package list only — nothing consumes it: the box pulls
+            # for humans reading the package list only; nothing consumes it: the box pulls
             # `sha-<40>` and immediately re-pins to the digest (civfix-infra/ops/deploy.sh). Never make
             # anything depend on `:prod`.
             docker buildx imagetools create \
@@ -277,7 +278,7 @@ jobs:
 
           # No remote command is passed: the deploy key's forced command runs /opt/civfix/ops/deploy.sh.
           # Its stdout/stderr stream here and its exit code becomes `rc`, which the assertion step
-          # turns into a job failure. Keepalives keep the connection up during the (quiet) build.
+          # turns into a job failure. Keepalives keep the connection up while deploy.sh is quiet.
           if ssh -i ~/.ssh/deploy_key \
               -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
               -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \

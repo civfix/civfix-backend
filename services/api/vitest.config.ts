@@ -4,9 +4,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["test/**/*.test.ts"],
-    // ONE PostGIS container for the whole run (was one per Docker-gated file, ~44 boots). It applies the
-    // migrations + seed once into a template database and hands the workers a connection URI; withPg()
-    // then clones that template per test file. Starts nothing when no pg-using file is selected, and
+    // ONE PostGIS container for the whole run. It applies the migrations + seed once into a template
+    // database and hands the workers a connection URI; withPg() then clones that template per test file. Starts nothing when no pg-using file is selected, and
     // reports a Docker-absent machine to the workers so describe.skipIf(!pg) still skips instead of
     // failing. See test/global-setup-pg.ts.
     globalSetup: ["test/global-setup-pg.ts"],

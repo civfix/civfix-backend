@@ -2,9 +2,8 @@
   "$schema": "https://turbo.build/schema.json",
   // Turbo runs tasks with a STRICT env by default, so anything not listed here is stripped before the
   // task sees it. The integration suites boot Postgres via testcontainers and SKIP THEMSELVES (they do
-  // not fail) when Docker is unreachable — so without this passthrough a local `pnpm test` silently
-  // reports a green 2444-test run with all 381 integration tests skipped, which reads exactly like a
-  // full pass. CI on ubuntu-latest needs none of these (Docker is at the default /var/run/docker.sock);
+  // not fail) when Docker is unreachable, so without this passthrough a local `pnpm test` silently
+  // reports a green run with every integration test skipped, which reads exactly like a full pass. CI on ubuntu-latest needs none of these (Docker is at the default /var/run/docker.sock);
   // they exist for colima/Rancher/Podman on a developer machine, where the daemon socket lives
   // elsewhere and the in-VM path has to be named separately for the reaper's bind mount.
   "globalPassThroughEnv": [
@@ -16,9 +15,8 @@
     "TESTCONTAINERS_RYUK_DISABLED",
     // The two guards that turn the silent skip above into a LOUD failure (test/helpers/pg.ts).
     // CIVFIX_REQUIRE_PG=1 makes a Docker-less run fail instead of skipping; CIVFIX_ALLOW_PG_SKIP is the
-    // deliberate opt-out. Both were being stripped by turbo's strict env, so `CIVFIX_REQUIRE_PG=1 pnpm
-    // test` at the repo root did nothing at all — the guard against the silent 381-test skip could not
-    // fire through the only command anybody actually runs.
+    // deliberate opt-out. Turbo's strict env would strip both, so `CIVFIX_REQUIRE_PG=1 pnpm test` at
+    // the repo root could not fire the guard.
     "CIVFIX_REQUIRE_PG",
     "CIVFIX_ALLOW_PG_SKIP"
   ],

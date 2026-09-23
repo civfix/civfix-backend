@@ -2,17 +2,8 @@ import eslint from "@eslint/js"
 import tseslint from "typescript-eslint"
 import globals from "globals"
 
-/**
- * Shared ESLint flat-config preset for civfix backend services.
- *
- * Services extend it like:
- *   import { config } from "@civfix/config/eslint"
- *   export default config()
- *
- * `config()` returns a flat-config array. Pass extra config objects to append service-specific
- * overrides. Type-aware rules are enabled per service by setting `parserOptions.projectService`
- * in the service eslint.config.js; this preset stays project-agnostic so it works everywhere.
- */
+// Type-aware rules are enabled per service via `parserOptions.projectService` in the service's
+// eslint.config.js, so this preset stays project-agnostic.
 export function config(...extra) {
   return tseslint.config(
     {

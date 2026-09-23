@@ -282,7 +282,7 @@ function main() {
       }
       if (!ALLOW_DRIZZLE_CLIENT.has(file) && findDrizzleClientUses(code).length > 0) {
         violations.push(
-          `${file}: raw SQL on drizzle's own client (.$client) — its Date/array/jsonb serializers are ` +
+          `${file}: raw SQL on drizzle's own client (.$client): its Date/array/jsonb serializers are ` +
             "identity passthroughs, so a bound Date throws at Bind time. Take the DbHandle's `sql` tag instead",
         )
       }
@@ -290,7 +290,7 @@ function main() {
       for (const nullTest of findParamNullTests(code)) {
         if (ALLOW_NULL_TEST.has(`${file}:${nullTest}`)) continue
         violations.push(
-          `${file}: uncast parameter in a NULL test — \`${nullTest}\` (add a ::type cast, or drop the redundant guard)`,
+          `${file}: uncast parameter in a NULL test: \`${nullTest}\` (add a ::type cast, or drop the redundant guard)`,
         )
       }
     }

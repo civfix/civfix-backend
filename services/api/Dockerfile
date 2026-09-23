@@ -5,9 +5,8 @@
 # BUILD CONTEXT MUST BE THE REPO ROOT (civfix-backend/), NOT services/api/. The API is a pnpm workspace
 # package that depends on @civfix/shared (installed from the private registry repo.civfix.org via the
 # root .npmrc), so the build needs the root manifests + pnpm-lock.yaml + .npmrc + packages/ in the
-# context. The compose file sets
-# `build.context: ../..` and `build.dockerfile: services/api/Dockerfile` accordingly. To build by hand
-# from the repo root:
+# context. CI builds it that way (.github/workflows/build-images.yml); to build by hand from the repo
+# root:
 #     docker build -f services/api/Dockerfile -t civfix/api:latest .
 #
 # Stages:
@@ -21,7 +20,6 @@
 # package resolvable in node_modules. `pnpm deploy` produces exactly that (shared injected + prod-only
 # deps), so the runtime image carries no build toolchain.
 
-# ----------------------------------------------------------------------------------------------------
 FROM node:22-bookworm-slim AS base
 ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
@@ -31,21 +29,18 @@ ENV PNPM_HOME="/pnpm" \
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 WORKDIR /app
 
-# ----------------------------------------------------------------------------------------------------
 FROM base AS build
-# Copy the whole workspace (context = repo root). The .dockerignore keeps node_modules/dist/tests out.
+# The .dockerignore keeps node_modules/dist/tests out of this copy.
 COPY . .
-# Install the FULL workspace (dev deps included: tsup/turbo are needed to build). A BuildKit cache mount
-# keeps the pnpm store warm across builds. --frozen-lockfile fails the build if the lockfile is stale.
+# Dev deps are needed here: tsup/turbo do the build. --frozen-lockfile fails the build on a stale
+# lockfile.
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile
-# Build shared -> api (turbo resolves the order; tsup emits dist/). Only the API graph is needed.
+# The trailing `...` builds the API and its workspace deps only.
 RUN pnpm --filter @civfix/api... build
-# Produce a self-contained, production-pruned deployment of just the API at /out (shared injected).
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm --filter @civfix/api --prod deploy /out
 
-# ----------------------------------------------------------------------------------------------------
 FROM base AS runtime
 # SERVICE_VERSION is the RELEASE IDENTITY and it is baked in at BUILD time on purpose. It is the
 # GlitchTip `release` (src/server.ts), so without it every production error report is tagged "0.0.0" and
@@ -58,7 +53,6 @@ ENV NODE_ENV=production \
     SERVICE_VERSION=${SERVICE_VERSION}
 # Run as the unprivileged `node` user that the base image already provides.
 WORKDIR /app
-# Copy only the pruned deployment (dist + drizzle SQL + prod node_modules incl. @civfix/shared).
 COPY --from=build --chown=node:node /out /app
 USER node
 EXPOSE 8080
@@ -66,5 +60,4 @@ EXPOSE 8080
 # global fetch (Node 22) so the slim image needs no curl/wget.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-# main.js calls start(): init error reporting, listen on PORT, install SIGTERM/SIGINT graceful shutdown.
 CMD ["node", "dist/main.js"]

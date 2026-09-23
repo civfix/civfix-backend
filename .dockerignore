@@ -26,8 +26,8 @@
 **/Dockerfile
 **/.dockerignore
 
-# Deploy/infra lives in the civfix-infra repo now; the only thing left here is the email-worker
-# (a standalone Cloudflare Worker) which must never be baked into the api/worker image.
+# infra/ holds only the email-worker (a standalone Cloudflare Worker), which must never be baked into
+# the api/worker image.
 infra
 
 # Tests + fixtures are not needed for a production image build (build stage only runs tsup, not tests)

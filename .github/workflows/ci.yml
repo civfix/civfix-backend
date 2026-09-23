@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel superseded runs on the same ref.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -33,13 +32,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Stage 0.7 (UI-unification) backend-isolation guard: fail CI if the backend ever pulls in
+      # The backend depends ONLY on the framework-free @civfix/shared contract; fail if it ever pulls in
       # frontend runtime deps (react / react-dom / react-native / react-native-web / @civfix/ui).
-      # The backend depends ONLY on the framework-free @civfix/shared contract; this keeps it that way.
       - name: Assert backend stays React/RN-free
         run: node scripts/assert-no-frontend.mjs
 
-      # H13 gate: fail the PR on a HIGH/CRITICAL advisory in the PRODUCTION dependency tree. `--prod`
+      # Fail the PR on a HIGH/CRITICAL advisory in the PRODUCTION dependency tree. `--prod`
       # deliberately ignores dev-only tooling (a DoS in a test runner is not a production exposure).
       # When a finding has no upstream fix yet, add a `pnpm.overrides` entry in the root package.json
       # (with a comment explaining why the forced version is safe) rather than removing this step.
@@ -61,8 +59,8 @@ jobs:
   integration:
     name: integration (postgis + redis)
     runs-on: ubuntu-latest
-    # Integration tests that require Docker-backed services run here. They are populated by later
-    # steps; for now this job installs, builds, and is ready to run them against live containers.
+    # Placeholder: the Docker-backed integration suite runs inside the build job's `pnpm test`
+    # (testcontainers). This job stays because its name is a required status check on main.
     services:
       postgres:
         image: postgis/postgis:16-3.4
@@ -110,8 +108,6 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # Later steps add integration test scripts; this is the hook for them. Kept as a no-op-safe
-      # placeholder so the job is green until those tests exist.
       - name: Integration tests
         run: echo "integration tests are added by later steps; services are up at DATABASE_URL / REDIS_URL"
 
