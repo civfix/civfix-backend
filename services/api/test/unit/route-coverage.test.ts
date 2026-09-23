@@ -1,4 +1,3 @@
-
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance, InjectOptions } from "fastify"
@@ -40,12 +39,6 @@ import { fakeCleanupReader } from "../helpers/host-team.js"
 const SIGNING_KEY = "test-anon-signing-key"
 
 const PARAM_VALUE = "11111111-1111-1111-1111-111111111111"
-
-const NOT_YET_ROUTED = new Set<string>([
-  "getForwardTemplateDefault",
-  "setForwardTemplateDefault",
-  "previewForwardTemplate",
-])
 
 async function buildFullFakeServer(): Promise<FastifyInstance> {
   const env = loadEnv({ NODE_ENV: "test" })
@@ -218,7 +211,7 @@ describe("route-coverage: every shared endpoint is registered (offline boot smok
   })
 
   for (const [name, ep] of Object.entries(endpoints)) {
-    it.skipIf(NOT_YET_ROUTED.has(name))(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
+    it(`registers ${name}: ${ep.method} ${ep.path}`, async () => {
       const res = await app.inject(injectArgs(ep))
 
       if (res.statusCode === 404) {
