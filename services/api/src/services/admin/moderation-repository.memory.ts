@@ -30,7 +30,7 @@ export class InMemoryModerationRepository implements ModerationRepository {
   readonly reportStatus = new Map<string, "published" | "rejected">()
   readonly suspensions = new Map<string, boolean>()
   readonly tombstoned = new Set<string>()
-  readonly accountStatus = new Map<string, "active" | "suspended">()
+  readonly accountStatus = new Map<string, "active" | "suspended" | "banned">()
   readonly userRoles = new Map<string, string>()
   readonly deletedUserIds = new Set<string>()
 
@@ -194,7 +194,10 @@ export class InMemoryModerationRepository implements ModerationRepository {
     if (item.subjectType === "chat" || item.subjectType === "message") {
       this.tombstoned.add(item.subjectId)
     }
-    if (isUserSubjectType(item.subjectType)) {
+    if (
+      isUserSubjectType(item.subjectType) &&
+      this.accountStatus.get(item.subjectId) !== "banned"
+    ) {
       this.accountStatus.set(item.subjectId, "suspended")
       item.suspendedUserId = item.subjectId
     }

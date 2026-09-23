@@ -57,3 +57,29 @@ describe("held-media moderation item names its reporter", () => {
     expect(insertedMeta(calls)).toMatchObject({ reporter: "Anonymous", reporterUserId: null })
   })
 })
+
+describe("held media folding into an open moderation item", () => {
+  it("clears an owner's consent marker so removing the item still strikes the author", async () => {
+    const calls: Call[] = []
+    const client = {
+      options: { parsers: {}, serializers: {} },
+      unsafe(query: string, params: unknown[]) {
+        calls.push({ query, params })
+        const rows = /^update "moderation_items"/.test(query) ? [["item-1"]] : []
+        return Object.assign(Promise.resolve([]), { values: () => Promise.resolve(rows) })
+      },
+    }
+    const db = drizzle(client as never) as unknown as Db
+    const repo = makeDrizzleMediaWorkerRepo(db, {} as Sql)
+
+    await repo.enqueueHeldModerationItem!({
+      reportId: REPORT_ID,
+      reason: "NSFW model over threshold",
+    })
+
+    const fold = calls.find((c) => /^update "moderation_items"/.test(c.query))
+    expect(fold?.query).toMatch(/- 'ownerTakedown'/)
+    expect(fold?.query).toMatch(/status = 'open'|"status" = \$/)
+    expect(calls.some((c) => /insert into "moderation_items"/.test(c.query))).toBe(false)
+  })
+})

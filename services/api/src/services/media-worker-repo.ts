@@ -307,18 +307,23 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
       kind?: "image" | "duplicate"
       note?: string | null
     }): Promise<void> {
-      const existing = await db
-        .select({ id: moderationItems.id })
-        .from(moderationItems)
-        .where(
-          and(
-            eq(moderationItems.subjectType, "report"),
-            eq(moderationItems.subjectId, input.reportId),
-            eq(moderationItems.status, "open"),
-          ),
-        )
-        .limit(1)
-      if (existing[0]) return
+      // A held source folding into an open item means the owner's takedown is no longer its only
+      // origin, so removing it must strike the author again.
+      const foldIntoOpenItem = async (): Promise<boolean> => {
+        const folded = await db
+          .update(moderationItems)
+          .set({ meta: sql`${moderationItems.meta} - 'ownerTakedown'` })
+          .where(
+            and(
+              eq(moderationItems.subjectType, "report"),
+              eq(moderationItems.subjectId, input.reportId),
+              eq(moderationItems.status, "open"),
+            ),
+          )
+          .returning({ id: moderationItems.id })
+        return folded.length > 0
+      }
+      if (await foldIntoOpenItem()) return
 
       const ctx = await db
         .select({
@@ -337,7 +342,7 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
       if (!row) return
 
       const kind = input.kind ?? "image"
-      await db
+      const inserted = await db
         .insert(moderationItems)
         .values({
           kind,
@@ -361,6 +366,8 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
           target: [moderationItems.subjectType, moderationItems.subjectId],
           where: sql`status = 'open'`,
         })
+        .returning({ id: moderationItems.id })
+      if (inserted.length === 0) await foldIntoOpenItem()
     },
 
     async recordLeakedObjects(input: {

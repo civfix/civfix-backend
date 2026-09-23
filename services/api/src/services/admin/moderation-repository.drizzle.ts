@@ -384,7 +384,12 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
       return sql.begin(async (tx) => {
         const resolved = await resolveItem(tx, id, "removed", input.actorId)
         if (!resolved) return null
-        const removed = await tombstoneSubject(tx, resolved.subject_type, resolved.subject_id)
+        const userRemoval = isUserSubject(resolved.subject_type)
+          ? await removeUserSubject(tx, resolved.subject_id)
+          : null
+        const removed =
+          userRemoval?.removed ??
+          (await tombstoneSubject(tx, resolved.subject_type, resolved.subject_id))
         const removedReport = removed && resolved.subject_type === "report"
         if (removedReport) {
           await tx`
@@ -413,9 +418,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         const media = await loadMedia(tx, resolved.subject_type, resolved.subject_id)
         const record = toRecord(resolved, media)
         if (removedReport) record.reportTimelineStatus = "rejected"
-        if (removed && isUserSubject(resolved.subject_type)) {
-          record.suspendedUserId = resolved.subject_id
-        }
+        if (userRemoval?.suspended === true) record.suspendedUserId = resolved.subject_id
         return record
       })
     },
@@ -817,30 +820,37 @@ async function tombstoneSubject(
     case "post": {
       return tombstonePostInTx(tx, subjectId)
     }
-    case "profile":
-    case "user": {
-      assertTargetIsNotOfficialAccount(subjectId, "remove")
-      const target = await tx<{ role: string }[]>`
-        SELECT role FROM users WHERE id = ${subjectId} AND deleted_at IS NULL FOR UPDATE`
-      const row = target[0]
-      if (row === undefined) return false
-      assertTargetIsNotOperatorRole(row.role, "remove")
-      const rows = await tx<{ user_id: string }[]>`
-        INSERT INTO user_moderation (user_id, account_status, flagged, updated_at)
-        VALUES (${subjectId}, 'suspended', true, now())
-        ON CONFLICT (user_id) DO UPDATE SET account_status = 'suspended', flagged = true, updated_at = now()
-        RETURNING user_id`
-      return rows.length > 0
-    }
     default:
       return false
   }
 }
 
+async function removeUserSubject(
+  tx: Queryable,
+  subjectId: string,
+): Promise<{ removed: boolean; suspended: boolean }> {
+  assertTargetIsNotOfficialAccount(subjectId, "remove")
+  const target = await tx<{ role: string }[]>`
+    SELECT role FROM users WHERE id = ${subjectId} AND deleted_at IS NULL FOR NO KEY UPDATE`
+  const row = target[0]
+  if (row === undefined) return { removed: false, suspended: false }
+  assertTargetIsNotOperatorRole(row.role, "remove")
+  // A ban outranks the suspension a removal imposes. Overwriting it would also let an appeal overturn,
+  // which lifts only suspensions, reactivate a banned account.
+  const rows = await tx<{ user_id: string }[]>`
+    INSERT INTO user_moderation (user_id, account_status, flagged, updated_at)
+    VALUES (${subjectId}, 'suspended', true, now())
+    ON CONFLICT (user_id) DO UPDATE SET account_status = 'suspended', flagged = true, updated_at = now()
+    WHERE user_moderation.account_status <> 'banned'
+    RETURNING user_id`
+  return { removed: true, suspended: rows.length > 0 }
+}
+
 /**
- * Marks an item whose report the author asked to take down. Removing it honors the author's own request,
- * so it must not count as a strike against them, and the marker has to survive folding into an item a
- * third party opened first.
+ * Marks an item that exists only because the report's author asked to take it down. Removing it honors
+ * that request, so it must not count as a strike. The marker is set only when the owner's request opens
+ * the item and is cleared as soon as any other origin folds in, or an author could pre-file a takedown
+ * on every post and wipe the strike an operator would record for a third party's or the pipeline's flag.
  */
 const OWNER_TAKEDOWN_META = { ownerTakedown: true } as const
 
@@ -864,12 +874,10 @@ async function escalateOpenItem(
   input: CreateModerationItemInput,
   ownerRequest: boolean,
 ): Promise<void> {
-  const ownerFlag = ownerRequest ? (input.flag ?? null) : null
-  const ownerMeta = (ownerRequest ? OWNER_TAKEDOWN_META : {}) as Parameters<typeof tx.json>[0]
+  const otherOrigin: SqlFragment = ownerRequest ? tx`` : tx`- 'ownerTakedown'`
   await tx`
     UPDATE moderation_items
     SET priority = 'high',
-        flag = COALESCE(${ownerFlag}::text, flag),
         meta = (CASE
           WHEN ${input.reporterUserId ?? null}::text IS NULL THEN meta
           WHEN meta->'reporters' @> to_jsonb(ARRAY[${input.reporterUserId ?? ""}::text]) THEN meta
@@ -878,7 +886,7 @@ async function escalateOpenItem(
             '{reporters}',
             COALESCE(meta->'reporters', '[]'::jsonb) || to_jsonb(${input.reporterUserId ?? ""}::text)
           )
-        END) || ${tx.json(ownerMeta)}
+        END) ${otherOrigin}
     WHERE id = ${itemId} AND status = 'open'
   `
 }
