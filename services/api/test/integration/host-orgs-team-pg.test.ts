@@ -8,7 +8,10 @@ import { makeDrizzleHostTeamRepository } from "../../src/services/host/host-team
 import { makeDrizzleHostPortfolioRepository } from "../../src/services/host/host-portfolio-repository.drizzle.js"
 import { makeDrizzleAnalyticsRepository } from "../../src/services/host/analytics-repository.drizzle.js"
 import { MAX_INSIGHTS_TOP_VOLUNTEERS } from "@civfix/shared"
-import { hostStandingOf, orgStandingOf } from "../../src/services/host/host-standing.js"
+import {
+  hostStandingOf,
+  orgStandingOf,
+} from "../../src/services/host/host-standing-repository.drizzle.js"
 import type { CleanupRepository } from "../../src/services/cleanup-repository.types.js"
 import type { OrganizationRepository } from "../../src/services/host/organization-repository.types.js"
 import type { HostTeamRepository } from "../../src/services/host/host-team-repository.types.js"

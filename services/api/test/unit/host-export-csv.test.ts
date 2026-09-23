@@ -294,12 +294,14 @@ describe("host export build", () => {
 describe("roster export query source", () => {
   it("never names a member's email or phone column", () => {
     const source = readFileSync(
-      fileURLToPath(new URL("../../src/services/host/host-export-builders.ts", import.meta.url)),
+      fileURLToPath(
+        new URL("../../src/services/host/export-repository.drizzle.ts", import.meta.url),
+      ),
       "utf8",
     )
     const rosterQuery = source.slice(
-      source.indexOf("async function* rosterRows"),
-      source.indexOf("async function* checkinRows"),
+      source.indexOf("async rosterPage("),
+      source.indexOf("async checkinPage("),
     )
     expect(rosterQuery.length).toBeGreaterThan(100)
     expect(rosterQuery).not.toMatch(/u\.email/)

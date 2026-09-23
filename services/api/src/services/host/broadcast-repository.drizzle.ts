@@ -10,7 +10,7 @@ import type { Queryable, Sql } from "../../db/client.js"
 import { keysetInstant, keysetPredicate } from "../../db/cursor-helpers.js"
 import { writeAudit, type WriteAuditInput } from "../admin/audit.js"
 import { likeContains } from "../admin/like.js"
-import { listGuestAudiencePage, listMemberAudiencePage } from "./broadcast-audience-sql.js"
+import { makeDrizzleBroadcastAudienceRepository } from "./broadcast-audience-repository.drizzle.js"
 import type {
   AdminBroadcastListQuery,
   AnnouncementCap,
@@ -136,6 +136,7 @@ function firstName(displayName: string): string {
 }
 
 export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
+  const audience = makeDrizzleBroadcastAudienceRepository(sql)
   async function selectById(broadcastId: string): Promise<BroadcastRecord | null> {
     const rows = await sql<BroadcastRowSelect[]>`
       SELECT ${broadcastColumns(sql)} FROM broadcasts WHERE id = ${broadcastId} LIMIT 1`
@@ -989,24 +990,8 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       return rows.map((row) => ({ cleanupId: row.cleanup_id, offsetMin: row.offset_min }))
     },
 
-    async audiencePage(query: AudiencePageQuery): Promise<{ members: string[]; guests: string[] }> {
-      const [members, guests] = await Promise.all([
-        listMemberAudiencePage(sql, {
-          cleanupId: query.cleanupId,
-          segment: query.segment,
-          kind: query.kind,
-          after: query.afterMember,
-          limit: query.limit,
-        }),
-        listGuestAudiencePage(sql, {
-          cleanupId: query.cleanupId,
-          segment: query.segment,
-          kind: query.kind,
-          after: query.afterGuest,
-          limit: query.limit,
-        }),
-      ])
-      return { members, guests }
+    audiencePage(query: AudiencePageQuery): Promise<{ members: string[]; guests: string[] }> {
+      return audience.audiencePage(query)
     },
 
     async scrubBroadcastContent(cutoff: Date, batchSize: number): Promise<number> {

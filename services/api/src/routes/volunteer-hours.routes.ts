@@ -29,8 +29,6 @@ import { makeDrizzleModerationRepository } from "../services/admin/moderation-re
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeInsightsGeneration } from "../services/host/host-analytics-cache.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
-import { hostStandingOf } from "../services/host/host-standing.js"
-import { NO_HOST_STANDING } from "@civfix/shared/host"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import type { NotificationService } from "../services/notification-service.js"
 import { route } from "../versioning/route.js"
@@ -127,8 +125,7 @@ export async function registerVolunteerHoursRoutes(
       roleOf: (cleanupId: string, userId: string) =>
         makeDrizzleCleanupRepository(container.getDb().sql).roleOf(cleanupId, userId),
       async standingOf(cleanupId: string, userId: string) {
-        const resolved = await hostStandingOf(container.getDb().sql, cleanupId, userId)
-        return resolved?.standing ?? NO_HOST_STANDING
+        return makeDrizzleCleanupRepository(container.getDb().sql).standingOf(cleanupId, userId)
       },
     }
   }

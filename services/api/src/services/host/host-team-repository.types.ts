@@ -135,4 +135,6 @@ export interface HostTeamRepository {
   }): Promise<DeclineTeamInviteOutcome>
   scrubInviteEmails(before: Date, limit: number): Promise<number>
   expireStaleInvites(now: Date, limit: number): Promise<number>
+  listTeamUserIds(cleanupId: string, limit: number): Promise<string[]>
+  eventTitleOf(cleanupId: string): Promise<string | null>
 }

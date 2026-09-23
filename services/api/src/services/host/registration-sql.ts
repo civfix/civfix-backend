@@ -508,18 +508,3 @@ export function toPageRecord(r: PageRowSelect): PageRecord {
     viewCount: typeof r.view_count === "string" ? Number(r.view_count) : r.view_count,
   }
 }
-
-export async function hostTeamUserIds(
-  tag: Queryable,
-  cleanupId: string,
-  limit: number,
-): Promise<string[]> {
-  const rows = await tag<{ user_id: string }[]>`
-    SELECT user_id FROM cleanup_members
-     WHERE cleanup_id = ${cleanupId}
-       AND role IN ('organizer', 'cohost', 'coordinator', 'staff')
-     ORDER BY joined_at
-     LIMIT ${limit}
-  `
-  return rows.map((r) => r.user_id)
-}

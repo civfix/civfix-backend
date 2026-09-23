@@ -16,7 +16,11 @@ import {
 } from "../db/cursor-helpers.js"
 import { allocateEventReferenceCode } from "../db/reference-code.js"
 import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
-import { hostStandingOf, hostStandingsOf, orgStandingOf } from "./host/host-standing.js"
+import {
+  hostStandingOf,
+  hostStandingsOf,
+  orgStandingOf,
+} from "./host/host-standing-repository.drizzle.js"
 import { NO_HOST_STANDING } from "@civfix/shared/host"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup, uploadedByClaimant } from "./media-bindings.js"
