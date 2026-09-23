@@ -90,6 +90,10 @@ const EMPTY_REPORT_COUNTS: AdminReportCounts = {
 
 const FALLBACK_ATTACHMENT_MIME = "image/jpeg"
 
+// In-flight R2 GETs per packet: overlaps the fetches while holding at most two images past the one
+// being attached, and costs at most two unused GETs once the attachment cap is reached.
+const PACKET_IMAGE_PREFETCH = 3
+
 const JPEG_SIGNATURE = [0xff, 0xd8, 0xff]
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 // A WebP file is a RIFF container: "RIFF", a 4-byte size, then "WEBP".
@@ -430,9 +434,48 @@ async function emitTimeline(
   await deps.reportChatEmitter.emit(event)
 }
 
+type SettledLoad = { ok: true; bytes: Uint8Array | null } | { ok: false; error: unknown }
+
+async function settleLoad(load: () => Promise<Uint8Array | null>): Promise<SettledLoad> {
+  try {
+    return { ok: true, bytes: await load() }
+  } catch (error) {
+    return { ok: false, error }
+  }
+}
+
+/**
+ * Up to PACKET_IMAGE_PREFETCH image loads run ahead of the cursor, each settled so a load the loop never
+ * consumes (it lies past the attachment cap, or an earlier step threw) can neither reject unhandled nor
+ * change the outcome. A consumed load's error is rethrown at the point the sequential loop awaited it.
+ */
+function makeImagePrefetcher(
+  media: readonly AdminReportMediaRecord[],
+  loadMediaBytes: (r2Key: string) => Promise<Uint8Array | null>,
+): (imageOrdinal: number) => Promise<Uint8Array | null> {
+  const imageKeys = media.filter((m) => m.kind === "image").map((m) => m.r2Key)
+  // A consumed slot is cleared so an image the loop skips (over a cap) is collectable at once instead of
+  // staying referenced until the whole packet is built.
+  const started: (Promise<SettledLoad> | undefined)[] = []
+  let startedCount = 0
+  return async (imageOrdinal) => {
+    const through = Math.min(imageOrdinal + PACKET_IMAGE_PREFETCH, imageKeys.length)
+    while (startedCount < through) {
+      const key = imageKeys[startedCount] as string
+      started[startedCount] = settleLoad(() => loadMediaBytes(key))
+      startedCount += 1
+    }
+    const result = await (started[imageOrdinal] as Promise<SettledLoad>)
+    started[imageOrdinal] = undefined
+    if (!result.ok) throw result.error
+    return result.bytes
+  }
+}
+
 /**
  * Every media item gets a link; only images within the per-file, count and total byte caps are also
- * attached. Presigning and loading stay sequential, in media order, so attachment filenames are stable.
+ * attached. Presigning and attachment selection stay sequential, in media order, so attachment
+ * filenames are stable; only the image fetches overlap.
  */
 async function collectPacketMedia(
   media: readonly AdminReportMediaRecord[],
@@ -442,11 +485,15 @@ async function collectPacketMedia(
 ): Promise<{ packetMedia: PacketMediaLink[]; attachments: PacketAttachment[] }> {
   const packetMedia: PacketMediaLink[] = []
   const attachments: PacketAttachment[] = []
+  const loadImage = loadMediaBytes ? makeImagePrefetcher(media, loadMediaBytes) : null
   let attachedBytesTotal = 0
+  let imageOrdinal = -1
   for (const m of media) {
     packetMedia.push({ kind: m.kind, url: await presignPacketMedia(m.r2Key, publiclyVisible) })
-    if (m.kind !== "image" || attachments.length >= MAX_PACKET_ATTACHMENTS) continue
-    const bytes = loadMediaBytes ? await loadMediaBytes(m.r2Key) : null
+    if (m.kind !== "image") continue
+    imageOrdinal += 1
+    if (attachments.length >= MAX_PACKET_ATTACHMENTS) continue
+    const bytes = loadImage ? await loadImage(imageOrdinal) : null
     if (bytes === null || bytes.byteLength > MAX_PACKET_ATTACHMENT_BYTES) continue
     if (attachedBytesTotal + bytes.byteLength > MAX_PACKET_TOTAL_BYTES) continue
     attachedBytesTotal += bytes.byteLength

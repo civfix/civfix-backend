@@ -1,3 +1,5 @@
+import { setFlagsFromString } from "node:v8"
+import { runInNewContext } from "node:vm"
 import { describe, it, expect } from "vitest"
 import { AppError, DEFAULT_FORWARD_SUBJECT_TEMPLATE, templateUsesToken } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
@@ -14,7 +16,10 @@ import {
 import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { InMemoryForwardTemplateRepository } from "../helpers/admin/forward-template-repository.memory.js"
 import { RecordingNotifier } from "../helpers/notifications.js"
-import { MAX_PACKET_TOTAL_BYTES } from "../../src/services/admin/mail-format.js"
+import {
+  MAX_PACKET_ATTACHMENT_BYTES,
+  MAX_PACKET_TOTAL_BYTES,
+} from "../../src/services/admin/mail-format.js"
 import {
   makeOutboundMailService,
   OutboundSendDeadlineError,
@@ -1565,6 +1570,134 @@ describe("F108 report-packet attachments are bounded in AGGREGATE, not just per 
       actorId: "op-1",
     })
     expect(h.mailer.sent.at(-1)?.outbound?.attachments).toHaveLength(4)
+  })
+})
+
+describe("report-packet image loads overlap without changing what is attached", () => {
+  type Loader = (r2Key: string) => Promise<Uint8Array | null>
+
+  const keyOf = (i: number) => `media/photo-${i}.jpg`
+  const bytesOf = (i: number) => new Uint8Array([0xff, 0xd8, 0xff, i])
+  const indexOf = (r2Key: string) => Number(/photo-(\d+)\.jpg$/.exec(r2Key)?.[1])
+
+  function harnessWithLoader(count: number, loadMediaBytes: Loader) {
+    const repo = new InMemoryAdminReportRepository()
+    repo.now = NOW
+    const mailer = new FakeMailer()
+    const outboundMail = makeOutboundMailService({
+      repo: new InMemoryMailRepository(),
+      mailer,
+      env: { MAIL_FROM_OUTREACH: "outreach@civfix.org", MAIL_REPLY_DOMAIN: "civfix.org" },
+    })
+    const svc = makeAdminReportService({
+      repo,
+      outboundMail,
+      now: () => NOW,
+      presignMedia: async (r2Key) => ({ url: `https://media.test/${r2Key}` }),
+      loadMediaBytes,
+    })
+    repo.seedReport({
+      id: "rep-1",
+      status: "submitted",
+      category: "hazard",
+      place: "Los Angeles",
+      routing: {
+        geoid: "0644000",
+        dept: "LA Public Works",
+        place: "Los Angeles",
+        contact: "311@lacity.gov",
+        routed: false,
+      },
+      media: Array.from({ length: count }, (_, i) => ({
+        id: `m-${i}`,
+        kind: "image" as const,
+        r2Key: keyOf(i),
+        thumbKey: null,
+        contentType: "image/jpeg",
+      })),
+    })
+    const route = () => svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
+    const attached = () =>
+      (mailer.sent.at(-1)?.outbound?.attachments ?? []).map((a) => ({
+        filename: a.filename,
+        photo: a.content[3],
+      }))
+    return { mailer, route, attached }
+  }
+
+  const inOrder: Loader = (r2Key) => Promise.resolve(bytesOf(indexOf(r2Key)))
+
+  it("attaches in media order with the same filenames when loads resolve in reverse", async () => {
+    const baseline = harnessWithLoader(6, inOrder)
+    await baseline.route()
+
+    const pending: (() => void)[] = []
+    const reversed = harnessWithLoader(6, (r2Key) => {
+      const done = new Promise<Uint8Array>((resolve) => {
+        pending.push(() => resolve(bytesOf(indexOf(r2Key))))
+      })
+      queueMicrotask(() => {
+        while (pending.length > 0) pending.pop()!()
+      })
+      return done
+    })
+    await reversed.route()
+
+    expect(reversed.attached()).toEqual(baseline.attached())
+    expect(reversed.attached().map((a) => a.photo)).toEqual([0, 1, 2, 3, 4, 5])
+  })
+
+  it("ignores a failing load past the tenth attachment, which the packet never consumes", async () => {
+    const h = harnessWithLoader(12, (r2Key) =>
+      indexOf(r2Key) >= 10 ? Promise.reject(new Error("r2 down")) : inOrder(r2Key),
+    )
+    await h.route()
+    expect(h.attached().map((a) => a.photo)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+  })
+
+  it("propagates the error of a load the packet consumes, and sends nothing", async () => {
+    const failure = new Error("r2 down")
+    const h = harnessWithLoader(5, (r2Key) =>
+      indexOf(r2Key) === 1 ? Promise.reject(failure) : inOrder(r2Key),
+    )
+    await expect(h.route()).rejects.toBe(failure)
+    expect(h.mailer.sent).toHaveLength(0)
+  })
+
+  it("keeps at most three image loads in flight", async () => {
+    let inFlight = 0
+    let peak = 0
+    const h = harnessWithLoader(8, async (r2Key) => {
+      inFlight += 1
+      peak = Math.max(peak, inFlight)
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      inFlight -= 1
+      return bytesOf(indexOf(r2Key))
+    })
+    await h.route()
+    expect(h.attached()).toHaveLength(8)
+    expect(peak).toBe(3)
+  })
+
+  it("lets an image skipped for size be collected before the packet is built", async () => {
+    setFlagsFromString("--expose-gc")
+    const gc = runInNewContext("gc") as () => void
+    const loaded = new Map<number, WeakRef<Uint8Array>>()
+    const collectedBeforeLater: boolean[] = []
+    const h = harnessWithLoader(8, async (r2Key) => {
+      const i = indexOf(r2Key)
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      if (i >= 5) {
+        gc()
+        collectedBeforeLater.push(loaded.get(i - 5)?.deref() === undefined)
+      }
+      const oversized = new Uint8Array(MAX_PACKET_ATTACHMENT_BYTES + 1)
+      loaded.set(i, new WeakRef(oversized))
+      return oversized
+    })
+    await h.route()
+    expect(h.attached()).toEqual([])
+    expect(collectedBeforeLater).toEqual([true, true, true])
   })
 })
 
