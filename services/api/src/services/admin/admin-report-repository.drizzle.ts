@@ -15,7 +15,8 @@ import {
   ilikeAnyOf,
   usableContactRowExpr,
 } from "./sql-fragments.js"
-import { personSelect, toPersonRecord } from "./admin-person.js"
+import { personSelect } from "./admin-person-sql.js"
+import { toPersonRecord } from "./admin-person.js"
 import { STATUS_BUCKETS, toTimelineKind } from "./admin-report-status.js"
 import {
   REPORT_VERIFIED_THRESHOLD,
@@ -40,7 +41,7 @@ import {
   ROUTE_CLAIM_STALE_SECONDS,
   ROUTE_DEADLINE_INFLIGHT_SECONDS,
 } from "./outbound-send-policy.js"
-import { sendFailedExpr, sendInFlightExpr } from "./outbound-send-sql.js"
+import { sendFailedExpr, sendInFlightExpr } from "./mail-repository.drizzle.js"
 
 export { ROUTE_CLAIM_STALE_SECONDS, ROUTE_DEADLINE_INFLIGHT_SECONDS }
 

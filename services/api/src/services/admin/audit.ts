@@ -1,4 +1,5 @@
 import type { Queryable } from "../../db/client.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 
 export type AdminAuditAction =
   | "operator.login"
@@ -132,16 +133,6 @@ export interface WriteAuditInput {
   meta?: Record<string, unknown> | null
 }
 
-export async function writeAudit(db: Queryable, input: WriteAuditInput): Promise<string> {
-  const actorId = input.actorId ?? null
-  const target = input.target ?? null
-  const meta = input.meta == null ? null : db.json(input.meta as Parameters<typeof db.json>[0])
-  const rows = await db<{ id: string }[]>`
-    INSERT INTO audit_log (actor_id, action, target, meta)
-    VALUES (${actorId}, ${input.action}, ${target}, ${meta})
-    RETURNING id
-  `
-  const id = rows[0]?.id
-  if (id === undefined) throw new Error("writeAudit: insert returned no row")
-  return id
+export function writeAudit(db: Queryable, input: WriteAuditInput): Promise<string> {
+  return insertAuditRow(db, input)
 }

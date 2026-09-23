@@ -138,9 +138,9 @@ export interface JurisdictionContactsRepository {
   ): Promise<{ lastOutreachAt: Date | null; suppressed: boolean } | null>
   listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult>
   getGeometry(geoid: string): Promise<JurisdictionGeometryRecord | null>
-  // Bounce stamping is deliberately not on this seam: inbound-bounce.ts markBouncedContact owns it, since
-  // it runs from the mail path with only a raw Sql handle and also needs geoidForContact to re-open
-  // discovery.
+  // Bounce stamping is deliberately not on this seam: the module-level markBouncedContact in
+  // jurisdiction-contacts-repository.drizzle.ts owns it, since it runs from the mail path with only a raw
+  // Sql handle and also needs geoidForContact to re-open discovery.
 }
 
 export interface OutreachEnqueuer {

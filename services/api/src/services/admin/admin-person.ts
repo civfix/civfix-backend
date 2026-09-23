@@ -1,14 +1,12 @@
 /**
  * The joined-person projection shared by the admin reports and events surfaces (a report's reporter, an
- * event's organizer). One SQL definition matters most: a silent divergence would make one surface report
- * `hasOauth: false` for every account, the provenance signal an operator reads before acting on a report.
+ * event's organizer).
  *
  * Each surface keeps its own missing-person fallback because the domains differ: a report may be
  * anonymous (`id: null`, "Anonymous"), while a cleanup always has an organizer and a null there is data
  * corruption (`id: ""`, "Unknown"). Those strings are on the wire, so they stay caller-supplied.
  */
 
-import type { Queryable, SqlFragment } from "../../db/client.js"
 import { toRelAbs } from "./admin-format.js"
 
 // Null at the call site means "no joined user" (an anonymous report), never "a user with empty fields".
@@ -32,23 +30,6 @@ export interface AdminPersonColumns {
   emailVerified: boolean | null
   hasOauth: boolean | null
   joinedAt: Date | null
-}
-
-/**
- * `alias` and `prefix` are interpolated as postgres.js identifiers (`sql(name)`), never as raw text.
- * `has_oauth` is a correlated EXISTS rather than a join so it cannot fan the row out when an account holds
- * several oauth identities.
- */
-export function personSelect(sql: Queryable, alias: string, prefix: string): SqlFragment {
-  const u = sql(alias)
-  return sql`
-    ${u}.id AS ${sql(`${prefix}_id`)},
-    ${u}.display_name AS ${sql(`${prefix}_name`)},
-    ${u}.handle AS ${sql(`${prefix}_handle`)},
-    ${u}.email_verified AS ${sql(`${prefix}_email_verified`)},
-    EXISTS (SELECT 1 FROM oauth_identities oi WHERE oi.user_id = ${u}.id) AS ${sql(`${prefix}_has_oauth`)},
-    ${u}.created_at AS ${sql(`${prefix}_joined`)}
-  `
 }
 
 // `fallbackName` covers a user row whose `display_name` is null: the account exists, so this is not the

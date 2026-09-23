@@ -1,7 +1,7 @@
 import type { Sql } from "../../db/client.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
 import { flaggedReportExpr } from "./admin-report-repository.drizzle.js"
-import { flaggedEventExpr } from "./admin-event-sql.js"
+import { flaggedEventExpr } from "./admin-event-repository.drizzle.js"
 import { reportRoutableExpr } from "./sql-fragments.js"
 import { toEventStatus } from "./event-status.js"
 import { DISCOVERY_SLA_HOURS } from "./discovery-service.js"

@@ -1,6 +1,7 @@
 import type { Sql } from "../../db/client.js"
 import type { ProbeResult, SystemHealthProbes } from "./system-health-service.js"
 import { MEDIA_WORKER_BACKLOG_WARN, PG_UNDEFINED_TABLE } from "./system-health-service.js"
+import { makeDrizzleSystemHealthRepository } from "./system-health-repository.drizzle.js"
 
 const PROBE_TIMEOUT_MS = 2000
 
@@ -58,24 +59,14 @@ export function makeSystemHealthProbes(deps: SystemProbeDeps): SystemHealthProbe
     // resolved inside each probe.
     const getSql = deps.getSql
     probes.postgres = async (): Promise<ProbeResult> => {
-      const sql = getSql()
-      const rows = await withQueryTimeout(
-        sql<{ n: string }[]>`SELECT COUNT(*)::text AS n FROM jurisdictions`,
-        PROBE_TIMEOUT_MS,
-      )
+      const repo = makeDrizzleSystemHealthRepository(getSql())
+      const rows = await withQueryTimeout(repo.countJurisdictions(), PROBE_TIMEOUT_MS)
       return { val: `${rows[0]?.n ?? "0"} jurisdictions`, status: "ok" }
     }
 
     probes.ociEmail = async (): Promise<ProbeResult> => {
-      const sql = getSql()
-      const rows = await withQueryTimeout(
-        sql<{ n: string }[]>`
-          SELECT COUNT(*)::text AS n
-          FROM mail_events
-          WHERE created_at >= now() - make_interval(days => 7)
-        `,
-        PROBE_TIMEOUT_MS,
-      )
+      const repo = makeDrizzleSystemHealthRepository(getSql())
+      const rows = await withQueryTimeout(repo.countMailEventsLast7Days(), PROBE_TIMEOUT_MS)
       return { val: `${countOf(rows)} events 7d`, status: "ok" }
     }
 

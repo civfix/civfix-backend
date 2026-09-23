@@ -1,21 +1,24 @@
-import type { Sql, SqlFragment } from "../../db/client.js"
-import { decodeCursor, clampLimit, keysetPredicate, paginateKeyset } from "./pagination.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
+import { isUuid } from "../../db/cursor-helpers.js"
+import {
+  decodeCursor,
+  clampLimit,
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+} from "./pagination.js"
 import { writeAudit } from "./audit.js"
 import { adminEventStatusExpr } from "../cleanup-sql.js"
-import {
-  eventSelect,
-  flaggedEventExpr,
-  searchEventsFragment,
-  toRecord,
-  type EventRowSelect,
-} from "./admin-event-sql.js"
+import { personSelect } from "./admin-person-sql.js"
+import { toPersonRecord } from "./admin-person.js"
+import { toEventStatus } from "./event-status.js"
 import {
   ADMIN_EVENT_MESSAGE_CAP,
   EVENT_NOTE_FLAGGED,
   EVENT_NOTE_UNFLAGGED,
   eventOutcomeNote,
 } from "./admin-event-helpers.js"
-import { andAll } from "./sql-fragments.js"
+import { andAll, ilikeAnyOf } from "./sql-fragments.js"
 import { publicReportFilter } from "../report-sql.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
 import type {
@@ -23,14 +26,125 @@ import type {
   AdminEventRecord,
   AdminEventRepository,
   AdminEventTimelineRecord,
+  AdminOrganizerRecord,
   ListEventsArgs,
 } from "./admin-event-service.js"
 import type { LinkedReportView } from "../cleanup-service.js"
-import type { AdminEventCounts, ReportCategory, ReportStatus } from "@civfix/shared"
+import type { AdminEventCounts, EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
 
 const LINK_REPORTS_MAX = 100
 
 const SYSTEM_ACTOR_NAME = "system"
+
+// eventSelect and countByBucket both build their flagged column/filter from this so they cannot drift.
+export function flaggedEventExpr(sql: Queryable): SqlFragment {
+  return sql`COALESCE((
+    SELECT ct.kind = 'flag'
+    FROM cleanup_timeline ct
+    WHERE ct.cleanup_id = c.id AND ct.kind IN ('flag', 'unflag')
+    ORDER BY ct.created_at DESC, ct.id DESC
+    LIMIT 1
+  ), false)`
+}
+
+// Assumes the query selects `cleanups c` LEFT JOIN `users u`.
+export function searchEventsFragment(sql: Queryable, q: string | null): SqlFragment {
+  if (q === null) return sql``
+  // ilikeAnyOf escapes the LIKE metacharacters so %/_ in q match literally (wildcard injection/trigram DoS).
+  return sql`AND ${ilikeAnyOf(
+    sql,
+    [sql`c.title`, sql`c.address`, sql`u.display_name`, sql`u.handle::text`],
+    q,
+    isUuid(q) ? [sql`c.id = ${q}::uuid`] : [],
+  )}`
+}
+
+export interface EventRowSelect {
+  id: string
+  status: string
+  event_kind: EventKind
+  flagged: boolean
+  title: string | null
+  place: string | null
+  address: string | null
+  description: string | null
+  attendees: string
+  capacity: number | null
+  bags: number
+  lat: number
+  lng: number
+  scheduled_at: Date
+  cursor_at: string | null
+  organizer_id: string | null
+  organizer_name: string | null
+  organizer_handle: string | null
+  organizer_email_verified: boolean | null
+  organizer_has_oauth: boolean | null
+  organizer_joined: Date | null
+}
+
+export function toRecord(r: EventRowSelect): AdminEventRecord {
+  const organizer: AdminOrganizerRecord | null = toPersonRecord(
+    {
+      id: r.organizer_id,
+      name: r.organizer_name,
+      handle: r.organizer_handle,
+      emailVerified: r.organizer_email_verified,
+      hasOauth: r.organizer_has_oauth,
+      joinedAt: r.organizer_joined,
+    },
+    "Organizer",
+  )
+  return {
+    id: r.id,
+    status: toEventStatus(r.status),
+    eventKind: r.event_kind,
+    flagged: r.flagged,
+    title: r.title ?? "Cleanup",
+    place: r.place ?? "",
+    attendees: Number(r.attendees ?? "0"),
+    capacity: r.capacity,
+    bags: r.bags,
+    organizer,
+    desc: r.description ?? "",
+    address: r.address ?? "",
+    lat: r.lat,
+    lng: r.lng,
+    scheduledAt: r.scheduled_at,
+  }
+}
+
+// Cleanups carry only a free-text address and no jurisdiction, so the place label is that address.
+export function eventSelect(
+  sql: Queryable,
+  extraWhere: SqlFragment,
+  orderLimit: SqlFragment,
+): SqlFragment {
+  return sql`
+    SELECT
+      c.id,
+      ${adminEventStatusExpr(sql)} AS status,
+      c.event_kind,
+      ${flaggedEventExpr(sql)} AS flagged,
+      c.title,
+      c.address AS place,
+      c.address,
+      c.description,
+      (SELECT COUNT(*) FROM cleanup_members cm WHERE cm.cleanup_id = c.id)::text AS attendees,
+      c.capacity,
+      c.bags,
+      ST_Y(c.geom) AS lat,
+      ST_X(c.geom) AS lng,
+      c.scheduled_at,
+      ${keysetInstant(sql, sql`c.scheduled_at`)} AS cursor_at,
+      ${personSelect(sql, "u", "organizer")}
+    FROM cleanups c
+    LEFT JOIN users u ON u.id = c.organizer_user_id
+    WHERE true
+    ${extraWhere}
+    ${orderLimit}
+  `
+}
 
 export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository {
   return {
