@@ -377,8 +377,10 @@ describe("admin events mutations", () => {
     expect(notified).toBe(3)
     // A chat message was appended.
     expect(repo.messages.get("evt-1")?.at(-1)).toMatchObject({
+      who: "CivFix",
       text: "Rescheduled to Saturday 9am",
     })
+    expect(repo.timeline.get("evt-1")?.at(-1)).toMatchObject({ kind: "message", who: "operator" })
     // One notification per member, all carrying the body.
     expect(repo.notifications).toHaveLength(3)
     expect(repo.notifications.map((n) => n.userId).sort()).toEqual(["m-1", "m-2", "m-3"])
@@ -386,6 +388,7 @@ describe("admin events mutations", () => {
     expect(repo.audits.at(-1)).toMatchObject({
       action: "event.message_posted",
       target: "cleanup:evt-1",
+      meta: { members: 3, messageId: expect.any(String) },
     })
   })
 

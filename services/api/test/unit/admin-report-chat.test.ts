@@ -3,8 +3,17 @@ import { AppError, type ChatHistoryPage, type ChatMessageDTO, type UserMentionDT
 import type { PersistChatInput } from "@civfix/shared/interfaces"
 import { makeAdminReportChatService } from "../../src/services/admin/admin-report-chat-service.js"
 import { InMemoryAdminReportChatRepository } from "../../src/services/admin/admin-report-chat-repository.memory.js"
-import { sendReportChatMessage, type ReportChatSendDeps } from "../../src/services/report-chat-send.js"
+import {
+  sendReportChatMessage,
+  type ReportChatPersistContext,
+  type ReportChatSendDeps,
+} from "../../src/services/report-chat-send.js"
+import { makeAuditedReportChatPersist } from "../../src/services/report-chat-send-wiring.js"
+import type { ChatRepository, InsertMessageOptions } from "../../src/services/chat-repository.drizzle.js"
+import type { Queryable } from "../../src/db/client.js"
+import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 import { roomKeyFor } from "../../src/ws/gateway.js"
+import { makeFakeSql } from "../helpers/fake-sql.js"
 
 const REPORT_ID = "11111111-1111-1111-1111-111111111111"
 const OPERATOR_ID = "99999999-9999-9999-9999-999999999999"
@@ -28,6 +37,7 @@ function messageDTO(overrides: Partial<ChatMessageDTO> = {}): ChatMessageDTO {
 interface SendHarness {
   deps: ReportChatSendDeps
   persisted: PersistChatInput[]
+  contexts: ReportChatPersistContext[]
   broadcasts: { roomKey: string; message: ChatMessageDTO }[]
   forwarded: { reportId: string; message: ChatMessageDTO; actorUserId: string }[]
   notified: { reportId: string; message: ChatMessageDTO }[]
@@ -40,6 +50,7 @@ function sendHarness(
   opts: { mentions?: UserMentionDTO[]; persistBody?: (input: PersistChatInput) => ChatMessageDTO } = {},
 ): SendHarness {
   const persisted: PersistChatInput[] = []
+  const contexts: ReportChatPersistContext[] = []
   const broadcasts: SendHarness["broadcasts"] = []
   const forwarded: SendHarness["forwarded"] = []
   const notified: SendHarness["notified"] = []
@@ -48,8 +59,9 @@ function sendHarness(
   const membershipChecks: string[] = []
 
   const deps: ReportChatSendDeps = {
-    persist: (input) => {
+    persist: (input, context) => {
       persisted.push(input)
+      contexts.push(context)
       return Promise.resolve(
         opts.persistBody ? opts.persistBody(input) : messageDTO({ body: input.body }),
       )
@@ -81,7 +93,7 @@ function sendHarness(
       return Promise.resolve()
     },
   }
-  return { deps, persisted, broadcasts, forwarded, notified, recorded, bells, membershipChecks }
+  return { deps, persisted, contexts, broadcasts, forwarded, notified, recorded, bells, membershipChecks }
 }
 
 function serviceHarness(
@@ -158,8 +170,8 @@ describe("admin report chat history (operator plane has NO public-visibility gat
   })
 })
 
-describe("admin report chat send (attributed operator message, no membership required)", () => {
-  it("persists into the REPORT room as the operator's own user id", async () => {
+describe("admin report chat send (official-account message, no membership required)", () => {
+  it("persists into the REPORT room as the official account, carrying the operator as the acting user", async () => {
     const h = serviceHarness()
     h.repo.seedReport(REPORT_ID)
 
@@ -172,9 +184,10 @@ describe("admin report chat send (attributed operator message, no membership req
     expect(h.send.persisted[0]).toMatchObject({
       cleanupId: REPORT_ID,
       roomKind: "report",
-      userId: OPERATOR_ID,
+      userId: CIVFIX_OFFICIAL_USER_ID,
       body: "Crew dispatched.",
     })
+    expect(h.send.contexts).toEqual([{ actingUserId: OPERATOR_ID }])
     expect(message.body).toBe("Crew dispatched.")
   })
 
@@ -200,7 +213,7 @@ describe("admin report chat send (attributed operator message, no membership req
       "notifyMembers",
       "persist",
     ])
-    expect(h.deps.persist.length).toBe(1)
+    expect(h.deps.persist.length).toBe(2)
   })
 
   it("broadcasts the message to the report's WS room key", async () => {
@@ -225,7 +238,7 @@ describe("admin report chat send (attributed operator message, no membership req
     expect(h.send.broadcasts[0]?.message.mine).toBe(false)
   })
 
-  it("runs the city-mention forward on the operator's message, attributed to the operator", async () => {
+  it("runs the city-mention forward on the official message, throttled per acting operator", async () => {
     const h = serviceHarness()
     h.repo.seedReport(REPORT_ID)
 
@@ -260,7 +273,7 @@ describe("admin report chat send (attributed operator message, no membership req
 
     expect(h.send.recorded).toEqual([{ messageId: MESSAGE_ID, mentionedUserIds: [MEMBER_ID] }])
     expect(message.mentions).toEqual([mention])
-    expect(h.send.bells).toEqual([{ mentionedUserId: MEMBER_ID, actorUserId: OPERATOR_ID }])
+    expect(h.send.bells).toEqual([{ mentionedUserId: MEMBER_ID, actorUserId: CIVFIX_OFFICIAL_USER_ID }])
   })
 
   it("resolves mentions scoped to the report room, so scope rules stay as-is", async () => {
@@ -417,7 +430,8 @@ describe("sendReportChatMessage core (the admin route's send; the WS path shares
     const withNone = sendHarness({ mentions: [] })
     const resolved = await sendReportChatMessage(withNone.deps, {
       reportId: REPORT_ID,
-      senderId: OPERATOR_ID,
+      senderId: CIVFIX_OFFICIAL_USER_ID,
+      actingUserId: OPERATOR_ID,
       body: "plain",
     })
     expect(resolved.mentions).toEqual([])
@@ -428,9 +442,41 @@ describe("sendReportChatMessage core (the admin route's send; the WS path shares
     const h = sendHarness()
     await sendReportChatMessage(h.deps, {
       reportId: REPORT_ID,
-      senderId: OPERATOR_ID,
+      senderId: CIVFIX_OFFICIAL_USER_ID,
+      actingUserId: OPERATOR_ID,
       body: "no handles at all",
     })
     expect(h.membershipChecks).toHaveLength(0)
+  })
+})
+
+describe("audited admin persist (the post and its audit row share one transaction)", () => {
+  it("inserts through the chat repository and audits the acting operator inside the insert's transaction", async () => {
+    const calls: { input: PersistChatInput; options: InsertMessageOptions | undefined }[] = []
+    const chatRepo = {
+      insertMessage: (input: PersistChatInput, _id: string, options?: InsertMessageOptions) => {
+        calls.push({ input, options })
+        return Promise.resolve(messageDTO())
+      },
+    } as unknown as ChatRepository
+    const input: PersistChatInput = {
+      cleanupId: REPORT_ID,
+      roomKind: "report",
+      userId: CIVFIX_OFFICIAL_USER_ID,
+      body: "Crew dispatched.",
+    }
+
+    await makeAuditedReportChatPersist(() => chatRepo)(input, { actingUserId: OPERATOR_ID })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.input).toBe(input)
+    const tx = makeFakeSql([{ match: /INSERT INTO audit_log/, rows: [{ id: "audit-1" }] }])
+    await calls[0]!.options!.inTx!(tx.sql as unknown as Queryable, {
+      id: MESSAGE_ID,
+      createdAt: new Date("2026-09-21T12:00:00.000Z"),
+    })
+    expect(tx.statements.map((st) => st.values)).toEqual([
+      [OPERATOR_ID, "report.message_posted", `report:${REPORT_ID}`, { messageId: MESSAGE_ID }],
+    ])
   })
 })

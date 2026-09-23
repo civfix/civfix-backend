@@ -172,6 +172,7 @@ export function describeAuditAction(action: string): string {
     "report.unflagged": "Unflagged a report",
     "report.removed": "Removed a report",
     "report.followup_sent": "Sent a report follow-up",
+    "report.message_posted": "Posted in a report chat",
     "report.verdict_set": "Set a report verdict",
     "report.routed": "Forwarded a report to the city",
     "event.status_changed": "Changed an event status",
