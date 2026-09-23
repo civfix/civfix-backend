@@ -2,17 +2,18 @@
  * The worker's RAW SQL against the canonical migrated schema (Docker-gated; SKIPS without Docker).
  *
  * Two pieces of the worker talk to Postgres in hand-written SQL and were only ever exercised against
- * fakes: runRetentionSweep (six paged DELETE ... RETURNING statements plus the inbound-email lane, spy-
- * tested as STRINGS, so a wrong column or table name was invisible) and makePhashDuplicateLookup (replaced
- * by an injected stub in every unit test, and its interpolated `AND id <> $1` / `AND report_id IS DISTINCT
- * FROM $2` fragments plus ORDER BY created_at are exactly the kind of thing a string spy cannot check).
+ * fakes: runRetentionSweep (six paged DELETE ... RETURNING statements in the api's retention repository
+ * plus the inbound-email lane, spy-tested as STRINGS, so a wrong column or table name was invisible) and
+ * the pHash duplicate lookup (the worker repository's findPhashDuplicate, replaced by an injected stub in
+ * every unit test, and its interpolated `AND id <> $1` / `AND report_id IS DISTINCT FROM $2` fragments
+ * plus ORDER BY created_at are exactly the kind of thing a string spy cannot check).
  * The idempotency_keys lane pages by ctid rather than by `key`: 0078/0079 dropped the key-only PK, so
  * `key` alone is NOT unique any more and a key-keyed subquery deleted unrelated live rows.
  * Both are also failure-tolerant in production - the retention sweep counts and continues, the dedupe
  * error is downgraded to a note - so drift would surface as silently-doing-nothing, not as an incident.
  *
- * The phash lookup is reached through buildSeams(), i.e. the real production wiring, because the function
- * itself is private to seams.ts (and how it gets wired is part of what should not break).
+ * The phash lookup is reached through buildSeams(), i.e. the real production wiring, because how seams.ts
+ * wires it (only when DATABASE_URL is set) is part of what should not break.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"

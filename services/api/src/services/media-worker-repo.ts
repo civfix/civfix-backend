@@ -9,6 +9,7 @@ import { jurisdictions } from "../db/schema/jurisdictions.js"
 import { users } from "../db/schema/users.js"
 import type { Db, Queryable, Sql } from "../db/client.js"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
+import type { NearDuplicateResult } from "@civfix/shared/interfaces"
 
 export { normalizeEtag, readEtag } from "./media-etag.js"
 export type { StorageHeadWithEtag } from "./media-etag.js"
@@ -91,6 +92,10 @@ export interface MediaWorkerRepo {
   deleteOrphan(id: string, olderThan: Date): Promise<OrphanRow | null>
   adoptLegacyServedKeys(olderThan: Date, limit: number): Promise<LegacyServedKeyAdoption>
   r2KeyReferencedByOthers(id: string, r2Key: string): Promise<boolean>
+  findPhashDuplicate?(
+    hash: string,
+    opts?: { excludeAssetId?: string; excludeReportId?: string },
+  ): Promise<NearDuplicateResult>
   enqueueHeldModerationItem?(input: {
     reportId: string
     reason: string
@@ -304,6 +309,27 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
         .where(and(eq(mediaAssets.r2Key, r2Key), ne(mediaAssets.id, id)))
         .limit(1)
       return rows.length > 0
+    },
+
+    async findPhashDuplicate(
+      hash: string,
+      opts?: { excludeAssetId?: string; excludeReportId?: string },
+    ): Promise<NearDuplicateResult> {
+      const excludeId = opts?.excludeAssetId ?? null
+      const excludeReportId = opts?.excludeReportId ?? null
+      const rows = await tag<{ report_id: string | null }[]>`
+        SELECT report_id
+        FROM media_assets
+        WHERE phash = ${hash}
+          AND report_id IS NOT NULL
+          ${excludeId !== null ? tag`AND id <> ${excludeId}` : tag``}
+          ${excludeReportId !== null ? tag`AND report_id IS DISTINCT FROM ${excludeReportId}` : tag``}
+        ORDER BY created_at ASC
+        LIMIT 1
+      `
+      const ofReportId = rows[0]?.report_id ?? null
+      if (ofReportId !== null) return { dup: true, ofReportId }
+      return { dup: false }
     },
 
     async enqueueHeldModerationItem(input: {

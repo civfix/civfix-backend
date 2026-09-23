@@ -7,6 +7,7 @@ import {
   type InboundRetentionRepository,
 } from "@civfix/api/inbound-retention-repo"
 import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
+import { makeDrizzleRetentionRepository } from "@civfix/api/retention-repo"
 import { drainPages } from "./drain.js"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 
@@ -92,87 +93,41 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
     }
   }
 
+  const repo = makeDrizzleRetentionRepository(deps.sql)
+
   await drainTable(
     "email_otps",
-    (limit) => deps.sql<{ id: string }[]>`
-      DELETE FROM email_otps
-      WHERE id IN (
-        SELECT id FROM email_otps
-        WHERE consumed_at IS NOT NULL OR expires_at < ${cutoff}
-        LIMIT ${limit}
-      )
-      RETURNING id
-    `,
+    (limit) => repo.deleteExpiredOtps(cutoff, limit),
     (n) => (result.otps += n),
   )
 
   await drainTable(
     "anon_tokens",
-    (limit) => deps.sql<{ id: string }[]>`
-      DELETE FROM anon_tokens
-      WHERE id IN (
-        SELECT id FROM anon_tokens
-        WHERE expires_at < ${cutoff}
-        LIMIT ${limit}
-      )
-      RETURNING id
-    `,
+    (limit) => repo.deleteExpiredAnonTokens(cutoff, limit),
     (n) => (result.anonTokens += n),
   )
 
   await drainTable(
     "sessions",
-    (limit) => deps.sql<{ id: string }[]>`
-      DELETE FROM sessions
-      WHERE id IN (
-        SELECT id FROM sessions
-        WHERE expires_at < ${cutoff}
-        LIMIT ${limit}
-      )
-      RETURNING id
-    `,
+    (limit) => repo.deleteExpiredSessions(cutoff, limit),
     (n) => (result.sessions += n),
   )
 
   await drainTable(
     "idempotency_keys",
-    (limit) => deps.sql<{ key: string }[]>`
-      DELETE FROM idempotency_keys
-      WHERE ctid IN (
-        SELECT ctid FROM idempotency_keys
-        WHERE created_at < ${idempotencyCutoff}
-        LIMIT ${limit}
-      )
-      RETURNING key
-    `,
+    (limit) => repo.deleteOldIdempotencyKeys(idempotencyCutoff, limit),
     (n) => (result.idempotencyKeys += n),
   )
 
   await drainTable(
     "notifications",
-    (limit) => deps.sql<{ id: string }[]>`
-      DELETE FROM notifications
-      WHERE id IN (
-        SELECT id FROM notifications
-        WHERE created_at < ${notificationsCutoff}
-        LIMIT ${limit}
-      )
-      RETURNING id
-    `,
+    (limit) => repo.deleteOldNotifications(notificationsCutoff, limit),
     (n) => (result.notifications += n),
   )
 
   await drainTable(
     "geocode_cache",
-    (limit) => deps.sql<{ point_key: string }[]>`
-      DELETE FROM geocode_cache
-      WHERE point_key IN (
-        SELECT point_key FROM geocode_cache
-        WHERE resolved_at < ${geocodeCacheCutoff}
-        LIMIT ${limit}
-      )
-      RETURNING point_key
-    `,
+    (limit) => repo.deleteStaleGeocodeCache(geocodeCacheCutoff, limit),
     (n) => (result.geocodeCache += n),
   )
 
