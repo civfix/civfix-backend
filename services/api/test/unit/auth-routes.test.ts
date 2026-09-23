@@ -885,6 +885,30 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
     expect(typeof (await updateWithAvatar(harness)).presignAvatar).toBe("function")
   })
 
+  it("reserves display names that read as CivFix, but only when the name changes", async () => {
+    harness = await makeAuthHarness()
+    const h = harness
+    const put = (token: string, handle: string, displayName: string) =>
+      h.app.inject({
+        method: "PUT",
+        url: "/v1/me/profile",
+        headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
+        payload: { handle, displayName },
+      })
+
+    const resident = await signIn(h, "resident@example.com")
+    for (const name of ["CivFix", "civ fix", "C1VF!X", "Civ-Fix", "\u0421iv\u0192ix"]) {
+      const res = await put(resident.token, "resident_1", name)
+      expect(res.statusCode, name).toBe(422)
+      expect(res.json().fields.displayName, name).toBe("That name is reserved.")
+    }
+    expect((await put(resident.token, "resident_1", "Civic Fixer")).statusCode).toBe(200)
+
+    const existing = await signIn(h, "civfix@example.com")
+    expect((await put(existing.token, "existing_1", "civfix")).statusCode).toBe(200)
+    expect((await put(existing.token, "existing_1", "CivFix")).statusCode).toBe(422)
+  })
+
   it("validates the handle format (bad handle -> 422)", async () => {
     harness = await makeAuthHarness()
     const { token } = await signIn(harness, "badhandle@example.com")
