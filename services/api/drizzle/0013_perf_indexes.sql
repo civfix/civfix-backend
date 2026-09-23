@@ -27,7 +27,7 @@
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- dm_threads.user_hi  (findings 1 + 15 — SAME index, created once)
+-- dm_threads.user_hi  (findings 1 + 15: SAME index, created once)
 -- -----------------------------------------------------------------------------
 -- listThreadsForUser / DM inbox filter `WHERE user_lo = X OR user_hi = X`. The
 -- UNIQUE(user_lo, user_hi) already anchors the user_lo branch via its leftmost
@@ -65,7 +65,7 @@ CREATE INDEX IF NOT EXISTS users_created_id_idx
   ON users (created_at DESC, id DESC);
 
 -- -----------------------------------------------------------------------------
--- chat_messages by sender  (finding 4) — PARTITIONED PARENT
+-- chat_messages by sender  (finding 4): PARTITIONED PARENT
 -- -----------------------------------------------------------------------------
 -- listUserMessages: `WHERE m.sender_id = X ... ORDER BY m.created_at DESC, m.id DESC`.
 -- chat_messages is declaratively partitioned (0002); a PLAIN index on the parent
@@ -99,7 +99,7 @@ CREATE INDEX IF NOT EXISTS reports_public_recent_idx
 -- cleanups created_at  (findings 5/6 cleanups-branch)
 -- -----------------------------------------------------------------------------
 -- Activity-feed cleanups UNION branch orders by c.created_at DESC (the COALESCE(
--- c.created_at, c.scheduled_at) wrapper has been dropped — created_at is DEFAULT
+-- c.created_at, c.scheduled_at) wrapper has been dropped; created_at is DEFAULT
 -- now() and effectively non-null, so the fallback never fired). This plain
 -- (created_at DESC) index serves that sort directly. cleanups_scheduled_idx (0001)
 -- already covers any scheduled_at-only ordering, so no extra index is needed for
@@ -162,7 +162,7 @@ CREATE INDEX IF NOT EXISTS report_timeline_acknowledged_idx
   WHERE status = 'acknowledged';
 
 -- -----------------------------------------------------------------------------
--- mail_threads inbox keyset  (finding 13) — EXPRESSION index
+-- mail_threads inbox keyset  (finding 13): EXPRESSION index
 -- -----------------------------------------------------------------------------
 -- listThreads paginates by (COALESCE(last_message_at, created_at) DESC, id DESC)
 -- so a brand-new thread with no message still orders by its creation time. An

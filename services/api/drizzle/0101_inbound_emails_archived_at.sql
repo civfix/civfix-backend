@@ -7,7 +7,7 @@
 -- previously recorded only the `status` string, so "when was this archived" was unrecoverable.
 --
 -- Backfill: existing archived rows get `received_at` as their archive time (the only timestamp the row
--- carries). That is conservative — it can only make an already-archived row eligible sooner, never later,
+-- carries). That is conservative: it can only make an already-archived row eligible sooner, never later,
 -- and pre-launch the table is empty.
 --
 -- inbound_emails is a small operator-plane table (catch-all inbox), not a hot table, so a plain

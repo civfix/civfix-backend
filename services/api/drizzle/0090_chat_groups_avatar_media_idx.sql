@@ -5,7 +5,7 @@
 -- media orphan-reaper (media-worker findOrphans) checks whether an asset is still
 -- referenced as a group avatar. With no index on avatar_media_id that check does a
 -- sequential scan of chat_groups per candidate asset. Add a partial index over the
--- non-null avatar references. (mw fixes the stale findOrphans comment — its half.)
+-- non-null avatar references. (mw fixes the stale findOrphans comment, its half.)
 --
 -- CANONICAL DDL: hand-authored source of truth. Mirror: schema/chat-groups.ts.
 --

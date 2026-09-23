@@ -9,7 +9,7 @@
 -- Runs AFTER 0081's dedupe so the build cannot fail on pre-existing duplicates.
 --
 -- Note: the existing NON-unique `mail_messages_message_id_idx (message_id) WHERE
--- message_id IS NOT NULL` (schema/mail.ts) stays — it is a redundant prefix of
+-- message_id IS NOT NULL` (schema/mail.ts) stays; it is a redundant prefix of
 -- this unique index but dropping it is a needless lock; noted for a future pass.
 --
 -- CANONICAL DDL: hand-authored source of truth. Mirror: schema/mail.ts.

@@ -24,7 +24,7 @@
 -- docs/out-of-band-indexes.md carries the same command plus the verification
 -- steps; re-running this migration afterwards simply stops warning.
 --
--- The index predicate is the STABLE part of the orphan predicate — the two
+-- The index predicate is the STABLE part of the orphan predicate; the two
 -- avatar NOT EXISTS probes and the `created_at < cutoff` bound are evaluated on
 -- the (now much smaller) candidate set; created_at is the index key so the age
 -- bound is served from the index tuple.

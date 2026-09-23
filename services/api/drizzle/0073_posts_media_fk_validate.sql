@@ -6,7 +6,7 @@
 -- them here, in a SEPARATE file, so a slow VALIDATE can't strand 0072 mid-apply
 -- (each file is its own transaction + bookkeeping row). Trivial on pre-launch
 -- volumes. Guarded so re-running (or running before 0072 on a partial history) is
--- a no-op rather than an error — VALIDATE has no IF EXISTS of its own.
+-- a no-op rather than an error; VALIDATE has no IF EXISTS of its own.
 --
 -- CANONICAL DDL: hand-authored source of truth. No shape change → no mirror edit
 -- beyond 0072's onDelete hints.

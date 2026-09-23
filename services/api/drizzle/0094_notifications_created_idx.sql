@@ -6,7 +6,7 @@
 --     SELECT id FROM notifications WHERE created_at < $1 LIMIT $2)
 -- Every index on the table is user_id-LEADING (notifications_user_created_idx and
 -- notifications_user_unread_idx from 0001_core.sql, notifications_feed_idx from
--- 0084), so none of them can serve a bare created_at range — the nightly sweep
+-- 0084), so none of them can serve a bare created_at range; the nightly sweep
 -- seq-scans the largest write-heavy table in the schema, once per page, up to
 -- maxPages times. Index created_at on its own, exactly as
 -- idempotency_keys_created_idx (0037) does for that table's identical lane.
@@ -18,7 +18,7 @@
 -- CANONICAL DDL: hand-authored source of truth. Mirror: schema/notifications.ts.
 --
 -- Conventions: additive CREATE INDEX IF NOT EXISTS; one transaction per file;
--- non-CONCURRENTLY build accepted (pre-launch, trivial rows) — on a live-traffic
+-- non-CONCURRENTLY build accepted (pre-launch, trivial rows); on a live-traffic
 -- box this one would be built out-of-band with CONCURRENTLY first, leaving this
 -- file an idempotent no-op. Forward-only, no down.
 --

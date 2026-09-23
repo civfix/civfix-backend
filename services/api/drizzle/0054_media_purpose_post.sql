@@ -20,7 +20,7 @@
 -- safe (the migrate runner wraps each file in one transaction).
 --
 -- Ordering rules: requires 0016_user_verification.sql (the purpose column).
--- Forward-only — there is no down migration in this suite.
+-- Forward-only: there is no down migration in this suite.
 -- =============================================================================
 
 ALTER TABLE media_assets
