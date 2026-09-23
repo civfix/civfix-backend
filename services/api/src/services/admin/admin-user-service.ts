@@ -336,10 +336,7 @@ export function makeAdminUserService(deps: AdminUserServiceDeps): AdminUserServi
     },
 
     async setRole(id: string, input: { role: Role; actorId: string | null }): Promise<void> {
-<<<<<<< HEAD
-=======
       assertTargetIsNotOfficialAccount(id, "change the role of")
->>>>>>> origin/main
       if (!GRANTABLE_ROLES.has(input.role)) {
         throw AppError.forbidden(
           "Operator access is granted only through ADMIN_EMAILS and Cloudflare Access, not this endpoint.",

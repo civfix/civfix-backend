@@ -98,7 +98,6 @@ export async function registerUsersRoutes(
     },
   )
 
-<<<<<<< HEAD
   route(
     app,
     "blockUser",
@@ -107,6 +106,9 @@ export async function registerUsersRoutes(
       const userId = requireAuth(request)
       const { id } = parse(UserIdParamsSchema, request.params)
       if (id === userId) throw AppError.validation({ id: "You cannot block yourself." })
+      if (isOfficialAccount(id)) {
+        throw AppError.forbidden("The official CivFix account can't be blocked.")
+      }
       const blocks = blocksRepo()
       await assertUserBlockable(app, blocks, userId, id)
       await blocks.block(userId, id)
@@ -115,22 +117,6 @@ export async function registerUsersRoutes(
       reply.status(200).send(payload)
     },
   )
-=======
-  route(app, "blockUser", { preHandler: csrfProtect, config: { rateLimit: BLOCK_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(UserIdParamsSchema, request.params)
-    if (id === userId) throw AppError.validation({ id: "You cannot block yourself." })
-    if (isOfficialAccount(id)) {
-      throw AppError.forbidden("The official CivFix account can't be blocked.")
-    }
-    const blocks = blocksRepo()
-    await assertUserBlockable(app, blocks, userId, id)
-    await blocks.block(userId, id)
-    await dropContainerSuggestions(container, [userId, id], request.log)
-    const payload: BlockUserResponse = { blocked: true }
-    reply.status(200).send(payload)
-  })
->>>>>>> origin/main
 
   route(
     app,

@@ -14,12 +14,7 @@ import { SUSPENDED_MESSAGE } from "../../auth/account-status.js"
 import type { Env } from "../../env.js"
 import { resolveLocale } from "../../i18n/locales.js"
 import { isAdminEmail } from "../../auth/admin-allowlist.js"
-<<<<<<< HEAD
-=======
 import { newAccountDisplayName } from "../../auth/official-account.js"
-import { createAccessVerifier, type AccessIdentity, type VerifyAccessJwt } from "../../auth/cf-access.js"
-import { writeAudit, type WriteAuditInput } from "../../services/admin/audit.js"
->>>>>>> origin/main
 import {
   createAccessVerifier,
   type AccessIdentity,
