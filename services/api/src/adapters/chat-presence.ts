@@ -18,6 +18,8 @@ export const PRESENCE_TTL_MS = 90_000
 
 const PRESENCE_KEY_TTL_SECONDS = 7200
 
+const PRESENCE_KEY_PREFIX = "presence:"
+
 /** UUIDs never contain "::", so splitting on the first occurrence is unambiguous. */
 const SEP = "::"
 
@@ -59,6 +61,12 @@ function userOf(memberId: string): string {
   return idx === -1 ? memberId : memberId.slice(0, idx)
 }
 
+// ZREMRANGEBYSCORE max bound: the "(" makes it exclusive, so an entry seen exactly at the cutoff survives
+// as it does in the in-memory prune.
+function staleScoreBound(now: number): string {
+  return `(${now - PRESENCE_TTL_MS}`
+}
+
 function distinctUsers(members: string[]): string[] {
   return [...new Set(members.map(userOf))].sort()
 }
@@ -97,7 +105,7 @@ export class RedisChatPresence implements ChatPresence {
   constructor(private readonly redis: RedisClient) {}
 
   private key(cleanupId: string): string {
-    return `presence:${cleanupId}`
+    return `${PRESENCE_KEY_PREFIX}${cleanupId}`
   }
 
   async join(cleanupId: string, connId: string, userId: string): Promise<PresenceJoinResult> {
@@ -107,7 +115,7 @@ export class RedisChatPresence implements ChatPresence {
     // cannot be perturbed by an interleaving command.
     const replies = await this.redis
       .multi()
-      .zremrangebyscore(key, "-inf", `(${now - PRESENCE_TTL_MS}`)
+      .zremrangebyscore(key, "-inf", staleScoreBound(now))
       .zadd(key, now, member(userId, connId))
       .expire(key, PRESENCE_KEY_TTL_SECONDS)
       .zrange(key, 0, -1)
@@ -125,7 +133,7 @@ export class RedisChatPresence implements ChatPresence {
     const replies = await this.redis
       .multi()
       .zrem(key, member(userId, connId))
-      .zremrangebyscore(key, "-inf", `(${now - PRESENCE_TTL_MS}`)
+      .zremrangebyscore(key, "-inf", staleScoreBound(now))
       .zrange(key, 0, -1)
       .exec()
     const members = presenceMembers(replies)
@@ -151,7 +159,7 @@ export class RedisChatPresence implements ChatPresence {
     const now = Date.now()
     const replies = await this.redis
       .multi()
-      .zremrangebyscore(key, "-inf", `(${now - PRESENCE_TTL_MS}`)
+      .zremrangebyscore(key, "-inf", staleScoreBound(now))
       .zrange(key, 0, -1)
       .exec()
     return distinctUsers(presenceMembers(replies))

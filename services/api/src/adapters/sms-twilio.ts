@@ -6,11 +6,14 @@ const TWILIO_API_ROOT = "https://api.twilio.com/2010-04-01/Accounts"
 
 export const SMS_SEND_TIMEOUT_MS = 10_000
 
-export const TWILIO_OPTED_OUT_CODE = 21610
+const TWILIO_OPTED_OUT_CODE = 21610
 
-export const TWILIO_INVALID_NUMBER_CODES: ReadonlySet<number> = new Set([21211, 21614])
+const TWILIO_INVALID_NUMBER_CODES: ReadonlySet<number> = new Set([21211, 21614])
 
 const MAX_ERROR_BODY_BYTES = 64 * 1024
+
+const HTTP_TOO_MANY_REQUESTS = 429
+const HTTP_SERVER_ERROR_MIN = 500
 
 export interface TwilioSmsSenderConfig {
   accountSid: string
@@ -160,7 +163,7 @@ export function classifyTwilioError(status: number, payload: TwilioMessageRespon
       `Text message not sent: that phone number is not a valid mobile number.${detail}`,
     )
   }
-  if (status === 429 || status >= 500) {
+  if (status === HTTP_TOO_MANY_REQUESTS || status >= HTTP_SERVER_ERROR_MIN) {
     return smsFailure(
       "temporary",
       `Text message not sent: the SMS provider is temporarily unavailable.${detail}`,

@@ -9,16 +9,9 @@ import { AppError } from "@civfix/shared"
 import type { RoutingProvider, RouteStop, RouteOpts, Route } from "@civfix/shared/interfaces"
 import type { LatLng } from "@civfix/shared"
 
-export interface RoutingProviderConfig {
-  /** Base URL of the routing engine (OSRM/Valhalla-compatible). */
-  baseUrl?: string
-}
-
 const NOT_IMPL = "adapter not implemented: routing-provider"
 
 export class HttpRoutingProvider implements RoutingProvider {
-  constructor(_config: RoutingProviderConfig = {}) {}
-
   matrix(_points: LatLng[]): Promise<number[][]> {
     return Promise.reject(AppError.internal(NOT_IMPL))
   }

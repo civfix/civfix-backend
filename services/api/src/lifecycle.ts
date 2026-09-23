@@ -11,10 +11,13 @@ declare module "fastify" {
 export const REQUEST_TIMEOUT_MS = 15_000
 export const SHUTDOWN_CLOSE_WAIT_MS = REQUEST_TIMEOUT_MS
 export const SHUTDOWN_TEARDOWN_WATCHDOG_MS = 15_000
-export const SHUTDOWN_IDLE_SWEEP_MS = 250
+const SHUTDOWN_IDLE_SWEEP_MS = 250
 export const SHUTDOWN_FORCE_GRACE_MS = 1_000
 export const SHUTDOWN_BUDGET_MARGIN_MS = 5_000
 export const COMPOSE_STOP_GRACE_PERIOD_SECONDS = 45
+
+const EXIT_CLEAN = 0
+const EXIT_FAILURE = 1
 
 export interface Lifecycle {
   isDraining: () => boolean
@@ -32,7 +35,7 @@ export function makeLifecycle(): Lifecycle {
       draining = true
     },
     escalateExitCode: (code: number): void => {
-      if (code !== 0 && escalated === undefined) escalated = code
+      if (code !== EXIT_CLEAN && escalated === undefined) escalated = code
     },
     finalExitCode: (fallback: number): number => escalated ?? fallback,
   }
@@ -116,7 +119,7 @@ export function makeShutdown(
   const teardownWatchdogMs = options.teardownWatchdogMs ?? SHUTDOWN_TEARDOWN_WATCHDOG_MS
   const idleSweepMs = options.idleSweepMs ?? SHUTDOWN_IDLE_SWEEP_MS
   const exit = options.exit ?? ((code: number): void => process.exit(code))
-  const cleanExitCode = options.exitCode ?? 0
+  const cleanExitCode = options.exitCode ?? EXIT_CLEAN
   const drainMs = Math.min(SHUTDOWN_DRAIN_MS_MAX, Math.max(0, options.drainMs))
   const hardDeadlineMs = drainMs + closeWaitMs + teardownWatchdogMs
   let started = false
@@ -140,7 +143,7 @@ export function makeShutdown(
 
     const deadline = setTimeout(() => {
       app.log.error({ hardDeadlineMs }, "shutdown: hard deadline exceeded; forcing exit")
-      exit(1)
+      exit(EXIT_FAILURE)
     }, hardDeadlineMs)
     deadline.unref()
 
@@ -156,7 +159,7 @@ export function makeShutdown(
       })()
       if ((await settleWithin(teardown, teardownWatchdogMs)) === "timeout") {
         app.log.error({ teardownWatchdogMs }, "shutdown: teardown timed out; forcing exit")
-        exit(1)
+        exit(EXIT_FAILURE)
         return
       }
       app.log.info("shutdown: complete")
@@ -164,7 +167,7 @@ export function makeShutdown(
     } catch (err) {
       app.log.error({ err }, "shutdown: error during close")
       await flushErrorReporting()
-      exit(1)
+      exit(EXIT_FAILURE)
     } finally {
       clearTimeout(deadline)
     }

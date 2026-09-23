@@ -9,9 +9,11 @@ export const DEFAULT_TRUSTED_PROXY_CIDRS: readonly string[] = [
   "fc00::/7",
 ]
 
+const TRUTHY_FORMS = new Set(["1", "true", "yes", "on"])
+
 export function parseBool(raw: string | undefined, fallback: boolean): boolean {
   if (raw === undefined || raw === "") return fallback
-  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase())
+  return TRUTHY_FORMS.has(raw.trim().toLowerCase())
 }
 
 // The single-letter forms are accepted because deployed boxes already hold one-character values for
@@ -36,6 +38,10 @@ export interface EnvIssueSink {
 }
 
 const INTEGER_PATTERN = /^-?\d+$/
+const UNSIGNED_INTEGER_PATTERN = /^\d+$/
+const CRON_FIELD_PATTERN = /^[\dA-Za-z*/,\-?#]+$/
+const CRON_FIELD_COUNTS = new Set([5, 6])
+const BOUNDS_PART_COUNT = 4
 
 export function parseCsv(raw: string | undefined): string[] {
   if (!raw) return []
@@ -90,7 +96,7 @@ export function parseBounds(
 ): [number, number, number, number] {
   if (raw === undefined || raw.trim() === "") return fallback
   const parts = raw.split(",").map((s) => Number.parseFloat(s.trim()))
-  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return fallback
+  if (parts.length !== BOUNDS_PART_COUNT || parts.some((n) => !Number.isFinite(n))) return fallback
   return [parts[0]!, parts[1]!, parts[2]!, parts[3]!]
 }
 
@@ -100,8 +106,8 @@ export function isCronish(raw: string | undefined): boolean {
     .trim()
     .split(/\s+/)
     .filter((f) => f.length > 0)
-  if (fields.length !== 5 && fields.length !== 6) return false
-  return fields.every((f) => /^[\dA-Za-z*/,\-?#]+$/.test(f))
+  if (!CRON_FIELD_COUNTS.has(fields.length)) return false
+  return fields.every((f) => CRON_FIELD_PATTERN.test(f))
 }
 
 export function parseTrustProxy(raw: string | undefined): TrustProxyValue {
@@ -113,7 +119,7 @@ export function parseTrustProxy(raw: string | undefined): TrustProxyValue {
   if (lower === "true") return true
   if (lower === "false") return false
 
-  if (/^\d+$/.test(value)) return [...DEFAULT_TRUSTED_PROXY_CIDRS]
+  if (UNSIGNED_INTEGER_PATTERN.test(value)) return [...DEFAULT_TRUSTED_PROXY_CIDRS]
 
   const cidrs = value
     .split(",")

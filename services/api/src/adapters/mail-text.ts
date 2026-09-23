@@ -3,6 +3,10 @@
 
 const HEADER_VALUE_MAX = 998 // RFC 5322 line-length ceiling
 
+const FALLBACK_MAIL_DOMAIN = "civfix.org"
+
+const HEADER_BREAKING_CHARS_RE = /[\r\n\0]/g
+
 // `&` MUST be escaped first or the later entity ampersands get double-escaped.
 export function escapeHtml(s: string): string {
   return s
@@ -29,7 +33,7 @@ export function domainOfOrNull(addr: string | null | undefined): string | null {
 
 // For Message-ID hosts and operator copy only. Never use it for a comparison decision: the fallback would
 // silently align an unparseable address with civfix.org.
-export function domainOf(addr: string, fallback = "civfix.org"): string {
+export function domainOf(addr: string, fallback = FALLBACK_MAIL_DOMAIN): string {
   return domainOfOrNull(addr) ?? fallback
 }
 
@@ -37,6 +41,6 @@ export function domainOf(addr: string, fallback = "civfix.org"): string {
 // (SMTP header injection); this has bitten the OCI From/Reply-To path in prod. Not for envelope addresses,
 // which must be REJECTED on a bad char rather than silently sanitized.
 export function sanitizeHeaderValue(value: string, maxLength = HEADER_VALUE_MAX): string {
-  const stripped = value.replace(/[\r\n\0]/g, "")
+  const stripped = value.replace(HEADER_BREAKING_CHARS_RE, "")
   return stripped.length > maxLength ? stripped.slice(0, maxLength) : stripped
 }

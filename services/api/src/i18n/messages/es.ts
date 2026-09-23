@@ -70,7 +70,6 @@ export const es: Partial<Record<MessageKey, string>> = {
     'El turno "{{slot}}" de {{title}} tiene un horario nuevo. Abre el evento para verlo.',
 
   "email.otp.subject": "Tu código de acceso a civfix",
-  "email.otp.body_line1": "Tu código de acceso a civfix es {{code}}.",
   "email.otp.body_expiry":
     "Caduca en {{minutes}} minutos. Si no lo solicitaste, puedes ignorar este correo.",
   "email.otp.html_intro": "Tu código de acceso a civfix es:",

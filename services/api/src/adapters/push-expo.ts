@@ -15,9 +15,15 @@ const EXPO_CHUNK = 100
 const EXPO_TIMEOUT_MS = 4000
 /** Expo asks senders to back off and retry a 429 / 5xx rather than dropping the batch. */
 const EXPO_RETRY_DELAY_MS = 250
+const EXPO_SOUND = "default"
+const EXPO_TOKEN_PREFIXES = ["ExponentPushToken[", "ExpoPushToken["] as const
+const EXPO_UNREGISTERED_ERROR = "DeviceNotRegistered"
+
+const HTTP_TOO_MANY_REQUESTS = 429
+const HTTP_SERVER_ERROR_MIN = 500
 
 function isRetryableStatus(status: number): boolean {
-  return status === 429 || status >= 500
+  return status === HTTP_TOO_MANY_REQUESTS || status >= HTTP_SERVER_ERROR_MIN
 }
 
 function sleep(ms: number): Promise<void> {
@@ -25,7 +31,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export function isExpoPushToken(token: string): boolean {
-  return token.startsWith("ExponentPushToken[") || token.startsWith("ExpoPushToken[")
+  return EXPO_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix))
 }
 
 export interface ExpoTicket {
@@ -47,7 +53,7 @@ export function collectExpoInvalidTokens(
   tickets.forEach((ticket, idx) => {
     if (ticket?.status !== "error") return
     const token = chunk[idx]
-    if (ticket.details?.error === "DeviceNotRegistered" && typeof token === "string") {
+    if (ticket.details?.error === EXPO_UNREGISTERED_ERROR && typeof token === "string") {
       invalid.push(token)
     } else {
       logger.warn(
@@ -80,7 +86,7 @@ export function makeExpoDispatcher(config: ExpoPushConfig, logger: PushLogger): 
         to,
         title: payload.title,
         ...(payload.body !== undefined ? { body: payload.body } : {}),
-        sound: "default",
+        sound: EXPO_SOUND,
         ...(hasData ? { data } : {}),
       }))
       const send = (): Promise<FetchJsonResult<{ data?: ExpoTicket[] }>> =>

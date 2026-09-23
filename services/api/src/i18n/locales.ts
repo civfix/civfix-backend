@@ -6,10 +6,12 @@ export type Locale = (typeof SUPPORTED_LOCALES)[number]
 
 export const DEFAULT_LOCALE: Locale = "en"
 
+const LANGUAGE_SUBTAG_SEPARATOR_RE = /[-_]/
+
 /** Total: a BCP-47 tag reduces to its base language (`es-419` -> `es`); anything else becomes `en`. */
 export function resolveLocale(value: unknown): Locale {
   if (typeof value !== "string" || value.trim() === "") return DEFAULT_LOCALE
-  const base = value.trim().toLowerCase().split(/[-_]/)[0]
+  const base = value.trim().toLowerCase().split(LANGUAGE_SUBTAG_SEPARATOR_RE)[0]
   return (SUPPORTED_LOCALES as readonly string[]).includes(base ?? "")
     ? (base as Locale)
     : DEFAULT_LOCALE

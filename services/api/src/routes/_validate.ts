@@ -1,6 +1,8 @@
 import { AppError } from "@civfix/shared"
 import { z, type ZodTypeAny } from "zod"
-import type { FastifyRequest } from "fastify"
+
+// Field key for an issue on the value itself (a non-object body, a refine on the whole schema).
+const ROOT_FIELD_KEY = "_"
 
 export function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
   try {
@@ -16,7 +18,7 @@ export function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S
       ).issues
       const fields: Record<string, string> = {}
       for (const issue of issues) {
-        const key = issue.path.length > 0 ? issue.path.join(".") : "_"
+        const key = issue.path.length > 0 ? issue.path.join(".") : ROOT_FIELD_KEY
         fields[key] = issue.message
       }
       throw AppError.validation(fields)
@@ -47,16 +49,3 @@ export function trimTextFields<S extends ZodTypeAny>(
     return trimmed
   }, schema)
 }
-
-export const validateBody = <S extends ZodTypeAny>(
-  schema: S,
-  request: FastifyRequest,
-): z.infer<S> => parse(schema, request.body)
-export const validateQuery = <S extends ZodTypeAny>(
-  schema: S,
-  request: FastifyRequest,
-): z.infer<S> => parse(schema, request.query)
-export const validateParams = <S extends ZodTypeAny>(
-  schema: S,
-  request: FastifyRequest,
-): z.infer<S> => parse(schema, request.params)

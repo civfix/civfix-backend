@@ -14,6 +14,8 @@ const DECRBY_FLOOR_LUA =
 
 const DECRBY_COMMAND_NAME = "civfixDecrByFloor"
 
+const MS_PER_SECOND = 1000
+
 type IncrExpire = (key: string, ttlSeconds: number) => Promise<number>
 
 type IncrByExpire = (key: string, by: number, ttlSeconds: number) => Promise<number>
@@ -30,27 +32,35 @@ export function attachAtomicIncr(redis: RedisClient): IncrExpire {
   return (key: string, ttlSeconds: number): Promise<number> => incrBy(key, 1, ttlSeconds)
 }
 
-export function attachAtomicIncrBy(redis: RedisClient): IncrByExpire {
+function defineOnce(
+  redis: RedisClient,
+  name: typeof INCRBY_COMMAND_NAME | typeof DECRBY_COMMAND_NAME,
+  lua: string,
+): WithIncrExpire {
   const client = redis as WithIncrExpire
-  if (typeof client[INCRBY_COMMAND_NAME] !== "function") {
-    redis.defineCommand(INCRBY_COMMAND_NAME, { numberOfKeys: 1, lua: INCRBY_EXPIRE_LUA })
+  if (typeof client[name] !== "function") {
+    redis.defineCommand(name, { numberOfKeys: 1, lua })
   }
+  return client
+}
+
+function wholeAmount(by: number): string {
+  return String(Math.max(0, Math.floor(by)))
+}
+
+export function attachAtomicIncrBy(redis: RedisClient): IncrByExpire {
+  const client = defineOnce(redis, INCRBY_COMMAND_NAME, INCRBY_EXPIRE_LUA)
   return async (key: string, by: number, ttlSeconds: number): Promise<number> => {
-    const amount = Math.max(0, Math.floor(by))
-    const ttlMs = Math.max(1, Math.ceil(ttlSeconds)) * 1000
-    const result = await client[INCRBY_COMMAND_NAME]!(key, String(amount), ttlMs)
+    const ttlMs = Math.max(1, Math.ceil(ttlSeconds)) * MS_PER_SECOND
+    const result = await client[INCRBY_COMMAND_NAME]!(key, wholeAmount(by), ttlMs)
     return Number(result)
   }
 }
 
 export function attachAtomicDecrBy(redis: RedisClient): DecrFloor {
-  const client = redis as WithIncrExpire
-  if (typeof client[DECRBY_COMMAND_NAME] !== "function") {
-    redis.defineCommand(DECRBY_COMMAND_NAME, { numberOfKeys: 1, lua: DECRBY_FLOOR_LUA })
-  }
+  const client = defineOnce(redis, DECRBY_COMMAND_NAME, DECRBY_FLOOR_LUA)
   return async (key: string, by: number): Promise<number> => {
-    const amount = Math.max(0, Math.floor(by))
-    const result = await client[DECRBY_COMMAND_NAME]!(key, String(amount))
+    const result = await client[DECRBY_COMMAND_NAME]!(key, wholeAmount(by))
     return Number(result)
   }
 }

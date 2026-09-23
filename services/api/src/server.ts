@@ -57,6 +57,11 @@ import { registerCommsJobs } from "./services/host/comms-jobs.js"
 import { SERVICE_VERSION } from "./version.js"
 import { makeLifecycle, makeShutdown, REQUEST_TIMEOUT_MS } from "./lifecycle.js"
 
+const API_BODY_LIMIT_BYTES = 256 * 1024
+const SOCKET_CONNECTION_TIMEOUT_MS = 30_000
+const KEEP_ALIVE_TIMEOUT_MS = 5_000
+const LISTEN_HOST = "0.0.0.0"
+
 declare module "fastify" {
   interface FastifyInstance {
     container: Container
@@ -176,11 +181,11 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   const app = Fastify({
     genReqId,
     trustProxy: env.TRUST_PROXY,
-    bodyLimit: 262144,
+    bodyLimit: API_BODY_LIMIT_BYTES,
     requestTimeout: REQUEST_TIMEOUT_MS,
     forceCloseConnections: false,
-    connectionTimeout: 30000,
-    keepAliveTimeout: 5000,
+    connectionTimeout: SOCKET_CONNECTION_TIMEOUT_MS,
+    keepAliveTimeout: KEEP_ALIVE_TIMEOUT_MS,
     logger: loggerOptions(env),
   })
 
@@ -284,7 +289,7 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"))
   process.on("SIGINT", () => void shutdown("SIGINT"))
 
-  await app.listen({ host: "0.0.0.0", port: env.PORT })
+  await app.listen({ host: LISTEN_HOST, port: env.PORT })
   app.log.info({ port: env.PORT, env: env.NODE_ENV }, "civfix-api listening")
   return app
 }

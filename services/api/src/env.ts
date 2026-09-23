@@ -1,80 +1,72 @@
 import { z } from "zod"
-import { DEFAULT_FEED_RANKING, FeedRankingConfigSchema } from "@civfix/shared"
-import type { FeedRankingConfig } from "@civfix/shared"
 import type { Env } from "./env/types.js"
-import { assertOutboundSendPolicy } from "./services/admin/outbound-send-policy.js"
 import { loadCommsEnv } from "./env/comms-env.js"
 import { loadRegistrationEnv } from "./env/registration-env.js"
+import { makeEnvReader, type EnvReader } from "./env/reader.js"
 import {
-  isCronish,
-  parseBool,
-  parseBounds,
-  parseCsv,
-  parseCsvLower,
-  parseDrainMs,
-  parseIntOr,
-  parsePositiveIntOr,
-  parseStrictBool,
-  STRICT_BOOL_ACCEPTED_FORMS,
-  parseTrustProxy,
-} from "./env/parsers.js"
+  checkDatabaseTls,
+  checkGeocoderDatabase,
+  loadAccessLists,
+  loadApnsProduction,
+  loadCoreEnv,
+  loadFeedRanking,
+  loadHomeRegion,
+  loadLocalStorage,
+  loadMailEnv,
+  loadR2Env,
+  loadScheduleEnv,
+  loadSigningKeys,
+  loadSmsEnv,
+  loadTrustProxy,
+  loadTuningEnv,
+  type FakeFlags,
+} from "./env/core-env.js"
+import { parseBool, parseBounds } from "./env/parsers.js"
 
 export type { Env } from "./env/types.js"
-export type { TrustProxyValue } from "./env/parsers.js"
-export {
-  parseBool,
-  parseCsv,
-  parseCsvLower,
-  parseDrainMs,
-  parseIntOr,
-  parsePositiveIntOr,
-  parseBounds,
-  parseTrustProxy,
-  isCronish,
-  DEFAULT_TRUSTED_PROXY_CIDRS,
-  SHUTDOWN_DRAIN_MS_MAX,
-} from "./env/parsers.js"
-
-const DEV_SESSION_SIGNING_KEY = "dev-insecure-session-signing-key-do-not-use-in-prod"
-const DEV_ANON_TOKEN_SIGNING_KEY = "dev-insecure-anon-token-signing-key-do-not-use-in-prod"
+export { DEFAULT_TRUSTED_PROXY_CIDRS, SHUTDOWN_DRAIN_MS_MAX } from "./env/parsers.js"
 
 export const REVIEWER_OTP_CODE_MIN_LENGTH = 20
 
-export const SIGNING_KEY_MIN_LENGTH = 32
-
-const TLS_SSLMODES = new Set(["require", "verify-ca", "verify-full"])
-
-const TILES_MIN_ZOOM_DEFAULT = 1
-const TILES_MAX_ZOOM_DEFAULT = 19
 const TILES_BOUNDS_DEFAULT: [number, number, number, number] = [-125, 24, -66, 50]
 
-const HOME_REGION_LAT_DEFAULT = 34.0522
-const HOME_REGION_LNG_DEFAULT = -118.2437
-const HOME_REGION_RADIUS_KM_DEFAULT = 40
+const NODE_ENVS = ["development", "test", "production"] as const
+const NodeEnvSchema = z.enum(NODE_ENVS).default("development")
 
-const APNS_CREDENTIAL_KEYS = [
+const OPTIONAL_STRING_KEYS: ReadonlyArray<keyof Env & string> = [
+  "R2_INBOUND_BUCKET",
+  "R2_PUBLIC_BASE",
+  "TILES_RASTER_URL",
+  "CF_ACCESS_TEAM_DOMAIN",
+  "CF_ACCESS_AUD",
+  "CF_TURNSTILE_SECRET",
+  "CF_EMAIL_WEBHOOK_SECRET",
+  "CF_API_TOKEN",
+  "MAPBOX_TOKEN",
+  "APPLE_OAUTH_CLIENT_ID",
+  "APPLE_OAUTH_TEAM_ID",
+  "APPLE_OAUTH_KEY_ID",
+  "APPLE_OAUTH_PRIVATE_KEY",
+  "APPLE_OAUTH_WEB_CLIENT_ID",
+  "APPLE_OAUTH_IOS_CLIENT_ID",
+  "GOOGLE_OAUTH_CLIENT_ID",
+  "GOOGLE_OAUTH_CLIENT_SECRET",
+  "GOOGLE_OAUTH_REDIRECT_URI",
+  "GOOGLE_OAUTH_IOS_CLIENT_ID",
+  "GOOGLE_OAUTH_ANDROID_CLIENT_ID",
   "APNS_KEY_ID",
   "APNS_TEAM_ID",
   "APNS_PRIVATE_KEY",
   "APNS_BUNDLE_ID",
-] as const
-
-const NodeEnvSchema = z.enum(["development", "test", "production"]).default("development")
-const PortSchema = z.coerce.number().int().positive().max(65535)
-
-type FakeFlags = Pick<
-  Env,
-  | "USE_FAKE_STORAGE"
-  | "USE_FAKE_MAILER"
-  | "USE_FAKE_PUSH"
-  | "USE_FAKE_ABUSE_NSFW"
-  | "USE_FAKE_CHAT"
-  | "USE_FAKE_JOBS"
-  | "USE_FAKE_USER_CHANNEL"
-  | "USE_FAKE_GEOCODER"
-  | "USE_FAKE_SMS"
-  | "USE_REAL_NSFW"
->
+  "FCM_SERVICE_ACCOUNT_JSON",
+  "FCM_PROJECT_ID",
+  "VAPID_PUBLIC_KEY",
+  "VAPID_PRIVATE_KEY",
+  "VAPID_SUBJECT",
+  "EXPO_ACCESS_TOKEN",
+  "GLITCHTIP_DSN",
+  "GLITCHTIP_DATABASE_URL",
+]
 
 export const FAKE_SEAM_FLAGS: ReadonlyArray<{ flag: keyof FakeFlags; consequence: string }> = [
   { flag: "USE_FAKE_STORAGE", consequence: "uploaded media is kept in memory and lost on restart" },
@@ -118,13 +110,13 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 
   const nodeEnvParsed = NodeEnvSchema.safeParse(source.NODE_ENV)
   if (!nodeEnvParsed.success) {
-    errors.push("NODE_ENV: must be one of development | test | production")
+    errors.push(`NODE_ENV: must be one of ${NODE_ENVS.join(" | ")}`)
   }
   const nodeEnv = nodeEnvParsed.success ? nodeEnvParsed.data : "development"
   const isProd = nodeEnv === "production"
+  const r = makeEnvReader(source, errors, isProd)
 
   const fakeFlags = deriveFakeFlags(source, isProd)
-
   if (isProd) {
     for (const { flag, consequence } of FAKE_SEAM_FLAGS) {
       if (fakeFlags[flag]) {
@@ -133,295 +125,21 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     }
   }
 
-  function reqStr(key: string, opts: { gatedOff?: boolean } = {}): string {
-    const raw = source[key]
-    const value = typeof raw === "string" ? raw.trim() : ""
-    const required = isProd && !(opts.gatedOff ?? false)
-    if (value.length === 0 && required) {
-      errors.push(`${key}: required [BOOT] variable is missing`)
-    }
-    return value
-  }
-
-  function reqPort(key: string, fallback: number): number {
-    const raw = source[key]
-    if (raw === undefined || raw === "") return fallback
-    const parsed = PortSchema.safeParse(raw)
-    if (!parsed.success) {
-      errors.push(`${key}: must be an integer between 1 and 65535`)
-      return fallback
-    }
-    return parsed.data
-  }
-
-  function reqNumber(
-    key: string,
-    fallback: number,
-    range: { min: number; max: number; exclusiveMin?: boolean },
-  ): number {
-    const raw = source[key]
-    if (raw === undefined || raw.trim() === "") return fallback
-
-    const exclusiveMin = range.exclusiveMin ?? false
-    const value = Number.parseFloat(raw.trim())
-    const aboveMin = exclusiveMin ? value > range.min : value >= range.min
-    if (Number.isFinite(value) && aboveMin && value <= range.max) return value
-
-    const lowerBound = exclusiveMin ? `greater than ${range.min}` : `at least ${range.min}`
-    errors.push(`${key}: must be a number ${lowerBound} and at most ${range.max}`)
-    return fallback
-  }
-
-  function reqFeedRanking(key: string): FeedRankingConfig {
-    const raw = (source[key] ?? "").trim()
-    if (raw.length === 0) return DEFAULT_FEED_RANKING
-    let decoded: unknown
-    try {
-      decoded = JSON.parse(raw)
-    } catch {
-      errors.push(`${key}: must be a JSON object of feed-ranking overrides`)
-      return DEFAULT_FEED_RANKING
-    }
-    const parsed = FeedRankingConfigSchema.safeParse(decoded)
-    if (!parsed.success) {
-      for (const issue of parsed.error.issues) {
-        const path = issue.path.length > 0 ? `.${issue.path.join(".")}` : ""
-        errors.push(`${key}${path}: ${issue.message}`)
-      }
-      return DEFAULT_FEED_RANKING
-    }
-    return parsed.data
-  }
-
-  function positiveInt(key: string, fallback: number): number {
-    return parsePositiveIntOr(source[key], fallback, { key, errors })
-  }
-
-  function readApnsProduction(): boolean | undefined {
-    const raw = (source.APNS_PRODUCTION ?? "").trim()
-    if (raw.length === 0) {
-      const apnsConfigured = APNS_CREDENTIAL_KEYS.every(
-        (key) => (source[key] ?? "").trim().length > 0,
-      )
-      if (isProd && apnsConfigured) {
-        errors.push(
-          "APNS_PRODUCTION: required [BOOT] once APNs credentials are set (true for App Store and " +
-            "TestFlight builds; a gateway mismatch makes APNs reject every token as BadDeviceToken)",
-        )
-      }
-      return undefined
-    }
-    const value = parseStrictBool(raw)
-    if (value === undefined) {
-      errors.push(`APNS_PRODUCTION: must be one of ${STRICT_BOOL_ACCEPTED_FORMS}`)
-    }
-    return value
-  }
-
-  function reqCron(key: string, fallback: string): string {
-    const value = (source[key] ?? "").trim() || fallback
-    if (!isCronish(value)) {
-      errors.push(`${key}: must be a 5- or 6-field cron expression`)
-    }
-    return value
-  }
-
-  const PORT = reqPort("PORT", 8080)
-  const PUBLIC_API_URL = reqStr("PUBLIC_API_URL")
-  const WEB_ORIGINS = parseCsv(source.WEB_ORIGINS)
-  if (isProd && WEB_ORIGINS.length === 0) {
-    errors.push("WEB_ORIGINS: required [BOOT] CORS allowlist (comma list) is missing")
-  }
-  const DATABASE_URL = reqStr("DATABASE_URL")
-  const REDIS_URL = reqStr("REDIS_URL")
-
-  let SESSION_SIGNING_KEY = (source.SESSION_SIGNING_KEY ?? "").trim()
-  let ANON_TOKEN_SIGNING_KEY = (source.ANON_TOKEN_SIGNING_KEY ?? "").trim()
-  if (isProd) {
-    if (SESSION_SIGNING_KEY.length === 0) {
-      errors.push("SESSION_SIGNING_KEY: required [BOOT] variable is missing")
-    } else if (SESSION_SIGNING_KEY === DEV_SESSION_SIGNING_KEY) {
-      errors.push("SESSION_SIGNING_KEY: must not be the insecure dev default in production")
-    } else if (SESSION_SIGNING_KEY.length < SIGNING_KEY_MIN_LENGTH) {
-      errors.push(
-        `SESSION_SIGNING_KEY: must be at least ${SIGNING_KEY_MIN_LENGTH} characters in production ` +
-          "(it is the cookie-signing and session-bound CSRF HMAC secret)",
-      )
-    }
-    if (ANON_TOKEN_SIGNING_KEY.length === 0) {
-      errors.push("ANON_TOKEN_SIGNING_KEY: required [BOOT] variable is missing")
-    } else if (ANON_TOKEN_SIGNING_KEY === DEV_ANON_TOKEN_SIGNING_KEY) {
-      errors.push("ANON_TOKEN_SIGNING_KEY: must not be the insecure dev default in production")
-    } else if (ANON_TOKEN_SIGNING_KEY.length < SIGNING_KEY_MIN_LENGTH) {
-      errors.push(
-        `ANON_TOKEN_SIGNING_KEY: must be at least ${SIGNING_KEY_MIN_LENGTH} characters in production ` +
-          "(it signs the anon-report claim tokens)",
-      )
-    }
-    if (SESSION_SIGNING_KEY.length > 0 && SESSION_SIGNING_KEY === ANON_TOKEN_SIGNING_KEY) {
-      errors.push(
-        "SESSION_SIGNING_KEY / ANON_TOKEN_SIGNING_KEY: must be DIFFERENT values in production " +
-          "(one shared secret lets a session-cookie oracle and an anon-token oracle attack the same key)",
-      )
-    }
-  } else {
-    if (SESSION_SIGNING_KEY.length === 0) SESSION_SIGNING_KEY = DEV_SESSION_SIGNING_KEY
-    if (ANON_TOKEN_SIGNING_KEY.length === 0) ANON_TOKEN_SIGNING_KEY = DEV_ANON_TOKEN_SIGNING_KEY
-  }
-
-  if (
-    isProd &&
-    DATABASE_URL.length > 0 &&
-    !TLS_SSLMODES.has(sslModeOf(DATABASE_URL) ?? "") &&
-    !isNonRoutableDbHost(DATABASE_URL)
-  ) {
-    errors.push(
-      "DATABASE_URL: production requires TLS; append ?sslmode=require (or verify-ca / verify-full); " +
-        "postgres.js otherwise connects in cleartext",
-    )
-  }
-
-  const TRUST_PROXY = parseTrustProxy(source.TRUST_PROXY)
-  if (isProd && TRUST_PROXY === true) {
-    errors.push(
-      "TRUST_PROXY: must not be `true` in production (it trusts any client-supplied X-Forwarded-For). " +
-        "Use an explicit CIDR list; leave unset for the safe internal-ranges default",
-    )
-  }
-
-  const HOME_REGION_LAT = reqNumber("HOME_REGION_LAT", HOME_REGION_LAT_DEFAULT, {
-    min: -90,
-    max: 90,
-  })
-  const HOME_REGION_LNG = reqNumber("HOME_REGION_LNG", HOME_REGION_LNG_DEFAULT, {
-    min: -180,
-    max: 180,
-  })
-  const HOME_REGION_RADIUS_KM = reqNumber("HOME_REGION_RADIUS_KM", HOME_REGION_RADIUS_KM_DEFAULT, {
-    min: 0,
-    max: 20_000,
-    exclusiveMin: true,
-  })
-
-  const FEED_RANKING = reqFeedRanking("FEED_RANKING")
-
-  const LOCAL_STORAGE_DIR = (source.LOCAL_STORAGE_DIR ?? "").trim()
-  const usesLocalStorage = LOCAL_STORAGE_DIR.length > 0
-  if (isProd && usesLocalStorage) {
-    errors.push(
-      "LOCAL_STORAGE_DIR: the local-disk storage driver is DEVELOPMENT ONLY and must not be set in " +
-        "production; configure R2 (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET)",
-    )
-  }
-  if (usesLocalStorage && PUBLIC_API_URL.length === 0) {
-    errors.push(
-      "PUBLIC_API_URL: required whenever LOCAL_STORAGE_DIR is set: the local-disk driver's presigned " +
-        "URLs must be absolute and reachable from the browser and the media worker",
-    )
-  }
-  const LOCAL_STORAGE_SIGNING_KEY = (source.LOCAL_STORAGE_SIGNING_KEY ?? "").trim()
-
-  if (!fakeFlags.USE_FAKE_GEOCODER && DATABASE_URL.length === 0) {
-    errors.push(
-      "DATABASE_URL: required whenever USE_FAKE_GEOCODER is false: the real geocoder resolves its " +
-        '"City, ST" label from the jurisdictions PostGIS table, so there is nothing to query without a database',
-    )
-  }
-
-  const R2_ACCOUNT_ID = reqStr("R2_ACCOUNT_ID", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
-  const R2_ACCESS_KEY_ID = reqStr("R2_ACCESS_KEY_ID", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
-  const R2_SECRET_ACCESS_KEY = reqStr("R2_SECRET_ACCESS_KEY", {
-    gatedOff: fakeFlags.USE_FAKE_STORAGE,
-  })
-  const R2_BUCKET = reqStr("R2_BUCKET", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
-
-  const R2_INBOUND_BUCKET = (source.R2_INBOUND_BUCKET ?? "").trim()
-  const R2_PUBLIC_BASE = (source.R2_PUBLIC_BASE ?? "").trim()
-  if (!fakeFlags.USE_FAKE_STORAGE && !usesLocalStorage) {
-    if (R2_PUBLIC_BASE.length > 0 && R2_INBOUND_BUCKET.length === 0) {
-      errors.push(
-        "R2_INBOUND_BUCKET: required [BOOT] whenever R2_PUBLIC_BASE is set: a shared bucket would " +
-          "publish raw inbound email and its attachments on the public CDN",
-      )
-    }
-    if (R2_INBOUND_BUCKET.length > 0 && R2_INBOUND_BUCKET === R2_BUCKET) {
-      errors.push(
-        "R2_INBOUND_BUCKET: must be a DIFFERENT bucket from R2_BUCKET (inbound mail must never live in " +
-          "the media bucket)",
-      )
-    }
-  }
-
-  const OCI_EMAIL_SMTP_HOST = reqStr("OCI_EMAIL_SMTP_HOST", { gatedOff: fakeFlags.USE_FAKE_MAILER })
-  const OCI_EMAIL_SMTP_PORT = reqPort("OCI_EMAIL_SMTP_PORT", 587)
-  const OCI_EMAIL_SMTP_USER = reqStr("OCI_EMAIL_SMTP_USER", { gatedOff: fakeFlags.USE_FAKE_MAILER })
-  const OCI_EMAIL_SMTP_PASS = reqStr("OCI_EMAIL_SMTP_PASS", { gatedOff: fakeFlags.USE_FAKE_MAILER })
-  const OCI_EMAIL_SMTP_TIMEOUT_MS = positiveInt("OCI_EMAIL_SMTP_TIMEOUT_MS", 15_000)
-  const OUTBOUND_SEND_MIN_THROUGHPUT_BPS = positiveInt(
-    "OUTBOUND_SEND_MIN_THROUGHPUT_BPS",
-    256 * 1024,
-  )
-  for (const problem of assertOutboundSendPolicy({
-    smtpTimeoutMs: OCI_EMAIL_SMTP_TIMEOUT_MS,
-    minThroughputBytesPerSec: OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
-  })) {
-    errors.push(problem)
-  }
-
-  const SMS_GUEST_ENABLED = parseBool(source.SMS_GUEST_ENABLED, false)
-  const SMS_DAILY_CAP = positiveInt("SMS_DAILY_CAP", 50)
-  const smsCredentialsUnused = fakeFlags.USE_FAKE_SMS || !SMS_GUEST_ENABLED
-  const TWILIO_ACCOUNT_SID = reqStr("TWILIO_ACCOUNT_SID", { gatedOff: smsCredentialsUnused })
-  const TWILIO_AUTH_TOKEN = reqStr("TWILIO_AUTH_TOKEN", { gatedOff: smsCredentialsUnused })
-  const TWILIO_SMS_FROM = reqStr("TWILIO_SMS_FROM", { gatedOff: smsCredentialsUnused })
-
-  const OUTREACH_DIGEST_CRON = reqCron("OUTREACH_DIGEST_CRON", "0 14 * * *")
-  const OUTREACH_DIGEST_ENABLED = parseBool(source.OUTREACH_DIGEST_ENABLED, false)
-  const REPORT_AUTOFORWARD_ENABLED = parseBool(source.REPORT_AUTOFORWARD_ENABLED, false)
-  const GUEST_RETENTION_CRON = reqCron("GUEST_RETENTION_CRON", "15 4 * * *")
-  const INBOUND_SWEEP_CRON = reqCron("INBOUND_SWEEP_CRON", "*/5 * * * *")
-
-  const OAUTH_REQUIRE_NONCE = parseBool(source.OAUTH_REQUIRE_NONCE, false)
-  const WS_ALLOW_QUERY_TOKEN = parseBool(source.WS_ALLOW_QUERY_TOKEN, false)
-  const REVIEWER_OTP_BYPASS = parseBool(source.REVIEWER_OTP_BYPASS, false)
-  const REVIEWER_OTP_BYPASS_ACK = parseBool(source.REVIEWER_OTP_BYPASS_ACK, false)
-  const REVIEWER_OTP_CODE = (source.REVIEWER_OTP_CODE ?? "").trim()
-  if (REVIEWER_OTP_CODE.length > 0 && REVIEWER_OTP_CODE.length < REVIEWER_OTP_CODE_MIN_LENGTH) {
-    errors.push(
-      `REVIEWER_OTP_CODE: must be at least ${REVIEWER_OTP_CODE_MIN_LENGTH} characters ` +
-        "(it is a login secret, not a 6-digit OTP)",
-    )
-  }
-  if (isProd && REVIEWER_OTP_BYPASS) {
-    if (!REVIEWER_OTP_BYPASS_ACK) {
-      errors.push(
-        "REVIEWER_OTP_BYPASS: refusing to enable an authentication bypass in production without the " +
-          "explicit second opt-in REVIEWER_OTP_BYPASS_ACK=true",
-      )
-    }
-    if (REVIEWER_OTP_CODE.length === 0) {
-      errors.push(
-        "REVIEWER_OTP_CODE: required whenever REVIEWER_OTP_BYPASS is on in production (a per-review, " +
-          `rotated secret of at least ${REVIEWER_OTP_CODE_MIN_LENGTH} characters)`,
-      )
-    }
-  }
-
-  const SHUTDOWN_DRAIN_MS = parseDrainMs(source.SHUTDOWN_DRAIN_MS)
-  const TILES_MIN_ZOOM = parseIntOr(source.TILES_MIN_ZOOM, TILES_MIN_ZOOM_DEFAULT, {
-    key: "TILES_MIN_ZOOM",
-    errors,
-  })
-  const TILES_MAX_ZOOM = parseIntOr(source.TILES_MAX_ZOOM, TILES_MAX_ZOOM_DEFAULT, {
-    key: "TILES_MAX_ZOOM",
-    errors,
-  })
-  const CENSUS_GEOCODER_TIMEOUT_MS = positiveInt("CENSUS_GEOCODER_TIMEOUT_MS", 2500)
-  const VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS = positiveInt("VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS", 60)
-  const OUTREACH_THROTTLE_DAYS = positiveInt("OUTREACH_THROTTLE_DAYS", 7)
-
-  const APNS_PRODUCTION = readApnsProduction()
-
+  const core = loadCoreEnv(r)
+  const signingKeys = loadSigningKeys(r)
+  checkDatabaseTls(r, core.DATABASE_URL)
+  const TRUST_PROXY = loadTrustProxy(r)
+  const homeRegion = loadHomeRegion(r)
+  const FEED_RANKING = loadFeedRanking(r, "FEED_RANKING")
+  const localStorage = loadLocalStorage(r, core.PUBLIC_API_URL)
+  checkGeocoderDatabase(r, fakeFlags, core.DATABASE_URL)
+  const r2 = loadR2Env(r, fakeFlags.USE_FAKE_STORAGE, localStorage.usesLocalStorage)
+  const mail = loadMailEnv(r, fakeFlags.USE_FAKE_MAILER)
+  const sms = loadSmsEnv(r, fakeFlags.USE_FAKE_SMS)
+  const schedules = loadScheduleEnv(r)
+  const authFlags = loadAuthFlags(r)
+  const tuning = loadTuningEnv(r)
+  const apns = loadApnsProduction(r)
   const comms = loadCommsEnv(source, errors)
   const registration = loadRegistrationEnv(source, errors)
 
@@ -432,147 +150,84 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     throw new Error([header, ...errors.map((e) => `  - ${e}`)].join("\n"))
   }
 
-  const env: Env = {
+  return {
     NODE_ENV: nodeEnv,
-    PORT,
-    PUBLIC_API_URL,
-    WEB_ORIGINS,
-    DATABASE_URL,
-    REDIS_URL,
-    SESSION_SIGNING_KEY,
-    ANON_TOKEN_SIGNING_KEY,
+    ...core,
+    ...signingKeys,
     TRUST_PROXY,
-    SHUTDOWN_DRAIN_MS,
-
-    R2_ACCOUNT_ID,
-    R2_ACCESS_KEY_ID,
-    R2_SECRET_ACCESS_KEY,
-    R2_BUCKET,
-    ...(usesLocalStorage ? { LOCAL_STORAGE_DIR } : {}),
-    ...(usesLocalStorage && LOCAL_STORAGE_SIGNING_KEY.length > 0
-      ? { LOCAL_STORAGE_SIGNING_KEY }
-      : {}),
-    TILES_MIN_ZOOM,
-    TILES_MAX_ZOOM,
+    ...r2,
+    ...localStorage.fields,
     TILES_BOUNDS: parseBounds(source.TILES_BOUNDS, TILES_BOUNDS_DEFAULT),
-
-    HOME_REGION_LAT,
-    HOME_REGION_LNG,
-    HOME_REGION_RADIUS_KM,
-
+    ...homeRegion,
     FEED_RANKING,
-
-    CENSUS_GEOCODER_URL:
-      (source.CENSUS_GEOCODER_URL ?? "").trim() ||
-      "https://geocoding.geo.census.gov/geocoder/geographies/coordinates",
-    CENSUS_GEOCODER_TIMEOUT_MS,
-
-    OCI_EMAIL_SMTP_HOST,
-    OCI_EMAIL_SMTP_PORT,
-    OCI_EMAIL_SMTP_USER,
-    OCI_EMAIL_SMTP_PASS,
-    OCI_EMAIL_SMTP_TIMEOUT_MS,
-    OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
-    VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS,
-    MAIL_FROM_NOREPLY: (source.MAIL_FROM_NOREPLY ?? "").trim() || "no-reply@civfix.org",
-    MAIL_FROM_OUTREACH: (source.MAIL_FROM_OUTREACH ?? "").trim() || "outreach@civfix.org",
-    HOME_TURF_MAIL_FROM: (source.HOME_TURF_MAIL_FROM ?? "").trim() || "donotreply@civfix.org",
-    HOME_TURF_NOTIFY_TO: (source.HOME_TURF_NOTIFY_TO ?? "").trim(),
-
-    ADMIN_EMAILS: parseCsvLower(source.ADMIN_EMAILS),
-    MAIL_REPLY_DOMAIN: (source.MAIL_REPLY_DOMAIN ?? "").trim() || "civfix.org",
-    OUTREACH_THROTTLE_DAYS,
-    OUTREACH_DIGEST_CRON,
-    OUTREACH_DIGEST_ENABLED,
-    REPORT_AUTOFORWARD_ENABLED,
-    INBOUND_SWEEP_CRON,
-    GUEST_RETENTION_CRON,
-
-    TWILIO_ACCOUNT_SID,
-    TWILIO_AUTH_TOKEN,
-    TWILIO_SMS_FROM,
-    SMS_GUEST_ENABLED,
-    SMS_DAILY_CAP,
-
-    CF_ACCESS_SERVICE_TOKENS: parseCsv(source.CF_ACCESS_SERVICE_TOKENS),
-
-    CF_TURNSTILE_HOSTNAMES: parseCsvLower(source.CF_TURNSTILE_HOSTNAMES),
-
-    OAUTH_REQUIRE_NONCE,
-    WS_ALLOW_QUERY_TOKEN,
-    REVIEWER_OTP_BYPASS,
-    REVIEWER_OTP_BYPASS_ACK,
-    ...(REVIEWER_OTP_CODE.length > 0 ? { REVIEWER_OTP_CODE } : {}),
-
-    ...optGroup(source, [
-      "R2_INBOUND_BUCKET",
-      "R2_PUBLIC_BASE",
-      "TILES_RASTER_URL",
-      "CF_ACCESS_TEAM_DOMAIN",
-      "CF_ACCESS_AUD",
-      "CF_TURNSTILE_SECRET",
-      "CF_EMAIL_WEBHOOK_SECRET",
-      "CF_API_TOKEN",
-      "MAPBOX_TOKEN",
-      "APPLE_OAUTH_CLIENT_ID",
-      "APPLE_OAUTH_TEAM_ID",
-      "APPLE_OAUTH_KEY_ID",
-      "APPLE_OAUTH_PRIVATE_KEY",
-      "APPLE_OAUTH_WEB_CLIENT_ID",
-      "APPLE_OAUTH_IOS_CLIENT_ID",
-      "GOOGLE_OAUTH_CLIENT_ID",
-      "GOOGLE_OAUTH_CLIENT_SECRET",
-      "GOOGLE_OAUTH_REDIRECT_URI",
-      "GOOGLE_OAUTH_IOS_CLIENT_ID",
-      "GOOGLE_OAUTH_ANDROID_CLIENT_ID",
-      "APNS_KEY_ID",
-      "APNS_TEAM_ID",
-      "APNS_PRIVATE_KEY",
-      "APNS_BUNDLE_ID",
-      "FCM_SERVICE_ACCOUNT_JSON",
-      "FCM_PROJECT_ID",
-      "VAPID_PUBLIC_KEY",
-      "VAPID_PRIVATE_KEY",
-      "VAPID_SUBJECT",
-      "EXPO_ACCESS_TOKEN",
-      "GLITCHTIP_DSN",
-      "GLITCHTIP_DATABASE_URL",
-    ]),
-    ...(APNS_PRODUCTION !== undefined ? { APNS_PRODUCTION } : {}),
-
+    ...mail,
+    ...sms,
+    ...schedules,
+    ...authFlags,
+    ...tuning,
+    ...loadAccessLists(r),
+    ...optionalStrings(source, OPTIONAL_STRING_KEYS),
+    ...apns,
     ...fakeFlags,
-
     ...comms,
     ...registration,
   }
-
-  return env
 }
 
-export function sslModeOf(databaseUrl: string): string | undefined {
-  try {
-    const value = new URL(databaseUrl).searchParams.get("sslmode")
-    return value === null ? undefined : value.trim().toLowerCase()
-  } catch {
-    return undefined
+function loadAuthFlags(
+  r: EnvReader,
+): Pick<
+  Env,
+  | "OAUTH_REQUIRE_NONCE"
+  | "WS_ALLOW_QUERY_TOKEN"
+  | "REVIEWER_OTP_BYPASS"
+  | "REVIEWER_OTP_BYPASS_ACK"
+  | "REVIEWER_OTP_CODE"
+> {
+  const { source } = r
+  const REVIEWER_OTP_BYPASS = parseBool(source.REVIEWER_OTP_BYPASS, false)
+  const REVIEWER_OTP_BYPASS_ACK = parseBool(source.REVIEWER_OTP_BYPASS_ACK, false)
+  const REVIEWER_OTP_CODE = (source.REVIEWER_OTP_CODE ?? "").trim()
+  checkReviewerBypass(r, {
+    bypass: REVIEWER_OTP_BYPASS,
+    acknowledged: REVIEWER_OTP_BYPASS_ACK,
+    code: REVIEWER_OTP_CODE,
+  })
+  return {
+    OAUTH_REQUIRE_NONCE: parseBool(source.OAUTH_REQUIRE_NONCE, false),
+    WS_ALLOW_QUERY_TOKEN: parseBool(source.WS_ALLOW_QUERY_TOKEN, false),
+    REVIEWER_OTP_BYPASS,
+    REVIEWER_OTP_BYPASS_ACK,
+    ...(REVIEWER_OTP_CODE.length > 0 ? { REVIEWER_OTP_CODE } : {}),
   }
 }
 
-export function isNonRoutableDbHost(databaseUrl: string): boolean {
-  let host: string
-  try {
-    host = new URL(databaseUrl).hostname.trim().toLowerCase()
-  } catch {
-    return false
+function checkReviewerBypass(
+  r: EnvReader,
+  reviewer: { bypass: boolean; acknowledged: boolean; code: string },
+): void {
+  if (reviewer.code.length > 0 && reviewer.code.length < REVIEWER_OTP_CODE_MIN_LENGTH) {
+    r.errors.push(
+      `REVIEWER_OTP_CODE: must be at least ${REVIEWER_OTP_CODE_MIN_LENGTH} characters ` +
+        "(it is a login secret, not a 6-digit OTP)",
+    )
   }
-  if (host.length === 0) return false
-  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1)
-  if (host === "localhost" || host === "::1") return true
-  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true
-  return /^[a-z0-9_-]+$/.test(host)
+  if (!r.isProd || !reviewer.bypass) return
+  if (!reviewer.acknowledged) {
+    r.errors.push(
+      "REVIEWER_OTP_BYPASS: refusing to enable an authentication bypass in production without the " +
+        "explicit second opt-in REVIEWER_OTP_BYPASS_ACK=true",
+    )
+  }
+  if (reviewer.code.length === 0) {
+    r.errors.push(
+      "REVIEWER_OTP_CODE: required whenever REVIEWER_OTP_BYPASS is on in production (a per-review, " +
+        `rotated secret of at least ${REVIEWER_OTP_CODE_MIN_LENGTH} characters)`,
+    )
+  }
 }
 
-function optGroup(
+function optionalStrings(
   source: NodeJS.ProcessEnv,
   keys: ReadonlyArray<keyof Env & string>,
 ): Partial<Env> {
@@ -588,30 +243,27 @@ function optGroup(
 
 let cached: Env | undefined
 
+function loadedEnv(): Env {
+  cached ??= loadEnv()
+  return cached
+}
+
 export const env: Env = new Proxy({} as Env, {
   get(_target, prop: string) {
     if (prop === "toJSON") return () => "[civfix env: redacted]"
-    if (cached === undefined) cached = loadEnv()
-    return cached[prop as keyof Env]
+    return loadedEnv()[prop as keyof Env]
   },
   has(_target, prop: string) {
-    if (cached === undefined) cached = loadEnv()
-    return prop in cached
+    return prop in loadedEnv()
   },
   ownKeys() {
-    if (cached === undefined) cached = loadEnv()
-    return Reflect.ownKeys(cached)
+    return Reflect.ownKeys(loadedEnv())
   },
   getOwnPropertyDescriptor(_target, prop: string) {
-    if (cached === undefined) cached = loadEnv()
-    return Object.getOwnPropertyDescriptor(cached, prop)
+    return Object.getOwnPropertyDescriptor(loadedEnv(), prop)
   },
 })
 
 export function isProd(): boolean {
   return env.NODE_ENV === "production"
-}
-
-export function resetEnvCache(): void {
-  cached = undefined
 }

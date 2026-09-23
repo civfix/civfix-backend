@@ -2,6 +2,20 @@ import fastifyCors from "@fastify/cors"
 import type { FastifyInstance } from "fastify"
 import { isProd } from "../env.js"
 
+const CORS_PREFLIGHT_MAX_AGE_SEC = 600
+
+const CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+
+// Browsers hide all but a few simple response headers from cross-origin JS. Same-origin web reads the
+// anon token from the civfix_anon cookie instead, but a cross-origin client needs X-Anon-Token here.
+const CORS_EXPOSED_HEADERS = [
+  "X-Anon-Token",
+  "X-RateLimit-Limit",
+  "X-RateLimit-Remaining",
+  "X-RateLimit-Reset",
+  "Retry-After",
+]
+
 export async function registerCors(app: FastifyInstance, webOrigins: string[]): Promise<void> {
   const allowlist = new Set(webOrigins)
   // Security: reflecting ANY origin with credentials:true is a credential-theft hole, so the empty-allowlist
@@ -19,17 +33,9 @@ export async function registerCors(app: FastifyInstance, webOrigins: string[]): 
 
   await app.register(fastifyCors, {
     credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    maxAge: 600,
-    // Browsers hide all but a few simple response headers from cross-origin JS. Same-origin web reads the
-    // anon token from the civfix_anon cookie instead, but a cross-origin client needs X-Anon-Token here.
-    exposedHeaders: [
-      "X-Anon-Token",
-      "X-RateLimit-Limit",
-      "X-RateLimit-Remaining",
-      "X-RateLimit-Reset",
-      "Retry-After",
-    ],
+    methods: CORS_METHODS,
+    maxAge: CORS_PREFLIGHT_MAX_AGE_SEC,
+    exposedHeaders: CORS_EXPOSED_HEADERS,
     origin(origin, cb) {
       if (!origin || allowAll || allowlist.has(origin)) {
         cb(null, true)

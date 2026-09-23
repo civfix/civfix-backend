@@ -71,7 +71,6 @@ export const de: Partial<Record<MessageKey, string>> = {
     'Die Schicht "{{slot}}" bei {{title}} hat eine neue Zeit. Öffne das Event, um sie zu prüfen.',
 
   "email.otp.subject": "Dein civfix-Anmeldecode",
-  "email.otp.body_line1": "Dein civfix-Anmeldecode lautet {{code}}.",
   "email.otp.body_expiry":
     "Er läuft in {{minutes}} Minuten ab. Falls du ihn nicht angefordert hast, kannst du diese E-Mail ignorieren.",
   "email.otp.html_intro": "Dein civfix-Anmeldecode lautet:",

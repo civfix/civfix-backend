@@ -2,7 +2,7 @@ import { AppError } from "@civfix/shared"
 import type { AbuseChecks, NearDuplicateResult } from "@civfix/shared/interfaces"
 import type { LatLng } from "@civfix/shared"
 import { haversineKm } from "@civfix/shared"
-import { fetchJsonWithTimeout } from "./http-fetch.js"
+import { fetchJsonWithTimeout, type FetchJsonResult } from "./http-fetch.js"
 
 export type PerceptualHashFn = (buffer: Uint8Array) => Promise<string>
 
@@ -33,6 +33,9 @@ const TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/sit
 const TURNSTILE_TIMEOUT_MS = 4000
 
 const GPS_MAX_KM = 50
+
+const FNV1A_32_OFFSET_BASIS = 0x811c9dc5
+const FNV1A_32_PRIME = 0x01000193
 
 interface TurnstileVerifyResponse {
   success?: boolean
@@ -79,17 +82,7 @@ export class RealAbuseChecks implements AbuseChecks {
         body,
       },
     })
-    if (!result.ok) {
-      const wrapped = AppError.internal(
-        result.kind === "http"
-          ? `Turnstile verification returned HTTP ${result.status}`
-          : result.kind === "body"
-            ? "Turnstile verification returned a non-JSON body"
-            : "Turnstile verification request failed",
-      )
-      if (result.kind !== "http") (wrapped as { cause?: unknown }).cause = result.error
-      throw wrapped
-    }
+    if (!result.ok) throw turnstileFailure(result)
 
     const json = result.json
     if (json.success !== true) return false
@@ -98,23 +91,22 @@ export class RealAbuseChecks implements AbuseChecks {
       this.log("Turnstile token rejected: unexpected hostname", { hostname: json.hostname })
       return false
     }
-    if (expect?.action !== undefined) {
-      if (json.action === undefined || json.action === "") {
-        if (!this.turnstileActionNoticeLogged) {
-          this.turnstileActionNoticeLogged = true
-          this.log("Turnstile token carried no action; binding not enforced (soft-enforce)", {
-            expected: expect.action,
-          })
-        }
-      } else if (json.action !== expect.action) {
-        this.log("Turnstile token rejected: action mismatch", {
-          expected: expect.action,
-          actual: json.action,
+    return expect?.action === undefined || this.actionAccepted(json.action, expect.action)
+  }
+
+  private actionAccepted(actual: string | undefined, expected: string): boolean {
+    if (actual === undefined || actual === "") {
+      if (!this.turnstileActionNoticeLogged) {
+        this.turnstileActionNoticeLogged = true
+        this.log("Turnstile token carried no action; binding not enforced (soft-enforce)", {
+          expected,
         })
-        return false
       }
+      return true
     }
-    return true
+    if (actual === expected) return true
+    this.log("Turnstile token rejected: action mismatch", { expected, actual })
+    return false
   }
 
   private hostnameAccepted(hostname: string | undefined): boolean {
@@ -179,13 +171,25 @@ export class RealAbuseChecks implements AbuseChecks {
   }
 }
 
+function turnstileFailure(result: Exclude<FetchJsonResult<unknown>, { ok: true }>): AppError {
+  const wrapped = AppError.internal(
+    result.kind === "http"
+      ? `Turnstile verification returned HTTP ${result.status}`
+      : result.kind === "body"
+        ? "Turnstile verification returned a non-JSON body"
+        : "Turnstile verification request failed",
+  )
+  if (result.kind !== "http") (wrapped as { cause?: unknown }).cause = result.error
+  return wrapped
+}
+
 function fnv1a64Hex(buffer: Uint8Array): string {
-  let lo = 0x811c9dc5
-  let hi = 0x811c9dc5
+  let lo = FNV1A_32_OFFSET_BASIS
+  let hi = FNV1A_32_OFFSET_BASIS
   for (let i = 0; i < buffer.length; i++) {
     const b = buffer[i] ?? 0
-    lo = Math.imul(lo ^ b, 0x01000193) >>> 0
-    hi = Math.imul(hi ^ (b ^ (i & 0xff)), 0x01000193) >>> 0
+    lo = Math.imul(lo ^ b, FNV1A_32_PRIME) >>> 0
+    hi = Math.imul(hi ^ (b ^ (i & 0xff)), FNV1A_32_PRIME) >>> 0
   }
   const toHex8 = (n: number): string => (n >>> 0).toString(16).padStart(8, "0")
   return toHex8(hi) + toHex8(lo)

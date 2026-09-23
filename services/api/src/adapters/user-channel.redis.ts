@@ -4,8 +4,10 @@ import type { FastifyBaseLogger } from "fastify"
 import type { ChatPubSub } from "./chat-pubsub.js"
 import { RefCountedSubscriptions } from "./ref-counted-subscriptions.js"
 
+const USER_CHANNEL_PREFIX = "user:"
+
 export function userChannel(userId: string): string {
-  return `user:${userId}`
+  return `${USER_CHANNEL_PREFIX}${userId}`
 }
 
 export interface RedisUserChannelDeps {

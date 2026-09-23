@@ -76,8 +76,12 @@ const STATE_FIPS_TO_USPS: Readonly<Record<string, string>> = {
   "78": "VI",
 }
 
+const STATE_FIPS_LENGTH = 2
+
+const FIPS_HIERARCHICAL_LAYERS: ReadonlySet<string> = new Set(["place", "county", "state"])
+
 export function uspsFromGeoid(geoid: string): string | null {
-  const fips = geoid.slice(0, 2)
+  const fips = geoid.slice(0, STATE_FIPS_LENGTH)
   return STATE_FIPS_TO_USPS[fips] ?? null
 }
 
@@ -110,8 +114,7 @@ export class TigerGeocoder implements Geocoder {
 
     // The geoid prefix is trusted only on FIPS-hierarchical layers; a federal/tribal numeric id (e.g. a
     // BIA/ArcGIS OBJECTID) would yield a valid-but-WRONG state (see file header).
-    const fipsLayer =
-      resolved.layer === "place" || resolved.layer === "county" || resolved.layer === "state"
+    const fipsLayer = FIPS_HIERARCHICAL_LAYERS.has(resolved.layer)
     const usps =
       (fipsLayer ? uspsFromGeoid(resolved.geoid) : null) ?? (await this.stateAbbrFor(sql, lng, lat))
     return formatCityStateLabel(resolved.name, usps)

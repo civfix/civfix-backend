@@ -26,6 +26,11 @@ interface ReadyBody {
 
 const READY_CACHE_MS = 5_000
 
+const NO_STORE = "no-store"
+const REDIS_PING_REPLY = "PONG"
+const HTTP_OK = 200
+const HTTP_SERVICE_UNAVAILABLE = 503
+
 /**
  * A header, not a body field, so the public 503 body stays a bare {ok:false} and cross-origin browser JS
  * cannot read it (no Access-Control-Expose-Headers). It is not a secret: any `curl -I` sees it. The deploy
@@ -38,10 +43,10 @@ export async function registerHealthRoutes(
   container: Container,
 ): Promise<void> {
   route(app, "health", async (_request, reply) => {
-    reply.header("cache-control", "no-store")
+    reply.header("cache-control", NO_STORE)
     if (app.lifecycle.isDraining()) {
       reply.header(DRAINING_HEADER, "1")
-      reply.status(503)
+      reply.status(HTTP_SERVICE_UNAVAILABLE)
       return { ok: false }
     }
     return { ok: true, service: SERVICE_NAME }
@@ -90,7 +95,7 @@ export async function registerHealthRoutes(
       try {
         const redis = container.getRedis()
         const pong = await redis.ping()
-        body.checks.redis = pong === "PONG" ? "ok" : "down"
+        body.checks.redis = pong === REDIS_PING_REPLY ? "ok" : "down"
         if (body.checks.redis === "down") body.ok = false
       } catch (err) {
         app.log.error({ err }, "readyz: redis ping failed")
@@ -104,7 +109,7 @@ export async function registerHealthRoutes(
 
   app.get("/readyz", async (_request, reply) => {
     const body = await readiness()
-    reply.header("cache-control", "no-store")
-    reply.status(body.ok ? 200 : 503).send(body)
+    reply.header("cache-control", NO_STORE)
+    reply.status(body.ok ? HTTP_OK : HTTP_SERVICE_UNAVAILABLE).send(body)
   })
 }

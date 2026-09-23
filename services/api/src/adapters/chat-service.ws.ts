@@ -14,27 +14,44 @@ export interface WsChatServiceDeps {
   repo: ChatRepository
   pubsub: ChatPubSub
   newId?: () => string
+  logger?: { warn(obj: unknown, msg?: string): void }
+}
+
+interface DecodedEnvelope {
+  frame: string
+  excludeConnId: string | undefined
 }
 
 export class WsChatService implements ChatService {
   private readonly repo: ChatRepository
   private readonly pubsub: ChatPubSub
   private readonly newId: () => string
+  private readonly logger: WsChatServiceDeps["logger"]
   private readonly rooms: RefCountedSubscriptions<ChatConnection>
 
   constructor(deps: WsChatServiceDeps) {
     this.repo = deps.repo
     this.pubsub = deps.pubsub
     this.newId = deps.newId ?? (() => randomUUID())
-    this.rooms = new RefCountedSubscriptions<ChatConnection>((cleanupId, connections) =>
-      this.pubsub.subscribe(chatChannel(cleanupId), (payload) => {
-        const { frame, excludeConnId } = decodeEnvelope(payload)
-        for (const c of [...connections()]) {
-          if (excludeConnId !== undefined && c.id === excludeConnId) continue
-          c.send(frame)
+    this.logger = deps.logger
+    this.rooms = new RefCountedSubscriptions<ChatConnection>((cleanupId, connections) => {
+      const channel = chatChannel(cleanupId)
+      return this.pubsub.subscribe(channel, (payload) => {
+        const envelope = decodeEnvelope(payload)
+        if (envelope === null) {
+          // The payload is never logged: it can carry message bodies from any room member.
+          this.logger?.warn(
+            { channel },
+            "chat: dropped a pub/sub payload that is not a frame envelope",
+          )
+          return
         }
-      }),
-    )
+        for (const c of [...connections()]) {
+          if (envelope.excludeConnId !== undefined && c.id === envelope.excludeConnId) continue
+          c.send(envelope.frame)
+        }
+      })
+    })
   }
 
   async joinRoom(cleanupId: string, conn: ChatConnection, _userId: string): Promise<void> {
@@ -111,24 +128,19 @@ export class WsChatService implements ChatService {
   }
 }
 
-function decodeEnvelope(payload: string): { frame: string; excludeConnId: string | undefined } {
+// publishFrame is the only publisher on chat:<id>, so anything else on the channel is foreign and is
+// dropped rather than forwarded unparsed to every socket in the room.
+function decodeEnvelope(payload: string): DecodedEnvelope | null {
+  let parsed: { frame?: unknown; excludeConnId?: unknown }
   try {
-    const parsed = JSON.parse(payload) as {
-      frame?: unknown
-      type?: unknown
-      message?: unknown
-      excludeConnId?: unknown
-    }
-    const excludeConnId =
-      typeof parsed.excludeConnId === "string" ? parsed.excludeConnId : undefined
-    if (parsed.frame !== undefined && parsed.frame !== null && typeof parsed.frame === "object") {
-      return { frame: JSON.stringify(parsed.frame), excludeConnId }
-    }
-    if (parsed.type === "message" && parsed.message !== undefined) {
-      return { frame: JSON.stringify({ type: "message", message: parsed.message }), excludeConnId }
-    }
+    parsed = JSON.parse(payload) as { frame?: unknown; excludeConnId?: unknown }
   } catch {
-    // Not a JSON envelope: the payload is already a bare frame and is forwarded as-is.
+    return null
   }
-  return { frame: payload, excludeConnId: undefined }
+  if (typeof parsed !== "object" || parsed === null) return null
+  if (parsed.frame === null || typeof parsed.frame !== "object") return null
+  return {
+    frame: JSON.stringify(parsed.frame),
+    excludeConnId: typeof parsed.excludeConnId === "string" ? parsed.excludeConnId : undefined,
+  }
 }
