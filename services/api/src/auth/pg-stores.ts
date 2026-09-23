@@ -61,8 +61,12 @@ import {
   type UserStore,
 } from "./stores.js"
 import { isUniqueViolation } from "../db/pg-errors.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 
 const ERASURE_HANDLE_RETRIES = 5
+
+// Bounds the post-commit fan-out on the DELETE /me response path; each item's failure stays isolated.
+const ERASURE_SIDE_EFFECT_CONCURRENCY = 4
 
 const HOST_TRANSFER_TITLE_KEY = "notification.cleanup_role.promoted.title"
 
@@ -467,24 +471,28 @@ export class PgUserStore implements UserStore {
   }
 
   private async deleteErasedObjects(userId: string, keys: readonly string[]): Promise<void> {
-    for (const key of keys) {
-      if (this.certificateObjects === undefined) {
+    const store = this.certificateObjects
+    if (store === undefined) {
+      for (const key of keys) {
         this.logger?.warn({ userId, key }, "erasure object not deleted: no object store wired")
-        continue
       }
+      return
+    }
+    await mapWithLimit(keys, ERASURE_SIDE_EFFECT_CONCURRENCY, async (key) => {
       try {
-        await this.certificateObjects.delete(key)
+        await store.delete(key)
       } catch (err) {
         this.logger?.warn({ err, userId, key }, "erasure object delete failed")
       }
-    }
+    })
   }
 
   private async notifyNewOrganizers(moved: readonly TransferredEvent[]): Promise<void> {
-    if (this.notifier === undefined) return
-    for (const row of moved) {
+    const notifier = this.notifier
+    if (notifier === undefined) return
+    await mapWithLimit(moved, ERASURE_SIDE_EFFECT_CONCURRENCY, async (row) => {
       try {
-        await this.notifier.createNotification(row.new_organizer, {
+        await notifier.createNotification(row.new_organizer, {
           type: "cleanup_role",
           titleKey: HOST_TRANSFER_TITLE_KEY,
           bodyKey: HOST_TRANSFER_BODY_KEY,
@@ -497,7 +505,7 @@ export class PgUserStore implements UserStore {
           "erasure host transfer notification failed (suppressed)",
         )
       }
-    }
+    })
   }
 }
 
