@@ -47,6 +47,7 @@ import type {
   OrgVerificationRecord,
   UpdateOrganizationPatch,
 } from "./organization-repository.types.js"
+import { webBaseUrlOf } from "../../lib/base-url.js"
 
 export const ORGS_CREATED_PER_DAY = 5
 const ORG_CREATE_WINDOW_SEC = 24 * 60 * 60
@@ -341,14 +342,13 @@ function toInviteDTO(record: OrganizationInviteRecord): OrganizationInviteDTO {
 /**
  * The org-scoped write gate for an operator-suspended org (DECISIONS §32): members keep reading, the
  * admin plane keeps working, but self-service settings, team changes, verification applications and
- * invite acceptance are refused until an operator lifts the flag.
+ * invite acceptance are refused until an operator lifts the flag. The operator's reason is internal
+ * (the admin console records it for the audit log), so members only ever see the generic sentence.
  */
 function assertNotSuspended(record: OrganizationBaseRecord): void {
   if (record.suspendedAt === null) return
   throw AppError.forbidden(
-    record.suspendedReason === null || record.suspendedReason.length === 0
-      ? "This organization has been suspended, so it can't be changed right now."
-      : `This organization has been suspended (${record.suspendedReason}), so it can't be changed right now.`,
+    "This organization has been suspended, so it can't be changed right now.",
   )
 }
 
@@ -398,7 +398,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
   const now = deps.now ?? (() => new Date())
   const newId = deps.newId ?? (() => randomUUID())
   const newToken = deps.newToken ?? (() => generateToken(ORG_INVITE_TOKEN_BYTES))
-  const webBase = () => (deps.webOrigin ?? "https://civfix.org").replace(/\/+$/, "")
+  const webBase = () => (deps.webOrigin ?? webBaseUrlOf({})).replace(/\/+$/, "")
 
   async function logoUrlOf(record: OrganizationBaseRecord): Promise<string | null> {
     if (record.logoKey === null || deps.presignLogo === undefined) return null
@@ -643,7 +643,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       return
     }
     if (owner === null) return
-    const base = (deps.webOrigin ?? "https://civfix.org").replace(/\/+$/, "")
+    const base = webBase()
     const orgPath = `/orgs/${org.slug}`
     const verifyPath = `/manage/orgs/${org.id}/verification`
     const kindLabel = verificationKindLabel(org.verifiedKind ?? null)

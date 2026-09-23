@@ -1,5 +1,6 @@
 import type { EventPageStatus, EventVisibility } from "@civfix/shared"
-import type { Sql } from "../../db/client.js"
+import type { Queryable } from "../../db/client.js"
+import { likeContains } from "../admin/like.js"
 
 export interface AdminEventPageRow {
   cleanupId: string
@@ -90,7 +91,7 @@ function toRow(row: PageRowSelect): AdminEventPageRow {
   }
 }
 
-export function makeDrizzleAdminEventPageRepository(sql: Sql): AdminEventPageRepository {
+export function makeDrizzleAdminEventPageRepository(sql: Queryable): AdminEventPageRepository {
   const selection = sql`
     p.id AS page_id, p.cleanup_id, c.page_slug AS slug, c.title, p.status, c.visibility,
     u.id AS organizer_id, u.display_name AS organizer_name, u.handle AS organizer_handle,
@@ -127,7 +128,8 @@ export function makeDrizzleAdminEventPageRepository(sql: Sql): AdminEventPageRep
             : sql`AND p.flagged_at IS NULL`
       const search =
         params.q !== undefined && params.q.length > 0
-          ? sql`AND (c.title ILIKE ${`%${params.q}%`} OR c.page_slug::text ILIKE ${`%${params.q}%`})`
+          ? sql`AND (c.title ILIKE ${likeContains(params.q)} ESCAPE '\\'
+                     OR c.page_slug::text ILIKE ${likeContains(params.q)} ESCAPE '\\')`
           : sql``
       const cursorFilter =
         params.cursor !== null

@@ -6,7 +6,23 @@ import type {
   OrgVerificationStatus,
   SocialLinks,
 } from "@civfix/shared"
+import { can } from "@civfix/shared/host"
 import type { CleanupOrganizationView, CleanupPersonView } from "../cleanup-repository.types.js"
+
+export type InviterRevocationReason = "inviter_removed" | "inviter_demoted"
+
+/**
+ * An accepted invite seats `invite.role` without re-checking the inviter, so a role change that takes
+ * away the power to invite must also withdraw the invites already sent with it.
+ */
+export function roleChangeWithdrawsInvites(
+  from: OrganizationMemberRole,
+  to: OrganizationMemberRole,
+): boolean {
+  const canInvite = (role: OrganizationMemberRole): boolean =>
+    can({ eventRole: null, orgRole: role }, "manage_org_members")
+  return canInvite(from) && !canInvite(to)
+}
 
 export interface OrganizationBaseRecord {
   id: string

@@ -37,6 +37,7 @@ import type {
   HostTeamRepository,
   PendingInviteForUserRecord,
 } from "./host-team-repository.types.js"
+import { webBaseUrlOf } from "../../lib/base-url.js"
 
 export const TEAM_INVITES_PER_EVENT_PER_DAY = 30
 const TEAM_INVITE_WINDOW_SEC = 24 * 60 * 60
@@ -227,7 +228,7 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
     token: string,
   ): Promise<void> {
     if (deps.mailer === undefined) return
-    const base = deps.webOrigin ?? "https://civfix.org"
+    const base = deps.webOrigin ?? webBaseUrlOf({})
     const link = `${base}/cleanups/${cleanupId}#teamInvite=${encodeURIComponent(token)}`
     try {
       await deps.mailer.sendTransactional(

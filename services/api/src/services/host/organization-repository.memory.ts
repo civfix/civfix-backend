@@ -44,7 +44,9 @@ import type {
   UpdateOrganizationAudit,
   UpdateOrganizationOutcome,
   UpdateOrganizationPatch,
+  InviterRevocationReason,
 } from "./organization-repository.types.js"
+import { roleChangeWithdrawsInvites } from "./organization-repository.types.js"
 
 interface StoredOrganization {
   id: string
@@ -479,12 +481,21 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       if (this.countAdminSeats(args.organizationId) <= 1) return Promise.resolve("last_admin")
     }
     if (member.role !== args.role) {
+      const from = member.role
       member.role = args.role
       this.audits.push({
         actorId: args.actorId,
         action: "org.member_role_changed",
         target: `organization:${args.organizationId}`,
       })
+      if (roleChangeWithdrawsInvites(from, args.role)) {
+        this.revokeInvitesByInviter(
+          args.organizationId,
+          args.userId,
+          args.actorId,
+          "inviter_demoted",
+        )
+      }
     }
     return Promise.resolve("updated")
   }
@@ -516,6 +527,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
         ...(args.reason !== undefined ? { reason: args.reason } : {}),
       },
     })
+    this.revokeInvitesByInviter(args.organizationId, args.userId, args.actorId, "inviter_removed")
     return Promise.resolve("removed")
   }
 
@@ -817,6 +829,9 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       target: `organization:${args.organizationId}`,
       meta: { targetUserId: args.userId, from, to: args.role, reason: args.reason },
     })
+    if (roleChangeWithdrawsInvites(from, args.role)) {
+      this.revokeInvitesByInviter(args.organizationId, args.userId, args.actorId, "inviter_demoted")
+    }
     if (args.role === "owner") {
       this.audits.push({
         actorId: args.actorId,
@@ -826,6 +841,31 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       })
     }
     return Promise.resolve("updated")
+  }
+
+  private revokeInvitesByInviter(
+    organizationId: string,
+    inviterId: string,
+    actorId: string,
+    reason: InviterRevocationReason,
+  ): void {
+    for (const invite of this.invites) {
+      if (
+        invite.organizationId !== organizationId ||
+        invite.invitedBy !== inviterId ||
+        invite.status !== "pending"
+      ) {
+        continue
+      }
+      invite.status = "revoked"
+      invite.revokedAt = new Date()
+      this.audits.push({
+        actorId,
+        action: "org.invite_revoked",
+        target: `organization:${organizationId}`,
+        meta: { inviteId: invite.id, reason },
+      })
+    }
   }
 
   private expireInvites(organizationId: string, now: Date): void {

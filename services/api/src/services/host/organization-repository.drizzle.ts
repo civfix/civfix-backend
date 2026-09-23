@@ -11,7 +11,7 @@ import type postgres from "postgres"
 import type { Queryable, Sql } from "../../db/client.js"
 import { encodeTimeCursor, isUuid, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
 import { likeContains } from "../admin/like.js"
-import { servedKeyExpr } from "../media-served-key.js"
+import { publicServedKeyExpr } from "../media-served-key.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./event-media.js"
 import { mediaBoundElsewhere } from "../media-bindings.js"
 import { writeHostAudit } from "./host-audit.js"
@@ -54,7 +54,9 @@ import type {
   UpdateOrganizationAudit,
   UpdateOrganizationOutcome,
   UpdateOrganizationPatch,
+  InviterRevocationReason,
 } from "./organization-repository.types.js"
+import { roleChangeWithdrawsInvites } from "./organization-repository.types.js"
 
 const PG_UNIQUE_VIOLATION = "23505"
 
@@ -224,7 +226,7 @@ function organizationColumns(sql: Queryable, viewerId: string | null) {
     o.website_url,
     o.donation_url,
     o.logo_media_id,
-    ${servedKeyExpr(sql, "am")} AS logo_key,
+    ${publicServedKeyExpr(sql, "am")} AS logo_key,
     o.social_links,
     o.verified_status,
     o.verified_kind,
@@ -760,6 +762,14 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           target: `organization:${args.organizationId}`,
           meta: { targetUserId: args.userId, from: existing.role, to: args.role },
         })
+        if (roleChangeWithdrawsInvites(existing.role, args.role)) {
+          await revokeInvitesByInviterInTx(tx, {
+            organizationId: args.organizationId,
+            inviterId: args.userId,
+            actorId: args.actorId,
+            reason: "inviter_demoted",
+          })
+        }
         return "updated"
       })
     },
@@ -815,6 +825,12 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             role: removed[0]?.role ?? null,
             ...(args.reason !== undefined ? { reason: args.reason } : {}),
           },
+        })
+        await revokeInvitesByInviterInTx(tx, {
+          organizationId: args.organizationId,
+          inviterId: args.userId,
+          actorId: args.actorId,
+          reason: "inviter_removed",
         })
         return "removed"
       })
@@ -1202,6 +1218,14 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             reason: args.reason,
           },
         })
+        if (roleChangeWithdrawsInvites(existing.role, args.role)) {
+          await revokeInvitesByInviterInTx(tx, {
+            organizationId: args.organizationId,
+            inviterId: args.userId,
+            actorId: args.actorId,
+            reason: "inviter_demoted",
+          })
+        }
         if (args.role === "owner") {
           await writeHostAudit(tx, {
             actorId: args.actorId,
@@ -1358,7 +1382,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           o.id AS organization_id,
           o.slug AS organization_slug,
           o.name AS organization_name,
-          ${servedKeyExpr(sql, "am")} AS organization_logo_key,
+          ${publicServedKeyExpr(sql, "am")} AS organization_logo_key,
           o.verified_status AS organization_verified_status,
           o.verified_kind AS organization_verified_kind
         FROM organization_invites i
@@ -1722,6 +1746,34 @@ function toAdminVerificationRecord(row: AdminVerificationRowSelect): AdminOrgVer
             handle: row.reviewed_by_handle ?? "",
             joined: row.reviewed_by_joined ?? new Date(0),
           },
+  }
+}
+
+/** The caller already holds the organizations row lock, so this keeps the documented lock order. */
+async function revokeInvitesByInviterInTx(
+  tx: Queryable,
+  args: {
+    organizationId: string
+    inviterId: string
+    actorId: string
+    reason: InviterRevocationReason
+  },
+): Promise<void> {
+  const revoked = await tx<{ id: string }[]>`
+    UPDATE organization_invites
+    SET status = 'revoked', revoked_at = now()
+    WHERE organization_id = ${args.organizationId}
+      AND invited_by = ${args.inviterId}
+      AND status = 'pending'
+    RETURNING id
+  `
+  for (const row of revoked) {
+    await writeHostAudit(tx, {
+      actorId: args.actorId,
+      action: "org.invite_revoked",
+      target: `organization:${args.organizationId}`,
+      meta: { inviteId: row.id, reason: args.reason },
+    })
   }
 }
 

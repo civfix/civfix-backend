@@ -45,6 +45,8 @@ interface StoredPerson {
   displayName: string
   handle: string | null
   email: string | null
+  /** Mirrors users.email_verified. */
+  emailVerified: boolean
   avatarUrl: string | null
 }
 
@@ -97,6 +99,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
       displayName: over.displayName ?? "Member",
       handle: over.handle ?? null,
       email: over.email ?? null,
+      emailVerified: over.emailVerified ?? true,
       avatarUrl: over.avatarUrl ?? null,
     }
     this.users.set(person.id, person)
@@ -224,7 +227,11 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
 
   resolveUserByHandle(handle: string): Promise<{ userId: string; email: string | null } | null> {
     const match = [...this.users.values()].find((u) => u.handle === handle)
-    return Promise.resolve(match === undefined ? null : { userId: match.id, email: match.email })
+    return Promise.resolve(
+      match === undefined
+        ? null
+        : { userId: match.id, email: match.emailVerified ? match.email : null },
+    )
   }
 
   private openInviteFor(args: OpenTeamInviteQuery): StoredInvite | undefined {
