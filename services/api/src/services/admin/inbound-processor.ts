@@ -131,12 +131,36 @@ export async function processInboundObject(
   }
 
   const authVerdict = readMailAuthVerdict(mail)
-  if (authVerdict !== "pass") {
-    const result = await routeInbox(storage, inboundRepo, key, mail, messageId, authVerdict)
-    if (result.outcome === "inbox" || result.outcome === "replay") await storage.delete(key)
-    return result
-  }
+  const resolvedThread =
+    mail.from === null ? null : await correlateThread(inboundMail, mailRepo, mail, authVerdict)
 
+  const result =
+    resolvedThread === null
+      ? await routeInbox(storage, inboundRepo, key, mail, messageId, authVerdict)
+      : await routeThreaded(
+          container,
+          injected,
+          storage,
+          mailRepo,
+          mail,
+          messageId,
+          resolvedThread,
+          authVerdict,
+          logger,
+        )
+
+  if (result.outcome === "threaded" || result.outcome === "inbox" || result.outcome === "replay") {
+    await storage.delete(key)
+  }
+  return result
+}
+
+async function correlateThread(
+  inboundMail: InboundMail,
+  mailRepo: MailRepository,
+  mail: ParsedMail,
+  authVerdict: MailAuthVerdict,
+): Promise<MailThreadRecord | null> {
   let token: string | null = null
   try {
     token = inboundMail.extractThreadToken(mail)
@@ -148,30 +172,8 @@ export async function processInboundObject(
   if (token !== null && token.length > 0) {
     resolvedThread = await mailRepo.findThreadByToken(token).catch(() => null)
   }
-  if (resolvedThread === null) {
-    resolvedThread = await findThreadByReferences(mailRepo, mail).catch(() => null)
-  }
-
-  let result: ProcessResult
-  if (resolvedThread !== null) {
-    result = await routeThreaded(
-      container,
-      injected,
-      storage,
-      mailRepo,
-      mail,
-      messageId,
-      resolvedThread,
-      logger,
-    )
-  } else {
-    result = await routeInbox(storage, inboundRepo, key, mail, messageId, authVerdict)
-  }
-
-  if (result.outcome === "threaded" || result.outcome === "inbox" || result.outcome === "replay") {
-    await storage.delete(key)
-  }
-  return result
+  if (resolvedThread !== null || authVerdict !== "pass") return resolvedThread
+  return findThreadByReferences(mailRepo, mail).catch(() => null)
 }
 
 async function routeThreaded(
@@ -182,9 +184,11 @@ async function routeThreaded(
   mail: ParsedMail,
   messageId: string,
   thread: MailThreadRecord,
+  authVerdict: MailAuthVerdict,
   logger: InboundLogger,
 ): Promise<ProcessResult> {
-  const unaffiliated = !(await isJurisdictionSender(mailRepo, thread.id, mail))
+  const unaffiliated =
+    authVerdict !== "pass" || !(await isJurisdictionSender(mailRepo, thread.id, mail))
   const { attachments, oversize } = await streamAttachments(storage, `inbound-mail/${thread.id}`, mail)
   const inserted = await mailRepo.insertMessage({
     threadId: thread.id,
@@ -207,6 +211,7 @@ async function routeThreaded(
         direction: "in",
         from: mail.from?.address ?? null,
         messageId,
+        authVerdict,
         ...(unaffiliated ? { unaffiliated: true } : {}),
         ...(oversize.length > 0 ? { oversizeAttachments: oversize } : {}),
       },

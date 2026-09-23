@@ -1,11 +1,39 @@
 # Mail effects and the outbound send triad
 
 **Audience:** internal (engineering). Not served publicly.
-**Last updated:** 2026-09-21 (city replies are published into the report chat).
+**Last updated:** 2026-09-22 (sender authentication policy; unauthenticated token replies file as unaffiliated).
 
 An inbound message that correlates to a mail thread can drive **public** effects: a report status
 transition, a public `report_timeline` row, a report-chat system message, and a push to the reporter.
 This documents how those run exactly once, and the one residual that is knowingly accepted.
+
+## Which messages may drive effects
+
+`readMailAuthVerdict` (`services/api/src/adapters/inbound-mail.cf.ts`) reduces a message's
+authentication to `pass`, `fail` or `unknown`. The email Worker applies no filter; this is the only gate.
+
+- Only the **top-most** `Authentication-Results` header is read, and only when its authserv-id is
+  `mx.cloudflare.net` (`CLOUDFLARE_AUTHSERV_ID`), the stamp Cloudflare Email Routing prepends. Copies
+  below it are sender-supplied and ignored. Any other top-most header, or none, is `unknown`.
+- Each result is read from its leading `method=result`. Comments and quoted text are dropped, so they
+  cannot inject a result.
+- `dmarc=pass` counts only when its `header.from` equals the parsed From domain. `dmarc=fail`, and any
+  result other than the no-policy ones below, is `fail`.
+- With no DMARC policy (`dmarc=none`, `temperror`, `permerror`, or no dmarc result), a `dkim=pass` whose
+  `header.d` aligns with the From domain passes (every DKIM result is checked, not only the first), else
+  an `spf=pass` whose `smtp.mailfrom` domain aligns with it.
+- A message with more than one `From` header or address has no parsed From. It never threads and goes
+  to the Inbox.
+
+`processInboundObject` (`services/api/src/services/admin/inbound-processor.ts`) then routes:
+
+| Verdict | Addressed to a thread token | Matches a thread only by In-Reply-To/References | No thread |
+|---|---|---|---|
+| `pass` | threaded; effects run when `isJurisdictionSender` holds | threaded; same | Inbox |
+| `fail` / `unknown` | threaded as **unaffiliated**: operator-visible, no public effects | Inbox | Inbox |
+
+The verdict is kept with the message: `meta.authVerdict` on the thread's `delivered` event, and the
+`x-civfix-auth-verdict` header on an Inbox row.
 
 ## Stage 2 publishes the city's reply text (product decision)
 
