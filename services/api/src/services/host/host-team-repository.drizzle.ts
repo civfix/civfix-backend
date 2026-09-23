@@ -8,7 +8,7 @@ import {
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
-import { servedKeyExpr } from "../media-served-key.js"
+import { publicServedKeyExpr } from "../media-served-key.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { writeHostAudit } from "./host-audit.js"
 import { isUniqueViolationOn } from "./registration-sql.js"
@@ -364,8 +364,10 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
     async resolveUserByHandle(
       handle: string,
     ): Promise<{ userId: string; email: string | null } | null> {
+      // A handle invite mails its accept link, so only an address the account proved it owns may
+      // receive it; the in-app notice still reaches the account either way.
       const rows = await sql<{ id: string; email: string | null }[]>`
-        SELECT id, email FROM users
+        SELECT id, CASE WHEN email_verified THEN email END AS email FROM users
         WHERE handle = ${handle} AND deleted_at IS NULL
         LIMIT 1
       `
@@ -551,7 +553,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           ${cleanupStatusExpr(sql)} AS event_status,
           c.visibility,
           c.address,
-          ${servedKeyExpr(sql, "ma")} AS cover_key,
+          ${publicServedKeyExpr(sql, "ma")} AS cover_key,
           bu.id AS inviter_id,
           bu.display_name AS inviter_name,
           bu.handle AS inviter_handle,

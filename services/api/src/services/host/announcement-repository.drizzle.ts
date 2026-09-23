@@ -3,7 +3,7 @@ import type { Sql } from "../../db/client.js"
 import { PRESIGN_CONCURRENCY, mapWithLimit } from "../media-presign.js"
 import { presentIds } from "../present-ids.js"
 import { publicAuthorIdentity } from "../public-author.js"
-import { servedKeyExpr } from "../media-served-key.js"
+import { publicServedKeyExpr } from "../media-served-key.js"
 
 export type AnnouncementImagePresigner = (r2Key: string) => Promise<string>
 
@@ -42,7 +42,7 @@ export function makeDrizzleAnnouncementIdentityRepository(
       if (ids.length === 0) return out
       const rows = await sql<AuthorRowSelect[]>`
         SELECT u.id, u.display_name, u.handle, u.bio,
-               ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
+               ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
                u.avatar_url, u.deleted_at
           FROM users u
           LEFT JOIN media_assets am ON am.id = u.avatar_media_id
@@ -81,7 +81,7 @@ export function makeDrizzleAnnouncementIdentityRepository(
     async organizationFor(cleanupId) {
       const rows = await sql<OrganizationRowSelect[]>`
         SELECT o.id, o.slug, o.name, o.verified_status, o.verified_kind,
-               ${servedKeyExpr(sql, "am")} AS logo_key
+               ${publicServedKeyExpr(sql, "am")} AS logo_key
           FROM cleanups c
           JOIN organizations o ON o.id = c.organization_id
           LEFT JOIN media_assets am ON am.id = o.logo_media_id

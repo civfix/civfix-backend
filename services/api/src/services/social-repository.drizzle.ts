@@ -27,7 +27,7 @@ import {
 } from "../db/cursor-helpers.js"
 import { escapeLike } from "./admin/like.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
-import { servedKeyExpr } from "./media-served-key.js"
+import { publicServedKeyExpr } from "./media-served-key.js"
 
 export { searchByHandlePrefix, searchMentionable } from "./user-search.drizzle.js"
 export {
@@ -280,7 +280,7 @@ async function connectionsPage(
       u.bio,
       u.follower_count AS followers,
       u.following_count AS following,
-      ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
+      ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
       u.avatar_url,
       u.show_volunteer_hours,
       u.edge_created_at,
@@ -417,7 +417,7 @@ function suggestFollowsStatement(
           c.bio,
           c.followers,
           c.following,
-          ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
+          ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
           c.avatar_url,
           c.show_volunteer_hours,
           c.is_organizer
@@ -453,7 +453,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
         u.bio,
         u.follower_count AS followers,
         u.following_count AS following,
-        ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
+        ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
         u.avatar_url,
         u.social_links,
         u.donation_url,
@@ -510,7 +510,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
           u.bio,
           u.follower_count AS followers,
           u.following_count AS following,
-          ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
+          ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
           u.avatar_url,
           u.show_volunteer_hours,
           ${followingExpr} AS is_following

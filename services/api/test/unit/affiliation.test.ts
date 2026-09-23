@@ -29,7 +29,8 @@ interface FakeRow {
 function fakeSql(rows: FakeRow[]): { sql: Sql; calls: Capture[]; fragments: Capture[] } {
   const calls: Capture[] = []
   const fragments: Capture[] = []
-  const tag = (strings: TemplateStringsArray, ...args: unknown[]): Promise<FakeRow[]> => {
+  const tag = (strings: TemplateStringsArray | string, ...args: unknown[]): unknown => {
+    if (typeof strings === "string") return strings
     const capture = { text: strings.join("?"), args }
     if (capture.text.includes("FROM organization_members")) calls.push(capture)
     else fragments.push(capture)
@@ -66,7 +67,7 @@ describe("loadPrimaryAffiliations", () => {
     const { sql, calls } = fakeSql([])
     await loadPrimaryAffiliations(sql, undefined, [ANN, BOB, ANN, BOB, CAROL], null)
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.args[0]).toEqual([ANN, BOB, CAROL])
+    expect(calls[0]!.args.find(Array.isArray)).toEqual([ANN, BOB, CAROL])
   })
 
   it("issues no query at all for an empty batch", async () => {
@@ -80,7 +81,7 @@ describe("loadPrimaryAffiliations", () => {
     const { sql, calls } = fakeSql([])
     await loadPrimaryAffiliations(sql, undefined, [ANN, null, BOB, undefined, ANN, null], null)
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.args[0]).toEqual([ANN, BOB])
+    expect(calls[0]!.args.find(Array.isArray)).toEqual([ANN, BOB])
   })
 
   it("issues no query at all when every id in the batch is missing", async () => {

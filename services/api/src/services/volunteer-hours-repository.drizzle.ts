@@ -8,7 +8,7 @@ import type {
 import type { Queryable, Sql } from "../db/client.js"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
-import { servedKeyExpr } from "./media-served-key.js"
+import { publicServedKeyExpr } from "./media-served-key.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
 import {
   DAILY_HOURS_CAP,
@@ -356,7 +356,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           o.id,
           o.slug,
           o.name,
-          ${servedKeyExpr(sql, "am")} AS logo_key,
+          ${publicServedKeyExpr(sql, "am")} AS logo_key,
           o.verified_status,
           o.verified_kind,
           sum(vh.hours)::float8 AS hours

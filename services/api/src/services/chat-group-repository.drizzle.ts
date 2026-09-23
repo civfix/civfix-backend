@@ -8,7 +8,7 @@ import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { resolveAvatarMediaOrThrow } from "./avatar-media.js"
 import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
 import { isUuid } from "../db/cursor-helpers.js"
-import { servedKeyExpr } from "./media-served-key.js"
+import { publicServedKeyExpr } from "./media-served-key.js"
 
 export type GroupMemberRole = (typeof GROUP_MEMBER_ROLE_VALUES)[number]
 
@@ -240,7 +240,7 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
           a.id AS avatar_id,
           a.kind AS avatar_kind,
           a.codec AS avatar_codec,
-          ${servedKeyExpr(sql, "a")} AS avatar_r2_key,
+          ${publicServedKeyExpr(sql, "a")} AS avatar_r2_key,
           a.thumb_key AS avatar_thumb_key,
           a.status AS avatar_status,
           a.width AS avatar_width,

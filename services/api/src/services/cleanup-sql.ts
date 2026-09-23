@@ -16,7 +16,7 @@ import type {
   OrgVerificationKind,
   OrgVerificationStatus,
 } from "@civfix/shared"
-import { servedKeyExpr } from "./media-served-key.js"
+import { publicServedKeyExpr } from "./media-served-key.js"
 
 export function cleanupStatusExpr(sql: Queryable) {
   return sql`CASE
@@ -186,7 +186,7 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     c.timezone,
     c.visibility,
     c.cover_media_id,
-    ${servedKeyExpr(sql, "ma")} AS cover_key,
+    ${publicServedKeyExpr(sql, "ma")} AS cover_key,
     c.gallery_media_ids,
     c.donation_url,
     c.page_slug,
@@ -198,7 +198,7 @@ export function cleanupColumns(sql: Queryable, near: NearPoint | null) {
     c.host_reply_to_verified_at,
     o.slug AS organization_slug,
     o.name AS organization_name,
-    ${servedKeyExpr(sql, "am")} AS organization_logo_key,
+    ${publicServedKeyExpr(sql, "am")} AS organization_logo_key,
     o.donation_url AS organization_donation_url,
     o.verified_status AS organization_verified_status,
     o.verified_kind AS organization_verified_kind,
