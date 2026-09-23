@@ -8,7 +8,7 @@ import {
   type CheckinService,
 } from "../../../src/services/host/checkin-service.js"
 import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
-import type { SeatDraft } from "../../../src/services/host/registration-repository.types.js"
+import type { SeatDraft } from "../../../src/services/host/registration-repository.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const OTHER_EVENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"

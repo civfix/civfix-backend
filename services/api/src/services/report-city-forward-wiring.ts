@@ -7,7 +7,7 @@ import {
   type ReportForwardAuditRepository,
 } from "./report-forward-audit-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "./discussion-repository.drizzle.js"
-import type { DiscussionRepository } from "./discussion-types.js"
+import type { DiscussionRepository } from "./discussion-repository.js"
 import {
   forwardReportCityMention,
   makeCityForwardThrottle,

@@ -16,7 +16,7 @@ import type {
   UpdateOrganizationAudit,
   UpdateOrganizationOutcome,
   UpdateOrganizationPatch,
-} from "./organization-repository.types.js"
+} from "./organization-repository.js"
 import { isUniqueViolationOn } from "../../db/pg-errors.js"
 
 /** The citext unique index on organizations.slug (0105). */

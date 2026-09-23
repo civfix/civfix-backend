@@ -11,7 +11,7 @@ import type { AdminReportRecord, AdminReportRoutingRecord } from "./admin-report
 import type {
   ForwardTemplateRepository,
   ForwardTemplateSettingsRecord,
-} from "./forward-template-types.js"
+} from "./forward-template-repository.js"
 
 export interface ForwardTemplateServiceDeps {
   repo: ForwardTemplateRepository

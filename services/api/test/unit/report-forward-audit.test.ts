@@ -13,7 +13,7 @@ import type {
   SendReportInput,
 } from "../../src/services/admin/outbound-mail-service.js"
 import type { MailThreadRecord } from "../../src/services/admin/mail-repository.drizzle.js"
-import type { ReportJurisdictionView } from "../../src/services/discussion-types.js"
+import type { ReportJurisdictionView } from "../../src/services/discussion-repository.js"
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const MSG = "dddddddd-dddd-dddd-dddd-dddddddddddd"

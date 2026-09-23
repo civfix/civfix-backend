@@ -20,7 +20,7 @@ import type {
   HostRegistrationRepository,
   RegistrationSubject,
   WaitlistOffer,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 import type {
   RegistrationAudit,
   RegistrationNotifier,

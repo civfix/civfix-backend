@@ -7,7 +7,7 @@ import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import type {
   HostRegistrationRepository,
   SeatDraft,
-} from "../../src/services/host/registration-repository.types.js"
+} from "../../src/services/host/registration-repository.js"
 
 const pg = await withPg()
 const tokens = makeTicketTokenSigner("integration-waitlist-secret-long-enough")

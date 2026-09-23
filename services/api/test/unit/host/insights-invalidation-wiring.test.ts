@@ -23,7 +23,7 @@ import {
 } from "../../../src/services/host/insights-service.js"
 import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
 import type { InsightsServiceDeps } from "../../../src/services/host/insights-service.js"
-import type { SeatDraft } from "../../../src/services/host/registration-repository.types.js"
+import type { SeatDraft } from "../../../src/services/host/registration-repository.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const HOST = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

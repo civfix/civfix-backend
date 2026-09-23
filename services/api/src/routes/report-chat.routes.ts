@@ -34,7 +34,7 @@ import {
   type ReportChatRepository,
 } from "../services/report-chat-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import type { DiscussionRepository } from "../services/discussion-types.js"
+import type { DiscussionRepository } from "../services/discussion-repository.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { withAffiliation } from "../services/affiliation.js"

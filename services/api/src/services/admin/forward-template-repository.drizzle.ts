@@ -4,7 +4,7 @@ import type {
   ForwardTemplateRepository,
   ForwardTemplateSettingsRecord,
   SetForwardTemplateInput,
-} from "./forward-template-types.js"
+} from "./forward-template-repository.js"
 
 const FORWARD_TEMPLATE_AUDIT_TARGET = "mail:forward-template"
 

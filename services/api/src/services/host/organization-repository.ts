@@ -7,7 +7,7 @@ import type {
   SocialLinks,
 } from "@civfix/shared"
 import { can } from "@civfix/shared/host"
-import type { CleanupOrganizationView, CleanupPersonView } from "../cleanup-repository.types.js"
+import type { CleanupOrganizationView, CleanupPersonView } from "../cleanup-repository.js"
 
 export type InviterRevocationReason = "inviter_removed" | "inviter_demoted" | "account_deleted"
 

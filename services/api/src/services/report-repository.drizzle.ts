@@ -28,7 +28,7 @@ import type {
   ReportRepository,
   ReportTimelineView,
   ReportVisibilityTimelineKind,
-} from "./report-service.types.js"
+} from "./report-types.js"
 import { servedKeyExpr, servableMediaFilter } from "./media-served-key.js"
 import { claimableAsReportMedia } from "./media-bindings.js"
 import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"

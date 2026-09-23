@@ -9,7 +9,7 @@ import { makeQuestionService } from "../../../src/services/host/question-service
 import { makeWaitlistService } from "../../../src/services/host/waitlist-service.js"
 import { WAITLIST_PROMOTE_JOB } from "../../../src/lib/queue-names.js"
 import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
-import type { SeatDraft } from "../../../src/services/host/registration-repository.types.js"
+import type { SeatDraft } from "../../../src/services/host/registration-repository.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const OTHER_EVENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"

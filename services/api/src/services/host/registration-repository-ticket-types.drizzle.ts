@@ -12,7 +12,7 @@ import type {
   TicketTypeRecord,
   TicketTypeWriteArgs,
   UpdateTicketTypeOutcome,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
 export const MAX_TICKET_TYPES = 20
 

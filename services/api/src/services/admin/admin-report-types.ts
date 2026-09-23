@@ -16,7 +16,7 @@ import type { NotificationService } from "../notification-service.js"
 import type { LinkedEventView } from "../cleanup-service.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import type { AdminPersonRecord } from "./admin-person.js"
-import type { ForwardTemplateReader } from "./forward-template-types.js"
+import type { ForwardTemplateReader } from "./forward-template-repository.js"
 import type { PresignPacketMedia } from "../media-presign.js"
 
 export type AdminReporterRecord = AdminPersonRecord

@@ -1,6 +1,6 @@
 import type { CleanupPinDTO } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
-import type { CleanupBBox } from "./cleanup-repository.types.js"
+import type { CleanupBBox } from "./cleanup-repository.js"
 import {
   buildBboxFilter,
   buildVisibilityFilter,

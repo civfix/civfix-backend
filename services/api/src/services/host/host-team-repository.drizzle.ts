@@ -31,8 +31,8 @@ import type {
   OpenTeamInviteQuery,
   PendingInviteForUserRecord,
   RevokeTeamInviteOutcome,
-} from "./host-team-repository.types.js"
-import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.types.js"
+} from "./host-team-repository.js"
+import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.js"
 import { personViewOf, UNKNOWN_PERSON_NAME } from "./organization-repository-rows.drizzle.js"
 
 const TEAM_INVITE_PENDING_CONSTRAINTS = [

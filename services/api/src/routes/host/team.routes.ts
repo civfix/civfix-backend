@@ -30,7 +30,7 @@ import {
   type HostTeamServiceDeps,
 } from "../../services/host/host-team-service.js"
 import { makeDrizzleHostTeamRepository } from "../../services/host/host-team-repository.drizzle.js"
-import type { HostTeamRepository } from "../../services/host/host-team-repository.types.js"
+import type { HostTeamRepository } from "../../services/host/host-team-repository.js"
 import { makeEventMediaPresigner } from "../../services/host/event-media.js"
 import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import { makeRouteCleanupReader } from "../../services/route-cleanup-reader.js"

@@ -1,6 +1,6 @@
 import type { ReportStatus } from "@civfix/shared"
-import type { DiscussionReportView } from "./discussion-types.js"
-import type { OwnerToggleStatus } from "./report-service.types.js"
+import type { DiscussionReportView } from "./discussion-repository.js"
+import type { OwnerToggleStatus } from "./report-types.js"
 
 /**
  * The statuses at which a report is PUBLICLY readable.

@@ -31,7 +31,7 @@ import {
 } from "../../services/admin/admin-report-service.js"
 import { makeDrizzleAdminReportRepository } from "../../services/admin/admin-report-repository.drizzle.js"
 import { makeDrizzleForwardTemplateRepository } from "../../services/admin/forward-template-repository.drizzle.js"
-import type { ForwardTemplateRepository } from "../../services/admin/forward-template-types.js"
+import type { ForwardTemplateRepository } from "../../services/admin/forward-template-repository.js"
 import {
   makeContainerOutboundMailService,
   type OutboundMailService,

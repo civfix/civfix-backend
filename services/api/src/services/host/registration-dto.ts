@@ -26,7 +26,7 @@ import type {
   SeatRecord,
   TicketTypeRecord,
   WaitlistRecord,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 import { eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
 
 export const REGISTRATION_ROSTER_DEFAULT_LIMIT = 25

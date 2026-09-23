@@ -8,7 +8,7 @@ import type {
   QuestionRecord,
   RegisterTxArgs,
   SeatDraft,
-} from "../../../src/services/host/registration-repository.types.js"
+} from "../../../src/services/host/registration-repository.js"
 import {
   makeRegistrationService,
   type RegistrationService,

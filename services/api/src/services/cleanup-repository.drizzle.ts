@@ -56,7 +56,7 @@ import type {
   SignupSeat,
   SlotReconcileResult,
   UpdateCleanupPatch,
-} from "./cleanup-repository.types.js"
+} from "./cleanup-repository.js"
 import { eventWindowOfRow, hasEventEnded } from "./cleanup-rules.js"
 import { hiddenIdentity } from "./hidden-identity.js"
 import { blockedPairExpr } from "./blocks-sql.js"

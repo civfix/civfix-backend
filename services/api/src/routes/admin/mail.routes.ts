@@ -39,7 +39,7 @@ import {
   makeForwardTemplateService,
   type ForwardTemplateService,
 } from "../../services/admin/forward-template-service.js"
-import type { ForwardTemplateRepository } from "../../services/admin/forward-template-types.js"
+import type { ForwardTemplateRepository } from "../../services/admin/forward-template-repository.js"
 
 export const ADMIN_OUTBOUND_MAIL_RATE_LIMIT = perIdentity({
   max: 20,

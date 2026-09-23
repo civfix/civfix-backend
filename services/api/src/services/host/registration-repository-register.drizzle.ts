@@ -21,7 +21,7 @@ import type {
   TicketTypeRecord,
   WalkupCheckIn,
   WalkupRegisterArgs,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
 export const REGISTER_IDEMPOTENCY_SCOPE = "event.register"
 

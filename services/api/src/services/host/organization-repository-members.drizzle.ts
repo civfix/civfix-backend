@@ -22,8 +22,8 @@ import type {
   OrgMemberIdentifier,
   RemoveOrganizationMemberOutcome,
   SetOrganizationMemberRoleOutcome,
-} from "./organization-repository.types.js"
-import { canManageOrgMembers, roleChangeWithdrawsInvites } from "./organization-repository.types.js"
+} from "./organization-repository.js"
+import { canManageOrgMembers, roleChangeWithdrawsInvites } from "./organization-repository.js"
 
 interface MemberRowSelect {
   user_id: string

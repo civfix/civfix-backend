@@ -15,7 +15,7 @@ import type { Jobs } from "@civfix/shared/interfaces"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import { toTicketTypeDTO } from "./registration-dto.js"
 import type { InsightsInvalidator } from "./host-analytics-cache.js"
-import type { HostRegistrationRepository } from "./registration-repository.types.js"
+import type { HostRegistrationRepository } from "./registration-repository.js"
 import { enqueueWaitlistPromotion } from "./waitlist-promotion.js"
 import { reserveCounterBudget } from "./counter-budget.js"
 

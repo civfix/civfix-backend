@@ -20,7 +20,7 @@ import { PRESIGN_CONCURRENCY } from "../media-presign.js"
 import { assertSlugAllowed, RESERVED_SLUGS } from "./slugs.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import { toEventPageDTO, toEventQuestionDTO, toPublicTicketType } from "./registration-dto.js"
-import type { HostRegistrationRepository, PageRecord } from "./registration-repository.types.js"
+import type { HostRegistrationRepository, PageRecord } from "./registration-repository.js"
 import type { RegistrationAudit } from "./registration-service.js"
 
 const HOST_PAGE_PUBLISH_COUNTER_KEY = "host:pagePublish"

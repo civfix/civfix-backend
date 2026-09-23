@@ -10,7 +10,7 @@ import type {
   HostedEventCounts,
   RegistrationRecord,
   SeatRecord,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
 export const ARRIVAL_BUCKET_MINUTES = 15
 

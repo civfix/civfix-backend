@@ -20,7 +20,7 @@ import {
 } from "../../src/services/media-uploader.js"
 import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
-import type { CreateReportTxArgs } from "../../src/services/report-service.types.js"
+import type { CreateReportTxArgs } from "../../src/services/report-types.js"
 import { makeFakeSql, type FakeSqlControl, type RecordedStatement } from "../helpers/fake-sql.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 

@@ -5,7 +5,7 @@ import {
   type ReportChatParticipantDTO,
 } from "@civfix/shared"
 import type { PresignMedia } from "./media-presign.js"
-import type { ReportChatMeta } from "./report-service.types.js"
+import type { ReportChatMeta } from "./report-types.js"
 import { monotonicReadWatermarkUpdate } from "./read-watermark-repository.drizzle.js"
 import { blockedPairExpr } from "./blocks-sql.js"
 import { toRoomMemberPerson, type RoomMemberIdentityRow } from "./room-member-person.js"

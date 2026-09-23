@@ -1,7 +1,7 @@
 import { AppError, MAX_EVENT_SLOTS, MIN_SLOT_DURATION_MINUTES } from "@civfix/shared"
 import type { EventSlotInput } from "@civfix/shared"
 import { assertNoSlur } from "../abuse/slur-filter.js"
-import type { DesiredSlot, EventSlotView } from "./cleanup-repository.types.js"
+import type { DesiredSlot, EventSlotView } from "./cleanup-repository.js"
 import type { EventWindow } from "./cleanup-rules.js"
 import { MS_PER_MINUTE } from "../lib/time.js"
 

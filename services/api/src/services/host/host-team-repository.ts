@@ -5,7 +5,7 @@ import type {
   EventTeamRole,
   EventVisibility,
 } from "@civfix/shared"
-import type { CleanupPersonView } from "../cleanup-repository.types.js"
+import type { CleanupPersonView } from "../cleanup-repository.js"
 
 export const TEAM_INVITE_CAP_MESSAGE =
   "This event already has the maximum number of open invitations."

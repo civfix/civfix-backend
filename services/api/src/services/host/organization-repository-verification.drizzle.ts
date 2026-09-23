@@ -14,7 +14,7 @@ import type {
   DecideOrgVerificationOutcome,
   OrganizationRepository,
   OrgVerificationRecord,
-} from "./organization-repository.types.js"
+} from "./organization-repository.js"
 
 type VerificationDocuments = { mediaId?: string }[] | null | undefined
 

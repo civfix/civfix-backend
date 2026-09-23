@@ -9,7 +9,7 @@ import type {
   HostRegistrationRepository,
   RegisterTxArgs,
   SeatDraft,
-} from "../../src/services/host/registration-repository.types.js"
+} from "../../src/services/host/registration-repository.js"
 
 const pg = await withPg()
 const tokens = makeTicketTokenSigner("integration-registration-security-secret")

@@ -30,7 +30,7 @@ import type {
   RosterPage,
   RosterQuery,
   TransferRegistrationOutcome,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
 export type RosterMethods = Pick<
   HostRegistrationRepository,

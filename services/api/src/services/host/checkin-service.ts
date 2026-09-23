@@ -20,7 +20,7 @@ import type {
   CheckinResultRecord,
   HostRegistrationRepository,
   RegistrationRecord,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 import type { RegistrationAudit, RegistrationService } from "./registration-service.js"
 import { normalizeTicketToken, type TicketTokenSigner } from "./ticket-token.js"
 

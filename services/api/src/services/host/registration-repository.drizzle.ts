@@ -10,7 +10,7 @@ import { makePageMethods } from "./registration-repository-pages.drizzle.js"
 import type {
   EventRegistrationContext,
   HostRegistrationRepository,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
 export { REGISTER_IDEMPOTENCY_SCOPE } from "./registration-repository-register.drizzle.js"
 export { applyBanIn } from "./registration-repository-roster.drizzle.js"

@@ -32,7 +32,7 @@ import {
   type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import type { DiscussionRepository } from "../services/discussion-types.js"
+import type { DiscussionRepository } from "../services/discussion-repository.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { conversationReadSeam } from "./chat-gateway-wiring.js"
 import type { MarkRoomRead } from "../services/room-read-service.js"

@@ -33,7 +33,7 @@ import type {
   TicketTypeRecord,
   WaitlistOffer,
   WaitlistRecord,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
 const DEFAULT_EVENT_DURATION_SEC = DEFAULT_EVENT_DURATION_MS / 1000
 

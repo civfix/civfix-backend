@@ -49,7 +49,7 @@ import {
 import { makeContainerCleanupService } from "../cleanups.routes.js"
 import { CLEANUPS_DEFAULT_LIMIT } from "../../services/cleanup-service.js"
 import { makeDrizzleOrganizationRepository } from "../../services/host/organization-repository.drizzle.js"
-import type { OrganizationRepository } from "../../services/host/organization-repository.types.js"
+import type { OrganizationRepository } from "../../services/host/organization-repository.js"
 import { webBaseUrlOf } from "../../lib/base-url.js"
 
 const ONE_MINUTE = "1 minute"

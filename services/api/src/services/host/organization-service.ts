@@ -48,7 +48,7 @@ import type {
   OrganizationRepository,
   OrgVerificationRecord,
   UpdateOrganizationPatch,
-} from "./organization-repository.types.js"
+} from "./organization-repository.js"
 
 export const ORGS_CREATED_PER_DAY = 5
 const ORG_CREATE_WINDOW_SEC = SECONDS_PER_DAY

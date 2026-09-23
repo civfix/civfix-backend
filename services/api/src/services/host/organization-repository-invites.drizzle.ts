@@ -22,8 +22,8 @@ import type {
   OrganizationRepository,
   PendingOrganizationInviteRecord,
   RevokeOrganizationInviteOutcome,
-} from "./organization-repository.types.js"
-import { inviterRevocationReason, ORG_INVITE_CAP_MESSAGE } from "./organization-repository.types.js"
+} from "./organization-repository.js"
+import { inviterRevocationReason, ORG_INVITE_CAP_MESSAGE } from "./organization-repository.js"
 
 type InviteLookup = { tokenHash: string } | { inviteId: string }
 

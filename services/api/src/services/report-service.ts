@@ -55,9 +55,9 @@ import {
   type ReportService,
   type ReportServiceDeps,
   type ReportTimelineView,
-} from "./report-service.types.js"
+} from "./report-types.js"
 
-export * from "./report-service.types.js"
+export * from "./report-types.js"
 export * from "./report-clustering.js"
 
 const REPORT_NOT_FOUND = "Report not found"

@@ -14,7 +14,7 @@ import {
   parseTimeCursor,
 } from "../../db/cursor-helpers.js"
 import { eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
-import type { CleanupPersonView } from "../cleanup-repository.types.js"
+import type { CleanupPersonView } from "../cleanup-repository.js"
 import type {
   AcceptTeamInviteByIdOutcome,
   AcceptTeamInviteOutcome,
@@ -29,8 +29,8 @@ import type {
   OpenTeamInviteQuery,
   PendingInviteForUserRecord,
   RevokeTeamInviteOutcome,
-} from "./host-team-repository.types.js"
-import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.types.js"
+} from "./host-team-repository.js"
+import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.js"
 import { MS_PER_DAY } from "../../lib/time.js"
 
 interface StoredInvite {

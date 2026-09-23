@@ -31,7 +31,7 @@ import { leaderboardEntryOf } from "../volunteer-hours-service.js"
 import type {
   CheckinCountersRecord,
   HostRegistrationRepository,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 import { CHECKIN_COARSEN_DAYS } from "./registration-retention.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
 import { PORTFOLIO_EVENT_LIMIT, clockPhase } from "./host-analytics-shaping.js"

@@ -35,7 +35,7 @@ import {
 } from "../services/chat-group-repository.drizzle.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import type { DiscussionRepository } from "../services/discussion-types.js"
+import type { DiscussionRepository } from "../services/discussion-repository.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makeDmPeerOf } from "../services/dm-peer.js"
 import { messageRoomMatches, REPORT_NOT_FOUND } from "./chat-route-helpers.js"

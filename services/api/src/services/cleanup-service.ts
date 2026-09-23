@@ -60,7 +60,7 @@ import type {
   SignupSeat,
   SlotReconcileResult,
   UpdateCleanupPatch,
-} from "./cleanup-repository.types.js"
+} from "./cleanup-repository.js"
 import {
   assertMayGrantRole,
   hasHostStanding,
@@ -92,7 +92,7 @@ import { eventAddressPatch, resolveEventAddress } from "./cleanup-address.js"
 import { assertKnownSlotIds, assertTimedSlotsFitWindow, toDesiredSlots } from "./cleanup-slots.js"
 import { makeCleanupNotifications, type CleanupCancelFanoutJob } from "./cleanup-notifications.js"
 
-export * from "./cleanup-repository.types.js"
+export * from "./cleanup-repository.js"
 export { CANCEL_FANOUT_MEMBER_CAP } from "./cleanup-notifications.js"
 export {
   CLEANUPS_DEFAULT_LIMIT,

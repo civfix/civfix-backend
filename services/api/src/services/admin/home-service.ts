@@ -17,10 +17,10 @@ import type {
   MailSectionCounts,
   ReportsSectionCounts,
   UsersSectionCounts,
-} from "./home-types.js"
+} from "./home-repository.js"
 import { mapWithLimit } from "../../lib/concurrency.js"
 
-export * from "./home-types.js"
+export * from "./home-repository.js"
 
 const ZERO_DISCOVERY: DiscoverySectionCounts = { queue: 0, reportsWaiting: 0, overSla: 0 }
 const ZERO_REPORTS: ReportsSectionCounts = { flagged: 0, inProgress: 0, completed: 0 }

@@ -17,7 +17,7 @@ import type {
   PublishPageOutcome,
   SavePageArgs,
   SavePageOutcome,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
 const PAGE_SLUG_CONSTRAINT = "cleanups_page_slug_uidx"
 

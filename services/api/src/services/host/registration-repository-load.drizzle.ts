@@ -33,7 +33,7 @@ import type {
   SeatRecord,
   TicketTypeRecord,
   WaitlistRecord,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
 interface EventContextRow {
   id: string

@@ -5,14 +5,14 @@ import type {
   SocialLinks,
 } from "@civfix/shared"
 import type { Queryable } from "../../db/client.js"
-import type { CleanupPersonView } from "../cleanup-repository.types.js"
+import type { CleanupPersonView } from "../cleanup-repository.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
 import type {
   AdminActorView,
   OrganizationBaseRecord,
   OrganizationRecord,
   OrgHoursTotals,
-} from "./organization-repository.types.js"
+} from "./organization-repository.js"
 
 export const UNKNOWN_PERSON_NAME = "Unknown"
 

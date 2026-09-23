@@ -30,7 +30,7 @@ import {
 import { makeTicketTypeService, type TicketTypeService } from "./ticket-type-service.js"
 import { makeWaitlistService, type WaitlistService } from "./waitlist-service.js"
 import type { TicketTokenSigner } from "./ticket-token.js"
-import type { HostRegistrationRepository } from "./registration-repository.types.js"
+import type { HostRegistrationRepository } from "./registration-repository.js"
 
 export interface HostServiceLogger {
   warn(obj: unknown, msg?: string): void

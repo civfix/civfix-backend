@@ -3,7 +3,7 @@ import type { MessageKey } from "../i18n/messages/en.js"
 import type { NotificationService } from "./notification-service.js"
 import { mapWithLimit } from "../lib/concurrency.js"
 import { MS_PER_HOUR } from "../lib/time.js"
-import type { CleanupRepository, SlotReconcileResult } from "./cleanup-repository.types.js"
+import type { CleanupRepository, SlotReconcileResult } from "./cleanup-repository.js"
 import type { GuestUpdateFanoutJob } from "./guest-rsvp-service.js"
 import { CLEANUP_CANCEL_FANOUT_JOB, CLEANUP_GUEST_UPDATE_FANOUT_JOB } from "../lib/queue-names.js"
 

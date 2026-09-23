@@ -15,7 +15,7 @@ import {
   type InsightsServiceDeps,
 } from "../../src/services/host/insights-service.js"
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
-import type { SeatDraft } from "../../src/services/host/registration-repository.types.js"
+import type { SeatDraft } from "../../src/services/host/registration-repository.js"
 import type {
   AnalyticsRepository,
   EventClockRecord,

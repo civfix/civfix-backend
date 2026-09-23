@@ -61,7 +61,7 @@ import type {
   WalkupRegisterArgs,
   WaitlistOffer,
   WaitlistRecord,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
 interface MemoryRegistration extends RegistrationRecord {
   answers: AnswerRecord[]

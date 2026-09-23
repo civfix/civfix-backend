@@ -37,7 +37,7 @@ import type {
   EventTeamMemberRecord,
   HostTeamRepository,
   PendingInviteForUserRecord,
-} from "./host-team-repository.types.js"
+} from "./host-team-repository.js"
 
 export const TEAM_INVITES_PER_EVENT_PER_DAY = 30
 const TEAM_INVITE_WINDOW_SEC = SECONDS_PER_DAY

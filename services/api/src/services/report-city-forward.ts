@@ -3,7 +3,7 @@ import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-ment
 import { replySubject, type OutboundMailService } from "./admin/outbound-mail-service.js"
 import type { MailThreadRecord } from "./admin/mail-repository.drizzle.js"
 import type { ReportForwardAuditRepository } from "./report-forward-audit-repository.drizzle.js"
-import type { ReportJurisdictionView } from "./discussion-types.js"
+import type { ReportJurisdictionView } from "./discussion-repository.js"
 import type { CounterStore } from "../abuse/counter-store.js"
 
 export interface CityForwardContext {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { validateAnswers } from "../../../src/services/host/question-validation.js"
-import type { QuestionRecord } from "../../../src/services/host/registration-repository.types.js"
+import type { QuestionRecord } from "../../../src/services/host/registration-repository.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 

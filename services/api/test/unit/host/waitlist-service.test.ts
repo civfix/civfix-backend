@@ -8,7 +8,7 @@ import {
   WAITLIST_CLAIM_WINDOW_MS,
   type WaitlistService,
 } from "../../../src/services/host/waitlist-service.js"
-import type { SeatDraft } from "../../../src/services/host/registration-repository.types.js"
+import type { SeatDraft } from "../../../src/services/host/registration-repository.js"
 import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"

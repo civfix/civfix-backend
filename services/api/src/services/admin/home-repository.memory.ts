@@ -6,7 +6,7 @@ import type {
   MailSectionCounts,
   ReportsSectionCounts,
   UsersSectionCounts,
-} from "./home-types.js"
+} from "./home-repository.js"
 
 export class InMemoryHomeRepository implements HomeRepository {
   discoveryValue: DiscoverySectionCounts = { queue: 0, reportsWaiting: 0, overSla: 0 }

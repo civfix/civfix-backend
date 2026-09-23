@@ -4,7 +4,7 @@ import { makeFakeSql } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
 import { makeReportService } from "../../src/services/report-service.js"
-import type { ReportRepository } from "../../src/services/report-service.types.js"
+import type { ReportRepository } from "../../src/services/report-types.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 
 const REPORT_ID = "11111111-1111-1111-1111-111111111111"

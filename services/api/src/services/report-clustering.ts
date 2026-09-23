@@ -1,6 +1,6 @@
 import { latLngToCell } from "h3-js"
 import type { ReportCategory, ReportClusterDTO, ReportStatus, ReportType } from "@civfix/shared"
-import { REPORT_H3_RESOLUTION, type ReportMapPoint } from "./report-service.types.js"
+import { REPORT_H3_RESOLUTION, type ReportMapPoint } from "./report-types.js"
 
 // Bounds the payload and per-request work for a wide bbox; clustering then collapses them to far fewer pins.
 export const MAP_REPORTS_CANDIDATE_CAP = 2000

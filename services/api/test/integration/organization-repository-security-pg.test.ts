@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { testHandle, withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleOrganizationRepository } from "../../src/services/host/organization-repository.drizzle.js"
-import type { OrganizationRepository } from "../../src/services/host/organization-repository.types.js"
+import type { OrganizationRepository } from "../../src/services/host/organization-repository.js"
 
 const pg = await withPg()
 const INVITE_TTL_MS = 14 * 86_400_000

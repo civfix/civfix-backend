@@ -21,7 +21,7 @@ import type {
   OrganizationRepository,
   SetOrganizationSuspendedArgs,
   SetOrganizationSuspendedOutcome,
-} from "./organization-repository.types.js"
+} from "./organization-repository.js"
 
 interface AdminOrganizationRowSelect extends OrganizationRowSelect {
   owner_id: string | null

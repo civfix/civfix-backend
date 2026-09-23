@@ -24,7 +24,7 @@ import type {
   SeatRecord,
   TicketTypeRecord,
   WaitlistRecord,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 import { isCheckViolationOn } from "../../db/pg-errors.js"
 
 const RESERVED_SEATS_BACKSTOP_CONSTRAINT = "cleanup_ticket_types_reserved_bounds"

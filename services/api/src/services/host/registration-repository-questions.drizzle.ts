@@ -12,7 +12,7 @@ import type {
   DesiredQuestion,
   HostRegistrationRepository,
   QuestionRecord,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
 export type QuestionMethods = Pick<
   HostRegistrationRepository,

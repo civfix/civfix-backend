@@ -47,13 +47,13 @@ import type {
   UpdateOrganizationPatch,
   InviterRevocationReason,
   InviterStanding,
-} from "./organization-repository.types.js"
+} from "./organization-repository.js"
 import {
   canManageOrgMembers,
   inviterRevocationReason,
   roleChangeWithdrawsInvites,
-} from "./organization-repository.types.js"
-import { ORG_INVITE_CAP_MESSAGE } from "./organization-repository.types.js"
+} from "./organization-repository.js"
+import { ORG_INVITE_CAP_MESSAGE } from "./organization-repository.js"
 import { encodeTimeCursor } from "../../db/cursor-helpers.js"
 
 const SEED_DISPLAY_NAME = "Member"

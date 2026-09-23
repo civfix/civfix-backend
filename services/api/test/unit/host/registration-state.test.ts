@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "vitest"
 import { registrationStateOf } from "../../../src/services/host/registration-dto.js"
-import type { EventRegistrationContext } from "../../../src/services/host/registration-repository.types.js"
+import type { EventRegistrationContext } from "../../../src/services/host/registration-repository.js"
 
 const NOW = new Date("2026-06-01T12:00:00.000Z")
 const HOUR = 3_600_000
