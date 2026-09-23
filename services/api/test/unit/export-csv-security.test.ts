@@ -18,6 +18,13 @@ describe("csv cells in a locale whose list separator splits a value", () => {
     expect(csvCell("a;  =1")).toBe('"a;  \'=1"')
   })
 
+  it("neutralizes a trigger that double quotes and spaces separate from the separator", () => {
+    expect(csvCell('x;"=1+1')).toBe('"x;""\'=1+1"')
+    expect(csvCell('x;""=1+1""')).toBe('"x;""""\'=1+1"""""')
+    expect(csvCell('x, "+1')).toBe('"x, ""\'+1"')
+    expect(csvCell('x;"  @a')).toBe('"x;""  \'@a"')
+  })
+
   it("neutralizes a trigger that is itself a separator, and the trigger after it", () => {
     expect(csvCell("a\t\t=1")).toBe("\"a\t'\t'=1\"")
   })

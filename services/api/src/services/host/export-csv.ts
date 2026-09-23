@@ -1,9 +1,12 @@
 const FORMULA_ESCAPE = "'"
 const LEADING_TRIGGER_RE = /^[=+\-@\t\r]/
 // Excel in a ';'-separator locale (de, es) splits a quoted value on ';' and evaluates a formula at the
-// start of the resulting field, so quoting alone does not help. The lookbehind (rather than a
-// consuming match) also catches a trigger that follows a tab or CR which was itself a trigger.
-const SEPARATED_TRIGGER_RE = /(?<=[;,\t\r\n] *)(?=[=+\-@\t\r])/g
+// start of the resulting field, so quoting alone does not help. Spaces and double quotes between the
+// separator and the trigger do not stop that evaluation, so the escape goes directly before the
+// trigger. A single quote is left out because a field that starts with one is already text. The
+// lookbehind (rather than a consuming match) also catches a trigger that follows a tab or CR which
+// was itself a trigger.
+const SEPARATED_TRIGGER_RE = /(?<=[;,\t\r\n][ "]*)(?=[=+\-@\t\r])/g
 
 function neutralizeFormulas(value: string): string {
   const separated = value.replace(SEPARATED_TRIGGER_RE, FORMULA_ESCAPE)
