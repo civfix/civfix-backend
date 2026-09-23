@@ -19,6 +19,7 @@ import {
   inboundEffectDeps,
   type InboundEffectDeps,
   isJurisdictionSender,
+  isSelfOriginated,
   parseMessageIdList,
   resolveMessageId,
 } from "./inbound-thread-correlation.js"
@@ -128,6 +129,12 @@ export async function processInboundObject(
     }
     if (result.outcome === "inbox" || result.outcome === "replay") await storage.delete(key)
     return result
+  }
+
+  if (isSelfOriginated(container, mail, messageId)) {
+    logger.warn({ key, messageId }, "inbound: dropped our own outbound mail looping back")
+    await storage.delete(key)
+    return { outcome: "skipped", reason: "self-originated" }
   }
 
   const authVerdict = readMailAuthVerdict(mail)

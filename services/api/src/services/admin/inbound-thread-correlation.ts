@@ -14,7 +14,7 @@ import type { CleanupRepository } from "../cleanup-service.js"
 import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import { MESSAGE_BODY_MAX, segmentGraphemes } from "@civfix/shared"
-import { DEFAULT_REPLY_DOMAIN, domainOf, domainsAligned } from "../../adapters/inbound-mail.cf.js"
+import { DEFAULT_REPLY_DOMAIN, domainOf, domainsAligned, replyAddressToken } from "../../adapters/inbound-mail.cf.js"
 
 export { JURISDICTION_REPLY_NOTE }
 
@@ -163,6 +163,22 @@ export function parseMessageIdList(value: string | undefined): string[] {
     }
   }
   return out
+}
+
+const OUTBOUND_MESSAGE_ID_RE = /^<out-[^@>]+@([^@>]+)>$/i
+
+export function isSelfOriginated(
+  container: Container,
+  mail: ParsedMail,
+  messageId: string,
+): boolean {
+  const env = container.env as { MAIL_FROM_OUTREACH?: string; MAIL_REPLY_DOMAIN?: string }
+  const outboundIdDomain = OUTBOUND_MESSAGE_ID_RE.exec(messageId)?.[1]?.toLowerCase()
+  const outreachDomain = domainOf(env.MAIL_FROM_OUTREACH ?? null)
+  if (outboundIdDomain !== undefined && outboundIdDomain === outreachDomain) return true
+  const fromAddress = mail.from?.address
+  if (fromAddress === undefined || env.MAIL_REPLY_DOMAIN === undefined) return false
+  return replyAddressToken(fromAddress, env.MAIL_REPLY_DOMAIN) !== null
 }
 
 export async function isJurisdictionSender(
