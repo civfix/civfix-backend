@@ -8,6 +8,7 @@ export * from "./sessions.js"
 
 export * from "./jurisdictions.js"
 export * from "./boundary_vintage.js"
+export * from "./geocode_cache.js"
 export * from "./reports.js"
 export * from "./media.js"
 export * from "./timeline.js"

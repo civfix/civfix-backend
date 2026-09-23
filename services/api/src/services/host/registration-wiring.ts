@@ -2,6 +2,8 @@ import type { CounterStore } from "../../abuse/counter-store.js"
 import type { Container } from "../../di.js"
 import type { Sql } from "../../db/client.js"
 import { makeMediaPresigner } from "../media-presign.js"
+import { guestManageLinkBase, makeGuestPromotionNotifier } from "../guest-notify.js"
+import { makeDrizzleGuestRsvpRepository } from "../guest-rsvp-repository.drizzle.js"
 import { writeAudit } from "../admin/audit.js"
 import type { HostCapability } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
@@ -136,6 +138,14 @@ export function makeContainerRegistrationServices(
         })
 
   const notifier = lazyNotifier(container, logger)
+  const guests =
+    sql === undefined
+      ? undefined
+      : makeGuestPromotionNotifier({
+          repo: makeDrizzleGuestRsvpRepository(sql),
+          mailer: container.mailer,
+          linkBase: guestManageLinkBase(container.env.WEB_ORIGINS),
+        })
   const counters = overrides?.counters ?? container.getCounterStore()
   const insightsInvalidator: InsightsInvalidator =
     overrides?.insightsInvalidator ??
@@ -182,6 +192,7 @@ export function makeContainerRegistrationServices(
       registrations,
       jobs: container.jobs,
       notifier,
+      ...(guests !== undefined ? { guests } : {}),
       ...(audit !== undefined ? { audit } : {}),
       ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
       ...(logger !== undefined ? { logger } : {}),

@@ -143,6 +143,7 @@ interface StoredCleanup {
   status: CleanupRecord["status"]
   bring: string[] | null
   address: string | null
+  addressSource: CleanupRecord["addressSource"]
   capacity: number | null
   jurisdictionGeoid: string | null
   referenceCode: string | null
@@ -409,6 +410,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       status: seededStatus === "cancelled" ? "cancelled" : "upcoming",
       bring: over.bring ?? null,
       address: over.address ?? null,
+      addressSource: over.addressSource ?? null,
       capacity: over.capacity ?? null,
       jurisdictionGeoid: over.jurisdictionGeoid ?? null,
       referenceCode: over.referenceCode ?? null,
@@ -483,6 +485,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       status: deriveCleanupStatus(eventWindowOf(c), this.now().getTime()),
       bring: c.bring,
       address: c.address,
+      addressSource: c.addressSource,
       capacity: c.capacity,
       jurisdictionGeoid: c.jurisdictionGeoid,
       referenceCode: c.referenceCode,
@@ -550,6 +553,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       status: args.status,
       bring: args.bring,
       address: args.address,
+      addressSource: args.addressSource,
       capacity: null,
       jurisdictionGeoid: args.jurisdictionGeoid,
       referenceCode,
@@ -834,6 +838,7 @@ export class InMemoryCleanupRepository implements CleanupRepository {
       c.lng = patch.lng
     }
     if (patch.address !== undefined) c.address = patch.address
+    if (patch.addressSource !== undefined) c.addressSource = patch.addressSource
     if (patch.bring !== undefined) c.bring = patch.bring
     if (patch.jurisdictionGeoid !== undefined) c.jurisdictionGeoid = patch.jurisdictionGeoid
     if (patch.endsAt !== undefined) c.endsAt = patch.endsAt

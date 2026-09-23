@@ -273,9 +273,9 @@ export type AcceptOrganizationInviteOutcome =
 
 export type AddOrganizationMemberOutcome = "added" | "already_member" | "user_not_found"
 
-export type RemoveOrganizationMemberOutcome = "removed" | "not_member" | "owner"
+export type RemoveOrganizationMemberOutcome = "removed" | "not_member" | "owner" | "last_admin"
 
-export type SetOrganizationMemberRoleOutcome = "updated" | "not_member" | "owner"
+export type SetOrganizationMemberRoleOutcome = "updated" | "not_member" | "owner" | "last_admin"
 
 export type DecideOrgVerificationOutcome = "decided" | "not_found" | "no_application"
 

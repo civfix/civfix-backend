@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   avatarGradient,
+  HostAnalyticsSummaryResponseSchema,
   HostedEventsAnalyticsResponseSchema,
   MAX_PORTFOLIO_TOP_VOLUNTEERS,
 } from "@civfix/shared"
@@ -14,6 +15,8 @@ import type { AnalyticsRepository } from "../../src/services/host/analytics-repo
 import type { MetricsRepository } from "../../src/services/host/metrics-repository.drizzle.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
+const EVENT_A = "11111111-1111-4111-8111-111111111111"
+const EVENT_B = "22222222-2222-4222-8222-222222222222"
 const NOW = new Date("2026-02-10T00:00:00Z")
 
 function analyticsRepo(overrides: Partial<AnalyticsRepository> = {}): AnalyticsRepository {
@@ -54,6 +57,7 @@ function analyticsRepo(overrides: Partial<AnalyticsRepository> = {}): AnalyticsR
     eventClock: () =>
       Promise.resolve({
         status: "active" as const,
+        createdAt: new Date("2026-02-01T17:00:00Z"),
         scheduledAt: new Date("2026-02-14T17:00:00Z"),
         endsAt: null,
         completedAt: null,
@@ -68,6 +72,31 @@ function analyticsRepo(overrides: Partial<AnalyticsRepository> = {}): AnalyticsR
     returningAttendees: () => Promise.resolve({ seats: 0, ofRegistered: 0 }),
     topVolunteers: () => Promise.resolve([]),
     hoursTotals: () => Promise.resolve({ credited: 0, volunteersCredited: 0 }),
+    activityTotals: () =>
+      Promise.resolve({
+        registrations: 20,
+        cancellations: 2,
+        hoursTotal: 48.755,
+        hoursVolunteers: 11,
+        reportsLinked: 3,
+        reportsResolved: 1,
+        postsCreated: 7,
+      }),
+    heldEventTotals: () =>
+      Promise.resolve({ events: 2, registered: 20, checkedIn: 12, noShow: 1 }),
+    signupsByDayAcross: () =>
+      Promise.resolve({
+        daily: [
+          { day: "2026-02-08", count: 6 },
+          { day: "2026-02-09", count: 2 },
+          { day: "2026-02-10", count: 7 },
+        ],
+        byEvent: [
+          { key: EVENT_A, label: "Beach Cleanup", count: 12 },
+          { key: EVENT_B, label: "Park Cleanup", count: 3 },
+        ],
+        hoursByEvent: [{ key: EVENT_A, label: "Beach Cleanup", count: 31 }],
+      }),
     ...overrides,
   }
 }
@@ -125,7 +154,27 @@ describe("host analytics envelopes", () => {
     expect(payload).not.toMatch(/"clicks"/)
   })
 
-  it("suppresses a count below k rather than showing it", async () => {
+  it("publishes the host's own whole-event counts exactly, including under k", async () => {
+    const { service } = build({
+      eventKpis: () =>
+        Promise.resolve({
+          registered: 4,
+          checkedIn: 2,
+          waitlisted: 3,
+          cancelled: 1,
+          noShow: 2,
+          capacity: 10,
+        }),
+    })
+    const payload = await service.overview(EVENT, "30d", "organizer:none")
+    expect(payload.kpis.registered).toBe(4)
+    expect(payload.kpis.checkedIn).toBe(2)
+    expect(payload.kpis.waitlisted).toBe(3)
+    expect(payload.kpis.cancelled).toBe(1)
+    expect(payload.kpis.noShow).toBe(2)
+  })
+
+  it("keeps the rates suppressed even though the counts behind them publish", async () => {
     const { service } = build({
       eventKpis: () =>
         Promise.resolve({
@@ -138,8 +187,27 @@ describe("host analytics envelopes", () => {
         }),
     })
     const payload = await service.overview(EVENT, "30d", "organizer:none")
-    expect(payload.kpis.registered).toBeNull()
-    expect(payload.kpis.checkedIn).toBeNull()
+    expect(payload.checkInRate.suppressed).toBe(true)
+    expect(payload.checkInRate.value).toBeNull()
+    expect(payload.checkInRate.denominator).toBeNull()
+    expect(payload.noShowRate.suppressed).toBe(true)
+  })
+
+  it("reports a rollup count exactly when it has rows and null when it has none", async () => {
+    const { service } = build({}, [
+      { cleanupId: EVENT, day: "2026-02-09", metric: "page_views", bucket: "all", value: 3 },
+    ])
+    const payload = await service.overview(EVENT, "30d", "organizer:none")
+    expect(payload.kpis.pageViews).toBe(3)
+    expect(payload.kpis.donationClicks).toBeNull()
+  })
+
+  it("does not let an empty page-view rollup zero a funnel with live signups", async () => {
+    const { service } = build()
+    const payload = await service.overview(EVENT, "30d", "organizer:none")
+    expect(payload.kpis.pageViews).toBeNull()
+    expect(payload.funnel.map((step) => step.step)).toEqual(["registered", "checked_in"])
+    expect(payload.funnel.map((step) => step.value)).toEqual([20, 12])
   })
 
   it("shows a count at exactly k", async () => {
@@ -428,7 +496,7 @@ describe("host analytics envelopes", () => {
     expect(derivable.has(2)).toBe(false)
   })
 
-  it("withholds the registered KPI that would close the same chain the series left open", async () => {
+  it("publishes the registered KPI while the series the chain left open stays closed", async () => {
     const registrationsByDay = () =>
       Promise.resolve([
         { day: "2026-02-08", count: 6 },
@@ -451,7 +519,7 @@ describe("host analytics envelopes", () => {
       PAGE_VIEW_ROWS,
     )
     const overview = await service.overview(EVENT, "30d", "organizer:none")
-    expect(overview.kpis.registered).toBeNull()
+    expect(overview.kpis.registered).toBe(15)
     expect(overview.checkInRate.suppressed).toBe(true)
     expect(overview.checkInRate.denominator).toBeNull()
     expect(overview.noShowRate.denominator).toBeNull()
@@ -568,7 +636,10 @@ describe("host analytics cache", () => {
       sadd: () => Promise.resolve(0),
       srem: () => Promise.resolve(0),
       smembers: () => Promise.resolve([]),
+      smismember: () => Promise.resolve([]),
+      scard: () => Promise.resolve(0),
       expire: () => Promise.resolve(),
+      expireNx: () => Promise.resolve(),
     }
     const cache = makeHostAnalyticsCache({ cache: broken, ttlSeconds: 60 })
     expect(await cache.getOrSet("k", () => Promise.resolve(42))).toBe(42)
@@ -648,5 +719,231 @@ describe("#110: portfolio hours and top volunteers", () => {
     expect(legacy.topVolunteers).toEqual([])
     expect(legacy.totalHours).toBeUndefined()
     expect(legacy.volunteersCredited).toBeUndefined()
+  })
+})
+
+describe("hosted-events analytics summary", () => {
+  const OWNER = "00000000-0000-0000-0000-0000000000aa"
+  const ORG = "33333333-3333-4333-8333-333333333333"
+
+  it("returns a payload the shared summary schema accepts", async () => {
+    const { service } = build()
+    const payload = await service.summary(OWNER, null, "30d", "self")
+    expect(() => HostAnalyticsSummaryResponseSchema.parse(payload)).not.toThrow()
+    expect(payload.k).toBe(5)
+    expect(payload.range).toBe("30d")
+    expect(payload.generatedAt).toBe(NOW.toISOString())
+  })
+
+  it("spans the 30-day window inclusive of both end days", async () => {
+    const { service } = build()
+    const payload = await service.summary(OWNER, null, "30d", "self")
+    expect(payload.window).toEqual({ from: "2026-01-12", to: "2026-02-10" })
+    expect(payload.signupsDaily).toHaveLength(30)
+    expect(payload.signupsDaily[0]?.day).toBe("2026-01-12")
+    expect(payload.signupsDaily.at(-1)?.day).toBe("2026-02-10")
+  })
+
+  it("hands the repositories the window's half-open instant bounds", async () => {
+    const asked: { from: Date; to: Date }[] = []
+    const { service } = build({
+      activityTotals: (_ids, from, to) => {
+        asked.push({ from, to })
+        return Promise.resolve({
+          registrations: 0,
+          cancellations: 0,
+          hoursTotal: 0,
+          hoursVolunteers: 0,
+          reportsLinked: 0,
+          reportsResolved: 0,
+          postsCreated: 0,
+        })
+      },
+      heldEventTotals: (_ids, from, to) => {
+        asked.push({ from, to })
+        return Promise.resolve({ events: 0, registered: 0, checkedIn: 0, noShow: 0 })
+      },
+    })
+    await service.summary(OWNER, null, "30d", "self")
+    expect(asked).toHaveLength(2)
+    for (const call of asked) {
+      expect(call.from.toISOString()).toBe("2026-01-12T00:00:00.000Z")
+      expect(call.to.toISOString()).toBe("2026-02-11T00:00:00.000Z")
+    }
+  })
+
+  it("carries the live activity counts straight through, sub-k included", async () => {
+    const { service } = build({}, [
+      { cleanupId: EVENT, day: "2026-02-09", metric: "donation_clicks", bucket: "", value: 4 },
+    ])
+    const payload = await service.summary(OWNER, null, "30d", "self")
+    expect(payload.activity).toEqual({
+      signups: 20,
+      cancellations: 2,
+      hoursTotal: 48.76,
+      hoursVolunteers: 11,
+      reportsLinked: 3,
+      reportsResolved: 1,
+      postsCreated: 7,
+      donationClicks: 4,
+    })
+  })
+
+  it("publishes every signup day exactly, sub-k days included", async () => {
+    const { service } = build()
+    const payload = await service.summary(OWNER, null, "30d", "self")
+    const byDay = new Map(payload.signupsDaily.map((point) => [point.day, point]))
+    expect(byDay.get("2026-02-08")?.value).toBe(6)
+    expect(byDay.get("2026-02-09")?.value).toBe(2)
+    expect(byDay.get("2026-02-10")?.value).toBe(7)
+    expect(payload.signupsDaily.every((point) => point.suppressed === false)).toBe(true)
+  })
+
+  it("publishes the per-event panels exactly, the way the portfolio does", async () => {
+    const { service } = build()
+    const payload = await service.summary(OWNER, null, "30d", "self")
+    expect(payload.byEvent.panelSuppressed).toBe(false)
+    expect(payload.byEvent.rows.map((row) => [row.key, row.label, row.value])).toEqual([
+      [EVENT_A, "Beach Cleanup", 12],
+      [EVENT_B, "Park Cleanup", 3],
+    ])
+    expect(payload.hoursByEvent.rows.map((row) => [row.key, row.label, row.value])).toEqual([
+      [EVENT_A, "Beach Cleanup", 31],
+    ])
+    expect(payload.byEvent.rows.every((row) => row.suppressed === false)).toBe(true)
+  })
+
+  it("keeps per-event rows distinct when two events share a title", async () => {
+    const { service } = build({
+      signupsByDayAcross: () =>
+        Promise.resolve({
+          daily: [],
+          byEvent: [
+            { key: EVENT_A, label: "Test1", count: 5 },
+            { key: EVENT_B, label: "Test1", count: 2 },
+          ],
+          hoursByEvent: [
+            { key: EVENT_A, label: "Test1", count: 9 },
+            { key: EVENT_B, label: "Test1", count: 4 },
+          ],
+        }),
+    })
+    const payload = await service.summary(OWNER, null, "30d", "self")
+    expect(payload.byEvent.rows.map((row) => row.key)).toEqual([EVENT_A, EVENT_B])
+    expect(new Set(payload.byEvent.rows.map((row) => row.key)).size).toBe(2)
+    expect(payload.byEvent.rows.map((row) => row.label)).toEqual(["Test1", "Test1"])
+    expect(payload.hoursByEvent.rows.map((row) => row.key)).toEqual([EVENT_A, EVENT_B])
+    expect(new Set(payload.hoursByEvent.rows.map((row) => row.key)).size).toBe(2)
+    expect(payload.hoursByEvent.rows.map((row) => row.value)).toEqual([9, 4])
+  })
+
+  it("derives the held-event check-in rate exactly, never suppressed above zero", async () => {
+    const { service } = build()
+    const payload = await service.summary(OWNER, null, "30d", "self")
+    expect(payload.eventsHeld).toMatchObject({
+      count: 2,
+      registered: 20,
+      checkIns: 12,
+      noShows: 1,
+    })
+    expect(payload.eventsHeld.checkInRate.value).toBeCloseTo(12 / 20, 4)
+    expect(payload.eventsHeld.checkInRate.numerator).toBe(12)
+    expect(payload.eventsHeld.checkInRate.denominator).toBe(20)
+    expect(payload.eventsHeld.checkInRate.suppressed).toBe(false)
+  })
+
+  it("keeps a sub-k held-event rate exact rather than hiding it", async () => {
+    const { service } = build({
+      heldEventTotals: () =>
+        Promise.resolve({ events: 1, registered: 3, checkedIn: 2, noShow: 1 }),
+    })
+    const payload = await service.summary(OWNER, null, "30d", "self")
+    expect(payload.eventsHeld.checkInRate.value).toBeCloseTo(2 / 3, 4)
+    expect(payload.eventsHeld.checkInRate.suppressed).toBe(false)
+  })
+
+  it("leaves the rate null when nobody registered", async () => {
+    const { service } = build({
+      heldEventTotals: () =>
+        Promise.resolve({ events: 1, registered: 0, checkedIn: 0, noShow: 0 }),
+    })
+    const payload = await service.summary(OWNER, null, "30d", "self")
+    expect(payload.eventsHeld.checkInRate.value).toBeNull()
+    expect(payload.eventsHeld.checkInRate.suppressed).toBe(true)
+  })
+
+  it("short-circuits a host with no events without touching the window reads", async () => {
+    const touched: string[] = []
+    const { service } = build({
+      hostedEventIds: () => Promise.resolve([]),
+      activityTotals: () => {
+        touched.push("activityTotals")
+        return Promise.resolve({
+          registrations: 1,
+          cancellations: 1,
+          hoursTotal: 1,
+          hoursVolunteers: 1,
+          reportsLinked: 1,
+          reportsResolved: 1,
+          postsCreated: 1,
+        })
+      },
+      heldEventTotals: () => {
+        touched.push("heldEventTotals")
+        return Promise.resolve({ events: 1, registered: 1, checkedIn: 1, noShow: 1 })
+      },
+      signupsByDayAcross: () => {
+        touched.push("signupsByDayAcross")
+        return Promise.resolve({ daily: [], byEvent: [], hoursByEvent: [] })
+      },
+    })
+    const payload = await service.summary(OWNER, null, "30d", "self")
+
+    expect(touched).toEqual([])
+    expect(() => HostAnalyticsSummaryResponseSchema.parse(payload)).not.toThrow()
+    expect(payload.totals.events).toBe(0)
+    expect(payload.eventsHeld).toMatchObject({ count: 0, registered: 0, checkIns: 0, noShows: 0 })
+    expect(Object.values(payload.activity).every((value) => value === 0)).toBe(true)
+    expect(payload.byEvent.rows).toEqual([])
+    expect(payload.hoursByEvent.rows).toEqual([])
+    expect(payload.signupsDaily.every((point) => point.value === 0)).toBe(true)
+  })
+
+  it("scopes the hosted-event lookup to the organization when one is asked for", async () => {
+    const asked: Array<string | null> = []
+    const { service } = build({
+      hostedEventIds: (_userId, organizationId) => {
+        asked.push(organizationId)
+        return Promise.resolve([EVENT])
+      },
+    })
+    await service.summary(OWNER, ORG, "30d", "org:admin")
+    await service.summary(OWNER, null, "30d", "self")
+    expect(asked).toEqual([ORG, null])
+  })
+
+  it("does not serve an org summary from the personal one's cache entry", async () => {
+    let calls = 0
+    const { service } = build({
+      hostedEventIds: () => {
+        calls += 1
+        return Promise.resolve([EVENT])
+      },
+    })
+    await service.summary(OWNER, null, "30d", "self")
+    await service.summary(OWNER, null, "30d", "self")
+    expect(calls).toBe(1)
+    await service.summary(OWNER, ORG, "30d", "org:admin")
+    expect(calls).toBe(2)
+  })
+
+  it("widens the window with the range", async () => {
+    const { service } = build()
+    expect((await service.summary(OWNER, null, "7d", "self")).window).toEqual({
+      from: "2026-02-04",
+      to: "2026-02-10",
+    })
+    expect((await service.summary(OWNER, null, "90d", "self")).window.from).toBe("2025-11-13")
+    expect((await service.summary(OWNER, null, "all", "self")).signupsDaily).toHaveLength(365)
   })
 })

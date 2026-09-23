@@ -6,8 +6,10 @@ import type {
   AdminReportListItemDTO,
   AdminReportStatus,
   ReportCategory,
+  ReportMedia,
   ReportOutreachStatus,
   ReportTimelineItem,
+  ReportVisibility,
 } from "@civfix/shared"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 import type { FastifyBaseLogger } from "fastify"
@@ -16,6 +18,7 @@ import type { LinkedEventView } from "../cleanup-service.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import type { AdminPersonRecord } from "./admin-person.js"
 import type { ForwardTemplateReader } from "./forward-template-types.js"
+import type { PresignPacketMedia } from "../media-presign.js"
 
 export type AdminReporterRecord = AdminPersonRecord
 
@@ -59,6 +62,7 @@ export interface AdminReportRecord {
   id: string
   category: ReportCategory
   status: AdminReportStatus
+  visibility: ReportVisibility
   flagged: boolean
   title: string
   place: string
@@ -69,6 +73,7 @@ export interface AdminReportRecord {
   lat: number
   lng: number
   hasPhoto: boolean
+  previewMedia: AdminReportMediaRecord | null
   createdAt: Date
   referenceCode: string | null
   verificationVerdict: "approved" | "rejected" | null
@@ -144,6 +149,17 @@ export interface AdminReportRepository {
 
 export const REPORT_VERIFIED_THRESHOLD = 2
 
+export function pickPreviewMedia<T extends { kind: "image" | "video" }>(
+  media: readonly T[],
+): T | null {
+  return media.find((m) => m.kind === "image") ?? media[0] ?? null
+}
+
+export function previewThumbnailUrl(media: ReportMedia | null): string | null {
+  if (media === null) return null
+  return media.kind === "image" ? (media.thumbUrl ?? media.url) : (media.thumbUrl ?? null)
+}
+
 export interface AdminReportServiceDeps {
   repo: AdminReportRepository
   outboundMail: OutboundMailService
@@ -151,10 +167,7 @@ export interface AdminReportServiceDeps {
     r2Key: string,
     thumbKey: string | null,
   ) => Promise<{ url: string; thumbUrl?: string }>
-  presignPacketMedia?: (
-    r2Key: string,
-    thumbKey: string | null,
-  ) => Promise<{ url: string; thumbUrl?: string }>
+  presignPacketMedia?: PresignPacketMedia
   loadLinkedEventsForReports?: (
     reportIds: string[],
   ) => Promise<Map<string, LinkedEventView[]>>

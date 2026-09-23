@@ -30,6 +30,9 @@ import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
 import { makePostService } from "../../src/services/post-service.js"
 import type {
   CreatePostArgs,
+  FeedCandidateArgs,
+  FeedCandidateRow,
+  FeedCountsRow,
   FeedPage,
   PostBrief,
   PostListArgs,
@@ -293,8 +296,61 @@ class InMemoryPostRepository implements PostRepository {
     })
   }
 
-  homeFeed(args: { viewerId: string; filter: "all" | "events" | "fixes"; cursor: string | null; limit: number }): Promise<FeedPage> {
+  homeFeedChronological(args: { viewerId: string; filter: "all" | "events" | "fixes"; cursor: string | null; limit: number }): Promise<FeedPage> {
     return Promise.resolve(this.page(this.byFilter(args.filter), args.viewerId, args))
+  }
+
+  feedCandidates(args: FeedCandidateArgs): Promise<FeedCandidateRow[]> {
+    const rows = this.byFilter(args.filter).map((p) => ({
+      id: p.id,
+      author_id: p.authorId,
+      created_at: p.createdAt,
+      like_count: p.likes.size,
+      reply_count: [...this.posts.values()].filter(
+        (r) => r.replyToId === p.id && r.deletedAt === null,
+      ).length,
+      repost_count: p.reposts.size,
+      has_report: p.reportId !== null,
+      has_live_event: p.eventId !== null,
+      has_media: false,
+      author_followed: false,
+      author_is_viewer: p.authorId === args.viewerId,
+      viewer_mentioned: p.mentionedUserIds.includes(args.viewerId),
+      author_org_verified: false,
+      distance_km: null,
+    }))
+    return Promise.resolve(rows.slice(0, args.candidateCap))
+  }
+
+  hydrateByIds(ids: readonly string[], viewerId: string): Promise<PostDTO[]> {
+    const out: PostDTO[] = []
+    for (const id of ids) {
+      const p = this.live(id)
+      if (p) out.push(this.dto(p, viewerId))
+    }
+    return Promise.resolve(out)
+  }
+
+  followerIdsOf(): Promise<string[]> {
+    return Promise.resolve([])
+  }
+
+  readableCounts(postIds: readonly string[]): Promise<FeedCountsRow[]> {
+    const out: FeedCountsRow[] = []
+    for (const id of postIds) {
+      const p = this.live(id)
+      if (!p) continue
+      out.push({
+        id: p.id,
+        like_count: p.likes.size,
+        repost_count: p.reposts.size,
+        reply_count: [...this.posts.values()].filter(
+          (r) => r.replyToId === p.id && r.deletedAt === null,
+        ).length,
+        save_count: p.saves.size,
+      })
+    }
+    return Promise.resolve(out)
   }
 
   publicFeed(args: { filter: "all" | "events" | "fixes"; cursor: string | null; limit: number }): Promise<FeedPage> {
@@ -785,7 +841,7 @@ describe("POST /posts (createPost)", () => {
     expect(h.repo.posts.get(res.json().id)?.reportId).toBe(reportId)
   })
 
-  it("rate limits createPost at 120/min PER IP (the route carries its own config.rateLimit bucket)", async () => {
+  it("rate limits createPost at 12/min PER IP (the route carries its own config.rateLimit bucket)", async () => {
     const h = await makeHarness()
     const me = await h.signIn("burst@example.com", "Burst")
     const post = () =>
@@ -796,13 +852,9 @@ describe("POST /posts (createPost)", () => {
         payload: { kind: "post", body: "burst" },
       })
 
-    for (let i = 0; i < 120; i += 1) {
+    for (let i = 0; i < 12; i += 1) {
       expect((await post()).statusCode, `request ${i + 1}`).toBe(201)
     }
-    // Without the route bucket this would sit at the global 300/min and return a 121st 201. The bucket is
-    // keyed by IP (the inherited global keyGenerator), so it is shared by every user behind one exit -
-    // which is why it is 120 and not the 20-30 the other creates use: this endpoint carries thread
-    // replies, and a whole crew replying from one venue Wi-Fi must not 429 each other.
     expect((await post()).statusCode).toBe(429)
   })
 

@@ -22,7 +22,10 @@ import type { FastifyInstance, FastifyRequest } from "fastify"
 import type { Container } from "../di.js"
 import type { Sql } from "../db/client.js"
 import { requireAuth } from "../auth/context.js"
-import { makeGeoidResolver, makeReverseGeocoder } from "../services/route-geo-helpers.js"
+import {
+  makeCachedAddressResolver,
+  makeGeoidResolver,
+} from "../services/route-geo-helpers.js"
 import { makeMediaPresigner, makePrivateMediaPresigner } from "../services/media-presign.js"
 import { perIdentity } from "../plugins/rate-limit.js"
 import {
@@ -52,7 +55,7 @@ export interface ReportServiceOverrides {
   repo: ReportRepository
   resolveJurisdictionGeoid?: ReportServiceDeps["resolveJurisdictionGeoid"]
   resolveJurisdictionCode?: ReportServiceDeps["resolveJurisdictionCode"]
-  reverseGeocode?: ReportServiceDeps["reverseGeocode"]
+  resolveAddress?: ReportServiceDeps["resolveAddress"]
   presignMedia?: ReportServiceDeps["presignMedia"]
   presignPrivateMedia?: ReportServiceDeps["presignPrivateMedia"]
   loadLinkedEventsForReports?: ReportServiceDeps["loadLinkedEventsForReports"]
@@ -184,7 +187,9 @@ export async function registerReportRoutes(
         presignMedia: overrides.presignMedia ?? makeMediaPresigner(container.storage),
         presignPrivateMedia:
           overrides.presignPrivateMedia ?? makePrivateMediaPresigner(container.storage),
-        ...(overrides.reverseGeocode !== undefined ? { reverseGeocode: overrides.reverseGeocode } : {}),
+        ...(overrides.resolveAddress !== undefined
+          ? { resolveAddress: overrides.resolveAddress }
+          : {}),
         ...(overrides.loadLinkedEventsForReports !== undefined
           ? { loadLinkedEventsForReports: overrides.loadLinkedEventsForReports }
           : {}),
@@ -275,7 +280,7 @@ export async function registerReportRoutes(
       },
       resolveJurisdictionGeoid: makeGeoidResolver(container),
       resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
-      reverseGeocode: makeReverseGeocoder(container),
+      resolveAddress: makeCachedAddressResolver(container),
       presignMedia: makeMediaPresigner(container.storage),
       presignPrivateMedia: makePrivateMediaPresigner(container.storage),
       jobs: container.jobs,

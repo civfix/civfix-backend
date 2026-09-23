@@ -2,6 +2,7 @@ import type {
   CleanupMemberRole,
   CleanupStatus,
   CleanupType,
+  EventAddressSource,
   EventKind,
   EventVisibility,
   OrganizationMemberRole,
@@ -56,6 +57,7 @@ export interface CleanupRecord extends CleanupHostFields {
   status: CleanupStatus
   bring: string[] | null
   address: string | null
+  addressSource: EventAddressSource | null
   capacity: number | null
   jurisdictionGeoid: string | null
   referenceCode: string | null
@@ -200,6 +202,7 @@ export interface CreateCleanupTxArgs {
   status: CleanupStatus
   bring: string[] | null
   address: string | null
+  addressSource: EventAddressSource | null
   jurisdictionGeoid: string | null
   jurCode: number
   linkedReportIds: string[]
@@ -223,6 +226,7 @@ export interface UpdateCleanupPatch extends EventHostWrite {
   lat?: number
   lng?: number
   address?: string | null
+  addressSource?: EventAddressSource | null
   bring?: string[] | null
   jurisdictionGeoid?: string | null
 }

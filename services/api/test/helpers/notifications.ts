@@ -182,9 +182,14 @@ export class InMemoryNotificationRepository implements NotificationRepository {
       (t) => t.platform === args.platform && t.token === args.token,
     )
     if (existing) {
-      if (existing.userId !== args.userId) return Promise.resolve("conflict")
+      if (existing.userId !== args.userId && existing.revokedAt === null) {
+        return Promise.resolve("conflict")
+      }
+      existing.userId = args.userId
       existing.deviceId = args.deviceId
       existing.revokedAt = null
+      this.pushTokens.splice(this.pushTokens.indexOf(existing), 1)
+      this.pushTokens.push(existing)
       this.capActiveTokens(args.userId)
       return Promise.resolve("stored")
     }
@@ -206,27 +211,6 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     for (const t of active.slice(0, active.length - MAX_ACTIVE_PUSH_TOKENS_PER_USER)) {
       t.revokedAt = at
     }
-  }
-
-  revokeDeviceTokensForOtherUsers(args: {
-    userId: string
-    token: string
-    platform: PushPlatform
-    deviceId: string | null
-  }): Promise<number> {
-    let revoked = 0
-    for (const t of this.pushTokens) {
-      if (
-        t.userId !== args.userId &&
-        t.revokedAt === null &&
-        t.platform === args.platform &&
-        t.token === args.token
-      ) {
-        t.revokedAt = this.now()
-        revoked++
-      }
-    }
-    return Promise.resolve(revoked)
   }
 
   revokeToken(userId: string, platform: PushPlatform, token: string): Promise<void> {

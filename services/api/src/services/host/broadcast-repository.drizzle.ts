@@ -1,3 +1,4 @@
+import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/shared"
 import type {
   BroadcastChannel,
   BroadcastKind,
@@ -5,10 +6,12 @@ import type {
   BroadcastStatus,
   DeliveryStatus,
 } from "@civfix/shared"
-import type { Sql } from "../../db/client.js"
+import type { Queryable, Sql } from "../../db/client.js"
 import { listGuestAudiencePage, listMemberAudiencePage } from "./broadcast-audience-sql.js"
 import type {
   AdminBroadcastListQuery,
+  AnnouncementCap,
+  AnnouncementListQuery,
   AudiencePageQuery,
   BroadcastListQuery,
   BroadcastRepository,
@@ -34,6 +37,7 @@ import type {
   HostMessagingState,
   MemberContact,
 } from "./broadcast-types.js"
+import { ANNOUNCEMENT_VISIBLE_STATUSES } from "./broadcast-types.js"
 
 interface BroadcastRowSelect {
   id: string
@@ -122,9 +126,11 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
     return rows[0] ? toRecord(rows[0]) : null
   }
 
-  return {
-    async create(input: BroadcastCreateInput): Promise<BroadcastRecord> {
-      const rows = await sql<BroadcastRowSelect[]>`
+  async function insertBroadcast(
+    db: Queryable,
+    input: BroadcastCreateInput,
+  ): Promise<BroadcastRecord> {
+    const rows = await db<BroadcastRowSelect[]>`
         INSERT INTO broadcasts (
           cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
           cta_label, cta_url, segment, channels, reply_to, scheduled_at, chunk_size
@@ -139,7 +145,28 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
                cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
                finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
                suppressed_count, content_scrubbed_at, created_at, updated_at`
-      return toRecord(rows[0]!)
+    return toRecord(rows[0]!)
+  }
+
+  return {
+    create(input: BroadcastCreateInput): Promise<BroadcastRecord> {
+      return insertBroadcast(sql, input)
+    },
+
+    createAnnouncementUnderCap(
+      input: BroadcastCreateInput,
+      cap: AnnouncementCap,
+    ): Promise<BroadcastRecord | null> {
+      return sql.begin(async (tx) => {
+        await tx`SELECT id FROM cleanups WHERE id = ${input.cleanupId} LIMIT 1 FOR UPDATE`
+        const rows = await tx<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM broadcasts
+           WHERE cleanup_id = ${input.cleanupId}
+             AND kind = ${ANNOUNCEMENT_BROADCAST_KIND}
+             AND created_at >= ${cap.since}`
+        if ((rows[0]?.n ?? 0) >= cap.max) return null
+        return insertBroadcast(tx, input)
+      }) as Promise<BroadcastRecord | null>
     },
 
     async createIfAbsent(input: BroadcastCreateInput): Promise<BroadcastRecord | null> {
@@ -192,6 +219,35 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
          ORDER BY created_at DESC, id DESC
          LIMIT ${query.limit}`
       return rows.map(toRecord)
+    },
+
+    async listAnnouncements(query: AnnouncementListQuery): Promise<BroadcastRecord[]> {
+      const cursorFilter =
+        query.cursor !== null
+          ? sql`AND (created_at, id) < (${query.cursor.createdAt}, ${query.cursor.id})`
+          : sql``
+      const rows = await sql<BroadcastRowSelect[]>`
+        SELECT id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
+               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
+               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
+               suppressed_count, content_scrubbed_at, created_at, updated_at FROM broadcasts
+         WHERE cleanup_id = ${query.cleanupId}
+           AND kind = ${ANNOUNCEMENT_BROADCAST_KIND}
+           AND status = ANY(${[...ANNOUNCEMENT_VISIBLE_STATUSES]}::text[])
+           ${cursorFilter}
+         ORDER BY created_at DESC, id DESC
+         LIMIT ${query.limit}`
+      return rows.map(toRecord)
+    },
+
+    async countAnnouncementsSince(cleanupId: string, since: Date): Promise<number> {
+      const rows = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM broadcasts
+         WHERE cleanup_id = ${cleanupId}
+           AND kind = ${ANNOUNCEMENT_BROADCAST_KIND}
+           AND status <> 'draft'
+           AND created_at >= ${since}`
+      return rows[0]?.n ?? 0
     },
 
     async listAdmin(query: AdminBroadcastListQuery): Promise<AdminBroadcastRow[]> {
@@ -661,12 +717,12 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
         {
           id: string
           email: string | null
-          email_verified_at: Date | null
+          email_verified: boolean | null
           display_name: string | null
           locale: string | null
         }[]
       >`
-        SELECT id, email, email_verified_at, display_name, locale
+        SELECT id, email, email_verified, display_name, locale
           FROM users
          WHERE id = ANY(${[...userIds]}::uuid[]) AND deleted_at IS NULL`
       for (const row of rows) {
@@ -674,7 +730,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
         out.set(row.id, {
           userId: row.id,
           email: row.email,
-          emailVerified: row.email_verified_at !== null,
+          emailVerified: row.email_verified === true,
           displayName,
           firstName: firstName(displayName),
           locale: row.locale,
@@ -803,9 +859,9 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
 
     async hostMessagingState(userId: string): Promise<HostMessagingState | null> {
       const rows = await sql<
-        { suspended: boolean | null; email_verified_at: Date | null; created_at: Date }[]
+        { suspended: boolean | null; email_verified: boolean | null; created_at: Date }[]
       >`
-        SELECT um.host_messaging_suspended AS suspended, u.email_verified_at, u.created_at
+        SELECT um.host_messaging_suspended AS suspended, u.email_verified, u.created_at
           FROM users u
           LEFT JOIN user_moderation um ON um.user_id = u.id
          WHERE u.id = ${userId} AND u.deleted_at IS NULL
@@ -814,7 +870,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       if (row === undefined) return null
       return {
         suspended: row.suspended === true,
-        emailVerified: row.email_verified_at !== null,
+        emailVerified: row.email_verified === true,
         accountCreatedAt: row.created_at,
       }
     },
@@ -947,6 +1003,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
            SELECT id FROM broadcasts
             WHERE content_scrubbed_at IS NULL
               AND body_md IS NOT NULL
+              AND kind <> ${ANNOUNCEMENT_BROADCAST_KIND}
               AND finished_at IS NOT NULL
               AND finished_at < ${cutoff}
             ORDER BY finished_at

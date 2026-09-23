@@ -1,5 +1,6 @@
 
 import {
+  ResolveAddressRequestSchema,
   ResolveJurisdictionRequestSchema,
   ReverseLabelRequestSchema,
   SuggestPlacesRequestSchema,
@@ -8,6 +9,7 @@ import {
   AppError,
   type TileInfoResponse,
   type JurisdictionDTO,
+  type ResolveAddressResponse,
   type ReverseLabelResponse,
   type SuggestPlacesResponse,
   type MapCleanupsResponse,
@@ -17,7 +19,10 @@ import { suggestAddresses } from "@civfix/shared/geocode"
 import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
-import { makeRouteJurisdictionService } from "../services/route-geo-helpers.js"
+import {
+  makeCachedAddressResolver,
+  makeRouteJurisdictionService,
+} from "../services/route-geo-helpers.js"
 import {
   makeCleanupMapRepository,
   MAP_CLEANUPS_LIMIT,
@@ -107,6 +112,32 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
       const { lat, lng } = parse(ReverseLabelRequestSchema, request.body)
       const label = await container.geocoder.cityStateLabel(lat, lng)
       const payload: ReverseLabelResponse = { cityStateLabel: label ?? "" }
+      reply.status(200).send(payload)
+    },
+  )
+
+  /**
+   * The street-level preview the creation flows call once a pin settles. `reverseLabel` above stays
+   * exactly as it is for already-deployed clients — it answers only TIGER's "City, ST", which is why
+   * pin previews were vague; this one walks the whole ladder and says which rung it reached, so the UI
+   * can prefill a confirmed address (street/intersection/landmark) or ask the host to type one
+   * (locality/null) without ever guessing. `cityStateLabel` is populated either way as the hint line.
+   *
+   * Same rate-limit bucket as the other geocoder surfaces, and the read-through cache means a dragged
+   * pin and the create that follows it share one provider call.
+   */
+  route(
+    app,
+    "resolveAddress",
+    { config: { rateLimit: GEOCODER_RATE_LIMIT } },
+    async (request, reply) => {
+      const { lat, lng } = parse(ResolveAddressRequestSchema, request.body)
+      const resolved = await makeCachedAddressResolver(container)(lat, lng)
+      const payload: ResolveAddressResponse = {
+        address: resolved.address,
+        precision: resolved.precision,
+        cityStateLabel: resolved.cityStateLabel,
+      }
       reply.status(200).send(payload)
     },
   )

@@ -5,7 +5,7 @@ import type { Mailer, OutboundEmail, SentMail } from "@civfix/shared/interfaces"
 import type { Transporter } from "nodemailer"
 import { domainOf, escapeHtml, sanitizeHeaderValue } from "./mail-text.js"
 import { mailFailure } from "./mail-failure.js"
-import { code, paragraph } from "./email-blocks.js"
+import { button, code, heading, kvTable, paragraph, quote, type EmailBlock } from "./email-blocks.js"
 import { renderEmailBody } from "./email-layout.js"
 import { renderMessage } from "../i18n/renderMessage.js"
 import { resolveLocale, type Locale } from "../i18n/locales.js"
@@ -185,7 +185,7 @@ export class OciMailer implements Mailer {
   }
 }
 
-function renderOtp(passcode: string, locale: Locale): Rendered {
+export function renderOtp(passcode: string, locale: Locale): Rendered {
   const subject = renderMessage(locale, "email.otp.subject")
   const { text, html } = renderEmailBody({
     preheader: subject,
@@ -198,7 +198,7 @@ function renderOtp(passcode: string, locale: Locale): Rendered {
   return { subject, text, html }
 }
 
-function renderTemplate(template: string, vars: Record<string, unknown>): Rendered {
+export function renderTemplate(template: string, vars: Record<string, unknown>): Rendered {
   const locale = resolveLocale(typeof vars.locale === "string" ? vars.locale : undefined)
   switch (template) {
     case "report_update": {
@@ -206,6 +206,80 @@ function renderTemplate(template: string, vars: Record<string, unknown>): Render
       const subject = renderMessage(locale, "email.report_update.subject", { status })
       const message = renderMessage(locale, "email.report_update.body", { status })
       const { text, html } = renderEmailBody({ preheader: subject, blocks: [paragraph(message)] })
+      return { subject, text, html }
+    }
+    case "guest_otp": {
+      const title = stringVar(vars, "title", "the event")
+      const passcode = stringVar(vars, "code", "")
+      const minutes = stringVar(vars, "minutes", "5")
+      const subject = renderMessage(locale, "email.guest_otp.subject", { title })
+      const { text, html } = renderEmailBody({
+        preheader: subject,
+        blocks: [
+          paragraph(renderMessage(locale, "email.guest_otp.html_intro", { title })),
+          code(passcode),
+          paragraph(renderMessage(locale, "email.guest_otp.body_expiry", { minutes }), {
+            muted: true,
+          }),
+        ],
+      })
+      return { subject, text, html }
+    }
+    case "guest_confirmed": {
+      const title = stringVar(vars, "title", "the event")
+      const when = optionalVar(vars, "when")
+      const place = optionalVar(vars, "place")
+      const cancelUrl = optionalVar(vars, "cancelUrl")
+      const subject = renderMessage(locale, "email.guest_confirmed.subject", { title })
+      const details: Array<[string, string]> = []
+      if (when !== undefined) details.push([renderMessage(locale, "email.event.when"), when])
+      if (place !== undefined) details.push([renderMessage(locale, "email.event.where"), place])
+      const blocks: EmailBlock[] = [heading(title)]
+      if (details.length > 0) blocks.push(kvTable(details))
+      blocks.push(paragraph(renderMessage(locale, "email.guest_confirmed.checkin")))
+      if (cancelUrl !== undefined) {
+        blocks.push(
+          paragraph(renderMessage(locale, "email.guest_confirmed.cancel_hint"), { muted: true }),
+          button(cancelUrl, renderMessage(locale, "email.guest_confirmed.cancel_cta")),
+        )
+      }
+      const { text, html } = renderEmailBody({ preheader: subject, blocks })
+      return { subject, text, html }
+    }
+    case "guest_promoted": {
+      const title = stringVar(vars, "title", "the event")
+      const when = stringVar(vars, "when", "")
+      const eventUrl = optionalVar(vars, "eventUrl")
+      const subject = renderMessage(locale, "email.guest_promoted.subject", { title })
+      const blocks: EmailBlock[] = [
+        paragraph(renderMessage(locale, "email.guest_promoted.intro", { title, when })),
+      ]
+      if (eventUrl !== undefined) {
+        blocks.push(button(eventUrl, renderMessage(locale, "email.guest_promoted.cta")))
+      }
+      blocks.push(paragraph(renderMessage(locale, "email.guest_promoted.ignore"), { muted: true }))
+      const { text, html } = renderEmailBody({ preheader: subject, blocks })
+      return { subject, text, html }
+    }
+    case "action": {
+      const subject = stringVar(vars, "subject", renderMessage(locale, "email.generic.subject"))
+      const blocks: EmailBlock[] = paragraphsVar(vars).map((p) => paragraph(p))
+      const quoteHeading = optionalVar(vars, "quoteHeading")
+      const quoted = optionalVar(vars, "quote")
+      if (quoted !== undefined) {
+        if (quoteHeading !== undefined) blocks.push(heading(quoteHeading))
+        blocks.push(quote(quoted))
+      }
+      const ctaUrl = optionalVar(vars, "ctaUrl")
+      if (ctaUrl !== undefined) {
+        blocks.push(button(ctaUrl, stringVar(vars, "ctaLabel", "Open")))
+      }
+      const note = optionalVar(vars, "note")
+      if (note !== undefined) blocks.push(paragraph(note, { muted: true }))
+      if (blocks.length === 0) {
+        blocks.push(paragraph(renderMessage(locale, "email.generic.body")))
+      }
+      const { text, html } = renderEmailBody({ preheader: subject, blocks })
       return { subject, text, html }
     }
     default: {
@@ -220,6 +294,17 @@ function renderTemplate(template: string, vars: Record<string, unknown>): Render
 function stringVar(vars: Record<string, unknown>, key: string, fallback: string): string {
   const v = vars[key]
   return typeof v === "string" && v.length > 0 ? v : fallback
+}
+
+function optionalVar(vars: Record<string, unknown>, key: string): string | undefined {
+  const v = vars[key]
+  return typeof v === "string" && v.length > 0 ? v : undefined
+}
+
+function paragraphsVar(vars: Record<string, unknown>): string[] {
+  const v = vars.paragraphs
+  if (!Array.isArray(v)) return []
+  return v.filter((p): p is string => typeof p === "string" && p.length > 0)
 }
 
 function textToHtml(text: string): string {

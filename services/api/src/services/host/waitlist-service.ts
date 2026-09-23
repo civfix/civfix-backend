@@ -13,6 +13,7 @@ import type {
 } from "@civfix/shared"
 import type { Jobs } from "@civfix/shared/interfaces"
 import { sha256Hex } from "../../auth/crypto.js"
+import type { GuestPromotionNotifier } from "../guest-notify.js"
 import { toWaitlistEntryDTO } from "./registration-dto.js"
 import { enqueueWaitlistPromotion } from "./waitlist-promotion.js"
 import type {
@@ -39,6 +40,7 @@ export interface WaitlistServiceDeps {
   registrations: Pick<RegistrationService, "buildSeatDrafts" | "eventChanged">
   jobs?: Jobs
   notifier?: RegistrationNotifier
+  guests?: GuestPromotionNotifier
   audit?: RegistrationAudit
   now?: () => Date
   claimWindowMs?: number
@@ -73,14 +75,18 @@ export function makeWaitlistService(deps: WaitlistServiceDeps): WaitlistService 
   const claimWindowMs = deps.claimWindowMs ?? WAITLIST_CLAIM_WINDOW_MS
 
   async function notifyOffered(offer: WaitlistOffer): Promise<void> {
-    if (deps.notifier === undefined || offer.userId === null) return
     try {
-      await deps.notifier.createNotification(offer.userId, {
-        type: "cleanup_slot",
-        title: "A place opened up",
-        body: "You moved off the waitlist. Claim your place before the hold expires.",
-        link: `/cleanups/${offer.cleanupId}`,
-      })
+      if (offer.userId !== null) {
+        await deps.notifier?.createNotification(offer.userId, {
+          type: "cleanup_slot",
+          title: "A place opened up",
+          body: "You moved off the waitlist. Claim your place before the hold expires.",
+          link: `/cleanups/${offer.cleanupId}`,
+        })
+        return
+      }
+      if (offer.guestId === null) return
+      await deps.guests?.notifyGuestPromoted(offer.guestId)
     } catch (err) {
       deps.logger?.warn(
         { err, cleanupId: offer.cleanupId },

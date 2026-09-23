@@ -52,6 +52,7 @@ function seatDrafts(partySize: number): SeatDraft[] {
 function clockRecord(overrides: Partial<EventClockRecord> = {}): EventClockRecord {
   return {
     status: "upcoming",
+    createdAt: STARTS_AT,
     scheduledAt: STARTS_AT,
     endsAt: null,
     completedAt: null,

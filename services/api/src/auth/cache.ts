@@ -11,7 +11,10 @@ export interface CacheClient {
   sadd(key: string, ...members: string[]): Promise<number>
   srem(key: string, ...members: string[]): Promise<number>
   smembers(key: string): Promise<string[]>
+  smismember(key: string, members: readonly string[]): Promise<number[]>
+  scard(key: string): Promise<number>
   expire(key: string, ttlSeconds: number): Promise<void>
+  expireNx(key: string, ttlSeconds: number): Promise<void>
 }
 
 export type Clock = () => number
@@ -115,12 +118,30 @@ export class InMemoryCacheClient implements CacheClient {
     return Promise.resolve([...(this.liveSet(key)?.members ?? [])])
   }
 
+  smismember(key: string, members: readonly string[]): Promise<number[]> {
+    const entry = this.liveSet(key)
+    return Promise.resolve(members.map((member) => (entry?.members.has(member) ? 1 : 0)))
+  }
+
+  scard(key: string): Promise<number> {
+    return Promise.resolve(this.liveSet(key)?.members.size ?? 0)
+  }
+
   expire(key: string, ttlSeconds: number): Promise<void> {
     const at = this.clock() + ttlSeconds * 1000
     const setEntry = this.liveSet(key)
     if (setEntry) setEntry.expiresAtMs = at
     const entry = this.live(key)
     if (entry) entry.expiresAtMs = at
+    return Promise.resolve()
+  }
+
+  expireNx(key: string, ttlSeconds: number): Promise<void> {
+    const at = this.clock() + ttlSeconds * 1000
+    const setEntry = this.liveSet(key)
+    if (setEntry && !Number.isFinite(setEntry.expiresAtMs)) setEntry.expiresAtMs = at
+    const entry = this.live(key)
+    if (entry && !Number.isFinite(entry.expiresAtMs)) entry.expiresAtMs = at
     return Promise.resolve()
   }
 
@@ -178,7 +199,20 @@ export class RedisCacheClient implements CacheClient {
     return this.redis.smembers(key)
   }
 
+  async smismember(key: string, members: readonly string[]): Promise<number[]> {
+    if (members.length === 0) return []
+    return this.redis.smismember(key, [...members])
+  }
+
+  async scard(key: string): Promise<number> {
+    return this.redis.scard(key)
+  }
+
   async expire(key: string, ttlSeconds: number): Promise<void> {
     await this.redis.expire(key, Math.max(1, Math.ceil(ttlSeconds)))
+  }
+
+  async expireNx(key: string, ttlSeconds: number): Promise<void> {
+    await this.redis.expire(key, Math.max(1, Math.ceil(ttlSeconds)), "NX")
   }
 }

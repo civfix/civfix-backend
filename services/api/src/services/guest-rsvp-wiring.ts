@@ -3,6 +3,7 @@ import { REVIEWER_OTP_EMAIL } from "../auth/otp.js"
 import { writeAudit } from "./admin/audit.js"
 import { requireCapability } from "./host/authz.js"
 import { makeContainerRegistrationServices } from "./host/registration-wiring.js"
+import { guestManageLinkBase } from "./guest-notify.js"
 import { makeDrizzleGuestRsvpRepository } from "./guest-rsvp-repository.drizzle.js"
 import {
   makeGuestRsvpService,
@@ -22,13 +23,6 @@ export interface GuestRsvpOverrides {
   counters?: GuestRsvpServiceDeps["counters"]
   reviewer?: GuestRsvpServiceDeps["reviewer"]
   now?: GuestRsvpServiceDeps["now"]
-}
-
-export function guestManageLinkBase(webOrigins: readonly string[]): string {
-  const origin = webOrigins[0]
-  return origin !== undefined && origin.length > 0
-    ? origin.replace(/\/+$/, "")
-    : "https://civfix.org"
 }
 
 export function guestReviewerConfig(container: Container): GuestRsvpServiceDeps["reviewer"] {

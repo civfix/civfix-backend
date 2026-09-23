@@ -119,10 +119,22 @@ export const ko: Partial<Record<MessageKey, string>> = {
 
   // ---- Guest event RSVP -------------------------------------------------------------------------
   "email.guest_otp.subject": "{{title}} 참가 신청 코드",
-  "email.guest_otp.body":
-    "{{title}} 참가 신청 코드는 {{code}}입니다. {{minutes}}분 후에 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하셔도 됩니다.",
+  "email.guest_otp.html_intro": "{{title}} 참가 신청 코드:",
+  "email.guest_otp.body_expiry":
+    "{{minutes}}분 후에 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하셔도 됩니다.",
   "email.guest_confirmed.subject": "{{title}} 참가자 명단에 등록되었습니다",
-  "email.guest_confirmed.body": "{{title}}에 참가 신청이 완료되었습니다. 마음이 바뀌셨나요? 여기에서 취소하세요: {{link}}",
+  "email.guest_confirmed.checkin":
+    "참가자 명단에 등록되었습니다. 현장에서는 이름으로 체크인하며, 출력할 티켓은 없습니다.",
+  "email.guest_confirmed.cancel_hint":
+    "일정이 바뀌셨나요? 다른 분이 자리를 이용할 수 있도록 참가를 취소해 주세요.",
+  "email.guest_confirmed.cancel_cta": "참가 취소",
+  "email.event.when": "일시",
+  "email.event.where": "장소",
+  "email.guest_promoted.subject": "{{title}}에 자리가 생겼습니다",
+  "email.guest_promoted.intro":
+    "{{when}}에 열리는 {{title}}에 자리가 생겼습니다. 대기자 명단에 계셨고, 주최자가 자리를 잡아두고 있습니다.",
+  "email.guest_promoted.cta": "행사 보기",
+  "email.guest_promoted.ignore": "자리가 더 이상 필요 없으시면 따로 하실 일은 없습니다.",
   "email.guest_updated.subject": "{{title}} 세부 정보가 변경되었습니다",
   "email.guest_updated.body":
     "{{title}}의 세부 정보가 변경되었습니다. 이제 {{when}}에 {{place}}에서 시작합니다. 참석이 어려우시면 확인 메시지의 취소 링크를 이용하세요.",

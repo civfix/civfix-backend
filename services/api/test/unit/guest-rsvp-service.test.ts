@@ -5,6 +5,7 @@ import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/shared/fakes
 import {
   GUEST_OTP_ERROR_FIELD,
   GuestOtpErrorReason,
+  MAX_GUEST_NAME,
   type GuestRsvpRequestRequest,
   type GuestRsvpVerifyRequest,
 } from "@civfix/shared"
@@ -13,11 +14,15 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryGuestRsvpRepository } from "../helpers/guest-rsvp.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
+import { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
 import { smsFailure } from "../../src/errors/sms-failure.js"
 import { formatEventWhen } from "../../src/services/host/broadcast-render.js"
 import { generateToken } from "../../src/auth/crypto.js"
+import { OTP_VERIFY_IP_FAIL_MAX } from "../../src/auth/otp.js"
+import { renderTemplate } from "../../src/adapters/mailer.oci.js"
 import {
   GUEST_CONTACT_MAX_PER_DAY,
+  GUEST_IP_MAX_PER_HOUR,
   MAX_GUESTS_PER_EVENT,
   SMS_BUDGET_KEY_PREFIX,
   makeGuestRsvpService,
@@ -158,8 +163,12 @@ describe("guest rsvp: requesting a code", () => {
     expect(result).toEqual({ sent: true, resendAfterSec: 60 })
     expect(h.mailer.sent).toHaveLength(1)
     expect(h.mailer.sent[0]?.to).toBe("ada@example.org")
-    expect(String(h.mailer.sent[0]?.vars?.message)).toContain(CODE)
-    expect(String(h.mailer.sent[0]?.vars?.subject)).toContain("Beach cleanup")
+    expect(h.mailer.sent[0]?.template).toBe("guest_otp")
+    expect(String(h.mailer.sent[0]?.vars?.code)).toBe(CODE)
+    expect(String(h.mailer.sent[0]?.vars?.title)).toContain("Beach cleanup")
+    const rendered = renderTemplate("guest_otp", h.mailer.sent[0]?.vars ?? {})
+    expect(rendered.subject).toContain("Beach cleanup")
+    expect(rendered.text).toContain(CODE)
     expect(h.repo.otps).toHaveLength(1)
     expect(h.repo.otps[0]?.name).toBe("Ada Lovelace")
   })
@@ -279,6 +288,60 @@ describe("guest rsvp: requesting a code", () => {
     })
   })
 
+  it("caps one NETWORK at ten code requests an hour, across different contacts", async () => {
+    for (let i = 0; i < GUEST_IP_MAX_PER_HOUR; i++) {
+      await expect(
+        h.service.requestCode(emailRequest({ email: `ip${i}@example.org` }), ctx),
+      ).resolves.toMatchObject({ sent: true })
+    }
+    await expect(
+      h.service.requestCode(emailRequest({ email: "one-too-many@example.org" }), ctx),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+    expect(h.mailer.sent).toHaveLength(GUEST_IP_MAX_PER_HOUR)
+
+    // A request with no resolvable IP is not silently exempted from the other throttles.
+    await expect(
+      h.service.requestCode(emailRequest({ email: "no-ip@example.org" }), { ip: null }),
+    ).resolves.toMatchObject({ sent: true })
+  })
+
+  it("refuses an empty or over-long name before anything is written", async () => {
+    await expect(h.service.requestCode(emailRequest({ name: "   " }), ctx)).rejects.toMatchObject({
+      code: "VALIDATION",
+    })
+    await expect(
+      h.service.requestCode(emailRequest({ name: "a".repeat(MAX_GUEST_NAME + 1) }), ctx),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    expect(h.repo.otps).toHaveLength(0)
+    expect(h.mailer.sent).toHaveLength(0)
+  })
+
+  it("refuses a slur in the guest name, which would otherwise land on the host's roster", async () => {
+    await expect(
+      h.service.requestCode(emailRequest({ name: "retarded mcfly" }), ctx),
+    ).rejects.toMatchObject({ code: "VALIDATION" })
+    expect(h.repo.otps).toHaveLength(0)
+  })
+
+  it("answers identically whether or not that contact already RSVP'd (no enumeration)", async () => {
+    const first = await h.service.requestCode(emailRequest(), ctx)
+    await h.service.verifyCode(emailVerify(), ctx)
+    h.advance(61_000)
+
+    const known = await h.service.requestCode(emailRequest(), ctx)
+    const unknown = await h.service.requestCode(
+      emailRequest({ email: "nobody@example.org" }),
+      ctx,
+    )
+    const honeypot = await h.service.requestCode(
+      emailRequest({ email: "bot@example.org", website: "spam" }),
+      ctx,
+    )
+    const reviewer = await h.service.requestCode(emailRequest({ email: REVIEWER_EMAIL }), ctx)
+
+    expect([known, unknown, honeypot, reviewer]).toEqual([first, first, first, first])
+  })
+
   it("skips every send and every counter for the reviewer contact", async () => {
     const result = await h.service.requestCode(emailRequest({ email: REVIEWER_EMAIL }), ctx)
 
@@ -384,9 +447,129 @@ describe("guest rsvp: verifying a code", () => {
     const result = await h.service.verifyCode(emailVerify(), ctx)
     const confirmation = h.mailer.sent.at(-1)
 
-    expect(String(confirmation?.vars?.message)).toContain(
+    expect(confirmation?.template).toBe("guest_confirmed")
+    expect(confirmation?.vars?.cancelUrl).toBe(
       `https://civfix.org/guest?token=${encodeURIComponent(result.manageToken)}`,
     )
+    const rendered = renderTemplate("guest_confirmed", confirmation?.vars ?? {})
+    expect(rendered.text).toContain(
+      `https://civfix.org/guest?token=${encodeURIComponent(result.manageToken)}`,
+    )
+  })
+
+  /**
+   * `/guest?token=` is a CANCEL page and nothing else, and `getGuestEventTicket` has no client caller,
+   * so a guest never sees a QR code. The confirmation has to say how they actually get in, or it is
+   * quietly promising a ticket that never arrives.
+   */
+  it("tells the guest how they actually get in, since no ticket is ever linked", async () => {
+    await h.service.verifyCode(emailVerify(), ctx)
+    const rendered = renderTemplate("guest_confirmed", h.mailer.sent.at(-1)?.vars ?? {})
+
+    expect(rendered.text).toContain("Check in by name")
+    expect(rendered.text).toContain("no ticket to print")
+  })
+
+  it("rejects a code that was already consumed by an earlier successful verify", async () => {
+    await h.service.verifyCode(emailVerify(), ctx)
+    await expect(h.service.verifyCode(emailVerify(), ctx)).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+      fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.invalidCode },
+    })
+    expect(h.repo.guests).toHaveLength(1)
+  })
+
+  it("locks the NETWORK out after enough wrong codes, before the event is even loaded", async () => {
+    for (let i = 0; i < OTP_VERIFY_IP_FAIL_MAX; i++) {
+      await h.service
+        .verifyCode(emailVerify({ email: `wrong${i}@example.org`, code: "000000" }), ctx)
+        .catch(() => undefined)
+    }
+    await expect(h.service.verifyCode(emailVerify(), ctx)).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+      fields: { [GUEST_OTP_ERROR_FIELD]: GuestOtpErrorReason.lockedOut },
+    })
+    expect(h.repo.guests).toHaveLength(0)
+  })
+
+  it("keys the registration bridge on the guest row, so a replayed verify cannot double-book", async () => {
+    const calls: { idempotencyKey: string; subject: unknown }[] = []
+    const harness = build({
+      registrations: {
+        register: (input, subject) => {
+          calls.push({ idempotencyKey: input.idempotencyKey as string, subject })
+          return Promise.resolve({
+            outcome: "registered" as const,
+            registration: null,
+            ticketTokens: ["tok-1"],
+          })
+        },
+      },
+    })
+    await harness.service.requestCode(emailRequest(), ctx)
+    const first = await harness.service.verifyCode(emailVerify(), ctx)
+    harness.advance(61_000)
+    await harness.service.requestCode(emailRequest(), ctx)
+    await harness.service.verifyCode(emailVerify(), ctx)
+
+    const guestId = harness.repo.guests[0]?.id as string
+    expect(calls.map((c) => c.idempotencyKey)).toEqual([`guest:${guestId}`, `guest:${guestId}`])
+    expect(calls[0]?.subject).toEqual({ kind: "guest", guestId })
+    expect(first.ticketTokens).toEqual(["tok-1"])
+  })
+
+  it("never puts a guest on the waitlist: the bridge is asked not to", async () => {
+    const seen: unknown[] = []
+    const harness = build({
+      registrations: {
+        register: (input) => {
+          seen.push(input.joinWaitlistIfFull)
+          return Promise.resolve({
+            outcome: "registered" as const,
+            registration: null,
+            ticketTokens: [],
+          })
+        },
+      },
+    })
+    await harness.service.requestCode(emailRequest(), ctx)
+    await harness.service.verifyCode(emailVerify(), ctx)
+    expect(seen).toEqual([false])
+  })
+
+  /**
+   * The RSVP is deliberately allowed to stand when the seat write fails: the guest is on the list and
+   * the host sees them, but there is NO registration and NO seat, so no ticket exists for them. This
+   * pins the shape of that half-state rather than pretending it cannot happen.
+   */
+  it("keeps the RSVP when the seat write fails, leaving a guest with no registration", async () => {
+    const harness = build({
+      registrations: { register: () => Promise.reject(new Error("registrations are down")) },
+    })
+    await harness.service.requestCode(emailRequest(), ctx)
+    const result = await harness.service.verifyCode(emailVerify(), ctx)
+
+    expect(result.joined).toBe(true)
+    expect(result.registration).toBeNull()
+    expect(result.registrationOutcome).toBeNull()
+    expect(result.ticketTokens).toEqual([])
+    expect(harness.repo.guests).toHaveLength(1)
+    expect(result.manageToken.length).toBeGreaterThanOrEqual(20)
+  })
+
+  it("lets a VALIDATION from the bridge escape, though the guest row is already written", async () => {
+    const harness = build({
+      registrations: {
+        register: () => Promise.reject(AppError.validation({ partySize: "too large" })),
+      },
+    })
+    await harness.service.requestCode(emailRequest(), ctx)
+
+    await expect(harness.service.verifyCode(emailVerify(), ctx)).rejects.toMatchObject({
+      code: "VALIDATION",
+    })
+    expect(harness.repo.guests).toHaveLength(1)
+    expect(harness.repo.otps[0]?.consumedAt).not.toBeNull()
   })
 
   it("rejects a wrong code without joining, naming the reason in fields", async () => {
@@ -499,6 +682,129 @@ describe("guest rsvp: cancelling", () => {
     await expect(h.service.cancelRsvp("not-a-real-manage-token-value")).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
+  })
+
+  it("kills the OLD manage link the moment a re-verify rotates the token", async () => {
+    const h = build()
+    await h.service.requestCode(emailRequest(), ctx)
+    const first = await h.service.verifyCode(emailVerify(), ctx)
+    h.advance(61_000)
+    await h.service.requestCode(emailRequest(), ctx)
+    const second = await h.service.verifyCode(emailVerify(), ctx)
+
+    await expect(h.service.cancelRsvp(first.manageToken)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    await expect(h.service.cancelRsvp(second.manageToken)).resolves.toEqual({ ok: true })
+  })
+
+  /**
+   * Cancel NULLs contact_key, which is what frees `cleanup_guests_active_contact_uidx`. Without that
+   * the same person could never RSVP again to the same event after changing their mind twice.
+   */
+  it("lets the same address RSVP again after cancelling, on a fresh row and a fresh token", async () => {
+    const h = build()
+    await h.service.requestCode(emailRequest(), ctx)
+    const first = await h.service.verifyCode(emailVerify(), ctx)
+    await h.service.cancelRsvp(first.manageToken)
+    h.advance(61_000)
+
+    await h.service.requestCode(emailRequest(), ctx)
+    const second = await h.service.verifyCode(emailVerify(), ctx)
+
+    expect(second.joined).toBe(true)
+    expect(second.going).toBe(4)
+    expect(second.manageToken).not.toBe(first.manageToken)
+    expect(h.repo.guests).toHaveLength(2)
+    expect(h.repo.activeGuestCount(EVENT_ID)).toBe(1)
+    expect(h.repo.guests.filter((g) => g.cancelledAt !== null)).toHaveLength(1)
+  })
+
+  it("cancels the seats, blanks the attendee name and gives the ticket type its seats back", async () => {
+    const registrations = new InMemoryHostRegistrationRepository()
+    registrations.seedEvent({ cleanupId: EVENT_ID })
+    const type = registrations.seedTicketType({ cleanupId: EVENT_ID, capacity: 5 })
+    const h = build({
+      registrations: {
+        register: async (input, subject) => {
+          const seatId = randomUUID()
+          const outcome = await registrations.registerTx({
+            cleanupId: input.id,
+            subject,
+            ticketTypeId: type.id,
+            seats: [{ id: seatId, attendeeName: "Ada Lovelace", tokenHash: `hash-${seatId}` }],
+            accessCodeHash: null,
+            answers: [],
+            consent: null,
+            slotId: null,
+            source: "self",
+            idempotencyKey: input.idempotencyKey as string,
+            waitlistId: null,
+            now: new Date(),
+          })
+          if (outcome.kind !== "registered") throw new Error(`unexpected ${outcome.kind}`)
+          return { outcome: "registered" as const, registration: null, ticketTokens: [seatId] }
+        },
+      },
+    })
+    h.repo.registrations = registrations
+
+    await h.service.requestCode(emailRequest(), ctx)
+    const { manageToken } = await h.service.verifyCode(emailVerify(), ctx)
+    expect(registrations.ticketTypes.get(type.id)?.reservedSeats).toBe(1)
+
+    await h.service.cancelRsvp(manageToken)
+
+    const registration = [...registrations.registrations.values()][0]
+    expect(registration?.status).toBe("cancelled")
+    expect(registration?.seats.every((seat) => seat.status === "cancelled")).toBe(true)
+    expect(registration?.seats.every((seat) => seat.attendeeName === null)).toBe(true)
+    expect(registrations.ticketTypes.get(type.id)?.reservedSeats).toBe(0)
+  })
+
+  it("cancels a guest's waitlist rows too, releasing any offered hold", async () => {
+    const registrations = new InMemoryHostRegistrationRepository()
+    registrations.seedEvent({ cleanupId: EVENT_ID })
+    const type = registrations.seedTicketType({
+      cleanupId: EVENT_ID,
+      capacity: 1,
+      waitlistEnabled: true,
+    })
+    const h = build()
+    h.repo.registrations = registrations
+
+    await h.service.requestCode(emailRequest(), ctx)
+    const { manageToken } = await h.service.verifyCode(emailVerify(), ctx)
+    const guestId = h.repo.guests[0]?.id as string
+
+    await registrations.joinWaitlist({
+      cleanupId: EVENT_ID,
+      ticketTypeId: type.id,
+      subject: { kind: "guest", guestId },
+      partySize: 1,
+      accessCodeHash: null,
+      now: new Date(),
+    })
+    const entry = [...registrations.waitlist.values()][0]
+    entry!.status = "offered"
+    entry!.offeredAt = new Date()
+    const seeded = registrations.ticketTypes.get(type.id)
+    seeded!.reservedSeats = 1
+
+    await h.service.cancelRsvp(manageToken)
+
+    expect([...registrations.waitlist.values()][0]?.status).toBe("cancelled")
+    expect(registrations.ticketTypes.get(type.id)?.reservedSeats).toBe(0)
+  })
+
+  it("counts only ACTIVE guests against the per-event cap", async () => {
+    const h = build()
+    await h.service.requestCode(emailRequest(), ctx)
+    const { manageToken } = await h.service.verifyCode(emailVerify(), ctx)
+    await h.service.cancelRsvp(manageToken)
+
+    await expect(h.repo.countActiveGuests(EVENT_ID)).resolves.toBe(0)
+    expect(h.repo.guests).toHaveLength(1)
   })
 
   it("reports the registration outcome when the event has no seat left", async () => {
@@ -718,6 +1024,55 @@ describe("guest rsvp: retention", () => {
     expect(result.scrubbedGuests).toBe(0)
     expect(h.repo.guests[0]?.email).toBe("ada@example.org")
   })
+
+  /**
+   * A cancelled event never "happens", so its scheduled_at can sit in the future forever. The scrub
+   * has a second branch that ages those guests off their own created_at instead, or their contact
+   * would be held indefinitely.
+   */
+  it("ages a CANCELLED event's guests off their own signup date, not the event date", async () => {
+    const h = build()
+    await h.service.requestCode(emailRequest(), ctx)
+    await h.service.verifyCode(emailVerify(), ctx)
+
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      status: "cancelled",
+      scheduledAt: new Date(Date.parse("2030-01-01T00:00:00.000Z")),
+    })
+    expect((await h.service.runRetentionSweep()).scrubbedGuests).toBe(0)
+
+    h.advance(31 * 24 * 60 * 60 * 1000)
+    expect((await h.service.runRetentionSweep()).scrubbedGuests).toBe(1)
+    expect(h.repo.guests[0]?.email).toBeNull()
+    expect(h.repo.guests[0]?.contactKey).toBeNull()
+  })
+
+  it("reaps guest OTPs on their own 24h clock, independent of the contact lane", async () => {
+    const h = build()
+    await h.service.requestCode(emailRequest(), ctx)
+
+    expect(await h.service.runRetentionSweep()).toEqual({ scrubbedGuests: 0, deletedOtps: 0 })
+    h.advance(23 * 60 * 60 * 1000)
+    expect((await h.service.runRetentionSweep()).deletedOtps).toBe(0)
+
+    h.advance(2 * 60 * 60 * 1000)
+    expect((await h.service.runRetentionSweep()).deletedOtps).toBe(1)
+    expect(h.repo.otps).toHaveLength(0)
+  })
+
+  it("scrubs a live guest's contact without cancelling their RSVP", async () => {
+    const h = build()
+    await h.service.requestCode(emailRequest(), ctx)
+    await h.service.verifyCode(emailVerify(), ctx)
+    h.repo.seedEvent({ id: EVENT_ID, scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")) })
+
+    await h.service.runRetentionSweep()
+
+    expect(h.repo.guests[0]?.cancelledAt).toBeNull()
+    expect(h.repo.activeGuestCount(EVENT_ID)).toBe(1)
+    await expect(h.repo.listContactableGuests(EVENT_ID, 10)).resolves.toEqual([])
+  })
 })
 
 describe("guest rsvp: SMS title truncation", () => {
@@ -790,6 +1145,7 @@ describe("going: members plus verified, non-cancelled guests", () => {
       status: "upcoming",
       bring: null,
       address: null,
+      addressSource: null,
       jurisdictionGeoid: null,
       jurCode: 1,
       linkedReportIds: [],

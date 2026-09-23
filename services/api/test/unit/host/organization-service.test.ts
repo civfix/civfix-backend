@@ -7,6 +7,7 @@ import { makeFakeSql, type SqlHandler } from "../../helpers/fake-sql.js"
 import type { Sql } from "../../../src/db/client.js"
 import {
   makeOrganizationService,
+  ORG_LAST_ADMIN_CODE,
   ORGS_CREATED_PER_DAY,
   type OrganizationService,
 } from "../../../src/services/host/organization-service.js"
@@ -401,6 +402,126 @@ describe("membership", () => {
   })
 })
 
+describe("last-admin guard", () => {
+  async function seeded(): Promise<string> {
+    const dto = await service.createOrganization(base(), OWNER)
+    await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "handle",
+      identifier: "adam",
+      role: "admin",
+    })
+    await service.inviteMember(dto.id, OWNER, {
+      identifierKind: "handle",
+      identifier: "mel",
+      role: "member",
+    })
+    return dto.id
+  }
+
+  /** The owner seat is the structural guard, so orphan the org first to reach the residual case. */
+  function dropOwnerSeat(id: string): void {
+    const index = repo.members.findIndex((m) => m.organizationId === id && m.role === "owner")
+    repo.members.splice(index, 1)
+  }
+
+  it("the owner seat alone already makes the invariant unreachable through the normal paths", async () => {
+    const id = await seeded()
+    await service.setMemberRole(id, OWNER, ADMIN, "member")
+    expect(
+      repo.members.filter((m) => m.organizationId === id && m.role !== "member"),
+    ).toHaveLength(1)
+    await expect(service.removeMember(id, OWNER, OWNER)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    })
+  })
+
+  it("refuses to remove the last owner-or-admin seat of an orphaned organization", async () => {
+    const id = await seeded()
+    dropOwnerSeat(id)
+
+    await expect(service.removeMember(id, ADMIN, ADMIN)).rejects.toMatchObject({
+      code: "VALIDATION",
+      fields: { userId: ORG_LAST_ADMIN_CODE },
+    })
+    expect(repo.members.some((m) => m.organizationId === id && m.userId === ADMIN)).toBe(true)
+  })
+
+  it("allows the removal once a second admin seat exists", async () => {
+    const id = await seeded()
+    dropOwnerSeat(id)
+    await repo.setMemberRoleTx({ organizationId: id, userId: MEMBER, role: "admin", actorId: ADMIN })
+
+    await expect(service.removeMember(id, ADMIN, ADMIN)).resolves.toEqual({ ok: true })
+  })
+
+  it("refuses to demote the last owner-or-admin seat at the repository boundary", async () => {
+    const id = await seeded()
+    dropOwnerSeat(id)
+
+    await expect(
+      repo.setMemberRoleTx({ organizationId: id, userId: ADMIN, role: "member", actorId: ADMIN }),
+    ).resolves.toBe("last_admin")
+    expect(repo.members.find((m) => m.organizationId === id && m.userId === ADMIN)?.role).toBe(
+      "admin",
+    )
+  })
+
+  it("lets an admin be demoted while another owner-or-admin seat remains", async () => {
+    const id = await seeded()
+    dropOwnerSeat(id)
+    await repo.setMemberRoleTx({ organizationId: id, userId: MEMBER, role: "admin", actorId: ADMIN })
+
+    await expect(
+      repo.setMemberRoleTx({ organizationId: id, userId: ADMIN, role: "member", actorId: ADMIN }),
+    ).resolves.toBe("updated")
+  })
+
+  const ORG = "66666666-6666-4666-8666-666666666666"
+
+  function seatHandlers(): SqlHandler[] {
+    return [
+      { match: /SELECT role FROM organization_members/, rows: [{ role: "admin" }] },
+      { match: /count\(\*\)::int AS n\s+FROM organization_members/, rows: [{ n: 1 }] },
+    ]
+  }
+
+  function lockIndex(statements: { sql: string }[]): number {
+    return statements.findIndex((s) => /FROM organizations WHERE id = \?.*FOR UPDATE/s.test(s.sql))
+  }
+
+  function countIndex(statements: { sql: string }[]): number {
+    return statements.findIndex((s) => /count\(\*\)::int AS n\s+FROM organization_members/.test(s.sql))
+  }
+
+  it("serializes a demotion on the organizations row before it counts the seats", async () => {
+    const fake = makeFakeSql(seatHandlers())
+
+    const outcome = await makeDrizzleOrganizationRepository(
+      fake.sql as unknown as Sql,
+    ).setMemberRoleTx({ organizationId: ORG, userId: ADMIN, role: "member", actorId: OWNER })
+
+    expect(outcome).toBe("last_admin")
+    const lock = lockIndex(fake.statements)
+    const count = countIndex(fake.statements)
+    expect(lock).toBe(0)
+    expect(count).toBeGreaterThan(lock)
+  })
+
+  it("serializes a removal on the organizations row before it counts the seats", async () => {
+    const fake = makeFakeSql(seatHandlers())
+
+    const outcome = await makeDrizzleOrganizationRepository(
+      fake.sql as unknown as Sql,
+    ).removeMemberTx({ organizationId: ORG, userId: ADMIN, actorId: OWNER })
+
+    expect(outcome).toBe("last_admin")
+    const lock = lockIndex(fake.statements)
+    const count = countIndex(fake.statements)
+    expect(lock).toBe(0)
+    expect(count).toBeGreaterThan(lock)
+  })
+})
+
 describe("verification", () => {
   async function seeded(): Promise<string> {
     const dto = await service.createOrganization(base(), OWNER)
@@ -568,11 +689,11 @@ describe("verification", () => {
       await svc.adminDecideVerification(id, OPERATOR, { decision: "verified" })
 
       expect(mails).toHaveLength(1)
-      expect(mails[0]).toMatchObject({ to: "olive@x.org", template: "generic" })
+      expect(mails[0]).toMatchObject({ to: "olive@x.org", template: "action" })
       expect(mails[0]?.vars.subject).toBe(
         "Ballona Creek Trust is now verified as a nonprofit on civfix",
       )
-      expect(String(mails[0]?.vars.message)).toContain("https://web.test/orgs/ballona-creek-trust")
+      expect(mails[0]?.vars.ctaUrl).toBe("https://web.test/orgs/ballona-creek-trust")
 
       expect(notes).toHaveLength(1)
       expect(notes[0]).toMatchObject({
@@ -606,10 +727,9 @@ describe("verification", () => {
       expect(mails[0]?.vars.subject).toBe(
         "Your verification application for Ballona Creek Trust was not approved",
       )
-      const message = String(mails[0]?.vars.message)
-      expect(message).toContain("Reason: no determination letter")
-      expect(message).toContain("re-apply")
-      expect(message).toContain(`https://web.test/manage/orgs/${id}/verification`)
+      expect(mails[0]?.vars.quote).toBe("no determination letter")
+      expect(String(mails[0]?.vars.note)).toContain("re-apply")
+      expect(mails[0]?.vars.ctaUrl).toBe(`https://web.test/manage/orgs/${id}/verification`)
 
       expect(notes[0]).toMatchObject({
         userId: OWNER,
@@ -728,10 +848,10 @@ describe("org invites (0.41.0)", () => {
     expect(mails[0]?.to).toBe("newcomer@example.com")
     expect(String(mails[0]?.vars.subject)).toContain("Olive Owner invited you to join Ballona Creek Trust")
     // The token rides the URL FRAGMENT, never the query string (DECISIONS §32).
-    expect(String(mails[0]?.vars.message)).toContain(
+    expect(mails[0]?.vars.ctaUrl).toBe(
       `https://civfix.test/manage/org-invites/accept#token=${OPERATOR_TOKEN}`,
     )
-    expect(String(mails[0]?.vars.message)).not.toContain("?token=")
+    expect(JSON.stringify(mails[0]?.vars)).not.toContain("?token=")
     expect(repo.audits.filter((a) => a.action === "org.invite_created")).toHaveLength(1)
     const listed = await service.listInvites(orgId, OWNER)
     expect(listed.items).toHaveLength(1)

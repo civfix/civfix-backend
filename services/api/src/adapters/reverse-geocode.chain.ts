@@ -1,5 +1,24 @@
-/** A street-level reverse geocoder: coords -> one-line address, or null. Photon + Mapbox conform. */
-export type ReverseGeocode = (lat: number, lng: number) => Promise<string | null>
+import type { AddressPrecision } from "@civfix/shared"
+
+/** Any "answer a question about a point, or don't" provider. Chainable by chainReverse. */
+export type PointResolver<T> = (lat: number, lng: number) => Promise<T | null>
+
+/**
+ * One rung of the precision ladder, as the provider actually reached it. `line` is the display address
+ * WITHOUT any localized decoration: a `landmark` result carries the bare feature name plus locality
+ * ("Vista Hermosa Park, Los Angeles, CA") and the "Near " prefix is added by the UI, which is the only
+ * layer that knows the viewer's language. Never claim a rung the data does not support - a street with
+ * no house number is `intersection`, not `street`.
+ */
+export interface ReverseResult {
+  line: string
+  precision: AddressPrecision
+  /** Which adapter answered. Diagnostics and cache bookkeeping only; never served to a client. */
+  provider: string
+}
+
+/** A street-level reverse geocoder: coords -> a structured address rung, or null. Photon + Mapbox conform. */
+export type ReverseGeocode = PointResolver<ReverseResult>
 
 /**
  * Overall budget for the whole chain. Each provider promises "never delays a submit" with its own ~4s
@@ -28,9 +47,11 @@ const CHAIN_BUDGET_MS = 5000
  * A provider abandoned at its share keeps running (its own timeout ends it); its late answer is discarded
  * and a late rejection is swallowed, so it can never surface as an unhandled rejection.
  */
-export function chainReverse(...providers: Array<ReverseGeocode | null | undefined>): ReverseGeocode {
-  const active = providers.filter((p): p is ReverseGeocode => typeof p === "function")
-  return async (lat: number, lng: number): Promise<string | null> => {
+export function chainReverse<T>(
+  ...providers: Array<PointResolver<T> | null | undefined>
+): PointResolver<T> {
+  const active = providers.filter((p): p is PointResolver<T> => typeof p === "function")
+  return async (lat: number, lng: number): Promise<T | null> => {
     if (active.length === 0) return null
 
     const deadline = Date.now() + CHAIN_BUDGET_MS
@@ -51,12 +72,12 @@ export function chainReverse(...providers: Array<ReverseGeocode | null | undefin
  * the catch is attached to the attempt itself so it also covers a rejection that lands AFTER the deadline
  * won the race.
  */
-async function withDeadline(
-  provider: ReverseGeocode,
+async function withDeadline<T>(
+  provider: PointResolver<T>,
   lat: number,
   lng: number,
   timeoutMs: number,
-): Promise<string | null> {
+): Promise<T | null> {
   const attempt = (async () => provider(lat, lng))().catch(() => null)
   let timer: ReturnType<typeof setTimeout> | undefined
   const budget = new Promise<null>((resolve) => {

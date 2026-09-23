@@ -29,6 +29,12 @@ import {
 } from "../abuse/anon-token.js"
 import { generateToken, constantTimeStringEqual, sha256Hex } from "../auth/crypto.js"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
+import {
+  addressProvenance,
+  resolveAddressOrNull,
+  type AddressResolver,
+} from "./address-resolver.js"
+import type { AddressPrecision, ReportAddressSource } from "@civfix/shared"
 
 export const ANON_REPORT_CREATE_SCOPE = "anon_report_create"
 
@@ -52,6 +58,8 @@ export interface CreateAnonReportTxArgs {
   title: string | null
   description: string | null
   addr: string | null
+  addrSource: ReportAddressSource | null
+  addrPrecision: AddressPrecision | null
   h3Cell: string
   mediaUploadIds: string[]
   claimCodeHash: string
@@ -94,7 +102,8 @@ export interface AnonServiceDeps {
   anonTokenSigningKey: string
   resolveJurisdictionGeoid: (lat: number, lng: number) => Promise<string | null>
   resolveJurisdictionCode?: (geoid: string | null) => Promise<number>
-  reverseGeocode?: (lat: number, lng: number) => Promise<string | null>
+  /** Structured twin of the signed-in path's dep - same resolver, same cache, same provenance rules. */
+  resolveAddress?: AddressResolver
   raiseAbuseFlag?: (subjectType: "report" | "anon_token", subjectId: string, reason: AnonAbuseReason) => Promise<void>
   enqueueMediaChecks?: (reportId: string, mediaUploadIds: string[]) => Promise<void>
   newId?: () => string
@@ -171,6 +180,7 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
 
       assertNoSlur(input.title ?? null, "title")
       assertNoSlur(input.description ?? null, "description")
+      assertNoSlur(input.addr ?? null, "addr")
 
       await enforceIpRateLimit(ctx.ip, { counters: deps.counters })
 
@@ -187,12 +197,12 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
 
       const { record: tokenRow, issuedToken } = await ensureAnonToken(presentedToken, tokenDeps)
 
-      const suppliedAddr = input.addr?.trim()
-      const [jurisdictionGeoid, geocodedAddr] = await Promise.all([
+      const suppliedAddr = input.addr?.trim() ?? ""
+      const [jurisdictionGeoid, resolvedAddr] = await Promise.all([
         deps.resolveJurisdictionGeoid(input.lat, input.lng),
-        suppliedAddr || !deps.reverseGeocode
+        suppliedAddr.length > 0
           ? Promise.resolve(null)
-          : deps.reverseGeocode(input.lat, input.lng),
+          : resolveAddressOrNull(deps.resolveAddress, input.lat, input.lng),
       ])
       const jurCode =
         deps.resolveJurisdictionCode !== undefined
@@ -202,7 +212,7 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
       const reportId = newId()
       const claimCode = newClaimCode()
       const claimCodeHash = await sha256Hex(claimCode)
-      const addr = suppliedAddr ? suppliedAddr : geocodedAddr
+      const addressWrite = addressProvenance(suppliedAddr, resolvedAddr)
 
       const responseSnapshot: AnonReportResponse = {
         reportId,
@@ -223,7 +233,9 @@ export function makeAnonService(deps: AnonServiceDeps): AnonService {
         type: input.type,
         title: input.title ?? null,
         description: input.description ?? null,
-        addr,
+        addr: addressWrite.addr,
+        addrSource: addressWrite.addrSource,
+        addrPrecision: addressWrite.addrPrecision,
         h3Cell,
         mediaUploadIds: input.mediaUploadIds,
         claimCodeHash,

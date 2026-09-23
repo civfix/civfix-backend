@@ -54,7 +54,10 @@ import {
 } from "../services/chat-repository.drizzle.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { buildIcs } from "@civfix/shared/ics"
-import { makeGeoidResolver } from "../services/route-geo-helpers.js"
+import {
+  makeCachedAddressResolver,
+  makeGeoidResolver,
+} from "../services/route-geo-helpers.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeOutboundMailService } from "../services/admin/outbound-mail-service.js"
 import { makeDrizzleMailRepository } from "../services/admin/mail-repository.drizzle.js"
@@ -194,6 +197,7 @@ export function makeContainerCleanupService(
       ? {}
       : {
           resolveJurisdictionGeoid: makeGeoidResolver(container),
+          resolveAddress: makeCachedAddressResolver(container),
           resolveJurisdictionCode: (geoid: string | null) =>
             resolveJurisdictionCode(container.getDb().sql, geoid),
           outboundMail: makeOutboundMailService({

@@ -14,10 +14,13 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { chainReverse, type ReverseGeocode } from "../../src/adapters/reverse-geocode.chain.js"
+import { chainReverse, type PointResolver } from "../../src/adapters/reverse-geocode.chain.js"
+
+/** The budget is scheduling, not shape: a string answer keeps these assertions about the clock. */
+type StringResolver = PointResolver<string>
 
 /** A provider that never answers — the stalled-vendor case. Records when it was called. */
-function hangs(calls: number[]): ReverseGeocode {
+function hangs(calls: number[]): StringResolver {
   return () => {
     calls.push(Date.now())
     return new Promise<string | null>(() => {})
@@ -25,7 +28,7 @@ function hangs(calls: number[]): ReverseGeocode {
 }
 
 /** A provider that answers `value` after `afterMs`. Records when it was called. */
-function answersAfter(afterMs: number, value: string | null, calls: number[]): ReverseGeocode {
+function answersAfter(afterMs: number, value: string | null, calls: number[]): StringResolver {
   return () => {
     calls.push(Date.now())
     return new Promise<string | null>((resolve) => {
@@ -97,7 +100,7 @@ describe("chainReverse budget", () => {
     }
     process.on("unhandledRejection", onUnhandled)
     try {
-      const late: ReverseGeocode = () =>
+      const late: StringResolver = () =>
         new Promise<string | null>((_resolve, reject) => {
           setTimeout(() => reject(new Error("vendor blew up after we gave up")), 3_000)
         })

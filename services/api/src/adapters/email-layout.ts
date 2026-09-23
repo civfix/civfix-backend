@@ -36,9 +36,9 @@ const WORDMARK_HTML = WORDMARK.map(
   ([letter, color]) => `<span style="color:${color};">${letter}</span>`,
 ).join("")
 
-const DEFAULT_FOOTER =
-  "civfix is a civic reporting platform that connects residents with their local government. " +
-  "Reply to this email to respond. civfix.org"
+export const DEFAULT_FOOTER =
+  "civfix is a civic reporting platform that connects residents with their local government.\n" +
+  "This mailbox is not monitored. civfix.org"
 
 export const CITY_FOOTER =
   "You're receiving this because a resident routed civic activity to your office through civfix, " +
@@ -77,7 +77,15 @@ export function eventFooter(opts: EventFooterOptions): string {
     lines.push(`Manage your signup: ${opts.manageUrl}`)
   }
   lines.push("civfix.org")
-  return lines.join(" ")
+  return lines.join("\n")
+}
+
+const FOOTER_URL_RE = /https?:\/\/[^\s<>"]+/g
+
+function footerHtml(footer: string): string {
+  return escapeHtml(footer)
+    .replace(FOOTER_URL_RE, (url) => `<a class="cv-link" href="${url}" style="color:inherit;">${url}</a>`)
+    .replace(/\n/g, "<br>")
 }
 
 export interface RenderEmailOptions {
@@ -119,7 +127,7 @@ export function renderEmailBody(opts: RenderEmailOptions): { text: string; html:
     `<table role="presentation" class="cv-container cv-card" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:600px;background:${CARD};border:1px solid ${BORDER};border-radius:14px;overflow:hidden;">` +
     `<tr><td class="cv-pad cv-rule" style="padding:22px 28px 16px;border-bottom:1px solid ${BORDER};"><span class="cv-wordmark" style="font-family:${FONT};font-size:24px;font-weight:800;letter-spacing:0.01em;">${WORDMARK_HTML}</span></td></tr>` +
     `<tr><td class="cv-pad" style="padding:26px 28px;">${blocksHtml}</td></tr>` +
-    `<tr><td class="cv-pad cv-rule" style="padding:18px 28px 24px;border-top:1px solid ${BORDER};"><p class="cv-ink3" style="margin:0;font-family:${FONT};font-size:12px;line-height:1.5;color:${INK3};">${escapeHtml(footerText)}</p></td></tr>` +
+    `<tr><td class="cv-pad cv-rule" style="padding:18px 28px 24px;border-top:1px solid ${BORDER};"><p class="cv-ink3" style="margin:0;font-family:${FONT};font-size:12px;line-height:1.5;color:${INK3};">${footerHtml(footerText)}</p></td></tr>` +
     `</table></td></tr></table></body></html>`
 
   const text = [...opts.blocks.map((b) => b.text), "--", footerText].join("\n\n")

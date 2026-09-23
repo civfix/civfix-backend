@@ -1,18 +1,22 @@
 
 import { describe, expect, it } from "vitest"
-import { AppError } from "@civfix/shared"
+import { AppError, DEFAULT_FEED_RANKING } from "@civfix/shared"
 import type { PostComposeInput, PostDTO } from "@civfix/shared"
 import type { Sql } from "../../src/db/client.js"
 import { makePostService } from "../../src/services/post-service.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 import {
   makeDrizzlePostRepository,
+  NIL_VIEWER_ID,
   type CreatePostArgs,
+  type FeedCandidateArgs,
   type PostBrief,
   type PostRepository,
   type ReplyListArgs,
 } from "../../src/services/post-repository.drizzle.js"
 import type { PostNotifier } from "../../src/services/notification-service.js"
+
+const LEGACY_CURSOR_ID = "33333333-3333-3333-3333-333333333333"
 
 const throwingSql = (() => {
   throw new Error("sql must not be called in these unit paths")
@@ -81,8 +85,12 @@ function fakeRepo(cfg: FakeConfig = {}): PostRepository & { created: CreatePostA
     repost: (id) => Promise.resolve({ targetId: id, created: true }),
     unrepost: (id) => Promise.resolve({ targetId: id, removed: true }),
     getPostDTO: (id) => Promise.resolve(dto(id)),
-    homeFeed: () => Promise.resolve({ items: [], nextCursor: null }),
+    homeFeedChronological: () => Promise.resolve({ items: [], nextCursor: null }),
     publicFeed: () => Promise.resolve({ items: [], nextCursor: null }),
+    feedCandidates: () => Promise.resolve([]),
+    hydrateByIds: () => Promise.resolve([]),
+    followerIdsOf: () => Promise.resolve([]),
+    readableCounts: () => Promise.resolve([]),
     listReplies: () => Promise.resolve({ items: [], nextCursor: null, authorReplies: [] }),
     listUserPosts: () => Promise.resolve({ items: [], nextCursor: null }),
     listSaves: () => Promise.resolve({ items: [], nextCursor: null }),
@@ -134,17 +142,77 @@ describe("PostService validation + authorization", () => {
   })
 
   it("publicFeed serves the global feed with no viewer (you don't need an account to read)", async () => {
-    const calls: Array<{ filter: string; cursor: string | null; limit: number }> = []
+    const calls: Array<{ viewerId: string; filter: string; candidateCap: number }> = []
     const repo = {
       ...fakeRepo(),
-      publicFeed: (args: { filter: "all" | "events" | "fixes"; cursor: string | null; limit: number }) => {
-        calls.push(args)
-        return Promise.resolve({ items: [], nextCursor: null })
+      feedCandidates: (args: FeedCandidateArgs) => {
+        calls.push({
+          viewerId: args.viewerId,
+          filter: args.filter,
+          candidateCap: args.candidateCap,
+        })
+        return Promise.resolve([])
       },
     }
     const svc = makePostService({ repo, sql: throwingSql })
     await svc.publicFeed({ filter: "all" })
-    expect(calls).toEqual([{ filter: "all", cursor: null, limit: 20 }])
+    expect(calls).toEqual([
+      { viewerId: NIL_VIEWER_ID, filter: "all", candidateCap: DEFAULT_FEED_RANKING.candidateCap },
+    ])
+  })
+
+  it("routes a legacy ISO cursor to the untouched chronological query (the rollback lever)", async () => {
+    const ranked: string[] = []
+    const chronological: Array<{ cursor: string | null; limit: number }> = []
+    const repo = {
+      ...fakeRepo(),
+      feedCandidates: (args: FeedCandidateArgs) => {
+        ranked.push(args.viewerId)
+        return Promise.resolve([])
+      },
+      publicFeed: (args: { filter: "all" | "events" | "fixes"; cursor: string | null; limit: number }) => {
+        chronological.push({ cursor: args.cursor, limit: args.limit })
+        return Promise.resolve({ items: [], nextCursor: null })
+      },
+      homeFeedChronological: (args: { cursor: string | null; limit: number }) => {
+        chronological.push({ cursor: args.cursor, limit: args.limit })
+        return Promise.resolve({ items: [], nextCursor: null })
+      },
+    }
+    const svc = makePostService({ repo, sql: throwingSql })
+    const legacy = `2026-09-14T12:00:00.000Z|${LEGACY_CURSOR_ID}`
+
+    await svc.publicFeed({ filter: "all", cursor: legacy })
+    await svc.homeFeed("viewer", { filter: "all", cursor: legacy })
+
+    expect(ranked).toEqual([])
+    expect(chronological).toEqual([
+      { cursor: legacy, limit: 20 },
+      { cursor: legacy, limit: 20 },
+    ])
+  })
+
+  it("never routes a score cursor or garbage to the chronological query", async () => {
+    const ranked: string[] = []
+    const chronological: string[] = []
+    const repo = {
+      ...fakeRepo(),
+      feedCandidates: (args: FeedCandidateArgs) => {
+        ranked.push(args.viewerId)
+        return Promise.resolve([])
+      },
+      publicFeed: () => {
+        chronological.push("publicFeed")
+        return Promise.resolve({ items: [], nextCursor: null })
+      },
+    }
+    const svc = makePostService({ repo, sql: throwingSql })
+
+    await svc.publicFeed({ filter: "all", cursor: `115.900000|${LEGACY_CURSOR_ID}` })
+    await svc.publicFeed({ filter: "all", cursor: "not-a-cursor" })
+
+    expect(chronological).toEqual([])
+    expect(ranked).toEqual([NIL_VIEWER_ID, NIL_VIEWER_ID])
   })
 
   it("rejects an attached event the author does not host/attend (403)", async () => {
@@ -825,11 +893,26 @@ describe("PostRepository read paths all exclude non-public posts", () => {
   it("filters every post-listing query on visibility, not just the public feed", async () => {
     const cases: Array<[string, (r: ReturnType<typeof makeDrizzlePostRepository>) => Promise<unknown>]> = [
       ["getPostDTO", (r) => r.getPostDTO(SUBJECT, VIEWER)],
-      ["homeFeed", (r) => r.homeFeed({ ...args, filter: "all" })],
+      ["homeFeedChronological", (r) => r.homeFeedChronological({ ...args, filter: "all" })],
       ["publicFeed", (r) => r.publicFeed({ filter: "all", cursor: null, limit: 10 })],
       ["listReplies", (r) => r.listReplies(SUBJECT, { ...args, focalAuthorId: VIEWER })],
       ["listUserPosts", (r) => r.listUserPosts(SUBJECT, args)],
       ["listSaves", (r) => r.listSaves(args)],
+      ["hydrateByIds", (r) => r.hydrateByIds([SUBJECT], VIEWER)],
+      ["readableCounts", (r) => r.readableCounts([SUBJECT], VIEWER)],
+      [
+        "feedCandidates",
+        (r) =>
+          r.feedCandidates({
+            viewerId: VIEWER,
+            filter: "all",
+            fallbackLat: null,
+            fallbackLng: null,
+            windowDays: 30,
+            radiusKm: 40,
+            candidateCap: 400,
+          }),
+      ],
     ]
     for (const [name, run] of cases) {
       const stmt = await emitted(run)
@@ -905,9 +988,10 @@ describe("PostRepository organization hydration", () => {
     const args = { viewerId: VIEWER, cursor: null, limit: 10 }
     const cases: Array<[string, (r: ReturnType<typeof makeDrizzlePostRepository>) => Promise<unknown>]> = [
       ["getPostDTO", (r) => r.getPostDTO(POST, VIEWER)],
-      ["homeFeed", (r) => r.homeFeed({ ...args, filter: "all" })],
+      ["homeFeedChronological", (r) => r.homeFeedChronological({ ...args, filter: "all" })],
       ["publicFeed", (r) => r.publicFeed({ filter: "all", cursor: null, limit: 10 })],
       ["listReplies", (r) => r.listReplies(POST, { ...args, focalAuthorId: AUTHOR })],
+      ["hydrateByIds", (r) => r.hydrateByIds([POST], VIEWER)],
       ["listUserPosts", (r) => r.listUserPosts(AUTHOR, args)],
       ["listSaves", (r) => r.listSaves(args)],
     ]

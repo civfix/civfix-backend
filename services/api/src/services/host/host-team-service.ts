@@ -200,6 +200,23 @@ function toMemberDTO(
   }
 }
 
+export function teamInviteEmailVars(args: {
+  title: string
+  role: string
+  link: string
+}): Record<string, unknown> {
+  return {
+    subject: `You've been invited to help run ${args.title}`,
+    paragraphs: [
+      `You've been invited to join ${args.title} as ${args.role}.`,
+      "Sign in with this email address to accept.",
+    ],
+    ctaUrl: args.link,
+    ctaLabel: "View the invitation",
+    note: "The invitation expires in 14 days. If you weren't expecting it, you can ignore this email.",
+  }
+}
+
 export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService {
   const counters = deps.counters ?? fallbackCounters
   const now = deps.now ?? (() => new Date())
@@ -217,10 +234,7 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
     const base = deps.webOrigin ?? "https://civfix.org"
     const link = `${base}/cleanups/${cleanupId}#teamInvite=${encodeURIComponent(token)}`
     try {
-      await deps.mailer.sendTransactional(email, "generic", {
-        subject: `You've been invited to help run ${title}`,
-        message: `You've been invited to join ${title} as ${role}. Open ${link} to accept. The invitation expires in 14 days.`,
-      })
+      await deps.mailer.sendTransactional(email, "action", teamInviteEmailVars({ title, role, link }))
     } catch (err) {
       deps.logger?.warn({ err, cleanupId }, "event team invite email failed (suppressed)")
     }

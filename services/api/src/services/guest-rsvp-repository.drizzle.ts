@@ -3,6 +3,7 @@ import type { Sql } from "../db/client.js"
 import { encodeTimeCursor, pageWith, type TimeCursor } from "../db/cursor-helpers.js"
 import type {
   GuestEventView,
+  GuestNoticeTarget,
   GuestOtpRecord,
   GuestRecipient,
   GuestRosterRow,
@@ -219,6 +220,34 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
       const row = rows[0]
       if (row === undefined) return null
       return { id: row.id, cleanupId: row.cleanup_id, cancelledAt: row.cancelled_at }
+    },
+
+    async findGuestForNotice(guestId: string): Promise<GuestNoticeTarget | null> {
+      const rows = await sql<
+        {
+          id: string
+          cleanup_id: string
+          name: string
+          email: string | null
+          cancelled_at: Date | null
+          contact_scrubbed_at: Date | null
+        }[]
+      >`
+        SELECT id, cleanup_id, name, email, cancelled_at, contact_scrubbed_at
+        FROM cleanup_guests
+        WHERE id = ${guestId}
+        LIMIT 1
+      `
+      const row = rows[0]
+      if (row === undefined) return null
+      return {
+        id: row.id,
+        cleanupId: row.cleanup_id,
+        name: row.name,
+        email: row.email,
+        cancelledAt: row.cancelled_at,
+        contactScrubbedAt: row.contact_scrubbed_at,
+      }
     },
 
     async cancelGuest(guestId: string, now: Date): Promise<string[]> {

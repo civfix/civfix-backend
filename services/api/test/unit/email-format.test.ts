@@ -5,7 +5,7 @@ import {
   buildEventPacket,
   NO_PHOTO_LINKS,
 } from "../../src/services/admin/mail-format.js"
-import { renderEmailBody } from "../../src/adapters/email-layout.js"
+import { eventFooter, renderEmailBody } from "../../src/adapters/email-layout.js"
 import { WORDMARK_FONT_WOFF2_BASE64 } from "../../src/adapters/email-wordmark-font.js"
 import {
   DEFAULT_FORWARD_BODY_TEMPLATE,
@@ -13,6 +13,8 @@ import {
   templateUsesToken,
 } from "@civfix/shared"
 import { paragraph, kvTable, linkList } from "../../src/adapters/email-blocks.js"
+import { renderOtp, renderTemplate } from "../../src/adapters/mailer.oci.js"
+import { buildDataExportEmail } from "../../src/services/data-export-service.js"
 import type { AdminReportRecord } from "../../src/services/admin/admin-report-types.js"
 
 function reportRecord(overrides: Partial<AdminReportRecord> = {}): AdminReportRecord {
@@ -20,6 +22,7 @@ function reportRecord(overrides: Partial<AdminReportRecord> = {}): AdminReportRe
     id: "11111111-2222-3333-4444-555555555555",
     category: "graffiti",
     status: "submitted",
+    visibility: "public",
     flagged: false,
     title: "Tag on the underpass",
     place: "Springfield",
@@ -37,6 +40,7 @@ function reportRecord(overrides: Partial<AdminReportRecord> = {}): AdminReportRe
     lat: 39.5,
     lng: -98.35,
     hasPhoto: true,
+    previewMedia: null,
     createdAt: new Date("2026-01-01T00:00:00Z"),
     referenceCode: "ABC123",
     verificationVerdict: null,
@@ -335,6 +339,19 @@ describe("buildReportPacket", () => {
     expect(custom.html).not.toContain("<b>plain</b>")
   })
 
+  it("keeps single line breaks inside a template paragraph that also carries a link", () => {
+    const packet = buildReportPacket(
+      reportRecord(),
+      null,
+      ["https://cdn.example.org/a.jpg", "https://cdn.example.org/b.jpg"],
+      null,
+      NO_TEMPLATES,
+    )
+    expect(packet.html).toContain("Location: 100 Main St<br>Coordinates: 39.5, -98.35<br>View the exact location")
+    expect(packet.html).toContain('a.jpg</a><br><a class="cv-link" href="https://cdn.example.org/b.jpg"')
+    expect(packet.text).toContain("Location: 100 Main St\nCoordinates: 39.5, -98.35\n")
+  })
+
   it("renders the operator-facing status LABEL, not the raw enum value", () => {
     const packet = buildReportPacket(reportRecord({ status: "in_progress" }), null, [], null, {
       subject: null,
@@ -406,5 +423,149 @@ describe("buildEventPacket", () => {
     expect(packet.subject).toBe("civfix event: Riverbank cleanup [EVT-9]")
     expect(packet.html).toContain("We need 20 trash bags and gloves.")
     expect(packet.text).toContain("Reference: EVT-9")
+  })
+})
+
+describe("footer rendering", () => {
+  it("splits the event footer into lines and links its URLs in the HTML part", () => {
+    const footer = eventFooter({
+      eventTitle: "Beach Cleanup",
+      unsubscribeUrl: "https://civfix.org/unsubscribe?t=abc",
+      manageUrl: "https://civfix.org/e/beach",
+    })
+    expect(footer).toContain("\n")
+    const { html, text } = renderEmailBody({ blocks: [paragraph("x")], footer })
+    expect(html).toContain('href="https://civfix.org/unsubscribe?t=abc"')
+    expect(html).toContain('href="https://civfix.org/e/beach"')
+    expect(html).toContain("never gave them your email address.<br>")
+    expect(text).toContain("Stop receiving messages about this event: https://civfix.org/unsubscribe?t=abc")
+  })
+
+  it("escapes HTML in the footer before linkifying", () => {
+    const { html } = renderEmailBody({ blocks: [paragraph("x")], footer: "<b>bold</b> https://civfix.org" })
+    expect(html).not.toContain("<b>bold</b>")
+    expect(html).toContain("&lt;b&gt;bold&lt;/b&gt;")
+    expect(html).toContain('href="https://civfix.org"')
+  })
+})
+
+describe("renderOtp", () => {
+  it("renders the passcode in the styled code block with a muted expiry line", () => {
+    const out = renderOtp("482913", "en")
+    expect(out.subject).toBe("Your civfix sign-in code")
+    expect(out.html).toContain("482913")
+    expect(out.html).toContain("letter-spacing:6px")
+    expect(out.text).toContain("482913")
+    expect(out.text).toContain("expires in 5 minutes")
+  })
+})
+
+describe("renderTemplate", () => {
+  it("guest_otp: shows the code in the big code block, not buried in a sentence", () => {
+    const out = renderTemplate("guest_otp", { title: "Beach Cleanup", code: "738201", minutes: "5" })
+    expect(out.subject).toBe("Your code to RSVP for Beach Cleanup")
+    expect(out.html).toContain("letter-spacing:6px")
+    expect(out.html).toContain(">738201<")
+    expect(out.text).toContain("738201")
+    expect(out.text).toContain("expires in 5 minutes")
+  })
+
+  it("guest_confirmed: event heading, when/where rows, honest check-in line and a cancel button", () => {
+    const out = renderTemplate("guest_confirmed", {
+      title: "Beach Cleanup",
+      when: "Saturday, October 3 at 9:00 AM PDT",
+      place: "Ballona Creek Trailhead",
+      cancelUrl: "https://civfix.org/guest?token=abc",
+    })
+    expect(out.subject).toBe("You are on the list for Beach Cleanup")
+    expect(out.html).toContain("<h2")
+    expect(out.html).toContain("Beach Cleanup")
+    expect(out.html).toContain("When")
+    expect(out.html).toContain("Where")
+    expect(out.html).toContain("Ballona Creek Trailhead")
+    expect(out.html).toContain("Check in by name")
+    expect(out.html).toContain('href="https://civfix.org/guest?token=abc"')
+    expect(out.html).toContain(">Cancel RSVP</a>")
+    expect(out.html).not.toContain(">https://civfix.org/guest?token=abc<")
+    expect(out.text).toContain("Cancel RSVP: https://civfix.org/guest?token=abc")
+  })
+
+  it("guest_confirmed: omits the details table when when/where are absent", () => {
+    const out = renderTemplate("guest_confirmed", {
+      title: "Beach Cleanup",
+      cancelUrl: "https://civfix.org/guest?token=abc",
+    })
+    expect(out.html).not.toContain(">When<")
+    expect(out.html).toContain("Check in by name")
+  })
+
+  it("guest_promoted: intro paragraph, event button, muted opt-out line", () => {
+    const out = renderTemplate("guest_promoted", {
+      title: "Beach Cleanup",
+      when: "Saturday at 9:00 AM",
+      eventUrl: "https://civfix.org/cleanups/e1",
+    })
+    expect(out.subject).toBe("A place opened up for Beach Cleanup")
+    expect(out.html).toContain("holding a place for you")
+    expect(out.html).toContain('href="https://civfix.org/cleanups/e1"')
+    expect(out.html).toContain(">See the event</a>")
+    expect(out.html).toContain("nothing you need to do")
+  })
+
+  it("action: paragraphs, quote with heading, CTA button and muted note", () => {
+    const out = renderTemplate("action", {
+      subject: "You have been invited",
+      paragraphs: ["First paragraph.", "Second paragraph."],
+      quoteHeading: "Reason",
+      quote: "The uploaded letter names a different entity.",
+      ctaUrl: "https://civfix.org/accept#token=x",
+      ctaLabel: "Accept the invitation",
+      note: "The invitation expires in 14 days.",
+    })
+    expect(out.subject).toBe("You have been invited")
+    expect(out.html).toContain("First paragraph.")
+    expect(out.html).toContain("Second paragraph.")
+    expect(out.html).toContain(">Reason</h2>")
+    expect(out.html).toContain("different entity")
+    expect(out.html).toContain('href="https://civfix.org/accept#token=x"')
+    expect(out.html).toContain(">Accept the invitation</a>")
+    expect(out.html).not.toContain(">https://civfix.org/accept#token=x<")
+    expect(out.text).toContain("Accept the invitation: https://civfix.org/accept#token=x")
+    expect(out.text).toContain("The invitation expires in 14 days.")
+  })
+
+  it("action: escapes HTML-significant user content", () => {
+    const out = renderTemplate("action", {
+      subject: "s",
+      paragraphs: ["<script>alert(1)</script>"],
+    })
+    expect(out.html).not.toContain("<script>alert(1)</script>")
+    expect(out.html).toContain("&lt;script&gt;")
+  })
+
+  it("action: falls back to the generic body when nothing usable is passed", () => {
+    const out = renderTemplate("action", { subject: "s", paragraphs: [42, ""] })
+    expect(out.html).toContain("You have a new civfix notification.")
+  })
+
+  it("unknown templates still fall back to the generic paragraph shell", () => {
+    const out = renderTemplate("whatever", { subject: "Hi", message: "Body text." })
+    expect(out.subject).toBe("Hi")
+    expect(out.html).toContain("Body text.")
+  })
+})
+
+describe("buildDataExportEmail", () => {
+  it("renders the branded shell with the truncation note only when sections were clipped", () => {
+    const full = buildDataExportEmail("support@civfix.org", [])
+    expect(full.subject).toBe("Your civfix data export")
+    expect(full.html).toContain("<!DOCTYPE html>")
+    expect(full.html).toContain("civfix-export.json")
+    expect(full.html).not.toContain("only part of them")
+
+    const clipped = buildDataExportEmail("support@civfix.org", ["messages", "comments"])
+    expect(clipped.html).toContain("messages, comments")
+    expect(clipped.html).toContain("support@civfix.org")
+    expect(clipped.text).toContain("If you did not request this, you can ignore this email.")
   })
 })

@@ -333,43 +333,50 @@ describe.skipIf(!pg)("social + notifications (integration)", () => {
     expect(cleared.quietEnd).toBeNull()
   })
 
-  it("push tokens: owner re-register re-activates; foreign user CANNOT hijack; device_id does NOT authorize a cross-account rebind (F153)", async () => {
+  it("push tokens: owner re-register re-activates; device_id does NOT authorize a cross-account rebind of an ACTIVE row (F153); a REVOKED row can be re-claimed", async () => {
     const repo = makeDrizzleNotificationRepository(h.sql)
     const userA = await newUser("Token Owner A")
     const userB = await newUser("Token Owner B")
+    const readRow = async (): Promise<{
+      user_id: string
+      device_id: string | null
+      revoked_at: Date | null
+    }> => {
+      const rows = await h.sql<{ user_id: string; device_id: string | null; revoked_at: Date | null }[]>`
+        SELECT user_id, device_id, revoked_at FROM push_tokens WHERE platform = 'ios' AND token = ${"tok-int"}
+      `
+      expect(rows).toHaveLength(1)
+      return rows[0]!
+    }
 
     expect(await repo.upsertPushToken({ userId: userA, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
       "stored",
     )
     await h.sql`UPDATE push_tokens SET revoked_at = now() WHERE token = ${"tok-int"}`
 
-    expect(await repo.upsertPushToken({ userId: userB, platform: "ios", token: "tok-int", deviceId: "d2" })).toBe(
-      "conflict",
-    )
-    let rows = await h.sql<{ user_id: string; device_id: string | null; revoked_at: Date | null }[]>`
-      SELECT user_id, device_id, revoked_at FROM push_tokens WHERE platform = 'ios' AND token = ${"tok-int"}
-    `
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.user_id).toBe(userA)
-    expect(rows[0]!.device_id).toBe("d1")
-    expect(rows[0]!.revoked_at).not.toBeNull()
-
     expect(await repo.upsertPushToken({ userId: userA, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
       "stored",
     )
-    rows = await h.sql<{ user_id: string; device_id: string | null; revoked_at: Date | null }[]>`
-      SELECT user_id, device_id, revoked_at FROM push_tokens WHERE platform = 'ios' AND token = ${"tok-int"}
-    `
-    expect(rows[0]!.user_id).toBe(userA)
-    expect(rows[0]!.revoked_at).toBeNull()
+    let row = await readRow()
+    expect(row.user_id).toBe(userA)
+    expect(row.device_id).toBe("d1")
+    expect(row.revoked_at).toBeNull()
 
     expect(await repo.upsertPushToken({ userId: userB, platform: "ios", token: "tok-int", deviceId: "d1" })).toBe(
       "conflict",
     )
-    rows = await h.sql<{ user_id: string; device_id: string | null; revoked_at: Date | null }[]>`
-      SELECT user_id, device_id, revoked_at FROM push_tokens WHERE platform = 'ios' AND token = ${"tok-int"}
-    `
-    expect(rows[0]!.user_id).toBe(userA)
+    row = await readRow()
+    expect(row.user_id).toBe(userA)
+    expect(row.revoked_at).toBeNull()
+
+    await h.sql`UPDATE push_tokens SET revoked_at = now() WHERE token = ${"tok-int"}`
+    expect(await repo.upsertPushToken({ userId: userB, platform: "ios", token: "tok-int", deviceId: "d2" })).toBe(
+      "stored",
+    )
+    row = await readRow()
+    expect(row.user_id).toBe(userB)
+    expect(row.device_id).toBe("d2")
+    expect(row.revoked_at).toBeNull()
   })
 
   it("new_follower hook end to end: a NEW follow records a notification for the followee", async () => {

@@ -15,6 +15,7 @@ const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const ALICE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 const BOB = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 const HOST = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+const GUEST = "ffffffff-ffff-4fff-8fff-ffffffffffff"
 
 const tokens = makeTicketTokenSigner("waitlist-service-test-secret-long-enough")
 
@@ -25,16 +26,20 @@ interface Harness {
   advance(ms: number): void
   enqueued: string[]
   notified: string[]
+  guestsNotified: string[]
+  warnings: unknown[]
   bumped: string[]
 }
 
-function build(): Harness {
+function build(opts: { guestNotifyFails?: boolean; withGuestNotifier?: boolean } = {}): Harness {
   const repo = new InMemoryHostRegistrationRepository()
   repo.seedEvent({ cleanupId: EVENT })
   const state = { base: new Date("2026-01-01T12:00:00.000Z").getTime(), tick: 0 }
   const clock = (): Date => new Date(state.base + state.tick++)
   const enqueued: string[] = []
   const notified: string[] = []
+  const guestsNotified: string[] = []
+  const warnings: unknown[] = []
   const bumped: string[] = []
   const seats = (partySize: number): SeatDraft[] =>
     Array.from({ length: partySize }, () => {
@@ -67,6 +72,24 @@ function build(): Harness {
         return Promise.resolve(null)
       },
     },
+    ...(opts.withGuestNotifier === false
+      ? {}
+      : {
+          guests: {
+            notifyGuestPromoted: (guestId: string) => {
+              guestsNotified.push(guestId)
+              return opts.guestNotifyFails === true
+                ? Promise.reject(new Error("mailer down"))
+                : Promise.resolve()
+            },
+          },
+        }),
+    logger: {
+      warn: (obj: unknown) => {
+        warnings.push(obj)
+      },
+      info: () => {},
+    },
     now: clock,
   })
   return {
@@ -78,6 +101,8 @@ function build(): Harness {
     },
     enqueued,
     notified,
+    guestsNotified,
+    warnings,
     bumped,
   }
 }
@@ -354,6 +379,74 @@ describe("waitlist service", () => {
 
     await h.service.promote({ id: EVENT, waitlistId: joined.entry.id }, HOST)
     expect(h.bumped).toEqual([EVENT])
+  })
+
+  /**
+   * A guest has no user id, so the bell/push notifier cannot reach them. Until the guest seam existed
+   * `notifyOffered` returned early on `userId === null` and a promoted guest heard NOTHING, then lost
+   * the hold when the 24 h claim window expired.
+   */
+  it("mails a promoted GUEST rather than returning early on the null user id", async () => {
+    const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 1, waitlistEnabled: true })
+    await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "guest", guestId: GUEST },
+    )
+
+    expect(await h.service.runPromote({ ticketTypeId: type.id })).toBe(1)
+    expect(h.guestsNotified).toEqual([GUEST])
+    expect(h.notified).toEqual([])
+    expect(h.repo.ticketTypes.get(type.id)?.reservedSeats).toBe(1)
+  })
+
+  it("mails a guest the host promoted by hand, and audits it the same way", async () => {
+    const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 1, waitlistEnabled: true })
+    const joined = await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "guest", guestId: GUEST },
+    )
+
+    const promoted = await h.service.promote({ id: EVENT, waitlistId: joined.entry.id }, HOST)
+    expect(promoted.entry.status).toBe("offered")
+    expect(h.guestsNotified).toEqual([GUEST])
+  })
+
+  it("keeps the promotion when the guest email fails, and says so in the log", async () => {
+    const broken = build({ guestNotifyFails: true })
+    const type = broken.repo.seedTicketType({ cleanupId: EVENT, capacity: 1, waitlistEnabled: true })
+    const joined = await broken.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "guest", guestId: GUEST },
+    )
+
+    expect(await broken.service.runPromote({ ticketTypeId: type.id })).toBe(1)
+    expect(broken.repo.waitlist.get(joined.entry.id)?.status).toBe("offered")
+    expect(broken.repo.ticketTypes.get(type.id)?.reservedSeats).toBe(1)
+    expect(broken.warnings).toHaveLength(1)
+  })
+
+  it("promotes a guest without incident when no guest notifier is wired at all", async () => {
+    const bare = build({ withGuestNotifier: false })
+    const type = bare.repo.seedTicketType({ cleanupId: EVENT, capacity: 1, waitlistEnabled: true })
+    await bare.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "guest", guestId: GUEST },
+    )
+
+    expect(await bare.service.runPromote({ ticketTypeId: type.id })).toBe(1)
+    expect(bare.warnings).toEqual([])
+  })
+
+  it("keeps the member notice on the bell, not on the guest lane", async () => {
+    const type = h.repo.seedTicketType({ cleanupId: EVENT, capacity: 1, waitlistEnabled: true })
+    await h.service.join(
+      { id: EVENT, ticketTypeId: type.id, partySize: 1 },
+      { kind: "user", userId: ALICE },
+    )
+
+    await h.service.runPromote({ ticketTypeId: type.id })
+    expect(h.notified).toEqual([ALICE])
+    expect(h.guestsNotified).toEqual([])
   })
 
   it("leaves the insights generation alone when a waitlist mutation changes nothing", async () => {

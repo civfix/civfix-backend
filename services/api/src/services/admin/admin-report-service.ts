@@ -23,6 +23,7 @@ import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { isPubliclyVisibleStatus } from "../report-visibility.js"
 import {
   JURISDICTION_REPLY_NOTE,
   resolveListFilter,
@@ -36,7 +37,9 @@ import {
   MAX_PACKET_ATTACHMENT_BYTES,
   MAX_PACKET_TOTAL_BYTES,
 } from "./mail-format.js"
+import { pickPreviewMedia, previewThumbnailUrl } from "./admin-report-types.js"
 import type {
+  AdminReportMediaRecord,
   AdminReportRecord,
   AdminReportService,
   AdminReportServiceDeps,
@@ -81,7 +84,8 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     deps.presignMedia ??
     (async (r2Key: string, thumbKey: string | null) =>
       thumbKey === null ? { url: r2Key } : { url: r2Key, thumbUrl: thumbKey })
-  const presignPacketMedia = deps.presignPacketMedia ?? presignMedia
+  const presignPacketMedia =
+    deps.presignPacketMedia ?? (async (r2Key: string) => (await presignMedia(r2Key, null)).url)
 
   async function emitTimeline(event: {
     reportId: string
@@ -94,7 +98,20 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     await deps.reportChatEmitter.emit(event)
   }
 
-  function toListItem(record: AdminReportRecord, ref: Date): AdminReportListItemDTO {
+  async function toMediaDTO(m: AdminReportMediaRecord): Promise<ReportMedia> {
+    const { url, thumbUrl } = await presignMedia(m.r2Key, m.thumbKey)
+    return { id: m.id, kind: m.kind, url, thumbUrl: thumbUrl ?? null }
+  }
+
+  async function previewMediaDTO(record: AdminReportRecord): Promise<ReportMedia | null> {
+    return record.previewMedia === null ? null : toMediaDTO(record.previewMedia)
+  }
+
+  function toListItem(
+    record: AdminReportRecord,
+    ref: Date,
+    preview: ReportMedia | null,
+  ): AdminReportListItemDTO {
     return {
       id: record.id,
       category: record.category,
@@ -112,6 +129,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       coords: [record.lat, record.lng],
       address: record.address,
       hasPhoto: record.hasPhoto,
+      thumbnailUrl: previewThumbnailUrl(preview),
     }
   }
 
@@ -155,7 +173,10 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
               needsVerification: 0,
             }),
       ])
-      return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }
+      const items = await mapWithLimit(records, PRESIGN_CONCURRENCY, async (r) =>
+        toListItem(r, ref, await previewMediaDTO(r)),
+      )
+      return { items, nextCursor, counts }
     },
 
     async get(id: string): Promise<AdminReportDTO> {
@@ -171,17 +192,14 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           : Promise.resolve(new Map<string, LinkedEventView[]>()),
         deps.repo.getOutreach(id),
       ])
-      const base = toListItem(record, ref)
       const city: ReportRouting = {
         dept: routing?.dept ?? "",
         place: routing?.place ?? record.place,
         contact: routing?.contact ?? null,
         routed: routing?.routed ?? false,
       }
-      const mediaDtos: ReportMedia[] = await mapWithLimit(media, PRESIGN_CONCURRENCY, async (m) => {
-        const { url, thumbUrl } = await presignMedia(m.r2Key, m.thumbKey)
-        return { id: m.id, kind: m.kind, url, thumbUrl: thumbUrl ?? null }
-      })
+      const mediaDtos: ReportMedia[] = await mapWithLimit(media, PRESIGN_CONCURRENCY, toMediaDTO)
+      const base = toListItem(record, ref, pickPreviewMedia(mediaDtos))
       const linkedEvents: LinkedEventRef[] = (linkedEventsMap.get(id) ?? []).map(toLinkedEventRef)
       const outreachDTO: ReportOutreach = {
         status: outreach.status,
@@ -373,12 +391,13 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       assertRoutable(await deps.repo.getOutreach(id), toAddr)
 
       const media = await deps.repo.listMedia(id)
+      const publiclyVisible =
+        isPubliclyVisibleStatus(record.status) && record.visibility === "public"
       const mediaLinks: string[] = []
       const attachments: PacketAttachment[] = []
       let attachedBytesTotal = 0
       for (const m of media) {
-        const { url } = await presignPacketMedia(m.r2Key, m.thumbKey)
-        mediaLinks.push(url)
+        mediaLinks.push(await presignPacketMedia(m.r2Key, publiclyVisible))
         if (m.kind !== "image" || attachments.length >= MAX_PACKET_ATTACHMENTS) continue
         const bytes = deps.loadMediaBytes ? await deps.loadMediaBytes(m.r2Key) : null
         if (bytes === null || bytes.byteLength > MAX_PACKET_ATTACHMENT_BYTES) continue

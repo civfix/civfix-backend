@@ -14,7 +14,7 @@ import { cleanups } from "./cleanups.js"
 import { organizations } from "./organizations.js"
 import { reports } from "./reports.js"
 import { users } from "./users.js"
-import type { POST_KIND_VALUES, REPORT_VISIBILITY_VALUES } from "./types.js"
+import { geometry, type POST_KIND_VALUES, type REPORT_VISIBILITY_VALUES } from "./types.js"
 
 type PostKind = (typeof POST_KIND_VALUES)[number]
 type PostVisibility = (typeof REPORT_VISIBILITY_VALUES)[number]
@@ -45,6 +45,7 @@ export const posts = pgTable(
     organizationId: uuid("organization_id").references(() => organizations.id, {
       onDelete: "set null",
     }),
+    geom: geometry("geom", { subtype: "Point", srid: 4326 }),
     likeCount: integer("like_count").notNull().default(0),
     repostCount: integer("repost_count").notNull().default(0),
     replyCount: integer("reply_count").notNull().default(0),
@@ -75,6 +76,14 @@ export const posts = pgTable(
     index("posts_toplevel_recent_idx")
       .on(t.createdAt.desc(), t.id.desc())
       .where(sql`deleted_at IS NULL AND reply_to_id IS NULL`),
+    index("posts_author_public_recent_idx")
+      .on(t.authorId, t.createdAt.desc(), t.id.desc())
+      .where(sql`deleted_at IS NULL AND reply_to_id IS NULL AND visibility = 'public'`),
+    index("posts_geom_gist")
+      .using("gist", t.geom)
+      .where(
+        sql`geom IS NOT NULL AND deleted_at IS NULL AND reply_to_id IS NULL AND visibility = 'public'`,
+      ),
     index("posts_organization_created_idx")
       .on(t.organizationId, t.createdAt.desc())
       .where(sql`${t.organizationId} IS NOT NULL AND deleted_at IS NULL`),
