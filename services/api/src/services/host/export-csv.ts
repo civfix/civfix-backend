@@ -5,8 +5,9 @@ const LEADING_TRIGGER_RE = /^[=+\-@\t\r]/
 // separator and the trigger do not stop that evaluation, so the escape goes directly before the
 // trigger. A single quote is left out because a field that starts with one is already text. The
 // lookbehind (rather than a consuming match) also catches a trigger that follows a tab or CR which
-// was itself a trigger.
-const SEPARATED_TRIGGER_RE = /(?<=[;,\t\r\n][ "]*)(?=[=+\-@\t\r])/g
+// was itself a trigger. The lookahead goes first so the unbounded lookbehind only runs where a trigger
+// follows; no trigger is in `[ "]`, so each run of spaces is scanned once instead of once per position.
+const SEPARATED_TRIGGER_RE = /(?=[=+\-@\t\r])(?<=[;,\t\r\n][ "]*)/g
 
 function neutralizeFormulas(value: string): string {
   const separated = value.replace(SEPARATED_TRIGGER_RE, FORMULA_ESCAPE)

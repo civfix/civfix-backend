@@ -43,6 +43,14 @@ describe("csv cells", () => {
     expect(csvRow(["a", "b"])).toBe('"a","b"\n')
     expect(csvProvenanceRow("note")).toBe('"# note"\n')
   })
+
+  // With the lookbehind first, every position rescanned the run of spaces behind it: about 1.5 s here.
+  it("neutralizes a long run of spaces in linear time", () => {
+    const value = "x" + " ".repeat(31998) + "x"
+    const started = performance.now()
+    expect(csvCell(value)).toBe(`"${value}"`)
+    expect(performance.now() - started).toBeLessThan(50)
+  })
 })
 
 const EXPORT_ID = "00000000-0000-0000-0000-0000000000e1"
