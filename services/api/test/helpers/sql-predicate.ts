@@ -9,6 +9,7 @@ export function evalSqlPredicate(text: string, row: PredicateRow): boolean {
     .replace(/(?<![!<>=])=(?!=)/g, "===")
     .replace(/\bOR\b/g, "||")
     .replace(/\bAND\b/g, "&&")
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval -- compiling the translated SQL predicate is this helper's purpose; the input is test-authored SQL
   const compiled = new Function("row", `"use strict"; return Boolean(${js})`) as (
     candidate: PredicateRow,
   ) => boolean

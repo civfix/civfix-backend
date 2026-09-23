@@ -44,7 +44,7 @@ export interface DiscoveryContactSuggestionRecord {
 export interface DiscoveryDetailRecord {
   task: DiscoveryTaskRecord
   contacts: DiscoveryContactRecord[]
-  placeGeojson: unknown | null
+  placeGeojson: unknown
   samplePins: DiscoverySamplePinRecord[]
   center: [number, number] | null
   zoom: number | null

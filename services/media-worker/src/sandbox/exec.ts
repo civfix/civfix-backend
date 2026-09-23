@@ -26,6 +26,7 @@ export class SandboxSpawnError extends Error {
   readonly tool: string
 
   constructor(tool: string, cause?: unknown) {
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- best-effort detail for a non-Error cause in an error message
     const detail = cause instanceof Error ? cause.message : cause === undefined ? "" : String(cause)
     super(`sandbox tool "${tool}" could not be started${detail ? `: ${detail}` : ""}`, { cause })
     this.name = "SandboxSpawnError"

@@ -38,7 +38,7 @@ export function eventStatusNote(status: EventStatus): string {
     case "cancelled":
       return "Event cancelled"
     default:
-      return `Status set to ${status}`
+      return `Status set to ${String(status)}`
   }
 }
 

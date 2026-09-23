@@ -418,9 +418,9 @@ async function loadGeometry(
   sql: Queryable,
   taskId: string,
   geoid: string,
-): Promise<{ placeGeojson: unknown | null; center: [number, number] | null; zoom: number | null }> {
+): Promise<{ placeGeojson: unknown; center: [number, number] | null; zoom: number | null }> {
   const [taskRows, centerRows] = await Promise.all([
-    sql<{ place_geojson: unknown | null }[]>`
+    sql<{ place_geojson: unknown }[]>`
       SELECT place_geojson FROM jurisdiction_discovery_tasks WHERE id = ${taskId} LIMIT 1
     `,
     sql<{ lat: number | null; lng: number | null }[]>`

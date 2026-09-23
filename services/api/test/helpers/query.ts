@@ -19,6 +19,7 @@ export function clientQuery(query: Record<string, unknown>): string {
     } else if (typeof value === "object") {
       sp.append(key, JSON.stringify(value))
     } else {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- only primitives reach here; objects are JSON-encoded above
       sp.append(key, String(value))
     }
   }

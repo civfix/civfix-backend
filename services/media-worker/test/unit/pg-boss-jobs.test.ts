@@ -358,6 +358,7 @@ describe("PgBossWorkerJobs work(): PER-JOB completion of a delivered batch", () 
   })
 
   it("wraps a non-Error rejection so the reason still reaches the job's output column", async () => {
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- this test is about a non-Error rejection reason
     await startWithHandler(() => Promise.reject("stringly-typed failure"))
 
     await lastBoss().deliver([{ id: "only", data: null }])
@@ -425,7 +426,7 @@ describe("PgBossWorkerJobs unsupported name-agnostic complete/fail", () => {
 
 describe("makeJobs seam selection", () => {
   it("defaults to the fake outside production (the worker boots offline)", () => {
-    const handle = makeJobs({ NODE_ENV: "test" } as NodeJS.ProcessEnv)
+    const handle = makeJobs({ NODE_ENV: "test" })
     expect(handle.jobs).toBeInstanceOf(FakeJobs)
   })
 
@@ -439,12 +440,12 @@ describe("makeJobs seam selection", () => {
         NODE_ENV: "production",
         USE_FAKE_JOBS: "1",
         DATABASE_URL: "postgres://stub/civfix",
-      } as NodeJS.ProcessEnv),
+      }),
     ).toThrow(/USE_FAKE_JOBS must be 0 in production/)
   })
 
   it("THROWS when the real seam is selected without a DATABASE_URL", () => {
-    expect(() => makeJobs({ NODE_ENV: "test", USE_FAKE_JOBS: "0" } as NodeJS.ProcessEnv)).toThrow(
+    expect(() => makeJobs({ NODE_ENV: "test", USE_FAKE_JOBS: "0" })).toThrow(
       /DATABASE_URL is required when USE_FAKE_JOBS is off/,
     )
   })
@@ -455,7 +456,7 @@ describe("makeJobs seam selection", () => {
       DATABASE_URL: "postgres://stub/civfix",
       MEDIA_JOB_TIMEOUT_MS: "10000",
       MEDIA_IMAGE_TIMEOUT_MS: "1000",
-    } as NodeJS.ProcessEnv)
+    })
     expect(handle.jobs).toBeInstanceOf(PgBossWorkerJobs)
 
     await handle.start()

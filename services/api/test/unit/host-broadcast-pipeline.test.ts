@@ -190,13 +190,13 @@ describe("broadcast plan", () => {
 
     const markPlanned = h.repo.markPlanned.bind(h.repo)
     let crashed = false
-    h.repo.markPlanned = ((broadcastId: string, args: Parameters<typeof markPlanned>[1]) => {
+    h.repo.markPlanned = (broadcastId: string, args: Parameters<typeof markPlanned>[1]) => {
       if (!crashed) {
         crashed = true
         return Promise.reject(new Error("crashed between the last insert and markPlanned"))
       }
       return markPlanned(broadcastId, args)
-    }) as typeof h.repo.markPlanned
+    }
 
     await expect(h.pipeline.plan(id)).rejects.toThrow(/crashed/)
     expect(h.repo.allDeliveries().filter((d) => d.chunkNo === 2)).toHaveLength(1)
@@ -333,6 +333,7 @@ describe("broadcast chunk", () => {
       sendOutbound: (email: OutboundEmail): Promise<SentMail> => {
         if (failNext) {
           failNext = false
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
           return Promise.reject({ responseCode: 451, response: "451 try later" })
         }
         return Promise.resolve({ messageId: email.messageId ?? "<x@civfix.org>" })
@@ -352,6 +353,7 @@ describe("broadcast chunk", () => {
     const alwaysFails: Mailer = {
       sendOtp: () => Promise.resolve(),
       sendTransactional: () => Promise.resolve(),
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
       sendOutbound: () => Promise.reject({ responseCode: 451 }),
     }
     const h = harness({ members: 1, mailer: alwaysFails as unknown as FakeMailer })
@@ -367,6 +369,7 @@ describe("broadcast chunk", () => {
     const bounces: Mailer = {
       sendOtp: () => Promise.resolve(),
       sendTransactional: () => Promise.resolve(),
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
       sendOutbound: () => Promise.reject({ responseCode: 550, response: "550 no such user" }),
     }
     const h = harness({ members: 1, mailer: bounces as unknown as FakeMailer })
@@ -388,6 +391,7 @@ describe("broadcast chunk", () => {
     const badAuth: Mailer = {
       sendOtp: () => Promise.resolve(),
       sendTransactional: () => Promise.resolve(),
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
       sendOutbound: () => Promise.reject({ code: "EAUTH" }),
     }
     const h = harness({ members: 2, mailer: badAuth as unknown as FakeMailer })
@@ -403,6 +407,7 @@ describe("broadcast chunk", () => {
     const badAuth: Mailer = {
       sendOtp: () => Promise.resolve(),
       sendTransactional: () => Promise.resolve(),
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
       sendOutbound: () => Promise.reject({ code: "EAUTH", response: "535 bad creds" }),
     }
     const h = harness({ members: 2, mailer: badAuth as unknown as FakeMailer })
@@ -426,6 +431,7 @@ describe("broadcast chunk", () => {
     const badAuth: Mailer = {
       sendOtp: () => Promise.resolve(),
       sendTransactional: () => Promise.resolve(),
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
       sendOutbound: () => Promise.reject({ code: "EAUTH" }),
     }
     const h = harness({ members: 1, mailer: badAuth as unknown as FakeMailer })

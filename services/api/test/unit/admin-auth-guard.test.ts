@@ -212,11 +212,11 @@ describe("H2: operator authority is re-checked against ADMIN_EMAILS on EVERY adm
       headers: { authorization: `Bearer ${token}` },
     })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as {
+    const body = res.json<{
       authenticated: boolean
       operator?: { email: string }
       csrfToken?: string
-    }
+    }>()
     expect(body.authenticated).toBe(true)
     expect(body.operator?.email).toBe(ALLOWED)
     expect(body.csrfToken).toBeTruthy()
@@ -395,6 +395,7 @@ describe("POST /admin/auth/logout: idempotent cookie clearing + CSRF enforcement
 
   function clearedCookies(res: { headers: Record<string, unknown> }): string[] {
     const raw = res.headers["set-cookie"]
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- a single set-cookie header value is a string
     const list = raw === undefined ? [] : Array.isArray(raw) ? raw.map(String) : [String(raw)]
     return list
       .filter((c) => /Max-Age=0|Expires=Thu, 01 Jan 1970/i.test(c))

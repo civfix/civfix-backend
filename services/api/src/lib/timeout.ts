@@ -37,6 +37,7 @@ export function settleWithin<T>(p: Promise<T>, ms: number, hooks: SettleWithinHo
       },
       (err: unknown) => {
         clearTimeout(timer)
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- passThroughRejection deliberately re-rejects with the work's own reason, Error or not
         reject(normalize(err))
       },
     )

@@ -1873,6 +1873,7 @@ async function runPurge(sql: Sql, commit: boolean): Promise<void> {
   const result = await sql
     .begin(async (tx) => {
       const counts = await purgeDemo(tx)
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- a unique sentinel, matched by identity in the catch below, that makes sql.begin roll the rehearsal back
       if (!commit) throw ROLLBACK
       return counts
     })
@@ -1952,6 +1953,7 @@ async function runSeed(
       await writeAll(tx, data)
       console.log("verifying...")
       const lines = await verify(tx, now)
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- a unique sentinel, matched by identity in the catch below, that makes sql.begin roll the rehearsal back
       if (!opts.commit) throw ROLLBACK
       return lines
     })
