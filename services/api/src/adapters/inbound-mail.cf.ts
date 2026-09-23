@@ -16,7 +16,7 @@ export interface CfInboundMailConfig {
   replyDomain?: string
 }
 
-const DEFAULT_REPLY_DOMAIN = "civfix.org"
+export const DEFAULT_REPLY_DOMAIN = "civfix.org"
 
 const REPLY_ADDRESS_RE = /^(?:reply|report|event)[-+]([^@\s]+)@([^@\s]+)$/
 
@@ -61,34 +61,44 @@ export class CfInboundMail implements InboundMail {
     }
     const { simpleParser } = await import("mailparser")
     const parsed = await simpleParser(Buffer.from(raw), {
-      maxHtmlLengthToParse: 2 * 1024 * 1024,
       skipImageLinks: true,
+      skipHtmlToText: true,
     })
 
     const fromValue = singleFromMailbox(parsed.headerLines, parsed.from)
+    const headers = flattenHeaders(parsed.headers)
+    const fromLines = parsed.headerLines.filter((line) => line.key === "from")
+    if (fromLines.length > 1) headers["from"] = fromLines.map(headerLineValue).join(", ")
     return {
       from: fromValue ? toAddress(fromValue) : null,
       to: toAddresses(parsed.to),
       subject: parsed.subject ?? null,
-      text: parsed.text ?? null,
+      text: parsed.text !== undefined && parsed.text.trim() !== "" ? parsed.text : null,
       html: typeof parsed.html === "string" ? parsed.html : null,
       messageId: parsed.messageId ?? null,
       inReplyTo: parsed.inReplyTo ?? null,
-      headers: flattenHeaders(parsed.headers),
+      headers,
       attachments: (parsed.attachments ?? []).map(toAttachment),
     }
   }
 
   extractThreadToken(mail: ParsedMail): string | null {
-    const replyDomain = (this.config.replyDomain ?? DEFAULT_REPLY_DOMAIN).toLowerCase()
-    for (const addr of mail.to) {
-      const match = addr.address.match(REPLY_ADDRESS_RE)
-      if (match && match[1] && match[2] && match[2].toLowerCase() === replyDomain) {
-        if (THREAD_TOKEN_RE.test(match[1])) return match[1]
-      }
+    const replyDomain = this.config.replyDomain ?? DEFAULT_REPLY_DOMAIN
+    const ccAddresses = (mail.headers["cc"] ?? "").match(REPLY_ADDRESS_SCAN_RE) ?? []
+    for (const address of [...mail.to.map((addr) => addr.address), ...ccAddresses]) {
+      const token = replyAddressToken(address, replyDomain)
+      if (token !== null) return token
     }
     return null
   }
+}
+
+const REPLY_ADDRESS_SCAN_RE = /(?<![^\s<,;:"])(?:reply|report|event)[-+][^@\s<>,;"]+@[^@\s<>,;"]+/gi
+
+export function replyAddressToken(address: string, replyDomain: string): string | null {
+  const match = address.toLowerCase().match(REPLY_ADDRESS_RE)
+  if (!match?.[1] || match[2] !== replyDomain.toLowerCase()) return null
+  return THREAD_TOKEN_RE.test(match[1]) ? match[1] : null
 }
 
 export type MailAuthVerdict = "pass" | "fail" | "unknown"
@@ -106,6 +116,10 @@ const PROP_SPEC_RE = /^([a-z0-9_-]+\.[a-z0-9_.-]+)=(\S+)$/
 const QUOTED_REMOTE_IP_RE = /smtp\.remote-ip\s*=\s*"[0-9a-f:.]+"/gi
 
 const FLAT_COMMENT_RE = /\([^()]*\)/g
+
+const ENVELOPE_ADDRESS_RE = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@([^@]+)$/
+
+const REMOTE_IP_RE = /^[0-9a-f:.]+$/
 
 const HOSTNAME_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 
@@ -140,7 +154,11 @@ export function readMailAuthVerdict(mail: ParsedMail): MailAuthVerdict {
   const alignedDkim = leadingDkimResults(results).some((r) =>
     isAlignedPass(r, r.props.get("header.d") ?? r.props.get("header.i"), fromDomain),
   )
-  return alignedDkim ? "pass" : "fail"
+  const mailFrom = soleMailFromResult(stamp, results)
+  const alignedSpf =
+    mailFrom !== undefined &&
+    isAlignedPass(mailFrom, mailFrom.props.get("smtp.mailfrom"), fromDomain)
+  return alignedDkim || alignedSpf ? "pass" : "fail"
 }
 
 function parseStamp(stamp: string): AuthResult[] | null {
@@ -174,6 +192,26 @@ function leadingDkimResults(results: readonly AuthResult[]): readonly AuthResult
   return end === -1 ? results : results.slice(0, end)
 }
 
+function soleMailFromResult(stamp: string, results: readonly AuthResult[]): AuthResult | undefined {
+  if (stamp.match(/smtp\.mailfrom/gi)?.length !== 1) return undefined
+  const index = results.findIndex((r) => r.props.has("smtp.mailfrom"))
+  const carrier = results[index]
+  if (carrier?.method !== "spf" || carrier.props.size !== 1) return undefined
+  if (!isEnvelopeAddress(carrier.props.get("smtp.mailfrom") ?? "")) return undefined
+  const trailing = results.slice(index + 1)
+  return trailing.length <= 1 && trailing.every(isBareArcResult) ? carrier : undefined
+}
+
+function isEnvelopeAddress(value: string): boolean {
+  const domain = ENVELOPE_ADDRESS_RE.exec(value)?.[1]
+  return domain !== undefined && HOSTNAME_RE.test(domain)
+}
+
+function isBareArcResult(result: AuthResult): boolean {
+  if (result.method !== "arc") return false
+  return [...result.props].every(([name, value]) => name === "smtp.remote-ip" && REMOTE_IP_RE.test(value))
+}
+
 function isAlignedPass(result: AuthResult, identity: string | undefined, from: string): boolean {
   if (result.result !== "pass" || identity === undefined) return false
   const domain = identityDomain(identity)
@@ -204,6 +242,10 @@ function singleFromMailbox(
   if (headerLines.filter((line) => line.key === "from").length !== 1) return null
   const mailboxes = (from?.value ?? []).flatMap((entry) => entry.group ?? [entry])
   return mailboxes.length === 1 ? (mailboxes[0] ?? null) : null
+}
+
+function headerLineValue(header: HeaderLines[number]): string {
+  return header.line.slice(header.line.indexOf(":") + 1).replace(/\s+/g, " ").trim()
 }
 
 function toAddress(value: EmailAddress): ParsedMailAddress {
