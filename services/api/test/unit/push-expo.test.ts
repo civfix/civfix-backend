@@ -3,11 +3,13 @@ import { makeExpoDispatcher, isExpoPushToken } from "../../src/adapters/push-exp
 import type { PushLogger } from "../../src/adapters/push-sender.js"
 import type { PushPayload } from "@civfix/shared/interfaces"
 
-
 const logger: PushLogger = { warn: () => {}, error: () => {} }
 const PAYLOAD: PushPayload = { title: "Hi", body: "there", link: "/x", data: { k: "v" } }
 
-function jsonFetch(body: unknown): { fetchImpl: typeof fetch; calls: Array<{ url: string; init: RequestInit }> } {
+function jsonFetch(body: unknown): {
+  fetchImpl: typeof fetch
+  calls: Array<{ url: string; init: RequestInit }>
+} {
   const calls: Array<{ url: string; init: RequestInit }> = []
   const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
     calls.push({ url, init })
@@ -77,7 +79,9 @@ describe("makeExpoDispatcher", () => {
       makeExpoDispatcher({ fetchImpl: throwing }, logger)(["ExponentPushToken[a]"], PAYLOAD),
     ).resolves.toEqual({ invalidTokens: [] })
 
-    const http500 = vi.fn(async () => new Response("nope", { status: 500 })) as unknown as typeof fetch
+    const http500 = vi.fn(
+      async () => new Response("nope", { status: 500 }),
+    ) as unknown as typeof fetch
     await expect(
       makeExpoDispatcher({ fetchImpl: http500 }, logger)(["ExponentPushToken[a]"], PAYLOAD),
     ).resolves.toEqual({ invalidTokens: [] })
@@ -100,5 +104,22 @@ describe("makeExpoDispatcher", () => {
     const tokens = Array.from({ length: 150 }, (_, i) => `ExponentPushToken[${i}]`)
     await dispatch(tokens, PAYLOAD)
     expect((fetchImpl as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(2)
+  })
+
+  it("resends per token when Expo rejects a batch mixing projects, so one stale token cannot block the rest", async () => {
+    const bodies: string[][] = []
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      const to = (JSON.parse(String(init.body)) as Array<{ to: string }>).map((m) => m.to)
+      bodies.push(to)
+      if (to.length > 1)
+        return new Response(
+          JSON.stringify({ errors: [{ code: "PUSH_TOO_MANY_EXPERIENCE_IDS" }] }),
+          { status: 400 },
+        )
+      return new Response(JSON.stringify({ data: [{ status: "ok" }] }), { status: 200 })
+    }) as unknown as typeof fetch
+    const tokens = ["ExponentPushToken[new]", "ExponentPushToken[old]"]
+    await makeExpoDispatcher({ fetchImpl }, logger)(tokens, PAYLOAD)
+    expect(bodies).toEqual([tokens, ["ExponentPushToken[new]"], ["ExponentPushToken[old]"]])
   })
 })
