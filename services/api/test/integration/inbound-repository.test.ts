@@ -80,6 +80,25 @@ describe.skipIf(!pg)("inbound repository (integration: real schema)", () => {
     expect(onlySupport.items).toHaveLength(2)
   })
 
+  it("pages rows that share a millisecond by their microseconds, skipping none", async () => {
+    for (const micros of ["123100", "123500", "123900"]) {
+      const { id } = await repo.insertIdempotent(insert({ messageId: `<us-${micros}@x>` }))
+      await h.sql`
+        UPDATE inbound_emails SET received_at = ${`2027-01-01T00:00:00.${micros}Z`}::text::timestamptz
+        WHERE id = ${id}
+      `
+    }
+    const walked: string[] = []
+    let cursor: string | undefined
+    do {
+      const page = await repo.list({ limit: 1, ...(cursor === undefined ? {} : { cursor }) })
+      walked.push(...page.items.map((i) => i.id))
+      cursor = page.nextCursor ?? undefined
+    } while (cursor !== undefined)
+    expect(walked).toEqual((await repo.list({})).items.map((i) => i.id))
+    expect(walked).toHaveLength(3)
+  })
+
   it("reads the stored auth verdict onto list rows and the detail", async () => {
     const headers = { "x-civfix-auth-verdict": "fail" }
     const r = await repo.insertIdempotent(insert({ messageId: "<verdict@x>", headers }))

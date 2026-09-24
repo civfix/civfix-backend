@@ -1,5 +1,6 @@
 
 import type { Sql } from "../../db/client.js"
+import { cursorAtSql, cursorInstantSql } from "../../db/cursor-helpers.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import { likeContains } from "./like.js"
 import { writeAudit } from "./audit.js"
@@ -142,7 +143,7 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
       const anchor = decodeCursor(query.cursor, true)
       const cursorFilter =
         anchor !== null
-          ? sql`AND (received_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
+          ? sql`AND (received_at, id) < (${cursorAtSql(sql, anchor)}, ${anchor.id}::uuid)`
           : sql``
       const statusFilter =
         query.status === "unread"
@@ -161,11 +162,12 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
               return sql`AND (from_addr ILIKE ${like} ESCAPE '\\' OR subject ILIKE ${like} ESCAPE '\\' OR recipient ILIKE ${like} ESCAPE '\\')`
             })()
           : sql``
-      const rows = await sql<InboundListRowSelect[]>`
+      const rows = await sql<(InboundListRowSelect & { cursor_at: string })[]>`
         SELECT id, from_addr, recipient, subject,
                left(body_text, ${PREVIEW_SOURCE_CHARS}) AS preview_text,
                left(body_html, ${HTML_PREVIEW_SOURCE_CHARS}) AS preview_html,
                has_attachments, status, received_at,
+               ${cursorInstantSql(sql, sql`received_at`)} AS cursor_at,
                headers->>${INBOUND_AUTH_VERDICT_HEADER}::text AS auth_verdict
         FROM inbound_emails
         WHERE true
@@ -181,7 +183,7 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
       const items = page.map(toListItem)
       const last = page[page.length - 1]
       const nextCursor =
-        hasMore && last ? encodeCursor({ createdAt: last.received_at, id: last.id }) : null
+        hasMore && last ? encodeCursor({ createdAt: last.cursor_at, id: last.id }) : null
       return { items, nextCursor }
     },
 
