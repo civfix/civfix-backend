@@ -20,6 +20,7 @@ export interface ActivitySourceRecord {
   id: string
   ts: Date
   who: string
+  actorless?: boolean
   where: string
   action?: string | null
   eventType?: string | null
@@ -220,6 +221,13 @@ export function describeAuditAction(action: string): string {
   return map[action] ?? action
 }
 
+const PUBLIC_AUDIT_ACTIONS: ReadonlySet<string> = new Set(["discovery.contact_suggested"])
+
+function auditActor(record: ActivitySourceRecord, action: string): string {
+  if (record.actorless !== true) return record.who || "Operator"
+  return PUBLIC_AUDIT_ACTIONS.has(action) ? "A neighbor" : "System"
+}
+
 export function classifyActivity(record: ActivitySourceRecord, ref: Date): ActivityItemDTO {
   const ts = relativeAgo(record.ts, ref)
   if (record.source === "report") {
@@ -245,7 +253,7 @@ export function classifyActivity(record: ActivitySourceRecord, ref: Date): Activ
   }
   const action = record.action ?? ""
   const kind = classifyAuditAction(action)
-  return item(kind, record.who || "Operator", describeAuditAction(action), record.where, ts)
+  return item(kind, auditActor(record, action), describeAuditAction(action), record.where, ts)
 }
 
 function item(

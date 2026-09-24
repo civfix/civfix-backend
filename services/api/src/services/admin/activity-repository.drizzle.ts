@@ -55,6 +55,7 @@ interface ActivityRowSelect {
   id: string
   ts: Date
   who: string | null
+  actorless: boolean
   where_label: string | null
   action: string | null
   event_type: string | null
@@ -67,6 +68,7 @@ function toRecord(r: ActivityRowSelect): ActivitySourceRecord {
     id: r.id,
     ts: r.ts,
     who: r.who ?? "",
+    actorless: r.actorless,
     where: r.where_label ?? "",
     action: r.action,
     eventType: r.event_type,
@@ -147,7 +149,7 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
       if (wants("audit")) {
         branches.push(sql`(
           SELECT 'audit'::text AS source, a.id::text AS id, a.created_at AS ts,
-                 u.display_name AS who, a.target AS where_label,
+                 u.display_name AS who, a.actor_id IS NULL AS actorless, a.target AS where_label,
                  a.action AS action, NULL::text AS event_type, a.target AS subject
           FROM audit_log a
           LEFT JOIN users u ON u.id = a.actor_id
@@ -164,7 +166,7 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
       if (wants("report")) {
         branches.push(sql`(
           SELECT 'report'::text AS source, r.id::text AS id, r.created_at AS ts,
-                 ru.display_name AS who, j.name AS where_label,
+                 ru.display_name AS who, false AS actorless, j.name AS where_label,
                  NULL::text AS action, NULL::text AS event_type, r.category AS subject
           FROM reports r
           LEFT JOIN users ru ON ru.id = r.reporter_user_id
@@ -180,7 +182,7 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
       if (wants("cleanup")) {
         branches.push(sql`(
           SELECT 'cleanup'::text AS source, c.id::text AS id, c.created_at AS ts,
-                 cu.display_name AS who, c.address AS where_label,
+                 cu.display_name AS who, false AS actorless, c.address AS where_label,
                  NULL::text AS action, NULL::text AS event_type, c.title AS subject
           FROM cleanups c
           LEFT JOIN users cu ON cu.id = c.organizer_user_id
@@ -195,7 +197,7 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
       if (wants("mail_event")) {
         branches.push(sql`(
           SELECT 'mail_event'::text AS source, e.id::text AS id, e.created_at AS ts,
-                 t.org AS who, COALESCE(t.org, t.jurisdiction_geoid) AS where_label,
+                 t.org AS who, false AS actorless, COALESCE(t.org, t.jurisdiction_geoid) AS where_label,
                  NULL::text AS action, e.type AS event_type, t.subject AS subject
           FROM mail_events e
           LEFT JOIN mail_threads t ON t.id = e.thread_id

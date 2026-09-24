@@ -143,6 +143,19 @@ describe("classifyActivity (per source)", () => {
         .who,
     ).toBe("Operator")
   })
+
+  it("labels an audit row with no actor as the system, or a neighbor for a public suggestion", () => {
+    const who = (action: string, actorless = true) =>
+      classifyActivity(
+        { source: "audit", id: "a", ts: NOW, who: "", actorless, where: "", action },
+        NOW,
+      ).who
+    expect(who("mail.reply_published_without_text")).toBe("System")
+    expect(who("mail.send_failed")).toBe("System")
+    expect(who("report.routed")).toBe("System")
+    expect(who("discovery.contact_suggested")).toBe("A neighbor")
+    expect(who("mail.sent", false)).toBe("Operator")
+  })
 })
 
 describe("activity service wiring", () => {
