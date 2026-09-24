@@ -29,6 +29,8 @@ export const MARK_NOTIFICATIONS_READ_MAX_IDS = 200
 
 export const PUSH_TOKEN_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 minute" })
 
+const DeviceIdSchema = z.string().uuid()
+
 export const MarkNotificationsReadBodySchema = MarkReadRequestSchema.extend({
   ids: MarkReadRequestSchema.shape.ids.max(MARK_NOTIFICATIONS_READ_MAX_IDS),
 })
@@ -163,5 +165,3 @@ export function normalizeDeviceId(raw: string | undefined): string | undefined {
   const parsed = DeviceIdSchema.safeParse(raw.trim().toLowerCase())
   return parsed.success ? parsed.data : undefined
 }
-
-const DeviceIdSchema = z.string().uuid()

@@ -22,9 +22,9 @@ import { requireAuth } from "../../auth/context.js"
 import { parse } from "../_validate.js"
 import { perIdentity } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
-import { requireCapability } from "../../services/host/authz.js"
 import {
   makeHostTeamService,
+  makeSqlTeamStanding,
   MY_EVENT_INVITES_DEFAULT_LIMIT,
   type HostTeamService,
   type HostTeamServiceDeps,
@@ -35,6 +35,9 @@ import { makeEventMediaPresigner } from "../../services/host/event-media.js"
 import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import { makeRouteCleanupReader } from "../../services/route-cleanup-reader.js"
 import { webBaseUrlOf } from "../../lib/base-url.js"
+
+const ONE_MINUTE = "1 minute"
+const ONE_HOUR = "1 hour"
 
 export interface HostTeamOverrides {
   repo: HostTeamRepository
@@ -66,11 +69,11 @@ const MyInvitesQuerySchema = z
   .object({ cursor: z.string().optional(), limit: z.string().optional() })
   .strict()
 
-export const TEAM_INVITE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 hour" })
+export const TEAM_INVITE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: ONE_HOUR })
 
-export const TEAM_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
+export const TEAM_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: ONE_MINUTE })
 
-export const MY_EVENT_INVITES_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
+export const MY_EVENT_INVITES_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: ONE_MINUTE })
 
 export async function registerHostTeamRoutes(
   app: FastifyInstance,
@@ -102,8 +105,7 @@ export async function registerHostTeamRoutes(
     const sql = container.getDb().sql
     return makeHostTeamService({
       repo: makeDrizzleHostTeamRepository(sql),
-      standing: (cleanupId, userId, capability) =>
-        requireCapability(sql, cleanupId, userId, capability),
+      standing: makeSqlTeamStanding(sql),
       loadEvent: makeRouteCleanupReader(container, app.log),
       counters: container.getCounterStore(),
       mailer: container.mailer,

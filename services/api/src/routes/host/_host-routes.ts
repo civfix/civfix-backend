@@ -14,6 +14,11 @@ import {
 } from "../../services/host/registration-wiring.js"
 import type { PageService } from "../../services/host/page-service.js"
 
+const ONE_MINUTE = "1 minute"
+
+/** A cheap bound on the raw param; the request schema validates the slug itself. */
+const PAGE_SLUG_PARAM_MAX = 120
+
 export const CleanupIdParamsSchema = z.object({ id: IdSchema }).strict()
 
 export const TicketTypeParamsSchema = z.object({ id: IdSchema, ticketTypeId: IdSchema }).strict()
@@ -26,24 +31,26 @@ export const WaitlistParamsSchema = z.object({ id: IdSchema, waitlistId: IdSchem
 
 export const SeatParamsSchema = z.object({ id: IdSchema, seatId: IdSchema }).strict()
 
-export const PageSlugParamsSchema = z.object({ slug: z.string().min(1).max(120) }).strict()
+export const PageSlugParamsSchema = z
+  .object({ slug: z.string().min(1).max(PAGE_SLUG_PARAM_MAX) })
+  .strict()
 
-export const TICKET_TYPE_READ_RATE_LIMIT = perHost({ max: 120, timeWindow: "1 minute" })
-export const TICKET_TYPE_WRITE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
-export const QUESTION_WRITE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
-export const REGISTER_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 minute" })
-export const ROSTER_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
-export const WALKUP_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
-export const REGISTRATION_WRITE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
-export const WAITLIST_WRITE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 minute" })
-export const WAITLIST_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
-export const PAGE_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
-export const PAGE_WRITE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
-export const PUBLIC_PAGE_RATE_LIMIT = perHost({ max: 120, timeWindow: "1 minute" })
-export const SCAN_RATE_LIMIT = perIdentity({ max: 300, timeWindow: "1 minute" })
-export const CHECKIN_RATE_LIMIT = perIdentity({ max: 120, timeWindow: "1 minute" })
-export const TICKET_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
-export const GUEST_TICKET_RATE_LIMIT = perHost({ max: 20, timeWindow: "1 minute" })
+export const TICKET_TYPE_READ_RATE_LIMIT = perHost({ max: 120, timeWindow: ONE_MINUTE })
+export const TICKET_TYPE_WRITE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: ONE_MINUTE })
+export const QUESTION_WRITE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: ONE_MINUTE })
+export const REGISTER_RATE_LIMIT = perIdentity({ max: 10, timeWindow: ONE_MINUTE })
+export const ROSTER_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: ONE_MINUTE })
+export const WALKUP_RATE_LIMIT = perIdentity({ max: 60, timeWindow: ONE_MINUTE })
+export const REGISTRATION_WRITE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: ONE_MINUTE })
+export const WAITLIST_WRITE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: ONE_MINUTE })
+export const WAITLIST_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: ONE_MINUTE })
+export const PAGE_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: ONE_MINUTE })
+export const PAGE_WRITE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: ONE_MINUTE })
+export const PUBLIC_PAGE_RATE_LIMIT = perHost({ max: 120, timeWindow: ONE_MINUTE })
+export const SCAN_RATE_LIMIT = perIdentity({ max: 300, timeWindow: ONE_MINUTE })
+export const CHECKIN_RATE_LIMIT = perIdentity({ max: 120, timeWindow: ONE_MINUTE })
+export const TICKET_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: ONE_MINUTE })
+export const GUEST_TICKET_RATE_LIMIT = perHost({ max: 20, timeWindow: ONE_MINUTE })
 
 declare module "fastify" {
   interface FastifyInstance {

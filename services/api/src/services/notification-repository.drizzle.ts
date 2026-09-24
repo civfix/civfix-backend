@@ -6,6 +6,7 @@ import {
   parseKeysetCursor,
 } from "../db/cursor-helpers.js"
 import type {
+  CoalescedNotificationArgs,
   NewNotificationArgs,
   NotificationPrefsPatch,
   NotificationPrefsRecord,
@@ -18,6 +19,8 @@ import { AppError } from "@civfix/shared"
 import type { NotificationType, PushPlatform } from "@civfix/shared"
 
 const QUIET_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/
+
+const QUIET_HOURS_FORMAT_MESSAGE = "quietHours must be HH:MM (24-hour)"
 
 export const MAX_ACTIVE_PUSH_TOKENS_PER_USER = 10
 
@@ -73,16 +76,10 @@ function toPrefsRecord(r: PrefsRowSelect): NotificationPrefsRecord {
   }
 }
 
-export interface RefreshUnreadArgs {
-  userId: string
-  type: NotificationType
-  link: string
-  title: string
-  body: string | null
-  since: Date
-}
-
-function refreshUnreadWith(exec: Sql, args: RefreshUnreadArgs): Promise<NotificationRecord | null> {
+function refreshUnreadWith(
+  exec: Sql,
+  args: CoalescedNotificationArgs,
+): Promise<NotificationRecord | null> {
   return exec<NotificationRowSelect[]>`
     UPDATE notifications
     SET title = ${args.title}, body = ${args.body}
@@ -228,41 +225,11 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
         return existing[0] ? toPrefsRecord(existing[0]) : DEFAULT_PREFS
       }
 
-      const setFragments: Array<ReturnType<Sql>> = []
-      if (patch.push !== undefined) setFragments.push(sql`push = ${patch.push}`)
-      if (patch.cleanupChat !== undefined)
-        setFragments.push(sql`cleanup_chat = ${patch.cleanupChat}`)
-      if (patch.reportUpdates !== undefined)
-        setFragments.push(sql`report_updates = ${patch.reportUpdates}`)
-      if (patch.follows !== undefined) setFragments.push(sql`follows = ${patch.follows}`)
-      if (patch.mentions !== undefined) setFragments.push(sql`mentions = ${patch.mentions}`)
-      if (patch.postInteractions !== undefined)
-        setFragments.push(sql`post_interactions = ${patch.postInteractions}`)
-      if (patch.hostBroadcasts !== undefined)
-        setFragments.push(sql`host_broadcasts = ${patch.hostBroadcasts}`)
-      if (patch.quietHours !== undefined) {
-        const start = patch.quietHours === null ? null : patch.quietHours.start
-        const end = patch.quietHours === null ? null : patch.quietHours.end
-        if (
-          (start !== null && !QUIET_TIME_RE.test(start)) ||
-          (end !== null && !QUIET_TIME_RE.test(end))
-        ) {
-          throw AppError.validation({ quietHours: "invalid" }, "quietHours must be HH:MM (24-hour)")
-        }
-        const tz = patch.quietHours === null ? null : (patch.quietHours.tz ?? null)
-        setFragments.push(sql`quiet_start = ${start}::time`)
-        setFragments.push(sql`quiet_end = ${end}::time`)
-        setFragments.push(sql`tz = ${tz}`)
-      }
-
-      const insStart =
-        patch.quietHours !== undefined && patch.quietHours !== null ? patch.quietHours.start : null
-      const insEnd =
-        patch.quietHours !== undefined && patch.quietHours !== null ? patch.quietHours.end : null
-      const insTz =
-        patch.quietHours !== undefined && patch.quietHours !== null
-          ? (patch.quietHours.tz ?? null)
-          : null
+      const setFragments = prefsSetFragments(sql, patch)
+      const quiet = patch.quietHours ?? null
+      const insStart = quiet === null ? null : quiet.start
+      const insEnd = quiet === null ? null : quiet.end
+      const insTz = quiet === null ? null : (quiet.tz ?? null)
 
       const rows = await sql<PrefsRowSelect[]>`
         INSERT INTO notification_prefs (
@@ -366,12 +333,12 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       }) as Promise<{ record: NotificationRecord; deduped: boolean }>
     },
 
-    refreshUnreadNotification(args: RefreshUnreadArgs): Promise<NotificationRecord | null> {
+    refreshUnreadNotification(args: CoalescedNotificationArgs): Promise<NotificationRecord | null> {
       return refreshUnreadWith(sql, args)
     },
 
     async upsertCoalescedNotification(
-      args: RefreshUnreadArgs,
+      args: CoalescedNotificationArgs,
     ): Promise<{ record: NotificationRecord; coalesced: boolean }> {
       return sql.begin(async (tx) => {
         // FOR UPDATE in the refresh locks nothing when no unread row exists yet, so two concurrent
@@ -415,6 +382,35 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
       return rows[0]?.locale ?? null
     },
   }
+}
+
+function prefsSetFragments(sql: Sql, patch: NotificationPrefsPatch): Array<ReturnType<Sql>> {
+  const setFragments: Array<ReturnType<Sql>> = []
+  if (patch.push !== undefined) setFragments.push(sql`push = ${patch.push}`)
+  if (patch.cleanupChat !== undefined) setFragments.push(sql`cleanup_chat = ${patch.cleanupChat}`)
+  if (patch.reportUpdates !== undefined)
+    setFragments.push(sql`report_updates = ${patch.reportUpdates}`)
+  if (patch.follows !== undefined) setFragments.push(sql`follows = ${patch.follows}`)
+  if (patch.mentions !== undefined) setFragments.push(sql`mentions = ${patch.mentions}`)
+  if (patch.postInteractions !== undefined)
+    setFragments.push(sql`post_interactions = ${patch.postInteractions}`)
+  if (patch.hostBroadcasts !== undefined)
+    setFragments.push(sql`host_broadcasts = ${patch.hostBroadcasts}`)
+  if (patch.quietHours !== undefined) {
+    const start = patch.quietHours === null ? null : patch.quietHours.start
+    const end = patch.quietHours === null ? null : patch.quietHours.end
+    if (
+      (start !== null && !QUIET_TIME_RE.test(start)) ||
+      (end !== null && !QUIET_TIME_RE.test(end))
+    ) {
+      throw AppError.validation({ quietHours: "invalid" }, QUIET_HOURS_FORMAT_MESSAGE)
+    }
+    const tz = patch.quietHours === null ? null : (patch.quietHours.tz ?? null)
+    setFragments.push(sql`quiet_start = ${start}::time`)
+    setFragments.push(sql`quiet_end = ${end}::time`)
+    setFragments.push(sql`tz = ${tz}`)
+  }
+  return setFragments
 }
 
 function isEmptyPatch(patch: NotificationPrefsPatch): boolean {

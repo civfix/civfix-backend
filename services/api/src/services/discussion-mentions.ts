@@ -1,11 +1,16 @@
+const MUNICIPALITY_PREFIX_RE = /^(city|town|village|county|borough|township|municipality)\s+of\s+/i
+const MUNICIPALITY_SUFFIX_RE = /\s+(city|town|village|county|borough|township)$/i
+const NON_HANDLE_RUN_RE = /[^a-z0-9]+/g
+const EDGE_UNDERSCORES_RE = /^_+|_+$/g
+
 export function jurisdictionHandle(name: string | null | undefined): string | null {
   if (name === null || name === undefined) return null
   let s = name.toLowerCase().trim()
   if (s === "") return null
-  s = s.replace(/^(city|town|village|county|borough|township|municipality)\s+of\s+/i, "")
-  s = s.replace(/\s+(city|town|village|county|borough|township)$/i, "")
-  s = s.replace(/[^a-z0-9]+/g, "_")
-  s = s.replace(/^_+|_+$/g, "")
+  s = s.replace(MUNICIPALITY_PREFIX_RE, "")
+  s = s.replace(MUNICIPALITY_SUFFIX_RE, "")
+  s = s.replace(NON_HANDLE_RUN_RE, "_")
+  s = s.replace(EDGE_UNDERSCORES_RE, "")
   return s === "" ? null : s
 }
 

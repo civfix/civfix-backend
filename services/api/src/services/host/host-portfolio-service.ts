@@ -13,6 +13,8 @@ import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
 
 export const HOSTED_EVENTS_DEFAULT_LIMIT = 20
 
+const DEFAULT_HOSTED_EVENTS_WHEN = "upcoming"
+
 export interface HostPortfolioCountsLoader {
   (cleanupIds: readonly string[]): Promise<Map<string, HostedEventCounts>>
 }
@@ -63,7 +65,7 @@ export function makeHostPortfolioService(deps: HostPortfolioServiceDeps): HostPo
       const organizationId = query.orgId ?? null
       const { items, nextCursor } = await deps.repo.listHostedEvents({
         userId,
-        when: query.when ?? "upcoming",
+        when: query.when ?? DEFAULT_HOSTED_EVENTS_WHEN,
         organizationId,
         cursor: query.cursor ?? null,
         limit,

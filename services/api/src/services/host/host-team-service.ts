@@ -37,22 +37,38 @@ import type {
   PendingInviteForUserRecord,
 } from "./host-team-repository.types.js"
 
+const DAY_SEC = 24 * 60 * 60
+const DAY_MS = DAY_SEC * 1000
+
 export const TEAM_INVITES_PER_EVENT_PER_DAY = 30
-const TEAM_INVITE_WINDOW_SEC = 24 * 60 * 60
+const TEAM_INVITE_WINDOW_SEC = DAY_SEC
+const TEAM_INVITE_COUNTER_KEY = "host:teamInvites"
 
-export const TEAM_INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000
+const TEAM_INVITE_TTL_DAYS = 14
+export const TEAM_INVITE_TTL_MS = TEAM_INVITE_TTL_DAYS * DAY_MS
 
-export const TEAM_INVITE_EMAIL_SCRUB_DELAY_MS = 7 * 24 * 60 * 60 * 1000
+export const TEAM_INVITE_EMAIL_SCRUB_DELAY_MS = 7 * DAY_MS
 
-export const TEAM_MEMBER_CAP = 200
+const TEAM_MEMBER_CAP = 200
 
-export const TEAM_INVITE_LIST_CAP = 100
+const TEAM_INVITE_LIST_CAP = 100
 
 export const MY_EVENT_INVITES_DEFAULT_LIMIT = 20
 
-export const TEAM_INVITE_TOKEN_BYTES = 32
+const TEAM_INVITE_TOKEN_BYTES = 32
 
 export const TEAM_INVITE_INBOX_LINK = "/"
+
+const ACTION_EMAIL_TEMPLATE = "action"
+
+const FALLBACK_EVENT_TITLE = "a civfix event"
+
+const EMAIL_MASK = "•••"
+
+/** The token rides the URL fragment, which browsers never send to the server. */
+function teamInviteAcceptPath(cleanupId: string, token: string): string {
+  return `/cleanups/${cleanupId}#teamInvite=${encodeURIComponent(token)}`
+}
 
 const TEAM_ROLE_LABEL_KEYS: Record<EventTeamRole, MessageKey> = {
   cohost: "role.cohost",
@@ -118,14 +134,14 @@ export interface HostTeamService {
 
 export function maskEmail(email: string): string {
   const at = email.indexOf("@")
-  if (at <= 0) return "•••"
+  if (at <= 0) return EMAIL_MASK
   const local = email.slice(0, at)
   const domain = email.slice(at + 1)
   const head = local.slice(0, 1)
   const dot = domain.lastIndexOf(".")
   const tld = dot >= 0 ? domain.slice(dot) : ""
-  const domainHead = dot > 0 ? domain.slice(0, 1) : domain.slice(0, 1)
-  return `${head}•••@${domainHead}•••${tld}`
+  const domainHead = domain.slice(0, 1)
+  return `${head}${EMAIL_MASK}@${domainHead}${EMAIL_MASK}${tld}`
 }
 
 function toInviteDTO(
@@ -208,7 +224,7 @@ export function teamInviteEmailVars(args: {
     ],
     ctaUrl: args.link,
     ctaLabel: "View the invitation",
-    note: "The invitation expires in 14 days. If you weren't expecting it, you can ignore this email.",
+    note: `The invitation expires in ${TEAM_INVITE_TTL_DAYS} days. If you weren't expecting it, you can ignore this email.`,
   }
 }
 
@@ -226,11 +242,11 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
     token: string,
   ): Promise<void> {
     if (deps.mailer === undefined) return
-    const link = `${deps.webOrigin}/cleanups/${cleanupId}#teamInvite=${encodeURIComponent(token)}`
+    const link = `${deps.webOrigin}${teamInviteAcceptPath(cleanupId, token)}`
     try {
       await deps.mailer.sendTransactional(
         email,
-        "action",
+        ACTION_EMAIL_TEMPLATE,
         teamInviteEmailVars({ title, role, link }),
       )
     } catch (err) {
@@ -309,7 +325,10 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
         invitedEmail: typedEmail,
       })
       if (alreadyOpen === null) {
-        const sent = await counters.incr(`host:teamInvites:${cleanupId}`, TEAM_INVITE_WINDOW_SEC)
+        const sent = await counters.incr(
+          `${TEAM_INVITE_COUNTER_KEY}:${cleanupId}`,
+          TEAM_INVITE_WINDOW_SEC,
+        )
         if (sent > TEAM_INVITES_PER_EVENT_PER_DAY) {
           throw AppError.rateLimited(
             "This event has sent too many team invitations today. Please try again tomorrow.",
@@ -340,7 +359,7 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
       if (outcome.kind === "already_invited" || outcome.kind === "updated") {
         return { ok: true, invite: toInviteDTO(outcome.invite) }
       }
-      const eventTitle = (await deps.eventTitleOf?.(cleanupId)) ?? "a civfix event"
+      const eventTitle = (await deps.eventTitleOf?.(cleanupId)) ?? FALLBACK_EVENT_TITLE
       if (notifyAt !== null) {
         await notifyInvitee(notifyAt, cleanupId, eventTitle, input.role, token)
       }

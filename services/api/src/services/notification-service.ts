@@ -26,6 +26,7 @@ import { mapWithLimit } from "./media-presign.js"
 import { classifyPushToken, isRegistrablePushEndpoint } from "./push-token-policy.js"
 import { renderMessage, type MessageKey, type MessageVars } from "../i18n/renderMessage.js"
 import { DEFAULT_LOCALE } from "../i18n/locales.js"
+import { actorDisplayName } from "./public-author.js"
 
 export {
   DEFAULT_PREFS,
@@ -40,13 +41,25 @@ export {
 } from "./notification-helpers.js"
 export type { PushGateMode } from "./notification-helpers.js"
 
-export const NOTIFICATIONS_DEFAULT_LIMIT = 20
+const NOTIFICATIONS_DEFAULT_LIMIT = 20
 
 export const NOTIFICATION_DEDUPE_WINDOW_MS = 5 * 60 * 1000
 
-export const BULK_NOTIFY_CONCURRENCY = 8
+const BULK_NOTIFY_CONCURRENCY = 8
 
 export const PUSH_FANOUT_BATCH_SIZE = 100
+
+const NOTIFICATIONS_TOPIC = "notifications"
+
+const INVALID_PUSH_TOKEN_MESSAGE = "Invalid push token"
+
+function postLink(postId: string): string {
+  return `/post/${postId}`
+}
+
+function personLink(userId: string): string {
+  return `/people/${userId}`
+}
 
 export interface NotificationRecord {
   id: string
@@ -91,6 +104,15 @@ export interface NotificationPrefsPatch {
   quietHours?: QuietHours | null
 }
 
+export interface CoalescedNotificationArgs {
+  userId: string
+  type: NotificationType
+  link: string
+  title: string
+  body: string | null
+  since: Date
+}
+
 export interface NotificationRepository {
   insertNotification(args: NewNotificationArgs): Promise<NotificationRecord>
 
@@ -108,23 +130,11 @@ export interface NotificationRepository {
     args: NewNotificationArgs & { since: Date },
   ): Promise<{ record: NotificationRecord; deduped: boolean }>
 
-  refreshUnreadNotification(args: {
-    userId: string
-    type: NotificationType
-    link: string
-    title: string
-    body: string | null
-    since: Date
-  }): Promise<NotificationRecord | null>
+  refreshUnreadNotification(args: CoalescedNotificationArgs): Promise<NotificationRecord | null>
 
-  upsertCoalescedNotification(args: {
-    userId: string
-    type: NotificationType
-    link: string
-    title: string
-    body: string | null
-    since: Date
-  }): Promise<{ record: NotificationRecord; coalesced: boolean }>
+  upsertCoalescedNotification(
+    args: CoalescedNotificationArgs,
+  ): Promise<{ record: NotificationRecord; coalesced: boolean }>
 
   deleteAllNotificationsForUser(userId: string): Promise<void>
 
@@ -177,12 +187,18 @@ export interface NotificationServiceDeps {
   isSafePushEndpoint?: (endpoint: string) => Promise<boolean>
 }
 
+export interface PostActivity {
+  recipientId: string
+  actorName: string
+  postId: string
+}
+
 export interface PostNotifier {
-  onPostLike(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
-  onPostRepost(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
-  onPostReply(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
-  onPostQuote(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
-  onPostMention(a: { recipientId: string; actorName: string; postId: string }): Promise<void>
+  onPostLike(a: PostActivity): Promise<void>
+  onPostRepost(a: PostActivity): Promise<void>
+  onPostReply(a: PostActivity): Promise<void>
+  onPostQuote(a: PostActivity): Promise<void>
+  onPostMention(a: PostActivity): Promise<void>
 }
 
 export interface FanOutNotificationResult {
@@ -219,6 +235,86 @@ interface ResolvedPrefs {
   unreadable: Set<string>
 }
 
+type PostActivityType = "post_like" | "post_repost" | "post_reply" | "post_quote" | "post_mention"
+
+interface PostActivitySpec {
+  titleKey: MessageKey
+  bodyKey: MessageKey
+  deduped: boolean
+}
+
+// Likes and reposts can be toggled repeatedly, so they are deduped; a reply, quote or mention is new
+// content every time.
+const POST_ACTIVITY_SPECS: Record<PostActivityType, PostActivitySpec> = {
+  post_like: {
+    titleKey: "notification.post.like.title",
+    bodyKey: "notification.post.like.body",
+    deduped: true,
+  },
+  post_repost: {
+    titleKey: "notification.post.repost.title",
+    bodyKey: "notification.post.repost.body",
+    deduped: true,
+  },
+  post_reply: {
+    titleKey: "notification.post.reply.title",
+    bodyKey: "notification.post.reply.body",
+    deduped: false,
+  },
+  post_quote: {
+    titleKey: "notification.post.quote.title",
+    bodyKey: "notification.post.quote.body",
+    deduped: false,
+  },
+  post_mention: {
+    titleKey: "notification.post.mention.title",
+    bodyKey: "notification.post.mention.body",
+    deduped: false,
+  },
+}
+
+interface CreatedNotification {
+  userId: string
+  record: NotificationRecord
+}
+
+interface PushGroup {
+  payload: PushPayload
+  userIds: string[]
+}
+
+function groupPushesByPayload(
+  created: readonly CreatedNotification[],
+  { byUser, unreadable }: ResolvedPrefs,
+  mode: PushGateMode,
+  at: Date,
+): Map<string, PushGroup> {
+  const groups = new Map<string, PushGroup>()
+  for (const { userId, record } of created) {
+    if (unreadable.has(userId)) continue
+    const prefs = byUser.get(userId) ?? DEFAULT_PREFS
+    if (!pushGateAllows(record.type, prefs, mode)) continue
+    if (isWithinQuietHours(at, prefs.quietStart, prefs.quietEnd, prefs.tz)) continue
+    const key = JSON.stringify([record.title, record.body, record.link])
+    const group = groups.get(key)
+    if (group) {
+      group.userIds.push(userId)
+      continue
+    }
+    groups.set(key, { payload: pushPayloadOf(record, { type: record.type }), userIds: [userId] })
+  }
+  return groups
+}
+
+function pushPayloadOf(record: NotificationRecord, data: Record<string, unknown>): PushPayload {
+  return {
+    title: record.title,
+    ...(record.body !== null ? { body: record.body } : {}),
+    ...(record.link !== null ? { link: record.link } : {}),
+    data,
+  }
+}
+
 export function makeNotificationService(deps: NotificationServiceDeps): NotificationService {
   const now = deps.now ?? (() => new Date())
   const isSafeEndpoint = deps.isSafePushEndpoint ?? isRegistrablePushEndpoint
@@ -240,12 +336,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
       if (!pushGateAllows(record.type, prefs, mode)) return
       if (isWithinQuietHours(now(), prefs.quietStart, prefs.quietEnd, prefs.tz)) return
 
-      const payload: PushPayload = {
-        title: record.title,
-        ...(record.body !== null ? { body: record.body } : {}),
-        ...(record.link !== null ? { link: record.link } : {}),
-        data: { type: record.type, notificationId: record.id },
-      }
+      const payload = pushPayloadOf(record, { type: record.type, notificationId: record.id })
       await deps.pushSender.send(userId, payload)
     } catch (err) {
       deps.logger?.warn(
@@ -258,7 +349,7 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   async function maybeSignalNotification(userId: string): Promise<void> {
     if (!deps.userChannel) return
     try {
-      await deps.userChannel.publishToUser(userId, { topic: "notifications" })
+      await deps.userChannel.publishToUser(userId, { topic: NOTIFICATIONS_TOPIC })
     } catch (err) {
       deps.logger?.warn({ err, userId }, "notification signal publish failed (suppressed)")
     }
@@ -395,6 +486,18 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     return toNotificationDTO(record)
   }
 
+  async function notifyPostActivity(type: PostActivityType, a: PostActivity): Promise<void> {
+    const spec = POST_ACTIVITY_SPECS[type]
+    await doCreateNotification(a.recipientId, {
+      type,
+      titleKey: spec.titleKey,
+      bodyKey: spec.bodyKey,
+      vars: { name: a.actorName },
+      link: postLink(a.postId),
+      ...(spec.deduped ? { dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS } : {}),
+    })
+  }
+
   async function prefsForMany(userIds: string[]): Promise<ResolvedPrefs> {
     if (deps.repo.findPrefsMany) {
       try {
@@ -432,34 +535,12 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   }
 
   async function sendBatchedPush(
-    created: Array<{ userId: string; record: NotificationRecord }>,
+    created: CreatedNotification[],
     mode: PushGateMode,
   ): Promise<void> {
     if (mode === "never") return
-    const { byUser, unreadable } = await prefsForMany(created.map((c) => c.userId))
-    const at = now()
-    const groups = new Map<string, { payload: PushPayload; userIds: string[] }>()
-    for (const { userId, record } of created) {
-      if (unreadable.has(userId)) continue
-      const prefs = byUser.get(userId) ?? DEFAULT_PREFS
-      if (!pushGateAllows(record.type, prefs, mode)) continue
-      if (isWithinQuietHours(at, prefs.quietStart, prefs.quietEnd, prefs.tz)) continue
-      const key = JSON.stringify([record.title, record.body, record.link])
-      const group = groups.get(key)
-      if (group) {
-        group.userIds.push(userId)
-        continue
-      }
-      groups.set(key, {
-        payload: {
-          title: record.title,
-          ...(record.body !== null ? { body: record.body } : {}),
-          ...(record.link !== null ? { link: record.link } : {}),
-          data: { type: record.type },
-        },
-        userIds: [userId],
-      })
-    }
+    const prefs = await prefsForMany(created.map((c) => c.userId))
+    const groups = groupPushesByPayload(created, prefs, mode, now())
     for (const group of groups.values()) {
       for (let i = 0; i < group.userIds.length; i += PUSH_FANOUT_BATCH_SIZE) {
         const batch = group.userIds.slice(i, i + PUSH_FANOUT_BATCH_SIZE)
@@ -475,11 +556,26 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
   async function signalMany(userIds: string[]): Promise<void> {
     if (!deps.userChannel) return
     try {
-      await deps.userChannel.publishToUsers(userIds, { topic: "notifications" })
+      await deps.userChannel.publishToUsers(userIds, { topic: NOTIFICATIONS_TOPIC })
     } catch (err) {
       deps.logger?.warn(
         { err, count: userIds.length },
         "notification signal publish failed (suppressed)",
+      )
+    }
+  }
+
+  function logFanOutFallbacks(
+    fallbacks: ReadonlyMap<FallbackLane, { count: number; err: unknown }>,
+    input: CreateNotificationInput,
+    recipients: number,
+  ): void {
+    for (const [lane, { count, err }] of fallbacks) {
+      deps.logger?.warn(
+        { err, type: input.type, lane, fallbacks: count, recipients },
+        lane === "coalesce"
+          ? "fan-out notification coalesce upsert failed; creating anyway"
+          : "fan-out notification dedupe insert failed; creating anyway",
       )
     }
   }
@@ -511,23 +607,14 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
         return null
       }
     })
-    for (const [lane, { count, err }] of fallbacks) {
-      deps.logger?.warn(
-        { err, type: input.type, lane, fallbacks: count, recipients: unique.length },
-        lane === "coalesce"
-          ? "fan-out notification coalesce upsert failed; creating anyway"
-          : "fan-out notification dedupe insert failed; creating anyway",
-      )
-    }
+    logFanOutFallbacks(fallbacks, input, unique.length)
     if (failed.length > 0) {
       deps.logger?.warn(
         { err: firstFailure, type: input.type, failed: failed.length, recipients: unique.length },
         "fan-out notification insert failed; reported to the caller",
       )
     }
-    const created = persisted.filter(
-      (p): p is { userId: string; record: NotificationRecord } => p !== null,
-    )
+    const created = persisted.filter((p): p is CreatedNotification => p !== null)
     if (created.length === 0) return { failed }
     void sendBatchedPush(created, input.push ?? "auto").catch((err: unknown) => {
       deps.logger?.error(
@@ -584,12 +671,12 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     async registerPushToken(userId: string, req: RegisterPushTokenRequest): Promise<{ ok: true }> {
       const shape = classifyPushToken(req.platform, req.token)
       if (!shape.ok) {
-        throw AppError.validation({ [shape.field]: shape.reason }, "Invalid push token")
+        throw AppError.validation({ [shape.field]: shape.reason }, INVALID_PUSH_TOKEN_MESSAGE)
       }
       if (shape.kind === "web" && (await isSafeEndpoint(shape.endpoint)) === false) {
         throw AppError.validation(
           { token: "subscription endpoint must be a public https push service" },
-          "Invalid push token",
+          INVALID_PUSH_TOKEN_MESSAGE,
         )
       }
       const outcome = await deps.repo.upsertPushToken({
@@ -647,88 +734,20 @@ export function makeNotificationService(deps: NotificationServiceDeps): Notifica
     },
 
     async onNewFollower(args: { followeeId: string; follower: PersonView }): Promise<void> {
-      const name =
-        args.follower.displayName.trim() !== ""
-          ? args.follower.displayName
-          : args.follower.handle
-            ? `@${args.follower.handle}`
-            : "Someone"
       await doCreateNotification(args.followeeId, {
         type: "new_follower",
         titleKey: "notification.follower.title",
         bodyKey: "notification.follower.body",
-        vars: { name },
-        link: `/people/${args.follower.id}`,
+        vars: { name: actorDisplayName(args.follower.displayName, args.follower.handle) },
+        link: personLink(args.follower.id),
         dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS,
       })
     },
 
-    async onPostLike(a: { recipientId: string; actorName: string; postId: string }): Promise<void> {
-      await doCreateNotification(a.recipientId, {
-        type: "post_like",
-        titleKey: "notification.post.like.title",
-        bodyKey: "notification.post.like.body",
-        vars: { name: a.actorName },
-        link: `/post/${a.postId}`,
-        dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS,
-      })
-    },
-
-    async onPostRepost(a: {
-      recipientId: string
-      actorName: string
-      postId: string
-    }): Promise<void> {
-      await doCreateNotification(a.recipientId, {
-        type: "post_repost",
-        titleKey: "notification.post.repost.title",
-        bodyKey: "notification.post.repost.body",
-        vars: { name: a.actorName },
-        link: `/post/${a.postId}`,
-        dedupeWindowMs: NOTIFICATION_DEDUPE_WINDOW_MS,
-      })
-    },
-
-    async onPostReply(a: {
-      recipientId: string
-      actorName: string
-      postId: string
-    }): Promise<void> {
-      await doCreateNotification(a.recipientId, {
-        type: "post_reply",
-        titleKey: "notification.post.reply.title",
-        bodyKey: "notification.post.reply.body",
-        vars: { name: a.actorName },
-        link: `/post/${a.postId}`,
-      })
-    },
-
-    async onPostQuote(a: {
-      recipientId: string
-      actorName: string
-      postId: string
-    }): Promise<void> {
-      await doCreateNotification(a.recipientId, {
-        type: "post_quote",
-        titleKey: "notification.post.quote.title",
-        bodyKey: "notification.post.quote.body",
-        vars: { name: a.actorName },
-        link: `/post/${a.postId}`,
-      })
-    },
-
-    async onPostMention(a: {
-      recipientId: string
-      actorName: string
-      postId: string
-    }): Promise<void> {
-      await doCreateNotification(a.recipientId, {
-        type: "post_mention",
-        titleKey: "notification.post.mention.title",
-        bodyKey: "notification.post.mention.body",
-        vars: { name: a.actorName },
-        link: `/post/${a.postId}`,
-      })
-    },
+    onPostLike: (a: PostActivity) => notifyPostActivity("post_like", a),
+    onPostRepost: (a: PostActivity) => notifyPostActivity("post_repost", a),
+    onPostReply: (a: PostActivity) => notifyPostActivity("post_reply", a),
+    onPostQuote: (a: PostActivity) => notifyPostActivity("post_quote", a),
+    onPostMention: (a: PostActivity) => notifyPostActivity("post_mention", a),
   }
 }

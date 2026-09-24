@@ -2,7 +2,7 @@ import type { CounterStore } from "../../abuse/counter-store.js"
 import type { Container } from "../../di.js"
 import type { Sql } from "../../db/client.js"
 import { makeMediaPresigner } from "../media-presign.js"
-import { makeGuestPromotionNotifier } from "../guest-notify.js"
+import { makeGuestPromotionNotifier, type GuestPromotionNotifier } from "../guest-notify.js"
 import { webBaseUrlOf } from "../../lib/base-url.js"
 import { makeDrizzleGuestRsvpRepository } from "../guest-rsvp-repository.drizzle.js"
 import { writeAudit } from "../admin/audit.js"
@@ -38,6 +38,8 @@ export interface HostServiceLogger {
   error(obj: unknown, msg?: string): void
 }
 
+const TRAILING_SLASHES = /\/+$/
+
 export interface HostRegistrationOverrides {
   guards?: HostGuards
   counters?: CounterStore
@@ -72,10 +74,10 @@ export interface HostRegistrationServices {
   checkin: CheckinService
 }
 
-export function platformMediaUrlPrefixes(container: Container): string[] {
+function platformMediaUrlPrefixes(container: Container): string[] {
   const bases = [container.env.R2_PUBLIC_BASE ?? "", container.env.PUBLIC_API_URL]
   return bases
-    .map((base) => base.trim().replace(/\/+$/, ""))
+    .map((base) => base.trim().replace(TRAILING_SLASHES, ""))
     .filter((base) => base.length > 0)
     .map((base) => `${base}/`)
 }
@@ -104,11 +106,41 @@ function auditWriter(sql: Sql, logger?: HostServiceLogger): RegistrationAudit {
   }
 }
 
-export function makeContainerRegistrationServices(
+type GuestTicketLookup = NonNullable<HostRegistrationOverrides["guestByManageToken"]>
+
+interface ResolvedRegistrationDeps {
+  sql: Sql | undefined
+  repo: HostRegistrationRepository
+  tokens: TicketTokenSigner
+  audit: RegistrationAudit | undefined
+  teamUserIds: ((cleanupId: string) => Promise<string[]>) | undefined
+  guestByManageToken: GuestTicketLookup | undefined
+  notifier: RegistrationNotifier
+  guests: GuestPromotionNotifier | undefined
+  counters: CounterStore
+  insightsInvalidator: InsightsInvalidator
+}
+
+function guestByManageTokenIn(sql: Sql): GuestTicketLookup {
+  return async (hash: string) => {
+    const rows = await sql<{ id: string; cleanup_id: string; cancelled_at: Date | null }[]>`
+      SELECT id, cleanup_id, cancelled_at FROM cleanup_guests
+       WHERE manage_token_hash = ${hash}
+       LIMIT 1
+    `
+    const row = rows[0]
+    return row === undefined
+      ? null
+      : { id: row.id, cleanupId: row.cleanup_id, cancelledAt: row.cancelled_at }
+  }
+}
+
+// A repo override means an offline test harness: nothing that would open the database is built then.
+function resolveRegistrationDeps(
   container: Container,
   overrides: HostRegistrationOverrides | undefined,
-  logger?: HostServiceLogger,
-): HostRegistrationServices {
+  logger: HostServiceLogger | undefined,
+): ResolvedRegistrationDeps {
   const sql = overrides?.repo === undefined ? container.getDb().sql : undefined
   const repo = overrides?.repo ?? makeDrizzleHostRegistrationRepository(sql as Sql)
   const tokens = overrides?.tokens ?? container.getTicketTokenSigner()
@@ -119,21 +151,7 @@ export function makeContainerRegistrationServices(
       ? undefined
       : (cleanupId: string) => hostTeamUserIds(sql, cleanupId, HOST_TEAM_SIGNAL_CAP))
   const guestByManageToken =
-    overrides?.guestByManageToken ??
-    (sql === undefined
-      ? undefined
-      : async (hash: string) => {
-          const rows = await sql<{ id: string; cleanup_id: string; cancelled_at: Date | null }[]>`
-            SELECT id, cleanup_id, cancelled_at FROM cleanup_guests
-             WHERE manage_token_hash = ${hash}
-             LIMIT 1
-          `
-          const row = rows[0]
-          return row === undefined
-            ? null
-            : { id: row.id, cleanupId: row.cleanup_id, cancelledAt: row.cancelled_at }
-        })
-
+    overrides?.guestByManageToken ?? (sql === undefined ? undefined : guestByManageTokenIn(sql))
   const notifier = lazyNotifier(container, logger)
   const guests =
     sql === undefined
@@ -152,6 +170,30 @@ export function makeContainerRegistrationServices(
           cache: container.getCache(),
           ...(logger !== undefined ? { logger } : {}),
         }))
+  return {
+    sql,
+    repo,
+    tokens,
+    audit,
+    teamUserIds,
+    guestByManageToken,
+    notifier,
+    guests,
+    counters,
+    insightsInvalidator,
+  }
+}
+
+export function makeContainerRegistrationServices(
+  container: Container,
+  overrides: HostRegistrationOverrides | undefined,
+  logger?: HostServiceLogger,
+): HostRegistrationServices {
+  const deps = resolveRegistrationDeps(container, overrides, logger)
+  const { repo, tokens, notifier, counters, insightsInvalidator } = deps
+  const clock = overrides?.now !== undefined ? { now: overrides.now } : {}
+  const log = logger !== undefined ? { logger } : {}
+  const audit = deps.audit !== undefined ? { audit: deps.audit } : {}
 
   const registrations = makeRegistrationService({
     repo,
@@ -160,13 +202,13 @@ export function makeContainerRegistrationServices(
     notifier,
     userChannel: container.userChannel,
     counters,
-    ...(audit !== undefined ? { audit } : {}),
+    ...audit,
     insightsInvalidator,
-    ...(teamUserIds !== undefined ? { teamUserIds } : {}),
-    ...(sql === undefined ? {} : { affiliations: container.getAffiliationLoader() }),
-    ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
+    ...(deps.teamUserIds !== undefined ? { teamUserIds: deps.teamUserIds } : {}),
+    ...(deps.sql === undefined ? {} : { affiliations: container.getAffiliationLoader() }),
+    ...clock,
     ...(overrides?.newId !== undefined ? { newId: overrides.newId } : {}),
-    ...(logger !== undefined ? { logger } : {}),
+    ...log,
   })
 
   return {
@@ -178,22 +220,19 @@ export function makeContainerRegistrationServices(
       jobs: container.jobs,
       counters,
       insightsInvalidator,
-      ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
-      ...(logger !== undefined ? { logger } : {}),
+      ...clock,
+      ...log,
     }),
-    questions: makeQuestionService({
-      repo,
-      ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
-    }),
+    questions: makeQuestionService({ repo, ...clock }),
     waitlist: makeWaitlistService({
       repo,
       registrations,
       jobs: container.jobs,
       notifier,
-      ...(guests !== undefined ? { guests } : {}),
-      ...(audit !== undefined ? { audit } : {}),
-      ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
-      ...(logger !== undefined ? { logger } : {}),
+      ...(deps.guests !== undefined ? { guests: deps.guests } : {}),
+      ...audit,
+      ...clock,
+      ...log,
     }),
     checkin: makeCheckinService({
       repo,
@@ -202,10 +241,12 @@ export function makeContainerRegistrationServices(
       ...(container.env.PUBLIC_API_URL.length > 0
         ? { publicApiUrl: container.env.PUBLIC_API_URL }
         : {}),
-      ...(guestByManageToken !== undefined ? { guestByManageToken } : {}),
-      ...(audit !== undefined ? { audit } : {}),
-      ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
-      ...(logger !== undefined ? { logger } : {}),
+      ...(deps.guestByManageToken !== undefined
+        ? { guestByManageToken: deps.guestByManageToken }
+        : {}),
+      ...audit,
+      ...clock,
+      ...log,
     }),
   }
 }

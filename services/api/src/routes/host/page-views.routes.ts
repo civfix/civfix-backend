@@ -7,7 +7,9 @@ import { parse } from "../_validate.js"
 import { makeCommsRuntime } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
 
-export const PAGE_VIEW_RATE_LIMIT = perHost({ max: 120, timeWindow: "1 minute" })
+const ONE_MINUTE = "1 minute"
+
+export const PAGE_VIEW_RATE_LIMIT = perHost({ max: 120, timeWindow: ONE_MINUTE })
 
 function headerOf(request: FastifyRequest, name: string): string | undefined {
   const value = request.headers[name]

@@ -32,7 +32,7 @@ import { officialPersonFlag } from "../../auth/official-account.js"
 
 export const REGISTRATION_ROSTER_DEFAULT_LIMIT = 25
 
-export function toRegistrantPerson(identity: RegistrantIdentity): PersonDTO {
+function toRegistrantPerson(identity: RegistrantIdentity): PersonDTO {
   const userId = identity.userId as string
   if (identity.deletedAt !== null) {
     return {
@@ -65,13 +65,17 @@ function iso(at: Date | null): string | null {
   return at === null ? null : at.toISOString()
 }
 
-export function salesOpenAt(record: TicketTypeRecord, now: Date): boolean {
+function dateOrNull(value: string | null | undefined): Date | null {
+  return value === null || value === undefined ? null : new Date(value)
+}
+
+function salesOpenAt(record: TicketTypeRecord, now: Date): boolean {
   if (record.salesOpensAt !== null && now < record.salesOpensAt) return false
   if (record.salesClosesAt !== null && now >= record.salesClosesAt) return false
   return true
 }
 
-export function remainingSeats(record: TicketTypeRecord): number | null {
+function remainingSeats(record: TicketTypeRecord): number | null {
   if (record.capacity === null) return null
   return Math.max(record.capacity - record.reservedSeats, 0)
 }
@@ -175,7 +179,7 @@ export function toEventRegistrationDTO(
   }
 }
 
-export function toMyRegistrationRef(
+function toMyRegistrationRef(
   record: RegistrationRecord,
   waitlistPosition: number | null,
   canCancel: boolean,
@@ -287,12 +291,12 @@ export function registrationStateOf(
   return open.some((t) => t.waitlistEnabled) ? "waitlist" : "full"
 }
 
-export interface AttachRegistrationFieldsDeps {
+interface AttachRegistrationFieldsDeps {
   repo: HostRegistrationRepository
   now?: () => Date
 }
 
-export async function attachRegistrationFieldsWith(
+async function attachRegistrationFieldsWith(
   deps: AttachRegistrationFieldsDeps,
   dtos: CleanupDTO[],
   viewerUserId: string | null,
@@ -315,15 +319,9 @@ export async function attachRegistrationFieldsWith(
       {
         status: dto.status,
         scheduledAt: new Date(dto.scheduledAt),
-        endsAt: dto.endsAt === null || dto.endsAt === undefined ? null : new Date(dto.endsAt),
-        registrationOpensAt:
-          dto.registrationOpensAt === null || dto.registrationOpensAt === undefined
-            ? null
-            : new Date(dto.registrationOpensAt),
-        registrationClosesAt:
-          dto.registrationClosesAt === null || dto.registrationClosesAt === undefined
-            ? null
-            : new Date(dto.registrationClosesAt),
+        endsAt: dateOrNull(dto.endsAt),
+        registrationOpensAt: dateOrNull(dto.registrationOpensAt),
+        registrationClosesAt: dateOrNull(dto.registrationClosesAt),
       },
       types,
       now,

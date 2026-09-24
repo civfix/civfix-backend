@@ -50,14 +50,6 @@ export function hasHostStanding(standing: HostStanding): boolean {
   return standing.eventRole !== null || standing.orgRole !== null
 }
 
-function isPubliclyVisible(resolution: HostStandingResolution): boolean {
-  return isEventPubliclyVisible(resolution.visibility)
-}
-
-function isMember(standing: HostStanding): boolean {
-  return hasHostStanding(standing)
-}
-
 export function notFoundCleanup(): AppError {
   return AppError.notFound("Cleanup not found")
 }
@@ -69,7 +61,9 @@ export async function resolveVisibleStanding(
 ): Promise<HostStandingResolution> {
   const resolution = await hostStandingOf(sql, cleanupId, userId)
   if (resolution === null) throw notFoundCleanup()
-  if (!isMember(resolution.standing) && !isPubliclyVisible(resolution)) throw notFoundCleanup()
+  if (!hasHostStanding(resolution.standing) && !isEventPubliclyVisible(resolution.visibility)) {
+    throw notFoundCleanup()
+  }
   return resolution
 }
 

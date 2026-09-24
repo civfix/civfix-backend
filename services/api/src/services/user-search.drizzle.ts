@@ -3,6 +3,23 @@ import { avatarGradient } from "@civfix/shared"
 import type { UserSearchResultDTO } from "@civfix/shared"
 import { escapeLike } from "./admin/like.js"
 
+interface UserSearchRow {
+  id: string
+  handle: string
+  display_name: string
+  avatar_url: string | null
+}
+
+function toSearchResult(r: UserSearchRow): UserSearchResultDTO {
+  return {
+    id: r.id,
+    handle: r.handle,
+    displayName: r.display_name,
+    avatar: avatarGradient(r.id),
+    ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
+  }
+}
+
 // Locked product rule: DM search never surfaces the viewer, deleted or handle-less users, accounts with
 // DMs turned off, or anyone blocked in either direction. The result shape carries no email, bio or
 // follower counts. The route has already stripped a leading `@` from `q`.
@@ -13,9 +30,7 @@ export async function searchByHandlePrefix(
   limit: number,
 ): Promise<UserSearchResultDTO[]> {
   const prefix = escapeLike(q) + "%"
-  const rows = await sql<
-    { id: string; handle: string; display_name: string; avatar_url: string | null }[]
-  >`
+  const rows = await sql<UserSearchRow[]>`
     SELECT u.id, u.handle, u.display_name, u.avatar_url
     FROM users u
     WHERE u.deleted_at IS NULL
@@ -33,13 +48,7 @@ export async function searchByHandlePrefix(
     ORDER BY u.handle ASC
     LIMIT ${limit}
   `
-  return rows.map((r) => ({
-    id: r.id,
-    handle: r.handle,
-    displayName: r.display_name,
-    avatar: avatarGradient(r.id),
-    ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
-  }))
+  return rows.map(toSearchResult)
 }
 
 // Keeps DM-disabled accounts (anyone is taggable) but, like DM search, never suggests a user blocked in
@@ -52,9 +61,7 @@ export async function searchMentionable(
   limit: number,
 ): Promise<UserSearchResultDTO[]> {
   const term = "%" + escapeLike(q) + "%"
-  const rows = await sql<
-    { id: string; handle: string; display_name: string; avatar_url: string | null }[]
-  >`
+  const rows = await sql<UserSearchRow[]>`
     SELECT u.id, u.handle, u.display_name, u.avatar_url
     FROM users u
     WHERE u.deleted_at IS NULL
@@ -71,11 +78,5 @@ export async function searchMentionable(
     ORDER BY u.handle ASC, u.display_name ASC
     LIMIT ${limit}
   `
-  return rows.map((r) => ({
-    id: r.id,
-    handle: r.handle,
-    displayName: r.display_name,
-    avatar: avatarGradient(r.id),
-    ...(r.avatar_url !== null ? { avatarUrl: r.avatar_url } : {}),
-  }))
+  return rows.map(toSearchResult)
 }

@@ -10,12 +10,17 @@ import {
 import { LIVE_TAIL_MS } from "@civfix/shared/host"
 import {
   ARRIVAL_BUCKET_MINUTES,
-  type AppliedBan,
   buildCheckinResult,
   emptyCheckinResult,
+} from "./registration-checkin.drizzle.js"
+import {
   guestSelfRegistrationOnPrivateEvent,
-  waitlistEntryAsRegistration,
-} from "./registration-repository.drizzle.js"
+  subjectOwner,
+  withinSalesWindow,
+} from "./registration-register.drizzle.js"
+import type { AppliedBan } from "./registration-roster.drizzle.js"
+import { MAX_TICKET_TYPES } from "./registration-ticket-types.drizzle.js"
+import { waitlistEntryAsRegistration } from "./registration-waitlist.drizzle.js"
 import type {
   AnswerRecord,
   CancelRegistrationOutcome,
@@ -63,8 +68,6 @@ interface MemoryGuest {
   name: string
 }
 
-const MAX_TICKET_TYPES = 20
-
 const ARRIVAL_BUCKET_MS = ARRIVAL_BUCKET_MINUTES * 60_000
 
 const SEEDED_EVENT_LEAD_MS = 7 * 24 * 60 * 60 * 1000
@@ -90,12 +93,6 @@ function subjectMatches(
   return subject.kind === "user"
     ? record.userId === subject.userId
     : record.guestId === subject.guestId
-}
-
-function withinWindow(now: Date, opensAt: Date | null, closesAt: Date | null): boolean {
-  if (opensAt !== null && now < opensAt) return false
-  if (closesAt !== null && now >= closesAt) return false
-  return true
 }
 
 export class InMemoryHostRegistrationRepository implements HostRegistrationRepository {
@@ -519,90 +516,91 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     }
   }
 
-  async registerTx(args: RegisterTxArgs): Promise<RegisterTxOutcome> {
-    const event = this.events.get(args.cleanupId)
-    if (event === undefined) return { kind: "not_found" }
-    if (guestSelfRegistrationOnPrivateEvent(args, event.visibility)) return { kind: "not_found" }
-
-    const owner =
-      args.idempotencyOwner ??
-      (args.subject.kind === "user"
-        ? `user:${args.subject.userId}`
-        : `guest:${args.subject.guestId}`)
-    const idempotencyKey = `${owner}:${args.idempotencyKey}`
-    const replayed = this.idempotency.get(idempotencyKey)
-    if (replayed !== undefined) {
-      const existing = this.registrations.get(replayed)
-      return {
-        kind: "replayed",
-        registration: existing === undefined ? null : this.toRecord(existing),
-      }
+  private replayOf(registrationId: string): RegisterTxOutcome {
+    const existing = this.registrations.get(registrationId)
+    return {
+      kind: "replayed",
+      registration: existing === undefined ? null : this.toRecord(existing),
     }
+  }
 
+  private eventRefusal(
+    args: RegisterTxArgs,
+    event: EventRegistrationContext,
+  ): RegisterTxOutcome | null {
     if (event.status === "cancelled") return { kind: "closed" }
-    if (!withinWindow(args.now, event.registrationOpensAt, event.registrationClosesAt)) {
+    if (!withinSalesWindow(args.now, event.registrationOpensAt, event.registrationClosesAt)) {
       return { kind: "registration_closed" }
     }
     if (args.subject.kind === "user" && this.isBanned(args.cleanupId, args.subject.userId)) {
       return { kind: "banned" }
     }
-
     const active = [...this.registrations.values()].find(
       (r) =>
         r.cleanupId === args.cleanupId &&
         r.status === "registered" &&
         subjectMatches(r, args.subject),
     )
-    if (active !== undefined) return { kind: "already_registered" }
+    return active === undefined ? null : { kind: "already_registered" }
+  }
 
+  private pickTicketType(
+    args: RegisterTxArgs,
+  ): { refusal: RegisterTxOutcome } | { type: TicketTypeRecord | null } {
     const types = this.typesOf(args.cleanupId)
     let type: TicketTypeRecord | null = null
     if (args.ticketTypeId !== null) {
       type = types.find((t) => t.id === args.ticketTypeId) ?? null
-      if (type === null) return { kind: "ticket_type_not_found" }
+      if (type === null) return { refusal: { kind: "ticket_type_not_found" } }
     } else if (types.length === 1) {
       type = types[0] ?? null
     } else if (types.length > 1) {
-      return { kind: "ticket_type_not_found" }
+      return { refusal: { kind: "ticket_type_not_found" } }
     }
     if (type !== null && type.visibility === "hidden" && args.source === "self") {
-      return { kind: "ticket_type_not_found" }
+      return { refusal: { kind: "ticket_type_not_found" } }
     }
+    return { type }
+  }
 
-    const partySize = args.seats.length
-    if (type !== null) {
-      if (type.visibility === "access_code" && args.waitlistId === null) {
-        const expected = this.accessCodeHashes.get(type.id) ?? null
-        if (args.accessCodeHash === null) return { kind: "access_code_required" }
-        if (args.accessCodeHash !== expected) return { kind: "access_code_invalid" }
-      }
-      if (partySize > type.maxPartySize) return { kind: "party_too_large" }
-      if (
-        args.waitlistId === null &&
-        !withinWindow(args.now, type.salesOpensAt, type.salesClosesAt)
-      ) {
-        return { kind: "sales_closed" }
-      }
-      if (
-        args.waitlistId === null &&
-        type.capacity !== null &&
-        type.reservedSeats + partySize > type.capacity
-      ) {
-        return { kind: "full" }
-      }
+  private ticketTypeRefusal(
+    args: RegisterTxArgs,
+    type: TicketTypeRecord,
+    partySize: number,
+  ): RegisterTxOutcome | null {
+    if (type.visibility === "access_code" && args.waitlistId === null) {
+      const expected = this.accessCodeHashes.get(type.id) ?? null
+      if (args.accessCodeHash === null) return { kind: "access_code_required" }
+      if (args.accessCodeHash !== expected) return { kind: "access_code_invalid" }
     }
-
-    if (type === null && event.capacity != null && args.waitlistId === null) {
-      const held = [...this.registrations.values()]
-        .filter((r) => r.cleanupId === args.cleanupId && r.status === "registered")
-        .reduce((sum, r) => sum + r.partySize, 0)
-      if (held + partySize > event.capacity) return { kind: "full" }
+    if (partySize > type.maxPartySize) return { kind: "party_too_large" }
+    if (args.waitlistId !== null) return null
+    if (!withinSalesWindow(args.now, type.salesOpensAt, type.salesClosesAt)) {
+      return { kind: "sales_closed" }
     }
+    if (type.capacity !== null && type.reservedSeats + partySize > type.capacity) {
+      return { kind: "full" }
+    }
+    return null
+  }
 
-    if (args.subject.kind === "user") this.members.add(`${args.cleanupId}:${args.subject.userId}`)
-    if (type !== null && args.waitlistId === null) type.reservedSeats += partySize
+  private eventCapacityRefusal(
+    args: RegisterTxArgs,
+    event: EventRegistrationContext,
+    partySize: number,
+  ): RegisterTxOutcome | null {
+    if (event.capacity == null || args.waitlistId !== null) return null
+    const held = [...this.registrations.values()]
+      .filter((r) => r.cleanupId === args.cleanupId && r.status === "registered")
+      .reduce((sum, r) => sum + r.partySize, 0)
+    return held + partySize > event.capacity ? { kind: "full" } : null
+  }
 
-    const id = this.newId()
+  private newRegistration(
+    args: RegisterTxArgs,
+    id: string,
+    type: TicketTypeRecord | null,
+  ): MemoryRegistration {
     const seats: SeatRecord[] = args.seats.map((seat, index) => ({
       id: seat.id,
       registrationId: id,
@@ -616,7 +614,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       noShowAt: null,
     }))
     const guest = args.subject.kind === "guest" ? this.guests.get(args.subject.guestId) : undefined
-    const registration: MemoryRegistration = {
+    return {
       id,
       cleanupId: args.cleanupId,
       ticketTypeId: type?.id ?? null,
@@ -635,7 +633,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
               deletedAt: null,
             }
           : null,
-      partySize,
+      partySize: args.seats.length,
       status: "registered",
       source: args.source,
       hostNote: null,
@@ -658,8 +656,37 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
         scrubbedAt: null,
       })),
     }
-    this.registrations.set(id, registration)
-    this.idempotency.set(idempotencyKey, id)
+  }
+
+  async registerTx(args: RegisterTxArgs): Promise<RegisterTxOutcome> {
+    const event = this.events.get(args.cleanupId)
+    if (event === undefined) return { kind: "not_found" }
+    if (guestSelfRegistrationOnPrivateEvent(args, event.visibility)) return { kind: "not_found" }
+
+    const owner = args.idempotencyOwner ?? subjectOwner(args.subject)
+    const idempotencyKey = `${owner}:${args.idempotencyKey}`
+    const replayed = this.idempotency.get(idempotencyKey)
+    if (replayed !== undefined) return this.replayOf(replayed)
+
+    const eventRefusal = this.eventRefusal(args, event)
+    if (eventRefusal !== null) return eventRefusal
+
+    const picked = this.pickTicketType(args)
+    if ("refusal" in picked) return picked.refusal
+    const { type } = picked
+    const partySize = args.seats.length
+    const refusal =
+      type === null
+        ? this.eventCapacityRefusal(args, event, partySize)
+        : this.ticketTypeRefusal(args, type, partySize)
+    if (refusal !== null) return refusal
+
+    if (args.subject.kind === "user") this.members.add(`${args.cleanupId}:${args.subject.userId}`)
+    if (type !== null && args.waitlistId === null) type.reservedSeats += partySize
+
+    const registration = this.newRegistration(args, this.newId(), type)
+    this.registrations.set(registration.id, registration)
+    this.idempotency.set(idempotencyKey, registration.id)
     if (type !== null) this.recomputeSold(type.id)
 
     return { kind: "registered", registration: this.toRecord(registration) }

@@ -71,6 +71,16 @@ function teamRoleRank(role: string): number {
   return TEAM_ROLE_RANK[role] ?? 0
 }
 
+const DAY_MS = 86_400_000
+
+const SEED_EVENT_LEAD_MS = 30 * DAY_MS
+
+const SEED_JOINED_AT = "2026-01-01T00:00:00.000Z"
+
+const SEED_DISPLAY_NAME = "Member"
+
+const SEED_EVENT_TITLE = "Beach cleanup"
+
 function compareIds(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0
 }
@@ -97,7 +107,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
   seedUser(over: Partial<StoredPerson> = {}): StoredPerson {
     const person: StoredPerson = {
       id: over.id ?? randomUUID(),
-      displayName: over.displayName ?? "Member",
+      displayName: over.displayName ?? SEED_DISPLAY_NAME,
       handle: over.handle ?? null,
       email: over.email ?? null,
       emailVerified: over.emailVerified ?? true,
@@ -111,7 +121,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
     cleanupId: string,
     userId: string,
     role: CleanupMemberRole,
-    joinedAt: Date = new Date("2026-01-01T00:00:00.000Z"),
+    joinedAt: Date = new Date(SEED_JOINED_AT),
   ): void {
     if (!this.users.has(userId)) this.seedUser({ id: userId })
     const existing = this.members.find((m) => m.cleanupId === cleanupId && m.userId === userId)
@@ -122,8 +132,8 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
   seedEvent(cleanupId: string, over: Partial<InviteEventView> = {}): InviteEventView {
     const event: InviteEventView = {
       id: cleanupId,
-      title: over.title ?? "Beach cleanup",
-      startsAt: over.startsAt ?? new Date(Date.now() + 30 * 86_400_000),
+      title: over.title ?? SEED_EVENT_TITLE,
+      startsAt: over.startsAt ?? new Date(Date.now() + SEED_EVENT_LEAD_MS),
       endsAt: over.endsAt ?? null,
       status: over.status ?? ("upcoming" as CleanupStatus),
       visibility: over.visibility ?? ("public" as EventVisibility),
@@ -148,6 +158,29 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
 
   seedBan(cleanupId: string, userId: string): void {
     this.bans.push({ cleanupId, userId })
+  }
+
+  private isBanned(cleanupId: string, userId: string): boolean {
+    return this.bans.some((b) => b.cleanupId === cleanupId && b.userId === userId)
+  }
+
+  /** Every closed invite drops the address it was sent to. */
+  private closeInvite(invite: StoredInvite, status: EventTeamInviteStatus, at: Date): void {
+    invite.status = status
+    invite.invitedEmail = null
+    invite.emailScrubbedAt = at
+  }
+
+  private acceptInvite(invite: StoredInvite, userId: string, now: Date): CleanupMemberRole {
+    const role = this.seatMember(invite.cleanupId, userId, invite.role, now)
+    this.closeInvite(invite, "accepted", now)
+    invite.acceptedAt = now
+    this.audits.push({
+      actorId: userId,
+      action: "event.team_role_changed",
+      target: `cleanup:${invite.cleanupId}`,
+    })
+    return role
   }
 
   private personOf(userId: string): CleanupPersonView | null {
@@ -261,10 +294,9 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
       if (member !== undefined && member.role !== "member") {
         return Promise.resolve({ kind: "already_member", role: member.role })
       }
-      const banned = this.bans.some(
-        (b) => b.cleanupId === args.cleanupId && b.userId === args.invitedUserId,
-      )
-      if (banned) return Promise.resolve({ kind: "banned" })
+      if (this.isBanned(args.cleanupId, args.invitedUserId)) {
+        return Promise.resolve({ kind: "banned" })
+      }
     }
     const open = this.openInviteFor(args)
     if (open !== undefined) {
@@ -319,9 +351,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
       (i) => i.id === args.inviteId && i.cleanupId === args.cleanupId && i.status === "pending",
     )
     if (invite === undefined) return Promise.resolve("not_found")
-    invite.status = "revoked"
-    invite.invitedEmail = null
-    invite.emailScrubbedAt = new Date()
+    this.closeInvite(invite, "revoked", new Date())
     this.audits.push({
       actorId: args.actorId,
       action: "event.team_invite_revoked",
@@ -345,9 +375,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
     }
     if (invite.invitedBy === args.userId) return Promise.resolve({ kind: "wrong_recipient" })
     if (invite.expiresAt.getTime() <= args.now.getTime()) {
-      invite.status = "expired"
-      invite.invitedEmail = null
-      invite.emailScrubbedAt = args.now
+      this.closeInvite(invite, "expired", args.now)
       return Promise.resolve({ kind: "expired" })
     }
     if (invite.invitedUserId !== null && invite.invitedUserId !== args.userId) {
@@ -358,19 +386,8 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
         return Promise.resolve({ kind: "wrong_recipient" })
       }
     }
-    if (this.bans.some((b) => b.cleanupId === args.cleanupId && b.userId === args.userId)) {
-      return Promise.resolve({ kind: "banned" })
-    }
-    const seated = this.seatMember(args.cleanupId, args.userId, invite.role, args.now)
-    invite.status = "accepted"
-    invite.acceptedAt = args.now
-    invite.invitedEmail = null
-    invite.emailScrubbedAt = args.now
-    this.audits.push({
-      actorId: args.userId,
-      action: "event.team_role_changed",
-      target: `cleanup:${args.cleanupId}`,
-    })
+    if (this.isBanned(args.cleanupId, args.userId)) return Promise.resolve({ kind: "banned" })
+    const seated = this.acceptInvite(invite, args.userId, args.now)
     return Promise.resolve({ kind: "accepted", role: seated })
   }
 
@@ -430,24 +447,11 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
     if (invite.status !== "pending") return Promise.resolve({ kind: "not_open" })
     if (this.isClosed(cleanupId)) return Promise.resolve({ kind: "closed" })
     if (invite.expiresAt.getTime() <= args.now.getTime()) {
-      invite.status = "expired"
-      invite.invitedEmail = null
-      invite.emailScrubbedAt = args.now
+      this.closeInvite(invite, "expired", args.now)
       return Promise.resolve({ kind: "expired" })
     }
-    if (this.bans.some((b) => b.cleanupId === cleanupId && b.userId === args.userId)) {
-      return Promise.resolve({ kind: "banned" })
-    }
-    const role = this.seatMember(cleanupId, args.userId, invite.role, args.now)
-    invite.status = "accepted"
-    invite.acceptedAt = args.now
-    invite.invitedEmail = null
-    invite.emailScrubbedAt = args.now
-    this.audits.push({
-      actorId: args.userId,
-      action: "event.team_role_changed",
-      target: `cleanup:${cleanupId}`,
-    })
+    if (this.isBanned(cleanupId, args.userId)) return Promise.resolve({ kind: "banned" })
+    const role = this.acceptInvite(invite, args.userId, args.now)
     return Promise.resolve({ kind: "accepted", cleanupId, role })
   }
 
@@ -461,9 +465,7 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
     )
     if (invite === undefined) return Promise.resolve("not_found")
     if (invite.status !== "pending") return Promise.resolve("not_pending")
-    invite.status = "declined"
-    invite.invitedEmail = null
-    invite.emailScrubbedAt = args.now
+    this.closeInvite(invite, "declined", args.now)
     this.audits.push({
       actorId: args.userId,
       action: "event.team_invite_declined",

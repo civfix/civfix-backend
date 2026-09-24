@@ -52,6 +52,9 @@ import { makeDrizzleOrganizationRepository } from "../../services/host/organizat
 import type { OrganizationRepository } from "../../services/host/organization-repository.types.js"
 import { webBaseUrlOf } from "../../lib/base-url.js"
 
+const ONE_MINUTE = "1 minute"
+const ONE_HOUR = "1 hour"
+
 export interface OrganizationOverrides {
   repo: OrganizationRepository
   counters?: OrganizationServiceDeps["counters"]
@@ -91,15 +94,15 @@ const OrgEventsQuerySchema = z
   })
   .strict()
 
-export const CREATE_ORG_RATE_LIMIT = perIdentity({ max: 5, timeWindow: "1 hour" })
+export const CREATE_ORG_RATE_LIMIT = perIdentity({ max: 5, timeWindow: ONE_HOUR })
 
-export const ORG_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
+export const ORG_MUTATION_RATE_LIMIT = perIdentity({ max: 30, timeWindow: ONE_MINUTE })
 
-export const ORG_INVITE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: "1 hour" })
+export const ORG_INVITE_RATE_LIMIT = perIdentity({ max: 20, timeWindow: ONE_HOUR })
 
-export const ORG_VERIFICATION_RATE_LIMIT = perIdentity({ max: 3, timeWindow: "1 hour" })
+export const ORG_VERIFICATION_RATE_LIMIT = perIdentity({ max: 3, timeWindow: ONE_HOUR })
 
-export const PUBLIC_ORG_READ_RATE_LIMIT = perHost({ max: 120, timeWindow: "1 minute" })
+export const PUBLIC_ORG_READ_RATE_LIMIT = perHost({ max: 120, timeWindow: ONE_MINUTE })
 
 const CreateOrganizationBodySchema = trimTextFields(
   CreateOrganizationRequestSchema,
