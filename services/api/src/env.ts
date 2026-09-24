@@ -1,4 +1,3 @@
-
 import { z } from "zod"
 import { DEFAULT_FEED_RANKING, FeedRankingConfigSchema } from "@civfix/shared"
 import type { FeedRankingConfig } from "@civfix/shared"
@@ -86,7 +85,8 @@ export const FAKE_SEAM_FLAGS: ReadonlyArray<{ flag: keyof FakeFlags; consequence
   },
   {
     flag: "USE_FAKE_GEOCODER",
-    consequence: 'every report is labeled "Los Angeles, CA" and that label is persisted as civic record',
+    consequence:
+      'every report is labeled "Los Angeles, CA" and that label is persisted as civic record',
   },
   {
     flag: "USE_FAKE_SMS",
@@ -224,10 +224,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
           "(it signs the anon-report claim tokens)",
       )
     }
-    if (
-      SESSION_SIGNING_KEY.length > 0 &&
-      SESSION_SIGNING_KEY === ANON_TOKEN_SIGNING_KEY
-    ) {
+    if (SESSION_SIGNING_KEY.length > 0 && SESSION_SIGNING_KEY === ANON_TOKEN_SIGNING_KEY) {
       errors.push(
         "SESSION_SIGNING_KEY / ANON_TOKEN_SIGNING_KEY: must be DIFFERENT values in production " +
           "(one shared secret lets a session-cookie oracle and an anon-token oracle attack the same key)",
@@ -266,11 +263,11 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     min: -180,
     max: 180,
   })
-  const HOME_REGION_RADIUS_KM = reqNumber(
-    "HOME_REGION_RADIUS_KM",
-    HOME_REGION_RADIUS_KM_DEFAULT,
-    { min: 0, max: 20_000, exclusiveMin: true },
-  )
+  const HOME_REGION_RADIUS_KM = reqNumber("HOME_REGION_RADIUS_KM", HOME_REGION_RADIUS_KM_DEFAULT, {
+    min: 0,
+    max: 20_000,
+    exclusiveMin: true,
+  })
 
   const FEED_RANKING = reqFeedRanking("FEED_RANKING")
 
@@ -293,13 +290,15 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (!fakeFlags.USE_FAKE_GEOCODER && DATABASE_URL.length === 0) {
     errors.push(
       "DATABASE_URL: required whenever USE_FAKE_GEOCODER is false — the real geocoder resolves its " +
-        "\"City, ST\" label from the jurisdictions PostGIS table, so there is nothing to query without a database",
+        '"City, ST" label from the jurisdictions PostGIS table, so there is nothing to query without a database',
     )
   }
 
   const R2_ACCOUNT_ID = reqStr("R2_ACCOUNT_ID", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
   const R2_ACCESS_KEY_ID = reqStr("R2_ACCESS_KEY_ID", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
-  const R2_SECRET_ACCESS_KEY = reqStr("R2_SECRET_ACCESS_KEY", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
+  const R2_SECRET_ACCESS_KEY = reqStr("R2_SECRET_ACCESS_KEY", {
+    gatedOff: fakeFlags.USE_FAKE_STORAGE,
+  })
   const R2_BUCKET = reqStr("R2_BUCKET", { gatedOff: fakeFlags.USE_FAKE_STORAGE })
 
   const R2_INBOUND_BUCKET = (source.R2_INBOUND_BUCKET ?? "").trim()
@@ -424,7 +423,10 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     OCI_EMAIL_SMTP_PASS,
     OCI_EMAIL_SMTP_TIMEOUT_MS,
     OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
-    VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS: parsePositiveIntOr(source.VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS, 60),
+    VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS: parsePositiveIntOr(
+      source.VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS,
+      60,
+    ),
     MAIL_FROM_NOREPLY: (source.MAIL_FROM_NOREPLY ?? "").trim() || "no-reply@civfix.org",
     MAIL_FROM_OUTREACH: (source.MAIL_FROM_OUTREACH ?? "").trim() || "outreach@civfix.org",
     HOME_TURF_MAIL_FROM: (source.HOME_TURF_MAIL_FROM ?? "").trim() || "donotreply@civfix.org",

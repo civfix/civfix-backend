@@ -61,14 +61,20 @@ describe("nudgeBackend", () => {
   })
 
   it("logs a rejected nudge instead of dropping it silently", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 401 })))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 401 })),
+    )
     const error = vi.spyOn(console, "error").mockImplementation(() => {})
     await nudgeBackend(env, "inbound/pending/a.eml")
     expect(error.mock.calls[0]?.[0]).toContain("HTTP 401 for inbound/pending/a.eml")
   })
 
   it("logs a network failure", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new Error("offline"))))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Promise.reject(new Error("offline"))),
+    )
     const error = vi.spyOn(console, "error").mockImplementation(() => {})
     await nudgeBackend(env, "inbound/pending/b.eml")
     expect(error).toHaveBeenCalledTimes(1)

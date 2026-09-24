@@ -2,10 +2,7 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 import { csvCell, csvProvenanceRow, csvRow } from "../../src/services/host/export-csv.js"
-import {
-  makeHostExportService,
-  toHostExportDTO,
-} from "../../src/services/host/export-service.js"
+import { makeHostExportService, toHostExportDTO } from "../../src/services/host/export-service.js"
 import {
   hostExportBuilder,
   registerHostExportBuilder,
@@ -25,7 +22,7 @@ describe("csv cells", () => {
   })
 
   it("prefixes formula-injection cells", () => {
-    expect(csvCell("=HYPERLINK(\"https://evil.example\")")).toContain("'=")
+    expect(csvCell('=HYPERLINK("https://evil.example")')).toContain("'=")
     expect(csvCell("+1")).toBe("'+1")
     expect(csvCell("-1")).toBe("'-1")
     expect(csvCell("@x")).toBe("'@x")
@@ -143,9 +140,16 @@ function harness(
     ...(authorize !== undefined ? { authorize } : {}),
     now: () => new Date("2026-02-05T12:00:00Z"),
   })
-  return { service, puts, deletes, claims, current: () => current, setCurrent: (patch: Partial<HostExportRecord>) => {
-    current = { ...current, ...patch }
-  } }
+  return {
+    service,
+    puts,
+    deletes,
+    claims,
+    current: () => current,
+    setCurrent: (patch: Partial<HostExportRecord>) => {
+      current = { ...current, ...patch }
+    },
+  }
 }
 
 describe("host export build", () => {
@@ -158,9 +162,9 @@ describe("host export build", () => {
     const put = h.puts[0]!
     expect(put.key).toBe("exports/host/2026/02/00000000-0000-0000-0000-0000000000e1.csv")
     expect(put.meta).toMatchObject({ contentType: "text/csv; charset=utf-8" })
-    expect(String(put.meta && (put.meta as { contentDisposition: string }).contentDisposition)).toContain(
-      "attachment;",
-    )
+    expect(
+      String(put.meta && (put.meta as { contentDisposition: string }).contentDisposition),
+    ).toContain("attachment;")
     const text = put.body.toString("utf8")
     expect(text).toContain("# member email is never included")
     expect(text).toContain("# k=5 note")

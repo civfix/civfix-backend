@@ -123,10 +123,15 @@ describe("forward-template service: preview", () => {
 
   it("previews {photoLinks} as one numbered '- Photo <n>: <link>' line per sample photo", async () => {
     const { svc } = harness()
-    const preview = await svc.preview({ subjectTemplate: null, bodyTemplate: "Links:\n{photoLinks}" })
+    const preview = await svc.preview({
+      subjectTemplate: null,
+      bodyTemplate: "Links:\n{photoLinks}",
+    })
     const urls = sample("photoLinks").split("\n")
     expect(urls.length).toBeGreaterThan(0)
-    expect(preview.text).toContain(`Links:\n${urls.map((u, i) => `- Photo ${i + 1}: ${u}`).join("\n")}`)
+    expect(preview.text).toContain(
+      `Links:\n${urls.map((u, i) => `- Photo ${i + 1}: ${u}`).join("\n")}`,
+    )
     urls.forEach((u, i) => {
       expect(preview.html).toContain(`- Photo ${i + 1}: <a class="cv-link" href="${u}"`)
     })
@@ -134,7 +139,10 @@ describe("forward-template service: preview", () => {
 
   it("appends the operator note WITHOUT a heading when the body does not render {operatorNote}", async () => {
     const { svc } = harness()
-    const preview = await svc.preview({ subjectTemplate: null, bodyTemplate: "A {category} report." })
+    const preview = await svc.preview({
+      subjectTemplate: null,
+      bodyTemplate: "A {category} report.",
+    })
     expect(preview.text).toContain(`> ${sample("operatorNote")}`)
     expect(preview.text).not.toContain("Note from the civfix team")
     expect(preview.html).not.toContain("Note from the civfix team")

@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import type {
   PersonView,
@@ -70,8 +69,14 @@ export class InMemorySocialRepository implements SocialRepository {
   }
 
   private bumpCounters(followerId: string, followeeId: string, delta: number): void {
-    this.followerCounts.set(followeeId, Math.max((this.followerCounts.get(followeeId) ?? 0) + delta, 0))
-    this.followingCounts.set(followerId, Math.max((this.followingCounts.get(followerId) ?? 0) + delta, 0))
+    this.followerCounts.set(
+      followeeId,
+      Math.max((this.followerCounts.get(followeeId) ?? 0) + delta, 0),
+    )
+    this.followingCounts.set(
+      followerId,
+      Math.max((this.followingCounts.get(followerId) ?? 0) + delta, 0),
+    )
   }
 
   seedCleanup(record: CleanupRecord, attendees: string[] = []): void {
@@ -159,7 +164,10 @@ export class InMemorySocialRepository implements SocialRepository {
     )
   }
 
-  private activityPoint(userId: string, organizedOnly: boolean): { lat: number; lng: number } | null {
+  private activityPoint(
+    userId: string,
+    organizedOnly: boolean,
+  ): { lat: number; lng: number } | null {
     const mine = this.cleanups
       .filter((c) =>
         organizedOnly
@@ -189,7 +197,10 @@ export class InMemorySocialRepository implements SocialRepository {
     const NEARBY_METERS = 25_000
     const RADIUS_METERS = SUGGEST_CANDIDATE_RADIUS_DEG * 111_320
     const viewerPoint = this.activityPoint(args.viewerId, false)
-    const haversine = (a: { lat: number; lng: number }, b: { lat: number; lng: number }): number => {
+    const haversine = (
+      a: { lat: number; lng: number },
+      b: { lat: number; lng: number },
+    ): number => {
       const toRad = (d: number): number => (d * Math.PI) / 180
       const dLat = toRad(b.lat - a.lat)
       const dLng = toRad(b.lng - a.lng)
@@ -314,7 +325,8 @@ export class InMemorySocialRepository implements SocialRepository {
     const needle = handle.toLowerCase()
     for (const u of this.users.values()) {
       if (u.deletedAt !== null) continue
-      if (u.handle !== null && u.handle.toLowerCase() === needle) return Promise.resolve(this.toView(u))
+      if (u.handle !== null && u.handle.toLowerCase() === needle)
+        return Promise.resolve(this.toView(u))
     }
     return Promise.resolve(null)
   }
@@ -389,8 +401,7 @@ export class InMemorySocialRepository implements SocialRepository {
     const mine = this.cleanups
       .filter(
         (c) =>
-          c.record.organizerUserId === userId ||
-          (args.includeAttending && c.attendees.has(userId)),
+          c.record.organizerUserId === userId || (args.includeAttending && c.attendees.has(userId)),
       )
       .map((c) => c.record)
       .filter((r) => r.scheduledAt.getTime() >= now && r.status !== "cancelled")
@@ -423,7 +434,9 @@ function parseNameCursor(cursor: string | null): { name: string; id: string } | 
   return { name, id }
 }
 
-export function makeCleanupRecord(over: Partial<CleanupRecord> & { organizerUserId: string }): CleanupRecord {
+export function makeCleanupRecord(
+  over: Partial<CleanupRecord> & { organizerUserId: string },
+): CleanupRecord {
   const id = over.id ?? randomUUID()
   const scheduledAt = over.scheduledAt ?? new Date("2025-01-01T10:00:00.000Z")
   return {

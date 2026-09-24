@@ -1,6 +1,9 @@
 import type { ChatMessageDTO, UserMentionDTO } from "@civfix/shared"
 import type { PersistChatInput } from "@civfix/shared/interfaces"
-import { resolveAndRecordChatMentions, type ChatMentionRecordSeam } from "./chat-mention-resolver.js"
+import {
+  resolveAndRecordChatMentions,
+  type ChatMentionRecordSeam,
+} from "./chat-mention-resolver.js"
 import { neutralizeChatViewerFields } from "./chat-viewer-fields.js"
 import { mapWithLimit } from "./media-presign.js"
 import { roomKeyFor } from "../ws/gateway.js"

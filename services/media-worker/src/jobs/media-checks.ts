@@ -1,11 +1,6 @@
-
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 import type { AbuseChecks, Storage, StorageHead } from "@civfix/shared/interfaces"
-import type {
-  MediaResultPatch,
-  MediaWorkerAsset,
-  MediaWorkerRepo,
-} from "@civfix/api/media-repo"
+import type { MediaResultPatch, MediaWorkerAsset, MediaWorkerRepo } from "@civfix/api/media-repo"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import type { WorkerLimits } from "../config.js"
 import { DownloadTooLargeError, type DownloadedObject, type DownloadFn } from "../download.js"
@@ -15,11 +10,7 @@ import { readEtag } from "@civfix/api/media-repo"
 import { SandboxSpawnError } from "../sandbox/exec.js"
 import { servedKey, thumbnailKey } from "./media-keys.js"
 import { deleteRejectedObjects, deleteSupersededUpload } from "./reject-cleanup.js"
-import {
-  processMedia,
-  errNote,
-  type MediaProcessResult,
-} from "./media-pipeline.js"
+import { processMedia, errNote, type MediaProcessResult } from "./media-pipeline.js"
 
 export * from "./media-pipeline.js"
 

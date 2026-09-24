@@ -260,7 +260,8 @@ export class PgBossWorkerJobs implements WorkerJobs {
       // pg-boss's batch-level fail retries the batch rather than losing the outcome silently. Jobs
       // already marked complete are unaffected (failJobsById only matches state < 'completed').
       const broken = settled.find((r): r is PromiseRejectedResult => r.status === "rejected")
-      if (broken) throw broken.reason instanceof Error ? broken.reason : new Error(String(broken.reason))
+      if (broken)
+        throw broken.reason instanceof Error ? broken.reason : new Error(String(broken.reason))
     })
   }
 
@@ -268,19 +269,25 @@ export class PgBossWorkerJobs implements WorkerJobs {
     // The shared Jobs.complete is name-agnostic; pg-boss v10 needs the queue name. workWithSettings
     // completes each delivered job itself (where the queue name IS known), so nothing on the worker calls
     // this. Log if it ever is (a silent no-op would mask a misuse) rather than guessing a queue name.
-    console.warn("PgBossWorkerJobs.complete is unsupported on the worker (the work loop completes jobs)", {
-      jobId,
-    })
+    console.warn(
+      "PgBossWorkerJobs.complete is unsupported on the worker (the work loop completes jobs)",
+      {
+        jobId,
+      },
+    )
     return Promise.resolve()
   }
 
   async fail(jobId: string, err?: unknown): Promise<void> {
     // Likewise unsupported for want of a queue name: a silent no-op would discard both the job AND its
     // error. Handlers signal failure by throwing; the work loop fails that job by id.
-    console.warn("PgBossWorkerJobs.fail is unsupported on the worker (throw to fail a job instead)", {
-      jobId,
-      err: err === undefined ? undefined : String(err),
-    })
+    console.warn(
+      "PgBossWorkerJobs.fail is unsupported on the worker (throw to fail a job instead)",
+      {
+        jobId,
+        err: err === undefined ? undefined : String(err),
+      },
+    )
     return Promise.resolve()
   }
 }

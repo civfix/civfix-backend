@@ -1,4 +1,3 @@
-
 import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { ReportCategory } from "@civfix/shared"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
@@ -17,21 +16,14 @@ export interface OutreachDigest {
 export interface OutreachRepository {
   loadDigest(geoid: string): Promise<OutreachDigest | null>
   listCandidateGeoids(limit?: number): Promise<string[]>
-  claimOutreachWindow?(
-    geoid: string,
-    window: { at: Date; windowStart: Date },
-  ): Promise<boolean>
+  claimOutreachWindow?(geoid: string, window: { at: Date; windowStart: Date }): Promise<boolean>
 }
 
 export const OUTREACH_SWEEP_BATCH_SIZE = 200
 
 export const OUTREACH_CATEGORIES: readonly ReportCategory[] = ADMIN_CATEGORIES
 
-export function isThrottled(
-  lastOutreachAt: Date | null,
-  now: Date,
-  throttleDays: number,
-): boolean {
+export function isThrottled(lastOutreachAt: Date | null, now: Date, throttleDays: number): boolean {
   if (lastOutreachAt === null) return false
   const windowMs = throttleDays * 24 * 60 * 60 * 1000
   return now.getTime() - lastOutreachAt.getTime() < windowMs

@@ -1,4 +1,3 @@
-
 import { AppError } from "@civfix/shared"
 import type {
   ComposeRequest,
@@ -157,7 +156,9 @@ export function resolveCorrespondent(
   replyDomain?: string,
 ): string | null {
   const ourDomains = new Set(
-    [domainOf(fromOutreach), replyDomain ?? ""].map((d) => d.trim().toLowerCase()).filter((d) => d.length > 0),
+    [domainOf(fromOutreach), replyDomain ?? ""]
+      .map((d) => d.trim().toLowerCase())
+      .filter((d) => d.length > 0),
   )
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
@@ -168,7 +169,11 @@ export function resolveCorrespondent(
   return null
 }
 
-function isOurAddress(from: string, fromOutreach: string, ourDomains: ReadonlySet<string>): boolean {
+function isOurAddress(
+  from: string,
+  fromOutreach: string,
+  ourDomains: ReadonlySet<string>,
+): boolean {
   if (addressesEqual(from, fromOutreach)) return true
   const addr = emailOf(from)
   if (addr === null) return false

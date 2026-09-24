@@ -247,7 +247,11 @@ describe("H2: operator authority is re-checked against ADMIN_EMAILS on EVERY adm
       headers: { authorization: `Bearer ${token}` },
     })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { authenticated: boolean; operator?: { email: string }; csrfToken?: string }
+    const body = res.json() as {
+      authenticated: boolean
+      operator?: { email: string }
+      csrfToken?: string
+    }
     expect(body.authenticated).toBe(true)
     expect(body.operator?.email).toBe(ALLOWED)
     expect(body.csrfToken).toBeTruthy()

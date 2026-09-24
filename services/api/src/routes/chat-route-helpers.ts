@@ -1,4 +1,3 @@
-
 import { AppError, type ChatHistoryResponse, type ChatMessageDTO } from "@civfix/shared"
 import type { ChatHistoryPage, ChatService } from "@civfix/shared/interfaces"
 import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
@@ -94,7 +93,9 @@ export async function deleteMessageWithPowers(
 
   const roomView = neutralizeChatViewerFields(tombstone)
   if (input.legacyBroadcast) {
-    void Promise.resolve(input.chat.broadcast(roomKeyFor(roomKind, roomId), roomView)).catch(() => {})
+    void Promise.resolve(input.chat.broadcast(roomKeyFor(roomKind, roomId), roomView)).catch(
+      () => {},
+    )
   }
   broadcastMessageUpdate(input.chat, roomKind, roomId, roomView)
   return tombstone

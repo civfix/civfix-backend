@@ -27,9 +27,8 @@ let timezoneSet: ReadonlySet<string> | null = null
 
 function supportedTimezones(): ReadonlySet<string> {
   if (timezoneSet !== null) return timezoneSet
-  const supported = (
-    Intl as unknown as { supportedValuesOf?: (key: string) => string[] }
-  ).supportedValuesOf
+  const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] })
+    .supportedValuesOf
   const values =
     typeof supported === "function" ? supported.call(Intl, "timeZone") : [...FALLBACK_TIMEZONES]
   timezoneSet = new Set(values.length > 0 ? values : FALLBACK_TIMEZONES)

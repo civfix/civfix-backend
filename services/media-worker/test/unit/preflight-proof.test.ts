@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest"
 import { parseProcStatus, sandboxProofFailure } from "../../src/sandbox/preflight.js"
 import { assertSandboxPreflight } from "../../src/sandbox/preflight.js"
@@ -54,28 +53,32 @@ describe("sandboxProofFailure", () => {
   })
 
   it("FAILS the ambient-capability leak this finding is about", () => {
-    const leaked = status({ CapAmb: "00000000000000c0", CapPrm: "00000000000000c0", CapEff: "00000000000000c0" })
+    const leaked = status({
+      CapAmb: "00000000000000c0",
+      CapPrm: "00000000000000c0",
+      CapEff: "00000000000000c0",
+    })
     expect(sandboxProofFailure(leaked, IDENTITY, WORKER)).toMatch(/CapInh|CapPrm|CapEff|CapAmb/)
   })
 
   it("fails any non-zero effective, permitted or inheritable set", () => {
     for (const name of ["CapInh", "CapPrm", "CapEff", "CapAmb"]) {
-      expect(sandboxProofFailure(status({ [name]: "0000000000000040" }), IDENTITY, WORKER)).toContain(
-        name,
-      )
+      expect(
+        sandboxProofFailure(status({ [name]: "0000000000000040" }), IDENTITY, WORKER),
+      ).toContain(name)
     }
   })
 
   it("fails a child that is not fully the sandbox uid/gid (incl. a saved-set escape hatch)", () => {
-    expect(sandboxProofFailure(status({ Uid: "1001\t1001\t1000\t1001" }), IDENTITY, WORKER)).toMatch(
-      /Uid/,
-    )
-    expect(sandboxProofFailure(status({ Gid: "1001\t1001\t1001\t1000" }), IDENTITY, WORKER)).toMatch(
-      /Gid/,
-    )
-    expect(sandboxProofFailure(status({ Uid: "1000\t1000\t1000\t1000" }), IDENTITY, WORKER)).toMatch(
-      /Uid/,
-    )
+    expect(
+      sandboxProofFailure(status({ Uid: "1001\t1001\t1000\t1001" }), IDENTITY, WORKER),
+    ).toMatch(/Uid/)
+    expect(
+      sandboxProofFailure(status({ Gid: "1001\t1001\t1001\t1000" }), IDENTITY, WORKER),
+    ).toMatch(/Gid/)
+    expect(
+      sandboxProofFailure(status({ Uid: "1000\t1000\t1000\t1000" }), IDENTITY, WORKER),
+    ).toMatch(/Uid/)
   })
 
   it("tolerates the container's own CAP_SETUID/CAP_SETGID bounding set, rejects anything wider", () => {

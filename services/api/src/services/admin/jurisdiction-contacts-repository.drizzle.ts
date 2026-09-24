@@ -1,4 +1,3 @@
-
 import type { Sql } from "../../db/client.js"
 import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination.js"
 import { writeAudit } from "./audit.js"
@@ -144,7 +143,13 @@ export function makeDrizzleJurisdictionContactsRepository(
       audit: { actorId: string | null },
     ): Promise<{ taskResolved: boolean }> {
       const committed = await sql.begin(async (tx) => {
-        await upsertJurisdictionContacts(tx, geoid, input.contacts, input.defaultEmails, input.formUrl)
+        await upsertJurisdictionContacts(
+          tx,
+          geoid,
+          input.contacts,
+          input.defaultEmails,
+          input.formUrl,
+        )
         await tx`
           UPDATE jurisdictions
           SET contact_updated_at = now(),
@@ -265,7 +270,9 @@ export function makeDrizzleJurisdictionContactsRepository(
           target: `jurisdiction:${geoid}`,
           meta: {
             geoid,
-            fields: Object.keys(input).filter((k) => (input as Record<string, unknown>)[k] !== undefined),
+            fields: Object.keys(input).filter(
+              (k) => (input as Record<string, unknown>)[k] !== undefined,
+            ),
           },
         })
         return true
@@ -312,8 +319,7 @@ export function makeDrizzleJurisdictionContactsRepository(
               ? sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr})`
               : args.filter === "routed"
                 ? sql`AND (${hasEmailExpr} OR ${hasFormExpr})`
-                :
-                  args.filter === "needs_mapping"
+                : args.filter === "needs_mapping"
                   ? sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr}) AND COALESCE(w.total, 0) > 0`
                   : sql``
 
@@ -324,8 +330,7 @@ export function makeDrizzleJurisdictionContactsRepository(
           ? sql`ORDER BY COALESCE(w.total, 0) DESC, j.geoid ASC`
           : args.sort === "name"
             ? sql`ORDER BY j.name ASC, j.geoid ASC`
-            :
-              args.sort === "oldest"
+            : args.sort === "oldest"
               ? sql`ORDER BY w.oldest_waiting_at ASC NULLS LAST, j.geoid ASC`
               : sql`ORDER BY COALESCE(j.population, 0) DESC, j.geoid ASC`
 

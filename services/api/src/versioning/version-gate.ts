@@ -1,4 +1,3 @@
-
 import { AppError } from "@civfix/shared"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import {

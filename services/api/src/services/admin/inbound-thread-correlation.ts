@@ -15,7 +15,12 @@ import type { CleanupRepository } from "../cleanup-service.js"
 import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
 import { MESSAGE_BODY_MAX, segmentGraphemes } from "@civfix/shared"
-import { DEFAULT_REPLY_DOMAIN, domainOf, domainsAligned, replyAddressToken } from "../../adapters/inbound-mail.cf.js"
+import {
+  DEFAULT_REPLY_DOMAIN,
+  domainOf,
+  domainsAligned,
+  replyAddressToken,
+} from "../../adapters/inbound-mail.cf.js"
 
 export { JURISDICTION_REPLY_NOTE }
 
@@ -42,13 +47,15 @@ export const EFFECTS_STAGE_SETTLED = 4
 export const JURISDICTION_REPLY_NOTIFICATION_BODY =
   "The city responded. See their reply in the report chat."
 
-export function inboundEffectDeps(deps: {
-  adminReportRepo?: AdminReportRepository
-  cleanupRepo?: CleanupRepository
-  notifications?: ReporterNotifier
-  chatEmitter?: ReportChatSystemEmitter
-  logger?: InboundLogger
-} = {}): InboundEffectDeps {
+export function inboundEffectDeps(
+  deps: {
+    adminReportRepo?: AdminReportRepository
+    cleanupRepo?: CleanupRepository
+    notifications?: ReporterNotifier
+    chatEmitter?: ReportChatSystemEmitter
+    logger?: InboundLogger
+  } = {},
+): InboundEffectDeps {
   return {
     ...(deps.adminReportRepo !== undefined ? { reportRepo: deps.adminReportRepo } : {}),
     ...(deps.cleanupRepo !== undefined ? { cleanupRepo: deps.cleanupRepo } : {}),

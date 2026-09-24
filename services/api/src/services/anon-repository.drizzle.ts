@@ -357,10 +357,7 @@ export function makeDrizzleClaimRepository(sql: Sql): ClaimRepository {
       return { reportId: row.id }
     },
 
-    async claimByCode(
-      claimCodeHash: string,
-      userId: string,
-    ): Promise<{ reportId: string } | null> {
+    async claimByCode(claimCodeHash: string, userId: string): Promise<{ reportId: string } | null> {
       return sql.begin(async (tx) => {
         // Atomically claim THE report whose stored digest matches: lock + link + clear in one statement.
         // The caller hashes the presented code, so the lookup is an index probe on the partial-unique

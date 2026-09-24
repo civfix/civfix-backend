@@ -1,4 +1,3 @@
-
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import type { AbuseChecks, NearDuplicateResult, Storage } from "@civfix/shared/interfaces"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
@@ -7,10 +6,7 @@ import { makeDrizzleMediaWorkerRepo, type MediaWorkerRepo } from "@civfix/api/me
 import { makeDrizzleAnonHoldReleaseRepo } from "@civfix/api/anon-hold-repo"
 import type { AnonHoldReleaseRepo } from "@civfix/api/anon-hold-release"
 import { R2Storage } from "@civfix/api/adapters/storage"
-import {
-  LOCAL_STORAGE_DEV_SIGNING_KEY,
-  LocalDiskStorage,
-} from "@civfix/api/adapters/storage-local"
+import { LOCAL_STORAGE_DEV_SIGNING_KEY, LocalDiskStorage } from "@civfix/api/adapters/storage-local"
 import { captureError, initErrorReporting, flushErrorReporting } from "@civfix/api/errors"
 import { assertRealSeamInProd, loadLimits, parseBool, type WorkerLimits } from "./config.js"
 import { makeDownloader, type DownloadFn } from "./download.js"

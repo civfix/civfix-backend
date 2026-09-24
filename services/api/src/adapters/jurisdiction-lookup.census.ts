@@ -1,4 +1,3 @@
-
 import { fetchJsonWithTimeout } from "./http-fetch.js"
 
 export interface JurisdictionLookupResult {

@@ -42,14 +42,21 @@ import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
 
 function shiftDayKey(day: string, deltaDays: number): string {
   const [year, month, date] = day.split("-").map(Number)
-  const shifted = new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, date ?? 1) + deltaDays * 86_400_000)
+  const shifted = new Date(
+    Date.UTC(year ?? 1970, (month ?? 1) - 1, date ?? 1) + deltaDays * 86_400_000,
+  )
   return shifted.toISOString().slice(0, 10)
 }
 
 export const PORTFOLIO_EVENT_LIMIT = 200
 export const ARRIVAL_SAMPLE_LIMIT = 20_000
 
-const RANGE_DAYS: Record<AnalyticsRange, number | null> = { "7d": 7, "30d": 30, "90d": 90, all: null }
+const RANGE_DAYS: Record<AnalyticsRange, number | null> = {
+  "7d": 7,
+  "30d": 30,
+  "90d": 90,
+  all: null,
+}
 const PORTFOLIO_RANGE_DAYS: Record<PortfolioAnalyticsRange, number | null> = {
   "30d": 30,
   "90d": 90,
@@ -69,7 +76,11 @@ export interface AnalyticsServiceDeps {
 }
 
 export interface AnalyticsService {
-  overview(cleanupId: string, range: AnalyticsRange, viewerScope: string): Promise<EventAnalyticsOverviewResponse>
+  overview(
+    cleanupId: string,
+    range: AnalyticsRange,
+    viewerScope: string,
+  ): Promise<EventAnalyticsOverviewResponse>
   registrations(
     cleanupId: string,
     range: AnalyticsRange,
@@ -148,12 +159,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
         const window = eventRangeWindow(RANGE_DAYS[range], timezone)
         const [kpis, metricRows, registrationDays] = await Promise.all([
           deps.analytics.eventKpis(cleanupId),
-          deps.metrics.read(
-            cleanupId,
-            ["page_views", "donation_clicks"],
-            window.from,
-            window.to,
-          ),
+          deps.metrics.read(cleanupId, ["page_views", "donation_clicks"], window.from, window.to),
           deps.analytics.registrationsByDay(cleanupId, timezone, window.from, window.to),
         ])
         const registeredPublishable = closureAllowsTotal(closureOf(registrationDays, window))
@@ -213,7 +219,9 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
           cumulative: toSeries(closure.cumulative),
           byTicketType: toPanel(breakdown(byType, { totalPublishable: registeredPublishable })),
           byAudience: toPanel(breakdown(byAudience, { totalPublishable: registeredPublishable })),
-          cancellations: toSeries(dailySeries(cancellations, window, { suppressPoints: true }).points),
+          cancellations: toSeries(
+            dailySeries(cancellations, window, { suppressPoints: true }).points,
+          ),
           waitlistConversion: toRate(waitlist.promoted, waitlist.joined),
         }
       })
@@ -290,9 +298,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
             failed: failedByChannel.get(channel) ?? null,
             suppressed: suppressedByChannel.get(channel) ?? null,
           })),
-          series: toSeries(
-            dailySeries(seriesOf(rows, "broadcast_sent"), window).points,
-          ),
+          series: toSeries(dailySeries(seriesOf(rows, "broadcast_sent"), window).points),
         }
       })
     },
@@ -315,9 +321,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
         return {
           ...envelope(range),
           pageViews: toSeries(dailySeries(seriesOf(rows, "page_views"), window).points),
-          bySource: toPanel(
-            breakdown([...byBucket].map(([key, count]) => ({ key, count }))),
-          ),
+          bySource: toPanel(breakdown([...byBucket].map(([key, count]) => ({ key, count })))),
           donationClicks: suppressCount(sumMetric(rows, "donation_clicks")).value,
         }
       })
@@ -564,7 +568,9 @@ function toPanel(panel: DerivedPanel<DerivedBreakdownRow>): Panel {
   }
 }
 
-function toFunnelSteps(panel: DerivedPanel<{ key: string; value: number | null; suppressed: boolean }>): FunnelStep[] {
+function toFunnelSteps(
+  panel: DerivedPanel<{ key: string; value: number | null; suppressed: boolean }>,
+): FunnelStep[] {
   return panel.rows.map((row) => ({
     step: row.key,
     label: row.key,

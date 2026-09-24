@@ -104,7 +104,8 @@ export function makeContainerReportChatSendDeps(
       (cleanupRepo ??= makeDrizzleCleanupRepository(sql)).isMember(cleanupId, userId),
     isReportChatMember: (reportId, userId) => reportChatRepo.isMember(reportId, userId),
     isChatGroupMember: async (groupId, userId) =>
-      ((await (groupRepo ??= makeChatGroupRepository(sql)).roleOf(groupId, userId)) ?? null) !== null,
+      ((await (groupRepo ??= makeChatGroupRepository(sql)).roleOf(groupId, userId)) ?? null) !==
+      null,
     isBlockedEitherWay,
     roomKeyFor,
   }

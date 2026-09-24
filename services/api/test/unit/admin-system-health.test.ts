@@ -6,7 +6,6 @@ import {
   type SystemHealthProbes,
 } from "../../src/services/admin/system-health-service.js"
 
-
 const FULL_ENV: SystemHealthEnv = {
   glitchTipConfigured: true,
   tileCdnConfigured: true,
@@ -65,11 +64,29 @@ describe("system health assembly", () => {
 
   it("F125: probe failures map to a fixed vocabulary and never leak driver detail", async () => {
     const cases: { err: unknown; val: string }[] = [
-      { err: Object.assign(new Error("connect ECONNREFUSED 10.0.0.7:5432"), { code: "ECONNREFUSED" }), val: "Unreachable" },
-      { err: Object.assign(new Error("getaddrinfo ENOTFOUND compose-postgres-1"), { code: "ENOTFOUND" }), val: "Unreachable" },
-      { err: Object.assign(new Error('password authentication failed for user "civfix"'), { code: "28P01" }), val: "Auth failed" },
+      {
+        err: Object.assign(new Error("connect ECONNREFUSED 10.0.0.7:5432"), {
+          code: "ECONNREFUSED",
+        }),
+        val: "Unreachable",
+      },
+      {
+        err: Object.assign(new Error("getaddrinfo ENOTFOUND compose-postgres-1"), {
+          code: "ENOTFOUND",
+        }),
+        val: "Unreachable",
+      },
+      {
+        err: Object.assign(new Error('password authentication failed for user "civfix"'), {
+          code: "28P01",
+        }),
+        val: "Auth failed",
+      },
       { err: new Error("probe timed out after 2000ms"), val: "Timed out" },
-      { err: Object.assign(new Error('relation "pgboss.job" does not exist'), { code: "42P01" }), val: "Not provisioned" },
+      {
+        err: Object.assign(new Error('relation "pgboss.job" does not exist'), { code: "42P01" }),
+        val: "Not provisioned",
+      },
     ]
     for (const { err, val } of cases) {
       const svc = makeSystemHealthService({
@@ -154,7 +171,12 @@ describe("system health assembly", () => {
   it("GlitchTip / Basemap reflect configuration", async () => {
     const svc = makeSystemHealthService({
       probes: {},
-      env: { glitchTipConfigured: false, tileCdnConfigured: false, mailerIsFake: false, jobsIsFake: false },
+      env: {
+        glitchTipConfigured: false,
+        tileCdnConfigured: false,
+        mailerIsFake: false,
+        jobsIsFake: false,
+      },
     })
     const { services } = await svc.health()
     expect(row(services, "GlitchTip")).toMatchObject({ status: "warn", val: "Not configured" })

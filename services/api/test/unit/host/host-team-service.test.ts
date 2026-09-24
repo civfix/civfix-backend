@@ -675,11 +675,7 @@ describe("the coordinator tier", () => {
       identifier: "ida",
       role: "coordinator",
     })
-    const result = await service.acceptInvite(
-      EVENT,
-      INVITEE,
-      "token-1-aaaaaaaaaaaaaaaaaaaaaaaa",
-    )
+    const result = await service.acceptInvite(EVENT, INVITEE, "token-1-aaaaaaaaaaaaaaaaaaaaaaaa")
     expect(result).toEqual({ ok: true, role: "coordinator" })
   })
 
@@ -690,11 +686,7 @@ describe("the coordinator tier", () => {
       role: "coordinator",
     })
     repo.seedMember(EVENT, INVITEE, "cohost")
-    const result = await service.acceptInvite(
-      EVENT,
-      INVITEE,
-      "token-1-aaaaaaaaaaaaaaaaaaaaaaaa",
-    )
+    const result = await service.acceptInvite(EVENT, INVITEE, "token-1-aaaaaaaaaaaaaaaaaaaaaaaa")
     expect(result.role).toBe("cohost")
   })
 
@@ -705,11 +697,7 @@ describe("the coordinator tier", () => {
       role: "coordinator",
     })
     repo.seedMember(EVENT, INVITEE, "staff")
-    const result = await service.acceptInvite(
-      EVENT,
-      INVITEE,
-      "token-1-aaaaaaaaaaaaaaaaaaaaaaaa",
-    )
+    const result = await service.acceptInvite(EVENT, INVITEE, "token-1-aaaaaaaaaaaaaaaaaaaaaaaa")
     expect(result.role).toBe("coordinator")
   })
 

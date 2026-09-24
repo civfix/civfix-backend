@@ -1,4 +1,3 @@
-
 export type FetchJsonResult<T> =
   | { ok: true; status: number; json: T }
   | { ok: false; kind: "http"; status: number }
@@ -46,7 +45,9 @@ export async function fetchJsonWithTimeout<T>(
     }
     const maxBytes = opts.maxBytes ?? DEFAULT_MAX_JSON_BYTES
     const declared =
-      typeof res.headers?.get === "function" ? Number(res.headers.get("content-length") ?? "") : Number.NaN
+      typeof res.headers?.get === "function"
+        ? Number(res.headers.get("content-length") ?? "")
+        : Number.NaN
     if (Number.isFinite(declared) && declared > maxBytes) {
       await res.body?.cancel().catch(() => {})
       return { ok: false, kind: "body", status, error: new JsonBodyTooLargeError(maxBytes) }

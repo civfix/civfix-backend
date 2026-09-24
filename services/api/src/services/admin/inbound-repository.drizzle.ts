@@ -1,14 +1,9 @@
-
 import type { Sql } from "../../db/client.js"
 import { cursorAtSql, cursorInstantSql } from "../../db/cursor-helpers.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import { likeContains } from "./like.js"
 import { writeAudit } from "./audit.js"
-import {
-  HTML_PREVIEW_SOURCE_CHARS,
-  PREVIEW_SOURCE_CHARS,
-  toPreview,
-} from "./mail-preview.js"
+import { HTML_PREVIEW_SOURCE_CHARS, PREVIEW_SOURCE_CHARS, toPreview } from "./mail-preview.js"
 import { normalizeAuthVerdict } from "./mail-mappers.js"
 import type {
   InboundEmailDTO,

@@ -10,7 +10,6 @@ import {
 import type { Container } from "../../src/di.js"
 import { makeFakeSql, type FakeSqlControl, type SqlHandler } from "../helpers/fake-sql.js"
 
-
 const TOKEN = "0123456789abcdef01234567"
 
 function dsn(opts: {

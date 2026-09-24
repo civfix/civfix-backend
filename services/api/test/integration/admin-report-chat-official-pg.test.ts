@@ -47,7 +47,11 @@ describe.skipIf(!pg)("admin report chat posts as the official account (integrati
   it("writes the chat row under the official account and audits the operator in the same commit", async () => {
     const message = await post("Crew dispatched.", operatorId)
 
-    expect(message.from).toMatchObject({ id: CIVFIX_OFFICIAL_USER_ID, name: "CivFix", handle: "civfix" })
+    expect(message.from).toMatchObject({
+      id: CIVFIX_OFFICIAL_USER_ID,
+      name: "CivFix",
+      handle: "civfix",
+    })
     const [row] = await h.sql<{ sender_id: string }[]>`
       SELECT sender_id FROM chat_messages WHERE id = ${message.id}
     `

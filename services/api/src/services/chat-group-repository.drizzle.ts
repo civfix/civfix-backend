@@ -1,4 +1,3 @@
-
 import type { Sql } from "../db/client.js"
 import type { MediaDTO, MediaKind, MediaStatus, PersonDTO } from "@civfix/shared"
 import type { ChatGroupKind, ChatGroupVisibility } from "../db/schema/chat-groups.js"
@@ -22,7 +21,10 @@ export interface GroupRoomAccess {
   role: GroupMemberRole | null
 }
 
-export function canPostToGroup(access: { kind: ChatGroupKind; role: GroupMemberRole | null }): boolean {
+export function canPostToGroup(access: {
+  kind: ChatGroupKind
+  role: GroupMemberRole | null
+}): boolean {
   if (access.role === null) return false
   return access.kind === "group" || access.role === "owner" || access.role === "admin"
 }
@@ -72,7 +74,11 @@ export interface ChatGroupRepository {
   banMember(groupId: string, userId: string, bannedBy: string): Promise<void>
   isBanned(groupId: string, userId: string): Promise<boolean>
   setRole(groupId: string, userId: string, role: "admin" | "member"): Promise<boolean>
-  findMember(groupId: string, userId: string, viewerId: string | null): Promise<GroupMemberView | null>
+  findMember(
+    groupId: string,
+    userId: string,
+    viewerId: string | null,
+  ): Promise<GroupMemberView | null>
   listMembers(
     groupId: string,
     viewerId: string | null,
@@ -147,7 +153,12 @@ export function toMemberView(r: MemberRowSelect): GroupMemberView {
 export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatGroupRepository {
   async function toGroupView(r: GroupRowSelect): Promise<ChatGroupView> {
     let avatar: MediaDTO | null = null
-    if (presign && r.avatar_id !== null && r.avatar_status === "ready" && r.avatar_r2_key !== null) {
+    if (
+      presign &&
+      r.avatar_id !== null &&
+      r.avatar_status === "ready" &&
+      r.avatar_r2_key !== null
+    ) {
       const { url, thumbUrl } = await presign(r.avatar_r2_key, r.avatar_thumb_key)
       avatar = {
         id: r.avatar_id,
@@ -208,7 +219,11 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
           VALUES (${groupId}, ${input.ownerId}, 'owner')
         `
         if (memberIds.length > 0) {
-          const rows = memberIds.map((userId) => ({ group_id: groupId, user_id: userId, role: "member" }))
+          const rows = memberIds.map((userId) => ({
+            group_id: groupId,
+            user_id: userId,
+            role: "member",
+          }))
           await tx`
             INSERT INTO chat_group_members ${tx(rows, "group_id", "user_id", "role")}
             ON CONFLICT (group_id, user_id) DO NOTHING
@@ -263,7 +278,9 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
 
     async accessOf(groupId: string, userId: string): Promise<GroupRoomAccess | null> {
       if (!isUuid(groupId)) return null
-      const rows = await sql<{ kind: ChatGroupKind; visibility: ChatGroupVisibility; role: GroupMemberRole | null }[]>`
+      const rows = await sql<
+        { kind: ChatGroupKind; visibility: ChatGroupVisibility; role: GroupMemberRole | null }[]
+      >`
         SELECT g.kind, g.visibility, m.role
         FROM chat_groups g
         LEFT JOIN chat_group_members m ON m.group_id = g.id AND m.user_id = ${userId}
@@ -432,7 +449,11 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       return rows.map((r) => r.user_id)
     },
 
-    async advanceReadWatermark(groupId: string, userId: string, upToMessageId: string): Promise<void> {
+    async advanceReadWatermark(
+      groupId: string,
+      userId: string,
+      upToMessageId: string,
+    ): Promise<void> {
       await monotonicReadWatermarkUpdate(
         sql,
         "chat_group_members",

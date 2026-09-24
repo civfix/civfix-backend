@@ -1,4 +1,3 @@
-
 import type { ChatMessageDTO } from "@civfix/shared"
 import type { NotificationService } from "./notification-service.js"
 import { makeRoomFanoutNotifier } from "./chat-room-fanout-notifier.js"

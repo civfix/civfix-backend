@@ -1,4 +1,3 @@
-
 import type { Sql } from "../db/client.js"
 import type { MediaAssetView, MediaOwner } from "./media-intake-service.js"
 import { isPubliclyVisibleStatus } from "./report-visibility.js"
@@ -184,9 +183,7 @@ export async function authorizePostBound(
   postId: string,
   viewerId: string | null,
 ): Promise<MediaAccessDecision> {
-  const rows = await sql<
-    { author_id: string; visibility: string; deleted_at: Date | null }[]
-  >`
+  const rows = await sql<{ author_id: string; visibility: string; deleted_at: Date | null }[]>`
     SELECT author_id, visibility, deleted_at FROM posts WHERE id = ${postId} LIMIT 1
   `
   const post = rows[0]
@@ -218,7 +215,11 @@ export async function authorizeReportBound(
   return DENY
 }
 
-async function reportVisible(sql: Sql, reportId: string, viewerId: string | null): Promise<boolean> {
+async function reportVisible(
+  sql: Sql,
+  reportId: string,
+  viewerId: string | null,
+): Promise<boolean> {
   const decision = await authorizeReportBound(sql, reportId, viewerId)
   return decision.allowed
 }

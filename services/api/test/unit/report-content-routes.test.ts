@@ -166,7 +166,12 @@ describe("POST /content-reports", () => {
       method: "POST",
       url: "/v1/content-reports",
       headers: { authorization: `Bearer ${token}`, "x-client": "mobile" },
-      payload: { subjectType: "report", subjectId: SUBJECT, reason: "other", details: "remove please" },
+      payload: {
+        subjectType: "report",
+        subjectId: SUBJECT,
+        reason: "other",
+        details: "remove please",
+      },
     })
 
     expect(res.statusCode).toBe(200)

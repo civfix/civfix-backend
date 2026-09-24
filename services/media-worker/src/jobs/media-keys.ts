@@ -1,4 +1,3 @@
-
 export function thumbnailKey(r2Key: string): string {
   return `thumbs/${r2Key}.jpg`
 }

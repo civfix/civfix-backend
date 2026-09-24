@@ -315,7 +315,7 @@ describe("GET /admin/inbox/:id (detail)", () => {
     harness = await makeHarness()
     const missing = await get(harness, "/v1/admin/inbox/2f9d3c11-0000-4000-8000-000000000000")
     expect(missing.statusCode).toBe(404)
-    expect((missing.json() as { code: string; message: string })).toMatchObject({
+    expect(missing.json() as { code: string; message: string }).toMatchObject({
       code: "NOT_FOUND",
       message: "Inbound email not found.",
     })
@@ -386,9 +386,9 @@ describe("POST /admin/inbox/:id/status", () => {
       payload: { id, status: "deleted" },
     })
     expect(badStatus.statusCode).toBe(422)
-    expect((badStatus.json() as { code: string; fields?: Record<string, string> }).fields).toHaveProperty(
-      "status",
-    )
+    expect(
+      (badStatus.json() as { code: string; fields?: Record<string, string> }).fields,
+    ).toHaveProperty("status")
 
     expect(harness.repo.rows.find((r) => r.id === id)?.status).toBe("unread")
     expect(harness.repo.audits).toHaveLength(0)

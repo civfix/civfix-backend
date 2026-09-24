@@ -1,4 +1,3 @@
-
 import type { Queryable, Sql } from "../db/client.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { officialPersonFlag } from "../auth/official-account.js"
@@ -13,7 +12,11 @@ import type {
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
-import { loadChatReactions, loadChatReactionsFor, toggleChatReaction } from "./chat-reactions.drizzle.js"
+import {
+  loadChatReactions,
+  loadChatReactionsFor,
+  toggleChatReaction,
+} from "./chat-reactions.drizzle.js"
 import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.js"
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
 import type { PresignMedia } from "./media-presign.js"
@@ -393,14 +396,21 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
   ): Promise<ChatMessageDTO[]> {
     const ids = liveMessageIds(page)
     const pollIds = page.filter((r) => r.kind === "poll" && r.deleted_at === null).map((r) => r.id)
-    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget, pollsByMessage] =
-      await Promise.all([
-        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
-        loadChatReactionsFor(sql, ids, viewerUserId),
-        loadChatMentionsFor(sql, ids),
-        replyMapForRows(sql, "chat_messages", page),
-        loadPollsFor(sql, pollIds, viewerUserId),
-      ])
+    const [
+      attachmentsByMessage,
+      reactionsByMessage,
+      mentionsByMessage,
+      replyByTarget,
+      pollsByMessage,
+    ] = await Promise.all([
+      presign
+        ? loadChatAttachments(sql, ids, presign)
+        : Promise.resolve(new Map<string, MediaDTO[]>()),
+      loadChatReactionsFor(sql, ids, viewerUserId),
+      loadChatMentionsFor(sql, ids),
+      replyMapForRows(sql, "chat_messages", page),
+      loadPollsFor(sql, pollIds, viewerUserId),
+    ])
     return page.map((r) =>
       toMessageDTO(
         r,
@@ -410,7 +420,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
         undefined,
         attachmentsByMessage.get(r.id) ?? [],
         reportCity,
-        r.reply_to_id !== null ? replyByTarget.get(r.reply_to_id) ?? null : null,
+        r.reply_to_id !== null ? (replyByTarget.get(r.reply_to_id) ?? null) : null,
         pollsByMessage.get(r.id) ?? null,
       ),
     )
@@ -427,7 +437,9 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       await Promise.all([
         liveIds.length > 0 ? loadChatReactions(sql, row.id, viewerUserId) : Promise.resolve([]),
         liveIds.length > 0 ? loadChatMentions(sql, row.id) : Promise.resolve([]),
-        presign ? loadChatAttachments(sql, liveIds, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        presign
+          ? loadChatAttachments(sql, liveIds, presign)
+          : Promise.resolve(new Map<string, MediaDTO[]>()),
         resolveReportCity(scope),
         replyMapForRows(sql, "chat_messages", [row]),
         loadPollsFor(sql, pollIds, viewerUserId),
@@ -440,7 +452,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       undefined,
       attachmentsByMessage.get(row.id) ?? [],
       reportCity,
-      row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+      row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null,
       pollsByMessage.get(row.id) ?? null,
     )
   }
@@ -451,7 +463,9 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       table: "chat_messages",
       alias: "cm",
       scope: (prefix) =>
-        prefix === null ? anchorScope(scope) : sql`${sql(prefix)}.${sql(scope.column)} = ${scope.id}`,
+        prefix === null
+          ? anchorScope(scope)
+          : sql`${sql(prefix)}.${sql(scope.column)} = ${scope.id}`,
       columns: chatColumns(sql, isReport),
       from: sql`FROM chat_messages cm LEFT JOIN users u ON u.id = cm.sender_id`,
       context: () => resolveReportCity(scope),
@@ -506,7 +520,10 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     return roomSetPinned(sql, roomSql(scope), messageId, userId, pinned)
   }
 
-  function listPinsScoped(scope: RoomScope, viewerUserId: string | null): Promise<ChatMessageDTO[]> {
+  function listPinsScoped(
+    scope: RoomScope,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO[]> {
     return roomListPins(sql, roomSql(scope), viewerUserId)
   }
 
@@ -546,7 +563,7 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       undefined,
       [],
       reportCity,
-      row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+      row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null,
     )
   }
 
@@ -609,8 +626,19 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
           ? resolveReportCity({ column: "report_id", id: input.cleanupId })
           : Promise.resolve(null),
       ])
-      const attachments = wantsMedia ? (await loadChatAttachments(sql, [id], presign!)).get(id) ?? [] : []
-      return toMessageDTO(rows[0]!, [], [], input.userId, input.clientId, attachments, reportCity, replyTo)
+      const attachments = wantsMedia
+        ? ((await loadChatAttachments(sql, [id], presign!)).get(id) ?? [])
+        : []
+      return toMessageDTO(
+        rows[0]!,
+        [],
+        [],
+        input.userId,
+        input.clientId,
+        attachments,
+        reportCity,
+        replyTo,
+      )
     },
 
     async findMessageMeta(messageId: string): Promise<ChatMessageMeta | null> {
@@ -652,7 +680,13 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       viewerUserId: string | null = null,
       around?: string,
     ): Promise<ChatHistoryPage> {
-      return historyScoped({ column: "cleanup_id", id: cleanupId }, before, limit, viewerUserId, around)
+      return historyScoped(
+        { column: "cleanup_id", id: cleanupId },
+        before,
+        limit,
+        viewerUserId,
+        around,
+      )
     },
 
     editMessage(
@@ -727,7 +761,13 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
       viewerUserId: string | null = null,
       around?: string,
     ): Promise<ChatHistoryPage> {
-      return historyScoped({ column: "report_id", id: reportId }, before, limit, viewerUserId, around)
+      return historyScoped(
+        { column: "report_id", id: reportId },
+        before,
+        limit,
+        viewerUserId,
+        around,
+      )
     },
 
     findReportMessage(

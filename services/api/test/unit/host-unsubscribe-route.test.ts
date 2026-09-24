@@ -212,7 +212,10 @@ describe("GET /v1/broadcasts/unsubscribe", () => {
     })
     expect(wrongKey.headers.location).toBe("https://civfix.org/unsubscribe")
 
-    const tooShort = await instance.inject({ method: "GET", url: "/v1/broadcasts/unsubscribe?t=nope" })
+    const tooShort = await instance.inject({
+      method: "GET",
+      url: "/v1/broadcasts/unsubscribe?t=nope",
+    })
     expect(tooShort.statusCode).toBe(302)
     expect(tooShort.headers.location).toBe("https://civfix.org/unsubscribe")
 

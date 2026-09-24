@@ -147,7 +147,11 @@ export function buildFunnel(counts: FunnelCounts): AnalyticsFunnelResponse {
 
 export function buildCoverage(counts: CoverageCounts): AnalyticsCoverageResponse {
   const total = counts.mapped + counts.needsMapping
-  return { pct: pct(counts.mapped, total), mapped: counts.mapped, needsMapping: counts.needsMapping }
+  return {
+    pct: pct(counts.mapped, total),
+    mapped: counts.mapped,
+    needsMapping: counts.needsMapping,
+  }
 }
 
 /**

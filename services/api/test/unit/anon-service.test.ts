@@ -14,7 +14,6 @@ import {
 import { InMemoryAnonStore } from "../helpers/anon.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
 
-
 const SIGNING_KEY = "test-anon-signing-key"
 const KEY_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const KEY_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -72,7 +71,6 @@ function req(over: Partial<AnonReportRequest> = {}): AnonReportRequest {
 
 const ctx = { ip: "203.0.113.10", cfGeo: {} as Record<string, string | string[] | undefined> }
 
-
 describe("submitAnonReport: held create", () => {
   it("creates a HELD report, issues an anon token, stamps a claim code, bumps report_count", async () => {
     const { store, service } = makeHarness()
@@ -115,7 +113,6 @@ describe("submitAnonReport: held create", () => {
   })
 })
 
-
 describe("submitAnonReport: Turnstile", () => {
   it("rejects a failed Turnstile FIRST with TURNSTILE_FAILED and creates nothing", async () => {
     const { store, service } = makeHarness()
@@ -136,7 +133,9 @@ describe("submitAnonReport: honeypot", () => {
       service.submitAnonReport(req({ honeypot: "gotcha", anonToken: signed }), ctx),
     ).rejects.toMatchObject({ code: "VALIDATION" })
     expect(store.reports.size).toBe(0)
-    expect(flags).toEqual([{ subjectType: "anon_token", subjectId: "anontok-1", reason: "honeypot" }])
+    expect(flags).toEqual([
+      { subjectType: "anon_token", subjectId: "anontok-1", reason: "honeypot" },
+    ])
   })
 
   it("a whitespace-only honeypot is treated as empty (legitimate)", async () => {
@@ -209,9 +208,9 @@ describe("submitAnonReport: per-token cap", () => {
     const { store, service } = makeHarness()
     const token = store.seedToken({ id: "anontok-1", reportCount: ANON_TOKEN_REPORT_CAP })
     const signed = signAnonToken(token.id, SIGNING_KEY)
-    await expect(
-      service.submitAnonReport(req({ anonToken: signed }), ctx),
-    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+    await expect(service.submitAnonReport(req({ anonToken: signed }), ctx)).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    })
     expect(store.reports.size).toBe(0)
   })
 })
@@ -300,7 +299,6 @@ describe("submitAnonReport: GPS sanity", () => {
   })
 })
 
-
 describe("submitAnonReport: idempotency replay", () => {
   it("returns the ORIGINAL AnonReportResponse for a duplicate key, with NO second report", async () => {
     const { store, service } = makeHarness()
@@ -309,7 +307,11 @@ describe("submitAnonReport: idempotency replay", () => {
     const countAfterFirst = store.tokens.get("anontok-1")!.reportCount
 
     const second = await service.submitAnonReport(
-      req({ idempotencyKey: KEY_A, category: "hazard", anonToken: signAnonToken("anontok-1", SIGNING_KEY) }),
+      req({
+        idempotencyKey: KEY_A,
+        category: "hazard",
+        anonToken: signAnonToken("anontok-1", SIGNING_KEY),
+      }),
       ctx,
     )
     expect(second.response).toEqual(first.response)
@@ -330,7 +332,10 @@ describe("submitAnonReport: idempotency replay", () => {
 
   it("bugs P1-1: an idempotent replay does NOT burn per-IP or per-H3-cell budget", async () => {
     const { store, service, counters } = makeHarness()
-    const first = await service.submitAnonReport(req({ idempotencyKey: KEY_A, lat: 34.1, lng: -118.35 }), ctx)
+    const first = await service.submitAnonReport(
+      req({ idempotencyKey: KEY_A, lat: 34.1, lng: -118.35 }),
+      ctx,
+    )
     expect(store.reports.size).toBe(1)
 
     const ipKey = "abuse:ip:203.0.113.10"
@@ -342,7 +347,12 @@ describe("submitAnonReport: idempotency replay", () => {
 
     for (let i = 0; i < 4; i++) {
       const replay = await service.submitAnonReport(
-        req({ idempotencyKey: KEY_A, lat: 34.1, lng: -118.35, anonToken: signAnonToken("anontok-1", SIGNING_KEY) }),
+        req({
+          idempotencyKey: KEY_A,
+          lat: 34.1,
+          lng: -118.35,
+          anonToken: signAnonToken("anontok-1", SIGNING_KEY),
+        }),
         ctx,
       )
       expect(replay.response).toEqual(first.response)
@@ -352,7 +362,6 @@ describe("submitAnonReport: idempotency replay", () => {
     expect(store.reports.size).toBe(1)
   })
 })
-
 
 describe("submitAnonReport: per-token cap is atomic under concurrency (bugs P0-1)", () => {
   it("fires N concurrent submits on a token with ONE slot left; at most one is created", async () => {
@@ -364,10 +373,10 @@ describe("submitAnonReport: per-token cap is atomic under concurrency (bugs P0-1
     const N = 6
     const results = await Promise.allSettled(
       Array.from({ length: N }, (_unused, i) =>
-        service.submitAnonReport(
-          req({ idempotencyKey: uuid(i), anonToken: signed }),
-          { ip: `10.1.0.${i}`, cfGeo: {} },
-        ),
+        service.submitAnonReport(req({ idempotencyKey: uuid(i), anonToken: signed }), {
+          ip: `10.1.0.${i}`,
+          cfGeo: {},
+        }),
       ),
     )
 
@@ -396,12 +405,14 @@ describe("submitAnonReport: per-token cap is atomic under concurrency (bugs P0-1
   })
 })
 
-
 describe("anonReportStatus", () => {
   it("returns the status for the matching claim code", async () => {
     const { service } = makeHarness()
     const created = await service.submitAnonReport(req(), ctx)
-    const status = await service.anonReportStatus(created.response.reportId, created.response.claimCode)
+    const status = await service.anonReportStatus(
+      created.response.reportId,
+      created.response.claimCode,
+    )
     expect(status.status).toBe("held")
     expect(status.publishedAt).toBeUndefined()
   })
@@ -427,7 +438,10 @@ describe("anonReportStatus", () => {
     const r = store.reports.get(created.response.reportId)!
     r.status = "published"
     r.publishedAt = new Date("2026-02-01T00:00:00Z")
-    const status = await service.anonReportStatus(created.response.reportId, created.response.claimCode)
+    const status = await service.anonReportStatus(
+      created.response.reportId,
+      created.response.claimCode,
+    )
     expect(status.status).toBe("published")
     expect(status.publishedAt).toBe("2026-02-01T00:00:00.000Z")
   })
@@ -496,7 +510,6 @@ describe("claim codes are persisted as a digest only (F150)", () => {
   })
 })
 
-
 describe("submitAnonReport: idempotency is scoped to the anon session (F028)", () => {
   it("does NOT replay one session's snapshot (or its claim code) to a DIFFERENT session", async () => {
     const { store, service } = makeHarness()
@@ -521,8 +534,14 @@ describe("submitAnonReport: idempotency is scoped to the anon session (F028)", (
   it("still replays the original response for the SAME anon session", async () => {
     const { store, service } = makeHarness()
     const signed = signAnonToken(store.seedToken({ id: "anontok-owner" }).id, SIGNING_KEY)
-    const first = await service.submitAnonReport(req({ idempotencyKey: KEY_A, anonToken: signed }), ctx)
-    const replay = await service.submitAnonReport(req({ idempotencyKey: KEY_A, anonToken: signed }), ctx)
+    const first = await service.submitAnonReport(
+      req({ idempotencyKey: KEY_A, anonToken: signed }),
+      ctx,
+    )
+    const replay = await service.submitAnonReport(
+      req({ idempotencyKey: KEY_A, anonToken: signed }),
+      ctx,
+    )
 
     expect(replay.response).toEqual(first.response)
     expect(store.reports.size).toBe(1)
@@ -531,9 +550,14 @@ describe("submitAnonReport: idempotency is scoped to the anon session (F028)", (
   it("a caller presenting NO anon token cannot replay a session-owned snapshot", async () => {
     const { store, service } = makeHarness()
     const signed = signAnonToken(store.seedToken({ id: "anontok-owner" }).id, SIGNING_KEY)
-    const first = await service.submitAnonReport(req({ idempotencyKey: KEY_A, anonToken: signed }), ctx)
+    const first = await service.submitAnonReport(
+      req({ idempotencyKey: KEY_A, anonToken: signed }),
+      ctx,
+    )
 
-    await expect(service.submitAnonReport(req({ idempotencyKey: KEY_A }), ctx)).rejects.toMatchObject({
+    await expect(
+      service.submitAnonReport(req({ idempotencyKey: KEY_A }), ctx),
+    ).rejects.toMatchObject({
       code: "CONFLICT",
     })
     expect(store.reports.size).toBe(1)

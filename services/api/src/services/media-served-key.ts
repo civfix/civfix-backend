@@ -1,4 +1,3 @@
-
 import type postgres from "postgres"
 import type { Queryable } from "../db/client.js"
 

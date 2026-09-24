@@ -54,10 +54,12 @@ export async function deleteSupersededUpload(
         err: String(err),
       }),
     )
-  report(
-    new Error("media.checks leaked the superseded upload object (tombstoned for retry)"),
-    { job: "media.checks", phase: "upload-cleanup", mediaId: asset.id, key: asset.r2Key },
-  )
+  report(new Error("media.checks leaked the superseded upload object (tombstoned for retry)"), {
+    job: "media.checks",
+    phase: "upload-cleanup",
+    mediaId: asset.id,
+    key: asset.r2Key,
+  })
 }
 
 export async function deleteRejectedObjects(
@@ -94,7 +96,11 @@ export async function deleteRejectedObjects(
   if (leaked.length === 0) return
 
   await deps.repo
-    .recordLeakedObjects?.({ mediaId: asset.id, keys: leaked, error: "rejected-media delete failed" })
+    .recordLeakedObjects?.({
+      mediaId: asset.id,
+      keys: leaked,
+      error: "rejected-media delete failed",
+    })
     .catch((err: unknown) =>
       log("media.checks: rejected-media tombstone write failed (leak unrecoverable)", {
         mediaId: asset.id,
@@ -103,7 +109,9 @@ export async function deleteRejectedObjects(
       }),
     )
   report(
-    new Error(`media.checks leaked ${leaked.length} rejected-media R2 object(s) (tombstoned for retry)`),
+    new Error(
+      `media.checks leaked ${leaked.length} rejected-media R2 object(s) (tombstoned for retry)`,
+    ),
     { job: "media.checks", phase: "reject-cleanup", mediaId: asset.id, keys: leaked },
   )
 }

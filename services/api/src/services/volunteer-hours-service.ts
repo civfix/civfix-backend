@@ -49,7 +49,6 @@ export const MAX_ORG_CHIPS_FETCH = 20
 
 export const HOURS_NOTIFY_CONCURRENCY = 8
 
-
 export const EVENT_WINDOW_GRACE_MS = 60 * 60 * 1000
 
 export const DAILY_HOURS_CAP = 24
@@ -421,8 +420,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
     const notifier = deps.notifier
     if (notifier === undefined) return
     const recipients = changed.filter(
-      (c) =>
-        c.userId !== actorId && (c.previousHours === null || c.hours > c.previousHours),
+      (c) => c.userId !== actorId && (c.previousHours === null || c.hours > c.previousHours),
     )
     await mapWithLimit(recipients, HOURS_NOTIFY_CONCURRENCY, async (c) => {
       try {

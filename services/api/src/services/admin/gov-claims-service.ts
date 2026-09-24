@@ -120,9 +120,7 @@ export interface GovClaimsRepository {
    * Page the claims matching the status facet ("all" = every status) + the search, keyset paged in the
    * requested direction.
    */
-  list(
-    args: ListGovClaimsArgs,
-  ): Promise<{ records: GovClaimRecord[]; nextCursor: string | null }>
+  list(args: ListGovClaimsArgs): Promise<{ records: GovClaimRecord[]; nextCursor: string | null }>
   /** Load one claim by id (any status), or null when it does not exist. */
   getClaim(id: string): Promise<GovClaimRecord | null>
   /**
@@ -289,10 +287,7 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
       }
     },
 
-    async approve(
-      id: string,
-      input: { actorId: string; note: string | null },
-    ): Promise<void> {
+    async approve(id: string, input: { actorId: string; note: string | null }): Promise<void> {
       const claim = await deps.repo.getClaim(id)
       if (!claim) throw AppError.notFound("Gov claim not found")
       if (claim.status !== "pending") {

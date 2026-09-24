@@ -1,4 +1,3 @@
-
 import type { Queryable, Sql } from "../../db/client.js"
 import { decodeCursor, clampLimit, paginate } from "./pagination.js"
 import { isUuid } from "../../db/cursor-helpers.js"
@@ -658,10 +657,7 @@ export function makeDrizzleAdminReportRepository(sql: Sql): AdminReportRepositor
   }
 }
 
-export function mapOutreachStatus(
-  threadStatus: string,
-  hasInbound: boolean,
-): ReportOutreachStatus {
+export function mapOutreachStatus(threadStatus: string, hasInbound: boolean): ReportOutreachStatus {
   if (threadStatus === "bounced") return "bounced"
   if (hasInbound || threadStatus === "replied") return "replied"
   if (threadStatus === "delivered" || threadStatus === "opened") return "delivered"

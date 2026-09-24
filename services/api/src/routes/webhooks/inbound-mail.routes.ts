@@ -1,4 +1,3 @@
-
 import { createHmac } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
@@ -48,7 +47,11 @@ export async function registerInboundMailWebhook(
     scope.addContentTypeParser(
       "application/json",
       { parseAs: "buffer" },
-      (_req: FastifyRequest, payload: Buffer, done: (err: Error | null, body?: unknown) => void) => {
+      (
+        _req: FastifyRequest,
+        payload: Buffer,
+        done: (err: Error | null, body?: unknown) => void,
+      ) => {
         done(null, payload)
       },
     )

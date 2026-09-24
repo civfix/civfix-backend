@@ -1,4 +1,3 @@
-
 export const PREVIEW_LEN = 140
 
 export const PREVIEW_SOURCE_CHARS = 400
@@ -103,7 +102,10 @@ export function htmlToText(html: string): string {
     i = closeGt + 1
   }
   breakLine()
-  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()
+  return lines
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
 }
 
 function decodeTextEntities(text: string): string {

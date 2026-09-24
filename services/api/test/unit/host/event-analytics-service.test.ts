@@ -168,7 +168,12 @@ describe("analyticsPhaseOf", () => {
   it("reads an unfinished event as upcoming", () => {
     expect(
       analyticsPhaseOf(
-        clock({ status: "upcoming", completedAt: null, endsAt: new Date("2026-03-01T00:00:00Z"), scheduledAt: new Date("2026-03-01T00:00:00Z") }),
+        clock({
+          status: "upcoming",
+          completedAt: null,
+          endsAt: new Date("2026-03-01T00:00:00Z"),
+          scheduledAt: new Date("2026-03-01T00:00:00Z"),
+        }),
         NOW,
       ),
     ).toBe("upcoming")

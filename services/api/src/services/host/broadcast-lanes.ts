@@ -65,7 +65,7 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
       const used = await deps.counters.incr(
         `bcast:evupd:${cleanupId}:${hourKey}`,
         EVENT_UPDATE_WINDOW_SEC,
-        )
+      )
       if (used <= deps.perEventPerHour) return true
       deps.logger?.warn(
         { evt: "broadcast.event_updated.throttled", cleanupId, used },

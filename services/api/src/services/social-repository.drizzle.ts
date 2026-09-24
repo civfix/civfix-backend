@@ -1,4 +1,3 @@
-
 import type postgres from "postgres"
 import type { Queryable, Sql } from "../db/client.js"
 import type {
@@ -31,10 +30,7 @@ import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
 import { servedKeyExpr } from "./media-served-key.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
 
-export {
-  searchByHandlePrefix,
-  searchMentionable,
-} from "./user-search.drizzle.js"
+export { searchByHandlePrefix, searchMentionable } from "./user-search.drizzle.js"
 export {
   resolveHandles,
   resolveMentionTargets,
@@ -263,9 +259,7 @@ async function connectionsPage(
   const cursor = parseTimeCursor(args.cursor)
   const viewerId = args.viewerId
   const cursorFilter =
-    cursor !== null
-      ? sql`AND (f.created_at, u.id) < (${cursor.at}, ${cursor.id}::uuid)`
-      : sql``
+    cursor !== null ? sql`AND (f.created_at, u.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
   const followingExpr =
     viewerId !== null
       ? sql`EXISTS (SELECT 1 FROM follows_people ff WHERE ff.follower_id = ${viewerId} AND ff.followee_id = u.id)`
@@ -490,8 +484,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       const viewerId = args.viewerId
       const qFilter =
         args.q !== null
-          ?
-            sql`AND ((u.handle::text) ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\' OR u.display_name ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\')`
+          ? sql`AND ((u.handle::text) ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\' OR u.display_name ILIKE ${"%" + escapeLike(args.q) + "%"} ESCAPE '\\')`
           : sql``
       const selfFilter = viewerId !== null ? sql`AND u.id <> ${viewerId}` : sql``
       const cursorFilter =
@@ -629,13 +622,17 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
       return rows[0]?.count ?? 0
     },
 
-    async pastEventsPageFor(userId: string, args: ProfileEventsPageArgs): Promise<ProfileEventsPage> {
+    async pastEventsPageFor(
+      userId: string,
+      args: ProfileEventsPageArgs,
+    ): Promise<ProfileEventsPage> {
       const cursor = parseTimeCursor(args.cursor)
       const rows = await profileEventRows(sql, {
         ids: organizedOrAttendedIds(sql, userId),
-        where: cursor !== null
-          ? sql`AND c.scheduled_at < now() AND (c.scheduled_at, c.id) < (${cursor.at}, ${cursor.id}::uuid)`
-          : sql`AND c.scheduled_at < now()`,
+        where:
+          cursor !== null
+            ? sql`AND c.scheduled_at < now() AND (c.scheduled_at, c.id) < (${cursor.at}, ${cursor.id}::uuid)`
+            : sql`AND c.scheduled_at < now()`,
         order: sql`ORDER BY c.scheduled_at DESC, c.id DESC`,
         limit: args.limit + 1,
       })

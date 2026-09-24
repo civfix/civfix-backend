@@ -15,7 +15,6 @@ import {
 } from "../../src/services/report-service.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 
-
 const VALID_UUID = "11111111-1111-1111-1111-111111111111"
 
 function fakePresign(r2Key: string, thumbKey: string | null) {
@@ -27,8 +26,18 @@ function fakePresign(r2Key: string, thumbKey: string | null) {
 }
 
 class FakeReportChatEmitter {
-  readonly events: { reportId: string; status: string; kind?: string | null; note?: string | null }[] = []
-  emit(event: { reportId: string; status: string; kind?: string | null; note?: string | null }): Promise<void> {
+  readonly events: {
+    reportId: string
+    status: string
+    kind?: string | null
+    note?: string | null
+  }[] = []
+  emit(event: {
+    reportId: string
+    status: string
+    kind?: string | null
+    note?: string | null
+  }): Promise<void> {
     this.events.push(event)
     return Promise.resolve()
   }
@@ -81,7 +90,6 @@ function createReq(over: Partial<CreateReportRequest> = {}): CreateReportRequest
   }
 }
 
-
 describe("clusterCellSizeDeg", () => {
   it("halves with each zoom step and is the world width at zoom 0", () => {
     expect(clusterCellSizeDeg(0)).toBeCloseTo(180, 6)
@@ -98,10 +106,62 @@ describe("clusterCellSizeDeg", () => {
 
 describe("clusterByZoom", () => {
   const pts: ReportMapPoint[] = [
-    { id: "a", lat: 34.10, lng: -118.350, category: "trash", type: "dump", status: "published", title: "Mattress dumped", description: "blocking the sidewalk", addr: "12 Spring St", referenceCode: "DU-42-000001", thumbKey: "thumbs/a", r2Key: "uploads/a" },
-    { id: "b", lat: 34.11, lng: -118.351, category: "graffiti", type: "graffiti", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
-    { id: "c", lat: 34.12, lng: -118.352, category: "trash", type: "dump", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
-    { id: "d", lat: 40.71, lng: -74.000, category: "hazard", type: "encampment", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
+    {
+      id: "a",
+      lat: 34.1,
+      lng: -118.35,
+      category: "trash",
+      type: "dump",
+      status: "published",
+      title: "Mattress dumped",
+      description: "blocking the sidewalk",
+      addr: "12 Spring St",
+      referenceCode: "DU-42-000001",
+      thumbKey: "thumbs/a",
+      r2Key: "uploads/a",
+    },
+    {
+      id: "b",
+      lat: 34.11,
+      lng: -118.351,
+      category: "graffiti",
+      type: "graffiti",
+      status: "published",
+      title: null,
+      description: null,
+      addr: null,
+      referenceCode: null,
+      thumbKey: null,
+      r2Key: null,
+    },
+    {
+      id: "c",
+      lat: 34.12,
+      lng: -118.352,
+      category: "trash",
+      type: "dump",
+      status: "published",
+      title: null,
+      description: null,
+      addr: null,
+      referenceCode: null,
+      thumbKey: null,
+      r2Key: null,
+    },
+    {
+      id: "d",
+      lat: 40.71,
+      lng: -74.0,
+      category: "hazard",
+      type: "encampment",
+      status: "published",
+      title: null,
+      description: null,
+      addr: null,
+      referenceCode: null,
+      thumbKey: null,
+      r2Key: null,
+    },
   ]
 
   it("at/above the threshold returns individual pins and no clusters", () => {
@@ -149,9 +209,48 @@ describe("clusterByZoom", () => {
 describe("countByCategory", () => {
   it("counts all candidates per category, omitting zero categories", () => {
     const pts: ReportMapPoint[] = [
-      { id: "a", lat: 0, lng: 0, category: "trash", type: "dump", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
-      { id: "b", lat: 0, lng: 0, category: "trash", type: "dump", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
-      { id: "c", lat: 0, lng: 0, category: "graffiti", type: "graffiti", status: "published", title: null, description: null, addr: null, referenceCode: null, thumbKey: null, r2Key: null },
+      {
+        id: "a",
+        lat: 0,
+        lng: 0,
+        category: "trash",
+        type: "dump",
+        status: "published",
+        title: null,
+        description: null,
+        addr: null,
+        referenceCode: null,
+        thumbKey: null,
+        r2Key: null,
+      },
+      {
+        id: "b",
+        lat: 0,
+        lng: 0,
+        category: "trash",
+        type: "dump",
+        status: "published",
+        title: null,
+        description: null,
+        addr: null,
+        referenceCode: null,
+        thumbKey: null,
+        r2Key: null,
+      },
+      {
+        id: "c",
+        lat: 0,
+        lng: 0,
+        category: "graffiti",
+        type: "graffiti",
+        status: "published",
+        title: null,
+        description: null,
+        addr: null,
+        referenceCode: null,
+        thumbKey: null,
+        r2Key: null,
+      },
     ]
     expect(countByCategory(pts)).toEqual({ trash: 2, graffiti: 1 })
     expect(countByCategory([])).toEqual({})
@@ -168,7 +267,6 @@ describe("reportH3Cell", () => {
     expect(REPORT_H3_RESOLUTION).toBe(10)
   })
 })
-
 
 describe("createReport: honeypot", () => {
   it("rejects a non-empty honeypot with VALIDATION and creates nothing", async () => {
@@ -197,7 +295,12 @@ describe("createReport: happy path (authed publish-immediately)", () => {
   it("creates a published+public report with geom_source, jurisdiction, h3, timeline, mine=true", async () => {
     const { repo, service } = makeHarness({ geoid: "0644000" })
     const dto = await service.createReport(
-      createReq({ category: "graffiti", type: "graffiti", description: "tagging on the wall", geomSource: "device" }),
+      createReq({
+        category: "graffiti",
+        type: "graffiti",
+        description: "tagging on the wall",
+        geomSource: "device",
+      }),
       { userId: "u1" },
     )
 
@@ -254,10 +357,9 @@ describe("createReport: happy path (authed publish-immediately)", () => {
     const { repo, service } = makeHarness()
     const asset = repo.seedMedia({ status: "validating", r2Key: "uploads/2026/01/pic" })
 
-    const dto = await service.createReport(
-      createReq({ mediaUploadIds: [asset.uploadId] }),
-      { userId: "u1" },
-    )
+    const dto = await service.createReport(createReq({ mediaUploadIds: [asset.uploadId] }), {
+      userId: "u1",
+    })
 
     expect(dto.media).toHaveLength(1)
     expect(dto.media[0]!.id).toBe(asset.id)
@@ -269,10 +371,9 @@ describe("createReport: happy path (authed publish-immediately)", () => {
     const { repo, service } = makeHarness()
     const foreign = repo.seedMedia({ reportId: "other-report" })
 
-    const dto = await service.createReport(
-      createReq({ mediaUploadIds: [foreign.uploadId] }),
-      { userId: "u1" },
-    )
+    const dto = await service.createReport(createReq({ mediaUploadIds: [foreign.uploadId] }), {
+      userId: "u1",
+    })
     expect(repo.media.find((m) => m.id === foreign.id)!.reportId).toBe("other-report")
     expect(dto.media).toHaveLength(0)
   })
@@ -427,7 +528,11 @@ describe("createReport: credits no volunteer hours", () => {
 describe("getReport: visibility / held hiding", () => {
   it("returns a published+public report to anyone, with mine reflecting ownership", async () => {
     const { repo, service } = makeHarness()
-    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
+    const r = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "public",
+    })
 
     const asStranger = await service.getReport(r.id, { userId: "stranger" })
     expect(asStranger.id).toBe(r.id)
@@ -502,7 +607,11 @@ describe("getReport: visibility / held hiding", () => {
         return Promise.resolve({ joined: true, memberCount: 3, messageCount: 12, unread: 4 })
       },
     })
-    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
+    const r = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "public",
+    })
 
     const dto = await service.getReport(r.id, { userId: "member" })
     expect(dto.chatJoined).toBe(true)
@@ -520,7 +629,11 @@ describe("getReport: visibility / held hiding", () => {
         return Promise.resolve({ joined: false, memberCount: 2, messageCount: 5, unread: 0 })
       },
     })
-    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
+    const r = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "public",
+    })
 
     const dto = await service.getReport(r.id, {})
     expect(dto.chatJoined).toBe(false)
@@ -532,7 +645,11 @@ describe("getReport: visibility / held hiding", () => {
 
   it("omits the chat metadata entirely when no loader is wired (offline/fake path)", async () => {
     const { repo, service } = makeHarness()
-    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
+    const r = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "public",
+    })
     const dto = await service.getReport(r.id, { userId: "member" })
     expect(dto.chatJoined).toBeUndefined()
     expect(dto.chatMemberCount).toBeUndefined()
@@ -542,14 +659,19 @@ describe("getReport: visibility / held hiding", () => {
 
   it("surfaces a city reply's kind + full body on the timeline DTO (D13)", async () => {
     const { repo, service } = makeHarness()
-    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
+    const r = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "public",
+    })
     repo.timeline.push({
       reportId: r.id,
       status: "published",
       note: null,
       createdAt: new Date(Date.now() - 1000),
     })
-    const fullBody = "We've scheduled a crew and will follow up after the visit — thanks for the report."
+    const fullBody =
+      "We've scheduled a crew and will follow up after the visit — thanks for the report."
     repo.timeline.push({
       reportId: r.id,
       status: "published",
@@ -632,7 +754,6 @@ describe("resolveReport (owner status toggle)", () => {
     })
   })
 
-
   it("L12: 404s (not 403) a stranger probing a HELD report", async () => {
     const { repo, service } = makeHarness()
     const r = repo.seedReport({ reporterUserId: "owner", status: "held", visibility: "public" })
@@ -647,7 +768,11 @@ describe("resolveReport (owner status toggle)", () => {
 
   it("L12: 404s a stranger probing an owner-UNLISTED report", async () => {
     const { repo, service } = makeHarness()
-    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "hidden" })
+    const r = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "hidden",
+    })
     await expect(service.resolveReport("stranger", r.id, true)).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
@@ -678,7 +803,11 @@ describe("resolveReport (owner status toggle)", () => {
 
   it("F057: 409s the OWNER resolving a submitted (pre-publish) report", async () => {
     const { repo, service } = makeHarness()
-    const sub = repo.seedReport({ reporterUserId: "owner", status: "submitted", visibility: "public" })
+    const sub = repo.seedReport({
+      reporterUserId: "owner",
+      status: "submitted",
+      visibility: "public",
+    })
     await expect(service.resolveReport("owner", sub.id, true)).rejects.toMatchObject({
       code: "CONFLICT",
     })
@@ -721,7 +850,11 @@ describe("unlistReport (owner visibility toggle)", () => {
 
   it("re-listing a hidden report returns it to public with a 'Re-listed' timeline entry", async () => {
     const { repo, service } = makeHarness()
-    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "hidden" })
+    const r = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "hidden",
+    })
 
     const dto = await service.unlistReport("owner", r.id, false)
     expect(dto.visibility).toBe("public")
@@ -814,17 +947,32 @@ describe("listMyReports", () => {
     const { repo, service } = makeHarness()
     const tie = new Date("2026-05-31T12:00:00.000Z")
     const later = new Date("2026-05-31T12:00:01.000Z")
-    repo.seedReport({ id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", reporterUserId: "me", createdAt: tie })
-    repo.seedReport({ id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", reporterUserId: "me", createdAt: tie })
-    repo.seedReport({ id: "cccccccc-cccc-cccc-cccc-cccccccccccc", reporterUserId: "me", createdAt: later })
+    repo.seedReport({
+      id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      reporterUserId: "me",
+      createdAt: tie,
+    })
+    repo.seedReport({
+      id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      reporterUserId: "me",
+      createdAt: tie,
+    })
+    repo.seedReport({
+      id: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      reporterUserId: "me",
+      createdAt: later,
+    })
 
     const seen: string[] = []
     let cursor: string | null | undefined = undefined
     for (let guard = 0; guard < 10; guard++) {
-      const page: Awaited<ReturnType<typeof service.listMyReports>> = await service.listMyReports("me", {
-        limit: 1,
-        ...(cursor ? { cursor } : {}),
-      })
+      const page: Awaited<ReturnType<typeof service.listMyReports>> = await service.listMyReports(
+        "me",
+        {
+          limit: 1,
+          ...(cursor ? { cursor } : {}),
+        },
+      )
       for (const item of page.items) seen.push(item.id)
       if (page.nextCursor === null) break
       cursor = page.nextCursor
@@ -842,11 +990,41 @@ describe("listMyReports", () => {
 describe("listReportsInBBox", () => {
   it("clusters at low zoom and returns per-category counts over the candidates", async () => {
     const { repo, service } = makeHarness()
-    repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-    repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.11, lng: -118.34 })
-    repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.12, lng: -118.33 })
-    repo.seedReport({ status: "published", visibility: "public", category: "hazard", lat: 10, lng: 10 })
-    repo.seedReport({ status: "held", visibility: "public", category: "trash", lat: 34.1, lng: -118.35 })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "trash",
+      lat: 34.1,
+      lng: -118.35,
+    })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "trash",
+      lat: 34.11,
+      lng: -118.34,
+    })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "graffiti",
+      lat: 34.12,
+      lng: -118.33,
+    })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "hazard",
+      lat: 10,
+      lng: 10,
+    })
+    repo.seedReport({
+      status: "held",
+      visibility: "public",
+      category: "trash",
+      lat: 34.1,
+      lng: -118.35,
+    })
 
     const bbox = { west: -118.5, south: 34.0, east: -118.2, north: 34.2 }
     const low = await service.listReportsInBBox(bbox, null, null, 3)
@@ -859,8 +1037,20 @@ describe("listReportsInBBox", () => {
 
   it("returns individual pins at high zoom", async () => {
     const { repo, service } = makeHarness()
-    repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-    repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "trash",
+      lat: 34.1,
+      lng: -118.35,
+    })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "graffiti",
+      lat: 34.11,
+      lng: -118.34,
+    })
 
     const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
     const high = await service.listReportsInBBox(bbox, null, null, 16)
@@ -873,34 +1063,73 @@ describe("listReportsInBBox", () => {
     const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
 
     const withThumb = repo.seedReport({
-      status: "published", visibility: "public", category: "trash",
-      lat: 34.10, lng: -118.35, title: "Mattress dumped", description: "blocking the sidewalk",
+      status: "published",
+      visibility: "public",
+      category: "trash",
+      lat: 34.1,
+      lng: -118.35,
+      title: "Mattress dumped",
+      description: "blocking the sidewalk",
     })
-    repo.seedMedia({ reportId: withThumb.id, status: "ready", r2Key: "uploads/a", thumbKey: "thumbs/a" })
+    repo.seedMedia({
+      reportId: withThumb.id,
+      status: "ready",
+      r2Key: "uploads/a",
+      thumbKey: "thumbs/a",
+    })
 
     const noThumb = repo.seedReport({
-      status: "published", visibility: "public", category: "graffiti",
-      lat: 34.11, lng: -118.34, title: "Graffiti on the wall",
+      status: "published",
+      visibility: "public",
+      category: "graffiti",
+      lat: 34.11,
+      lng: -118.34,
+      title: "Graffiti on the wall",
     })
     repo.seedMedia({ reportId: noThumb.id, status: "ready", r2Key: "uploads/b", thumbKey: null })
 
     const noMedia = repo.seedReport({
-      status: "published", visibility: "public", category: "hazard",
-      lat: 34.12, lng: -118.33, title: "Pothole",
+      status: "published",
+      visibility: "public",
+      category: "hazard",
+      lat: 34.12,
+      lng: -118.33,
+      title: "Pothole",
     })
 
     const pendingOnly = repo.seedReport({
-      status: "published", visibility: "public", category: "water",
-      lat: 34.13, lng: -118.32, title: null,
+      status: "published",
+      visibility: "public",
+      category: "water",
+      lat: 34.13,
+      lng: -118.32,
+      title: null,
     })
-    repo.seedMedia({ reportId: pendingOnly.id, status: "validating", r2Key: "uploads/d", thumbKey: "thumbs/d" })
+    repo.seedMedia({
+      reportId: pendingOnly.id,
+      status: "validating",
+      r2Key: "uploads/d",
+      thumbKey: "thumbs/d",
+    })
 
     const high = await service.listReportsInBBox(bbox, null, null, 16)
     const byId = new Map(high.pins.map((p) => [p.id, p]))
 
-    expect(byId.get(withThumb.id)).toMatchObject({ title: "Mattress dumped", description: "blocking the sidewalk", thumbUrl: "memory://thumbs/a" })
-    expect(byId.get(noThumb.id)).toMatchObject({ title: "Graffiti on the wall", description: null, thumbUrl: "memory://uploads/b" })
-    expect(byId.get(noMedia.id)).toMatchObject({ title: "Pothole", description: null, thumbUrl: null })
+    expect(byId.get(withThumb.id)).toMatchObject({
+      title: "Mattress dumped",
+      description: "blocking the sidewalk",
+      thumbUrl: "memory://thumbs/a",
+    })
+    expect(byId.get(noThumb.id)).toMatchObject({
+      title: "Graffiti on the wall",
+      description: null,
+      thumbUrl: "memory://uploads/b",
+    })
+    expect(byId.get(noMedia.id)).toMatchObject({
+      title: "Pothole",
+      description: null,
+      thumbUrl: null,
+    })
 
     const pending = byId.get(pendingOnly.id)!
     expect(pending.thumbUrl).toBeNull()
@@ -912,21 +1141,35 @@ describe("listReportsInBBox", () => {
     const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
 
     const posterOnly = repo.seedReport({
-      status: "published", visibility: "public", category: "trash",
-      lat: 34.10, lng: -118.35, title: "Dumping caught on video",
+      status: "published",
+      visibility: "public",
+      category: "trash",
+      lat: 34.1,
+      lng: -118.35,
+      title: "Dumping caught on video",
     })
     repo.seedMedia({
-      reportId: posterOnly.id, status: "ready", kind: "video",
-      r2Key: "uploads/clip.mp4", thumbKey: "thumbs/clip.jpg",
+      reportId: posterOnly.id,
+      status: "ready",
+      kind: "video",
+      r2Key: "uploads/clip.mp4",
+      thumbKey: "thumbs/clip.jpg",
     })
 
     const thumbless = repo.seedReport({
-      status: "published", visibility: "public", category: "hazard",
-      lat: 34.11, lng: -118.34, title: "Video still transcoding",
+      status: "published",
+      visibility: "public",
+      category: "hazard",
+      lat: 34.11,
+      lng: -118.34,
+      title: "Video still transcoding",
     })
     repo.seedMedia({
-      reportId: thumbless.id, status: "ready", kind: "video",
-      r2Key: "uploads/raw.mp4", thumbKey: null,
+      reportId: thumbless.id,
+      status: "ready",
+      kind: "video",
+      r2Key: "uploads/raw.mp4",
+      thumbKey: null,
     })
 
     const high = await service.listReportsInBBox(bbox, null, null, 16)
@@ -937,8 +1180,20 @@ describe("listReportsInBBox", () => {
 
   it("filters by category when provided", async () => {
     const { repo, service } = makeHarness()
-    repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-    repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "trash",
+      lat: 34.1,
+      lng: -118.35,
+    })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "graffiti",
+      lat: 34.11,
+      lng: -118.34,
+    })
 
     const bbox = { west: -118.36, south: 34.09, east: -118.31, north: 34.14 }
     const onlyTrash = await service.listReportsInBBox(bbox, ["trash"], null, 16)
@@ -958,8 +1213,20 @@ describe("listReportsInBBox", () => {
 
   it("M14: a world bbox at zoom 22 produces ZERO per-pin rows (no presign fan-out)", async () => {
     const { repo, service } = makeHarness()
-    repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-    repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 40.71, lng: -74.0 })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "trash",
+      lat: 34.1,
+      lng: -118.35,
+    })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "graffiti",
+      lat: 40.71,
+      lng: -74.0,
+    })
 
     const world = { west: -180, south: -85, east: 180, north: 85 }
     const attack = await service.listReportsInBBox(world, null, null, 22)
@@ -998,7 +1265,7 @@ describe("effectiveMapZoom / impliedZoomForBBox (M14)", () => {
     const pxPerDeg = (512 * Math.pow(2, mapZoom)) / 360
     const halfLng = (PHONE_WIDTH_PT / pxPerDeg / 2) * REGION_PAD_FACTOR
     const halfLat =
-      ((PHONE_HEIGHT_PT / pxPerDeg) * Math.cos((DOWNTOWN_LA.lat * Math.PI) / 180) / 2) *
+      (((PHONE_HEIGHT_PT / pxPerDeg) * Math.cos((DOWNTOWN_LA.lat * Math.PI) / 180)) / 2) *
       REGION_PAD_FACTOR
     return {
       west: DOWNTOWN_LA.lng - halfLng,
@@ -1035,13 +1302,22 @@ describe("searchReports", () => {
   it("returns only published+public+non-deleted reports as ReportPinDTOs with description/addr/referenceCode carried", async () => {
     const { repo, service } = makeHarness()
     const pub = repo.seedReport({
-      status: "published", visibility: "public", category: "trash",
-      title: "Broken streetlight", description: "out for a week", addr: "5th Ave",
+      status: "published",
+      visibility: "public",
+      category: "trash",
+      title: "Broken streetlight",
+      description: "out for a week",
+      addr: "5th Ave",
       referenceCode: "TR-7-000009",
     })
     repo.seedReport({ status: "held", visibility: "public", title: "Held one", publishedAt: null })
     repo.seedReport({ status: "published", visibility: "hidden", title: "Hidden one" })
-    repo.seedReport({ status: "published", visibility: "public", title: "Deleted one", deletedAt: new Date() })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      title: "Deleted one",
+      deletedAt: new Date(),
+    })
 
     const res = await service.searchReports({})
     expect(res.items).toHaveLength(1)
@@ -1060,9 +1336,22 @@ describe("searchReports", () => {
 
   it("carries thumbUrl from the first ready photo (presigned) and null when there is no media", async () => {
     const { repo, service } = makeHarness()
-    const withPhoto = repo.seedReport({ status: "published", visibility: "public", title: "with photo" })
-    repo.seedMedia({ reportId: withPhoto.id, status: "ready", r2Key: "uploads/x", thumbKey: "thumbs/x" })
-    const noPhoto = repo.seedReport({ status: "published", visibility: "public", title: "no photo" })
+    const withPhoto = repo.seedReport({
+      status: "published",
+      visibility: "public",
+      title: "with photo",
+    })
+    repo.seedMedia({
+      reportId: withPhoto.id,
+      status: "ready",
+      r2Key: "uploads/x",
+      thumbKey: "thumbs/x",
+    })
+    const noPhoto = repo.seedReport({
+      status: "published",
+      visibility: "public",
+      title: "no photo",
+    })
 
     const res = await service.searchReports({})
     const byId = new Map(res.items.map((p) => [p.id, p]))
@@ -1072,9 +1361,23 @@ describe("searchReports", () => {
 
   it("filters by free-text q (case-insensitive) over title OR address", async () => {
     const { repo, service } = makeHarness()
-    const byTitle = repo.seedReport({ status: "published", visibility: "public", title: "Pothole on Main" })
-    const byAddr = repo.seedReport({ status: "published", visibility: "public", title: "Graffiti", addr: "12 POTHOLE Lane" })
-    repo.seedReport({ status: "published", visibility: "public", title: "Trash pile", addr: "9 Elm St" })
+    const byTitle = repo.seedReport({
+      status: "published",
+      visibility: "public",
+      title: "Pothole on Main",
+    })
+    const byAddr = repo.seedReport({
+      status: "published",
+      visibility: "public",
+      title: "Graffiti",
+      addr: "12 POTHOLE Lane",
+    })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      title: "Trash pile",
+      addr: "9 Elm St",
+    })
 
     const res = await service.searchReports({ q: "pothole" })
     const ids = new Set(res.items.map((p) => p.id))
@@ -1085,7 +1388,12 @@ describe("searchReports", () => {
 
   it("filters by category set", async () => {
     const { repo, service } = makeHarness()
-    const trash = repo.seedReport({ status: "published", visibility: "public", category: "trash", title: "t" })
+    const trash = repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "trash",
+      title: "t",
+    })
     repo.seedReport({ status: "published", visibility: "public", category: "graffiti", title: "g" })
 
     const res = await service.searchReports({ categories: ["trash"] })
@@ -1096,8 +1404,20 @@ describe("searchReports", () => {
 
   it("filters by fine-grained type set (0021), alongside category", async () => {
     const { repo, service } = makeHarness()
-    const dump = repo.seedReport({ status: "published", visibility: "public", category: "trash", type: "dump", title: "dumped mattress" })
-    repo.seedReport({ status: "published", visibility: "public", category: "graffiti", type: "graffiti", title: "tag" })
+    const dump = repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "trash",
+      type: "dump",
+      title: "dumped mattress",
+    })
+    repo.seedReport({
+      status: "published",
+      visibility: "public",
+      category: "graffiti",
+      type: "graffiti",
+      title: "tag",
+    })
 
     const res = await service.searchReports({ types: ["dump"] })
     expect(res.items).toHaveLength(1)
@@ -1124,9 +1444,27 @@ describe("searchReports", () => {
     const { repo, service } = makeHarness()
     const tie = new Date("2026-05-31T12:00:00.000Z")
     const later = new Date("2026-05-31T12:00:01.000Z")
-    repo.seedReport({ id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", status: "published", visibility: "public", title: "a", createdAt: tie })
-    repo.seedReport({ id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", status: "published", visibility: "public", title: "b", createdAt: tie })
-    repo.seedReport({ id: "cccccccc-cccc-cccc-cccc-cccccccccccc", status: "published", visibility: "public", title: "c", createdAt: later })
+    repo.seedReport({
+      id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      status: "published",
+      visibility: "public",
+      title: "a",
+      createdAt: tie,
+    })
+    repo.seedReport({
+      id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      status: "published",
+      visibility: "public",
+      title: "b",
+      createdAt: tie,
+    })
+    repo.seedReport({
+      id: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      status: "published",
+      visibility: "public",
+      title: "c",
+      createdAt: later,
+    })
 
     const seen: string[] = []
     let cursor: string | null | undefined = undefined
@@ -1164,15 +1502,27 @@ describe("report media presigner selection (F058)", () => {
 
   it("signs a HELD or UNLISTED report's media privately, and a published+public one publicly", async () => {
     const { repo, service } = presignHarness()
-    const published = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
+    const published = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "public",
+    })
     repo.seedMedia({ reportId: published.id, status: "ready", r2Key: "k/pub.jpg" })
     const held = repo.seedReport({ reporterUserId: "owner", status: "held", visibility: "public" })
     repo.seedMedia({ reportId: held.id, status: "ready", r2Key: "k/held.jpg" })
-    const unlisted = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "hidden" })
+    const unlisted = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "hidden",
+    })
     repo.seedMedia({ reportId: unlisted.id, status: "ready", r2Key: "k/unlisted.jpg" })
 
-    expect((await service.getReport(published.id, { userId: "owner" })).media[0]!.url).toBe("public://k/pub.jpg")
-    expect((await service.getReport(held.id, { userId: "owner" })).media[0]!.url).toBe("signed://k/held.jpg")
+    expect((await service.getReport(published.id, { userId: "owner" })).media[0]!.url).toBe(
+      "public://k/pub.jpg",
+    )
+    expect((await service.getReport(held.id, { userId: "owner" })).media[0]!.url).toBe(
+      "signed://k/held.jpg",
+    )
     expect((await service.getReport(unlisted.id, { userId: "owner" })).media[0]!.url).toBe(
       "signed://k/unlisted.jpg",
     )
@@ -1180,7 +1530,11 @@ describe("report media presigner selection (F058)", () => {
 
   it("signs a still-VALIDATING asset privately even on a published+public report", async () => {
     const { repo, service } = presignHarness()
-    const r = repo.seedReport({ reporterUserId: "owner", status: "published", visibility: "public" })
+    const r = repo.seedReport({
+      reporterUserId: "owner",
+      status: "published",
+      visibility: "public",
+    })
     repo.seedMedia({ reportId: r.id, status: "validating", r2Key: "k/pending.jpg" })
 
     const dto = await service.getReport(r.id, { userId: "owner" })

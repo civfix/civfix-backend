@@ -73,7 +73,9 @@ export function roomKeyFor(kind: RoomKind, id: string): string {
 }
 
 export function broadcastMessageUpdate(
-  chat: { broadcastEvent?: ((roomKey: string, frame: WsServerMessage) => Promise<void> | void) | undefined },
+  chat: {
+    broadcastEvent?: ((roomKey: string, frame: WsServerMessage) => Promise<void> | void) | undefined
+  },
   roomKind: RoomKind,
   roomId: string,
   message: ChatMessageDTO,
@@ -95,7 +97,10 @@ function decodeRoomKey(roomKey: string): { kind: RoomKind; id: string } {
   return { kind: "cleanup", id: roomKey }
 }
 
-export async function leaveRoomAndAnnounce(session: GatewaySession, roomKey: string): Promise<void> {
+export async function leaveRoomAndAnnounce(
+  session: GatewaySession,
+  roomKey: string,
+): Promise<void> {
   const { conn, deps, userId } = session
   const { kind, id } = decodeRoomKey(roomKey)
   await deps.chat.leaveRoom(roomKey, conn)
@@ -126,7 +131,9 @@ async function authorizeRoom(
 ): Promise<RoomAuthorization> {
   if (kind === "cleanup") {
     const ok = await deps.isMember(id, userId)
-    return ok ? { ok: true } : { ok: false, code: "FORBIDDEN", message: "You are not a member of this cleanup." }
+    return ok
+      ? { ok: true }
+      : { ok: false, code: "FORBIDDEN", message: "You are not a member of this cleanup." }
   }
   if (kind === "report") {
     if (deps.reportVisible && !(await deps.reportVisible(id, userId))) {
@@ -158,7 +165,11 @@ async function authorizeRoom(
       return { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
     }
     if (!access.canPost) {
-      return { ok: false, code: "channel_read_only", message: "Only owners and admins can post in this channel." }
+      return {
+        ok: false,
+        code: "channel_read_only",
+        message: "Only owners and admins can post in this channel.",
+      }
     }
     return { ok: true }
   }
@@ -192,7 +203,10 @@ export async function reauthorizeJoinedRooms(session: GatewaySession): Promise<v
     if (!session.joined.has(roomKey)) continue
     if (await canStillRead(session, roomKey)) continue
     const { kind, id } = decodeRoomKey(roomKey)
-    sendError(session.conn, "FORBIDDEN", "You no longer have access to this conversation.", { kind, id })
+    sendError(session.conn, "FORBIDDEN", "You no longer have access to this conversation.", {
+      kind,
+      id,
+    })
     await leaveRoomAndAnnounce(session, roomKey).catch(() => {})
   }
 }
@@ -211,7 +225,12 @@ async function handleJoin(session: GatewaySession, frame: ExtractFrame<"join">):
       const online = await deps.presence.online(roomKey)
       if (session.closed) return
       conn.send(
-        serverFrame({ type: "presence_snapshot", cleanupId: id, ...stampRoomKind(kind), userIds: online }),
+        serverFrame({
+          type: "presence_snapshot",
+          cleanupId: id,
+          ...stampRoomKind(kind),
+          userIds: online,
+        }),
       )
     }
     return
@@ -241,7 +260,12 @@ async function handleJoin(session: GatewaySession, frame: ExtractFrame<"join">):
       return
     }
     conn.send(
-      serverFrame({ type: "presence_snapshot", cleanupId: id, ...stampRoomKind(kind), userIds: online }),
+      serverFrame({
+        type: "presence_snapshot",
+        cleanupId: id,
+        ...stampRoomKind(kind),
+        userIds: online,
+      }),
     )
     if (userJoined) {
       await deps.chat.broadcastEvent?.(
@@ -317,7 +341,10 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
     return
   }
   if (deps.reportSendLimiter && !deps.reportSendLimiter.tryConsume(`${userId}:${roomKey}`)) {
-    sendError(conn, "RATE_LIMITED", "You're sending messages too fast. Please slow down.", { kind, id })
+    sendError(conn, "RATE_LIMITED", "You're sending messages too fast. Please slow down.", {
+      kind,
+      id,
+    })
     return
   }
   const resilience = deps.chat.sendResilience ?? PASSTHROUGH_SEND_RESILIENCE
@@ -376,7 +403,12 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
 
   conn.send(serverFrame({ type: "ack", clientId: frame.clientId, message }))
 
-  await resilience.broadcastMessage(deps.chat, roomKey, neutralizeChatViewerFields(message), conn.id)
+  await resilience.broadcastMessage(
+    deps.chat,
+    roomKey,
+    neutralizeChatViewerFields(message),
+    conn.id,
+  )
 
   const replyTargetUserId = replyBellTarget(message, userId)
   fireMentionBells(deps, kind, id, userId, mentions, message, replyTargetUserId)
@@ -490,13 +522,7 @@ async function handleTyping(session: GatewaySession, frame: ExtractFrame<"typing
     if (oldest !== undefined) session.typingThrottle.delete(oldest)
   }
   session.typingThrottle.set(roomKey, now)
-  const auth = await authorizeRoom(
-    deps,
-    kind,
-    id,
-    userId,
-     kind === "report" || kind === "group",
-  )
+  const auth = await authorizeRoom(deps, kind, id, userId, kind === "report" || kind === "group")
   if (!auth.ok) {
     sendError(conn, auth.code, auth.message, { kind, id })
     return
@@ -576,7 +602,10 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
     return
   }
   const frame = result.data
-  await (dispatch[frame.type] as (s: GatewaySession, f: ClientFrame) => Promise<void>)(session, frame)
+  await (dispatch[frame.type] as (s: GatewaySession, f: ClientFrame) => Promise<void>)(
+    session,
+    frame,
+  )
 }
 
 export { serverFrame, sendError, decodeRoomKey }

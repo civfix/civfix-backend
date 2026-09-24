@@ -74,7 +74,11 @@ export function classifyPageViewSource(input: {
   if (SEARCH_HOSTS.some((prefix) => host.startsWith(prefix) || host.includes(`.${prefix}`))) {
     return "search"
   }
-  if (SOCIAL_HOSTS.some((prefix) => host === prefix || host.startsWith(prefix) || host.includes(`.${prefix}`))) {
+  if (
+    SOCIAL_HOSTS.some(
+      (prefix) => host === prefix || host.startsWith(prefix) || host.includes(`.${prefix}`),
+    )
+  ) {
     return "social"
   }
   return "referral"

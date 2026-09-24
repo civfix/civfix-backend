@@ -126,6 +126,5 @@ export interface Env extends CommsEnv, RegistrationEnv {
 
   USE_FAKE_SMS: boolean
 
-
   USE_REAL_NSFW: boolean
 }

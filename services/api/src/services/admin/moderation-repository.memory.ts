@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import {
@@ -67,7 +66,8 @@ export class InMemoryModerationRepository implements ModerationRepository {
       subjectId,
       destinationKind:
         input.destinationKind === undefined ? destination.destinationKind : input.destinationKind,
-      destinationId: input.destinationId === undefined ? destination.destinationId : input.destinationId,
+      destinationId:
+        input.destinationId === undefined ? destination.destinationId : input.destinationId,
       flag: input.flag ?? null,
       reason: input.reason ?? null,
       category: input.category ?? null,

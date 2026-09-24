@@ -1,4 +1,3 @@
-
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
 import { decodeCursor, clampLimit, paginate } from "./pagination.js"
@@ -330,7 +329,13 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         if (!task || task.geoid === null) return false
         const geoid = task.geoid
 
-        await upsertJurisdictionContacts(tx, geoid, input.contacts, input.defaultEmails, input.formUrl)
+        await upsertJurisdictionContacts(
+          tx,
+          geoid,
+          input.contacts,
+          input.defaultEmails,
+          input.formUrl,
+        )
         await writeAudit(tx, {
           actorId: input.actorId,
           action: "discovery.draft_saved",
@@ -374,8 +379,9 @@ async function loadContacts(sql: Queryable, geoid: string): Promise<DiscoveryCon
     ORDER BY category ASC
   `
   return rows
-    .filter((r): r is { category: ReportCategory; email: string | null } =>
-      r.category !== null && (ADMIN_CATEGORIES as readonly string[]).includes(r.category),
+    .filter(
+      (r): r is { category: ReportCategory; email: string | null } =>
+        r.category !== null && (ADMIN_CATEGORIES as readonly string[]).includes(r.category),
     )
     .map((r) => ({ category: r.category, email: r.email }))
 }

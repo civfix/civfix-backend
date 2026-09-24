@@ -1,4 +1,3 @@
-
 import { existsSync } from "node:fs"
 import { access, constants } from "node:fs/promises"
 import type { SandboxIdentity } from "../config.js"
@@ -113,7 +112,9 @@ export async function assertSandboxPreflight(
   const tools = await resolveMediaToolPaths(source)
   const identity = sandboxIdentity(source)
   if (identity === null) {
-    throw new Error("media-worker: MEDIA_SANDBOX_UID / MEDIA_SANDBOX_GID are required in production")
+    throw new Error(
+      "media-worker: MEDIA_SANDBOX_UID / MEDIA_SANDBOX_GID are required in production",
+    )
   }
 
   await assertScratchHandover(identity)
@@ -121,7 +122,9 @@ export async function assertSandboxPreflight(
   await assertVideoLaneRuns(tools.ffprobe)
 
   if (process.platform !== "linux") {
-    log("media-worker: sandbox capability proof skipped (not Linux)", { platform: process.platform })
+    log("media-worker: sandbox capability proof skipped (not Linux)", {
+      platform: process.platform,
+    })
     return
   }
 

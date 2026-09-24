@@ -1,11 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { relativeAgo } from "@civfix/shared"
-import {
-  makeThreadsService,
-  InMemoryChatReadState,
-} from "../../src/services/threads-service.js"
+import { makeThreadsService, InMemoryChatReadState } from "../../src/services/threads-service.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
-
 
 const ME = "11111111-1111-1111-1111-111111111111"
 const OTHER = "22222222-2222-2222-2222-222222222222"
@@ -29,8 +25,16 @@ describe("threads service", () => {
     repo.addMember(c1, ME, new Date("2026-06-01T10:00:00.000Z"))
     repo.addMember(c1, OTHER, new Date("2026-06-01T09:00:00.000Z"))
 
-    repo.addMessage(c1, { senderId: OTHER, body: "hi all", createdAt: new Date("2026-06-01T11:00:00.000Z") })
-    repo.addMessage(c1, { senderId: OTHER, body: "see you there", createdAt: new Date("2026-06-01T11:30:00.000Z") })
+    repo.addMessage(c1, {
+      senderId: OTHER,
+      body: "hi all",
+      createdAt: new Date("2026-06-01T11:00:00.000Z"),
+    })
+    repo.addMessage(c1, {
+      senderId: OTHER,
+      body: "see you there",
+      createdAt: new Date("2026-06-01T11:30:00.000Z"),
+    })
 
     const svc = makeThreadsService({ repo, readState: new InMemoryChatReadState(), now: () => NOW })
     const { items } = await svc.listThreads(ME)
@@ -51,8 +55,16 @@ describe("threads service", () => {
     const repo = new InMemoryThreadsRepository()
     const c1 = repo.seedCleanup("Park cleanup")
     repo.addMember(c1, ME, new Date("2026-06-01T10:00:00.000Z"))
-    repo.addMessage(c1, { senderId: OTHER, body: "yo", createdAt: new Date("2026-06-01T10:30:00.000Z") })
-    repo.addMessage(c1, { senderId: ME, body: "on my way", createdAt: new Date("2026-06-01T11:00:00.000Z") })
+    repo.addMessage(c1, {
+      senderId: OTHER,
+      body: "yo",
+      createdAt: new Date("2026-06-01T10:30:00.000Z"),
+    })
+    repo.addMessage(c1, {
+      senderId: ME,
+      body: "on my way",
+      createdAt: new Date("2026-06-01T11:00:00.000Z"),
+    })
 
     const svc = makeThreadsService({ repo, readState: new InMemoryChatReadState(), now: () => NOW })
     const { items } = await svc.listThreads(ME)
@@ -66,8 +78,16 @@ describe("threads service", () => {
     const repo = new InMemoryThreadsRepository()
     const c1 = repo.seedCleanup("Trail day")
     repo.addMember(c1, ME, new Date("2026-06-01T08:00:00.000Z"))
-    repo.addMessage(c1, { senderId: OTHER, body: "old", createdAt: new Date("2026-06-01T09:00:00.000Z") })
-    repo.addMessage(c1, { senderId: OTHER, body: "new", createdAt: new Date("2026-06-01T11:00:00.000Z") })
+    repo.addMessage(c1, {
+      senderId: OTHER,
+      body: "old",
+      createdAt: new Date("2026-06-01T09:00:00.000Z"),
+    })
+    repo.addMessage(c1, {
+      senderId: OTHER,
+      body: "new",
+      createdAt: new Date("2026-06-01T11:00:00.000Z"),
+    })
 
     const readState = new InMemoryChatReadState()
     await readState.markRead(c1, ME, new Date("2026-06-01T10:00:00.000Z"))
@@ -109,8 +129,16 @@ describe("threads service", () => {
     const b = repo.seedCleanup("B-newer-activity")
     repo.addMember(a, ME, new Date("2026-06-01T08:00:00.000Z"))
     repo.addMember(b, ME, new Date("2026-06-01T08:00:00.000Z"))
-    repo.addMessage(a, { senderId: OTHER, body: "old", createdAt: new Date("2026-06-01T09:00:00.000Z") })
-    repo.addMessage(b, { senderId: OTHER, body: "new", createdAt: new Date("2026-06-01T11:00:00.000Z") })
+    repo.addMessage(a, {
+      senderId: OTHER,
+      body: "old",
+      createdAt: new Date("2026-06-01T09:00:00.000Z"),
+    })
+    repo.addMessage(b, {
+      senderId: OTHER,
+      body: "new",
+      createdAt: new Date("2026-06-01T11:00:00.000Z"),
+    })
 
     const svc = makeThreadsService({ repo, readState: new InMemoryChatReadState(), now: () => NOW })
     const { items } = await svc.listThreads(ME)

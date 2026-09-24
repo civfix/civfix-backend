@@ -8,7 +8,6 @@ import {
   type ActivityService,
 } from "../../src/services/admin/activity-service.js"
 
-
 const NOW = new Date("2026-06-15T12:00:00.000Z")
 
 function harness(): { repo: InMemoryActivityRepository; svc: ActivityService } {
@@ -80,7 +79,14 @@ describe("classifyActivity (per source)", () => {
 
   it("classifies a cleanup as cleanup_plan", () => {
     const dto = classifyActivity(
-      { source: "cleanup", id: "c1", ts: hoursAgo(1), who: "Bob", where: "Park", subject: "River cleanup" },
+      {
+        source: "cleanup",
+        id: "c1",
+        ts: hoursAgo(1),
+        who: "Bob",
+        where: "Park",
+        subject: "River cleanup",
+      },
       NOW,
     )
     expect(dto.kind).toBe("cleanup_plan")
@@ -89,28 +95,56 @@ describe("classifyActivity (per source)", () => {
 
   it("labels mail events distinctly: sent, failed, bounced, and inbound replies", () => {
     const bounced = classifyActivity(
-      { source: "mail_event", id: "m1", ts: hoursAgo(1), who: "city@x.gov", where: "x", eventType: "bounced" },
+      {
+        source: "mail_event",
+        id: "m1",
+        ts: hoursAgo(1),
+        who: "city@x.gov",
+        where: "x",
+        eventType: "bounced",
+      },
       NOW,
     )
     expect(bounced.kind).toBe("outreach_bounce")
     expect(bounced.what).toBe("Outreach bounced")
 
     const failed = classifyActivity(
-      { source: "mail_event", id: "m2", ts: hoursAgo(1), who: "city@x.gov", where: "x", eventType: "failed" },
+      {
+        source: "mail_event",
+        id: "m2",
+        ts: hoursAgo(1),
+        who: "city@x.gov",
+        where: "x",
+        eventType: "failed",
+      },
       NOW,
     )
     expect(failed.kind).toBe("outreach_bounce")
     expect(failed.what).toBe("Outreach failed")
 
     const replied = classifyActivity(
-      { source: "mail_event", id: "m3", ts: hoursAgo(1), who: "city@x.gov", where: "x", eventType: "delivered" },
+      {
+        source: "mail_event",
+        id: "m3",
+        ts: hoursAgo(1),
+        who: "city@x.gov",
+        where: "x",
+        eventType: "delivered",
+      },
       NOW,
     )
     expect(replied.kind).toBe("outreach_open")
     expect(replied.what).toBe("City replied")
 
     const sent = classifyActivity(
-      { source: "mail_event", id: "m4", ts: hoursAgo(1), who: "city@x.gov", where: "x", eventType: "sent" },
+      {
+        source: "mail_event",
+        id: "m4",
+        ts: hoursAgo(1),
+        who: "city@x.gov",
+        where: "x",
+        eventType: "sent",
+      },
       NOW,
     )
     expect(sent.kind).toBe("outreach_open")
@@ -139,8 +173,10 @@ describe("classifyActivity (per source)", () => {
       classifyActivity({ source: "report", id: "r", ts: NOW, who: "", where: "" }, NOW).who,
     ).toBe("A neighbor")
     expect(
-      classifyActivity({ source: "audit", id: "a", ts: NOW, who: "", where: "", action: "x.y" }, NOW)
-        .who,
+      classifyActivity(
+        { source: "audit", id: "a", ts: NOW, who: "", where: "", action: "x.y" },
+        NOW,
+      ).who,
     ).toBe("Operator")
   })
 
@@ -161,7 +197,14 @@ describe("classifyActivity (per source)", () => {
 describe("activity service wiring", () => {
   it("merges sources newest-first and returns a null cursor (capped recent window)", async () => {
     const { repo, svc } = harness()
-    repo.seedRecord({ source: "report", id: "r1", ts: hoursAgo(5), who: "A", where: "LA", subject: "trash" })
+    repo.seedRecord({
+      source: "report",
+      id: "r1",
+      ts: hoursAgo(5),
+      who: "A",
+      where: "LA",
+      subject: "trash",
+    })
     repo.seedRecord({
       source: "audit",
       id: "a1",
@@ -188,7 +231,14 @@ describe("activity service wiring", () => {
   it("respects the limit", async () => {
     const { repo, svc } = harness()
     for (let i = 0; i < 5; i++) {
-      repo.seedRecord({ source: "report", id: `r${i}`, ts: hoursAgo(i), who: "A", where: "LA", subject: "trash" })
+      repo.seedRecord({
+        source: "report",
+        id: `r${i}`,
+        ts: hoursAgo(i),
+        who: "A",
+        where: "LA",
+        subject: "trash",
+      })
     }
     const res = await svc.list({ limit: 2 })
     expect(res.items).toHaveLength(2)

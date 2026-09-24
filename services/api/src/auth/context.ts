@@ -1,4 +1,3 @@
-
 import { AppError } from "@civfix/shared"
 import type { AuthContext } from "@civfix/shared"
 import type { FastifyInstance, FastifyRequest } from "fastify"

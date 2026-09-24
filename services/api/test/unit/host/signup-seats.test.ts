@@ -19,10 +19,7 @@ import { TEST_TICKET_SIGNER } from "../../helpers/ticket-signer.js"
 import { randomUUID } from "node:crypto"
 import { beforeEach, describe, expect, it } from "vitest"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import {
-  makeCleanupService,
-  type CleanupService,
-} from "../../../src/services/cleanup-service.js"
+import { makeCleanupService, type CleanupService } from "../../../src/services/cleanup-service.js"
 import { InMemoryCleanupRepository } from "../../helpers/cleanups.js"
 import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
 import type { TicketTypeRecord } from "../../../src/services/host/registration-repository.types.js"

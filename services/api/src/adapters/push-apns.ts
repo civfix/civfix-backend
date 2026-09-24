@@ -52,7 +52,8 @@ export function makeApnsDispatcher(
             {
               status,
               reason,
-              deviceHash: typeof failure.device === "string" ? hashForLog(failure.device) : undefined,
+              deviceHash:
+                typeof failure.device === "string" ? hashForLog(failure.device) : undefined,
             },
             "push(apns): delivery failure",
           )

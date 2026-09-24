@@ -37,10 +37,7 @@ export function assertCurrentConsentVersions(consent: EventConsentInput): void {
   if (Object.keys(fields).length > 0) throw AppError.validation(fields)
 }
 
-export async function insertConsent(
-  tx: Queryable,
-  input: InsertConsentInput,
-): Promise<string> {
+export async function insertConsent(tx: Queryable, input: InsertConsentInput): Promise<string> {
   assertCurrentConsentVersions(input.consent)
   if (input.subjectType === "user" && input.userId === null) {
     throw AppError.internal("event consent for a member needs a user id")

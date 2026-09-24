@@ -1,4 +1,3 @@
-
 import type { JobHandler } from "@civfix/shared/interfaces"
 import { MEDIA_CHECKS_JOB } from "@civfix/api/media-repo"
 import { releaseAnonHoldIfReady, type HeldReportView } from "@civfix/api/anon-hold-release"
@@ -98,11 +97,7 @@ function makeMediaChecksHandler(jobs: WorkerJobs, seams: WorkerSeams): JobHandle
         outcome.reportId ??
         (outcome.status === "missing" ? null : await findReportId(repo, payload))
       if (reportId && (await shouldEnqueueHoldRelease(seams, reportId))) {
-        await jobs.enqueue(
-          ANON_HOLD_RELEASE_JOB,
-          { reportId },
-          { singletonKey: reportId },
-        )
+        await jobs.enqueue(ANON_HOLD_RELEASE_JOB, { reportId }, { singletonKey: reportId })
       } else {
         console.debug("media.checks: hold-release skipped (no row/reportId, or not anon-held)", {
           uploadId: payload.uploadId,
@@ -179,7 +174,12 @@ function makeOrphanSweepHandler(seams: WorkerSeams): JobHandler {
     await sweepStaleScratchDirs().catch(() => 0)
     const repo = requireRepo(seams, ORPHAN_SWEEP_JOB, "repo")
     if (!repo) return
-    await runOrphanSweep({ repo, storage: seams.storage, limits: seams.limits, report: seams.report })
+    await runOrphanSweep({
+      repo,
+      storage: seams.storage,
+      limits: seams.limits,
+      report: seams.report,
+    })
   }
 }
 
@@ -257,7 +257,11 @@ async function registerHandlers(
   await jobs.createQueue(ANON_HOLD_RELEASE_SWEEP_JOB, { policy: "singleton" })
   await jobs.createQueue(RETENTION_SWEEP_JOB, { policy: "singleton" })
   await jobs.createQueue(MEDIA_STUCK_SWEEP_JOB, { policy: "singleton" })
-  await jobs.createQueue(MEDIA_UPLOAD_REAP_JOB, { policy: "short", retryLimit: 3, retryBackoff: true })
+  await jobs.createQueue(MEDIA_UPLOAD_REAP_JOB, {
+    policy: "short",
+    retryLimit: 3,
+    retryBackoff: true,
+  })
 
   await jobs.workWithSettings(MEDIA_CHECKS_JOB, makeMediaChecksHandler(jobs, seams), {
     batchSize: limits.mediaChecksConcurrency,
@@ -272,15 +276,30 @@ async function registerHandlers(
   await jobs.work(MEDIA_STUCK_SWEEP_JOB, makeStuckSweepHandler(jobs, seams))
   await jobs.work(MEDIA_UPLOAD_REAP_JOB, makeUploadReapHandler(seams))
 
-  await jobs.schedule(ORPHAN_SWEEP_JOB, ORPHAN_SWEEP_CRON, undefined, cronSchedule(ORPHAN_SWEEP_JOB))
-  await jobs.schedule(CHAT_PARTITION_JOB, CHAT_PARTITION_CRON, undefined, cronSchedule(CHAT_PARTITION_JOB))
+  await jobs.schedule(
+    ORPHAN_SWEEP_JOB,
+    ORPHAN_SWEEP_CRON,
+    undefined,
+    cronSchedule(ORPHAN_SWEEP_JOB),
+  )
+  await jobs.schedule(
+    CHAT_PARTITION_JOB,
+    CHAT_PARTITION_CRON,
+    undefined,
+    cronSchedule(CHAT_PARTITION_JOB),
+  )
   await jobs.schedule(
     ANON_HOLD_RELEASE_SWEEP_JOB,
     HOLD_RELEASE_SWEEP_CRON,
     undefined,
     cronSchedule(ANON_HOLD_RELEASE_SWEEP_JOB),
   )
-  await jobs.schedule(RETENTION_SWEEP_JOB, RETENTION_SWEEP_CRON, undefined, cronSchedule(RETENTION_SWEEP_JOB))
+  await jobs.schedule(
+    RETENTION_SWEEP_JOB,
+    RETENTION_SWEEP_CRON,
+    undefined,
+    cronSchedule(RETENTION_SWEEP_JOB),
+  )
   await jobs.schedule(
     MEDIA_STUCK_SWEEP_JOB,
     MEDIA_STUCK_SWEEP_CRON,

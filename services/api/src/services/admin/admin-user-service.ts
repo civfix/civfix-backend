@@ -1,4 +1,3 @@
-
 import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   AdminUserCounts,
@@ -126,10 +125,7 @@ export interface AdminUserRepository {
   ): Promise<boolean>
   applyRole(id: string, input: { role: Role; actorId: string | null }): Promise<boolean>
   listUserOrganizations(id: string): Promise<AdminUserOrganizationRecord[]>
-  setReportVerified(
-    id: string,
-    input: { value: boolean; actorId: string | null },
-  ): Promise<boolean>
+  setReportVerified(id: string, input: { value: boolean; actorId: string | null }): Promise<boolean>
   removeUserMessage(
     userId: string,
     messageId: string,

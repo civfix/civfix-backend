@@ -1,10 +1,7 @@
 import { AppError, ErrorCode } from "@civfix/shared"
 import type { Env } from "../env.js"
 import type { Container } from "../di.js"
-import {
-  makeDataExportService,
-  type DataExportService,
-} from "./data-export-service.js"
+import { makeDataExportService, type DataExportService } from "./data-export-service.js"
 
 export const DATA_EXPORT_JOB = "data.export"
 

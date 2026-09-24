@@ -180,7 +180,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         tickets: TEST_TICKET_SIGNER,
         repo: makeDrizzleCleanupRepository(h.sql),
       }).joinCleanup(cleanupId, memberId)
-      const msg = await chat().insertMessage({ cleanupId, userId: memberId, body: "pin me" }, randomUUID())
+      const msg = await chat().insertMessage(
+        { cleanupId, userId: memberId, body: "pin me" },
+        randomUUID(),
+      )
 
       const watcher = new MockConnection("pin-watcher")
       await container.chatService.joinRoom(roomKeyFor("cleanup", cleanupId), watcher, memberId)
@@ -216,7 +219,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         tickets: TEST_TICKET_SIGNER,
         repo: makeDrizzleCleanupRepository(h.sql),
       }).joinCleanup(cleanupId, memberId)
-      const msg = await chat().insertMessage({ cleanupId, userId: organizerId, body: "no pin for you" }, randomUUID())
+      const msg = await chat().insertMessage(
+        { cleanupId, userId: organizerId, body: "no pin for you" },
+        randomUUID(),
+      )
 
       const res = await pin(await token(memberId), {
         roomKind: "cleanup",
@@ -284,7 +290,11 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       const aliceId = await newUser("Pin DM Alice")
       const bobId = await newUser("Pin DM Bob")
       const thread = await dmRepo().openOrCreateThread(aliceId, bobId)
-      const msg = await dmRepo().persist({ threadId: thread.id, senderId: bobId, body: "keep this" })
+      const msg = await dmRepo().persist({
+        threadId: thread.id,
+        senderId: bobId,
+        body: "keep this",
+      })
 
       const aliceToken = await token(aliceId)
       const pinned = await pin(aliceToken, {
@@ -317,16 +327,29 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
     it("pinning is IDEMPOTENT: a second pin returns the SAME pinnedAt (no refresh)", async () => {
       const organizerId = await newUser("Pin Idem Org")
       const cleanupId = await newCleanup(organizerId)
-      const msg = await chat().insertMessage({ cleanupId, userId: organizerId, body: "once" }, randomUUID())
+      const msg = await chat().insertMessage(
+        { cleanupId, userId: organizerId, body: "once" },
+        randomUUID(),
+      )
 
       const tok = await token(organizerId)
-      const first = await pin(tok, { roomKind: "cleanup", roomId: cleanupId, messageId: msg.id, pinned: true })
+      const first = await pin(tok, {
+        roomKind: "cleanup",
+        roomId: cleanupId,
+        messageId: msg.id,
+        pinned: true,
+      })
       expect(first.statusCode).toBe(200)
       const firstAt = first.json().pinnedAt
       expect(firstAt).toBeTruthy()
 
       // A repeat pin is a no-op: 200 with the ORIGINAL stamp, not a refreshed one.
-      const second = await pin(tok, { roomKind: "cleanup", roomId: cleanupId, messageId: msg.id, pinned: true })
+      const second = await pin(tok, {
+        roomKind: "cleanup",
+        roomId: cleanupId,
+        messageId: msg.id,
+        pinned: true,
+      })
       expect(second.statusCode).toBe(200)
       expect(second.json().pinnedAt).toBe(firstAt)
     })
@@ -342,7 +365,12 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         body: "Status changed",
       })
       const tok = await token(ownerId)
-      const sysRes = await pin(tok, { roomKind: "report", roomId: reportId, messageId: sys.id, pinned: true })
+      const sysRes = await pin(tok, {
+        roomKind: "report",
+        roomId: reportId,
+        messageId: sys.id,
+        pinned: true,
+      })
       expect(sysRes.statusCode).toBe(422)
 
       const msg = await chat().insertMessage(
@@ -350,7 +378,12 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         randomUUID(),
       )
       await chat().softDeleteReport(reportId, msg.id, ownerId)
-      const delRes = await pin(tok, { roomKind: "report", roomId: reportId, messageId: msg.id, pinned: true })
+      const delRes = await pin(tok, {
+        roomKind: "report",
+        roomId: reportId,
+        messageId: msg.id,
+        pinned: true,
+      })
       expect(delRes.statusCode).toBe(422)
     })
   })
@@ -360,9 +393,18 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       const organizerId = await newUser("Hist Org")
       const cleanupId = await newCleanup(organizerId)
       const repo = chat()
-      const m1 = await repo.insertMessage({ cleanupId, userId: organizerId, body: "one" }, randomUUID())
-      const m2 = await repo.insertMessage({ cleanupId, userId: organizerId, body: "two" }, randomUUID())
-      const m3 = await repo.insertMessage({ cleanupId, userId: organizerId, body: "three" }, randomUUID())
+      const m1 = await repo.insertMessage(
+        { cleanupId, userId: organizerId, body: "one" },
+        randomUUID(),
+      )
+      const m2 = await repo.insertMessage(
+        { cleanupId, userId: organizerId, body: "two" },
+        randomUUID(),
+      )
+      const m3 = await repo.insertMessage(
+        { cleanupId, userId: organizerId, body: "three" },
+        randomUUID(),
+      )
       await repo.setPinned(cleanupId, m1.id, organizerId, true)
       await repo.setPinned(cleanupId, m2.id, organizerId, true)
 
@@ -471,7 +513,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         tickets: TEST_TICKET_SIGNER,
         repo: makeDrizzleCleanupRepository(h.sql),
       }).joinCleanup(cleanupId, memberId)
-      const msg = await chat().insertMessage({ cleanupId, userId: memberId, body: "rule-breaking" }, randomUUID())
+      const msg = await chat().insertMessage(
+        { cleanupId, userId: memberId, body: "rule-breaking" },
+        randomUUID(),
+      )
 
       const watcher = new MockConnection("del-override-watcher")
       await container.chatService.joinRoom(roomKeyFor("cleanup", cleanupId), watcher, memberId)
@@ -502,7 +547,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         tickets: TEST_TICKET_SIGNER,
         repo: makeDrizzleCleanupRepository(h.sql),
       }).joinCleanup(cleanupId, memberId)
-      const msg = await chat().insertMessage({ cleanupId, userId: organizerId, body: "keep out" }, randomUUID())
+      const msg = await chat().insertMessage(
+        { cleanupId, userId: organizerId, body: "keep out" },
+        randomUUID(),
+      )
 
       const res = await app.inject({
         method: "DELETE",
@@ -561,7 +609,11 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
       const aliceId = await newUser("Del DM Alice")
       const bobId = await newUser("Del DM Bob")
       const thread = await dmRepo().openOrCreateThread(aliceId, bobId)
-      const msg = await dmRepo().persist({ threadId: thread.id, senderId: bobId, body: "bob's words" })
+      const msg = await dmRepo().persist({
+        threadId: thread.id,
+        senderId: bobId,
+        body: "bob's words",
+      })
 
       const res = await app.inject({
         method: "DELETE",

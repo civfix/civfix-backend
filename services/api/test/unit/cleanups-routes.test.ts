@@ -16,7 +16,6 @@ import {
   type CleanupServiceOverrides,
 } from "../../src/routes/cleanups.routes.js"
 
-
 interface Harness {
   app: FastifyInstance
   repo: InMemoryCleanupRepository
@@ -555,8 +554,16 @@ describe("POST /cleanups/:id/complete (the deprecated no-op)", () => {
     const member = await signIn(app, mailer, "attendee@example.com")
     repo.seedUser({ id: cohost.userId, displayName: "Cory" })
     repo.seedUser({ id: member.userId, displayName: "Mel" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(cohost.token) })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(member.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(cohost.token),
+    })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(member.token),
+    })
     await app.inject({
       method: "PATCH",
       url: `/v1/cleanups/${id}/members/${cohost.userId}`,
@@ -627,7 +634,11 @@ describe("POST /cleanups/:id/complete (the deprecated no-op)", () => {
   it("401s an anonymous completion", async () => {
     const { app, token } = await makeHarness()
     const id = await createCleanup(app, token, PAST)
-    const res = await app.inject({ method: "POST", url: `/v1/cleanups/${id}/complete`, payload: {} })
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/complete`,
+      payload: {},
+    })
     expect(res.statusCode).toBe(401)
   })
 
@@ -697,7 +708,11 @@ describe("GET /cleanups/:id/messages (member-gated history)", () => {
 
       const joiner = await signIn(app, mailer, "joiner@example.com")
       repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
-      await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+      await app.inject({
+        method: "POST",
+        url: `/v1/cleanups/${id}/join`,
+        headers: auth(joiner.token),
+      })
 
       const anon = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/attendees` })
       expect(anon.statusCode).toBe(200)
@@ -812,7 +827,11 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
 
     const joiner = await signIn(app, mailer, "joiner@example.com")
     repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(joiner.token),
+    })
 
     const promote = await app.inject({
       method: "PATCH",
@@ -855,7 +874,11 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     const id = await createCleanup(app, token)
     const joiner = await signIn(app, mailer, "joiner@example.com")
     repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(joiner.token),
+    })
 
     const asMember = await app.inject({
       method: "PATCH",
@@ -878,7 +901,11 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     const id = await createCleanup(app, token)
     const joiner = await signIn(app, mailer, "joiner@example.com")
     repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(joiner.token),
+    })
 
     const badRole = await app.inject({
       method: "PATCH",
@@ -903,7 +930,11 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     const id = await createCleanup(app, token)
     const joiner = await signIn(app, mailer, "joiner@example.com")
     repo.seedUser({ id: joiner.userId, displayName: "Jordan" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(joiner.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(joiner.token),
+    })
 
     const before = await app.inject({
       method: "GET",
@@ -935,8 +966,16 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     const member = await signIn(app, mailer, "member@example.com")
     repo.seedUser({ id: cohost.userId, displayName: "Cory" })
     repo.seedUser({ id: member.userId, displayName: "Mel" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(cohost.token) })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(member.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(cohost.token),
+    })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(member.token),
+    })
     await app.inject({
       method: "PATCH",
       url: `/v1/cleanups/${id}/members/${cohost.userId}`,
@@ -974,8 +1013,16 @@ describe("WS4 member management: PATCH + DELETE /cleanups/:id/members/:userId", 
     const member = await signIn(app, mailer, "member@example.com")
     repo.seedUser({ id: cohost.userId, displayName: "Cory" })
     repo.seedUser({ id: member.userId, displayName: "Mel" })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(cohost.token) })
-    await app.inject({ method: "POST", url: `/v1/cleanups/${id}/join`, headers: auth(member.token) })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(cohost.token),
+    })
+    await app.inject({
+      method: "POST",
+      url: `/v1/cleanups/${id}/join`,
+      headers: auth(member.token),
+    })
     await app.inject({
       method: "PATCH",
       url: `/v1/cleanups/${id}/members/${cohost.userId}`,

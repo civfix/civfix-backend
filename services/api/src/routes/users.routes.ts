@@ -1,4 +1,3 @@
-
 import {
   SearchUsersRequestSchema,
   MentionSearchRequestSchema,
@@ -54,7 +53,10 @@ export const BLOCK_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
 export const UNBLOCKABLE_MESSAGE = "User not found"
 
-export async function registerUsersRoutes(app: FastifyInstance, container: Container): Promise<void> {
+export async function registerUsersRoutes(
+  app: FastifyInstance,
+  container: Container,
+): Promise<void> {
   const csrfProtect = container.csrf.protect
 
   function blocksRepo(): BlocksRepository {
@@ -96,29 +98,39 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     },
   )
 
-  route(app, "blockUser", { preHandler: csrfProtect, config: { rateLimit: BLOCK_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(UserIdParamsSchema, request.params)
-    if (id === userId) throw AppError.validation({ id: "You cannot block yourself." })
-    if (isOfficialAccount(id)) {
-      throw AppError.forbidden("The official CivFix account can't be blocked.")
-    }
-    const blocks = blocksRepo()
-    await assertUserBlockable(app, blocks, userId, id)
-    await blocks.block(userId, id)
-    await dropContainerSuggestions(container, [userId, id], request.log)
-    const payload: BlockUserResponse = { blocked: true }
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "blockUser",
+    { preHandler: csrfProtect, config: { rateLimit: BLOCK_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(UserIdParamsSchema, request.params)
+      if (id === userId) throw AppError.validation({ id: "You cannot block yourself." })
+      if (isOfficialAccount(id)) {
+        throw AppError.forbidden("The official CivFix account can't be blocked.")
+      }
+      const blocks = blocksRepo()
+      await assertUserBlockable(app, blocks, userId, id)
+      await blocks.block(userId, id)
+      await dropContainerSuggestions(container, [userId, id], request.log)
+      const payload: BlockUserResponse = { blocked: true }
+      reply.status(200).send(payload)
+    },
+  )
 
-  route(app, "unblockUser", { preHandler: csrfProtect, config: { rateLimit: BLOCK_RATE_LIMIT } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const { id } = parse(UserIdParamsSchema, request.params)
-    await blocksRepo().unblock(userId, id)
-    await dropContainerSuggestions(container, [userId, id], request.log)
-    const payload: BlockUserResponse = { blocked: false }
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "unblockUser",
+    { preHandler: csrfProtect, config: { rateLimit: BLOCK_RATE_LIMIT } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const { id } = parse(UserIdParamsSchema, request.params)
+      await blocksRepo().unblock(userId, id)
+      await dropContainerSuggestions(container, [userId, id], request.log)
+      const payload: BlockUserResponse = { blocked: false }
+      reply.status(200).send(payload)
+    },
+  )
 
   route(
     app,
@@ -166,64 +178,71 @@ export async function registerUsersRoutes(app: FastifyInstance, container: Conta
     reply.status(200).send(payload)
   })
 
-  route(app, "deleteAccount", { preHandler: csrfProtect, config: { allowSuspended: true } }, async (request, reply) => {
-    const userId = requireAuth(request)
-    const store = app.authServices?.users
-    const sessions = app.authServices?.sessions
-    const otp = app.authServices?.otp
-    const oauth = app.authServices?.oauth
-    if (!store || !sessions || !otp || !oauth) {
-      throw AppError.unauthorized("Authentication required.")
-    }
-
-    const { emailOtp } = parse(DeleteAccountRequestSchema, request.body)
-    const me = await store.findById(userId)
-    const email = me?.email ?? null
-    if (email) {
-      const verifiedUserId = await otp.verifyOtp(email, emailOtp, request.ip || null)
-      if (verifiedUserId !== userId) {
-        throw AppError.unauthorized("That code could not be verified for this account.")
+  route(
+    app,
+    "deleteAccount",
+    { preHandler: csrfProtect, config: { allowSuspended: true } },
+    async (request, reply) => {
+      const userId = requireAuth(request)
+      const store = app.authServices?.users
+      const sessions = app.authServices?.sessions
+      const otp = app.authServices?.otp
+      const oauth = app.authServices?.oauth
+      if (!store || !sessions || !otp || !oauth) {
+        throw AppError.unauthorized("Authentication required.")
       }
-    }
 
-    await store.softDeleteAndAnonymize(userId)
-    await sessions.banUser(userId)
-
-    clearSessionCookie(reply)
-    clearCsrfCookie(reply)
-    const cleanups: ReadonlyArray<readonly [step: string, run: () => Promise<unknown>]> = [
-      ["oauth.unlink", () => oauth.unlinkAllForUser(userId)],
-      [
-        "push-tokens.delete",
-        () =>
-          makeDrizzleNotificationRepository(container.getDb().sql).deletePushTokensForUser(userId),
-      ],
-      [
-        "notifications.delete",
-        () => container.getDb().sql`DELETE FROM notifications WHERE user_id = ${userId}`,
-      ],
-      [
-        "audit.account-deleted",
-        () =>
-          writeAudit(container.getDb().sql, {
-            actorId: userId,
-            action: "account.deleted",
-            target: `user:${userId}`,
-          }),
-      ],
-    ]
-    const outcomes = await Promise.allSettled(cleanups.map(async ([, run]) => run()))
-    outcomes.forEach((outcome, i) => {
-      if (outcome.status === "rejected") {
-        request.log.error(
-          { err: outcome.reason, userId, step: cleanups[i]![0] },
-          "account deletion: post-revocation cleanup step failed (the account IS deleted and every session revoked)",
-        )
+      const { emailOtp } = parse(DeleteAccountRequestSchema, request.body)
+      const me = await store.findById(userId)
+      const email = me?.email ?? null
+      if (email) {
+        const verifiedUserId = await otp.verifyOtp(email, emailOtp, request.ip || null)
+        if (verifiedUserId !== userId) {
+          throw AppError.unauthorized("That code could not be verified for this account.")
+        }
       }
-    })
-    const payload: DeleteAccountResponse = { ok: true }
-    reply.status(200).send(payload)
-  })
+
+      await store.softDeleteAndAnonymize(userId)
+      await sessions.banUser(userId)
+
+      clearSessionCookie(reply)
+      clearCsrfCookie(reply)
+      const cleanups: ReadonlyArray<readonly [step: string, run: () => Promise<unknown>]> = [
+        ["oauth.unlink", () => oauth.unlinkAllForUser(userId)],
+        [
+          "push-tokens.delete",
+          () =>
+            makeDrizzleNotificationRepository(container.getDb().sql).deletePushTokensForUser(
+              userId,
+            ),
+        ],
+        [
+          "notifications.delete",
+          () => container.getDb().sql`DELETE FROM notifications WHERE user_id = ${userId}`,
+        ],
+        [
+          "audit.account-deleted",
+          () =>
+            writeAudit(container.getDb().sql, {
+              actorId: userId,
+              action: "account.deleted",
+              target: `user:${userId}`,
+            }),
+        ],
+      ]
+      const outcomes = await Promise.allSettled(cleanups.map(async ([, run]) => run()))
+      outcomes.forEach((outcome, i) => {
+        if (outcome.status === "rejected") {
+          request.log.error(
+            { err: outcome.reason, userId, step: cleanups[i]![0] },
+            "account deletion: post-revocation cleanup step failed (the account IS deleted and every session revoked)",
+          )
+        }
+      })
+      const payload: DeleteAccountResponse = { ok: true }
+      reply.status(200).send(payload)
+    },
+  )
 
   route(
     app,

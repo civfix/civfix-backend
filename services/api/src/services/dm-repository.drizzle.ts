@@ -1,4 +1,3 @@
-
 import type { Queryable, Sql } from "../db/client.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { officialPersonFlag } from "../auth/official-account.js"
@@ -12,7 +11,11 @@ import type {
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
-import { loadChatReactions, loadChatReactionsFor, toggleChatReaction } from "./chat-reactions.drizzle.js"
+import {
+  loadChatReactions,
+  loadChatReactionsFor,
+  toggleChatReaction,
+} from "./chat-reactions.drizzle.js"
 import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions.drizzle.js"
 import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
 import { monotonicReadWatermark } from "./chat-read-state.drizzle.js"
@@ -87,11 +90,7 @@ export interface DmRepository {
     body: string,
   ): Promise<ChatMessageDTO | null>
   findMessageMeta(messageId: string): Promise<DmMessageMeta | null>
-  softDelete(
-    threadId: string,
-    messageId: string,
-    senderId: string,
-  ): Promise<ChatMessageDTO | null>
+  softDelete(threadId: string, messageId: string, senderId: string): Promise<ChatMessageDTO | null>
   setPinned(
     threadId: string,
     messageId: string,
@@ -253,7 +252,9 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     const ids = liveMessageIds(page)
     const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
       await Promise.all([
-        presign ? loadChatAttachments(sql, ids, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+        presign
+          ? loadChatAttachments(sql, ids, presign)
+          : Promise.resolve(new Map<string, MediaDTO[]>()),
         loadChatReactionsFor(sql, ids, viewerUserId),
         loadChatMentionsFor(sql, ids),
         replyMapForRows(sql, "dm_messages", page),
@@ -266,17 +267,22 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         viewerUserId,
         undefined,
         attachmentsByMessage.get(r.id) ?? [],
-        r.reply_to_id !== null ? replyByTarget.get(r.reply_to_id) ?? null : null,
+        r.reply_to_id !== null ? (replyByTarget.get(r.reply_to_id) ?? null) : null,
       ),
     )
   }
 
-  async function hydrateDmRow(row: DmRowSelect, viewerUserId: string | null): Promise<ChatMessageDTO> {
+  async function hydrateDmRow(
+    row: DmRowSelect,
+    viewerUserId: string | null,
+  ): Promise<ChatMessageDTO> {
     const liveIds = liveMessageIds([row])
     const [reactions, mentions, attachmentsByMessage, replyByTarget] = await Promise.all([
       liveIds.length > 0 ? loadChatReactions(sql, row.id, viewerUserId) : Promise.resolve([]),
       liveIds.length > 0 ? loadChatMentions(sql, row.id) : Promise.resolve([]),
-      presign ? loadChatAttachments(sql, liveIds, presign) : Promise.resolve(new Map<string, MediaDTO[]>()),
+      presign
+        ? loadChatAttachments(sql, liveIds, presign)
+        : Promise.resolve(new Map<string, MediaDTO[]>()),
       replyMapForRows(sql, "dm_messages", [row]),
     ])
     return toMessageDTO(
@@ -286,7 +292,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       viewerUserId,
       undefined,
       attachmentsByMessage.get(row.id) ?? [],
-      row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+      row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null,
     )
   }
 
@@ -295,7 +301,9 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       table: "dm_messages",
       alias: "dm",
       scope: (prefix) =>
-        prefix === null ? sql`thread_id = ${threadId}` : sql`${sql(prefix)}.thread_id = ${threadId}`,
+        prefix === null
+          ? sql`thread_id = ${threadId}`
+          : sql`${sql(prefix)}.thread_id = ${threadId}`,
       columns: dmColumns,
       from: sql`FROM dm_messages dm JOIN users u ON u.id = dm.sender_id`,
       context: () => Promise.resolve(null),
@@ -389,7 +397,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         : await run(sql)
       const messageId = rows[0]!.id
       const attachments = wantsMedia
-        ? (await loadChatAttachments(sql, [messageId], presign!)).get(messageId) ?? []
+        ? ((await loadChatAttachments(sql, [messageId], presign!)).get(messageId) ?? [])
         : []
       return toMessageDTO(rows[0]!, [], [], input.senderId, input.clientId, attachments, replyTo)
     },
@@ -472,7 +480,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         senderId,
         undefined,
         [],
-        row.reply_to_id !== null ? replyByTarget.get(row.reply_to_id) ?? null : null,
+        row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null,
       )
     },
 
@@ -499,7 +507,12 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     },
 
     async markRead(threadId: string, userId: string, at: Date): Promise<void> {
-      await monotonicReadWatermark(sql, "dm_read_state", { thread_id: threadId, user_id: userId }, at)
+      await monotonicReadWatermark(
+        sql,
+        "dm_read_state",
+        { thread_id: threadId, user_id: userId },
+        at,
+      )
     },
 
     async lastReadAt(threadId: string, userId: string): Promise<Date | null> {

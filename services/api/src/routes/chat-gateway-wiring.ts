@@ -149,7 +149,10 @@ export interface ConversationReadSeam {
 
 const readSeams = new WeakMap<FastifyInstance, ConversationReadSeam>()
 
-export function conversationReadSeam(app: FastifyInstance, container: Container): ConversationReadSeam {
+export function conversationReadSeam(
+  app: FastifyInstance,
+  container: Container,
+): ConversationReadSeam {
   const cached = readSeams.get(app)
   if (cached) return cached
 
@@ -468,11 +471,12 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const roomFanoutHandoff = (
     kind: "report" | "group",
   ): Pick<RoomFanoutNotifierDeps, "dispatchToJob" | "claimWindow"> => ({
-    ...(fanoutMode.queued
-      ? { dispatchToJob: makeRoomFanoutDispatcher(container.jobs, kind) }
-      : {}),
+    ...(fanoutMode.queued ? { dispatchToJob: makeRoomFanoutDispatcher(container.jobs, kind) } : {}),
     ...(fanoutMode.claimed
-      ? { claimWindow: (roomId: string, windowMs: number) => roomFanoutClaim(kind, roomId, windowMs) }
+      ? {
+          claimWindow: (roomId: string, windowMs: number) =>
+            roomFanoutClaim(kind, roomId, windowMs),
+        }
       : {}),
   })
 

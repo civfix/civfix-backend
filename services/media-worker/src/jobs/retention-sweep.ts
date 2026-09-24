@@ -1,4 +1,3 @@
-
 import type { Storage } from "@civfix/shared/interfaces"
 import type { Sql } from "@civfix/api/db"
 import {
@@ -218,7 +217,8 @@ export async function runInboundEmailRetentionLane(
   let stalled = false
   try {
     await drainPages(
-      (limit) => (stalled ? Promise.resolve([]) : repo.findArchivedBefore({ before: opts.before, limit })),
+      (limit) =>
+        stalled ? Promise.resolve([]) : repo.findArchivedBefore({ before: opts.before, limit }),
       async (rows) => {
         const reaped: string[] = []
         for (const row of rows) {

@@ -15,7 +15,6 @@ import {
   type JurisdictionLookup,
 } from "../../src/adapters/jurisdiction-lookup.census.js"
 
-
 const NOW = new Date("2026-05-31T00:00:00.000Z")
 
 interface ResolvedRow {
@@ -62,9 +61,7 @@ describe("needsDiscovery (pure)", () => {
   })
 
   it("returns true when contact_emails is empty or all-blank", () => {
-    expect(
-      needsDiscovery({ geoid: "x", contactEmails: [], contactUpdatedAt: NOW }, NOW),
-    ).toBe(true)
+    expect(needsDiscovery({ geoid: "x", contactEmails: [], contactUpdatedAt: NOW }, NOW)).toBe(true)
     expect(
       needsDiscovery({ geoid: "x", contactEmails: ["", "   "], contactUpdatedAt: NOW }, NOW),
     ).toBe(true)
@@ -136,9 +133,9 @@ describe("needsDiscovery (per-category routing precedence)", () => {
   })
 
   it("BACKWARD COMPATIBLE: with hasRoutingContact absent/false it reduces to the legacy check", () => {
-    expect(
-      needsDiscovery({ geoid: "x", contactEmails: null, contactUpdatedAt: NOW }, NOW),
-    ).toBe(true)
+    expect(needsDiscovery({ geoid: "x", contactEmails: null, contactUpdatedAt: NOW }, NOW)).toBe(
+      true,
+    )
     expect(
       needsDiscovery(
         { geoid: "x", contactEmails: null, contactUpdatedAt: NOW, hasRoutingContact: false },

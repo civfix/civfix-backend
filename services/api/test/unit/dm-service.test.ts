@@ -11,7 +11,6 @@ import {
 } from "../../src/services/dm-repository.memory.js"
 import type { AppError } from "@civfix/shared"
 
-
 const ALICE = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"
 const CAROL = "33333333-3333-3333-3333-333333333333"
@@ -38,7 +37,10 @@ beforeEach(() => {
   users = new Map()
   users.set(ALICE, user({ id: ALICE, displayName: "Alice", handle: "alice" }))
   users.set(BOB, user({ id: BOB, displayName: "Bob", handle: "bob" }))
-  users.set(CAROL, user({ id: CAROL, displayName: "Carol", handle: "carol", allowDirectMessages: false }))
+  users.set(
+    CAROL,
+    user({ id: CAROL, displayName: "Carol", handle: "carol", allowDirectMessages: false }),
+  )
   service = makeDmService({
     dm,
     blocks,
@@ -108,9 +110,15 @@ describe("DmService.openDm", () => {
   })
 
   it("opens an EXISTING thread even when the target later disables DMs", async () => {
-    users.set(CAROL, user({ id: CAROL, displayName: "Carol", handle: "carol", allowDirectMessages: true }))
+    users.set(
+      CAROL,
+      user({ id: CAROL, displayName: "Carol", handle: "carol", allowDirectMessages: true }),
+    )
     const first = await service.openDm(ALICE, CAROL)
-    users.set(CAROL, user({ id: CAROL, displayName: "Carol", handle: "carol", allowDirectMessages: false }))
+    users.set(
+      CAROL,
+      user({ id: CAROL, displayName: "Carol", handle: "carol", allowDirectMessages: false }),
+    )
     const again = await service.openDm(ALICE, CAROL)
     expect(again.id).toBe(first.id)
   })

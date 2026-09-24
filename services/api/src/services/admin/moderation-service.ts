@@ -1,4 +1,3 @@
-
 import { AppError, relativeAgo } from "@civfix/shared"
 import type {
   ModerationItemDTO,
@@ -19,7 +18,6 @@ import { clampLimit } from "./pagination.js"
 import { timelineKindForStatus } from "./admin-report-status.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "../media-presign.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
-
 
 export type ModerationFilter = "all" | ModerationKind | "high"
 
@@ -119,7 +117,6 @@ export interface ModerationRepository {
   backfillFromHeldReports(): Promise<number>
 }
 
-
 export const NEUTRAL_USER_SNAPSHOT: ModerationUserSnapshot = {
   id: null,
   handle: "",
@@ -144,7 +141,6 @@ function toUserDTO(snapshot: ModerationUserSnapshot | null): ModerationUser {
     device: s.device,
   }
 }
-
 
 export interface ModerationSessionControl {
   applyStatus(userId: string, status: UserStatus): Promise<number>

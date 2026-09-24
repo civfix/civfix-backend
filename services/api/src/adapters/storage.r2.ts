@@ -1,4 +1,3 @@
-
 import { AppError, ErrorCode } from "@civfix/shared"
 import type {
   Storage,
@@ -81,9 +80,7 @@ export class R2Storage implements Storage {
     const { HeadObjectCommand } = await import("@aws-sdk/client-s3")
     const client = await this.getClient()
     try {
-      const res = await client.send(
-        new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }),
-      )
+      const res = await client.send(new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }))
       const etag = normalizeEtag(res.ETag)
       return {
         size: typeof res.ContentLength === "number" ? res.ContentLength : 0,
@@ -156,9 +153,7 @@ export class R2Storage implements Storage {
     const { GetObjectCommand } = await import("@aws-sdk/client-s3")
     const client = await this.getClient()
     try {
-      const res = await client.send(
-        new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
-      )
+      const res = await client.send(new GetObjectCommand({ Bucket: this.config.bucket, Key: key }))
       if (!res.Body) return null
       const bytes = await res.Body.transformToByteArray()
       return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
@@ -188,9 +183,7 @@ export class R2Storage implements Storage {
   }
 }
 
-async function proxyRequestHandler(
-  host: string,
-): Promise<Pick<S3ClientConfig, "requestHandler">> {
+async function proxyRequestHandler(host: string): Promise<Pick<S3ClientConfig, "requestHandler">> {
   const settings = readProxySettings()
   if (settings === null || !shouldProxyHost(host, settings)) return {}
   const [{ NodeHttpHandler }, { HttpsProxyAgent }] = await Promise.all([

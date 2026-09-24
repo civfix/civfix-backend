@@ -1,4 +1,3 @@
-
 import type { ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
@@ -118,12 +117,8 @@ function refFor(reportId: string | null, cleanupId: string | null): string | nul
 }
 
 async function attachDestinationRefs(sql: Queryable, page: ModerationItemRow[]): Promise<void> {
-  const chatIds = page
-    .filter((r) => isMessageSubject(r.subject_type))
-    .map((r) => r.subject_id)
-  const photoIds = page
-    .filter((r) => r.subject_type === "photo")
-    .map((r) => r.subject_id)
+  const chatIds = page.filter((r) => isMessageSubject(r.subject_type)).map((r) => r.subject_id)
+  const photoIds = page.filter((r) => r.subject_type === "photo").map((r) => r.subject_id)
   if (chatIds.length === 0 && photoIds.length === 0) return
 
   const byId = new Map<string, string | null>()
@@ -393,7 +388,11 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
           `
         }
         if (removed) {
-          const authorId = await resolveSubjectAuthor(tx, resolved.subject_type, resolved.subject_id)
+          const authorId = await resolveSubjectAuthor(
+            tx,
+            resolved.subject_type,
+            resolved.subject_id,
+          )
           if (authorId != null) await incrementUserModeration(tx, authorId)
         }
         await writeAudit(tx, {

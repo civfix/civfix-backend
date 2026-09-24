@@ -62,10 +62,7 @@ export interface WaitlistService {
     input: ClaimWaitlistOfferRequest,
     subject: RegistrationSubject,
   ): Promise<ClaimWaitlistOfferResponse>
-  promote(
-    input: PromoteFromWaitlistRequest,
-    actorId: string,
-  ): Promise<PromoteFromWaitlistResponse>
+  promote(input: PromoteFromWaitlistRequest, actorId: string): Promise<PromoteFromWaitlistResponse>
   runPromote(job: WaitlistPromoteJob): Promise<number>
   runExpireSweep(): Promise<number>
 }

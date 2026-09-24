@@ -1,4 +1,3 @@
-
 import { describe, it, expect } from "vitest"
 import {
   makeVolunteerHoursService,
@@ -47,7 +46,8 @@ function makeCleanups(
     load: () => Promise.resolve(view),
     listMemberIds: () => Promise.resolve(members),
     roleOf: (_cleanupId: string, userId: string) => {
-      if (view !== null && view.organizerUserId === userId) return Promise.resolve("organizer" as const)
+      if (view !== null && view.organizerUserId === userId)
+        return Promise.resolve("organizer" as const)
       if (cohosts.includes(userId)) return Promise.resolve("cohost" as const)
       if (members.includes(userId)) return Promise.resolve("member" as const)
       return Promise.resolve(null)
@@ -361,7 +361,6 @@ describe("hours ledger: the public projection (C18's two gates)", () => {
     expect(ownStillVisible.items.map((e) => e.source)).toEqual(["event", "event"])
   })
 
-
   it("isSelf bypasses both gates even when the owner has opted OUT", async () => {
     const repo = makeRepo()
     await seedBob(repo)
@@ -458,9 +457,7 @@ describe("hours ledger: getEventHours scope matrix (C10)", () => {
     )
     const res = await service.getEventHours(EVENT, CAROL)
     expect(res.scope).toBe("self")
-    expect(res.entries).toEqual([
-      { userId: CAROL, hours: 1.5, loggedAt: res.entries[0]!.loggedAt },
-    ])
+    expect(res.entries).toEqual([{ userId: CAROL, hours: 1.5, loggedAt: res.entries[0]!.loggedAt }])
     expect(res.anyLogged).toBe(true)
   })
 

@@ -371,12 +371,11 @@ describe("host registration routes", () => {
 
   it("configures the scanner at 300 requests a minute and the roster at 60", async () => {
     const { app } = await makeHarness()
-    expect(
-      app.hasRoute({ method: "POST", url: versionedPath(endpoints.scanEventTicket) }),
-    ).toBe(true)
-    const { SCAN_RATE_LIMIT, ROSTER_READ_RATE_LIMIT } = await import(
-      "../../../src/routes/host/_host-routes.js"
+    expect(app.hasRoute({ method: "POST", url: versionedPath(endpoints.scanEventTicket) })).toBe(
+      true,
     )
+    const { SCAN_RATE_LIMIT, ROSTER_READ_RATE_LIMIT } =
+      await import("../../../src/routes/host/_host-routes.js")
     expect(SCAN_RATE_LIMIT.max).toBe(300)
     expect(ROSTER_READ_RATE_LIMIT.max).toBe(60)
   })

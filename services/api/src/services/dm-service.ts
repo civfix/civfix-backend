@@ -1,4 +1,3 @@
-
 import { AppError, relativeAgo, avatarGradient } from "@civfix/shared"
 import type { ChatMessageDTO, MessageThreadDTO, PersonDTO } from "@civfix/shared"
 import type { BlocksRepository } from "./blocks-repository.drizzle.js"

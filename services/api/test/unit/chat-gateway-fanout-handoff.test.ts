@@ -104,10 +104,7 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
       dispatchToJob: makeRoomFanoutDispatcher(p.jobs, "group"),
     })
     const conn = new MockConnection("A")
-    const s = session(
-      { onGroupMessage: (groupId, message) => notify(groupId, message) },
-      conn,
-    )
+    const s = session({ onGroupMessage: (groupId, message) => notify(groupId, message) }, conn)
     await handleClientFrame(
       s,
       JSON.stringify({ type: "join", cleanupId: GROUP, roomKind: "group" }),
@@ -186,7 +183,13 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
     )
     await handleClientFrame(
       s,
-      JSON.stringify({ type: "send", cleanupId: GROUP, roomKind: "group", body: "x", clientId: "c1" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: GROUP,
+        roomKind: "group",
+        body: "x",
+        clientId: "c1",
+      }),
     )
     await flush()
 
@@ -210,7 +213,10 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
     const conn = new MockConnection("A")
     const s = session(
       {
-        reportChat: { isMember: () => Promise.resolve(true), advanceReadWatermark: () => Promise.resolve() },
+        reportChat: {
+          isMember: () => Promise.resolve(true),
+          advanceReadWatermark: () => Promise.resolve(),
+        },
         onReportMessage: (reportId, message) => notify(reportId, message),
       },
       conn,
@@ -240,10 +246,12 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
   })
 
   it("USE_FAKE_JOBS never queues: FakeJobs registers no chat.room.fanout handler, so bells must stay inline", () => {
-    expect(roomFanoutMode({ useFakeChat: false, useFakeJobs: false, usesRealRedis: true })).toEqual({
-      queued: true,
-      claimed: true,
-    })
+    expect(roomFanoutMode({ useFakeChat: false, useFakeJobs: false, usesRealRedis: true })).toEqual(
+      {
+        queued: true,
+        claimed: true,
+      },
+    )
     expect(roomFanoutMode({ useFakeChat: false, useFakeJobs: true, usesRealRedis: true })).toEqual({
       queued: false,
       claimed: true,
@@ -252,7 +260,9 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
       queued: false,
       claimed: false,
     })
-    expect(roomFanoutMode({ useFakeChat: false, useFakeJobs: false, usesRealRedis: false })).toEqual({
+    expect(
+      roomFanoutMode({ useFakeChat: false, useFakeJobs: false, usesRealRedis: false }),
+    ).toEqual({
       queued: false,
       claimed: false,
     })
@@ -282,7 +292,13 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
     )
     await handleClientFrame(
       s,
-      JSON.stringify({ type: "send", cleanupId: GROUP, roomKind: "group", body: "x", clientId: "c1" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: GROUP,
+        roomKind: "group",
+        body: "x",
+        clientId: "c1",
+      }),
     )
     await flush()
 
@@ -312,7 +328,13 @@ describe("H19 over the WS send lane: a burst enqueues one job, never fans out in
     )
     await handleClientFrame(
       s,
-      JSON.stringify({ type: "send", cleanupId: GROUP, roomKind: "group", body: "x", clientId: "c1" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: GROUP,
+        roomKind: "group",
+        body: "x",
+        clientId: "c1",
+      }),
     )
     await flush()
 

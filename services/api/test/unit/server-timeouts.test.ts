@@ -1,4 +1,3 @@
-
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { buildServer } from "../../src/server.js"

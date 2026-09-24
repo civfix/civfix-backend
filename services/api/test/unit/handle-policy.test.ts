@@ -51,8 +51,9 @@ describe("handleChanged (the unchanged-handle no-op predicate)", () => {
 
 describe("decideHandleWrite: initial set (first-run completion)", () => {
   it("sets the handle and leaves the cooldown clock NULL, so the first real rename is free", () => {
-    expect(decideHandleWrite(input({ current: null, submitted: "jane_doe", profileComplete: false })))
-      .toEqual({ handle: "jane_doe", handleChangedAt: null })
+    expect(
+      decideHandleWrite(input({ current: null, submitted: "jane_doe", profileComplete: false })),
+    ).toEqual({ handle: "jane_doe", handleChangedAt: null })
   })
 
   it("does not stamp the clock even when the user already had a handle (placeholder -> chosen)", () => {
@@ -201,7 +202,10 @@ describe("InMemoryUserStore.updateProfile DELEGATES to the policy (no divergent 
   it("initial set leaves handle_changed_at null; the next rename stamps it; a second rename 429s", async () => {
     const { clock, store, user } = await seed()
 
-    const initial = await store.updateProfile(user.id, { handle: "coach_alex", displayName: "Coach" })
+    const initial = await store.updateProfile(user.id, {
+      handle: "coach_alex",
+      displayName: "Coach",
+    })
     expect(initial.handle).toBe("coach_alex")
     expect(initial.handleChangedAt).toBeNull()
     expect(initial.profileComplete).toBe(true)

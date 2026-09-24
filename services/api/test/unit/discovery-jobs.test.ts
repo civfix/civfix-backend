@@ -78,9 +78,9 @@ describe("registerDiscoveryJobs", () => {
 
     // The EXISTS probe ran, but the early-return skipped the INSERT entirely.
     expect(db.statements.some((s) => /SELECT\s+EXISTS[\s\S]*has_contact/i.test(s.sql))).toBe(true)
-    expect(db.statements.some((s) => /INSERT\s+INTO\s+jurisdiction_discovery_tasks/i.test(s.sql))).toBe(
-      false,
-    )
+    expect(
+      db.statements.some((s) => /INSERT\s+INTO\s+jurisdiction_discovery_tasks/i.test(s.sql)),
+    ).toBe(false)
   })
 
   it("is a no-op for a malformed payload with no geoid (no DB touched)", async () => {

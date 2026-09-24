@@ -10,7 +10,11 @@ import {
 import { WsChatService } from "../../src/adapters/chat-service.ws.js"
 import { InMemoryChatPubSub } from "../../src/adapters/chat-pubsub.js"
 import { InMemoryChatPresence } from "../../src/adapters/chat-presence.js"
-import { InMemoryChatRepository, InMemoryThreadsRepository, MockConnection } from "../helpers/chat.js"
+import {
+  InMemoryChatRepository,
+  InMemoryThreadsRepository,
+  MockConnection,
+} from "../helpers/chat.js"
 import { forwardReportCityMention } from "../../src/services/report-city-forward.js"
 import { makeTokenBucketLimiter, type RateLimiter } from "../../src/ws/report-rate-limit.js"
 import type {
@@ -28,9 +32,11 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { buildAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { InMemoryBlocksRepository, InMemoryDmRepository } from "../../src/services/dm-repository.memory.js"
+import {
+  InMemoryBlocksRepository,
+  InMemoryDmRepository,
+} from "../../src/services/dm-repository.memory.js"
 import { InMemoryDiscussionRepository } from "../helpers/discussion.js"
-
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const HELD_REPORT = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -150,7 +156,13 @@ function sessionFor(userId: string, conn: MockConnection): GatewaySession {
     ...(sendLimiter ? { reportSendLimiter: sendLimiter } : {}),
     ...(reportChat ? { reportChat } : {}),
   }
-  return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+  return {
+    userId,
+    conn,
+    joined: new Set<string>(),
+    typingThrottle: new Map<string, number>(),
+    deps,
+  }
 }
 
 beforeEach(() => {
@@ -169,7 +181,10 @@ describe("report chat gateway", () => {
   it("authorizes a report JOIN with no membership (public-read/join)", async () => {
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
 
     expect(conn.framesOfType("error")).toHaveLength(0)
     expect(conn.framesOfType("presence_snapshot")).toHaveLength(1)
@@ -191,10 +206,19 @@ describe("report chat gateway", () => {
     reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
     await handleClientFrame(
       session,
-      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "hello" }),
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
+    await handleClientFrame(
+      session,
+      JSON.stringify({
+        type: "send",
+        cleanupId: REPORT,
+        roomKind: "report",
+        clientId: "c1",
+        body: "hello",
+      }),
     )
 
     const acks = conn.framesOfType("ack")
@@ -209,10 +233,19 @@ describe("report chat gateway", () => {
     reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: HELD_REPORT, roomKind: "report" }))
     await handleClientFrame(
       session,
-      JSON.stringify({ type: "send", cleanupId: HELD_REPORT, roomKind: "report", clientId: "c1", body: "leak?" }),
+      JSON.stringify({ type: "join", cleanupId: HELD_REPORT, roomKind: "report" }),
+    )
+    await handleClientFrame(
+      session,
+      JSON.stringify({
+        type: "send",
+        cleanupId: HELD_REPORT,
+        roomKind: "report",
+        clientId: "c1",
+        body: "leak?",
+      }),
     )
 
     const errors = conn.framesOfType("error")
@@ -228,11 +261,20 @@ describe("report chat gateway", () => {
     sendLimiter = makeTokenBucketLimiter({ capacity: 2, refillPerSec: 0 })
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
     for (const body of ["m1", "m2", "m3"]) {
       await handleClientFrame(
         session,
-        JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: body, body }),
+        JSON.stringify({
+          type: "send",
+          cleanupId: REPORT,
+          roomKind: "report",
+          clientId: body,
+          body,
+        }),
       )
     }
 
@@ -246,10 +288,19 @@ describe("report chat gateway", () => {
     reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
     await handleClientFrame(
       session,
-      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "pls fix @sf" }),
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
+    await handleClientFrame(
+      session,
+      JSON.stringify({
+        type: "send",
+        cleanupId: REPORT,
+        roomKind: "report",
+        clientId: "c1",
+        body: "pls fix @sf",
+      }),
     )
     await new Promise((r) => setTimeout(r, 0))
 
@@ -266,10 +317,19 @@ describe("report chat gateway", () => {
     mail.reportThread = null
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
     await handleClientFrame(
       session,
-      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "pls fix @sf" }),
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
+    await handleClientFrame(
+      session,
+      JSON.stringify({
+        type: "send",
+        cleanupId: REPORT,
+        roomKind: "report",
+        clientId: "c1",
+        body: "pls fix @sf",
+      }),
     )
     await new Promise((r) => setTimeout(r, 0))
 
@@ -280,11 +340,20 @@ describe("report chat gateway", () => {
     reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
     for (const clientId of ["c1", "c2", "c3"]) {
       await handleClientFrame(
         session,
-        JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId, body: "@sf urgent" }),
+        JSON.stringify({
+          type: "send",
+          cleanupId: REPORT,
+          roomKind: "report",
+          clientId,
+          body: "@sf urgent",
+        }),
       )
     }
     await new Promise((r) => setTimeout(r, 0))
@@ -296,10 +365,19 @@ describe("report chat gateway", () => {
     reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
     await handleClientFrame(
       session,
-      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "just chatting" }),
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
+    await handleClientFrame(
+      session,
+      JSON.stringify({
+        type: "send",
+        cleanupId: REPORT,
+        roomKind: "report",
+        clientId: "c1",
+        body: "just chatting",
+      }),
     )
     await new Promise((r) => setTimeout(r, 0))
 
@@ -310,10 +388,19 @@ describe("report chat gateway", () => {
     reportChat = makeReportChat(true)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
     await handleClientFrame(
       session,
-      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "public msg" }),
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
+    await handleClientFrame(
+      session,
+      JSON.stringify({
+        type: "send",
+        cleanupId: REPORT,
+        roomKind: "report",
+        clientId: "c1",
+        body: "public msg",
+      }),
     )
 
     const page = await chatRepo.reportHistory(REPORT, undefined, 30, null)
@@ -328,7 +415,10 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
     reportChat = makeReportChat(false)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
 
     expect(conn.framesOfType("error")).toHaveLength(0)
     expect(conn.framesOfType("presence_snapshot")).toHaveLength(1)
@@ -339,15 +429,29 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
     reportChat = makeReportChat(false)
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
     await handleClientFrame(
       session,
-      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "let me in" }),
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
+    await handleClientFrame(
+      session,
+      JSON.stringify({
+        type: "send",
+        cleanupId: REPORT,
+        roomKind: "report",
+        clientId: "c1",
+        body: "let me in",
+      }),
     )
 
     const errors = conn.framesOfType("error")
     expect(errors).toHaveLength(1)
-    expect(errors[0]).toMatchObject({ type: "error", code: "FORBIDDEN", roomKind: "report", cleanupId: REPORT })
+    expect(errors[0]).toMatchObject({
+      type: "error",
+      code: "FORBIDDEN",
+      roomKind: "report",
+      cleanupId: REPORT,
+    })
     expect(conn.framesOfType("ack")).toHaveLength(0)
     expect(conn.framesOfType("message")).toHaveLength(0)
     expect(chatRepo.count(REPORT)).toBe(0)
@@ -357,13 +461,25 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
     reportChat = undefined
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
     expect(session.joined.has(`report:${REPORT}`)).toBe(true)
     await handleClientFrame(
       session,
-      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "unwired" }),
+      JSON.stringify({
+        type: "send",
+        cleanupId: REPORT,
+        roomKind: "report",
+        clientId: "c1",
+        body: "unwired",
+      }),
     )
-    await handleClientFrame(session, JSON.stringify({ type: "typing", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "typing", cleanupId: REPORT, roomKind: "report" }),
+    )
 
     const errors = conn.framesOfType("error")
     expect(errors).toHaveLength(2)
@@ -378,11 +494,23 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
     const session = sessionFor(ALICE, conn)
     const observerConn = new MockConnection("B")
     const observer = sessionFor(ALICE, observerConn)
-    await handleClientFrame(observer, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      observer,
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
     await handleClientFrame(
       session,
-      JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "fix it @sf" }),
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
+    await handleClientFrame(
+      session,
+      JSON.stringify({
+        type: "send",
+        cleanupId: REPORT,
+        roomKind: "report",
+        clientId: "c1",
+        body: "fix it @sf",
+      }),
     )
     await new Promise((r) => setTimeout(r, 0))
 
@@ -401,8 +529,20 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
     reportChat = rc
     const conn = new MockConnection("A")
     const session = sessionFor(ALICE, conn)
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
-    await handleClientFrame(session, JSON.stringify({ type: "send", cleanupId: REPORT, roomKind: "report", clientId: "c1", body: "hi" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
+    await handleClientFrame(
+      session,
+      JSON.stringify({
+        type: "send",
+        cleanupId: REPORT,
+        roomKind: "report",
+        clientId: "c1",
+        body: "hi",
+      }),
+    )
     const UP_TO = "55555555-5555-5555-5555-555555555555"
     await handleClientFrame(
       session,
@@ -419,10 +559,19 @@ describe("report chat gateway — member-only send/typing + read watermark (D-C3
     const session = sessionFor(ALICE, conn)
     const observerConn = new MockConnection("B")
     const observer = sessionFor(ALICE, observerConn)
-    await handleClientFrame(observer, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
-    await handleClientFrame(session, JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      observer,
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "join", cleanupId: REPORT, roomKind: "report" }),
+    )
     observerConn.sent.length = 0
-    await handleClientFrame(session, JSON.stringify({ type: "typing", cleanupId: REPORT, roomKind: "report" }))
+    await handleClientFrame(
+      session,
+      JSON.stringify({ type: "typing", cleanupId: REPORT, roomKind: "report" }),
+    )
 
     const errors = conn.framesOfType("error")
     expect(errors).toHaveLength(1)
@@ -454,8 +603,18 @@ describe("GET /reports/:id/messages visibility gate", () => {
       now: () => Date.now(),
     })
     const discussionRepo = new InMemoryDiscussionRepository()
-    discussionRepo.seedReport({ id: HELD_REPORT, status: "held", visibility: "public", reporterUserId: null })
-    discussionRepo.seedReport({ id: REPORT, status: "published", visibility: "public", reporterUserId: null })
+    discussionRepo.seedReport({
+      id: HELD_REPORT,
+      status: "held",
+      visibility: "public",
+      reporterUserId: null,
+    })
+    discussionRepo.seedReport({
+      id: REPORT,
+      status: "published",
+      visibility: "public",
+      reporterUserId: null,
+    })
     const blocks = new InMemoryBlocksRepository()
     const built = await buildServer({
       env,

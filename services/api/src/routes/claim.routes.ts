@@ -1,4 +1,3 @@
-
 import {
   ClaimNudgeRequestSchema,
   ClaimReportRequestSchema,
@@ -61,7 +60,11 @@ export async function registerClaimRoutes(
       anonTokenSigningKey: container.env.ANON_TOKEN_SIGNING_KEY,
       getReportForOwner: (reportId, owner) => reportService().getReport(reportId, owner),
       enqueueHoldRelease: async (reportId) => {
-        await container.jobs.enqueue(ANON_HOLD_RELEASE_JOB, { reportId }, { singletonKey: reportId })
+        await container.jobs.enqueue(
+          ANON_HOLD_RELEASE_JOB,
+          { reportId },
+          { singletonKey: reportId },
+        )
       },
     })
   }

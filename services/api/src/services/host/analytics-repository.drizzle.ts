@@ -162,8 +162,18 @@ export interface HostSummarySignups {
 
 export interface AnalyticsRepository {
   eventKpis(cleanupId: string): Promise<EventKpiRow>
-  registrationsByDay(cleanupId: string, timezone: string, from: string, to: string): Promise<DayCount[]>
-  cancellationsByDay(cleanupId: string, timezone: string, from: string, to: string): Promise<DayCount[]>
+  registrationsByDay(
+    cleanupId: string,
+    timezone: string,
+    from: string,
+    to: string,
+  ): Promise<DayCount[]>
+  cancellationsByDay(
+    cleanupId: string,
+    timezone: string,
+    from: string,
+    to: string,
+  ): Promise<DayCount[]>
   registrationsByTicketType(cleanupId: string): Promise<KeyCount[]>
   registrationsByAudience(cleanupId: string): Promise<KeyCount[]>
   checkinsByTicketType(cleanupId: string): Promise<KeyCount[]>

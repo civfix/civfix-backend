@@ -244,7 +244,8 @@ export interface EventPacketInput {
 export function buildEventPacket(event: EventPacketInput, message: string): ReportPacket {
   const safeTitle = sanitizeHeaderValue(event.title)
   const ref = event.referenceCode ?? null
-  const subject = ref !== null ? `civfix event: ${safeTitle} [${ref}]` : `civfix event: ${safeTitle}`
+  const subject =
+    ref !== null ? `civfix event: ${safeTitle} [${ref}]` : `civfix event: ${safeTitle}`
   const place = event.place ?? "the area"
   const address = event.address && event.address.trim() !== "" ? event.address : place
   const msgText = message.trim() !== "" ? message.trim() : "(no message provided)"

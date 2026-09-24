@@ -13,7 +13,6 @@ import { PUSH_MAX_PER_USER_PER_MINUTE, allowedByPushRate } from "../../src/adapt
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { PushPayload, PushPlatform } from "@civfix/shared/interfaces"
 
-
 function recordingDispatcher(invalid: string[] = []): {
   calls: Array<{ tokens: string[]; payload: PushPayload }>
   fn: PlatformDispatcher
@@ -73,7 +72,6 @@ function fakeDb(rows: TokenRow[], prune: PruneCapture): Db {
 
 const PAYLOAD: PushPayload = { title: "Hi", body: "there", link: "/x", data: { k: "v" } }
 
-
 describe("groupByPlatform", () => {
   it("groups tokens by platform and de-duplicates within a platform", () => {
     const tokens: ActiveToken[] = [
@@ -89,7 +87,6 @@ describe("groupByPlatform", () => {
     expect(groupByPlatform([])).toEqual({ ios: [], android: [], web: [] })
   })
 })
-
 
 describe("MultiPushSender.send routing", () => {
   it("routes each platform's tokens to the matching dispatcher (ios->ios, android->fcm, web->webpush)", async () => {
@@ -199,7 +196,6 @@ describe("MultiPushSender.registerToken", () => {
   })
 })
 
-
 describe("MultiPushSender.send Expo routing", () => {
   const expoTok = "ExponentPushToken[aaa]"
   const expoTok2 = "ExponentPushToken[bbb]"
@@ -298,9 +294,10 @@ describe("isSafePushEndpoint (SSRF guard, IP-literal paths)", () => {
   }
 })
 
-
 describe("per-user push rate cap (H15)", () => {
-  const rateRows = (userId: string): TokenRow[] => [{ userId, platform: "ios", token: `${userId}-tok` }]
+  const rateRows = (userId: string): TokenRow[] => [
+    { userId, platform: "ios", token: `${userId}-tok` },
+  ]
 
   it("stops dispatching to a recipient past the per-minute cap and keeps the window per user", async () => {
     const ios = recordingDispatcher()

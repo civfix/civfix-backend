@@ -23,10 +23,7 @@
  */
 
 import type { AbuseChecks } from "@civfix/shared/interfaces"
-import {
-  releaseAnonHoldIfReady,
-  type AnonHoldReleaseRepo,
-} from "@civfix/api/anon-hold-release"
+import { releaseAnonHoldIfReady, type AnonHoldReleaseRepo } from "@civfix/api/anon-hold-release"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 
 export interface HoldReleaseSweepDeps extends JobObsDeps {

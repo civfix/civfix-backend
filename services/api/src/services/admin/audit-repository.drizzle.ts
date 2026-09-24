@@ -1,4 +1,3 @@
-
 import type { Sql } from "../../db/client.js"
 import { clampLimit, decodeCursor, paginate } from "./pagination.js"
 import { isUuid } from "../../db/cursor-helpers.js"
@@ -47,9 +46,13 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
             })()
           : sql``
       const actionFilter =
-        args.action !== null ? sql`AND a.action ILIKE ${likeContains(args.action)} ESCAPE '\\'` : sql``
+        args.action !== null
+          ? sql`AND a.action ILIKE ${likeContains(args.action)} ESCAPE '\\'`
+          : sql``
       const targetFilter =
-        args.target !== null ? sql`AND a.target ILIKE ${likeContains(args.target)} ESCAPE '\\'` : sql``
+        args.target !== null
+          ? sql`AND a.target ILIKE ${likeContains(args.target)} ESCAPE '\\'`
+          : sql``
 
       const rows = await sql<AuditRowSelect[]>`
         SELECT a.id, a.actor_id, u.display_name AS actor_name, a.action, a.target, a.meta, a.created_at

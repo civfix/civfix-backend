@@ -10,8 +10,7 @@ const KID = "test-key-1"
 /** Sign a minimal RS256 JWT with the given private key + claims. */
 function signJwt(privateKey: KeyObject, claims: Record<string, unknown>): string {
   const header = { alg: "RS256", kid: KID, typ: "JWT" }
-  const enc = (o: unknown): string =>
-    Buffer.from(JSON.stringify(o)).toString("base64url")
+  const enc = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString("base64url")
   const signingInput = `${enc(header)}.${enc(claims)}`
   const signer = createSign("RSA-SHA256")
   signer.update(signingInput)
@@ -135,7 +134,13 @@ describe("RemoteJwksVerifier", () => {
     it("accepts a token whose nonce claim is the SHA-256 hex of the nonce (Apple native)", async () => {
       const raw = "client-nonce-xyz"
       const hashed = createHash("sha256").update(raw).digest("hex")
-      const token = signJwt(privateKey, { iss: ISS, aud: AUD, sub: "s", exp: NOW + 600, nonce: hashed })
+      const token = signJwt(privateKey, {
+        iss: ISS,
+        aud: AUD,
+        sub: "s",
+        exp: NOW + 600,
+        nonce: hashed,
+      })
       const verifier = makeVerifier(publicKey, NOW)
       const result = await verifier.verify(token, { ...params(NOW), expectedNonce: raw })
       expect(result.sub).toBe("s")
@@ -150,13 +155,17 @@ describe("RemoteJwksVerifier", () => {
         nonce: "some-other-nonce",
       })
       const verifier = makeVerifier(publicKey, NOW)
-      await expectUnauthorized(verifier.verify(token, { ...params(NOW), expectedNonce: "expected" }))
+      await expectUnauthorized(
+        verifier.verify(token, { ...params(NOW), expectedNonce: "expected" }),
+      )
     })
 
     it("REJECTS a token with NO nonce claim when one is expected", async () => {
       const token = signJwt(privateKey, { iss: ISS, aud: AUD, sub: "s", exp: NOW + 600 })
       const verifier = makeVerifier(publicKey, NOW)
-      await expectUnauthorized(verifier.verify(token, { ...params(NOW), expectedNonce: "expected" }))
+      await expectUnauthorized(
+        verifier.verify(token, { ...params(NOW), expectedNonce: "expected" }),
+      )
     })
 
     it("a caller that passes NO expectedNonce gets no nonce checking — which is why sign-in always passes one", async () => {

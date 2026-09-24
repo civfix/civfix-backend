@@ -11,7 +11,6 @@ import { InMemorySocialRepository, makeCleanupRecord } from "../helpers/social.j
 import type { SocialServiceOverrides } from "../../src/routes/social.routes.js"
 import type { SocialNotifier, PersonView } from "../../src/services/social-service.js"
 
-
 class SpyNotifier implements SocialNotifier {
   readonly calls: Array<{ followeeId: string; follower: PersonView }> = []
   onNewFollower(args: { followeeId: string; follower: PersonView }): Promise<void> {
@@ -108,7 +107,11 @@ describe("GET /people", () => {
     })
     const noQ = await app.inject({ method: "GET", url: "/v1/people", headers: auth(token) })
     expect(noQ.statusCode).toBe(422)
-    const blankQ = await app.inject({ method: "GET", url: "/v1/people?q=%20", headers: auth(token) })
+    const blankQ = await app.inject({
+      method: "GET",
+      url: "/v1/people?q=%20",
+      headers: auth(token),
+    })
     expect(blankQ.statusCode).toBe(422)
   })
 
@@ -124,13 +127,21 @@ describe("GET /people", () => {
     expect(ids).not.toContain(userId)
     expect(body.items[0].avatar).toHaveLength(2)
 
-    const miss = await app.inject({ method: "GET", url: "/v1/people?q=nobody", headers: auth(token) })
+    const miss = await app.inject({
+      method: "GET",
+      url: "/v1/people?q=nobody",
+      headers: auth(token),
+    })
     expect(miss.json().items).toEqual([])
   })
 
   it("422s a bad limit", async () => {
     const { app, token } = await makeHarness()
-    const res = await app.inject({ method: "GET", url: "/v1/people?q=zel&limit=999", headers: auth(token) })
+    const res = await app.inject({
+      method: "GET",
+      url: "/v1/people?q=zel&limit=999",
+      headers: auth(token),
+    })
     expect(res.statusCode).toBe(422)
   })
 })
@@ -216,7 +227,11 @@ describe("GET /people/:id (profile)", () => {
       repo.seedUser({ id: OTHER, displayName: "Pro" })
     })
     await app.inject({ method: "POST", url: `/v1/people/${OTHER}/follow`, headers: auth(token) })
-    const res = await app.inject({ method: "GET", url: `/v1/people/${OTHER}`, headers: auth(token) })
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/people/${OTHER}`,
+      headers: auth(token),
+    })
     expect(res.json().profile.isFollowing).toBe(true)
   })
 

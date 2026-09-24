@@ -50,7 +50,11 @@ async function buildProbe(thrown: () => unknown): Promise<FastifyInstance> {
   app.setNotFoundHandler(makeNotFoundHandler())
   app.post(
     "/boom",
-    { schema: { body: { type: "object", required: ["email"], properties: { email: { type: "string" } } } } },
+    {
+      schema: {
+        body: { type: "object", required: ["email"], properties: { email: { type: "string" } } },
+      },
+    },
     async () => ({ ok: true }),
   )
   app.get("/throw", async () => {

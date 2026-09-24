@@ -1,9 +1,4 @@
-
-import type {
-  NotificationDTO,
-  NotificationPrefsDTO,
-  NotificationType,
-} from "@civfix/shared"
+import type { NotificationDTO, NotificationPrefsDTO, NotificationType } from "@civfix/shared"
 import type { NotificationPrefsRecord, NotificationRecord } from "./notification-service.js"
 
 export const DEFAULT_PREFS: NotificationPrefsRecord = {
@@ -78,7 +73,10 @@ export function isWithinQuietHours(
   return t >= s || t < e
 }
 
-export function typeAllowedByPrefs(type: NotificationType, prefs: NotificationPrefsRecord): boolean {
+export function typeAllowedByPrefs(
+  type: NotificationType,
+  prefs: NotificationPrefsRecord,
+): boolean {
   if (!prefs.push) return false
   switch (type) {
     case "report_update":

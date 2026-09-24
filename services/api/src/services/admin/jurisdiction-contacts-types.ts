@@ -159,9 +159,15 @@ export interface JurisdictionContactsRepository {
    * Patch contacts/notes/form WITHOUT routing, AND write the jurisdiction.patched audit row, all in ONE
    * transaction (H4). Returns false when the geoid is unknown.
    */
-  patch(geoid: string, input: PatchContactsInput, audit: { actorId: string | null }): Promise<boolean>
+  patch(
+    geoid: string,
+    input: PatchContactsInput,
+    audit: { actorId: string | null },
+  ): Promise<boolean>
   /** Read the outreach throttle state for a geoid (last_outreach_at + suppressed), or null when absent. */
-  getOutreachState(geoid: string): Promise<{ lastOutreachAt: Date | null; suppressed: boolean } | null>
+  getOutreachState(
+    geoid: string,
+  ): Promise<{ lastOutreachAt: Date | null; suppressed: boolean } | null>
   /** Page the directory rows (org/coverage/method derived by the service), searched + filtered + sorted. */
   listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult>
   /** One jurisdiction's simplified boundary geometry for the map, or null when it has no stored boundary. */
@@ -195,7 +201,11 @@ export interface JurisdictionContactsServiceDeps {
  */
 export interface JurisdictionContactsService {
   /** Save & route: persist contacts, route pending pins, enqueue throttled outreach. Audited in-tx (H4). */
-  saveAndRoute(geoid: string, input: SaveContactsInput, actorId: string): Promise<SaveAndRouteResult>
+  saveAndRoute(
+    geoid: string,
+    input: SaveContactsInput,
+    actorId: string,
+  ): Promise<SaveAndRouteResult>
   /** Patch a jurisdiction's contacts/notes/form WITHOUT routing. Audited in-tx (H4). */
   patch(geoid: string, input: PatchContactsInput, actorId: string): Promise<void>
   /** List the jurisdiction directory (org/dept/email/form/method/status/coverage/lastRouted). */

@@ -14,10 +14,7 @@ import { route } from "../../versioning/route.js"
 import { parse, trimTextFields } from "../_validate.js"
 import { requireCapability, resolveVisibleStanding } from "../../services/host/authz.js"
 import { writeAudit } from "../../services/admin/audit.js"
-import {
-  BroadcastCapError,
-  capError,
-} from "../../services/host/broadcast-service.js"
+import { BroadcastCapError, capError } from "../../services/host/broadcast-service.js"
 import { makeCommsRuntime } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
 import type {

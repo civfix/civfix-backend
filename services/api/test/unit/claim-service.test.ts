@@ -110,9 +110,9 @@ describe("claimNudge", () => {
   it("404s a valid token with no pending report", async () => {
     const { store, service } = harness()
     store.seedToken({ id: "tok-empty" })
-    await expect(
-      service.claimNudge(signAnonToken("tok-empty", SIGNING_KEY)),
-    ).rejects.toMatchObject({ code: "NOT_FOUND" })
+    await expect(service.claimNudge(signAnonToken("tok-empty", SIGNING_KEY))).rejects.toMatchObject(
+      { code: "NOT_FOUND" },
+    )
   })
 })
 
@@ -187,7 +187,11 @@ describe("claimReport", () => {
     expect(store.reports.get(r2.id)!.reporterUserId).toBe("user-2")
 
     // Each code is single-use afterward.
-    await expect(service.claimReport("code-a", "user-3")).rejects.toMatchObject({ code: "NOT_FOUND" })
-    await expect(service.claimReport("code-b", "user-3")).rejects.toMatchObject({ code: "NOT_FOUND" })
+    await expect(service.claimReport("code-a", "user-3")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    await expect(service.claimReport("code-b", "user-3")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
   })
 })

@@ -70,18 +70,16 @@ export const cleanupRegistrations = pgTable(
       .on(t.cleanupId, t.guestId)
       .where(sql`status = 'registered' AND guest_id IS NOT NULL`),
     uniqueIndex("cleanup_registrations_id_cleanup_uidx").on(t.id, t.cleanupId),
-    index("cleanup_registrations_roster_idx").on(
-      t.cleanupId,
-      t.registeredAt.desc(),
-      t.id.desc(),
-    ),
+    index("cleanup_registrations_roster_idx").on(t.cleanupId, t.registeredAt.desc(), t.id.desc()),
     index("cleanup_registrations_type_idx")
       .on(t.ticketTypeId)
       .where(sql`status = 'registered'`),
     index("cleanup_registrations_user_idx")
       .on(t.userId, t.registeredAt.desc())
       .where(sql`user_id IS NOT NULL`),
-    index("cleanup_registrations_guest_idx").on(t.guestId).where(sql`guest_id IS NOT NULL`),
+    index("cleanup_registrations_guest_idx")
+      .on(t.guestId)
+      .where(sql`guest_id IS NOT NULL`),
     index("cleanup_registrations_host_note_idx")
       .on(t.cleanupId)
       .where(sql`host_note IS NOT NULL`),
@@ -116,10 +114,7 @@ export const cleanupRegistrationSeats = pgTable(
       columns: [t.registrationId, t.cleanupId],
       foreignColumns: [cleanupRegistrations.id, cleanupRegistrations.cleanupId],
     }).onDelete("cascade"),
-    check(
-      "cleanup_registration_seats_status_check",
-      sql`${t.status} IN ('active', 'cancelled')`,
-    ),
+    check("cleanup_registration_seats_status_check", sql`${t.status} IN ('active', 'cancelled')`),
     check(
       "cleanup_registration_seats_method_check",
       sql`${t.checkinMethod} IS NULL OR ${t.checkinMethod} IN ('scan', 'manual', 'self', 'walkup')`,

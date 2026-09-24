@@ -72,7 +72,9 @@ describe.skipIf(!pg)("chat polls schema (0048, integration)", () => {
 
   it("creates the poll trio with sensible defaults", async () => {
     const pollId = await newPoll(2)
-    const [p] = await h.sql<{ allow_multiple: boolean; anonymous: boolean; closed_at: string | null }[]>`
+    const [p] = await h.sql<
+      { allow_multiple: boolean; anonymous: boolean; closed_at: string | null }[]
+    >`
       SELECT allow_multiple, anonymous, closed_at FROM chat_polls WHERE message_id = ${pollId}
     `
     expect(p).toEqual({ allow_multiple: false, anonymous: true, closed_at: null })

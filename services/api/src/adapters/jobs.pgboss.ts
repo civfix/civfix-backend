@@ -1,4 +1,3 @@
-
 import type PgBoss from "pg-boss"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
 import { REGISTRATION_QUEUE_NAMES } from "../services/host/registration-queues.js"

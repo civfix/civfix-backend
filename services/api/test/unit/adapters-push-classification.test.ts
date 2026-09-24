@@ -141,7 +141,9 @@ describe("expo dispatcher retry (429/5xx)", () => {
 
   it("gives up after ONE retry (never loops) and reports the status", async () => {
     const { logger, errors } = recordingLogger()
-    const fetchImpl = vi.fn(async () => new Response("boom", { status: 502 })) as unknown as typeof fetch
+    const fetchImpl = vi.fn(
+      async () => new Response("boom", { status: 502 }),
+    ) as unknown as typeof fetch
 
     const dispatch = makeExpoDispatcher({ fetchImpl, retryDelayMs: 1 }, logger)
     await expect(dispatch(["ExponentPushToken[a]"], { title: "Hi" })).resolves.toEqual({
@@ -153,7 +155,9 @@ describe("expo dispatcher retry (429/5xx)", () => {
 
   it("does NOT retry a 4xx that is not 429", async () => {
     const { logger } = recordingLogger()
-    const fetchImpl = vi.fn(async () => new Response("bad", { status: 400 })) as unknown as typeof fetch
+    const fetchImpl = vi.fn(
+      async () => new Response("bad", { status: 400 }),
+    ) as unknown as typeof fetch
 
     const dispatch = makeExpoDispatcher({ fetchImpl, retryDelayMs: 1 }, logger)
     await dispatch(["ExponentPushToken[a]"], { title: "Hi" })

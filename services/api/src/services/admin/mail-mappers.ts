@@ -1,4 +1,3 @@
-
 import type { CursorAnchor } from "./pagination.js"
 import type { MailAuthVerdict } from "../../adapters/inbound-mail.cf.js"
 import { MAIL_AUTH_VERDICT_VALUES } from "../../db/schema/types.js"

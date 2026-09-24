@@ -1,11 +1,18 @@
-
 import { randomUUID } from "node:crypto"
 import { AppError, ErrorCode, MailSendError } from "@civfix/shared"
 import type { Mailer, OutboundEmail, SentMail } from "@civfix/shared/interfaces"
 import type { Transporter } from "nodemailer"
 import { domainOf, escapeHtml, sanitizeHeaderValue } from "./mail-text.js"
 import { mailFailure } from "./mail-failure.js"
-import { button, code, heading, kvTable, paragraph, quote, type EmailBlock } from "./email-blocks.js"
+import {
+  button,
+  code,
+  heading,
+  kvTable,
+  paragraph,
+  quote,
+  type EmailBlock,
+} from "./email-blocks.js"
 import { renderEmailBody } from "./email-layout.js"
 import { renderMessage } from "../i18n/renderMessage.js"
 import { resolveLocale, type Locale } from "../i18n/locales.js"
@@ -135,7 +142,10 @@ export class OciMailer implements Mailer {
       })
       this.transporter = transporter
       transporter.verify().catch((err: unknown) => {
-        console.warn({ err }, "OCI mailer SMTP verify failed (continuing; send will surface the error)")
+        console.warn(
+          { err },
+          "OCI mailer SMTP verify failed (continuing; send will surface the error)",
+        )
       })
     }
     return this.transporter

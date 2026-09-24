@@ -1,4 +1,3 @@
-
 import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   CleanupDTO,
@@ -113,10 +112,7 @@ export interface SocialRepository {
 
   isFollowing(followerId: string, followeeId: string): Promise<boolean>
 
-  addFollow(
-    followerId: string,
-    followeeId: string,
-  ): Promise<{ exists: boolean; created: boolean }>
+  addFollow(followerId: string, followeeId: string): Promise<{ exists: boolean; created: boolean }>
 
   removeFollow(followerId: string, followeeId: string): Promise<{ exists: boolean }>
 
@@ -130,10 +126,7 @@ export interface SocialRepository {
 }
 
 export interface SocialNotifier {
-  onNewFollower(args: {
-    followeeId: string
-    follower: PersonView
-  }): Promise<void>
+  onNewFollower(args: { followeeId: string; follower: PersonView }): Promise<void>
 }
 
 export interface SocialViewer {
@@ -261,7 +254,10 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
       viewerId: string | null
       cursor: string | null
       limit: number
-    }) => Promise<{ items: Array<PersonView & { isFollowing: boolean }>; nextCursor: string | null }>,
+    }) => Promise<{
+      items: Array<PersonView & { isFollowing: boolean }>
+      nextCursor: string | null
+    }>,
     id: string,
     viewer: SocialViewer,
     req: ConnectionsListQuery,
@@ -338,9 +334,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
         : {}),
       stats,
       ...(volunteerHours !== undefined ? { volunteerHours } : {}),
-      ...(view.showVolunteerHours !== null
-        ? { showVolunteerHours: view.showVolunteerHours }
-        : {}),
+      ...(view.showVolunteerHours !== null ? { showVolunteerHours: view.showVolunteerHours } : {}),
     }
   }
 
@@ -362,10 +356,7 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
     }
   }
 
-  async function resolveProfile(
-    view: PersonView,
-    viewer: SocialViewer,
-  ): Promise<ProfileWithBlock> {
+  async function resolveProfile(view: PersonView, viewer: SocialViewer): Promise<ProfileWithBlock> {
     const isSelf = viewer.userId === view.id
     if (!isSelf && viewer.userId !== null && deps.blockState) {
       const { blockedByViewer, blockedByTarget } = await deps.blockState(viewer.userId, view.id)
@@ -451,7 +442,10 @@ export function makeSocialService(deps: SocialServiceDeps): SocialService {
             void 0
           }
         } else {
-          deps.logger?.warn({ viewerId, targetId }, "social: new follower row missing, notification skipped")
+          deps.logger?.warn(
+            { viewerId, targetId },
+            "social: new follower row missing, notification skipped",
+          )
         }
       }
 

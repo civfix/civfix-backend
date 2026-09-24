@@ -7,7 +7,10 @@ import {
 
 function okFetch(props: unknown): typeof fetch {
   return (async () =>
-    ({ ok: true, json: async () => ({ features: [{ properties: props }] }) }) as unknown as Response) as unknown as typeof fetch
+    ({
+      ok: true,
+      json: async () => ({ features: [{ properties: props }] }),
+    }) as unknown as Response) as unknown as typeof fetch
 }
 
 describe("formatMapboxReverse", () => {
@@ -47,7 +50,11 @@ describe("makeMapboxReverseGeocode", () => {
       fetchImpl: okFetch({
         feature_type: "address",
         name: "1 Main St",
-        context: { place: { name: "Springfield" }, region: { region_code: "IL" }, country: { country_code: "us" } },
+        context: {
+          place: { name: "Springfield" },
+          region: { region_code: "IL" },
+          country: { country_code: "us" },
+        },
       }),
     })
     expect(await geocode(39.8, -89.6)).toEqual({
@@ -75,7 +82,11 @@ describe("makeMapboxReverseGeocode", () => {
   it("returns null for empty features", async () => {
     const geocode = makeMapboxReverseGeocode({
       token: "pk.test",
-      fetchImpl: (async () => ({ ok: true, json: async () => ({ features: [] }) }) as unknown as Response) as unknown as typeof fetch,
+      fetchImpl: (async () =>
+        ({
+          ok: true,
+          json: async () => ({ features: [] }),
+        }) as unknown as Response) as unknown as typeof fetch,
     })
     expect(await geocode(39.8, -89.6)).toBeNull()
   })
@@ -112,9 +123,9 @@ describe("makeMapboxReverseGeocode", () => {
  */
 describe("mapboxPrecision", () => {
   it("claims street only with a house number", () => {
-    expect(mapboxPrecision({ context: { address: { address_number: "123", name: "123 Main St" } } })).toBe(
-      "street",
-    )
+    expect(
+      mapboxPrecision({ context: { address: { address_number: "123", name: "123 Main St" } } }),
+    ).toBe("street")
     expect(mapboxPrecision({ feature_type: "address", name: "123 Main St" })).toBe("street")
   })
 
@@ -136,7 +147,9 @@ describe("mapboxPrecision", () => {
   })
 
   it("claims NOTHING for a place-only hit, so the chain keeps going", () => {
-    expect(mapboxPrecision({ name: "Los Angeles", context: { place: { name: "Los Angeles" } } })).toBeNull()
+    expect(
+      mapboxPrecision({ name: "Los Angeles", context: { place: { name: "Los Angeles" } } }),
+    ).toBeNull()
     expect(mapboxPrecision({})).toBeNull()
   })
 })

@@ -1,4 +1,3 @@
-
 import type { Container } from "../../di.js"
 import type { InboundMail, ParsedMail, Storage } from "@civfix/shared/interfaces"
 import type { MailAttachment } from "@civfix/shared"
@@ -212,7 +211,11 @@ async function routeThreaded(
   const unaffiliated =
     authVerdict !== "pass" || !(await isJurisdictionSender(mailRepo, thread.id, mail))
   const withheld = unaffiliated && (thread.reportId !== null || thread.cleanupId !== null)
-  const { attachments, oversize } = await streamAttachments(storage, `inbound-mail/${thread.id}`, mail)
+  const { attachments, oversize } = await streamAttachments(
+    storage,
+    `inbound-mail/${thread.id}`,
+    mail,
+  )
   const inserted = await mailRepo.insertMessage({
     threadId: thread.id,
     direction: "in",
@@ -256,12 +259,14 @@ async function routeThreaded(
 
   const message = inserted ?? (await mailRepo.findMessageByMessageId(messageId).catch(() => null))
   if (message !== null && message.threadId === thread.id) {
-    await applyInboundEffects(container, injected, mailRepo, thread, message).catch((err: unknown) => {
-      logger.warn(
-        { err: errorText(err), threadId: thread.id, messageId: message.id },
-        "inbound: side effects failed (claim released; the sweep re-drives it)",
-      )
-    })
+    await applyInboundEffects(container, injected, mailRepo, thread, message).catch(
+      (err: unknown) => {
+        logger.warn(
+          { err: errorText(err), threadId: thread.id, messageId: message.id },
+          "inbound: side effects failed (claim released; the sweep re-drives it)",
+        )
+      },
+    )
   }
   if (inserted === null) return { outcome: "replay" }
   return { outcome: "threaded", id: inserted.id }

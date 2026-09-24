@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest"
 import type { UserStatus } from "@civfix/shared"
-import { CIVFIX_OFFICIAL_USER_ID, impersonatesOfficialName } from "../../src/auth/official-account.js"
+import {
+  CIVFIX_OFFICIAL_USER_ID,
+  impersonatesOfficialName,
+} from "../../src/auth/official-account.js"
 import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
 import { makeAdminUserService } from "../../src/services/admin/admin-user-service.js"
 import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
@@ -95,17 +98,22 @@ describe("moderation remove refuses the official account as a user subject", () 
     return { repo, svc, applied }
   }
 
-  it.each(["user", "profile"] as const)("leaves a %s item open with no suspension", async (subjectType) => {
-    const { repo, svc, applied } = harness()
-    repo.seedItem({ id: "MOD-1", subjectType, subjectId: OFFICIAL, status: "open" })
+  it.each(["user", "profile"] as const)(
+    "leaves a %s item open with no suspension",
+    async (subjectType) => {
+      const { repo, svc, applied } = harness()
+      repo.seedItem({ id: "MOD-1", subjectType, subjectId: OFFICIAL, status: "open" })
 
-    await expect(svc.remove("MOD-1", { actorId: "op-1", reason: "abuse" })).rejects.toMatchObject({
-      httpStatus: 403,
-    })
-    expect(repo.accountStatus.get(OFFICIAL)).toBeUndefined()
-    expect(repo.items.get("MOD-1")?.status).toBe("open")
-    expect(applied).toEqual([])
-  })
+      await expect(svc.remove("MOD-1", { actorId: "op-1", reason: "abuse" })).rejects.toMatchObject(
+        {
+          httpStatus: 403,
+        },
+      )
+      expect(repo.accountStatus.get(OFFICIAL)).toBeUndefined()
+      expect(repo.items.get("MOD-1")?.status).toBe("open")
+      expect(applied).toEqual([])
+    },
+  )
 
   it("still removes a chat post the official account authored", async () => {
     const { repo, svc } = harness()

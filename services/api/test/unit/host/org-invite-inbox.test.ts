@@ -119,8 +119,9 @@ describe("acceptMyOrgInvite", () => {
     const res = await service.acceptMyInvite(INVITEE, inviteId)
     expect(res).toMatchObject({ ok: true, role: "member" })
     expect(res.organization.id).toBe(organizationId)
-    expect(repo.members.some((m) => m.organizationId === organizationId && m.userId === INVITEE))
-      .toBe(true)
+    expect(
+      repo.members.some((m) => m.organizationId === organizationId && m.userId === INVITEE),
+    ).toBe(true)
     expect(repo.invites.find((i) => i.id === inviteId)?.status).toBe("accepted")
   })
 
@@ -169,8 +170,9 @@ describe("declineMyOrgInvite", () => {
     const { organizationId, inviteId } = await invited()
     expect(await service.declineMyInvite(INVITEE, inviteId)).toEqual({ ok: true })
     expect(repo.invites.find((i) => i.id === inviteId)?.status).toBe("declined")
-    expect(repo.members.some((m) => m.organizationId === organizationId && m.userId === INVITEE))
-      .toBe(false)
+    expect(
+      repo.members.some((m) => m.organizationId === organizationId && m.userId === INVITEE),
+    ).toBe(false)
     expect(repo.audits.some((a) => a.action === "org.invite_declined")).toBe(true)
   })
 

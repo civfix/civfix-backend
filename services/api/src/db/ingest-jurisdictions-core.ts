@@ -58,7 +58,14 @@ export function normalizeFeature(
   const geometry = f.geometry
   const isPolygon =
     geometry !== null && (geometry.type === "Polygon" || geometry.type === "MultiPolygon")
-  const geoid = pickString(f.properties, ["geoid", "GEOID", "UNIT_CODE", "unit_code", "id", "OBJECTID"])
+  const geoid = pickString(f.properties, [
+    "geoid",
+    "GEOID",
+    "UNIT_CODE",
+    "unit_code",
+    "id",
+    "OBJECTID",
+  ])
   const prefixedGeoid = geoid !== null && geoidPrefix ? geoidPrefix + geoid : geoid
   const name = pickString(f.properties, ["name", "NAME", "UNIT_NAME", "unit_name", "Unit_Name"])
   const rawLayer = pickString(f.properties, ["layer", "LAYER", "owner_type", "Own_Type"])
@@ -95,7 +102,10 @@ export function normalizeFeatures(
   return { rows, skipped }
 }
 
-export async function upsertJurisdictionBatch(sql: Queryable, rows: readonly IngestRow[]): Promise<number> {
+export async function upsertJurisdictionBatch(
+  sql: Queryable,
+  rows: readonly IngestRow[],
+): Promise<number> {
   if (rows.length === 0) return 0
   const byGeoid = new Map<string, IngestRow>()
   for (const r of rows) byGeoid.set(r.geoid, r)

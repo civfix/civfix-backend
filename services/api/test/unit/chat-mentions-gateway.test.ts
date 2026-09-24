@@ -75,9 +75,19 @@ function spyMentions() {
   return { seam, recorded, notified }
 }
 
-function sessionFor(userId: string, conn: MockConnection, mentions: GatewayChatMentions): GatewaySession {
+function sessionFor(
+  userId: string,
+  conn: MockConnection,
+  mentions: GatewayChatMentions,
+): GatewaySession {
   const deps: GatewayDeps = { chat, isMember: memberOf, chatMentions: mentions }
-  return { userId, conn, joined: new Set<string>(), typingThrottle: new Map<string, number>(), deps }
+  return {
+    userId,
+    conn,
+    joined: new Set<string>(),
+    typingThrottle: new Map<string, number>(),
+    deps,
+  }
 }
 
 beforeEach(() => {

@@ -25,10 +25,7 @@
 
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../di.js"
-import {
-  makeChatPowersResolver,
-  type ResolveChatPowers,
-} from "../services/chat-room-roles.js"
+import { makeChatPowersResolver, type ResolveChatPowers } from "../services/chat-room-roles.js"
 import type { ROLE_VALUES } from "../db/schema/types.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import {
@@ -104,7 +101,9 @@ function buildChatPowers(app: FastifyInstance, container: Container): ResolveCha
         : {}),
       cleanupRoleOf: () => Promise.resolve(null),
       reportChatRoleOf: (reportId, userId) =>
-        overrides.reportChat ? overrides.reportChat.roleOf(reportId, userId) : Promise.resolve(null),
+        overrides.reportChat
+          ? overrides.reportChat.roleOf(reportId, userId)
+          : Promise.resolve(null),
       globalRoleOf: () => Promise.resolve(null),
       groupRoleOf: (groupId, userId) =>
         overrides.groups ? overrides.groups.roleOf(groupId, userId) : Promise.resolve(null),

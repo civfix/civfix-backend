@@ -4,7 +4,6 @@ import { InMemoryChatPubSub, type ChatPubSub } from "../../src/adapters/chat-pub
 import { MockConnection } from "../helpers/chat.js"
 import { WsServerMessageSchema } from "@civfix/shared"
 
-
 const ALICE = "11111111-1111-1111-1111-111111111111"
 const BOB = "22222222-2222-2222-2222-222222222222"
 
@@ -50,7 +49,10 @@ describe("RedisUserChannel over a shared in-memory pub/sub", () => {
     await channel.subscribeUser(ALICE, aConn)
     await channel.subscribeUser(BOB, bConn)
 
-    await channel.publishToUser(ALICE, { topic: "threads", id: "cccccccc-cccc-cccc-cccc-cccccccccccc" })
+    await channel.publishToUser(ALICE, {
+      topic: "threads",
+      id: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    })
 
     expect(aConn.framesOfType("signal")).toHaveLength(1)
     expect(aConn.framesOfType("signal")[0]).toMatchObject({

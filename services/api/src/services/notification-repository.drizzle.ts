@@ -1,4 +1,3 @@
-
 import type { Sql } from "../db/client.js"
 import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
 import type {
@@ -115,9 +114,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
     ): Promise<{ records: NotificationRecord[]; nextCursor: string | null }> {
       const parsed = parseTimeCursor(cursor)
       const cursorFilter =
-        parsed !== null
-          ? sql`AND (created_at, id) < (${parsed.at}, ${parsed.id}::uuid)`
-          : sql``
+        parsed !== null ? sql`AND (created_at, id) < (${parsed.at}, ${parsed.id}::uuid)` : sql``
       const rows = await sql<NotificationRowSelect[]>`
         SELECT id, user_id, type, title, body, link, read_at, created_at
         FROM notifications
@@ -224,7 +221,8 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
 
       const setFragments: Array<ReturnType<Sql>> = []
       if (patch.push !== undefined) setFragments.push(sql`push = ${patch.push}`)
-      if (patch.cleanupChat !== undefined) setFragments.push(sql`cleanup_chat = ${patch.cleanupChat}`)
+      if (patch.cleanupChat !== undefined)
+        setFragments.push(sql`cleanup_chat = ${patch.cleanupChat}`)
       if (patch.reportUpdates !== undefined)
         setFragments.push(sql`report_updates = ${patch.reportUpdates}`)
       if (patch.follows !== undefined) setFragments.push(sql`follows = ${patch.follows}`)

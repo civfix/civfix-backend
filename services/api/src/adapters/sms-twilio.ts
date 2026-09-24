@@ -72,7 +72,10 @@ export class TwilioSmsSender implements SmsSender {
     }
     const sid = typeof payload.sid === "string" ? payload.sid : ""
     if (sid === "") {
-      throw smsFailure("temporary", "Text message not sent: the SMS provider returned no message id.")
+      throw smsFailure(
+        "temporary",
+        "Text message not sent: the SMS provider returned no message id.",
+      )
     }
     return { id: sid }
   }

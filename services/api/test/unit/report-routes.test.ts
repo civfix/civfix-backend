@@ -281,7 +281,12 @@ describe("POST /reports", () => {
       geomSource: "device",
       mediaUploadIds: [],
     }
-    const first = await app.inject({ method: "POST", url: "/v1/reports", headers: auth(token), payload })
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/reports",
+      headers: auth(token),
+      payload,
+    })
     expect(first.statusCode).toBe(201)
     const firstId = first.json().id
 
@@ -437,7 +442,11 @@ describe("GET /reports/:id", () => {
       },
     })
     // The signed-in caller is NOT the owner -> 404.
-    const res = await app.inject({ method: "GET", url: `/v1/reports/${heldId}`, headers: auth(token) })
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/reports/${heldId}`,
+      headers: auth(token),
+    })
     expect(res.statusCode).toBe(404)
     expect(res.json().code).toBe("NOT_FOUND")
   })
@@ -455,7 +464,11 @@ describe("GET /reports/:id", () => {
     let code = ""
     const { app } = await makeHarness({
       seed: (repo) => {
-        const r = repo.seedReport({ status: "published", visibility: "public", referenceCode: "DU-42-000001" })
+        const r = repo.seedReport({
+          status: "published",
+          visibility: "public",
+          referenceCode: "DU-42-000001",
+        })
         code = r.referenceCode!
       },
     })
@@ -609,8 +622,20 @@ describe("GET /map/reports", () => {
   it("returns clusters at low zoom and pins at high zoom for points in the bbox (client-encoded bbox)", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 34.11,
+          lng: -118.34,
+        })
       },
     })
 
@@ -639,14 +664,26 @@ describe("GET /map/reports", () => {
     const { app } = await makeHarness({
       seed: (repo) => {
         const withPhoto = repo.seedReport({
-          status: "published", visibility: "public", category: "trash",
-          lat: 34.10, lng: -118.35, title: "Mattress dumped",
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+          title: "Mattress dumped",
         })
-        repo.seedMedia({ reportId: withPhoto.id, status: "ready", r2Key: "uploads/a", thumbKey: "thumbs/a" })
+        repo.seedMedia({
+          reportId: withPhoto.id,
+          status: "ready",
+          r2Key: "uploads/a",
+          thumbKey: "thumbs/a",
+        })
         // A second report with no media -> thumbUrl null, title omitted (null).
         repo.seedReport({
-          status: "published", visibility: "public", category: "graffiti",
-          lat: 34.11, lng: -118.34,
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 34.11,
+          lng: -118.34,
         })
       },
     })
@@ -656,7 +693,11 @@ describe("GET /map/reports", () => {
       url: `/v1/map/reports${clientQuery({ bbox: BBOX, zoom: 16 })}`,
     })
     expect(res.statusCode).toBe(200)
-    const pins = res.json().pins as { category: string; title?: string | null; thumbUrl: string | null }[]
+    const pins = res.json().pins as {
+      category: string
+      title?: string | null
+      thumbUrl: string | null
+    }[]
     const trash = pins.find((p) => p.category === "trash")!
     expect(trash.title).toBe("Mattress dumped")
     expect(trash.thumbUrl).toBe("memory://thumbs/a")
@@ -668,8 +709,20 @@ describe("GET /map/reports", () => {
   it("filters by categories sent as repeated params (the client's array encoding)", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 34.11,
+          lng: -118.34,
+        })
       },
     })
     // clientQuery({categories:["trash"]}) -> ?...&categories=trash (repeated-param form).
@@ -685,9 +738,27 @@ describe("GET /map/reports", () => {
   it("accepts MULTIPLE repeated categories params", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
-        repo.seedReport({ status: "published", visibility: "public", category: "water", lat: 34.12, lng: -118.33 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 34.11,
+          lng: -118.34,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "water",
+          lat: 34.12,
+          lng: -118.33,
+        })
       },
     })
     // ?...&categories=trash&categories=graffiti -> both kept, water excluded.
@@ -703,8 +774,20 @@ describe("GET /map/reports", () => {
   it("still accepts a categories CSV (resilience)", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 34.11, lng: -118.34 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 34.11,
+          lng: -118.34,
+        })
       },
     })
     // A single CSV param (hand-built) is tolerated: categories=trash,graffiti.
@@ -725,8 +808,20 @@ describe("GET /map/reports", () => {
   it("M14: a continental bbox is forced to CLUSTER even when the client claims max zoom", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
-        repo.seedReport({ status: "published", visibility: "public", category: "graffiti", lat: 40.71, lng: -74.0 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "graffiti",
+          lat: 40.71,
+          lng: -74.0,
+        })
       },
     })
     // Just inside MAX_MAP_BBOX_AREA_DEG2 (100 x 60 = 6000 deg^2) so it is the ZOOM clamp under test
@@ -754,7 +849,13 @@ describe("GET /map/reports", () => {
   it("M14: a genuine neighborhood viewport still returns individual pins", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
       },
     })
     const res = await app.inject({
@@ -787,7 +888,13 @@ describe("GET /map/reports", () => {
   it("P2: 422s an INVERTED bbox (west >= east or south >= north) instead of silently empty", async () => {
     const { app } = await makeHarness({
       seed: (repo) => {
-        repo.seedReport({ status: "published", visibility: "public", category: "trash", lat: 34.10, lng: -118.35 })
+        repo.seedReport({
+          status: "published",
+          visibility: "public",
+          category: "trash",
+          lat: 34.1,
+          lng: -118.35,
+        })
       },
     })
     // west > east (transposed longitude). Before the guard this built an empty envelope -> 200 with no

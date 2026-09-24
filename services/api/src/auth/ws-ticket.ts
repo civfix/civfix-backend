@@ -1,4 +1,3 @@
-
 import { makeSingleUseSecretStore } from "./single-use-secret.js"
 import type { CacheClient } from "./cache.js"
 

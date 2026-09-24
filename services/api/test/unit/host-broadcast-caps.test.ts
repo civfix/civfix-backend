@@ -247,10 +247,7 @@ describe("broadcast content gates", () => {
 
   it("counts the CTA url toward the link cap", async () => {
     const { service } = build()
-    const fiveLinks = Array.from(
-      { length: 5 },
-      (_, i) => `https://civfix.org/${i}`,
-    ).join(" and ")
+    const fiveLinks = Array.from({ length: 5 }, (_, i) => `https://civfix.org/${i}`).join(" and ")
     await expect(
       service.create(EVENT, HOST, {
         id: EVENT,

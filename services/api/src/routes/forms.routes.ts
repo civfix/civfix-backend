@@ -1,4 +1,3 @@
-
 import { createHash } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import { z } from "zod"
@@ -122,7 +121,9 @@ export async function registerHomeTurfRoutes(
   function requireNotifyTo(): string {
     const notifyTo = container.env.HOME_TURF_NOTIFY_TO
     if (notifyTo === "") {
-      throw AppError.conflict("This form isn't accepting submissions right now. Please try again later.")
+      throw AppError.conflict(
+        "This form isn't accepting submissions right now. Please try again later.",
+      )
     }
     return notifyTo
   }
@@ -133,15 +134,22 @@ export async function registerHomeTurfRoutes(
     async (request, reply) => {
       const form = parse(HomeTurfFormSchema, request.body)
 
-      const human = await container.abuseChecks.verifyTurnstile(form.turnstileToken, request.ip ?? "", {
-        action: "home-turf",
-      })
+      const human = await container.abuseChecks.verifyTurnstile(
+        form.turnstileToken,
+        request.ip ?? "",
+        {
+          action: "home-turf",
+        },
+      )
       if (!human) {
         throw AppError.turnstileFailed()
       }
 
       if (honeypotTripped(form.honeypot)) {
-        request.log.info({ ip: request.ip }, "home-turf form: honeypot tripped; fake success, no mail")
+        request.log.info(
+          { ip: request.ip },
+          "home-turf form: honeypot tripped; fake success, no mail",
+        )
         return reply.status(200).send({ ok: true })
       }
 
@@ -158,7 +166,10 @@ export async function registerHomeTurfRoutes(
       try {
         await container.mailer.sendOutbound(buildConfirmationEmail(form, from, notifyTo))
       } catch (err) {
-        request.log.warn({ err }, "home-turf form: confirmation email failed (non-fatal; returning 200)")
+        request.log.warn(
+          { err },
+          "home-turf form: confirmation email failed (non-fatal; returning 200)",
+        )
       }
 
       return reply.status(200).send({ ok: true })
@@ -191,7 +202,11 @@ function formRows(form: HomeTurfForm): Array<[string, string]> {
   return rows
 }
 
-export function buildNotificationEmail(form: HomeTurfForm, from: string, to: string): FormOutboundEmail {
+export function buildNotificationEmail(
+  form: HomeTurfForm,
+  from: string,
+  to: string,
+): FormOutboundEmail {
   const subject = sanitizeHeaderValue(`Home Turf sign-up: ${form.school}`)
   const { text, html } = renderEmailBody({
     preheader: subject,
@@ -200,7 +215,11 @@ export function buildNotificationEmail(form: HomeTurfForm, from: string, to: str
   return { from, to, replyTo: form.email, subject, text, html }
 }
 
-export function buildConfirmationEmail(form: HomeTurfForm, from: string, notifyTo: string): FormOutboundEmail {
+export function buildConfirmationEmail(
+  form: HomeTurfForm,
+  from: string,
+  notifyTo: string,
+): FormOutboundEmail {
   const subject = "We got your Home Turf sign-up"
   const { text, html } = renderEmailBody({
     preheader: subject,

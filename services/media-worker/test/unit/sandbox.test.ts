@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
@@ -181,7 +180,9 @@ describe("sandbox/phash", () => {
           raw[y * w + x] = reverse ? 255 - v : v
         }
       }
-      return sharp(raw, { raw: { width: w, height: h, channels: 1 } }).png().toBuffer()
+      return sharp(raw, { raw: { width: w, height: h, channels: 1 } })
+        .png()
+        .toBuffer()
     }
 
     it("hashes an ascending ramp to all-zero bits and a descending ramp to all-one bits", async () => {
@@ -202,7 +203,9 @@ describe("sandbox/phash", () => {
           raw[y * w + x] = Math.round(invert ? 255 - v : v)
         }
       }
-      return sharp(raw, { raw: { width: w, height: h, channels: 1 } }).png().toBuffer()
+      return sharp(raw, { raw: { width: w, height: h, channels: 1 } })
+        .png()
+        .toBuffer()
     }
 
     it("is PERCEPTUAL: a downscaled, JPEG-re-encoded copy hashes identically", async () => {
@@ -222,7 +225,9 @@ describe("sandbox/phash", () => {
     })
 
     it("refuses a non-allowlisted container (the L15 sniff applies to the hash path too)", async () => {
-      const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>')
+      const svg = new TextEncoder().encode(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>',
+      )
       await expect(perceptualHash(svg, limits)).rejects.toThrow(/unsupported image container/i)
     })
   })
@@ -363,9 +368,7 @@ describe("sandbox/image magic-byte container gate (L15)", () => {
     expect(
       sniffAllowedImageContainer(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
     ).toBe("png")
-    const webp = new Uint8Array([
-      0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x45, 0x42, 0x50,
-    ])
+    const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x45, 0x42, 0x50])
     expect(sniffAllowedImageContainer(webp)).toBe("webp")
   })
 
@@ -385,7 +388,9 @@ describe("sandbox/image magic-byte container gate (L15)", () => {
   })
 
   it("processImage refuses a non-allowlisted container so libvips never sees it", async () => {
-    const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>')
+    const svg = new TextEncoder().encode(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>',
+    )
     await expect(processImage(svg, limits)).rejects.toThrow(/unsupported image container/i)
   })
 

@@ -164,7 +164,11 @@ class InMemoryPostRepository implements PostRepository {
   }
 
   /** Newest-first keyset page over the canonical cursor helpers (the real repo's contract). */
-  private page(rows: StoredPost[], viewerId: string, args: { cursor: string | null; limit: number }): FeedPage {
+  private page(
+    rows: StoredPost[],
+    viewerId: string,
+    args: { cursor: string | null; limit: number },
+  ): FeedPage {
     const sorted = [...rows].sort(
       (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : -1),
     )
@@ -270,7 +274,10 @@ class InMemoryPostRepository implements PostRepository {
 
   unrepost(postId: string, userId: string): Promise<{ targetId: string; removed: boolean }> {
     const targetId = this.targetOf(postId)
-    return Promise.resolve({ targetId, removed: this.live(targetId)?.reposts.delete(userId) ?? false })
+    return Promise.resolve({
+      targetId,
+      removed: this.live(targetId)?.reposts.delete(userId) ?? false,
+    })
   }
 
   getPostDTO(id: string, viewerId: string): Promise<PostDTO | null> {
@@ -296,7 +303,12 @@ class InMemoryPostRepository implements PostRepository {
     })
   }
 
-  homeFeedChronological(args: { viewerId: string; filter: "all" | "events" | "fixes"; cursor: string | null; limit: number }): Promise<FeedPage> {
+  homeFeedChronological(args: {
+    viewerId: string
+    filter: "all" | "events" | "fixes"
+    cursor: string | null
+    limit: number
+  }): Promise<FeedPage> {
     return Promise.resolve(this.page(this.byFilter(args.filter), args.viewerId, args))
   }
 
@@ -353,13 +365,19 @@ class InMemoryPostRepository implements PostRepository {
     return Promise.resolve(out)
   }
 
-  publicFeed(args: { filter: "all" | "events" | "fixes"; cursor: string | null; limit: number }): Promise<FeedPage> {
+  publicFeed(args: {
+    filter: "all" | "events" | "fixes"
+    cursor: string | null
+    limit: number
+  }): Promise<FeedPage> {
     // NIL viewer: every viewer flag must come back false for a signed-out reader.
     return Promise.resolve(this.page(this.byFilter(args.filter), "", args))
   }
 
   listReplies(postId: string, args: ReplyListArgs): Promise<RepliesPage> {
-    const rows = [...this.posts.values()].filter((p) => p.replyToId === postId && p.deletedAt === null)
+    const rows = [...this.posts.values()].filter(
+      (p) => p.replyToId === postId && p.deletedAt === null,
+    )
     const page = this.page(rows, args.viewerId, args)
     const authorReplies = page.items.flatMap((reply) => {
       const answer = this.latestAnswerBy(args.focalAuthorId, reply.id)
@@ -453,7 +471,8 @@ async function makeHarness(): Promise<Harness> {
   const service = makePostService({
     repo,
     sql: throwingSql,
-    isBlockedEitherWay: (a, b) => Promise.resolve(blocked.has(`${a}:${b}`) || blocked.has(`${b}:${a}`)),
+    isBlockedEitherWay: (a, b) =>
+      Promise.resolve(blocked.has(`${a}:${b}`) || blocked.has(`${b}:${a}`)),
   })
 
   const container = buildContainer(env)
@@ -511,7 +530,9 @@ function bearer(s: Session): Record<string, string> {
 const UNKNOWN_ID = "11111111-2222-4333-8444-555555555555"
 
 /** Every route that mutates state, with a body where one is required. */
-const MUTATIONS = (id: string): ReadonlyArray<{
+const MUTATIONS = (
+  id: string,
+): ReadonlyArray<{
   method: "POST" | "DELETE"
   url: string
   payload?: Record<string, unknown>
@@ -669,7 +690,11 @@ describe("posts routes: CSRF (cookie transport)", () => {
     const me = await h.signInWeb("read@example.com", "Read")
     const id = h.repo.seed({ authorId: me.userId })
     for (const r of READS(id, me.userId)) {
-      const res = await h.app.inject({ method: r.method, url: r.url, headers: { cookie: me.cookie } })
+      const res = await h.app.inject({
+        method: r.method,
+        url: r.url,
+        headers: { cookie: me.cookie },
+      })
       expect(res.statusCode, r.url).toBe(200)
     }
   })
@@ -898,7 +923,11 @@ describe("GET /posts/:id (getPost) + DELETE /posts/:id (deletePost)", () => {
     expect(ok.statusCode).toBe(200)
     expect(ok.json()).toMatchObject({ id, body: "readable" })
 
-    const bad = await h.app.inject({ method: "GET", url: "/v1/posts/not-a-uuid", headers: bearer(me) })
+    const bad = await h.app.inject({
+      method: "GET",
+      url: "/v1/posts/not-a-uuid",
+      headers: bearer(me),
+    })
     expect(bad.statusCode).toBe(422)
     expect(bad.json().fields.id).toBeDefined()
 
@@ -917,11 +946,16 @@ describe("GET /posts/:id (getPost) + DELETE /posts/:id (deletePost)", () => {
     const id = h.repo.seed({ authorId: author.userId })
     h.blocked.add(`${author.userId}:${viewer.userId}`)
 
-    const res = await h.app.inject({ method: "GET", url: `/v1/posts/${id}`, headers: bearer(viewer) })
+    const res = await h.app.inject({
+      method: "GET",
+      url: `/v1/posts/${id}`,
+      headers: bearer(viewer),
+    })
     expect(res.statusCode).toBe(404)
     // The author still sees their own post.
     expect(
-      (await h.app.inject({ method: "GET", url: `/v1/posts/${id}`, headers: bearer(author) })).statusCode,
+      (await h.app.inject({ method: "GET", url: `/v1/posts/${id}`, headers: bearer(author) }))
+        .statusCode,
     ).toBe(200)
   })
 
@@ -1087,8 +1121,9 @@ describe("interaction toggles (like / save / repost)", () => {
     const me = await h.signIn("saver@example.com", "Saver")
     const id = h.repo.seed({ authorId: me.userId })
 
-    expect((await h.app.inject({ method: "GET", url: "/v1/me/saves", headers: bearer(me) })).json())
-      .toEqual({ items: [], nextCursor: null })
+    expect(
+      (await h.app.inject({ method: "GET", url: "/v1/me/saves", headers: bearer(me) })).json(),
+    ).toEqual({ items: [], nextCursor: null })
 
     const saved = await h.app.inject({
       method: "POST",
@@ -1108,14 +1143,16 @@ describe("interaction toggles (like / save / repost)", () => {
     })
     expect(unsaved.json()).toMatchObject({ counts: { saves: 0 }, viewer: { saved: false } })
     expect(
-      (await h.app.inject({ method: "GET", url: "/v1/me/saves", headers: bearer(me) })).json().items,
+      (await h.app.inject({ method: "GET", url: "/v1/me/saves", headers: bearer(me) })).json()
+        .items,
     ).toEqual([])
 
     // Another account's saves are not visible in mine.
     const other = await h.signIn("other-saver@example.com", "Other")
     await h.app.inject({ method: "POST", url: `/v1/posts/${id}/save`, headers: bearer(other) })
     expect(
-      (await h.app.inject({ method: "GET", url: "/v1/me/saves", headers: bearer(me) })).json().items,
+      (await h.app.inject({ method: "GET", url: "/v1/me/saves", headers: bearer(me) })).json()
+        .items,
     ).toEqual([])
   })
 
@@ -1125,7 +1162,12 @@ describe("interaction toggles (like / save / repost)", () => {
     const sharer = await h.signIn("sharer@example.com", "Sharer")
     const original = h.repo.seed({ authorId: author.userId, body: "original" })
     // A pure repost row pointing at the original: reposting THAT must resolve to the original.
-    const bounce = h.repo.seed({ authorId: sharer.userId, kind: "repost", repostOfId: original, body: null })
+    const bounce = h.repo.seed({
+      authorId: sharer.userId,
+      kind: "repost",
+      repostOfId: original,
+      body: null,
+    })
 
     const res = await h.app.inject({
       method: "POST",
@@ -1146,7 +1188,11 @@ describe("interaction toggles (like / save / repost)", () => {
       headers: bearer(sharer),
     })
     expect(undone.statusCode).toBe(200)
-    expect(undone.json()).toMatchObject({ id: original, counts: { reposts: 0 }, viewer: { reposted: false } })
+    expect(undone.json()).toMatchObject({
+      id: original,
+      counts: { reposts: 0 },
+      viewer: { reposted: false },
+    })
   })
 
   it("404s every toggle against an unknown post and 422s a non-uuid id", async () => {
@@ -1182,8 +1228,18 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
     const me = await h.signIn("threads@example.com", "Th")
     const parent = h.repo.seed({ authorId: me.userId, body: "parent" })
     const otherParent = h.repo.seed({ authorId: me.userId, body: "unrelated" })
-    const first = h.repo.seed({ authorId: me.userId, kind: "reply", replyToId: parent, body: "one" })
-    const second = h.repo.seed({ authorId: me.userId, kind: "reply", replyToId: parent, body: "two" })
+    const first = h.repo.seed({
+      authorId: me.userId,
+      kind: "reply",
+      replyToId: parent,
+      body: "one",
+    })
+    const second = h.repo.seed({
+      authorId: me.userId,
+      kind: "reply",
+      replyToId: parent,
+      body: "two",
+    })
     h.repo.seed({ authorId: me.userId, kind: "reply", replyToId: otherParent, body: "elsewhere" })
 
     const res = await h.app.inject({
@@ -1228,10 +1284,25 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
     const author = await h.signIn("thread-author@example.com", "ThreadAuthor")
     const other = await h.signIn("thread-other@example.com", "ThreadOther")
     const parent = h.repo.seed({ authorId: author.userId, body: "parent" })
-    const first = h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: parent, body: "first" })
-    const second = h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: parent, body: "second" })
+    const first = h.repo.seed({
+      authorId: other.userId,
+      kind: "reply",
+      replyToId: parent,
+      body: "first",
+    })
+    const second = h.repo.seed({
+      authorId: other.userId,
+      kind: "reply",
+      replyToId: parent,
+      body: "second",
+    })
     h.repo.seed({ authorId: author.userId, kind: "reply", replyToId: first, body: "older answer" })
-    const latest = h.repo.seed({ authorId: author.userId, kind: "reply", replyToId: first, body: "latest answer" })
+    const latest = h.repo.seed({
+      authorId: author.userId,
+      kind: "reply",
+      replyToId: first,
+      body: "latest answer",
+    })
     h.repo.seed({
       authorId: author.userId,
       kind: "reply",
@@ -1239,7 +1310,12 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
       body: "deleted answer",
       deletedAt: new Date(),
     })
-    h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: second, body: "not the author" })
+    h.repo.seed({
+      authorId: other.userId,
+      kind: "reply",
+      replyToId: second,
+      body: "not the author",
+    })
     h.repo.seed({ authorId: author.userId, kind: "reply", replyToId: latest, body: "deeper" })
 
     const res = await h.app.inject({
@@ -1259,10 +1335,30 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
     const author = await h.signIn("page-author@example.com", "PageAuthor")
     const other = await h.signIn("page-other@example.com", "PageOther")
     const parent = h.repo.seed({ authorId: author.userId, body: "parent" })
-    const first = h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: parent, body: "first" })
-    const second = h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: parent, body: "second" })
-    const answer = h.repo.seed({ authorId: author.userId, kind: "reply", replyToId: first, body: "answer" })
-    const otherAnswer = h.repo.seed({ authorId: other.userId, kind: "reply", replyToId: answer, body: "back at you" })
+    const first = h.repo.seed({
+      authorId: other.userId,
+      kind: "reply",
+      replyToId: parent,
+      body: "first",
+    })
+    const second = h.repo.seed({
+      authorId: other.userId,
+      kind: "reply",
+      replyToId: parent,
+      body: "second",
+    })
+    const answer = h.repo.seed({
+      authorId: author.userId,
+      kind: "reply",
+      replyToId: first,
+      body: "answer",
+    })
+    const otherAnswer = h.repo.seed({
+      authorId: other.userId,
+      kind: "reply",
+      replyToId: answer,
+      body: "back at you",
+    })
 
     const newest = await h.app.inject({
       method: "GET",
@@ -1358,9 +1454,12 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
     const withReport = h.repo.seed({ authorId: me.userId, body: "report", reportId })
 
     const all = await h.app.inject({ method: "GET", url: "/v1/feed/home", headers: bearer(me) })
-    expect(all.json().items.map((p: PostDTO) => p.id).sort()).toEqual(
-      [plain, withEvent, withReport].sort(),
-    )
+    expect(
+      all
+        .json()
+        .items.map((p: PostDTO) => p.id)
+        .sort(),
+    ).toEqual([plain, withEvent, withReport].sort())
 
     const events = await h.app.inject({
       method: "GET",
@@ -1394,10 +1493,20 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
     const h = await makeHarness()
     const me = await h.signIn("noreplies@example.com", "NoReplies")
     const parent = h.repo.seed({ authorId: me.userId, body: "the original thought" })
-    const reply = h.repo.seed({ authorId: me.userId, kind: "reply", replyToId: parent, body: "count me in" })
+    const reply = h.repo.seed({
+      authorId: me.userId,
+      kind: "reply",
+      replyToId: parent,
+      body: "count me in",
+    })
     // A repost of the reply: its OWN row is top-level (repost never sets replyToId), so it MUST survive —
     // amplifying is a deliberate act, and this is the documented carve-out, not an oversight.
-    const repostOfReply = h.repo.seed({ authorId: me.userId, kind: "repost", repostOfId: reply, body: null })
+    const repostOfReply = h.repo.seed({
+      authorId: me.userId,
+      kind: "repost",
+      repostOfId: reply,
+      body: null,
+    })
 
     const home = await h.app.inject({ method: "GET", url: "/v1/feed/home", headers: bearer(me) })
     expect(home.statusCode).toBe(200)
@@ -1407,7 +1516,8 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
     expect(homeIds).toContain(repostOfReply)
 
     // Signed-out reads the SAME shape — the whole point of using publicFeed's exact predicate.
-    const publicIds = (await h.app.inject({ method: "GET", url: "/v1/feed/home" })).json()
+    const publicIds = (await h.app.inject({ method: "GET", url: "/v1/feed/home" }))
+      .json()
       .items.map((p: PostDTO) => p.id)
     expect(publicIds).toContain(parent)
     expect(publicIds).not.toContain(reply)
@@ -1421,21 +1531,27 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
     expect(replies.statusCode).toBe(200)
     expect(replies.json().items.map((p: PostDTO) => p.id)).toEqual([reply])
     expect(
-      (await h.app.inject({ method: "GET", url: `/v1/posts/${reply}`, headers: bearer(me) })).json().id,
+      (await h.app.inject({ method: "GET", url: `/v1/posts/${reply}`, headers: bearer(me) })).json()
+        .id,
     ).toBe(reply)
 
     // The profile "Posts" tab excludes it too (`kind <> 'reply'`), but a BOOKMARKED reply still shows:
     // the viewer asked for that one by name.
     expect(
-      (await h.app.inject({
-        method: "GET",
-        url: `/v1/people/${me.userId}/posts`,
-        headers: bearer(me),
-      })).json().items.map((p: PostDTO) => p.id),
+      (
+        await h.app.inject({
+          method: "GET",
+          url: `/v1/people/${me.userId}/posts`,
+          headers: bearer(me),
+        })
+      )
+        .json()
+        .items.map((p: PostDTO) => p.id),
     ).not.toContain(reply)
     await h.app.inject({ method: "POST", url: `/v1/posts/${reply}/save`, headers: bearer(me) })
     expect(
-      (await h.app.inject({ method: "GET", url: "/v1/me/saves", headers: bearer(me) })).json()
+      (await h.app.inject({ method: "GET", url: "/v1/me/saves", headers: bearer(me) }))
+        .json()
         .items.map((p: PostDTO) => p.id),
     ).toContain(reply)
   })

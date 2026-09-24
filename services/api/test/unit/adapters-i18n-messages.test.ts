@@ -96,7 +96,9 @@ describe("renderMessage", () => {
 
   it("clamps the locale argument, so a raw users.locale is safe to pass", () => {
     expect(renderMessage("es-MX", "notification.follower.title")).toBe("Nuevo seguidor")
-    expect(renderMessage("fr", "notification.follower.title")).toBe(en["notification.follower.title"])
+    expect(renderMessage("fr", "notification.follower.title")).toBe(
+      en["notification.follower.title"],
+    )
     expect(renderMessage(undefined, "notification.follower.title")).toBe(
       en["notification.follower.title"],
     )

@@ -1,4 +1,3 @@
-
 import { sql } from "drizzle-orm"
 import { index, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { mediaAssets } from "./media.js"

@@ -4,10 +4,7 @@ import { buildServer } from "../../src/server.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import type { Container } from "../../src/di.js"
-import type {
-  ReverseGeocode,
-  ReverseResult,
-} from "../../src/adapters/reverse-geocode.chain.js"
+import type { ReverseGeocode, ReverseResult } from "../../src/adapters/reverse-geocode.chain.js"
 
 /**
  * Route-level tests for the map plugin that need NO database: tileinfo (pure env read) and
@@ -273,7 +270,7 @@ describe("POST /map/suggest", () => {
     expect(new URL(urls[0]!).searchParams.get("q")).toBe("Marienplatz")
   })
 
-  it("keeps the provider's \"en\" default when the caller sends no language", async () => {
+  it('keeps the provider\'s "en" default when the caller sends no language', async () => {
     const urls: string[] = []
     captureFetch(urls)
     app = await buildServer({ env: loadEnv() })

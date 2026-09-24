@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import type {
@@ -121,8 +120,7 @@ export interface MediaIntakeService {
 
 export function precheckUpload(input: CreateMediaUploadRequest): void {
   const max = input.kind === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES
-  const allowed =
-    input.kind === "video" ? ALLOWED_VIDEO_CONTENT_TYPES : ALLOWED_IMAGE_CONTENT_TYPES
+  const allowed = input.kind === "video" ? ALLOWED_VIDEO_CONTENT_TYPES : ALLOWED_IMAGE_CONTENT_TYPES
 
   if (!allowed.has(input.contentType)) {
     throw AppError.mediaRejected(

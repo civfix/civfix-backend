@@ -1,7 +1,6 @@
 import { afterEach, describe, it, expect, vi } from "vitest"
 import { RealAbuseChecks } from "../../src/adapters/abuse-checks.js"
 
-
 const IMG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 5, 6, 7, 8])
 
 describe("RealAbuseChecks.nsfwScore (default benign, never throws)", () => {
@@ -65,9 +64,7 @@ describe("RealAbuseChecks.isNearDuplicate (benign default, never throws)", () =>
   })
 
   it("delegates to the injected lookup when provided", async () => {
-    const findPhashDuplicate = vi
-      .fn()
-      .mockResolvedValue({ dup: true, ofReportId: "report-1" })
+    const findPhashDuplicate = vi.fn().mockResolvedValue({ dup: true, ofReportId: "report-1" })
     const abuse = new RealAbuseChecks({ findPhashDuplicate })
     await expect(abuse.isNearDuplicate("abc123")).resolves.toEqual({
       dup: true,
@@ -136,7 +133,9 @@ describe("RealAbuseChecks.verifyTurnstile hostname/action binding (L16)", () => 
       turnstileHostnames: ["civfix.org"],
       log: () => {},
     })
-    await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "home-turf" })).resolves.toBe(false)
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "home-turf" })).resolves.toBe(
+      false,
+    )
     await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "login" })).resolves.toBe(true)
   })
 
@@ -148,8 +147,12 @@ describe("RealAbuseChecks.verifyTurnstile hostname/action binding (L16)", () => 
       turnstileHostnames: ["civfix.org"],
       log: (l) => lines.push(l),
     })
-    await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "anon-report" })).resolves.toBe(true)
-    await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "anon-report" })).resolves.toBe(true)
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "anon-report" })).resolves.toBe(
+      true,
+    )
+    await expect(abuse.verifyTurnstile("tok", "1.2.3.4", { action: "anon-report" })).resolves.toBe(
+      true,
+    )
     expect(lines.filter((l) => l.includes("carried no action"))).toHaveLength(1)
   })
 

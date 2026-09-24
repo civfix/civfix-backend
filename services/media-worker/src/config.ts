@@ -1,4 +1,3 @@
-
 import { dirname, join } from "node:path"
 import { MAX_VIDEO_BYTES } from "@civfix/shared"
 
@@ -121,7 +120,8 @@ export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimit
     maxVideoBitrateBps: parsePosInt(source.MEDIA_VIDEO_MAX_BITRATE, 50_000_000),
     thumbnailMaxEdge: parsePosInt(source.MEDIA_THUMBNAIL_MAX_EDGE, 400),
     nsfwHoldThreshold: clampUnit(source.MEDIA_NSFW_HOLD_THRESHOLD, 0.8),
-    nsfwUnscoredPolicy: source.MEDIA_UNSCORED_POLICY?.trim().toLowerCase() === "hold" ? "hold" : "flag",
+    nsfwUnscoredPolicy:
+      source.MEDIA_UNSCORED_POLICY?.trim().toLowerCase() === "hold" ? "hold" : "flag",
     mediaChecksConcurrency: parsePosInt(source.MEDIA_CHECKS_CONCURRENCY, 2),
     orphanTtlMs: parsePosInt(source.MEDIA_ORPHAN_TTL_MS, 6 * 60 * 60 * 1000),
     orphanSweepBatch: parsePosInt(source.MEDIA_ORPHAN_SWEEP_BATCH, 1000),

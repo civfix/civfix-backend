@@ -1,4 +1,3 @@
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
@@ -90,10 +89,9 @@ describe.skipIf(!pg)("H18: follow suggestions are bounded before ranking", () =>
       line.includes(`Index Scan using ${SUGGEST_KNN_INDEX}`),
     )
     expect(knnScan, `no Index Scan using ${SUGGEST_KNN_INDEX} in:\n${text}`).toBeGreaterThan(-1)
-    expect(
-      nodeDetail(lines, knnScan),
-      `KNN scan without an Order By in:\n${text}`,
-    ).toContain("Order By:")
+    expect(nodeDetail(lines, knnScan), `KNN scan without an Order By in:\n${text}`).toContain(
+      "Order By:",
+    )
     expect(nodeDetail(lines, knnScan)).toContain("last_activity_geom <->")
   })
 

@@ -1,4 +1,3 @@
-
 import type postgres from "postgres"
 import { AppError, avatarGradient } from "@civfix/shared"
 import type {
@@ -183,7 +182,6 @@ export interface PostRepository {
   listUserPosts(authorId: string, args: PostListArgs): Promise<FeedPage>
   listSaves(args: PostListArgs): Promise<FeedPage>
 }
-
 
 interface PostRowSelect {
   id: string
@@ -538,10 +536,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
-  async function loadAuthors(
-    ids: string[],
-    viewerId: string,
-  ): Promise<Map<string, PersonDTO>> {
+  async function loadAuthors(ids: string[], viewerId: string): Promise<Map<string, PersonDTO>> {
     const out = new Map<string, PersonDTO>()
     if (ids.length === 0) return out
     const rows = await sql<AuthorRow[]>`
@@ -653,7 +648,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     return out
   }
 
-  async function loadReports(ids: string[]): Promise<Map<string, Omit<LinkedReportRef, "linkedAt">>> {
+  async function loadReports(
+    ids: string[],
+  ): Promise<Map<string, Omit<LinkedReportRef, "linkedAt">>> {
     const out = new Map<string, Omit<LinkedReportRef, "linkedAt">>()
     if (ids.length === 0) return out
     const rows = await sql<ReportRow[]>`
@@ -814,7 +811,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     viewerId: string,
   ): Promise<{ liked: Set<string>; saved: Set<string>; repostedTargets: Set<string> }> {
     const ids = rows.map((r) => r.id)
-    const subjectIds = rows.map((r) => (r.kind === "repost" && r.repost_of_id ? r.repost_of_id : r.id))
+    const subjectIds = rows.map((r) =>
+      r.kind === "repost" && r.repost_of_id ? r.repost_of_id : r.id,
+    )
     const liked = new Set<string>()
     const saved = new Set<string>()
     const repostedTargets = new Set<string>()
@@ -892,7 +891,8 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       if (!author) continue
       const isRepost = r.kind === "repost" && r.repost_of_id !== null
       const targetId = isRepost ? r.repost_of_id! : r.id
-      const editedAt = r.updated_at.getTime() > r.created_at.getTime() ? r.updated_at.toISOString() : null
+      const editedAt =
+        r.updated_at.getTime() > r.created_at.getTime() ? r.updated_at.toISOString() : null
       const eventBase = r.event_id !== null ? events.get(r.event_id) : undefined
       const reportBase = r.report_id !== null ? reports.get(r.report_id) : undefined
       const repostOf = r.repost_of_id !== null ? (refs.get(r.repost_of_id) ?? null) : null
@@ -1085,7 +1085,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
             RETURNING upload_id
           `
           if (claimed.length !== new Set(args.mediaUploadIds).size) {
-            throw AppError.validation({ mediaUploadIds: "One or more media uploads are unavailable." })
+            throw AppError.validation({
+              mediaUploadIds: "One or more media uploads are unavailable.",
+            })
           }
         }
 
@@ -1182,7 +1184,10 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       })
     },
 
-    async unrepost(postId: string, userId: string): Promise<{ targetId: string; removed: boolean }> {
+    async unrepost(
+      postId: string,
+      userId: string,
+    ): Promise<{ targetId: string; removed: boolean }> {
       return sql.begin(async (tx) => {
         const targetId = await resolveOriginalTarget(tx, postId)
         if (targetId === null) return { targetId: postId, removed: false }
@@ -1364,7 +1369,9 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
     async listSaves(args: PostListArgs): Promise<FeedPage> {
       const cursor = parseTimeCursor(args.cursor)
       const cursorFilter =
-        cursor !== null ? sql`AND (ps.created_at, ps.post_id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
+        cursor !== null
+          ? sql`AND (ps.created_at, ps.post_id) < (${cursor.at}, ${cursor.id}::uuid)`
+          : sql``
       const rows = await sql<(PostRowSelect & { saved_at: Date })[]>`
         SELECT ${postColumns(sql)}, ps.created_at AS saved_at
         FROM post_saves ps

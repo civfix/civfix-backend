@@ -1,4 +1,3 @@
-
 export function jurisdictionHandle(name: string | null | undefined): string | null {
   if (name === null || name === undefined) return null
   let s = name.toLowerCase().trim()
@@ -10,7 +9,10 @@ export function jurisdictionHandle(name: string | null | undefined): string | nu
   return s === "" ? null : s
 }
 
-export function effectiveJurisdictionHandle(j: { handle: string | null; name: string }): string | null {
+export function effectiveJurisdictionHandle(j: {
+  handle: string | null
+  name: string
+}): string | null {
   return j.handle ?? jurisdictionHandle(j.name)
 }
 
@@ -40,7 +42,10 @@ export function parseUserMentions(body: string): string[] {
   return out
 }
 
-export function parseCityMention(body: string, cityHandle: string | null | undefined): string | null {
+export function parseCityMention(
+  body: string,
+  cityHandle: string | null | undefined,
+): string | null {
   if (cityHandle === null || cityHandle === undefined) return null
   const handle = cityHandle.trim()
   if (handle === "") return null

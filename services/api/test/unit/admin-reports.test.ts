@@ -1,9 +1,5 @@
 import { describe, it, expect } from "vitest"
-import {
-  AppError,
-  DEFAULT_FORWARD_SUBJECT_TEMPLATE,
-  templateUsesToken,
-} from "@civfix/shared"
+import { AppError, DEFAULT_FORWARD_SUBJECT_TEMPLATE, templateUsesToken } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js"
 import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
@@ -23,7 +19,6 @@ import {
   OutboundSendDeadlineError,
   type OutboundMailService,
 } from "../../src/services/admin/outbound-mail-service.js"
-
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 
@@ -47,9 +42,19 @@ const REPORT_STATUSES = [
 ] as const
 
 class FakeReportChatEmitter {
-  readonly events: { reportId: string; status: string; kind?: string | null; note?: string | null }[] = []
+  readonly events: {
+    reportId: string
+    status: string
+    kind?: string | null
+    note?: string | null
+  }[] = []
   shouldThrow = false
-  emit(event: { reportId: string; status: string; kind?: string | null; note?: string | null }): Promise<void> {
+  emit(event: {
+    reportId: string
+    status: string
+    kind?: string | null
+    note?: string | null
+  }): Promise<void> {
     this.events.push(event)
     if (this.shouldThrow) return Promise.reject(new Error("emit boom"))
     return Promise.resolve()
@@ -340,7 +345,11 @@ describe("admin reports list", () => {
     repo.seedReport({ id: "unverified-held", status: "held" })
     repo.seedReport({ id: "unverified-published", status: "published" })
     repo.seedReport({ id: "approved", status: "published", verificationVerdict: "approved" })
-    repo.seedReport({ id: "rejected-verdict", status: "submitted", verificationVerdict: "rejected" })
+    repo.seedReport({
+      id: "rejected-verdict",
+      status: "submitted",
+      verificationVerdict: "rejected",
+    })
     repo.seedReport({ id: "later-stage", status: "in_progress" })
 
     const ids = (await svc.list({ filter: "needs_verification" })).items.map((i) => i.id).sort()
@@ -644,9 +653,9 @@ describe("admin reports mutations", () => {
     const { repo, emitter, svc } = harness()
     repo.seedReport({ id: "rep-1", status: "acknowledged" })
     emitter.shouldThrow = true
-    await expect(
-      svc.setStatus("rep-1", { status: "resolved", actorId: "op-1" }),
-    ).rejects.toThrow("emit boom")
+    await expect(svc.setStatus("rep-1", { status: "resolved", actorId: "op-1" })).rejects.toThrow(
+      "emit boom",
+    )
     expect(repo.reports.get("rep-1")?.record.status).toBe("resolved")
     expect(repo.timeline.get("rep-1")?.at(-1)).toMatchObject({ status: "resolved" })
   })
@@ -778,7 +787,11 @@ describe("admin reports mutations", () => {
 
   it("follow-up to city REFUSES while a send on that thread is still in flight (409, nothing mailed)", async () => {
     const { repo, mailRepo, mailer, svc } = harness()
-    const thread = mailRepo.seedThread({ reportId: "rep-1", subject: "Hazard report", status: "sent" })
+    const thread = mailRepo.seedThread({
+      reportId: "rep-1",
+      subject: "Hazard report",
+      status: "sent",
+    })
     repo.seedReport({
       id: "rep-1",
       routing: {
@@ -919,7 +932,10 @@ describe("M5: routeToJurisdiction destination + audit", () => {
 })
 
 describe("routeToJurisdiction template resolution", () => {
-  function seedWith(h: Harness, templates: { subject?: string | null; body?: string | null }): void {
+  function seedWith(
+    h: Harness,
+    templates: { subject?: string | null; body?: string | null },
+  ): void {
     h.repo.seedReport({
       id: "rep-1",
       status: "submitted",
@@ -943,7 +959,10 @@ describe("routeToJurisdiction template resolution", () => {
 
   it("sends the JURISDICTION's own template, rendered, when it has one", async () => {
     const h = harness()
-    h.forwardTemplates.seed({ subjectTemplate: "Default {referenceCode}", bodyTemplate: "Default body." })
+    h.forwardTemplates.seed({
+      subjectTemplate: "Default {referenceCode}",
+      bodyTemplate: "Default body.",
+    })
     seedWith(h, {
       subject: "City case {referenceCode}: {category}",
       body: "A {category} report at {address}, confirmed by {confirmations} neighbors.",
@@ -993,7 +1012,10 @@ describe("routeToJurisdiction template resolution", () => {
 
   it("an EMPTY jurisdiction template does not shadow the stored default", async () => {
     const h = harness()
-    h.forwardTemplates.seed({ subjectTemplate: "Stored {referenceCode}", bodyTemplate: "Stored body." })
+    h.forwardTemplates.seed({
+      subjectTemplate: "Stored {referenceCode}",
+      bodyTemplate: "Stored body.",
+    })
     seedWith(h, { subject: "   ", body: "" })
 
     await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
@@ -1194,7 +1216,10 @@ describe("routeToJurisdiction re-send gate", () => {
 
   it("clears a thread's 'bounced' status once a re-route actually delivers (no unbounded re-sends)", async () => {
     const h = harness()
-    const thread = await h.mailRepo.findOrCreateReportThread("rep-1", { subject: "S", status: "sent" })
+    const thread = await h.mailRepo.findOrCreateReportThread("rep-1", {
+      subject: "S",
+      status: "sent",
+    })
     await h.mailRepo.setThreadStatus(thread.id, "bounced")
     expect((await h.mailRepo.getThreadRecord(thread.id))?.status).toBe("bounced")
     seedRouted(h, { threadStatus: "bounced" })
@@ -1379,7 +1404,12 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
     expect(timeline[0]?.status).toBe("acknowledged")
     expect(timeline[0]?.who).toBe("op-1")
     expect(repo.audits.filter((a) => a.action === "report.status_changed")).toEqual([
-      { actorId: "op-1", action: "report.status_changed", target: "report:rep-1", meta: { status: "acknowledged" } },
+      {
+        actorId: "op-1",
+        action: "report.status_changed",
+        target: "report:rep-1",
+        meta: { status: "acknowledged" },
+      },
     ])
   })
 
@@ -1401,7 +1431,7 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
     let lockDepth = 0
     let maxLockDepthDuringSend = 0
     const realLock = repo.withRouteLock.bind(repo)
-    repo.withRouteLock = async <T,>(id: string, fn: () => Promise<T>): Promise<T> => {
+    repo.withRouteLock = async <T>(id: string, fn: () => Promise<T>): Promise<T> => {
       return realLock(id, async () => {
         lockDepth += 1
         try {

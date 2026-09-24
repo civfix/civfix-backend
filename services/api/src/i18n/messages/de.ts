@@ -153,5 +153,4 @@ export const de: Partial<Record<MessageKey, string>> = {
     "{{title}} geändert: jetzt {{when}} an folgendem Ort: {{place}}. Antworte mit STOP, um dich abzumelden.",
   "sms.guest_cancelled.body":
     "{{title}} wurde von der Veranstalterin oder dem Veranstalter abgesagt. Antworte mit STOP, um dich abzumelden.",
-
 }

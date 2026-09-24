@@ -30,7 +30,10 @@ import type { ModerationRouteOverrides } from "./routes/admin/moderation.routes.
 import type { OrganizationOverrides } from "./routes/host/orgs.routes.js"
 import type { HostTeamOverrides } from "./routes/host/team.routes.js"
 import type { HostPortfolioOverrides } from "./routes/host/portfolio.routes.js"
-import type { HostRegistrationOverrides, HostPageOverrides } from "./services/host/registration-wiring.js"
+import type {
+  HostRegistrationOverrides,
+  HostPageOverrides,
+} from "./services/host/registration-wiring.js"
 import type { BroadcastOverrides } from "./routes/host/broadcasts.routes.js"
 import type { HostAnalyticsOverrides } from "./routes/host/analytics.routes.js"
 import type { HostExportOverrides } from "./routes/host/exports.routes.js"

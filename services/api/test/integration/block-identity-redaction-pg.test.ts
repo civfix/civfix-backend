@@ -191,7 +191,9 @@ describe.skipIf(!pg)("block identity redaction (integration)", () => {
       const open = await repo.listAttendees(args)
       expect(open).toHaveLength(3)
       expect(open.find((a) => a.id === other)!.displayName).toBe("RosterOther")
-      expect(open.find((a) => a.id === other)!.avatarUrl).toBe("https://cdn.example/RosterOther.jpg")
+      expect(open.find((a) => a.id === other)!.avatarUrl).toBe(
+        "https://cdn.example/RosterOther.jpg",
+      )
 
       for (const direction of BOTH_BLOCK_DIRECTIONS) {
         await withBlockDirection(direction, viewer, other, async () => {

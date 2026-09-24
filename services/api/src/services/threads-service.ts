@@ -1,4 +1,3 @@
-
 import { relativeAgo, avatarGradient } from "@civfix/shared"
 import type { MessageThreadDTO, PersonDTO } from "@civfix/shared"
 import {
@@ -270,35 +269,33 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
       }),
     )
 
-    const dmEntries = dmAggregates.map(
-      (agg): { dto: MessageThreadDTO; activity: number } => {
-        const lastFromMe = agg.last !== null && agg.last.senderId === userId
-        const peer = peerOf(agg.peer)
-        const title =
-          agg.peer.displayName.trim() !== ""
-            ? agg.peer.displayName
-            : agg.peer.handle !== null
-              ? `@${agg.peer.handle}`
-              : agg.peer.displayName
-        return {
-          dto: {
-            id: agg.threadId,
-            kind: "dm",
-            refId: agg.threadId,
-            title,
-            peer,
-            last: agg.last !== null ? (agg.last.body ?? "") : null,
-            ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
-            lastMessageAt: agg.last !== null ? agg.last.createdAt.toISOString() : null,
-            lastFromMe,
-            unread: agg.unread,
-            members: 2,
-            muted: mutedDm.has(agg.threadId),
-          },
-          activity: (agg.last?.createdAt ?? agg.createdAt).getTime(),
-        }
-      },
-    )
+    const dmEntries = dmAggregates.map((agg): { dto: MessageThreadDTO; activity: number } => {
+      const lastFromMe = agg.last !== null && agg.last.senderId === userId
+      const peer = peerOf(agg.peer)
+      const title =
+        agg.peer.displayName.trim() !== ""
+          ? agg.peer.displayName
+          : agg.peer.handle !== null
+            ? `@${agg.peer.handle}`
+            : agg.peer.displayName
+      return {
+        dto: {
+          id: agg.threadId,
+          kind: "dm",
+          refId: agg.threadId,
+          title,
+          peer,
+          last: agg.last !== null ? (agg.last.body ?? "") : null,
+          ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
+          lastMessageAt: agg.last !== null ? agg.last.createdAt.toISOString() : null,
+          lastFromMe,
+          unread: agg.unread,
+          members: 2,
+          muted: mutedDm.has(agg.threadId),
+        },
+        activity: (agg.last?.createdAt ?? agg.createdAt).getTime(),
+      }
+    })
 
     const reportEntries = reportAggregates.map(
       (agg): { dto: MessageThreadDTO; activity: number } => {
@@ -322,28 +319,26 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
       },
     )
 
-    const groupEntries = groupAggregates.map(
-      (agg): { dto: MessageThreadDTO; activity: number } => {
-        const lastFromMe = agg.last !== null && agg.last.senderId === userId
-        return {
-          dto: {
-            id: agg.groupId,
-            kind: "group",
-            refId: agg.groupId,
-            title: agg.title,
-            last: agg.last !== null ? (agg.last.body ?? "") : null,
-            ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
-            lastMessageAt: agg.last !== null ? agg.last.createdAt.toISOString() : null,
-            lastFromMe,
-            unread: agg.unread,
-            members: agg.members,
-            muted: mutedGroup.has(agg.groupId),
-            ...(agg.kind === "channel" ? { channel: true as const } : {}),
-          },
-          activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
-        }
-      },
-    )
+    const groupEntries = groupAggregates.map((agg): { dto: MessageThreadDTO; activity: number } => {
+      const lastFromMe = agg.last !== null && agg.last.senderId === userId
+      return {
+        dto: {
+          id: agg.groupId,
+          kind: "group",
+          refId: agg.groupId,
+          title: agg.title,
+          last: agg.last !== null ? (agg.last.body ?? "") : null,
+          ago: agg.last !== null ? relativeAgo(agg.last.createdAt, now()) : null,
+          lastMessageAt: agg.last !== null ? agg.last.createdAt.toISOString() : null,
+          lastFromMe,
+          unread: agg.unread,
+          members: agg.members,
+          muted: mutedGroup.has(agg.groupId),
+          ...(agg.kind === "channel" ? { channel: true as const } : {}),
+        },
+        activity: (agg.last?.createdAt ?? agg.joinedAt).getTime(),
+      }
+    })
 
     const merged = [...cleanupEntries, ...dmEntries, ...reportEntries, ...groupEntries]
       .filter((e) => beforeCursor(cursor, e.activity, e.dto.id))

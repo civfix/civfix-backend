@@ -1,4 +1,3 @@
-
 import { sql } from "drizzle-orm"
 import { index, jsonb, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { chatGroups } from "./chat-groups.js"

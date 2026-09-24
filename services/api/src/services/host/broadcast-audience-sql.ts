@@ -1,9 +1,6 @@
 import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
 import type { Queryable } from "../../db/client.js"
-import {
-  CRITICAL_BROADCAST_KINDS,
-  HOST_COMPOSED_BROADCAST_KINDS,
-} from "./broadcast-types.js"
+import { CRITICAL_BROADCAST_KINDS, HOST_COMPOSED_BROADCAST_KINDS } from "./broadcast-types.js"
 
 export const AUDIENCE_PAGE_SIZE = 1000
 
@@ -27,7 +24,10 @@ export async function listMemberAudiencePage(
   return rows.map((row) => row.id)
 }
 
-export async function listGuestAudiencePage(sql: Queryable, query: AudienceQuery): Promise<string[]> {
+export async function listGuestAudiencePage(
+  sql: Queryable,
+  query: AudienceQuery,
+): Promise<string[]> {
   const rows = await guestQuery(sql, query)
   return rows.map((row) => row.id)
 }

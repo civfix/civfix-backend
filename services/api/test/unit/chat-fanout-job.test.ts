@@ -1,4 +1,3 @@
-
 import { describe, it, expect } from "vitest"
 import { FakePushSender } from "@civfix/shared/fakes"
 import type { ChatMessageDTO, PersonDTO } from "@civfix/shared"
@@ -17,7 +16,10 @@ import {
   type RoomFanoutNotifierDeps,
 } from "../../src/services/chat-room-fanout-notifier.js"
 import { makeNotificationService } from "../../src/services/notification-service.js"
-import { InMemoryNotificationRepository, flushNotificationDispatch } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  flushNotificationDispatch,
+} from "../helpers/notifications.js"
 
 const ACTOR = "dddddddd-dddd-dddd-dddd-dddddddddddd"
 const A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"

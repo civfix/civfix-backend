@@ -31,7 +31,9 @@ export const cleanupQuestions = pgTable(
     prompt: text("prompt").notNull(),
     helpText: text("help_text"),
     required: boolean("required").notNull().default(false),
-    options: jsonb("options").notNull().default(sql`'[]'::jsonb`),
+    options: jsonb("options")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     maxSelections: smallint("max_selections"),
     consentText: text("consent_text"),
     showIf: jsonb("show_if"),
@@ -92,10 +94,7 @@ export const cleanupAnswers = pgTable(
       columns: [t.questionId, t.cleanupId],
       foreignColumns: [cleanupQuestions.id, cleanupQuestions.cleanupId],
     }).onDelete("cascade"),
-    check(
-      "cleanup_answers_value_exclusive",
-      sql`${t.valueText} IS NULL OR ${t.valueJson} IS NULL`,
-    ),
+    check("cleanup_answers_value_exclusive", sql`${t.valueText} IS NULL OR ${t.valueJson} IS NULL`),
     uniqueIndex("cleanup_answers_registration_question_uidx").on(t.registrationId, t.questionId),
     index("cleanup_answers_unscrubbed_idx")
       .on(t.cleanupId)

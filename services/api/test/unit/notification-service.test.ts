@@ -13,9 +13,11 @@ import {
   type NotificationPrefsRecord,
 } from "../../src/services/notification-service.js"
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
-import { InMemoryNotificationRepository, flushNotificationDispatch } from "../helpers/notifications.js"
+import {
+  InMemoryNotificationRepository,
+  flushNotificationDispatch,
+} from "../helpers/notifications.js"
 import { normalizeDeviceId } from "../../src/routes/notifications.routes.js"
-
 
 const TOK_1 = "d1".repeat(32)
 const TOK_SHARED = "d5".repeat(32)
@@ -43,7 +45,6 @@ function makeHarness(nowFn?: () => Date): {
   return { repo, push, service }
 }
 
-
 describe("parseTimeOfDayMinutes", () => {
   it("parses HH:MM and HH:MM:SS", () => {
     expect(parseTimeOfDayMinutes("00:00")).toBe(0)
@@ -59,7 +60,6 @@ describe("parseTimeOfDayMinutes", () => {
     expect(parseTimeOfDayMinutes("")).toBeNull()
   })
 })
-
 
 function at(hh: number, mm = 0): Date {
   return new Date(Date.UTC(2025, 0, 1, hh, mm, 0, 0))
@@ -107,7 +107,6 @@ describe("isWithinQuietHours", () => {
   })
 })
 
-
 describe("typeAllowedByPrefs", () => {
   const base: NotificationPrefsRecord = { ...DEFAULT_PREFS }
 
@@ -139,7 +138,6 @@ describe("toPrefsDTO", () => {
     expect(withQuiet.quietHours).toEqual({ start: "22:00", end: "07:00" })
   })
 })
-
 
 describe("listNotifications + markRead", () => {
   it("lists newest-first and reflects read state", async () => {
@@ -202,8 +200,17 @@ describe("listNotifications + markRead", () => {
 describe("feed excludes conversation-message notifications", () => {
   it("hides dm + cleanup_chat + report_chat from the feed read while still recording the row and pushing", async () => {
     const { repo, push, service } = makeHarness()
-    await service.createNotification(U, { type: "report_update", title: "status changed", link: "/pin/x" })
-    await service.createNotification(U, { type: "dm", title: "Alice", body: "hi", link: "/messages/dm/t1" })
+    await service.createNotification(U, {
+      type: "report_update",
+      title: "status changed",
+      link: "/pin/x",
+    })
+    await service.createNotification(U, {
+      type: "dm",
+      title: "Alice",
+      body: "hi",
+      link: "/messages/dm/t1",
+    })
     await service.createNotification(U, {
       type: "cleanup_chat",
       title: "Bob mentioned you",
@@ -296,7 +303,6 @@ describe("getPrefs + updatePrefs", () => {
   })
 })
 
-
 describe("registerPushToken", () => {
   it("upserts a token and delegates to the PushSender", async () => {
     const { repo, push, service } = makeHarness()
@@ -345,12 +351,24 @@ describe("registerPushToken", () => {
 
   it("F153: a matching device_id can NO LONGER take over another account's (platform,token) row", async () => {
     const { repo, service } = makeHarness()
-    await service.registerPushToken(U, { platform: "android", token: TOK_X, deviceId: "shared-device" })
+    await service.registerPushToken(U, {
+      platform: "android",
+      token: TOK_X,
+      deviceId: "shared-device",
+    })
     await expect(
-      service.registerPushToken(V, { platform: "android", token: TOK_X, deviceId: "shared-device" }),
+      service.registerPushToken(V, {
+        platform: "android",
+        token: TOK_X,
+        deviceId: "shared-device",
+      }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
     expect(repo.pushTokens).toHaveLength(1)
-    expect(repo.pushTokens[0]).toMatchObject({ userId: U, deviceId: "shared-device", revokedAt: null })
+    expect(repo.pushTokens[0]).toMatchObject({
+      userId: U,
+      deviceId: "shared-device",
+      revokedAt: null,
+    })
   })
 
   it("a DIFFERENT user CAN claim a (platform,token) row that is already revoked (device handoff)", async () => {
@@ -393,7 +411,6 @@ describe("registerPushToken", () => {
   })
 })
 
-
 describe("createNotification (inline-send gating)", () => {
   it("records the row and sends a push when prefs allow + not in quiet hours", async () => {
     const { repo, push, service } = makeHarness(() => at(12, 0))
@@ -417,7 +434,10 @@ describe("createNotification (inline-send gating)", () => {
     await flushNotificationDispatch()
     expect(push.sent[0]!.payload.link).toBe("/people/x")
     await flushNotificationDispatch()
-    expect(push.sent[0]!.payload.data).toMatchObject({ type: "new_follower", notificationId: dto.id })
+    expect(push.sent[0]!.payload.data).toMatchObject({
+      type: "new_follower",
+      notificationId: dto.id,
+    })
   })
 
   it("does NOT push when the master push switch is off (but still records the row)", async () => {
@@ -484,13 +504,24 @@ describe("createNotification (inline-send gating)", () => {
   })
 })
 
-
 describe("onNewFollower", () => {
   it("records a new_follower notification for the followee with a friendly body + link", async () => {
     const { repo, push, service } = makeHarness(() => at(12, 0))
     await service.onNewFollower({
       followeeId: U,
-      follower: { id: V, displayName: "Alice", handle: "alice", bio: null, followers: 0, following: 0, avatarR2Key: null, avatarUrl: null, socialLinks: null, donationUrl: null, showVolunteerHours: null },
+      follower: {
+        id: V,
+        displayName: "Alice",
+        handle: "alice",
+        bio: null,
+        followers: 0,
+        following: 0,
+        avatarR2Key: null,
+        avatarUrl: null,
+        socialLinks: null,
+        donationUrl: null,
+        showVolunteerHours: null,
+      },
     })
     expect(repo.notifications).toHaveLength(1)
     const n = repo.notifications[0]!
@@ -502,7 +533,6 @@ describe("onNewFollower", () => {
     expect(push.sent).toHaveLength(1)
   })
 })
-
 
 describe("createNotification (per-user signal)", () => {
   function makeSignalHarness(): {
@@ -535,9 +565,9 @@ describe("createNotification (per-user signal)", () => {
     await service.createNotification(U, { type: "cleanup_chat", title: "y" })
     await service.createNotification(U, { type: "system", title: "z" })
     expect(channel.published).toHaveLength(3)
-    expect(channel.published.every((p) => p.userId === U && p.signal.topic === "notifications")).toBe(
-      true,
-    )
+    expect(
+      channel.published.every((p) => p.userId === U && p.signal.topic === "notifications"),
+    ).toBe(true)
   })
 
   it("signals even when the PUSH is suppressed (prefs/quiet hours gate push, not the in-app badge)", async () => {
@@ -713,9 +743,21 @@ describe("toggle-bell de-duplication (F015)", () => {
 describe("account-erasure notification purge (F088)", () => {
   it("hard-deletes every notification row for the erased user, keeping others", async () => {
     const repo = new InMemoryNotificationRepository()
-    await repo.insertNotification({ userId: U, type: "dm", title: "Alice", body: "secret", link: "/messages/dm/t1" })
+    await repo.insertNotification({
+      userId: U,
+      type: "dm",
+      title: "Alice",
+      body: "secret",
+      link: "/messages/dm/t1",
+    })
     await repo.insertNotification({ userId: U, type: "system", title: "x", body: null, link: null })
-    await repo.insertNotification({ userId: V, type: "system", title: "keep", body: null, link: null })
+    await repo.insertNotification({
+      userId: V,
+      type: "system",
+      title: "keep",
+      body: null,
+      link: null,
+    })
 
     await repo.deleteAllNotificationsForUser(U)
     expect(repo.notifications.filter((n) => n.userId === U)).toHaveLength(0)

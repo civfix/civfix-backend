@@ -75,7 +75,9 @@ function build(
   const counters = new InMemoryCounterStore(now)
   const roles = new Map<string, "organizer" | "cohost" | "member">([[HOST_ID, "organizer"]])
   const reviewer =
-    opts.reviewer === null ? undefined : (opts.reviewer ?? { email: REVIEWER_EMAIL, code: REVIEWER_CODE })
+    opts.reviewer === null
+      ? undefined
+      : (opts.reviewer ?? { email: REVIEWER_EMAIL, code: REVIEWER_CODE })
 
   const service = makeGuestRsvpService({
     repo,
@@ -329,10 +331,7 @@ describe("guest rsvp: requesting a code", () => {
     h.advance(61_000)
 
     const known = await h.service.requestCode(emailRequest(), ctx)
-    const unknown = await h.service.requestCode(
-      emailRequest({ email: "nobody@example.org" }),
-      ctx,
-    )
+    const unknown = await h.service.requestCode(emailRequest({ email: "nobody@example.org" }), ctx)
     const honeypot = await h.service.requestCode(
       emailRequest({ email: "bot@example.org", website: "spam" }),
       ctx,
@@ -607,7 +606,6 @@ describe("guest rsvp: verifying a code", () => {
     })
     expect(h.repo.guests).toHaveLength(0)
   })
-
 
   it("refuses to join when the single-use consume is lost to a concurrent verify", async () => {
     h.repo.markOtpConsumed = () => Promise.resolve(false)
@@ -963,7 +961,10 @@ describe("guest rsvp: the host roster", () => {
   it("returns scrubbed contacts as null once retention has run", async () => {
     const h = build()
     await seedGuest(h, "ada@example.org")
-    h.repo.seedEvent({ id: EVENT_ID, scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")) })
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")),
+    })
 
     const result = await h.service.runRetentionSweep()
     expect(result.scrubbedGuests).toBe(1)
@@ -1001,7 +1002,10 @@ describe("guest rsvp: retention", () => {
     await h.service.requestCode(emailRequest(), ctx)
     await h.service.verifyCode(emailVerify(), ctx)
 
-    h.repo.seedEvent({ id: EVENT_ID, scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")) })
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")),
+    })
     h.advance(25 * 60 * 60 * 1000)
 
     const result = await h.service.runRetentionSweep()
@@ -1065,7 +1069,10 @@ describe("guest rsvp: retention", () => {
     const h = build()
     await h.service.requestCode(emailRequest(), ctx)
     await h.service.verifyCode(emailVerify(), ctx)
-    h.repo.seedEvent({ id: EVENT_ID, scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")) })
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")),
+    })
 
     await h.service.runRetentionSweep()
 
@@ -1123,7 +1130,6 @@ describe("guest rsvp: SMS title truncation", () => {
     expect(body).toContain("Beach cleanup")
     expect(body).not.toContain("...")
   })
-
 })
 
 describe("going: members plus verified, non-cancelled guests", () => {
@@ -1250,7 +1256,10 @@ describe("guest rsvp: one global SMS budget covers every outbound text", () => {
 describe("guest rsvp: retention drains rather than shaving one batch", () => {
   it("keeps paging until the backlog is gone", async () => {
     const h = build()
-    h.repo.seedEvent({ id: EVENT_ID, scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")) })
+    h.repo.seedEvent({
+      id: EVENT_ID,
+      scheduledAt: new Date(Date.parse("2026-01-01T00:00:00.000Z")),
+    })
     for (let i = 0; i < 1200; i++) {
       h.repo.guests.push({
         id: randomUUID(),
@@ -1347,10 +1356,7 @@ describe("guest rsvp: the SMS half of the cancel/update notice", () => {
     expect(await h.service.notifyGuestsBySms(EVENT_ID, "updated")).toBe(1)
     const body = h.sms.sent[0]?.body ?? ""
     expect(body).toContain(
-      formatEventWhen(
-        new Date(Date.parse("2026-09-05T17:00:00.000Z")),
-        "America/Los_Angeles",
-      ),
+      formatEventWhen(new Date(Date.parse("2026-09-05T17:00:00.000Z")), "America/Los_Angeles"),
     )
     expect(body).toContain("10:00 AM PDT")
     expect(body).not.toContain("2026-09-05T17:00:00.000Z")

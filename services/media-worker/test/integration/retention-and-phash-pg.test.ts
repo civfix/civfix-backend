@@ -236,9 +236,7 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
     expect(points.map((r) => r.point_key)).not.toContain(staleGeocode)
 
     const emails = await h.sql<{ id: string }[]>`SELECT id FROM inbound_emails`
-    expect(emails.map((r) => r.id).sort()).toEqual(
-      [recentlyArchivedEmail, unarchivedEmail].sort(),
-    )
+    expect(emails.map((r) => r.id).sort()).toEqual([recentlyArchivedEmail, unarchivedEmail].sort())
     expect(emails.map((r) => r.id)).not.toContain(archivedEmail)
     expect(storage.get(attachmentKey)).toBeNull()
   })
@@ -348,7 +346,11 @@ describe.skipIf(!pg)("retention.sweep against the real schema", () => {
   it("never deletes more aged rows than the batch limit in a single page", async () => {
     const key = randomUUID()
     for (let i = 0; i < 5; i++) {
-      await insertIdempotencyKey(at(-72 * HOUR), { key, scope: `report.create.${i}`, owner: "user-a" })
+      await insertIdempotencyKey(at(-72 * HOUR), {
+        key,
+        scope: `report.create.${i}`,
+        owner: "user-a",
+      })
     }
 
     const res = await runRetentionSweep({
@@ -445,7 +447,11 @@ describe.skipIf(!pg)("phash near-duplicate lookup against the real media_assets"
   it("#43: a SIBLING in the same report is not a duplicate, but a third report still is", async () => {
     const shared = await insertReport()
     await insertMedia({ phash: HASH, reportId: shared, createdAt: "2026-06-02T00:00:00Z" })
-    const sibling = await insertMedia({ phash: HASH, reportId: shared, createdAt: "2026-06-03T00:00:00Z" })
+    const sibling = await insertMedia({
+      phash: HASH,
+      reportId: shared,
+      createdAt: "2026-06-03T00:00:00Z",
+    })
 
     await expect(
       lookup(HASH, { excludeAssetId: sibling, excludeReportId: shared }),

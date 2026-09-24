@@ -100,10 +100,7 @@ export function toTicketTypeDTO(record: TicketTypeRecord, now: Date): TicketType
   }
 }
 
-export function toPublicTicketType(
-  record: TicketTypeRecord,
-  now: Date,
-): PublicPageTicketType {
+export function toPublicTicketType(record: TicketTypeRecord, now: Date): PublicPageTicketType {
   const remaining = remainingSeats(record)
   return {
     id: record.id,
@@ -172,9 +169,7 @@ export function toEventRegistrationDTO(
     ...(projection.waitlistPosition !== undefined
       ? { waitlistPosition: projection.waitlistPosition }
       : {}),
-    ...(projection.includeAnswersPreview === true
-      ? { answersPreview: record.answersPreview }
-      : {}),
+    ...(projection.includeAnswersPreview === true ? { answersPreview: record.answersPreview } : {}),
     ...(projection.answers !== undefined ? { answers: projection.answers } : {}),
     ...(projection.includeHostNote === true ? { note: record.hostNote } : {}),
   }

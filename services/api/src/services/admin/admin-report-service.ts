@@ -1,4 +1,3 @@
-
 import {
   ADMIN_REPORT_STATUS_LABELS,
   AppError,
@@ -55,7 +54,11 @@ export const SEND_IN_FLIGHT_CONFLICT =
   "A send to this jurisdiction is still in progress. Check back shortly — the outcome will appear on the outreach trail."
 
 export function isAlreadyRoutedConflict(err: unknown): boolean {
-  return err instanceof AppError && err.code === ErrorCode.CONFLICT && err.message === ALREADY_ROUTED_CONFLICT
+  return (
+    err instanceof AppError &&
+    err.code === ErrorCode.CONFLICT &&
+    err.message === ALREADY_ROUTED_CONFLICT
+  )
 }
 
 function firstTemplate(...candidates: (string | null | undefined)[]): string | null {
@@ -248,7 +251,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         )
       }
       await notifyReporterOfStatus(deps, id, record.reporter?.id ?? null, input.status)
-      await emitTimeline({ reportId: id, status: input.status, kind: timelineKindForStatus(input.status), note })
+      await emitTimeline({
+        reportId: id,
+        status: input.status,
+        kind: timelineKindForStatus(input.status),
+        note,
+      })
     },
 
     async flag(
@@ -283,7 +291,12 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           : statusChangeNote("rejected")
       const ok = await deps.repo.remove(id, { note, actorId: input.actorId })
       if (!ok) throw AppError.notFound("Report not found")
-      await emitTimeline({ reportId: id, status: "rejected", kind: timelineKindForStatus("rejected"), note })
+      await emitTimeline({
+        reportId: id,
+        status: "rejected",
+        kind: timelineKindForStatus("rejected"),
+        note,
+      })
     },
 
     async sendFollowup(
@@ -425,7 +438,9 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
             await deps.repo.appendSystemTimeline(id, { note: routeNote, kind: "route" })
           }
         })
-        const current = advanced ? "acknowledged" : ((await deps.repo.getReport(id))?.status ?? record.status)
+        const current = advanced
+          ? "acknowledged"
+          : ((await deps.repo.getReport(id))?.status ?? record.status)
         await emitTimeline({ reportId: id, status: current, kind: "route", note: routeNote })
       }
 

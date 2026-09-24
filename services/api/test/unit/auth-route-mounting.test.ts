@@ -49,9 +49,9 @@ describe("auth/admin route mounting is gated on the auth bundle", () => {
       // failure is systemic (the whole auth surface is gone), not specific to the admin plugin.
       const citizen = await app.inject({ method: "GET", url: "/v1/auth/session" })
       expect(citizen.statusCode).toBe(404)
-      expect((citizen.json() as { message?: string }).message?.startsWith(routeMissingPrefix("GET"))).toBe(
-        true,
-      )
+      expect(
+        (citizen.json() as { message?: string }).message?.startsWith(routeMissingPrefix("GET")),
+      ).toBe(true)
 
       // Sanity: an always-mounted public route still answers, so the server itself is up and routing.
       const health = await app.inject({ method: "GET", url: "/healthz" })

@@ -1,4 +1,3 @@
-
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
@@ -45,7 +44,10 @@ class SpyUserStore implements UserStore {
   setRole(id: string, role: Parameters<UserStore["setRole"]>[1]): Promise<UserRecord> {
     return this.inner.setRole(id, role)
   }
-  updateSettings(id: string, input: Parameters<UserStore["updateSettings"]>[1]): Promise<UserRecord> {
+  updateSettings(
+    id: string,
+    input: Parameters<UserStore["updateSettings"]>[1],
+  ): Promise<UserRecord> {
     return this.inner.updateSettings(id, input)
   }
   softDeleteAndAnonymize(id: string): Promise<UserRecord> {
@@ -200,7 +202,11 @@ describe("operator allowlist verdict caching", () => {
     }
     expect(h.users.lookups).toBe(1)
     expect(h.cache.sets).toEqual([
-      { key: ALLOWLIST_KEY_PREFIX + userId, value: "1", ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS },
+      {
+        key: ALLOWLIST_KEY_PREFIX + userId,
+        value: "1",
+        ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS,
+      },
     ])
   })
 
@@ -215,7 +221,11 @@ describe("operator allowlist verdict caching", () => {
     }
     expect(h.users.lookups).toBe(1)
     expect(h.cache.sets).toEqual([
-      { key: ALLOWLIST_KEY_PREFIX + userId, value: "0", ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS },
+      {
+        key: ALLOWLIST_KEY_PREFIX + userId,
+        value: "0",
+        ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS,
+      },
     ])
   })
 
@@ -316,7 +326,11 @@ describe("fail-closed", () => {
     const { userId, token } = await h.operator(null)
     expect((await get(h, token)).statusCode).toBe(403)
     expect(h.cache.sets).toEqual([
-      { key: ALLOWLIST_KEY_PREFIX + userId, value: "0", ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS },
+      {
+        key: ALLOWLIST_KEY_PREFIX + userId,
+        value: "0",
+        ttlSeconds: OPERATOR_ALLOWLIST_TTL_SECONDS,
+      },
     ])
   })
 
@@ -329,9 +343,9 @@ describe("fail-closed", () => {
 
   it("never consults the allowlist cache for an anonymous or citizen caller", async () => {
     const h = await makeHarness()
-    expect(
-      (await h.app.inject({ method: "GET", url: "/v1/admin/moderation" })).statusCode,
-    ).toBe(401)
+    expect((await h.app.inject({ method: "GET", url: "/v1/admin/moderation" })).statusCode).toBe(
+      401,
+    )
 
     const inner = await h.services.sessions.createSession(
       (await h.services.users.create("citizen@example.com", { displayName: "C" })).id,

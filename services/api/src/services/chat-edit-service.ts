@@ -129,7 +129,10 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
         roomId,
       })
       // Record even an EMPTY set: an edit that drops an @mention must clear the stale record.
-      await mentions.recordChatMentions(messageId, resolved.map((m) => m.id))
+      await mentions.recordChatMentions(
+        messageId,
+        resolved.map((m) => m.id),
+      )
     } catch {
       // Best-effort, like the WS send path: a mention failure never fails the edit.
     }

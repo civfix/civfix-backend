@@ -99,7 +99,10 @@ describe("legal_documents seed", () => {
     for (const row of seededRows()) {
       const key = `${row.type}@${row.version}`
       const seen = byKey.get(key)
-      expect(seen === undefined || seen === row.sha256, `${key} seeded twice with differing sha256`).toBe(true)
+      expect(
+        seen === undefined || seen === row.sha256,
+        `${key} seeded twice with differing sha256`,
+      ).toBe(true)
       byKey.set(key, row.sha256)
     }
   })

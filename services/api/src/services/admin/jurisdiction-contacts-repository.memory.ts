@@ -1,4 +1,3 @@
-
 import { randomUUID } from "node:crypto"
 import { clampLimit, decodeOffsetCursor, encodeOffsetCursor } from "./pagination.js"
 import type { OutreachStateRecord } from "./mail-repository.drizzle.js"
@@ -276,7 +275,6 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
     return this.outreach.get(geoid) ?? null
   }
 
-
   async listDirectory(args: ListDirectoryArgs): Promise<ListDirectoryResult> {
     const all = [...this.jurisdictions.values()].map((j) => toRecord(j, this.reports))
 
@@ -285,7 +283,8 @@ export class InMemoryJurisdictionContactsRepository implements JurisdictionConta
         ? (() => {
             const needle = args.q.toLowerCase()
             return all.filter(
-              (r) => r.name.toLowerCase().includes(needle) || r.geoid.toLowerCase().includes(needle),
+              (r) =>
+                r.name.toLowerCase().includes(needle) || r.geoid.toLowerCase().includes(needle),
             )
           })()
         : all

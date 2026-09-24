@@ -197,7 +197,10 @@ async function reofferOpenInvite(
   return { kind: "updated", invite: { ...open, role: args.role } }
 }
 
-async function eventOpenInTx(tx: Queryable, cleanupId: string): Promise<"open" | "closed" | "gone"> {
+async function eventOpenInTx(
+  tx: Queryable,
+  cleanupId: string,
+): Promise<"open" | "closed" | "gone"> {
   const rows = await tx<{ closed: boolean }[]>`
     SELECT (status = 'cancelled' OR ends_at <= now()) AS closed
     FROM cleanups WHERE id = ${cleanupId} LIMIT 1 FOR SHARE
@@ -263,7 +266,14 @@ async function seatTeamMemberInTx(
 
 async function closeAcceptedInviteInTx(
   tx: Queryable,
-  args: { inviteId: string; cleanupId: string; userId: string; role: EventTeamRole; now: Date; from: CleanupMemberRole | null },
+  args: {
+    inviteId: string
+    cleanupId: string
+    userId: string
+    role: EventTeamRole
+    now: Date
+    from: CleanupMemberRole | null
+  },
 ): Promise<void> {
   await tx`
     UPDATE cleanup_team_invites
@@ -527,9 +537,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
     ): Promise<{ items: PendingInviteForUserRecord[]; nextCursor: string | null }> {
       const cursor = parseTimeCursor(args.cursor)
       const cursorFilter =
-        cursor !== null
-          ? sql`AND (i.created_at, i.id) < (${cursor.at}, ${cursor.id}::uuid)`
-          : sql``
+        cursor !== null ? sql`AND (i.created_at, i.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
       const rows = await sql<PendingInviteForUserRowSelect[]>`
         SELECT
           i.id,
@@ -631,9 +639,7 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
       now: Date
     }): Promise<DeclineTeamInviteOutcome> {
       return sql.begin(async (tx): Promise<DeclineTeamInviteOutcome> => {
-        const rows = await tx<
-          { id: string; cleanup_id: string; status: EventTeamInviteStatus }[]
-        >`
+        const rows = await tx<{ id: string; cleanup_id: string; status: EventTeamInviteStatus }[]>`
           SELECT id, cleanup_id, status FROM cleanup_team_invites
           WHERE id = ${args.inviteId} AND invited_user_id = ${args.userId}
           LIMIT 1

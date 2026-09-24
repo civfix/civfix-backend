@@ -1,4 +1,3 @@
-
 import {
   AppleSignInRequestSchema,
   AppleCallbackBodySchema,
@@ -19,12 +18,7 @@ import {
   type HandleAvailableResponse,
   type UserDTO,
 } from "@civfix/shared"
-import type {
-  FastifyBaseLogger,
-  FastifyInstance,
-  FastifyReply,
-  FastifyRequest,
-} from "fastify"
+import type { FastifyBaseLogger, FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import { perHost } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
 import type { AuthServices } from "../auth/auth-services.js"
@@ -41,10 +35,7 @@ import { isProd } from "../env.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 import { setCsrfCookie, clearCsrfCookie, type Csrf } from "../auth/csrf.js"
-import {
-  makeSingleUseSecretStore,
-  type SingleUseSecretStore,
-} from "../auth/single-use-secret.js"
+import { makeSingleUseSecretStore, type SingleUseSecretStore } from "../auth/single-use-secret.js"
 import type { CacheClient } from "../auth/cache.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import {
@@ -79,7 +70,9 @@ function oauthNonces(cache: CacheClient): SingleUseSecretStore {
   })
 }
 
-async function mintOAuthNonce(cache: CacheClient): Promise<{ nonce: string; expiresInSeconds: number }> {
+async function mintOAuthNonce(
+  cache: CacheClient,
+): Promise<{ nonce: string; expiresInSeconds: number }> {
   const { secret, expiresInSeconds } = await oauthNonces(cache).mint()
   return { nonce: secret, expiresInSeconds }
 }
@@ -127,18 +120,28 @@ export async function registerAuthRoutes(
     return handleCollidesWithJurisdiction(container.getDb().sql, handle)
   }
 
-  route(app, "otpRequest", { config: { rateLimit: OTP_REQUEST_RATE_LIMIT, allowSuspended: true } }, async (request, reply) => {
-    const body = parse(EmailOtpRequestRequestSchema, request.body)
-    const result = await services.otp.issueOtp(body.email, request.ip || null)
-    const payload: EmailOtpRequestResponse = { sent: true, resendAfterSec: result.resendAfterSec }
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "otpRequest",
+    { config: { rateLimit: OTP_REQUEST_RATE_LIMIT, allowSuspended: true } },
+    async (request, reply) => {
+      const body = parse(EmailOtpRequestRequestSchema, request.body)
+      const result = await services.otp.issueOtp(body.email, request.ip || null)
+      const payload: EmailOtpRequestResponse = { sent: true, resendAfterSec: result.resendAfterSec }
+      reply.status(200).send(payload)
+    },
+  )
 
-  route(app, "otpVerify", { config: { rateLimit: OTP_VERIFY_RATE_LIMIT } }, async (request, reply) => {
-    const body = parse(EmailOtpVerifyRequestSchema, request.body)
-    const userId = await services.otp.verifyOtp(body.email, body.code, request.ip || null)
-    await issueSession(services, csrf, request, reply, userId, { guestSmsEnabled })
-  })
+  route(
+    app,
+    "otpVerify",
+    { config: { rateLimit: OTP_VERIFY_RATE_LIMIT } },
+    async (request, reply) => {
+      const body = parse(EmailOtpVerifyRequestSchema, request.body)
+      const userId = await services.otp.verifyOtp(body.email, body.code, request.ip || null)
+      await issueSession(services, csrf, request, reply, userId, { guestSmsEnabled })
+    },
+  )
 
   app.post(
     "/v1/auth/oauth/nonce",
@@ -163,19 +166,27 @@ export async function registerAuthRoutes(
     await issueSessionForUser(services, csrf, request, reply, user, { guestSmsEnabled })
   })
 
-  route(app, "googleSignIn", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
-    const body = parse(GoogleSignInRequestSchema, request.body)
-    const expectedNonce = await requireIssuedNonce(services.cache, body.nonce, {
-      required: container.env.OAUTH_REQUIRE_NONCE,
-      log: request.log,
-    })
-    const user = await services.oauth.signInWithGoogleIdToken(body.idToken, expectedNonce)
-    await issueSessionForUser(services, csrf, request, reply, user, { guestSmsEnabled })
-  })
+  route(
+    app,
+    "googleSignIn",
+    { config: { rateLimit: OAUTH_RATE_LIMIT } },
+    async (request, reply) => {
+      const body = parse(GoogleSignInRequestSchema, request.body)
+      const expectedNonce = await requireIssuedNonce(services.cache, body.nonce, {
+        required: container.env.OAUTH_REQUIRE_NONCE,
+        log: request.log,
+      })
+      const user = await services.oauth.signInWithGoogleIdToken(body.idToken, expectedNonce)
+      await issueSessionForUser(services, csrf, request, reply, user, { guestSmsEnabled })
+    },
+  )
 
   route(app, "googleStart", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
     const startQuery = parse(OAuthStartQuerySchema, request.query)
-    if (startQuery.redirect !== undefined && !isAllowedPostLoginRedirect(startQuery.redirect, webOrigins)) {
+    if (
+      startQuery.redirect !== undefined &&
+      !isAllowedPostLoginRedirect(startQuery.redirect, webOrigins)
+    ) {
       throw AppError.validation({ redirect: "must be an allowed origin or a relative path" })
     }
     const auth = services.oauth.createGoogleAuthUrl()
@@ -195,25 +206,33 @@ export async function registerAuthRoutes(
     reply.redirect(auth.url)
   })
 
-  route(app, "googleCallback", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
-    const query = parse(OAuthCallbackQuerySchema, request.query)
-    const stash = readOAuthStash(request)
-    if (!stash || stash.state !== query.state || stash.codeVerifier === undefined) {
-      throw AppError.unauthorized("Invalid OAuth state.")
-    }
-    reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
-    const user = await services.oauth.completeGoogleCallback(query.code, stash.codeVerifier)
-    const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
-    await issueSessionForUser(services, csrf, request, reply, user, {
-      forceKind: "web",
-      webRedirectTo: target,
-      guestSmsEnabled,
-    })
-  })
+  route(
+    app,
+    "googleCallback",
+    { config: { rateLimit: OAUTH_RATE_LIMIT } },
+    async (request, reply) => {
+      const query = parse(OAuthCallbackQuerySchema, request.query)
+      const stash = readOAuthStash(request)
+      if (!stash || stash.state !== query.state || stash.codeVerifier === undefined) {
+        throw AppError.unauthorized("Invalid OAuth state.")
+      }
+      reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
+      const user = await services.oauth.completeGoogleCallback(query.code, stash.codeVerifier)
+      const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
+      await issueSessionForUser(services, csrf, request, reply, user, {
+        forceKind: "web",
+        webRedirectTo: target,
+        guestSmsEnabled,
+      })
+    },
+  )
 
   route(app, "appleStart", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
     const startQuery = parse(OAuthStartQuerySchema, request.query)
-    if (startQuery.redirect !== undefined && !isAllowedPostLoginRedirect(startQuery.redirect, webOrigins)) {
+    if (
+      startQuery.redirect !== undefined &&
+      !isAllowedPostLoginRedirect(startQuery.redirect, webOrigins)
+    ) {
       throw AppError.validation({ redirect: "must be an allowed origin or a relative path" })
     }
     const auth = services.oauth.createAppleAuthUrl()
@@ -245,22 +264,27 @@ export async function registerAuthRoutes(
         }
       },
     )
-    route(appleScope, "appleCallback", { config: { rateLimit: OAUTH_RATE_LIMIT } }, async (request, reply) => {
-      const body = parse(AppleCallbackBodySchema, request.body)
-      const stash = readOAuthStash(request)
-      if (!stash || stash.state !== body.state) {
-        throw AppError.unauthorized("Invalid OAuth state.")
-      }
-      reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
-      const fullName = appleFullNameFromUserField(body.user)
-      const user = await services.oauth.completeAppleCallback(body.code, fullName)
-      const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
-      await issueSessionForUser(services, csrf, request, reply, user, {
-        forceKind: "web",
-        webRedirectTo: target,
-        guestSmsEnabled,
-      })
-    })
+    route(
+      appleScope,
+      "appleCallback",
+      { config: { rateLimit: OAUTH_RATE_LIMIT } },
+      async (request, reply) => {
+        const body = parse(AppleCallbackBodySchema, request.body)
+        const stash = readOAuthStash(request)
+        if (!stash || stash.state !== body.state) {
+          throw AppError.unauthorized("Invalid OAuth state.")
+        }
+        reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
+        const fullName = appleFullNameFromUserField(body.user)
+        const user = await services.oauth.completeAppleCallback(body.code, fullName)
+        const target = resolvePostLoginRedirect(stash.redirect, webOrigins)
+        await issueSessionForUser(services, csrf, request, reply, user, {
+          forceKind: "web",
+          webRedirectTo: target,
+          guestSmsEnabled,
+        })
+      },
+    )
   })
 
   route(app, "session", async (request, reply) => {
@@ -268,17 +292,22 @@ export async function registerAuthRoutes(
     reply.status(200).send({ ...payload, guestSmsEnabled: guestSmsEnabledFor(container.env) })
   })
 
-  route(app, "logout", { preHandler: csrfProtect, config: { allowSuspended: true } }, async (request, reply) => {
-    const token = presentedSessionToken(request)
-    if (token === null) {
-      throw AppError.unauthorized()
-    }
-    await services.sessions.revokeSession(token)
-    clearSessionCookie(reply)
-    clearCsrfCookie(reply)
-    const payload: LogoutResponse = { ok: true }
-    reply.status(200).send(payload)
-  })
+  route(
+    app,
+    "logout",
+    { preHandler: csrfProtect, config: { allowSuspended: true } },
+    async (request, reply) => {
+      const token = presentedSessionToken(request)
+      if (token === null) {
+        throw AppError.unauthorized()
+      }
+      await services.sessions.revokeSession(token)
+      clearSessionCookie(reply)
+      clearCsrfCookie(reply)
+      const payload: LogoutResponse = { ok: true }
+      reply.status(200).send(payload)
+    },
+  )
 
   route(app, "wsTicket", { preHandler: csrfProtect }, async (request, reply) => {
     const userId = requireAuth(request)
@@ -308,9 +337,7 @@ export async function registerAuthRoutes(
       return
     }
     const payload: HandleAvailableResponse =
-      existing === null
-        ? { available: true, reason: null }
-        : { available: false, reason: "taken" }
+      existing === null ? { available: true, reason: null } : { available: false, reason: "taken" }
     reply.status(200).send(payload)
   })
 
@@ -342,7 +369,10 @@ export async function registerAuthRoutes(
         ? {
             avatarUploadId: body.avatarUploadId,
             ...(avatarUrlDurable
-              ? { presignAvatar: (k: string) => container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC) }
+              ? {
+                  presignAvatar: (k: string) =>
+                    container.storage.presignGet(k, MEDIA_GET_URL_TTL_SEC),
+                }
               : {}),
           }
         : {}),
@@ -503,7 +533,8 @@ function appleFullNameFromUserField(user: string | undefined): string | undefine
   if (!user) return undefined
   try {
     const parsed = JSON.parse(user) as { name?: { firstName?: string; lastName?: string } }
-    const full = `${parsed.name?.firstName?.trim() ?? ""} ${parsed.name?.lastName?.trim() ?? ""}`.trim()
+    const full =
+      `${parsed.name?.firstName?.trim() ?? ""} ${parsed.name?.lastName?.trim() ?? ""}`.trim()
     return full.length > 0 ? full : undefined
   } catch {
     return undefined

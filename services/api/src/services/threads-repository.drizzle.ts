@@ -1,4 +1,3 @@
-
 import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { ReportCategory } from "@civfix/shared"
 import type postgres from "postgres"
@@ -121,7 +120,9 @@ async function listThreadFamily<R extends ThreadFamilyRow>(
   `
 }
 
-function lastOf(r: ThreadFamilyRow): { body: string | null; createdAt: Date; senderId: string | null } | null {
+function lastOf(
+  r: ThreadFamilyRow,
+): { body: string | null; createdAt: Date; senderId: string | null } | null {
   return r.last_created_at !== null
     ? { body: r.last_body, createdAt: r.last_created_at, senderId: r.last_sender_id }
     : null
@@ -175,9 +176,10 @@ export function makeDrizzleThreadsRepository(sql: Sql): ThreadsRepository {
         joinedAt: r.joined_at,
         members: r.members,
         unread: r.unread,
-        last: r.last_created_at !== null
-          ? { body: r.last_body, createdAt: r.last_created_at, senderId: r.last_sender_id! }
-          : null,
+        last:
+          r.last_created_at !== null
+            ? { body: r.last_body, createdAt: r.last_created_at, senderId: r.last_sender_id! }
+            : null,
       }))
     },
 

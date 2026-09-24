@@ -122,7 +122,11 @@ async function makeHarness(): Promise<Harness> {
   const csrf = (web.json() as { csrfToken?: string }).csrfToken ?? ""
 
   async function signIn(otherEmail: string): Promise<string> {
-    await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email: otherEmail } })
+    await app.inject({
+      method: "POST",
+      url: "/v1/auth/otp/request",
+      payload: { email: otherEmail },
+    })
     const otherCode = mailer.lastOtpFor(otherEmail) as string
     const res = await app.inject({
       method: "POST",
@@ -209,7 +213,10 @@ describe("organization routes", () => {
       url: "/v1/orgs/by-slug/ballona-creek-trust",
     })
     expect(bySlug.statusCode).toBe(200)
-    expect(bySlug.json()).toMatchObject({ slug: "ballona-creek-trust", verifiedStatus: "unverified" })
+    expect(bySlug.json()).toMatchObject({
+      slug: "ballona-creek-trust",
+      verifiedStatus: "unverified",
+    })
 
     const mine = await app.inject({
       method: "GET",
@@ -376,7 +383,12 @@ describe("portfolio route", () => {
 
 describe("organization invites + suspension routes (0.41.0)", () => {
   async function ownedOrg(h: Harness): Promise<string> {
-    h.orgs.seedUser({ id: h.userId, displayName: "Host", handle: "host", email: "host@example.com" })
+    h.orgs.seedUser({
+      id: h.userId,
+      displayName: "Host",
+      handle: "host",
+      email: "host@example.com",
+    })
     const created = await h.app.inject({
       method: "POST",
       url: "/v1/orgs",
@@ -396,10 +408,18 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       payload: { identifierKind: "email", identifier: "newcomer@example.org", role: "member" },
     })
     expect(invited.statusCode).toBe(200)
-    const body = invited.json() as { member: null; invited: boolean; invite: { id: string; status: string } }
+    const body = invited.json() as {
+      member: null
+      invited: boolean
+      invite: { id: string; status: string }
+    }
     expect(body.member).toBeNull()
     expect(body.invited).toBe(true)
-    expect(body.invite).toMatchObject({ status: "pending", role: "member", email: "newcomer@example.org" })
+    expect(body.invite).toMatchObject({
+      status: "pending",
+      role: "member",
+      email: "newcomer@example.org",
+    })
     const mail = h.mailer.sent.find((m) => m.to === "newcomer@example.org")
     expect(mail).toBeDefined()
     expect(JSON.stringify(mail)).toContain(`/manage/org-invites/accept#token=${INVITE_TOKEN}`)
@@ -411,7 +431,9 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       headers: auth(h.token),
     })
     expect(listed.statusCode).toBe(200)
-    expect((listed.json() as { items: { id: string }[] }).items.map((i) => i.id)).toEqual([body.invite.id])
+    expect((listed.json() as { items: { id: string }[] }).items.map((i) => i.id)).toEqual([
+      body.invite.id,
+    ])
 
     const revoked = await h.app.inject({
       method: "DELETE",
@@ -419,11 +441,15 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       headers: auth(h.token),
     })
     expect(revoked.statusCode).toBe(200)
-    expect((await h.app.inject({
-      method: "GET",
-      url: `/v1/orgs/${id}/invites`,
-      headers: auth(h.token),
-    })).json().items[0].status).toBe("revoked")
+    expect(
+      (
+        await h.app.inject({
+          method: "GET",
+          url: `/v1/orgs/${id}/invites`,
+          headers: auth(h.token),
+        })
+      ).json().items[0].status,
+    ).toBe("revoked")
     const again = await h.app.inject({
       method: "DELETE",
       url: `/v1/orgs/${id}/invites/${body.invite.id}`,
@@ -583,11 +609,19 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       ["DELETE", `/v1/orgs/${id}/invites/${randomUUID()}`],
       ["POST", "/v1/org-invites/accept"],
     ] as const) {
-      const res = await h.app.inject({ method, url, ...(method === "GET" ? {} : { payload: { token: INVITE_TOKEN } }) })
+      const res = await h.app.inject({
+        method,
+        url,
+        ...(method === "GET" ? {} : { payload: { token: INVITE_TOKEN } }),
+      })
       expect(res.statusCode, `${method} ${url}`).toBe(401)
     }
     const stranger = await h.signIn("stranger@example.org")
-    const res = await h.app.inject({ method: "GET", url: `/v1/orgs/${id}/invites`, headers: auth(stranger) })
+    const res = await h.app.inject({
+      method: "GET",
+      url: `/v1/orgs/${id}/invites`,
+      headers: auth(stranger),
+    })
     expect(res.statusCode).toBe(404)
   })
 
@@ -637,7 +671,11 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       payload: { kind: "community", documents: [] },
     })
     expect(apply.statusCode).toBe(403)
-    const mine = await h.app.inject({ method: "GET", url: "/v1/me/organizations", headers: auth(h.token) })
+    const mine = await h.app.inject({
+      method: "GET",
+      url: "/v1/me/organizations",
+      headers: auth(h.token),
+    })
     expect(mine.json().items[0]).toMatchObject({ suspended: true })
   })
 })

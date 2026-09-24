@@ -23,9 +23,7 @@ afterEach(async () => {
   open = undefined
 })
 
-async function harness(
-  opts: Parameters<typeof makeAuthHarness>[0] = {},
-): Promise<AuthHarness> {
+async function harness(opts: Parameters<typeof makeAuthHarness>[0] = {}): Promise<AuthHarness> {
   const h = await makeAuthHarness(opts)
   open = h.app
   return h

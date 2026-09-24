@@ -54,7 +54,11 @@ function groupBellRoute(
 export interface ChatBellDeps {
   notificationService: Pick<NotificationService, "createNotification" | "getPrefs">
   /** Best-effort "has this user muted this room?" (absent store / lookup error => false). */
-  isMutedFor(userId: string, kind: "dm" | "cleanup" | "report" | "group", roomId: string): Promise<boolean>
+  isMutedFor(
+    userId: string,
+    kind: "dm" | "cleanup" | "report" | "group",
+    roomId: string,
+  ): Promise<boolean>
   isCleanupMember(cleanupId: string, userId: string): Promise<boolean>
   isReportChatMember(reportId: string, userId: string): Promise<boolean>
   /** P4 4.5: chat_group_members membership (fail-closed false when the group repo is unwired). */
@@ -81,7 +85,9 @@ async function isGroupMember(
  * The @-mention bell (GROUP rooms only). Same gate order the pre-2.5 inline closure applied for
  * cleanup rooms — mute, membership, blocks, mentions pref — now kind-aware for report rooms (D11).
  */
-export function makeChatMentionNotifier(deps: ChatBellDeps): GatewayChatMentions["notifyChatMention"] {
+export function makeChatMentionNotifier(
+  deps: ChatBellDeps,
+): GatewayChatMentions["notifyChatMention"] {
   return async (input) => {
     const { kind, roomId, actorUserId, mentionedUserId, message } = input
     // dm bells ride makeDmBellNotifier (a dm message already bells via the delivered bell).

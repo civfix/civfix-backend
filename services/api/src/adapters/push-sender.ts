@@ -1,4 +1,3 @@
-
 import { createHash } from "node:crypto"
 import type { PushSender, PushPayload, PushPlatform } from "@civfix/shared/interfaces"
 import type { Db } from "../db/client.js"
@@ -147,9 +146,7 @@ export class MultiPushSender implements PushSender {
 
   async close(): Promise<void> {
     if (!this.dispatchers) return
-    await Promise.all(
-      Object.values(this.dispatchers).map((d) => d?.close?.()),
-    )
+    await Promise.all(Object.values(this.dispatchers).map((d) => d?.close?.()))
   }
 
   private async deliver(recipientIds: string[], payload: PushPayload): Promise<void> {
@@ -238,7 +235,9 @@ export class MultiPushSender implements PushSender {
     this.dispatchers = {
       ...(this.config.apns ? { ios: makeApnsDispatcher(this.config.apns, this.logger) } : {}),
       ...(this.config.fcm ? { android: makeFcmDispatcher(this.config.fcm, this.logger) } : {}),
-      ...(this.config.webPush ? { web: makeWebPushDispatcher(this.config.webPush, this.logger) } : {}),
+      ...(this.config.webPush
+        ? { web: makeWebPushDispatcher(this.config.webPush, this.logger) }
+        : {}),
       expo: makeExpoDispatcher(this.config.expo ?? {}, this.logger),
     }
     return this.dispatchers

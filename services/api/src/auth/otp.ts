@@ -1,4 +1,3 @@
-
 import { hash as argonHash, verify as argonVerify } from "@node-rs/argon2"
 import { AppError } from "@civfix/shared"
 import { constantTimeStringEqual, generateNumericCode } from "./crypto.js"
@@ -138,7 +137,10 @@ export class OtpService {
     } catch (err) {
       if (emailHits === 1) {
         await this.cache.del(emailKey).catch((delErr: unknown) => {
-          this.logger?.warn({ err: delErr }, "otp: failed to release per-email cooldown after issue error")
+          this.logger?.warn(
+            { err: delErr },
+            "otp: failed to release per-email cooldown after issue error",
+          )
         })
       }
       throw err
@@ -196,7 +198,10 @@ export class OtpService {
       throw AppError.unauthorized("Invalid or expired code.")
     }
     await this.cache.del(emailCooldownKey(normalized)).catch((err: unknown) => {
-      this.logger?.warn({ err }, "otp: failed to release per-email cooldown after successful verify")
+      this.logger?.warn(
+        { err },
+        "otp: failed to release per-email cooldown after successful verify",
+      )
     })
     const existing = await this.users.findByEmail(normalized)
     if (existing) return existing.id

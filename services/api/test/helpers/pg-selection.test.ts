@@ -120,17 +120,17 @@ describe("pgSkipDecision", () => {
 
   it("lets CIVFIX_ALLOW_PG_SKIP override both (a CI job that intentionally has no Docker)", () => {
     expect(pgSkipDecision({ CI: "true", CIVFIX_ALLOW_PG_SKIP: "1" }).allowed).toBe(true)
-    expect(
-      pgSkipDecision({ CIVFIX_REQUIRE_PG: "1", CIVFIX_ALLOW_PG_SKIP: "true" }).allowed,
-    ).toBe(true)
+    expect(pgSkipDecision({ CIVFIX_REQUIRE_PG: "1", CIVFIX_ALLOW_PG_SKIP: "true" }).allowed).toBe(
+      true,
+    )
   })
 })
 
 describe("assertPgSkipAllowed", () => {
   it("throws where a skip is forbidden, quoting the underlying Docker failure", () => {
-    expect(() => assertPgSkipAllowed("connect ENOENT /var/run/docker.sock", { CI: "true" })).toThrow(
-      /REQUIRED in this environment \(CI=true\)[\s\S]*docker\.sock/,
-    )
+    expect(() =>
+      assertPgSkipAllowed("connect ENOENT /var/run/docker.sock", { CI: "true" }),
+    ).toThrow(/REQUIRED in this environment \(CI=true\)[\s\S]*docker\.sock/)
   })
 
   it("names the escape hatch in the message, so the failure is actionable", () => {

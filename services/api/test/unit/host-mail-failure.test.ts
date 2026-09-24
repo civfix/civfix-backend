@@ -2,7 +2,11 @@ import Fastify from "fastify"
 import { describe, expect, it } from "vitest"
 import { AppError, ErrorCode, MailSendError } from "@civfix/shared"
 import { LOG_REDACT_PATHS } from "../../src/server.js"
-import { isRetryableMailFailure, mailFailure, mailFailureKind } from "../../src/adapters/mail-failure.js"
+import {
+  isRetryableMailFailure,
+  mailFailure,
+  mailFailureKind,
+} from "../../src/adapters/mail-failure.js"
 
 describe("mailFailure", () => {
   it("classifies an auth rejection", () => {
@@ -39,7 +43,11 @@ describe("mailFailure", () => {
       }),
     ).toBe("auth")
     expect(
-      mailFailureKind({ responseCode: 550, command: "RCPT TO", response: "550 relay not permitted" }),
+      mailFailureKind({
+        responseCode: 550,
+        command: "RCPT TO",
+        response: "550 relay not permitted",
+      }),
     ).toBe("auth")
     expect(
       mailFailure({
@@ -64,23 +72,26 @@ describe("mailFailure", () => {
   })
 
   it("classifies a SENDER rejection as auth, never as a recipient hard bounce", () => {
-    expect(mailFailureKind({ responseCode: 550, response: "550 5.7.1 Sender address rejected" })).toBe(
+    expect(
+      mailFailureKind({ responseCode: 550, response: "550 5.7.1 Sender address rejected" }),
+    ).toBe("auth")
+    expect(
+      mailFailureKind({ responseCode: 553, response: "553 sorry, that domain isn't allowed" }),
+    ).toBe("auth")
+    expect(mailFailureKind({ responseCode: 530, response: "530 Authentication required" })).toBe(
       "auth",
     )
-    expect(mailFailureKind({ responseCode: 553, response: "553 sorry, that domain isn't allowed" })).toBe(
-      "auth",
-    )
-    expect(mailFailureKind({ responseCode: 530, response: "530 Authentication required" })).toBe("auth")
     expect(mailFailureKind({ responseCode: 535, response: "535 auth failed" })).toBe("auth")
     expect(mailFailureKind({ responseCode: 554, response: "554 5.7.1 Relay access denied" })).toBe(
       "auth",
     )
-    expect(
-      mailFailureKind({ responseCode: 550, command: "MAIL FROM", response: "550 no" }),
-    ).toBe("auth")
-    expect(mailFailure({ responseCode: 550, response: "550 5.7.1 Sender address rejected" }).senderRejected).toBe(
-      true,
+    expect(mailFailureKind({ responseCode: 550, command: "MAIL FROM", response: "550 no" })).toBe(
+      "auth",
     )
+    expect(
+      mailFailure({ responseCode: 550, response: "550 5.7.1 Sender address rejected" })
+        .senderRejected,
+    ).toBe(true)
   })
 
   it("still classifies a RECIPIENT rejection as permanent (the only thing that suppresses)", () => {
@@ -88,7 +99,11 @@ describe("mailFailure", () => {
       "permanent",
     )
     expect(
-      mailFailureKind({ responseCode: 550, command: "RCPT TO", response: "550 mailbox unavailable" }),
+      mailFailureKind({
+        responseCode: 550,
+        command: "RCPT TO",
+        response: "550 mailbox unavailable",
+      }),
     ).toBe("permanent")
     expect(
       mailFailure({ responseCode: 550, response: "550 5.1.1 unknown user" }).senderRejected,

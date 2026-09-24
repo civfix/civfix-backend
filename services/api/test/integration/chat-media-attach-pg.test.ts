@@ -1,4 +1,3 @@
-
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -79,7 +78,9 @@ describe.skipIf(!pg)("chat media attach (integration)", () => {
     )
     expect(dto.attachments).toHaveLength(1)
 
-    const [row] = await h.sql<{ chat_message_id: string | null; chat_message_created_at: Date | null }[]>`
+    const [row] = await h.sql<
+      { chat_message_id: string | null; chat_message_created_at: Date | null }[]
+    >`
       SELECT chat_message_id, chat_message_created_at FROM media_assets WHERE upload_id = ${uploadId}
     `
     expect(row!.chat_message_id).toBe(messageId)

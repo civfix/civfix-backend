@@ -420,9 +420,7 @@ describe("broadcast chunk", () => {
     const h = harness({ members: 1, mailer: badAuth as unknown as FakeMailer })
     const id = await draftSending(h)
     await h.pipeline.plan(id)
-    await expect(
-      h.pipeline.runChunk(id, 0, AUTH_ABORT_BACKOFF_SEC.length),
-    ).rejects.toBeDefined()
+    await expect(h.pipeline.runChunk(id, 0, AUTH_ABORT_BACKOFF_SEC.length)).rejects.toBeDefined()
   })
 
   it("suppresses the remainder when the kill switch trips mid-send", async () => {

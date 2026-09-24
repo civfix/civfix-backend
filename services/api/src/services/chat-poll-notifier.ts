@@ -1,4 +1,3 @@
-
 import type { FastifyBaseLogger } from "fastify"
 import type { ChatMessageDTO } from "@civfix/shared"
 import type { Container } from "../di.js"

@@ -124,7 +124,9 @@ async function main(): Promise<void> {
 
   const databaseUrl = process.env.DATABASE_URL
   if (!databaseUrl) {
-    console.error(`${PREFIX}: DATABASE_URL is required (open a tunnel to prod Postgres and export it)`)
+    console.error(
+      `${PREFIX}: DATABASE_URL is required (open a tunnel to prod Postgres and export it)`,
+    )
     process.exit(2)
   }
 
@@ -140,7 +142,9 @@ async function main(): Promise<void> {
     }
 
     log(`code          ${formatCertificateCode(before.code)}`)
-    log(`holder        ${before.holderName} (${before.holderHandle ?? "no handle"}) ${before.userId}`)
+    log(
+      `holder        ${before.holderName} (${before.holderHandle ?? "no handle"}) ${before.userId}`,
+    )
     log(`issued        ${before.issuedAt.toISOString()}`)
     log(`hours         ${before.totalHours} over ${before.entryCount} activities`)
     log(`object        ${before.r2Key}`)
@@ -168,7 +172,9 @@ async function main(): Promise<void> {
           `(${row.revokedReason ?? "no reason"}) — "${args.reason}" was NOT written`,
       )
     } else {
-      log(`revoked at ${row.revokedAt?.toISOString() ?? "?"} with reason "${row.revokedReason ?? "?"}"`)
+      log(
+        `revoked at ${row.revokedAt?.toISOString() ?? "?"} with reason "${row.revokedReason ?? "?"}"`,
+      )
       log(`verify() now reports status "revoked" with that reason to anyone holding the paper`)
     }
 
@@ -178,7 +184,9 @@ async function main(): Promise<void> {
     }
     await deleteObject(row.r2Key)
 
-    log(`done. Notify the holder — after the ledger correction they can re-issue a corrected transcript.`)
+    log(
+      `done. Notify the holder — after the ledger correction they can re-issue a corrected transcript.`,
+    )
   } finally {
     await handle.close()
   }

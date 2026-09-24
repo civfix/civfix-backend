@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest"
-import { AppError, type ChatHistoryPage, type ChatMessageDTO, type UserMentionDTO } from "@civfix/shared"
+import {
+  AppError,
+  type ChatHistoryPage,
+  type ChatMessageDTO,
+  type UserMentionDTO,
+} from "@civfix/shared"
 import type { PersistChatInput } from "@civfix/shared/interfaces"
 import { makeAdminReportChatService } from "../../src/services/admin/admin-report-chat-service.js"
 import { InMemoryAdminReportChatRepository } from "../../src/services/admin/admin-report-chat-repository.memory.js"
@@ -9,7 +14,10 @@ import {
   type ReportChatSendDeps,
 } from "../../src/services/report-chat-send.js"
 import { makeAuditedReportChatPersist } from "../../src/services/report-chat-send-wiring.js"
-import type { ChatRepository, InsertMessageOptions } from "../../src/services/chat-repository.drizzle.js"
+import type {
+  ChatRepository,
+  InsertMessageOptions,
+} from "../../src/services/chat-repository.drizzle.js"
 import type { Queryable } from "../../src/db/client.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 import { roomKeyFor } from "../../src/ws/gateway.js"
@@ -47,7 +55,10 @@ interface SendHarness {
 }
 
 function sendHarness(
-  opts: { mentions?: UserMentionDTO[]; persistBody?: (input: PersistChatInput) => ChatMessageDTO } = {},
+  opts: {
+    mentions?: UserMentionDTO[]
+    persistBody?: (input: PersistChatInput) => ChatMessageDTO
+  } = {},
 ): SendHarness {
   const persisted: PersistChatInput[] = []
   const contexts: ReportChatPersistContext[] = []
@@ -93,7 +104,17 @@ function sendHarness(
       return Promise.resolve()
     },
   }
-  return { deps, persisted, contexts, broadcasts, forwarded, notified, recorded, bells, membershipChecks }
+  return {
+    deps,
+    persisted,
+    contexts,
+    broadcasts,
+    forwarded,
+    notified,
+    recorded,
+    bells,
+    membershipChecks,
+  }
 }
 
 function serviceHarness(
@@ -273,7 +294,9 @@ describe("admin report chat send (official-account message, no membership requir
 
     expect(h.send.recorded).toEqual([{ messageId: MESSAGE_ID, mentionedUserIds: [MEMBER_ID] }])
     expect(message.mentions).toEqual([mention])
-    expect(h.send.bells).toEqual([{ mentionedUserId: MEMBER_ID, actorUserId: CIVFIX_OFFICIAL_USER_ID }])
+    expect(h.send.bells).toEqual([
+      { mentionedUserId: MEMBER_ID, actorUserId: CIVFIX_OFFICIAL_USER_ID },
+    ])
   })
 
   it("resolves mentions scoped to the report room, so scope rules stay as-is", async () => {

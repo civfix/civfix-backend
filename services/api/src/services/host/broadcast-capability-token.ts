@@ -84,5 +84,7 @@ function encode(value: string): string {
 }
 
 function sign(body: string, signingKey: string): string {
-  return createHmac("sha256", signingKey).update(`${UNSUBSCRIBE_TOKEN_VERSION}.${body}`).digest("base64url")
+  return createHmac("sha256", signingKey)
+    .update(`${UNSUBSCRIBE_TOKEN_VERSION}.${body}`)
+    .digest("base64url")
 }

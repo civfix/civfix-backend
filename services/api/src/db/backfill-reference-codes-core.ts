@@ -15,7 +15,11 @@
  */
 
 import type { ReportType } from "@civfix/shared"
-import { resolveGeomJurisdictions, stampReferenceCodes, type ReferenceCodeRow } from "./backfill-keyset.js"
+import {
+  resolveGeomJurisdictions,
+  stampReferenceCodes,
+  type ReferenceCodeRow,
+} from "./backfill-keyset.js"
 import type { Sql } from "./client.js"
 import { allocateReportReferenceCode, allocateEventReferenceCode } from "./reference-code.js"
 
@@ -31,7 +35,9 @@ const LABEL = "reference-codes"
  * (jurisdictions.code; UNKNOWN_JURCODE/0 when unresolved or the joined code is NULL). Returns how many rows
  * were stamped.
  */
-export async function backfillReportReferenceCodes(sql: Sql): Promise<{ stamped: number; failed: number }> {
+export async function backfillReportReferenceCodes(
+  sql: Sql,
+): Promise<{ stamped: number; failed: number }> {
   return stampReferenceCodes<ReferenceCodeRow & { type: ReportType }>(sql, {
     table: "reports",
     batchSize: BATCH_SIZE,

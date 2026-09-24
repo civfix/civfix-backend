@@ -7,10 +7,7 @@ import {
   type SetForwardTemplateDefaultRequest,
 } from "@civfix/shared"
 import { buildReportPacket, type PacketMediaLink } from "./mail-format.js"
-import type {
-  AdminReportRecord,
-  AdminReportRoutingRecord,
-} from "./admin-report-types.js"
+import type { AdminReportRecord, AdminReportRoutingRecord } from "./admin-report-types.js"
 import type {
   ForwardTemplateRepository,
   ForwardTemplateSettingsRecord,

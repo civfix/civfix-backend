@@ -1,4 +1,3 @@
-
 const DROP_WITH_CONTENT = new Set([
   "script",
   "style",

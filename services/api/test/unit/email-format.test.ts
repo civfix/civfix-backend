@@ -94,7 +94,7 @@ describe("email layout", () => {
     ])
     expect(block.text).toContain("Title:")
     expect(block.text).toContain("Category:")
-    expect(block.html).toContain("role=\"presentation\"")
+    expect(block.html).toContain('role="presentation"')
   })
 
   it("renders photo links as labels, never raw URLs as text", () => {
@@ -160,7 +160,13 @@ describe("buildReportPacket", () => {
   })
 
   it("uses the real links, not the (none) placeholder, as soon as the report has media", () => {
-    const packet = buildReportPacket(reportRecord(), null, photos("https://r2/a?t=1"), null, NO_TEMPLATES)
+    const packet = buildReportPacket(
+      reportRecord(),
+      null,
+      photos("https://r2/a?t=1"),
+      null,
+      NO_TEMPLATES,
+    )
     expect(packet.text).not.toContain(NO_PHOTO_LINKS)
   })
 
@@ -186,13 +192,25 @@ describe("buildReportPacket", () => {
   })
 
   it("strips CRLF from the subject to block header injection", () => {
-    const packet = buildReportPacket(reportRecord({ title: "Hi\r\nBcc: evil@x" }), null, [], null, NO_TEMPLATES)
+    const packet = buildReportPacket(
+      reportRecord({ title: "Hi\r\nBcc: evil@x" }),
+      null,
+      [],
+      null,
+      NO_TEMPLATES,
+    )
     expect(packet.subject).not.toContain("\n")
     expect(packet.subject).not.toContain("\r")
   })
 
   it("escapes HTML-significant characters in user content", () => {
-    const packet = buildReportPacket(reportRecord({ desc: "<script>alert(1)</script>" }), null, [], null, NO_TEMPLATES)
+    const packet = buildReportPacket(
+      reportRecord({ desc: "<script>alert(1)</script>" }),
+      null,
+      [],
+      null,
+      NO_TEMPLATES,
+    )
     expect(packet.html).not.toContain("<script>alert(1)</script>")
     expect(packet.html).toContain("&lt;script&gt;")
   })
@@ -330,7 +348,9 @@ describe("buildReportPacket", () => {
       subject: null,
       body: "Map: {mapLink}",
     })
-    expect(packet.html).toMatch(/<a class="cv-link" href="https:\/\/www\.openstreetmap\.org\/\?mlat=/)
+    expect(packet.html).toMatch(
+      /<a class="cv-link" href="https:\/\/www\.openstreetmap\.org\/\?mlat=/,
+    )
     const custom = buildReportPacket(reportRecord(), null, [], null, {
       subject: null,
       body: "See https://example.org/x?a=1&b=2. Then <b>plain</b>",
@@ -348,8 +368,12 @@ describe("buildReportPacket", () => {
       null,
       NO_TEMPLATES,
     )
-    expect(packet.html).toContain("Location: 100 Main St<br>Coordinates: 39.5, -98.35<br>View the exact location")
-    expect(packet.html).toContain('a.jpg</a><br>- Photo 2: <a class="cv-link" href="https://cdn.example.org/b.jpg"')
+    expect(packet.html).toContain(
+      "Location: 100 Main St<br>Coordinates: 39.5, -98.35<br>View the exact location",
+    )
+    expect(packet.html).toContain(
+      'a.jpg</a><br>- Photo 2: <a class="cv-link" href="https://cdn.example.org/b.jpg"',
+    )
     expect(packet.text).toContain("Location: 100 Main St\nCoordinates: 39.5, -98.35\n")
   })
 
@@ -378,20 +402,32 @@ describe("{photoLinks} and the appended media list", () => {
     expect(packet.text).toContain(
       "Links (3):\n- Photo 1: https://cdn.test/a.jpg\n- Video 1: https://cdn.test/v.mp4\n- Photo 2: https://cdn.test/b.jpg?X-Amz-Signature=s&x=1\n\nEnd.",
     )
-    expect(packet.html).toContain('Links (3):<br>- Photo 1: <a class="cv-link" href="https://cdn.test/a.jpg"')
-    expect(packet.html).toContain('>https://cdn.test/a.jpg</a><br>- Video 1: <a class="cv-link" href="https://cdn.test/v.mp4"')
-    expect(packet.html).toContain('>https://cdn.test/v.mp4</a><br>- Photo 2: <a class="cv-link" href="https://cdn.test/b.jpg?X-Amz-Signature=s&amp;x=1"')
+    expect(packet.html).toContain(
+      'Links (3):<br>- Photo 1: <a class="cv-link" href="https://cdn.test/a.jpg"',
+    )
+    expect(packet.html).toContain(
+      '>https://cdn.test/a.jpg</a><br>- Video 1: <a class="cv-link" href="https://cdn.test/v.mp4"',
+    )
+    expect(packet.html).toContain(
+      '>https://cdn.test/v.mp4</a><br>- Photo 2: <a class="cv-link" href="https://cdn.test/b.jpg?X-Amz-Signature=s&amp;x=1"',
+    )
     expect(packet.html).not.toContain("<ul")
   })
 
   it("keeps (none) on its own line when the report has no media", () => {
-    const packet = buildReportPacket(reportRecord(), null, [], null, { subject: null, body: "Links:\n{photoLinks}" })
+    const packet = buildReportPacket(reportRecord(), null, [], null, {
+      subject: null,
+      body: "Links:\n{photoLinks}",
+    })
     expect(packet.text).toContain("Links:\n(none)")
     expect(packet.html).toContain("Links:<br>(none)")
   })
 
   it("labels the appended list per kind and names videos in its heading", () => {
-    const packet = buildReportPacket(reportRecord(), null, mixed, null, { subject: null, body: "Filed." })
+    const packet = buildReportPacket(reportRecord(), null, mixed, null, {
+      subject: null,
+      body: "Filed.",
+    })
     expect(packet.text).toContain(
       "Photos and videos (3):\n  Photo 1: https://cdn.test/a.jpg\n  Video 1: https://cdn.test/v.mp4\n  Photo 2: https://cdn.test/b.jpg",
     )
@@ -421,7 +457,9 @@ describe("buildDiscussionForwardPacket", () => {
       { ...input, displayName: "Dana Neighbor" },
       "Still not cleared.",
     )
-    expect(packet.text).toContain("Dana Neighbor commented on a trash report in Oakville via civfix")
+    expect(packet.text).toContain(
+      "Dana Neighbor commented on a trash report in Oakville via civfix",
+    )
     expect(packet.text).not.toContain("A neighbor commented")
     expect(packet.text).toContain("> Still not cleared.")
   })
@@ -432,7 +470,9 @@ describe("buildDiscussionForwardPacket", () => {
       expect(packet.text).toContain("A neighbor commented on a trash report in Oakville via civfix")
     }
     const deleted = buildDiscussionForwardPacket({ ...input, displayName: "Deleted User" }, "hi")
-    expect(deleted.text).toContain("Deleted User commented on a trash report in Oakville via civfix")
+    expect(deleted.text).toContain(
+      "Deleted User commented on a trash report in Oakville via civfix",
+    )
   })
 
   it("escapes a display name that carries HTML-significant characters", () => {
@@ -477,11 +517,16 @@ describe("footer rendering", () => {
     expect(html).toContain('href="https://civfix.org/unsubscribe?t=abc"')
     expect(html).toContain('href="https://civfix.org/e/beach"')
     expect(html).toContain("never gave them your email address.<br>")
-    expect(text).toContain("Stop receiving messages about this event: https://civfix.org/unsubscribe?t=abc")
+    expect(text).toContain(
+      "Stop receiving messages about this event: https://civfix.org/unsubscribe?t=abc",
+    )
   })
 
   it("escapes HTML in the footer before linkifying", () => {
-    const { html } = renderEmailBody({ blocks: [paragraph("x")], footer: "<b>bold</b> https://civfix.org" })
+    const { html } = renderEmailBody({
+      blocks: [paragraph("x")],
+      footer: "<b>bold</b> https://civfix.org",
+    })
     expect(html).not.toContain("<b>bold</b>")
     expect(html).toContain("&lt;b&gt;bold&lt;/b&gt;")
     expect(html).toContain('href="https://civfix.org"')
@@ -501,7 +546,11 @@ describe("renderOtp", () => {
 
 describe("renderTemplate", () => {
   it("guest_otp: shows the code in the big code block, not buried in a sentence", () => {
-    const out = renderTemplate("guest_otp", { title: "Beach Cleanup", code: "738201", minutes: "5" })
+    const out = renderTemplate("guest_otp", {
+      title: "Beach Cleanup",
+      code: "738201",
+      minutes: "5",
+    })
     expect(out.subject).toBe("Your code to RSVP for Beach Cleanup")
     expect(out.html).toContain("letter-spacing:6px")
     expect(out.html).toContain(">738201<")

@@ -27,7 +27,8 @@ vi.mock("../../src/ws/gateway.js", async (importOriginal) => {
   }
 })
 
-const { wireChatGateway, makeGatewayReportChat } = await import("../../src/routes/chat-gateway-wiring.js")
+const { wireChatGateway, makeGatewayReportChat } =
+  await import("../../src/routes/chat-gateway-wiring.js")
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const BOB = "22222222-2222-2222-2222-222222222222"
@@ -92,9 +93,14 @@ describe("report chat bell wiring", () => {
   })
 
   it("the real wiring clears the report bell when a member reads (fails if the wiring drops the clear)", async () => {
-    const advance = vi.fn((_reportId: string, _userId: string, _upToId: string) => Promise.resolve())
+    const advance = vi.fn((_reportId: string, _userId: string, _upToId: string) =>
+      Promise.resolve(),
+    )
     const notifRepo = new InMemoryNotificationRepository()
-    const notifications = makeNotificationService({ repo: notifRepo, pushSender: new FakePushSender() })
+    const notifications = makeNotificationService({
+      repo: notifRepo,
+      pushSender: new FakePushSender(),
+    })
 
     wire(makeReportChatSource(advance), notifications)
     expect(captured.reportChat).toBeDefined()

@@ -183,7 +183,11 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     })
   }
 
-  const createPollBody = (roomKind: string, roomId: string, extra: Record<string, unknown> = {}) => ({
+  const createPollBody = (
+    roomKind: string,
+    roomId: string,
+    extra: Record<string, unknown> = {},
+  ) => ({
     roomKind,
     roomId,
     question: "Best day?",
@@ -247,11 +251,21 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       ],
     })
 
-    const denied = await inject(await token(memberId), "POST", "/v1/messages/poll", createPollBody("group", channelId))
+    const denied = await inject(
+      await token(memberId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", channelId),
+    )
     expect(denied.statusCode).toBe(403)
     expect(denied.json().fields).toMatchObject({ code: "poll_forbidden" })
 
-    const ok = await inject(await token(adminId), "POST", "/v1/messages/poll", createPollBody("group", channelId))
+    const ok = await inject(
+      await token(adminId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", channelId),
+    )
     expect(ok.statusCode).toBe(200)
     expect(ok.json().kind).toBe("poll")
   })
@@ -261,7 +275,12 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     const memberId = await newUser("Cl Poll Member")
     const cleanupId = await newCleanup(organizerId, [memberId])
 
-    const res = await inject(await token(memberId), "POST", "/v1/messages/poll", createPollBody("cleanup", cleanupId))
+    const res = await inject(
+      await token(memberId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("cleanup", cleanupId),
+    )
     expect(res.statusCode).toBe(200)
     expect(res.json().poll.options).toHaveLength(2)
   })
@@ -313,7 +332,12 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     const strangerId = await newUser("Rep Poll Stranger")
     const reportId = await newReport()
 
-    const res = await inject(await token(strangerId), "POST", "/v1/messages/poll", createPollBody("report", reportId))
+    const res = await inject(
+      await token(strangerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("report", reportId),
+    )
     expect(res.statusCode).toBe(403)
     expect(res.json().fields).toMatchObject({ code: "poll_forbidden" })
   })
@@ -325,12 +349,23 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     const bId = await newUser("Hydr B")
     const groupId = await newGroup(ownerId, { members: [{ id: bId }] })
 
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", groupId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId),
+    )
     const pollId = created.json().id
 
     // Owner votes idx 0, B votes idx 1.
-    await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [0] })
-    await inject(await token(bId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [1] })
+    await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [0],
+    })
+    await inject(await token(bId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [1],
+    })
 
     // History as the owner: counts reflect both votes, myVote is the owner's, totalVoters distinct = 2.
     const hist = await inject(await token(ownerId), "GET", `/v1/groups/${groupId}/messages`)
@@ -358,13 +393,19 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     const pollId = created.json().id
 
     // Vote A(0).
-    const a = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [0] })
+    const a = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [0],
+    })
     expect(a.statusCode).toBe(200)
     expect(a.json().poll.options.map((o: { count: number }) => o.count)).toEqual([1, 0])
     expect(a.json().poll.myVote).toEqual([0])
 
     // Switch A->B: A decrements, B increments.
-    const b = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [1] })
+    const b = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [1],
+    })
     expect(b.json().poll.options.map((o: { count: number }) => o.count)).toEqual([0, 1])
     expect(b.json().poll.myVote).toEqual([1])
 
@@ -411,7 +452,9 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     expect(voted.json().poll.options[0].mine).toBe(true)
 
     await flush()
-    type Framed = { message: { poll: { myVote: number[]; options: Array<{ count: number; mine: boolean }> } } }
+    type Framed = {
+      message: { poll: { myVote: number[]; options: Array<{ count: number; mine: boolean }> } }
+    }
     const voteFrame = watcher.framesOfType("message_update")[0]!
     const afterVote = (voteFrame as Framed).message.poll
     // Tallies still ride the frame (the room needs them); the BALLOT does not — for an anonymous poll the
@@ -474,7 +517,12 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
   it("a multi-idx ballot on a single-choice poll 422s; an unknown idx 422s", async () => {
     const ownerId = await newUser("Val Owner")
     const groupId = await newGroup(ownerId, {})
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", groupId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId),
+    )
     const pollId = created.json().id
 
     const multi = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
@@ -494,12 +542,22 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
   it("voting on a CLOSED poll 409s (poll_closed)", async () => {
     const ownerId = await newUser("Closed Owner")
     const groupId = await newGroup(ownerId, {})
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", groupId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId),
+    )
     const pollId = created.json().id
-    const closed = await inject(await token(ownerId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const closed = await inject(await token(ownerId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(closed.statusCode).toBe(200)
 
-    const vote = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [0] })
+    const vote = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [0],
+    })
     expect(vote.statusCode).toBe(409)
     expect(vote.json().fields).toMatchObject({ code: "poll_closed" })
   })
@@ -513,16 +571,27 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       visibility: "public",
       members: [{ id: readerId, role: "member" }],
     })
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", channelId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", channelId),
+    )
     const pollId = created.json().id
 
     // A read-only channel member can't POST but CAN vote (membership suffices).
-    const reader = await inject(await token(readerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [0] })
+    const reader = await inject(await token(readerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [0],
+    })
     expect(reader.statusCode).toBe(200)
     expect(reader.json().poll.options[0].count).toBe(1)
 
     // A public non-member reader is NOT a member -> can't vote.
-    const stranger = await inject(await token(strangerId), "PUT", "/v1/messages/poll/vote", { messageId: pollId, optionIdxs: [1] })
+    const stranger = await inject(await token(strangerId), "PUT", "/v1/messages/poll/vote", {
+      messageId: pollId,
+      optionIdxs: [1],
+    })
     expect(stranger.statusCode).toBe(403)
     expect(stranger.json().fields).toMatchObject({ code: "poll_not_member" })
   })
@@ -533,18 +602,27 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     const ownerId = await newUser("Close Owner")
     const memberId = await newUser("Close Member")
     const groupId = await newGroup(ownerId, { members: [{ id: memberId }] })
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", groupId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId),
+    )
     const pollId = created.json().id
 
     // A plain member (not author, not moderator) can't close.
-    const denied = await inject(await token(memberId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const denied = await inject(await token(memberId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(denied.statusCode).toBe(403)
     expect(denied.json().fields).toMatchObject({ code: "poll_close_forbidden" })
 
     const watcher = new MockConnection("close-watcher")
     await container.chatService.joinRoom(roomKeyFor("group", groupId), watcher, ownerId)
 
-    const closed = await inject(await token(ownerId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const closed = await inject(await token(ownerId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(closed.statusCode).toBe(200)
     expect(closed.json().poll.closed).toBe(true)
 
@@ -564,10 +642,17 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     const memberId = await newUser("Cl Close Member")
     const cleanupId = await newCleanup(organizerId, [memberId])
     // Poll authored by the plain member; the organizer closes it as a moderator.
-    const created = await inject(await token(memberId), "POST", "/v1/messages/poll", createPollBody("cleanup", cleanupId))
+    const created = await inject(
+      await token(memberId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("cleanup", cleanupId),
+    )
     const pollId = created.json().id
 
-    const closed = await inject(await token(organizerId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const closed = await inject(await token(organizerId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(closed.statusCode).toBe(200)
     expect(closed.json().poll.closed).toBe(true)
 
@@ -575,7 +660,9 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       SELECT closed_at FROM chat_polls WHERE message_id = ${pollId}
     `
     // Re-close is idempotent: still 200, closed_at unchanged.
-    const again = await inject(await token(organizerId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const again = await inject(await token(organizerId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(again.statusCode).toBe(200)
     const [secondClose] = await h.sql<{ closed_at: Date }[]>`
       SELECT closed_at FROM chat_polls WHERE message_id = ${pollId}
@@ -593,11 +680,18 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
 
     // Poll authored by the plain member; the report chat OWNER closes it — isModerator is true for a
     // report owner (canPin), so close succeeds even though they hold no canDeleteOthers power.
-    const created = await inject(await token(memberId), "POST", "/v1/messages/poll", createPollBody("report", reportId))
+    const created = await inject(
+      await token(memberId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("report", reportId),
+    )
     expect(created.statusCode).toBe(200)
     const pollId = created.json().id
 
-    const closed = await inject(await token(reportOwnerId), "POST", "/v1/messages/poll/close", { messageId: pollId })
+    const closed = await inject(await token(reportOwnerId), "POST", "/v1/messages/poll/close", {
+      messageId: pollId,
+    })
     expect(closed.statusCode).toBe(200)
     expect(closed.json().poll.closed).toBe(true)
   })
@@ -607,7 +701,12 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
   it("a deleted poll hydrates as a plain tombstone with NO poll field", async () => {
     const ownerId = await newUser("Tomb Owner")
     const groupId = await newGroup(ownerId, {})
-    const created = await inject(await token(ownerId), "POST", "/v1/messages/poll", createPollBody("group", groupId))
+    const created = await inject(
+      await token(ownerId),
+      "POST",
+      "/v1/messages/poll",
+      createPollBody("group", groupId),
+    )
     const pollId = created.json().id
 
     // Tombstone the poll message (sender-only soft delete).

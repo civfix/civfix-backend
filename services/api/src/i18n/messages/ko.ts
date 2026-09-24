@@ -75,8 +75,7 @@ export const ko: Partial<Record<MessageKey, string>> = {
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "civfix 로그인 코드",
   "email.otp.body_line1": "civfix 로그인 코드는 {{code}}입니다.",
-  "email.otp.body_expiry":
-    "코드는 5분 후 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하세요.",
+  "email.otp.body_expiry": "코드는 5분 후 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하세요.",
   "email.otp.html_intro": "civfix 로그인 코드:",
 
   "email.report_update.subject": "civfix 제보가 {{status}} 처리되었어요",
@@ -145,7 +144,8 @@ export const ko: Partial<Record<MessageKey, string>> = {
     "{{code}}은(는) {{title}} 참가 신청을 위한 civfix 코드입니다. 메시지 및 데이터 요금이 부과될 수 있습니다. 수신을 원하지 않으시면 STOP으로 답장하세요.",
   "sms.guest_confirmed.body":
     "{{title}} 참가자 명단에 등록되었습니다. 취소: {{link}} 수신을 원하지 않으시면 STOP으로 답장하세요.",
-  "sms.guest_updated.body": "{{title}} 변경: 이제 {{when}}, 장소 {{place}}. 수신을 원하지 않으시면 STOP으로 답장하세요.",
-  "sms.guest_cancelled.body": "주최자가 {{title}}을(를) 취소했습니다. 수신을 원하지 않으시면 STOP으로 답장하세요.",
-
+  "sms.guest_updated.body":
+    "{{title}} 변경: 이제 {{when}}, 장소 {{place}}. 수신을 원하지 않으시면 STOP으로 답장하세요.",
+  "sms.guest_cancelled.body":
+    "주최자가 {{title}}을(를) 취소했습니다. 수신을 원하지 않으시면 STOP으로 답장하세요.",
 }

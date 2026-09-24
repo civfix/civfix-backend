@@ -106,12 +106,18 @@ describe("sanitizer is linear at the size cap (H14)", () => {
   }
 
   const payloads: [string, () => string][] = [
-    ["allowed tag + attribute name-run", () => `<a ${repeatChar("a", INBOUND_HTML_MAX_CHARS - 4)}>`],
+    [
+      "allowed tag + attribute name-run",
+      () => `<a ${repeatChar("a", INBOUND_HTML_MAX_CHARS - 4)}>`,
+    ],
     [
       "allowed tag + unclosed quoted value",
       () => `<a href="${repeatChar("a", INBOUND_HTML_MAX_CHARS - 10)}`,
     ],
-    ["allowed tag + unquoted value-run", () => `<img alt=${repeatChar("a", INBOUND_HTML_MAX_CHARS - 10)}>`],
+    [
+      "allowed tag + unquoted value-run",
+      () => `<img alt=${repeatChar("a", INBOUND_HTML_MAX_CHARS - 10)}>`,
+    ],
     [
       "allowed tag + name-run then href",
       () => `<a ${repeatChar("a", INBOUND_HTML_MAX_CHARS - 30)} href="https://x.test">`,
@@ -182,9 +188,9 @@ describe("sanitizer is linear at the size cap (H14)", () => {
   })
 
   it("keeps the FIRST occurrence of a duplicated attribute and drops later ones", () => {
-    expect(sanitizeInboundHtml('<a href="https://first.test" href="https://second.test">x</a>')).toBe(
-      '<a href="https://first.test">x</a>',
-    )
+    expect(
+      sanitizeInboundHtml('<a href="https://first.test" href="https://second.test">x</a>'),
+    ).toBe('<a href="https://first.test">x</a>')
     expect(sanitizeInboundHtml('<a title="one" title="two" href="https://ok.test">x</a>')).toBe(
       '<a title="one" href="https://ok.test">x</a>',
     )

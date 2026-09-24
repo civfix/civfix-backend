@@ -12,8 +12,6 @@ import type {
   AnonSubmitResult,
 } from "../../src/services/anon-service.js"
 
-
-
 describe("parseTrustProxy", () => {
   it("defaults to the internal loopback+private CIDR set (NOT trust-all) when unset or blank", () => {
     expect(parseTrustProxy(undefined)).toEqual([...DEFAULT_TRUSTED_PROXY_CIDRS])
@@ -60,7 +58,6 @@ describe("parseTrustProxy", () => {
   })
 })
 
-
 describe("Fastify request.ip under TRUST_PROXY default", () => {
   let app: FastifyInstance | undefined
 
@@ -101,7 +98,6 @@ describe("Fastify request.ip under TRUST_PROXY default", () => {
     expect(res.json().ip).toBe("203.0.113.7")
   })
 })
-
 
 describe("anon submit abuse key is the real client IP (not a spoofed XFF)", () => {
   let app: FastifyInstance | undefined

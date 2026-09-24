@@ -456,7 +456,10 @@ describe("OtpService reviewer-OTP bypass", () => {
 
   it("when the bypass is NOT configured, the reviewer email behaves like a normal email", async () => {
     const { service, users } = makeOtp()
-    await expectAppError(service.verifyOtp(REVIEWER_EMAIL, REVIEWER_CODE, IP), ErrorCode.UNAUTHORIZED)
+    await expectAppError(
+      service.verifyOtp(REVIEWER_EMAIL, REVIEWER_CODE, IP),
+      ErrorCode.UNAUTHORIZED,
+    )
     expect(await users.findByEmail(REVIEWER_EMAIL)).toBeNull()
   })
 
@@ -543,10 +546,7 @@ describe("OTP per-IP counters normalize IPv6 to the /64 (F004)", () => {
     for (let i = 0; i < OTP_IP_MAX_PER_WINDOW; i++) {
       await service.issueOtp(`user${i}@example.com`, i % 2 === 0 ? IPV6_A : IPV6_B)
     }
-    await expectAppError(
-      service.issueOtp("overflow@example.com", IPV6_B),
-      ErrorCode.RATE_LIMITED,
-    )
+    await expectAppError(service.issueOtp("overflow@example.com", IPV6_B), ErrorCode.RATE_LIMITED)
   })
 
   it("two addresses in one /64 share the verify-failure throttle", async () => {

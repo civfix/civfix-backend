@@ -26,9 +26,7 @@ export function smsFailureKind(err: unknown): SmsFailureKind | null {
   if (typeof fields !== "object" || fields === null) return null
   const value = (fields as Record<string, unknown>)[SMS_FAILURE_FIELD]
   if (typeof value !== "string") return null
-  return (SMS_FAILURE_KINDS as readonly string[]).includes(value)
-    ? (value as SmsFailureKind)
-    : null
+  return (SMS_FAILURE_KINDS as readonly string[]).includes(value) ? (value as SmsFailureKind) : null
 }
 
 export function isRetryableSmsFailure(err: unknown): boolean {

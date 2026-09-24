@@ -84,7 +84,10 @@ const FOOTER_URL_RE = /https?:\/\/[^\s<>"]+/g
 
 function footerHtml(footer: string): string {
   return escapeHtml(footer)
-    .replace(FOOTER_URL_RE, (url) => `<a class="cv-link" href="${url}" style="color:inherit;">${url}</a>`)
+    .replace(
+      FOOTER_URL_RE,
+      (url) => `<a class="cv-link" href="${url}" style="color:inherit;">${url}</a>`,
+    )
     .replace(/\n/g, "<br>")
 }
 

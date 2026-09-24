@@ -1,4 +1,3 @@
-
 import type { ChatMessageDTO } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import type { NotificationService } from "./notification-service.js"
