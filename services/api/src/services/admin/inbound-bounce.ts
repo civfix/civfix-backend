@@ -229,7 +229,7 @@ export async function handleBounce(
   await mailRepo.markBounceDiscoveryEnqueued(marker)
 }
 
-function extractEmail(value: string | null): string | null {
+export function extractEmail(value: string | null): string | null {
   if (value === null) return null
   const m = value.match(EMAIL_RE)
   return m ? m[0] : null
@@ -240,7 +240,7 @@ function matchLine(body: string, re: RegExp): string | null {
   return m && m[1] ? m[1].trim() : null
 }
 
-function matchBracketId(value: string | null): string | null {
+export function matchBracketId(value: string | null): string | null {
   if (value === null) return null
   // Every match ends at a ">", so text after the last one cannot change the result; cutting it off
   // stops a long run of "<" with no ">" from rescanning itself at every position.

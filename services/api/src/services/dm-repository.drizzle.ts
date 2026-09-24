@@ -1,6 +1,5 @@
 import type { Queryable, Sql } from "../db/client.js"
 import { publicAuthorIdentity } from "./public-author.js"
-import { officialPersonFlag } from "../auth/official-account.js"
 import type {
   ChatMessageDTO,
   ChatMessageKind,

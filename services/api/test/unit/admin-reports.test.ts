@@ -1,5 +1,3 @@
-import { setFlagsFromString } from "node:v8"
-import { runInNewContext } from "node:vm"
 import { describe, it, expect } from "vitest"
 import { AppError, DEFAULT_FORWARD_SUBJECT_TEMPLATE, templateUsesToken } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"

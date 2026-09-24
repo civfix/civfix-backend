@@ -25,7 +25,6 @@ import type {
   AdminReportRoutingRecord,
 } from "./admin-report-repository.js"
 import type { MarkdownInline } from "@civfix/shared/markdown"
-import { ATTACHMENT_FILENAME_MAX_CHARS, safeFilenameChars } from "../../lib/filename.js"
 
 export const NO_PHOTO_LINKS = "(none)"
 
