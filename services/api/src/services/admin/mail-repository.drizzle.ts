@@ -38,6 +38,7 @@ import {
   type RecordEventInput,
   type RecordSendFailureInput,
   type SettleRepliedThreadInput,
+  type SettleThreadStatusInput,
   type ThreadInit,
 } from "./mail-repository.js"
 import type {
@@ -103,6 +104,28 @@ function withheldReplyExpr(sql: Queryable, threadId: string): SqlFragment {
       AND m.effects_applied_at IS NULL
       AND (t.report_id IS NOT NULL OR t.cleanup_id IS NOT NULL)
   )`
+}
+
+async function settleThreadStatusIn(tx: Queryable, input: SettleThreadStatusInput): Promise<void> {
+  await tx`SELECT id FROM mail_threads WHERE id = ${input.threadId} FOR UPDATE`
+  const settled = await tx<{ id: string }[]>`
+    UPDATE mail_threads
+    SET status = CASE
+      WHEN ${input.flag !== undefined}
+        OR (status = 'needs_action' AND ${withheldReplyExpr(tx, input.threadId)})
+        THEN 'needs_action'
+      ELSE 'replied'
+    END
+    WHERE id = ${input.threadId}
+    RETURNING id
+  `
+  if (settled.length === 0 || input.flag === undefined) return
+  await writeAudit(tx, {
+    actorId: input.flag.actorId,
+    action: input.flag.action,
+    target: input.flag.target,
+    meta: input.flag.meta ?? null,
+  })
 }
 
 function threadColumns(sql: Queryable, alias?: string): SqlFragment {
@@ -618,25 +641,12 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
           RETURNING id
         `
         if (advanced.length === 0) return
-        await tx`SELECT id FROM mail_threads WHERE id = ${input.threadId} FOR UPDATE`
-        const settled = await tx<{ id: string }[]>`
-          UPDATE mail_threads
-          SET status = CASE
-            WHEN ${input.flag !== undefined} OR ${withheldReplyExpr(tx, input.threadId)}
-              THEN 'needs_action'
-            ELSE 'replied'
-          END
-          WHERE id = ${input.threadId}
-          RETURNING id
-        `
-        if (settled.length === 0 || input.flag === undefined) return
-        await writeAudit(tx, {
-          actorId: input.flag.actorId,
-          action: input.flag.action,
-          target: input.flag.target,
-          meta: input.flag.meta ?? null,
-        })
+        await settleThreadStatusIn(tx, input)
       })
+    },
+
+    async settleThreadStatus(input: SettleThreadStatusInput): Promise<void> {
+      await sql.begin((tx) => settleThreadStatusIn(tx, input))
     },
 
     async findMessagesPendingEffects(input: PendingEffectsQuery): Promise<PendingEffects[]> {

@@ -285,6 +285,19 @@ describe("mail-service: reply", () => {
     expect(getThread).toHaveBeenCalledTimes(1)
   })
 
+  it("keeps a thread in review after a reply while it holds a withheld city reply", async () => {
+    const { repo, svc } = harness()
+    const t = repo.seedThread({ reportId: "report-1", status: "needs_action" })
+    repo.seedMessage({ threadId: t.id, direction: "out", toAddr: "publicworks@lacity.gov" })
+    repo.seedMessage({ threadId: t.id, direction: "in", unaffiliated: true })
+
+    expect((await svc.reply(t.id, { body: "From your city address?" }, "op-1")).status).toBe(
+      "needs_action",
+    )
+    await svc.setStatus(t.id, "replied", "op-1")
+    expect((await svc.reply(t.id, { body: "Following up." }, "op-1")).status).toBe("replied")
+  })
+
   it("404s an unknown thread and 422s a thread with no recipient at all to reply to", async () => {
     const { repo, svc } = harness()
     await expect(svc.reply("missing", { body: "b" }, "op-1")).rejects.toMatchObject({

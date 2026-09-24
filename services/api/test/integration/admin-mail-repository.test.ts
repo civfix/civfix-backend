@@ -343,7 +343,13 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
     `
     const t = await repo.findOrCreateReportThread(report!.id, { subject: "Settle" })
     const inbound = (messageId: string, unaffiliated: boolean) =>
-      repo.insertMessage({ threadId: t.id, direction: "in", messageId, unaffiliated })
+      repo.insertMessage({
+        threadId: t.id,
+        direction: "in",
+        messageId,
+        unaffiliated,
+        ...(unaffiliated ? { threadStatus: "needs_action" as const } : {}),
+      })
     const withheld = await inbound("<settle-w@vendor.example>", true)
     const verified = await inbound("<settle-v@lacity.gov>", false)
     const flag = {
@@ -380,6 +386,14 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
     await settle(later!.id)
     expect(await status()).toBe("replied")
     expect((await repo.findMessageByMessageId("<settle-later@lacity.gov>"))?.effectsStage).toBe(4)
+
+    await inbound("<settle-dismissed@vendor.example>", true)
+    await repo.settleThreadStatus({ threadId: t.id })
+    expect(await status()).toBe("needs_action")
+    await repo.setThreadStatus(t.id, "replied")
+    const after = await inbound("<settle-after@lacity.gov>", false)
+    await settle(after!.id)
+    expect([await status(), await repo.hasWithheldReply(t.id)]).toEqual(["replied", true])
 
     await h.sql`DELETE FROM reports WHERE id = ${report!.id}`
   })

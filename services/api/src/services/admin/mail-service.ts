@@ -137,7 +137,7 @@ export function makeMailService(deps: MailServiceDeps): MailService {
         toAddr,
         audit: { actorId, action: "mail.replied", meta: { to: toAddr } },
       })
-      await repo.setThreadStatus(id, "replied")
+      await repo.settleThreadStatus({ threadId: id })
       await repo.markThreadRead(id)
       return requireThreadDTO(id)
     },

@@ -765,6 +765,27 @@ describe("processInboundObject: unaffiliated thread joiners (H5)", () => {
     expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
     expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("needs_action")
   })
+
+  it("settles to replied when a verified reply lands after the withheld one was marked replied", async () => {
+    const reportId = "report-withheld-dismissed"
+    const c = ctx()
+    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const to = `reply+${TOKEN}@civfix.org`
+    const withheld = `${INBOUND_PENDING_PREFIX}dw.eml`
+    const verified = `${INBOUND_PENDING_PREFIX}dv.eml`
+    await put(c, withheld, rfc822({ from: "sales@vendor.example", to }))
+    await put(c, verified, rfc822({ from: "clerk@lacity.gov", to, body: "On it." }))
+
+    await processInboundObject(c.container, withheld, c.deps)
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("needs_action")
+    await c.mailRepo.setThreadStatus(thread.id, "replied")
+    await processInboundObject(c.container, verified, c.deps)
+
+    expect(await c.mailRepo.hasWithheldReply(thread.id)).toBe(true)
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("replied")
+  })
 })
 
 describe("processInboundObject: failures surface instead of being swallowed", () => {

@@ -20,6 +20,7 @@ import {
   type RecordEventInput,
   type RecordSendFailureInput,
   type SettleRepliedThreadInput,
+  type SettleThreadStatusInput,
   type ThreadInit,
 } from "./mail-repository.js"
 import {
@@ -456,9 +457,15 @@ export class InMemoryMailRepository implements MailRepository {
     const message = this.messages.find((m) => m.id === input.messageId)
     if (!message || message.effectsStage >= input.stage) return Promise.resolve()
     message.effectsStage = input.stage
+    return this.settleThreadStatus(input)
+  }
+
+  settleThreadStatus(input: SettleThreadStatusInput): Promise<void> {
     const thread = this.threads.get(input.threadId)
     if (!thread) return Promise.resolve()
-    const needsAction = input.flag !== undefined || this.holdsWithheldReply(thread.id)
+    const needsAction =
+      input.flag !== undefined ||
+      (thread.status === "needs_action" && this.holdsWithheldReply(thread.id))
     thread.status = needsAction ? "needs_action" : "replied"
     this.recordAudit(input.flag)
     return Promise.resolve()

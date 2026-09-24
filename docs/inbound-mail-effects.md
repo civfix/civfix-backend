@@ -1,7 +1,7 @@
 # Mail effects and the outbound send triad
 
 **Audience:** internal (engineering). Not served publicly.
-**Last updated:** 2026-09-23 (a thread stays in review while it holds a withheld reply, whatever reply settles it; the stripped-reply audit row is written once).
+**Last updated:** 2026-09-23 (a thread in review stays there while it holds a withheld reply, whatever reply settles it, an operator's included; Mark replied keeps the reply dismissed; the stripped-reply audit row is written once).
 
 An inbound message that correlates to a mail thread can drive **public** effects: a report status
 transition, a public `report_timeline` row, a report-chat system message, and a push to the reporter.
@@ -61,10 +61,14 @@ forward would otherwise drop the reply out of review. A thread with no report or
 public to publish to, so an unaffiliated reply there is stored without the flag.
 
 A reply whose effects run, verified or published, settles the thread last (stage 4,
-`settleRepliedThread`): `needs_action` while the thread still holds a withheld reply, otherwise
-`replied`. The status is read from the thread's messages under a lock on the thread row, in the same
-transaction that records the stage, so a later verified reply, or publishing one of two withheld
-replies, leaves the thread in review.
+`settleRepliedThread`), and an operator's reply settles it the same way once it is delivered
+(`settleThreadStatus`). The thread stays `needs_action` when it is already `needs_action` and still
+holds a withheld reply; otherwise it becomes `replied`. Both are read under a lock on the thread row, in
+one transaction (for an inbound reply, the one that records the stage), so a later verified reply, an
+operator's reply, or publishing one of two withheld replies leaves the thread in review. The rule only
+keeps a thread in review, it never puts one back: **Mark replied** is how an operator turns a withheld
+reply down without publishing it, so a thread already set to `replied` stays `replied` and the reply
+stays dismissed, whatever reply settles it next.
 
 An operator publishes a withheld reply with `publishMailReply`
 (`POST /admin/mail/:id/messages/:messageId/publish`: operator only, CSRF, 20 a minute per operator).
