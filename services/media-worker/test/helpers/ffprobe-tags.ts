@@ -1,5 +1,5 @@
 
-import ffprobeStatic from "ffprobe-static"
+import { mediaToolPath } from "../../src/sandbox/binaries.js"
 import { runTool } from "../../src/sandbox/exec.js"
 import { makeScratch } from "../../src/sandbox/tmp.js"
 
@@ -8,7 +8,7 @@ export async function readContainerTags(bytes: Uint8Array): Promise<Record<strin
   try {
     const res = await runTool(
       "ffprobe",
-      (ffprobeStatic as unknown as { path: string }).path,
+      await mediaToolPath("ffprobe"),
       [
         "-hide_banner",
         "-loglevel",
@@ -39,7 +39,7 @@ export async function readStreamTags(bytes: Uint8Array): Promise<StreamInfo[]> {
   try {
     const res = await runTool(
       "ffprobe",
-      (ffprobeStatic as unknown as { path: string }).path,
+      await mediaToolPath("ffprobe"),
       [
         "-hide_banner",
         "-loglevel",
