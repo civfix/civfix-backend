@@ -16,7 +16,6 @@ export interface AdminReportChatRepository {
   ): Promise<boolean>
 }
 
-/** The chat room a chat or DM message lives in, or null when the id matches no message. */
 export async function findMessageRoom(
   sql: Queryable,
   messageId: string,

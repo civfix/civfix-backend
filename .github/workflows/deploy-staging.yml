@@ -3,10 +3,10 @@ name: Deploy (staging)
 # Deploys the civfix backend to the STAGING VPS (193.122.142.107). TWO jobs, in order:
 #
 #   1. `images`  builds the api + media-worker images for this commit and pushes them to GHCR
-#                (build-images.yml). This is the ONLY build of this release — production is later
+#                (build-images.yml). This is the ONLY build of this release: production is later
 #                promoted onto these exact digests rather than rebuilding.
 #   2. `deploy`  SSHes the box, whose forced command runs /opt/civfix/infra/ops/deploy.sh. That script
-#                git-pulls the infra repo (single `main` branch — the same tree prod runs; the box's env
+#                git-pulls the infra repo (single `main` branch, the same tree prod runs; the box's env
 #                marker at /etc/civfix/env selects env/staging.sh and secrets/staging/) + this backend
 #                (at CIVFIX_REF, which env/staging.sh defaults to `main`), PULLS the images job 1 just
 #                published, SOPS-decrypts the secrets, then blue/green swaps the compose stack.
@@ -16,8 +16,8 @@ name: Deploy (staging)
 # Mirrors deploy.yml (prod). Issue: https://github.com/civfix/issue-tracker/issues/108
 #
 # Triggers:
-#   - Every push to main. `main` IS the staging lane — there is no `dev` branch any more; feature
-#     branches PR into main, and prod is promoted from a `v*` release cut off main.
+#   - Every push to main. `main` IS the staging lane; feature branches PR into main, and prod is
+#     promoted from a `v*` release cut off main.
 #   - Manually via the Actions "Run workflow" button (workflow_dispatch).
 # Both deploy the staging env's CIVFIX_REF (from env/staging.sh, default `main`); the SSH forced command
 # ignores any client-sent command, so a deploy can never target an arbitrary ref.
@@ -28,14 +28,15 @@ name: Deploy (staging)
 # Against the old stop-then-start deploy the API genuinely goes down for tens of seconds and this job
 # fails every time. This backend branch must merge AFTER the civfix-infra change, never alone.
 #
-# THE AVAILABILITY CHECK IS AN ASSERTION, NOT A "did it come back" WAIT — see the deploy.yml header for
+# THE AVAILABILITY CHECK IS AN ASSERTION, NOT A "did it come back" WAIT; see the deploy.yml header for
 # the reasoning. GET /healthz is polled once a second for the whole deploy (pure and
 # rate-limit-allowlisted, so a 1s poll cannot trip the limiter); the job fails when the longest gap
 # between serving samples exceeds MAX_OUTAGE_S seconds, with a 503 carrying the x-civfix-draining
 # response header (the retiring color, by design) not counted as an outage. /readyz (db + redis, not
 # allowlisted) stays a separate gate afterwards, and the availability + deploy-rc assertion runs last:
-# both steps are `if: always()`, so a red availability result cannot skip the readiness gate and a
-# failed ssh still fails the job. It all runs after the flip, so it reports rather than prevents.
+# both steps are `if: success() || failure()`, so a red availability result cannot skip the readiness
+# gate and a failed ssh still fails the job. It all runs after the flip, so it reports rather than
+# prevents.
 #
 # Required repo secret:
 #   STAGING_DEPLOY_SSH_KEY  Private half of the dedicated staging CI deploy key (ed25519). Its public half
@@ -56,7 +57,7 @@ permissions:
 # NOTE THE SCOPE: the serialization is on the `deploy` JOB, not on the workflow.
 #
 # It has to be. Workflow-level concurrency queues the whole RUN, and a queued run starts none of its
-# jobs — including its image build. So while one box was waiting for the image of a newer commit (it
+# jobs, including its image build. So while one box was waiting for the image of a newer commit (it
 # deploys the branch tip, not the commit that triggered the run), the run that would have built that
 # image could not start until the waiting deploy finished. The wait could never succeed, and every
 # back-to-back merge burned the full retry budget and then failed.
@@ -157,7 +158,7 @@ jobs:
 
           # No remote command is passed: the deploy key's forced command runs deploy.sh (CIVFIX_REF=main).
           # Its stdout/stderr stream here and its exit code becomes `rc`, which the assertion step
-          # turns into a job failure. Keepalives keep the connection up during the (quiet) build.
+          # turns into a job failure. Keepalives keep the connection up while deploy.sh is quiet.
           if ssh -i ~/.ssh/deploy_key \
               -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
               -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \

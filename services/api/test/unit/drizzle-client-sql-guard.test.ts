@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { findDrizzleClientUses } from "../../../../scripts/check-dynamic-sql.mjs"
 
-describe("check:sql — raw SQL on drizzle's own client", () => {
+describe("check:sql: raw SQL on drizzle's own client", () => {
   it("flags the aliased tag the orphan sweep used to run its Date-bound predicate on", () => {
     const code = ["const tag = db.$client", "const rows = await tag`SELECT 1`"].join("\n")
     expect(findDrizzleClientUses(code)).toEqual([".$client"])

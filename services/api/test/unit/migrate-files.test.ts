@@ -46,8 +46,8 @@ describe("orderMigrationFiles", () => {
     const entries = ["0001_core.sql", "0000_extensions.sql"]
     const copy = [...entries]
     const out = orderMigrationFiles(entries)
-    expect(entries).toEqual(copy) // input untouched
-    expect(out).not.toBe(entries) // new array
+    expect(entries).toEqual(copy)
+    expect(out).not.toBe(entries)
   })
 
   it("handles an empty listing", () => {
@@ -69,9 +69,6 @@ describe("orderMigrationFiles", () => {
   // the Docker-gated schema bookkeeping assertion) is updated to match. The same list the runner reads.
   it("the REAL services/api/drizzle directory holds exactly 0000..0009 (DM + privacy) in order", () => {
     const ordered = orderMigrationFiles(readdirSync(DRIZZLE_DIR))
-    // 0009 adds the direct-messages + blocking schema (dm_threads / dm_messages / dm_read_state /
-    // user_blocks + users.allow_direct_messages). The list asserts the deploy contract: the runner applies
-    // exactly these files, in this order.
     expect(ordered).toContain("0009_dm_and_privacy.sql")
     expect(ordered.slice(0, 10)).toEqual([
       "0000_extensions.sql",

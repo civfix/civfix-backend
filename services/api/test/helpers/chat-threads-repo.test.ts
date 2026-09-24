@@ -5,7 +5,7 @@
  * page with the identical (activity, id) predicate, trusting each family not to re-offer rows the caller
  * already saw. This fake used to accept `(userId, limit)` and drop the cursor entirely, so page 2 of an
  * offline inbox re-returned page 1's newest rows, the service's exact filter discarded them, and the page
- * came back short — invisible in a single-page test, wrong the moment pagination is exercised.
+ * came back short: invisible in a single-page test, wrong the moment pagination is exercised.
  *
  * The order under test is the Drizzle repository's: activity = COALESCE(last message created_at,
  * joined_at) DESC, then room id DESC.

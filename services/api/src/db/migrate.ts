@@ -1,22 +1,10 @@
 /**
- * Migration runner for the hand-authored, canonical civfix DDL.
+ * drizzle-kit's generated-migration journal is not used: the hand SQL is the source of truth because
+ * drizzle-kit cannot express PostGIS geometry, GiST indexes or declarative partitioning.
  *
- * Applies every .sql file in services/api/drizzle in lexical order, each inside its OWN transaction,
- * and records applied files in a bookkeeping table `_civfix_migrations(name text primary key,
- * applied_at timestamptz)`. A file that is already recorded is skipped, so re-running is safe.
- *
- * Design notes:
- *   - We do NOT use drizzle-kit's generated-migration journal: the hand SQL is the source of truth
- *     (PostGIS geometry, GiST indexes, declarative partitioning cannot be expressed by drizzle-kit).
- *   - Each file runs via `sql.unsafe(text)` in simple-query mode (no bind params), which lets a file
- *     contain multiple statements. Wrapping each file in `sql.begin()` makes a failed file roll back
- *     atomically; the bookkeeping insert is in the same transaction so a file is only ever marked
- *     applied if it fully succeeded.
- *   - Most statements are themselves idempotent (CREATE ... IF NOT EXISTS), so even a half-recorded
- *     state recovers cleanly.
- *   - Requires DATABASE_URL and a reachable Postgres. Exits non-zero on any error. Because it needs a
- *     live database, it is exercised in CI (Docker) and by the Testcontainers harness, not by the
- *     offline unit suite. The pure file-ordering logic lives in migrate-files.ts and IS unit-tested.
+ * Each file runs through `unsafe(text)` in simple-query mode (no bind params) so it may hold several
+ * statements, and its bookkeeping row commits in the same transaction, so a file is only ever marked
+ * applied if it fully succeeded.
  */
 
 import { readdir, readFile } from "node:fs/promises"
@@ -26,17 +14,14 @@ import type { Sql } from "./client.js"
 import { runDbCli, runIfMain } from "./cli.js"
 import { orderMigrationFiles } from "./migrate-files.js"
 
-/** Absolute path to services/api/drizzle, resolved relative to this module (cwd-independent). */
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "drizzle")
 
 /**
- * Fixed advisory-lock key so two instances/CI jobs booting concurrently serialize the apply loop instead
- * of racing the same file (a non-IF-NOT-EXISTS statement applied twice would abort the deploy, and deploys
- * are NOT health-gated). Arbitrary constant, unique to this runner.
+ * Serializes concurrent runners: a non-idempotent statement applied twice would abort the deploy.
+ * Arbitrary constant, unique to this runner.
  */
 const MIGRATE_ADVISORY_LOCK_KEY = 4747120626
 
-/** Ensure the bookkeeping table exists. Idempotent. */
 async function ensureBookkeeping(sql: Sql): Promise<void> {
   await sql.unsafe(
     `CREATE TABLE IF NOT EXISTS _civfix_migrations (
@@ -46,26 +31,19 @@ async function ensureBookkeeping(sql: Sql): Promise<void> {
   )
 }
 
-/** Fetch the set of already-applied migration file names. */
 async function appliedSet(sql: Sql): Promise<Set<string>> {
   const rows = await sql<{ name: string }[]>`SELECT name FROM _civfix_migrations`
   return new Set(rows.map((r) => r.name))
 }
 
 /**
- * Apply all pending migrations from `dir` using `sql`. Returns the list of files that were applied
- * (in order). Exported for reuse by the Testcontainers harness so tests apply the EXACT same SQL the
- * runner does.
+ * Exported so the Testcontainers harness applies exactly the SQL the runner does. The session-level
+ * advisory lock and every per-file transaction run on one reserved connection, so the whole
+ * read-applied -> apply-pending sequence is serialized.
  *
- * Concurrency: a reserved (connection-pinned) session-level `pg_advisory_lock` serializes the whole
- * read-applied -> apply-pending sequence, so two instances booting at once don't both try to apply the
- * same file. The lock + every per-file transaction run on the SAME reserved connection.
- *
- * GOTCHA: each file is one `tx.unsafe(text)` in a transaction, so a large-table `CREATE INDEX`
- * (non-CONCURRENTLY — CONCURRENTLY can't run in a tx) takes a SHARE lock that blocks writes on
- * reports/chat_messages during the deploy. For a big table, add the index out-of-band with
- * `CREATE INDEX CONCURRENTLY` BEFORE the migration and make the migration's `CREATE INDEX ... IF NOT
- * EXISTS` a no-op.
+ * GOTCHA: CREATE INDEX CONCURRENTLY cannot run in a transaction, so a plain CREATE INDEX here takes a
+ * SHARE lock that blocks writes on a big table during the deploy. Build such an index out-of-band with
+ * CONCURRENTLY first and make the migration's CREATE INDEX IF NOT EXISTS a no-op.
  */
 export async function applyMigrations(sql: Sql, dir: string = MIGRATIONS_DIR): Promise<string[]> {
   const reserved = await sql.reserve()
@@ -85,9 +63,8 @@ export async function applyMigrations(sql: Sql, dir: string = MIGRATIONS_DIR): P
     for (const name of ordered) {
       if (already.has(name)) continue
       const text = await readFile(join(dir, name), "utf8")
-      // Transaction-per-file: the DDL and its bookkeeping row commit together or not at all. A reserved
-      // connection has no `.begin()` in postgres 3.4 (only the pool sql does), so drive BEGIN/COMMIT
-      // explicitly on the pinned connection.
+      // A reserved connection has no `.begin()` in postgres 3.4 (only the pool does), so BEGIN/COMMIT
+      // are driven explicitly on the pinned connection.
       await reserved.unsafe("begin")
       try {
         await reserved.unsafe(text)

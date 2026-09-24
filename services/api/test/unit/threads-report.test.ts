@@ -36,7 +36,7 @@ function mutesSource(muted: Array<{ roomKind: "cleanup" | "dm" | "report"; roomI
   }
 }
 
-describe("threads service — report half (DB-free)", () => {
+describe("threads service: report half (DB-free)", () => {
   it("projects a report aggregate into a kind:'report' DTO with muted:false by default", async () => {
     const report: ReportThreadAggregateView = {
       reportId: REPORT_A,
@@ -155,7 +155,7 @@ describe("threads service — report half (DB-free)", () => {
   })
 })
 
-describe("threads service — real per-conversation muted on ALL families (DB-free)", () => {
+describe("threads service: real per-conversation muted on ALL families (DB-free)", () => {
   it("stamps muted per-family from the mutes source (cleanup + report muted, others not)", async () => {
     const repo = new InMemoryThreadsRepository()
     const c1 = repo.seedCleanup("Muted cleanup", CLEANUP_ID)

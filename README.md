@@ -47,7 +47,7 @@ civfix-backend/
 - Node >= 22 (see `.nvmrc`)
 - pnpm 9.12.0 (this repo is pnpm-only)
 - Docker is needed only for the integration suites; it is not required to build or test.
-  The Docker-gated suites SKIP themselves on a machine with no Docker so `pnpm test` stays green — but
+  The Docker-gated suites SKIP themselves on a machine with no Docker so `pnpm test` stays green, but
   only there: with `CI` (set by GitHub Actions) or `CIVFIX_REQUIRE_PG=1` in the environment, a failed
   container start FAILS the run instead of silently dropping every integration test from it. Set
   `CIVFIX_ALLOW_PG_SKIP=1` to opt a CI job back into skipping.
@@ -232,7 +232,7 @@ every deploy** (longer if a rollback follows). So:
 
 - **Every migration in a release is ADDITIVE and backward-compatible**: add tables/columns/indexes,
   add nullable or DEFAULTed columns, add constraints only as `NOT VALID` first. The old image must
-  keep working untouched against the post-migration schema — including `INSERT`s that never mention
+  keep working untouched against the post-migration schema, including `INSERT`s that never mention
   the new column.
 - **Destructive DDL ships ONE RELEASE LATER, never with the code change**: dropping or renaming a
   column/table, `SET NOT NULL` on an existing column, narrowing a type, or removing an enum value
@@ -248,14 +248,14 @@ every deploy** (longer if a rollback follows). So:
 
 Deployment is owned by the **civfix-infra** repo (`github.com/civfix/civfix-infra`): the compose files,
 the Caddy + Cloudflare Tunnel edge, the local Postgres/Redis services, the SOPS-encrypted secrets, and the
-deploy scripts all live there — NOT in this repo. That repo has ONE branch, `main`, serving both
+deploy scripts all live there, NOT in this repo. That repo has ONE branch, `main`, serving both
 environments: the box picks its environment from a host marker file (`/etc/civfix/env`), which selects
 `env/prod.sh` + `secrets/prod/` on the production box (`ssh civfix`) and `env/staging.sh` +
 `secrets/staging/` on the staging box (`ssh civfix-dev`). There is no per-environment infra branch.
 
 This repo provides the two service **Dockerfiles** (`services/{api,media-worker}/Dockerfile`) AND the
 workflow that builds them. The images are built once per commit by
-`.github/workflows/build-images.yml` — natively on arm64, to match the Oracle Ampere boxes — and pushed
+`.github/workflows/build-images.yml` (natively on arm64, to match the Oracle Ampere boxes) and pushed
 to `ghcr.io/civfix/{api,media-worker}` as `sha-<commit>`. The VPS pulls them; it no longer compiles.
 The infra compose still carries each image's `build.context`, which is the escape hatch
 (`CIVFIX_ALLOW_LOCAL_BUILD=1`) rather than the normal path.
@@ -276,7 +276,7 @@ There is no `dev` branch: feature branches PR into `main`, `main` is the staging
 GitHub release is the production deploy. Both workflows SSH in under a forced command that runs the same
 on-box script. The manual equivalent, for infra-only changes and recovery, is a single command on either
 box (it pulls civfix-infra + this repo, decrypts secrets, pulls the release images, and brings the stack
-up — see civfix-infra/README.md):
+up; see civfix-infra/README.md):
 
 ```
 sudo -u civfix /opt/civfix/infra/ops/deploy.sh
@@ -308,18 +308,18 @@ API drains first (`src/lifecycle.ts`), in three bounded phases:
    `forceCloseConnections: false`; its default (`'idle'`) calls `closeAllConnections()` and DESTROYS
    sockets with a request in flight, which is exactly the dropped request the drain exists to prevent.
    Instead the shutdown closes only IDLE keep-alive sockets, on a 250 ms sweep, while awaiting
-   `app.close()` — so parked connections cannot stretch the close and active requests still finish.
-   One second before the wait expires anything still open is forced down — WebSocket clients are
+   `app.close()`, so parked connections cannot stretch the close and active requests still finish.
+   One second before the wait expires anything still open is forced down: WebSocket clients are
    `terminate()`d (a graceful close frame an unresponsive peer never answers would otherwise hold
-   `app.close()` for ws's own 30s timeout) and remaining sockets destroyed — and the shutdown moves
+   `app.close()` for ws's own 30s timeout) and remaining sockets destroyed. The shutdown then moves
    on to teardown regardless, never awaiting a close that cannot settle.
 3. **Teardown (15s watchdog).** pg-boss, the chat pub/sub subscriber, Redis and the Postgres pool,
-   plus the error-reporting flush — all INSIDE the watchdog, so nothing trails the budget — then
+   plus the error-reporting flush, all INSIDE the watchdog so nothing trails the budget, then
    exit. (Open WebSockets are not migrated: they stay on the retiring color and are cut when the
    server closes, then reconnect to the new color.) The worker drains the queue then closes its DB
    pool.
 
-`SHUTDOWN_DRAIN_MS` defaults to **0 — no drain — in every environment, deliberately**: a drain longer
+`SHUTDOWN_DRAIN_MS` defaults to **0 (no drain) in every environment, deliberately**: a drain longer
 than the container's `stop_grace_period` gets SIGKILLed mid-teardown, which is worse than not draining
 at all. The deployed value is set in the civfix-infra compose `api` service `environment:` block, on the
 same service that carries `stop_grace_period: 45s`, so the drain and its SIGKILL deadline cannot land in
@@ -331,7 +331,7 @@ inside the 45s grace**. `test/unit/shutdown-drain.test.ts` asserts that arithmet
 `COMPOSE_STOP_GRACE_PERIOD_SECONDS = 45` constant, so raising any phase without raising the compose
 grace period fails CI. A hard deadline of the same length (drain + close wait + teardown watchdog) is
 armed the moment the signal lands, so the process exits inside the grace period even if a phase
-somehow outlives its own bound — the guarantee the old single close watchdog provided.
+somehow outlives its own bound: the guarantee the old single close watchdog provided.
 
 Resource budget (prod compose `mem_limit`/`cpus`): api 1.5G / 2 cpu per color, media-worker 2.5G /
 1.5 cpu, redis 1G / 1 cpu. The staging overlay trims these.
@@ -453,6 +453,6 @@ license headers. The corresponding source for the API and the media worker is
 this repository, <https://github.com/civfix/civfix-backend>; the community web
 app and the operator dashboard link to their own repositories at the deployed
 commit. Contributions are accepted under
-the [Contributor License Agreement](CLA.md) — see
+the [Contributor License Agreement](CLA.md); see
 [CONTRIBUTING.md](CONTRIBUTING.md). civfix is a project of Reach Out Los Angeles Inc.; the civfix name and
 logos are its trademarks and are not covered by the license.

@@ -2,7 +2,7 @@
 --
 -- H5 + M(inbound side effects): the facts an inbound thread message has to carry.
 --
--- `unaffiliated` — the message reached the thread by echoing a thread token or an outbound Message-ID
+-- `unaffiliated`: the message reached the thread by echoing a thread token or an outbound Message-ID
 -- (both disclosed to every recipient of a forwarded packet) but its From domain does NOT align with any
 -- address civfix actually mailed on that thread. Such a message is still stored (audit trail) but must
 -- never drive an official-city-reply effect, a bounce, or recipient resolution.
@@ -13,7 +13,7 @@
 --
 --   effects_claimed_at  a runner holds the message. RECLAIMABLE: the sweep re-drives any claim older than
 --                       its lease, because a process death between claim and completion (a deploy
---                       restart, OOM, the drain watchdog) would otherwise strand the row forever — the
+--                       restart, OOM, the drain watchdog) would otherwise strand the row forever; the
 --                       exact failure the fix is for, just narrower.
 --   effects_applied_at  set ONLY on completion. `IS NULL` is the "still owed" set the partial index
 --                       serves; the lease comparison stays in the query because now() is not IMMUTABLE.
@@ -33,7 +33,7 @@ ALTER TABLE mail_messages ADD COLUMN IF NOT EXISTS effects_stage integer NOT NUL
 -- NULL" with no created_at floor, so without this every historical inbound reply would match on the first
 -- inbound.sweep after deploy and be re-driven at stage 0: a second "The city responded" timeline row, a
 -- chat system message, a push, and thread status forced back to 'replied' over a closed or bounced
--- thread — 100 per run until drained, including senders the affiliation gate never applied to. Their
+-- thread: 100 per run until drained, including senders the affiliation gate never applied to. Their
 -- effects already ran under the old fire-and-forget path, so they are marked applied at their own
 -- created_at with the pipeline recorded complete. Idempotent (only touches rows still NULL).
 UPDATE mail_messages

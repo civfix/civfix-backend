@@ -1,16 +1,9 @@
 /**
- * Admin activity-feed route (Phase 2).
+ * GET /admin/activity: a union of audit_log entries and recent domain events (new reports, cleanups, mail
+ * bounces). No read audit (aggregate view).
  *
- *   GET /admin/activity  the recent activity feed (ActivityListResponse): a union of audit_log entries +
- *                        recent domain events (new reports, cleanups, mail bounces).
- *
- * Read-only operator view (no audit written for a read). The requireOperator guard is applied by
- * routes/admin/index.ts. The query is validated against the shared ActivityListQuerySchema via parse().
- * The service is built lazily from the container (Drizzle repo) or a test override (in-memory repo).
- *
- * The whole query (q / filter / sort / cursor / limit) is forwarded verbatim: `filter` and `sort` are
- * free-form strings on the wire, and the service NORMALIZES them (parseActivityFilter / parseActivitySort)
- * so an unrecognized value degrades to the default instead of 422ing or reaching SQL.
+ * `filter` and `sort` are free-form strings on the wire and are forwarded verbatim: the service normalizes
+ * them so an unrecognized value degrades to the default instead of 422ing or reaching SQL.
  */
 
 import { ActivityListQuerySchema, type ActivityListResponse } from "@civfix/shared"
@@ -24,10 +17,7 @@ import {
 import { makeDrizzleActivityRepository } from "../../services/admin/activity-repository.drizzle.js"
 import { route } from "../../versioning/route.js"
 
-/**
- * Optional injected activity-service dependencies (tests). When present the route builds the service from
- * these (an in-memory repo) instead of the container, so the whole HTTP flow runs offline.
- */
+/** Injected activity-service deps (tests), so the whole HTTP flow runs offline. */
 export interface ActivityRouteOverrides {
   repo: ActivityRepository
   now?: () => Date
@@ -35,7 +25,6 @@ export interface ActivityRouteOverrides {
 
 declare module "fastify" {
   interface FastifyInstance {
-    /** Injected activity-route overrides (tests). See ActivityRouteOverrides. */
     activityOverrides?: ActivityRouteOverrides
   }
 }
@@ -44,7 +33,6 @@ export async function registerAdminActivityRoutes(
   app: FastifyInstance,
   container: Container,
 ): Promise<void> {
-  /** Build the activity service from injected overrides (tests) or the container (production). */
   const service = overridableService(
     app,
     "activityOverrides",

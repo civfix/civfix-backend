@@ -1,13 +1,8 @@
 /**
- * Best-effort street-level reverse geocoder backed by the public Photon instance (the same service the
- * clients use for FORWARD address autocomplete). Turns a pin into a one-line human address
- * ("123 Imperial Hwy, Inglewood, CA") so a report or event shows a real location instead of "City, ST".
+ * Never throws: any failure resolves to `null` so report creation does not depend on an external geocoder
+ * being reachable.
  *
- * Contract: NEVER throws and NEVER blocks. Any failure (network, HTTP error, timeout, no result, bad
- * coords) resolves to `null` so the caller falls back (to the local City, ST label) or simply stores no
- * address - report creation must not depend on an external geocoder being reachable.
- *
- * PRECISION LADDER. Photon/OSM chronically lacks house numbers, so a single "nearest feature" answer is
+ * Precision ladder. Photon/OSM chronically lacks house numbers, so a single "nearest feature" answer is
  * either exact or wildly overconfident. One request (limit=5, radius=50 m) buys the whole ladder:
  *
  *   street       house number + street on one feature        "123 Main St, Inglewood, CA"
@@ -29,22 +24,19 @@ import type { AddressPrecision } from "@civfix/shared"
 import type { ReverseGeocode, ReverseResult } from "./reverse-geocode.chain.js"
 import { fetchJsonOrNull } from "./http-fetch.js"
 
-/** Public Photon reverse endpoint. Self-host + override via the factory `url` for higher volume. */
 const PHOTON_REVERSE_URL = "https://photon.komoot.io/reverse"
-/** Cap the geocode so a slow/hung Photon never delays a report submit. */
 const DEFAULT_TIMEOUT_MS = 4000
-/** Features per request. Enough to see a cross street and a POI beside the nearest hit; still one call. */
+/** Enough to see a cross street and a POI beside the nearest hit in one call. */
 const REVERSE_LIMIT = 5
-/** Photon's search radius, in KILOMETRES. 50 m bounds the whole candidate set to "at this pin". */
+/** Photon takes the radius in KILOMETRES. */
 const REVERSE_RADIUS_KM = 0.05
 /** Two roads only compose an intersection when BOTH are essentially at the pin. */
 const INTERSECTION_RADIUS_M = 40
-/** A landmark may sit a little further out - a park or plaza entrance is not its centroid. */
+/** A park or plaza entrance is not its centroid, so a landmark may sit a little further out. */
 const LANDMARK_RADIUS_M = 60
 
 const EARTH_RADIUS_M = 6_371_000
 
-/** OSM keys whose named features are real public landmarks worth naming beside a pin. */
 const LANDMARK_KEYS = new Set([
   "amenity",
   "leisure",
@@ -73,7 +65,6 @@ interface PhotonFeature {
   geometry?: { coordinates?: [number, number] }
 }
 
-/** Metres between two WGS84 points (haversine). Only ever used at sub-kilometre scale. */
 export function distanceMeters(
   a: { lat: number; lng: number },
   b: { lat: number; lng: number },
@@ -87,7 +78,6 @@ export function distanceMeters(
   return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(s)))
 }
 
-/** "<primary>, City, ST" - skips whatever is already the primary and drops a US country. */
 function addressLine(p: PhotonReverseProps, primary: string): string {
   const tail = [
     p.city && p.city !== primary ? p.city : null,
@@ -99,14 +89,6 @@ function addressLine(p: PhotonReverseProps, primary: string): string {
   return [primary, ...tail].join(", ")
 }
 
-/**
- * Format a Photon reverse feature into a single human address line. Prefers a "<number> <street>" line,
- * else the place `name`/district, then appends the city/state (and country when it is not the US) -
- * skipping any part already used as the primary. Returns null when nothing usable is present.
- *
- * Kept exported and unchanged in shape: it is the formatter for a SINGLE feature, which the ladder below
- * composes with. It deliberately makes no precision claim of its own.
- */
 export function formatPhotonReverse(p: PhotonReverseProps): string | null {
   const street = [p.housenumber, p.street].filter(Boolean).join(" ").trim()
   const primary = street || p.name || p.district || p.city || ""
@@ -114,7 +96,6 @@ export function formatPhotonReverse(p: PhotonReverseProps): string | null {
   return addressLine(p, primary)
 }
 
-/** True when a feature's `name` could be a private residence label rather than a public landmark. */
 export function isResidentialName(p: PhotonReverseProps): boolean {
   if (p.osm_key === "building") return true
   if (p.osm_key === "place" && (p.osm_value === "house" || p.osm_value === "farm")) return true
@@ -139,10 +120,6 @@ interface Candidate {
   meters: number
 }
 
-/**
- * Compose the ladder from one Photon response. Exported so the rungs and their guards are unit-testable
- * without a fetch: every branch here is a product decision, not plumbing.
- */
 export function composePhotonReverse(
   features: PhotonFeature[],
   at: { lat: number; lng: number },
@@ -191,18 +168,11 @@ export function composePhotonReverse(
 }
 
 export interface PhotonReverseOptions {
-  /** Override the Photon reverse base URL (e.g. a self-hosted instance). */
   url?: string
-  /** Geocode timeout in ms (default 4000). */
   timeoutMs?: number
-  /** Injected fetch (tests). Defaults to the global fetch. */
   fetchImpl?: typeof fetch
 }
 
-/**
- * Build a reverse geocoder returning the structured ladder result, or null on ANY failure so it is safe
- * to call in the report-create hot path (the caller treats null as "no address").
- */
 export function makePhotonReverseGeocode(opts: PhotonReverseOptions = {}): ReverseGeocode {
   const baseUrl = opts.url ?? PHOTON_REVERSE_URL
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -224,8 +194,7 @@ export function makePhotonReverseGeocode(opts: PhotonReverseOptions = {}): Rever
       // A misconfigured base URL must not throw out of a best-effort geocode.
       return null
     }
-    // Network / abort / non-2xx / parse failure all degrade to null (the caller falls back or stores no
-    // address); redirect:"error" (the helper's default) keeps a MITM Photon from 30x-ing us internally.
+    // redirect:"error" (the helper's default) keeps a MITM Photon from 30x-ing us to an internal host.
     const data = await fetchJsonOrNull<{ features?: PhotonFeature[] }>(url, {
       timeoutMs,
       ...(doFetch !== undefined ? { fetchImpl: doFetch } : {}),

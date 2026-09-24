@@ -16,12 +16,12 @@
 --     CASCADE, parallel to report_message_reactions. Composite PK
 --     (message_id, mentioned_user_id) de-dupes a user named twice in one message.
 --
---   * chat_message_mentions: a user @-mentioned in a CHAT message — the cleanup
+--   * chat_message_mentions: a user @-mentioned in a CHAT message: the cleanup
 --     group chat (chat_messages) OR a 1:1 DM (dm_messages). ONE table serves both
 --     because a message id is a globally-unique uuid across both message tables,
 --     exactly like chat_message_reactions (0022).
 --
--- IMPORTANT — NO FK on chat_message_mentions.message_id. chat_messages and
+-- IMPORTANT: NO FK on chat_message_mentions.message_id. chat_messages and
 -- dm_messages are DECLARATIVELY PARTITIONED BY RANGE(created_at) with COMPOSITE
 -- PKs (id, created_at) (0002_chat_partitioning.sql / 0009_dm_and_privacy.sql), so
 -- there is no single-column key to reference: a FK on message_id alone is

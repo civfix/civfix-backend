@@ -6,7 +6,7 @@
  * the actual SQL of the Pg stores: session insert/find/expiry/delete, the email-OTP lifecycle, and
  * find-or-create over the real users + oauth_identities tables.
  *
- * It also re-proves the section-17 property against the real store: once a session is warm in the
+ * It also re-proves the session-cache property against the real store: once a session is warm in the
  * cache, a second resolve is served from the cache with the Postgres store query NOT invoked (the
  * PgSessionStore.findById is wrapped with a spy and asserted to be untouched on the cache hit).
  */
@@ -207,7 +207,6 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
     const ids = new Set(results.map((r) => r.id))
     expect(ids.size).toBe(1) // all converged on one user
 
-    // Exactly one row exists in the table for that email.
     const rows = await h.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM users WHERE email = ${email}
     `

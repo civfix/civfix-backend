@@ -1,14 +1,3 @@
-/**
- * Spatial integration test: jurisdiction resolution (place -> county -> state precedence).
- *
- * Requires Docker (a real PostGIS container). When Docker is unavailable the whole describe block is
- * SKIPPED (not failed) via describe.skipIf, so the local suite stays green; CI runs it for real.
- *
- * It exercises the SAME query the jurisdiction-service will use: src/db/sql/jurisdiction.ts. The
- * probe points and their expected results come from src/db/seed-fixtures.ts, the single source of
- * truth shared with the seed.
- */
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { resolveJurisdiction } from "../../src/db/sql/jurisdiction.js"
@@ -26,7 +15,7 @@ const pg = await withPg()
 describe.skipIf(!pg)("spatial: jurisdiction resolution", () => {
   let h: PgHarness
   beforeAll(() => {
-    // Non-null here: skipIf(!pg) guarantees we only run when pg is a live harness.
+    // skipIf(!pg) guarantees pg is a live harness here.
     h = pg as PgHarness
   })
   afterAll(async () => {
@@ -48,9 +37,7 @@ describe.skipIf(!pg)("spatial: jurisdiction resolution", () => {
   })
 
   it("resolves each real federal / tribal land to its OWN distinct unit (different parks -> different mappings)", async () => {
-    // A point in each curated federal/tribal land must resolve to THAT unit and read back as a
-    // federal/tribal layer - proving Yellowstone, Yosemite, the Angeles National Forest, the Navajo
-    // Nation, etc. are separate jurisdictions, each routable on its own.
+    // Each curated federal/tribal land must be its own jurisdiction, routable on its own.
     for (const probe of FEDERAL_PROBES) {
       const r = await resolveJurisdiction(h.sql, probe.lng, probe.lat)
       expect(r, probe.name).not.toBeNull()
@@ -60,7 +47,6 @@ describe.skipIf(!pg)("spatial: jurisdiction resolution", () => {
   })
 
   it("routes a national-forest point to the forest, not the surrounding city (ownership overrides place)", async () => {
-    // PROBE_ANGELES_OVER_CITY sits inside the Angeles National Forest AND the LA city box; federal wins.
     const r = await resolveJurisdiction(
       h.sql,
       PROBE_ANGELES_OVER_CITY.lng,

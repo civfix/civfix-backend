@@ -5,8 +5,8 @@ export type PresignMedia = (
   thumbKey: string | null,
 ) => Promise<{ url: string; thumbUrl?: string }>
 
-// Structural slice of the storage seam (presigned-GET issuer) so this module pulls in neither Container
-// nor the Storage interface — avoids an import cycle through di.ts.
+// A structural slice of the storage seam: importing Container or the Storage interface here would
+// create an import cycle through di.ts.
 //
 // `opts.forceSigned` is optional on purpose: an adapter that has no public-CDN mode (FakeStorage) simply
 // declares two parameters and stays assignable here, while R2Storage honors it (adapters/storage.r2.ts).
@@ -17,7 +17,7 @@ interface PresignStorage {
 export function makeMediaPresigner(storage: PresignStorage): PresignMedia {
   return async (r2Key, thumbKey) => {
     const url = await storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
-    if (thumbKey === null) return { url } // images: only url, no thumbnail
+    if (thumbKey === null) return { url }
     const thumbUrl = await storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
     return { url, thumbUrl }
   }
@@ -25,9 +25,9 @@ export function makeMediaPresigner(storage: PresignStorage): PresignMedia {
 
 /**
  * Presigner for PRIVATE media (chat/DM attachments, an owner's own held/unlisted report media,
- * not-yet-committed uploads). Two differences from the public presigner, both load-bearing (H9):
+ * not-yet-committed uploads). Two differences from the public presigner, both load-bearing:
  *
- *   - `forceSigned: true` — never emit a public CDN URL. A CDN URL is unsigned and permanent, so a DM
+ *   - `forceSigned: true`: never emit a public CDN URL. A CDN URL is unsigned and permanent, so a DM
  *     attachment served through one stays world-readable to anyone who ever saw the link, and no later
  *     unlist / delete / block can revoke it.
  *   - a much shorter TTL, so a leaked URL expires in minutes rather than an hour.
@@ -54,11 +54,11 @@ export function makePacketMediaPresigner(storage: PresignStorage): PresignPacket
     storage.presignGet(r2Key, PACKET_MEDIA_URL_TTL_SEC, { forceSigned: !publiclyVisible })
 }
 
-// Concurrency cap for presign fan-outs (bounds concurrent SigV4 signings / R2 ops per page).
+// Bounds concurrent SigV4 signings / R2 ops per page.
 export const PRESIGN_CONCURRENCY = 8
 
-// Bounded-concurrency map preserving input order. Replaces unbounded `Promise.all(arr.map(fn))` on
-// presign/sub-query fan-outs so a large page can't fire hundreds of concurrent R2/DB ops.
+// Order-preserving, used instead of `Promise.all(arr.map(fn))` on presign/sub-query fan-outs so a large
+// page can't fire hundreds of concurrent R2/DB ops.
 export async function mapWithLimit<T, R>(
   items: readonly T[],
   limit: number,

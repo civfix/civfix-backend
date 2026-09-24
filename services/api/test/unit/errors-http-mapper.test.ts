@@ -1,15 +1,12 @@
 /**
- * Direct tests for the canonical error handler (src/errors/http-mapper.ts). It was previously covered only
- * incidentally, through route tests, so its most consequential behaviors were unpinned:
+ * The canonical error handler, driven through a real Fastify instance exactly as buildServer wires it:
  *
- *   - the STRUCTURAL ZodError branch (name + issues array, NOT instanceof) that keeps a ZodError thrown
- *     across the dual-zod-realm boundary from rendering as a 500,
- *   - the STATUS_TO_CODE reverse map the typed client relies on,
- *   - PROD MESSAGE HIDING on a 500 (a leaked internal message is an information-disclosure regression),
- *   - captureError forwarding for >=500 only,
- *   - the not-found handler's prod-stealth vs dev-echo message.
- *
- * The handler is driven through a real Fastify instance via app.inject, exactly as buildServer wires it.
+ *   - ZodError is matched STRUCTURALLY (name + issues, NOT instanceof), so one thrown across the
+ *     dual-zod-realm boundary does not render as a 500;
+ *   - the STATUS_TO_CODE reverse map the typed client relies on;
+ *   - a 500 hides its message in production (a leaked internal message is an information disclosure);
+ *   - only >=500 is forwarded to captureError;
+ *   - the not-found handler is stealthy in production and echoes in dev.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
@@ -43,7 +40,6 @@ interface ErrorBody {
   fields?: Record<string, string>
 }
 
-/** A probe server whose routes throw the error under test. */
 async function buildProbe(thrown: () => unknown): Promise<FastifyInstance> {
   const app = Fastify({ logger: false })
   app.setErrorHandler(makeErrorHandler())
@@ -82,7 +78,6 @@ describe("makeErrorHandler", () => {
     expect(body.message).toBe("Bad handle")
     expect(body.fields).toEqual({ handle: "already taken" })
     expect(body.requestId).toBeTruthy()
-    // A client AppError is NOT forwarded to the error tracker.
     expect(captured).toHaveLength(0)
     await app.close()
   })
@@ -169,7 +164,6 @@ describe("makeErrorHandler", () => {
     expect(live.statusCode).toBe(500)
     expect(live.json<ErrorBody>().message).toBe("Internal error")
     expect(live.json<ErrorBody>().message).not.toContain("leaked")
-    // Both unhandled errors were reported.
     expect(captured).toHaveLength(2)
     await app.close()
   })

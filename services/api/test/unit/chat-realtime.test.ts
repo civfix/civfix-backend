@@ -7,18 +7,10 @@ import { InMemoryChatRepository, MockConnection } from "../helpers/chat.js"
 import { WsClientMessageSchema, WsServerMessageSchema, type ChatMessageDTO } from "@civfix/shared"
 
 /**
- * THE PHASE-1 DONE-CRITERION, proven locally: two devices chat in real time.
- *
- * This drives the gateway's frame handler (handleClientFrame) with TWO mock ChatConnections through the
- * REAL WsChatService over an in-memory pub/sub (the same fan-out wiring as Redis, minus the network). It
- * asserts:
- *   - A and B (both members) join room R; A sends a message;
- *   - B's send() receives the broadcast {type:"message"} frame (A -> B flows);
- *   - A receives an {type:"ack"} with its clientId and the persisted message (optimistic reconcile) and
- *     EXACTLY ONE total frame for the send (no echoed {type:"message"} - P1-2 exactly-once to sender);
- *   - the message was persisted (history returns it);
- *   - a NON-member is rejected on join AND cannot send (membership gate);
- *   - every inbound/outbound frame validates against the shared WS schemas.
+ * Two devices chat in real time, proven locally: TWO mock ChatConnections drive handleClientFrame
+ * through the REAL WsChatService over an in-memory pub/sub (the same fan-out wiring as Redis, minus the
+ * network). The sender gets EXACTLY ONE frame per send (the ack, never an echoed {type:"message"}),
+ * because the client reconciles its optimistic copy against that ack.
  */
 
 const ROOM = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -37,7 +29,6 @@ let pubsub: InMemoryChatPubSub
 let repo: InMemoryChatRepository
 let presence: InMemoryChatPresence
 
-/** Build a fresh gateway session for a user over a mock connection. */
 function sessionFor(userId: string, conn: MockConnection): GatewaySession {
   const deps: GatewayDeps = { chat, isMember: memberOf, presence }
   return {
@@ -49,12 +40,10 @@ function sessionFor(userId: string, conn: MockConnection): GatewaySession {
   }
 }
 
-/** Assert a raw frame string parses as a valid client frame (outbound-from-client direction). */
 function assertClientFrame(raw: string): void {
   expect(WsClientMessageSchema.safeParse(JSON.parse(raw)).success).toBe(true)
 }
 
-/** Assert a raw frame string parses as a valid server frame (outbound-to-client direction). */
 function assertServerFrame(raw: string): void {
   const parsed = WsServerMessageSchema.safeParse(JSON.parse(raw))
   expect(parsed.success, `frame failed server schema: ${raw}`).toBe(true)
@@ -76,7 +65,6 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     const aSession = sessionFor(ALICE, aConn)
     const bSession = sessionFor(BOB, bConn)
 
-    // Both join room R (both members). The join frames are valid client frames.
     const joinFrameA = JSON.stringify({ type: "join", cleanupId: ROOM })
     const joinFrameB = JSON.stringify({ type: "join", cleanupId: ROOM })
     assertClientFrame(joinFrameA)
@@ -95,7 +83,6 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     const bSnap = bConn.framesOfType("presence_snapshot")[0]! as { userIds: string[] }
     expect([...bSnap.userIds].sort()).toEqual([ALICE, BOB].sort())
 
-    // A sends a message with a client-generated id.
     const clientId = "client-temp-1"
     const sendFrame = JSON.stringify({
       type: "send",
@@ -106,7 +93,6 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     assertClientFrame(sendFrame)
     await handleClientFrame(aSession, sendFrame)
 
-    // ---- B received the broadcast {type:"message"} (the A -> B real-time path) ----
     const bMessages = bConn.framesOfType("message")
     expect(bMessages).toHaveLength(1)
     const broadcast = bMessages[0]! as { type: "message"; message: ChatMessageDTO }
@@ -117,7 +103,6 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     expect(broadcast.message.from?.id).toBe(ALICE)
     expect(broadcast.message.cleanupId).toBe(ROOM)
 
-    // ---- A received an {type:"ack"} carrying its clientId + the persisted message ----
     const aAcks = aConn.framesOfType("ack")
     expect(aAcks).toHaveLength(1)
     const ack = aAcks[0]! as { type: "ack"; clientId: string; message: ChatMessageDTO }
@@ -125,7 +110,6 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     expect(ack.message.id).toBe(broadcast.message.id)
     expect(ack.message.body).toBe("hello bob")
 
-    // ---- P1-2: the sender receives EXACTLY ONE frame for the send (the ack), NOT the broadcast ----
     // A's socket is in the room, but it is excluded from the broadcast fan-out, so it never gets a
     // {type:"message"} echo of its own message. The ack is its only copy (exactly-once to the sender).
     expect(aConn.framesOfType("message")).toHaveLength(0)
@@ -137,14 +121,12 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     expect(aFramesAfterJoin).toHaveLength(1)
     expect(aFramesAfterJoin[0]!.type).toBe("ack")
 
-    // Validate EVERY outbound frame on both sockets against the server schema (the broadcast frame B got
-    // must NOT carry the internal excludeConnId hint - it is stripped before the wire).
+    // The internal excludeConnId hint must be stripped before the wire.
     for (const raw of [...aConn.sent, ...bConn.sent]) assertServerFrame(raw)
     expect(
       JSON.parse(bConn.sent.find((s) => JSON.parse(s).type === "message")!),
     ).not.toHaveProperty("excludeConnId")
 
-    // ---- The message was persisted: history returns it ----
     const page = await chat.history(ROOM, undefined, 50)
     expect(page.items).toHaveLength(1)
     expect(page.items[0]!.id).toBe(broadcast.message.id)
@@ -156,7 +138,6 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     const mConn = new MockConnection("M")
     const mSession = sessionFor(MALLORY, mConn)
 
-    // Join is rejected with an error frame; the room does not admit Mallory.
     await handleClientFrame(mSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
     const joinErrors = mConn.framesOfType("error")
     expect(joinErrors).toHaveLength(1)
@@ -164,7 +145,6 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     expect(chat.roomSize(ROOM)).toBe(0)
     expect(mSession.joined.has(ROOM)).toBe(false)
 
-    // Send is rejected too; nothing is persisted and no message is broadcast.
     await handleClientFrame(
       mSession,
       JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "x", body: "intrude" }),
@@ -175,7 +155,6 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     expect(mConn.framesOfType("ack")).toHaveLength(0)
     expect(repo.count(ROOM)).toBe(0)
 
-    // Every outbound frame (the two error frames) is a valid server frame.
     for (const raw of mConn.sent) assertServerFrame(raw)
   })
 
@@ -185,19 +164,16 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     const aSession = sessionFor(ALICE, aConn)
     const bSession = sessionFor(BOB, bConn)
 
-    // Only A joins; B is a member but has not opened the room.
     await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
     await handleClientFrame(
       aSession,
       JSON.stringify({ type: "send", cleanupId: ROOM, clientId: "c1", body: "anyone?" }),
     )
 
-    // B received nothing (not in the room), but the message is persisted and A is acked.
     expect(bConn.framesOfType("message")).toHaveLength(0)
     expect(aConn.framesOfType("ack")).toHaveLength(1)
     expect(repo.count(ROOM)).toBe(1)
 
-    // Now B joins and a SECOND message reaches B.
     await handleClientFrame(bSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
     await handleClientFrame(
       aSession,
@@ -218,11 +194,9 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     await handleClientFrame(bSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
     expect(chat.roomSize(ROOM)).toBe(2)
 
-    // B leaves.
     await handleClientFrame(bSession, JSON.stringify({ type: "leave", cleanupId: ROOM }))
     expect(chat.roomSize(ROOM)).toBe(1)
 
-    // A sends; B (left) receives nothing further.
     const beforeB = bConn.framesOfType("message").length
     await handleClientFrame(
       aSession,
@@ -230,7 +204,6 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
     )
     expect(bConn.framesOfType("message").length).toBe(beforeB)
 
-    // A leaves -> the room empties and the pub/sub channel is unsubscribed.
     await handleClientFrame(aSession, JSON.stringify({ type: "leave", cleanupId: ROOM }))
     expect(chat.roomSize(ROOM)).toBe(0)
     expect(pubsub.channelCount).toBe(0)
@@ -296,7 +269,6 @@ describe("two-device real-time chat (A -> B with ack + persistence)", () => {
       pubsubCloseSpy.mock.invocationCallOrder[0]!,
     )
 
-    // Nothing survives shutdown: no room, no channel, no delivery on either side.
     expect(chat.roomSize(ROOM)).toBe(0)
     expect(pubsub.channelCount).toBe(0)
     const framesBefore = aConn.sent.length
@@ -348,20 +320,18 @@ describe("history `before` cursor is room-scoped (P1-5)", () => {
     const roomB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
     repo.registerSender({ id: ALICE, displayName: "Alice" })
 
-    // Room A has 3 messages; room B has 1.
     const a1 = await repo.insertMessage({ cleanupId: roomA, userId: ALICE, body: "a1" }, "a1-id")
     const a2 = await repo.insertMessage({ cleanupId: roomA, userId: ALICE, body: "a2" }, "a2-id")
     const a3 = await repo.insertMessage({ cleanupId: roomA, userId: ALICE, body: "a3" }, "a3-id")
     const b1 = await repo.insertMessage({ cleanupId: roomB, userId: ALICE, body: "b1" }, "b1-id")
 
-    // Paging room A with room B's message id as the `before` cursor: the foreign id is not found in
-    // room A, so we get room A's newest page (a3, a2) - never b1, never a B-timestamp-carved window.
+    // A foreign cursor is not found in room A, so the result is room A's newest page, never b1 and never
+    // a window carved at B's timestamp.
     const page = await chat.history(roomA, b1.id, 2)
     expect(page.items.map((m) => m.id)).toEqual([a3.id, a2.id])
     expect(page.items.every((m) => m.cleanupId === roomA)).toBe(true)
     expect(page.items.some((m) => m.id === b1.id)).toBe(false)
 
-    // Control: a valid in-room cursor pages correctly.
     const within = await chat.history(roomA, a3.id, 2)
     expect(within.items.map((m) => m.id)).toEqual([a2.id, a1.id])
   })

@@ -1,11 +1,8 @@
 /**
- * Route-level wiring for the jurisdiction + reverse-geocode seams.
- *
- * The reports, anon, cleanups and map plugins all need the same two things: "which government owns this
- * point" and "what address is at this point". Each used to build the closures inline, so the wiring drifted
- * — map.routes silently omitted `jurisdictionLookup`, which made POST /map/resolve-jurisdiction answer
- * "not covered" for a point that self-maps via the Census fallback the moment the same user submits a
- * report there. One builder per seam keeps the coverage answer consistent across every surface.
+ * The reports, anon, cleanups and map plugins all need "which government owns this point" and "what
+ * address is at this point". Each used to build the closures inline and the wiring drifted: map.routes
+ * silently omitted `jurisdictionLookup`, which made POST /map/resolve-jurisdiction answer "not covered"
+ * for a point that self-maps via the Census fallback the moment the same user submits a report there. One builder per seam keeps the coverage answer consistent across every surface.
  *
  * Everything here touches `container.getDb()` INSIDE the returned closure: a route may build a resolver at
  * mount time, and merely mounting a plugin must never open a DB connection.
@@ -20,13 +17,12 @@ import { makeJurisdictionService, type JurisdictionService } from "./jurisdictio
 import { makeAddressResolver, type AddressResolver } from "./address-resolver.js"
 import { makeGeocodeCache } from "./geocode-cache.js"
 
-/** Coords -> the owning jurisdiction's geoid, or null outside coverage. Matches the service deps. */
 export type PointToString = (lat: number, lng: number) => Promise<string | null>
 
 /**
  * ONE memoizing lookup wrapper per container, kept at module scope because the SERVICE is rebuilt per
- * request (a per-service cache would never see a second call). Keyed by container — not a bare module
- * singleton — so a process holding several containers (the test suites do) never serves one container's
+ * request (a per-service cache would never see a second call). Keyed by container, not a bare module
+ * singleton, so a process holding several containers (the test suites do) never serves one container's
  * cached coverage answers to another, and so the cache is collected with the container.
  */
 const CACHED_LOOKUPS = new WeakMap<Container, JurisdictionLookup>()
@@ -42,7 +38,7 @@ function cachedLookupFor(container: Container): JurisdictionLookup {
 export interface RouteJurisdictionServiceOptions {
   /**
    * Wrap the Census lookup in the process-local TTL memo (CachedJurisdictionLookup) instead of calling it
-   * per request. OFF by default; see makeRouteJurisdictionService for which surfaces opt in and why.
+   * per request. See makeRouteJurisdictionService for which surfaces opt in and why.
    */
   cacheLookup?: boolean
 }
@@ -52,9 +48,9 @@ export interface RouteJurisdictionServiceOptions {
  * PostGIS miss the point self-maps to the most specific Census place instead of staying "Unmapped"
  * (fake/no-op outside production). Census spend is bounded by the callers' per-route rate limits.
  *
- * `cacheLookup` does NOT change the coverage answer — same resolver, same fallback, same lazily-inserted
- * row; it only stops the SAME point from re-fetching Census on every request (the fallback's row has a NULL
- * geom, so it never becomes a local hit — see jurisdiction-service's header). It is opted into by the
+ * `cacheLookup` does NOT change the coverage answer (same resolver, same fallback, same lazily-inserted
+ * row); it only stops the SAME point from re-fetching Census on every request (the fallback's row has a
+ * NULL geom, so it never becomes a local hit; see jurisdiction-service's header). It is opted into by the
  * anon-ok read surface (POST /map/resolve-jurisdiction: unauthenticated, csrf-less, IP-keyed, and a pure
  * question about a coordinate) and deliberately NOT by the report/anon/cleanup SUBMIT paths, which write a
  * row whose jurisdiction_geoid is an FK into `jurisdictions` and must therefore observe live coverage
@@ -73,7 +69,6 @@ export function makeRouteJurisdictionService(
   })
 }
 
-/** resolveJurisdictionGeoid dep: the owning jurisdiction's geoid for a point, or null when uncovered. */
 export function makeGeoidResolver(container: Container): PointToString {
   return async (lat, lng) => {
     const resolved = await makeRouteJurisdictionService(container).resolveForPoint(lat, lng)
@@ -90,7 +85,7 @@ export function makeGeoidResolver(container: Container): PointToString {
  * returned closure (mounting a plugin must not open a connection), and the cache swallows the throw a
  * DB-less process raises, degrading to an uncached resolve rather than an error.
  *
- * Best-effort by contract — a null address leaves the field empty and never blocks a submit.
+ * Best-effort by contract: a null address leaves the field empty and never blocks a submit.
  */
 export function makeCachedAddressResolver(container: Container): AddressResolver {
   return makeAddressResolver({

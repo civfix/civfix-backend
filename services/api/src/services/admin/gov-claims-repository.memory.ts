@@ -1,19 +1,4 @@
-/**
- * In-memory GovClaimsRepository (Phase 2): the offline binding of the gov-provisioning persistence seam.
- *
- * Mirrors the Drizzle impl's OBSERVABLE contract so the gov-claims service can be unit-tested with NO
- * database (no Docker):
- *   - list pages the claims matching the status facet ("all" applies no status narrowing) + the search
- *     (name/org), ordered by createdAt in the requested direction with an id tiebreak;
- *   - getClaim returns the seeded record at any status;
- *   - setCheck writes one check into the record's checks map (any status);
- *   - approve links the user + sets status='approved' (only when pending);
- *   - reject sets status='rejected' + reject_reason (only when pending).
- * Seed/inspect helpers (seedClaim, the public claims map) let tests arrange + assert state directly.
- *
- * Pairs with InMemoryUserProvisioner (below): a tiny find-or-create + setRole fake matching the
- * UserProvisioner seam, so an approve test can assert the user was created with role gov_admin.
- */
+// Mirrors the Drizzle repository's observable behavior.
 
 import { randomUUID } from "node:crypto"
 import { pageInMemoryById } from "./pagination.js"
@@ -27,12 +12,10 @@ import {
 } from "./gov-claims-service.js"
 import type { GovCheckStatus, GovVerificationCheck, Role } from "@civfix/shared"
 
-/** An in-memory GovClaimsRepository faithful to the Drizzle impl's observable behavior. */
 export class InMemoryGovClaimsRepository implements GovClaimsRepository {
-  /** Seeded claims keyed by id (insertion order preserved for stable paging). */
+  /** Insertion order is preserved for stable paging. */
   readonly claims = new Map<string, GovClaimRecord>()
 
-  /** Deterministic clock; each seeded claim advances by one millisecond for stable ordering. */
   now = new Date(Date.UTC(2026, 0, 1, 0, 0, 0, 0))
   private tick = 0
 
@@ -41,7 +24,6 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
     return new Date(this.now.getTime() + this.tick)
   }
 
-  /** Seed a claim. Defaults fill the fields so a test only sets what it asserts on. */
   seedClaim(input: Partial<GovClaimRecord> & { id?: string; name?: string }): GovClaimRecord {
     const id = input.id ?? randomUUID()
     const record: GovClaimRecord = {
@@ -71,7 +53,6 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
       rows = rows.filter((r) => r.status === args.filter)
     }
 
-    // Search: name OR org, case-insensitive.
     if (args.q !== null) {
       const needle = args.q.toLowerCase()
       rows = rows.filter(
@@ -80,8 +61,8 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
       )
     }
 
-    // createdAt in the requested direction; id is the stable tiebreak in the SAME direction the Drizzle
-    // twin's (created_at, id) keyset uses, so a page boundary lands identically.
+    // The id tiebreak runs in the same direction as the Drizzle (created_at, id) keyset, so a page
+    // boundary lands identically.
     const dir = args.sort === "oldest" ? 1 : -1
     rows.sort((a, b) => {
       const primary = (a.createdAt.getTime() - b.createdAt.getTime()) * dir
@@ -110,7 +91,7 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
     },
   ): Promise<GovClaimRecord | null> {
     const claim = this.claims.get(id)
-    // Mirror the Drizzle WHERE status='pending' guard: a decided claim's checks are immutable (null/404).
+    // Mirrors the Drizzle WHERE status='pending' guard: a decided claim's checks are immutable.
     if (!claim || claim.status !== "pending") return null
     const check: GovCheckRecord = {
       status: input.status,
@@ -144,17 +125,14 @@ export class InMemoryGovClaimsRepository implements GovClaimsRepository {
   }
 }
 
-/**
- * In-memory UserProvisioner: a find-or-create-by-email + idempotent setRole fake matching the seam the
- * gov approve flow depends on. Mirrors the observable behavior of the Phase 1 UserStore slice (email
- * matched case-insensitively, like the CITEXT users.email column).
- */
+/** Email is matched case-insensitively, like the CITEXT users.email column. */
 export class InMemoryUserProvisioner implements UserProvisioner {
   readonly users = new Map<string, ProvisionedUser>()
 
-  /** Seed an existing user (e.g. to test the find branch of approve). Defaults to a VERIFIED email so the
-   * common "approve an existing account" test still elevates; pass emailVerified:false to exercise the
-   * unverified-rejection guard. */
+  /**
+   * Defaults to a verified email so the common "approve an existing account" test still elevates; pass
+   * emailVerified:false to exercise the unverified-rejection guard.
+   */
   seedUser(input: {
     id?: string
     email: string

@@ -218,8 +218,7 @@ describe("POST /anon/reports", () => {
       payload: anonPayload(),
     })
     const firstBody = first.json()
-    // The replay is the SAME anon session retrying: it carries the token the first submit issued,
-    // which is what the snapshot is keyed by (F028).
+    // The snapshot is keyed by the anon token, so the replay carries the token the first submit issued.
     const anonToken = first.headers["x-anon-token"] as string
     const second = await app.inject({
       method: "POST",
@@ -502,14 +501,9 @@ describe("claim flow", () => {
   })
 })
 
-/**
- * F131: every other test in this file injects `anonOverride`, so the PRODUCTION wiring in
- * anon.routes.ts `service()` — the branch that supplies `raiseAbuseFlag` and `log` — was never
- * executed. Both default to no-ops inside the service, so before the fix a honeypot hit in production
- * wrote nothing (anon_tokens/abuse_flags never learned about the bot) and every observability line was
- * discarded, while CI proved behavior production did not have. These tests boot the route with NO
- * override and a scripted `sql` so the real closure runs.
- */
+// Every other test here injects `anonOverride`, so the production wiring that supplies `raiseAbuseFlag`
+// and `log` (both no-ops by default) never ran: a honeypot hit once wrote nothing while CI stayed green.
+// These boot the route with no override and a scripted `sql` so the real closure runs.
 describe("F131: the PRODUCTION anon service raises abuse flags and logs", () => {
   interface ProdHarness {
     app: FastifyInstance

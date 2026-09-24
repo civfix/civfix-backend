@@ -68,7 +68,7 @@ function manyPartMessage(parts: number): Uint8Array {
   return bytes(lines.join("\r\n"))
 }
 
-describe("CfInboundMail.parse — structured content-type rendering (F099)", () => {
+describe("CfInboundMail.parse: structured content-type rendering (F099)", () => {
   it("renders a structured multipart/report content-type back to header-string form, not a JSON blob", async () => {
     const parsed = await new CfInboundMail().parse(rfc3464Bounce())
     const contentType = parsed.headers["content-type"]
@@ -86,7 +86,7 @@ describe("CfInboundMail.parse — structured content-type rendering (F099)", () 
   })
 })
 
-describe("CfInboundMail.parse — MIME part-count pre-scan (F097)", () => {
+describe("CfInboundMail.parse: MIME part-count pre-scan (F097)", () => {
   it("rejects a message with too many MIME parts BEFORE mailparser can stall, and does so quickly", async () => {
     const started = Date.now()
     await expect(new CfInboundMail().parse(manyPartMessage(300))).rejects.toThrow(

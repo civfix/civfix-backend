@@ -3,7 +3,7 @@
 -- -----------------------------------------------------------------------------
 -- FINDING F151: posts.reply_to_id is a self-FK (posts→posts) but the only index
 -- covering it was `posts_reply_to_idx (reply_to_id, created_at) WHERE deleted_at
--- IS NULL` (0051) — a PARTIAL index that excludes tombstoned rows. Postgres uses
+-- IS NULL` (0051), a PARTIAL index that excludes tombstoned rows. Postgres uses
 -- an index to enforce/scan an ON DELETE FK action only when it covers ALL rows,
 -- so the delete-time lookup for reply_to_id children (and the F148 RESTRICT swap
 -- in 0072) has no usable index and does a sequential scan of posts. Add a plain

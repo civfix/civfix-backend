@@ -1,17 +1,17 @@
 /**
- * P4 Task 4.4 integration test (Docker-gated): the group-room REALTIME lane + the unified reaction
+ * Integration test (Docker-gated): the group-room REALTIME lane + the unified reaction
  * toggle, against a live PostGIS container (via withPg).
  *
- *   WS seam (handleClientFrame over real Drizzle repos + WsChatService/InMemoryChatPubSub — the same
+ *   WS seam (handleClientFrame over real Drizzle repos + WsChatService/InMemoryChatPubSub, the same
  *   pieces chat-gateway-wiring composes):
  *     - member send round-trips: sender gets the ack, a second joined member receives the broadcast
  *       {type:"message"} frame, and the row lands group-scoped (roomKind "group");
- *     - NON-member join / send / typing all reject FORBIDDEN (member-only for BOTH kinds until P5's
- *       public-channel read-joins) and persist nothing;
+ *     - NON-member join / send / typing all reject FORBIDDEN and persist nothing (public-channel
+ *       read-joins are chat-channels-pg's);
  *     - joining marks the room read (chat_group_members.last_read_at stamped via markReadOnOpen) and
  *       ack {upToId} advances the watermark to that message's created_at;
  *     - @mention of a group MEMBER resolves + records the chat_message_mentions row; a non-member
- *       handle resolves to nothing (no row) — the chat-mention-resolver group scope end-to-end.
+ *       handle resolves to nothing (no row): the chat-mention-resolver group scope end-to-end.
  *
  *   HTTP (buildServer + chatOverrides on real repos, FakeChatService watcher for broadcast frames):
  *     - PATCH /messages roomKind:"group" edits the sender's message (200 + message_update broadcast);
@@ -82,7 +82,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
     return u!.id
   }
 
-  /** Direct-SQL group fixture: owner + plain members (management gates are 4.3's suite, not this one). */
+  /** Direct-SQL group fixture: owner + plain members (management gates are chat-groups-pg's, not this suite's). */
   async function newGroup(ownerId: string, memberIds: string[]): Promise<string> {
     const [g] = await h.sql<{ id: string }[]>`
       INSERT INTO chat_groups (name, owner_id) VALUES ('WS Crew', ${ownerId}) RETURNING id
@@ -142,7 +142,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
             listGroupMemberIds: (groupId) => groups.listMemberIds(groupId),
           }),
           recordChatMentions: (messageId, ids) => recordChatMentions(h.sql, messageId, ids),
-          // Bells are 4.5's — the WS lane only needs resolve+record here.
+          // Bells are chat-groups-threads-pg's; the WS lane only needs resolve+record here.
           notifyChatMention: () => Promise.resolve(),
         },
       }
@@ -204,7 +204,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       expect(received).toHaveLength(1)
       expect((received[0] as { message: { id: string } }).message.id).toBe(acked.id)
 
-      // Persisted group-scoped (group_id set, cleanup/report refs NULL — the 0047 three-way XOR).
+      // Persisted group-scoped (group_id set, cleanup/report refs NULL: the 0047 three-way XOR).
       const rows = await h.sql<{ group_id: string | null; cleanup_id: string | null }[]>`
         SELECT group_id, cleanup_id FROM chat_messages WHERE id = ${acked.id}
       `
@@ -579,7 +579,7 @@ describe.skipIf(!pg)("chat groups WS lane + unified reactions (integration)", ()
       const frames = watcher.framesOfType("reaction")
       expect(frames).toHaveLength(1)
       expect(frames[0]).toMatchObject({ type: "reaction", cleanupId, message: { id: msg.id } })
-      // Cleanup rooms omit roomKind on the legacy frame — mirrored exactly.
+      // Cleanup rooms omit roomKind on the legacy frame; mirrored exactly.
       expect(frames[0]).not.toHaveProperty("roomKind")
     })
 

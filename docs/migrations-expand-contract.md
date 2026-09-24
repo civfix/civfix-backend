@@ -13,7 +13,7 @@ The production deploy is blue/green (`civfix-infra` compose + `ops/deploy.sh`):
    (`SHUTDOWN_DRAIN_MS`, 8s as set in `civfix-infra/compose/docker-compose.yml`; the API's own
    default is 0, no drain) plus the bounded close that follows it.
 
-Between (1) and (4) the **previous release's code is serving live traffic against the new schema** —
+Between (1) and (4) the **previous release's code is serving live traffic against the new schema**:
 for minutes in a normal deploy, and indefinitely if the deploy is rolled back with `ops/rollback.sh`
 or `CIVFIX_REF=<tag|sha> ops/deploy.sh` (the rollback moves the code back; migrations are forward-only
 and are NOT reverted).
@@ -37,7 +37,7 @@ A migration that removes or tightens something therefore breaks the still-runnin
 - **A rename is two releases**: (1) add the new column, dual-write, backfill; (2) after the release
   that stopped reading the old column is fully deployed, drop it.
 - **A drop is one release after the code stopped depending on it.** "The code no longer uses it" is
-  not enough — the release that removes the usage has to be the one running everywhere first.
+  not enough; the release that removes the usage has to be the one running everywhere first.
 - **`NOT NULL` is two releases**: backfill + `CHECK (col IS NOT NULL) NOT VALID`, then `VALIDATE` and
   `SET NOT NULL` in a later release.
 - **Backfills** live in their own migration (or, when one `UPDATE` over the table inside the

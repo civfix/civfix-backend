@@ -1,6 +1,6 @@
 name: Build release images
 
-# Builds the two artifacts a civfix-backend release consists of — the api and the media-worker — and
+# Builds the two artifacts a civfix-backend release consists of (the api and the media-worker) and
 # pushes them to GHCR. This is the ONLY place either image is built: the VPS deploy pulls what this
 # workflow produced (civfix-infra ops/deploy.sh) instead of rebuilding from source on the box, so
 # staging and production run byte-identical bytes rather than two builds of one commit.
@@ -12,13 +12,13 @@ name: Build release images
 #
 # NATIVE ARM64, NOT QEMU. Both VPSes are Oracle Ampere (arm64) boxes. `ubuntu-24.04-arm` is a GitHub
 # larger runner (available on the Team plan, billed per-minute rather than from the free allotment) and
-# builds ~5-10x faster than cross-building an image with this much native compilation in it — the
+# builds ~5-10x faster than cross-building an image with this much native compilation in it: the
 # media-worker alone pulls a static ffmpeg and builds sharp/libvips bindings. `platform` is an input so
 # a future amd64 box is a one-line change at the call site rather than a rewrite.
 #
 # TAGGING. The immutable tag is `sha-<full 40-char commit sha>`, and that shape is a CROSS-REPO CONTRACT:
 # civfix-infra's ops/deploy.sh reconstructs exactly this tag from the commit it checked out. Do not
-# shorten it, do not switch to a `metadata-action` tag scheme, and do not remove it — a deploy that
+# shorten it, do not switch to a `metadata-action` tag scheme, and do not remove it: a deploy that
 # cannot find its own release image fails closed and refuses to deploy. `main` is a moving convenience
 # tag for humans; nothing reads it.
 #

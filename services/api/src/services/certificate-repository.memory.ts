@@ -8,13 +8,12 @@
  *
  * Mirrored deliberately:
  *   - BOTH unique indexes, as the typed `CertificateConflictError`: `(code)` and the PARTIAL
- *     `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL`. The partial-ness is the point — revoking
+ *     `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL`. The partial-ness is the point: revoking
  *     frees the slot so the holder can re-issue over the same ledger.
  *   - `revoke` is idempotent via a COALESCE-equivalent, and returns null for an unknown code OR another
  *     user's code, so the service's "404, never 403" rule is exercised here too.
  *   - `findByCode` reports a tombstoned holder rather than hiding the row.
- *   - reads hand back CLONES, so a test mutating a returned row cannot corrupt the store (the Drizzle
- *     repo obviously cannot be corrupted that way).
+ *   - reads hand back CLONES, so a test mutating a returned row cannot corrupt the store.
  *
  * `snapshot` is stored but never read back, exactly as in production.
  */

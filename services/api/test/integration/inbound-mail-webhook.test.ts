@@ -35,8 +35,8 @@ function sign(body: string): string {
 }
 
 /**
- * `auth` is the RFC 8601 `Authentication-Results` header our MTA stamps. M7 made the threading path
- * FAIL CLOSED on anything but a DMARC-aligned pass — an ABSENT header is `unknown`, not `pass` — because
+ * `auth` is the RFC 8601 `Authentication-Results` header our MTA stamps. The threading path FAILS
+ * CLOSED on anything but a DMARC-aligned pass (an ABSENT header is `unknown`, not `pass`) because
  * threading is what grants a message authority (report status transitions, an "official city reply"
  * mirrored into the PUBLIC report chat, a push to the reporter). So a fixture that wants those effects
  * MUST carry a passing verdict; omit `auth` to exercise the unauthenticated lane.
@@ -136,7 +136,6 @@ describe.skipIf(!pg)("inbound-mail webhook (integration: real schema)", () => {
     expect(storage.get(key)).toBeNull()
   })
 
-  // --- M7 message-authentication gate --------------------------------------------------------------
   // A valid thread token used to be sufficient to reach the THREADED path, so anyone who learned a token
   // could forge `From: publicworks@lacity.gov` and drive the whole side-effect chain: report status ->
   // in_progress, their text mirrored into the PUBLIC report chat as an official city reply, and a push to

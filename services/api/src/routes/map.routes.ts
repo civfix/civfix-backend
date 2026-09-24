@@ -142,10 +142,10 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
 
   /**
    * The street-level preview the creation flows call once a pin settles. `reverseLabel` above stays
-   * exactly as it is for already-deployed clients — it answers only TIGER's "City, ST", which is why
-   * pin previews were vague; this one walks the whole ladder and says which rung it reached, so the UI
-   * can prefill a confirmed address (street/intersection/landmark) or ask the host to type one
-   * (locality/null) without ever guessing. `cityStateLabel` is populated either way as the hint line.
+   * as it is for already-deployed clients and answers only TIGER's "City, ST"; this one walks the whole
+   * ladder and says which rung it reached, so the UI can prefill a confirmed address
+   * (street/intersection/landmark) or ask the host to type one (locality/null) without guessing.
+   * `cityStateLabel` is populated either way as the hint line.
    *
    * Same rate-limit bucket as the other geocoder surfaces, and the read-through cache means a dragged
    * pin and the create that follows it share one provider call.

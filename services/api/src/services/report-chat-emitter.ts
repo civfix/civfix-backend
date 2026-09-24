@@ -1,27 +1,10 @@
 /**
- * Task D-D1: build the report-chat SYSTEM-message emitter (the timeline choke point) from CONTAINER
- * PRIMITIVES, so it can be constructed wherever the admin / citizen report services are wired — WITHOUT
- * depending on the chat-gateway wiring's instances.
+ * Built from container primitives so the admin and citizen report services can emit timeline messages
+ * without depending on the chat-gateway wiring's instances.
  *
- * The emitter's three deps are assembled exactly the way the chat gateway (chat-gateway-wiring.ts) builds
- * its own report-chat notifier:
- *   - reportChat  = makeReportChatRepository(sql)         (system-message insert + member lookup)
- *   - broadcast   = container.chatService.broadcast       (fan the system frame to the live room)
- *   - notify      = makeReportChatNotifier({ notificationService, reportChatRepo, isMuted, presence?,
- *                    roomKeyFor })                          (per-member bell, skipping present/muted)
- *   - notificationService = makeNotificationService(...)   (same shape as the container/chat wiring)
- *   - isMuted     = makeConversationMutesRepository(sql), scoped to roomKind "report"
- *   - roomKeyFor  from ../ws/gateway.js
- *
- * PRESENCE: the room presence adapter (RedisChatPresence / InMemoryChatPresence) is built inside the chat
- * gateway wiring and is NOT readily reachable from the admin/citizen service context, so `presence` is
- * passed as undefined here. Effect: a member currently VIEWING the report chat also receives a push for a
- * system event (minor over-notification; acceptable — see task note). Live delivery still happens via the
- * broadcast, so the viewer sees the message immediately regardless.
- *
- * FAKE-CHAT GUARD: under USE_FAKE_CHAT (no DB / no real chat + notification services) this degrades to a
- * NO-OP emitter rather than crashing — mirroring how the report's other best-effort side effects
- * (onReportMessage / notifyReporter) are gated off under fake-chat.
+ * The room presence adapter lives inside the chat gateway wiring and is not reachable from here, so a
+ * member currently viewing the report chat also gets a push for a system event. That over-notification
+ * is accepted: the broadcast still delivers the message live.
  */
 
 import type { FastifyBaseLogger } from "fastify"
@@ -37,22 +20,16 @@ import {
   type ReportChatSystemEmitter,
 } from "./report-timeline-event.js"
 
-/** A no-op emitter used under fake-chat (or any absent-service path). emit() resolves without side effects. */
 export const NOOP_REPORT_CHAT_EMITTER: ReportChatSystemEmitter = {
   emit: () => Promise.resolve(),
 }
 
-/**
- * Build the real container-backed emitter, or the no-op emitter under fake-chat. `logger` (defaults to
- * container-less no-op) is threaded into both the notification service and the emitter's swallowed-error
- * warnings.
- */
 export function makeContainerReportChatEmitter(
   container: Container,
   logger?: Pick<FastifyBaseLogger, "warn" | "error">,
   opts: { propagateInsertFailure?: boolean } = {},
 ): ReportChatSystemEmitter {
-  // Fake-chat: no DB + a no-op chat service, so mirror the other report side-effects and degrade to no-op.
+  // Fake chat has no DB, so this degrades to a no-op like the report's other best-effort side effects.
   if (container.env.USE_FAKE_CHAT) return NOOP_REPORT_CHAT_EMITTER
 
   const sql = container.getDb().sql
@@ -68,13 +45,9 @@ export function makeContainerReportChatEmitter(
   const conversationMutes = makeConversationMutesRepository(sql)
 
   /**
-   * Batch mute shape: one query for the room's whole member set instead of one per recipient.
-   *
-   * PROBED, never bound to an empty-Set default (the chat-gateway-wiring stance): the fan-out treats a
-   * present `mutedUserIdsFor` as AUTHORITATIVE and skips the per-user `isMuted` entirely, so a
-   * `?? Promise.resolve(new Set())` fallback would silently UNMUTE the whole room the moment this is
-   * built over a mutes store without the batch method (it is optional on the interface). Absent => the
-   * dep is omitted and the notifier keeps its per-candidate `isMuted` gate.
+   * Probed, never bound to an empty-Set default: the fan-out treats a present `mutedUserIdsFor` as
+   * authoritative and skips the per-user `isMuted`, so a `new Set()` fallback would silently unmute the
+   * whole room over a mutes store without the batch method.
    */
   const mutedUserIdsFor = (():
     | ((roomId: string, userIds: string[]) => Promise<Set<string>>)
@@ -89,19 +62,12 @@ export function makeContainerReportChatEmitter(
     reportChatRepo,
     isMuted: (userId, roomId) => conversationMutes.isMuted(userId, "report", roomId),
     ...(mutedUserIdsFor ? { mutedUserIdsFor } : {}),
-    // presence intentionally omitted — not reachable from the admin/citizen service context (see header).
     roomKeyFor,
-    // M11: this emitter only ever fans out SENDER-LESS `kind:"system"` messages (a timeline reflection
-    // has no author), so the block gate can never fire on this path — the notifier short-circuits on a
-    // null actor. Wired to the real repo anyway rather than a `() => false` stub: the dep is required
-    // precisely so nobody has to reason about whether a given caller "needs" it, and if a future
-    // timeline event ever gains an author this path is already correct.
-    // Resolved LAZILY (inside the closure), like every other container read on this best-effort path: the
-    // factory is called per timeline event from services whose own wiring may not have a blocks repo at
-    // all, and a throw HERE would abort the caller (the emit() try/catch only covers the emit itself).
-    // The BATCH form (blockedIdsAmong) is deliberately NOT wired here for the same reason — probing it
-    // requires the repo at construction time, and it would buy nothing: see above, a null actor
-    // short-circuits the gate before either shape is consulted.
+    // System messages have no author, so the notifier short-circuits this gate on a null actor. It is
+    // wired to the real repo rather than a `() => false` stub so a timeline event that gains an author
+    // is already correct. Resolved lazily: a caller's wiring may have no blocks repo, and a throw at
+    // construction would abort the caller (emit()'s try/catch only covers the emit). The batch form
+    // (blockedIdsAmong) is not wired because probing it needs the repo at construction time.
     isBlockedEitherWay: (a, b) => container.getBlocksRepo().isBlockedEitherWay(a, b),
     logger,
   })

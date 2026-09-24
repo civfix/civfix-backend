@@ -1,34 +1,9 @@
 /**
- * The TABLE-PARAMETERIZED room-scope core shared by chat-repository.drizzle.ts (chat_messages) and
- * dm-repository.drizzle.ts (dm_messages).
- *
- * The two tables are structural twins: dm_messages mirrors chat_messages column-for-column apart from its
- * room reference (thread_id vs cleanup_id/report_id/group_id) and the report-only extras (system payload,
- * @city forward). Every room-scoped READ was therefore written twice — the same keyset cursor anchor, the
- * same around-window, the same one-row seek, the same pin flip, the same pin list — and each copy is a
- * place the other can silently drift. The subtle invariants that drift first are exactly the ones that
- * cost the most to rediscover:
- *   - the `before` anchor's (created_at, id) tuple NEVER leaves the database (a row-valued subquery), so
- *     the driver's millisecond truncation of created_at cannot make same-millisecond rows repeat/skip;
- *   - the anchor EXISTENCE pre-check, which keeps an unknown/foreign cursor falling back to the newest
- *     page instead of an all-NULL filter -> empty page;
- *   - around-mode's `(deleted_at IS NULL OR id = <target>)` exception, which lets a jump target's own
- *     tombstone ride in its window while every other tombstone stays filtered out;
- *   - the pin flip's `(pinned_at IS NULL) = <pinned>` gate, which makes a repeat pin an idempotent no-op
- *     that does NOT refresh pinned_at.
- *
- * ONE definition each lives here, parameterized by a RoomScopeSql descriptor supplying the table, the row
- * alias, the room predicate, the SELECT list, the users join, the per-query side context and the two
- * hydrators. What genuinely DIVERGES stays in the repositories and is deliberately NOT pushed through this
- * seam: the row shape and DTO mapping (system rows, roomKind, @city chips, poll bodies vs the flat dm
- * row), persistence, edit/soft-delete writes (chat has a moderator sender-gate bypass, dm does not), meta
- * lookups, and everything dm-only (threads, peers, read state, blocks).
- *
- * SQL SEMANTICS ARE UNCHANGED from the two originals: identifiers render through postgres.js's `sql(...)`
- * ident helper over closed unions (never string concatenation), values stay parameterized, and every
- * predicate / ORDER BY / LIMIT is equivalent to the copy it replaces. The only textual difference is that
- * idents which used to be bare (`chat_messages`, `cm.created_at`) now render quoted (`"chat_messages"`,
- * `"cm".created_at`) — the same objects, since both spellings are already lower-case.
+ * chat_messages and dm_messages are structural twins, so their room-scoped reads live here once: two
+ * copies of the keyset anchor, around-window and pin flip would drift on exactly the invariants that are
+ * costliest to rediscover. What genuinely diverges (row shape and DTO mapping, writes, meta lookups and
+ * everything dm-only) deliberately stays in the repositories. Identifiers render through `sql(...)` over
+ * closed unions, never string concatenation.
  */
 
 import { AppError } from "@civfix/shared"
@@ -40,79 +15,54 @@ import { isUuid } from "../db/cursor-helpers.js"
 import { aroundLimits, mergeAroundWindow } from "./chat-history-window.js"
 import type { ReplyTable } from "./chat-reply-hydration.js"
 
-/** A composable SQL fragment (postgres.js Fragment); what a `sql\`...\`` expression yields. */
 type SqlFragment = postgres.Fragment
 
-/** The two room-scoped message tables — the same closed set as chat-reply-hydration's ReplyTable. */
 export type RoomTable = ReplyTable
 
 /**
- * The row alias each table is selected through. A CLOSED union rather than a bare string, so the ident
- * positions the core renders can never receive anything but these two literals (the convention the
- * dynamic-SQL guard documents: dynamic identifiers go through `${sql(name)}` over a closed union).
+ * A closed union rather than a bare string, so the ident positions the core renders can never receive
+ * anything but these two literals (the dynamic-SQL guard's convention).
  */
 export type RoomAlias = "cm" | "dm"
 
-/** Cap for a room's pin list (both the listPins query and the initial-history `pins` array). */
 export const PIN_LIST_CAP = 25
 
-/**
- * The only field the core itself reads off a selected row (both cursor ends). Everything else about the
- * row shape belongs to the owning repository's hydrator/mapper.
- */
+/** Everything else about the row shape belongs to the owning repository's hydrator. */
 export interface RoomScopeRow {
   id: string
 }
 
 /**
- * Everything the core needs to run the room-scoped reads for ONE room of ONE table. Built per call by the
- * owning repository (the room id is baked into `scope`), so a chat spec can specialize on its scope column
- * (e.g. the report-only forward column in `columns`) exactly as the hand-written copies did.
+ * Built per call by the owning repository with the room id baked into `scope`, so a chat spec can
+ * specialize on its scope column (e.g. the report-only forward column in `columns`).
  */
 export interface RoomScopeSql<Row extends RoomScopeRow, Ctx> {
-  /** The room's message table. A trusted internal identifier, rendered via sql(...) as an ident. */
+  /** A trusted internal identifier, rendered via sql(...) as an ident. */
   table: RoomTable
-  /** The row alias every query below selects through, matching the alias `from` declares. */
   alias: RoomAlias
   /**
-   * The room predicate: `<prefix>.<scope column> = <room id>`. `prefix` is the alias to qualify the
-   * column with, or null for the statements that have no alias to qualify it WITH (the anchor
-   * pre-check and the pin UPDATE). Values stay parameterized; the column name is a trusted ident.
+   * `prefix` is null for the statements with no alias to qualify the column with (the anchor pre-check
+   * and the pin UPDATE).
    */
   scope(prefix: string | null): SqlFragment
-  /** The SELECT list for a full row: the table's columns off `alias` + the sender columns off `u`. */
   columns: SqlFragment
-  /**
-   * `FROM <table> <alias> [LEFT] JOIN users u ON u.id = <alias>.sender_id`. The join KIND is part of the
-   * divergence: chat LEFT-joins (a report SYSTEM row has no sender), dm inner-joins.
-   */
+  /** Chat LEFT-joins users because a report SYSTEM row has no sender; dm inner-joins. */
   from: SqlFragment
-  /**
-   * Per-query side context, resolved IN PARALLEL with the row fetch (chat: the report's jurisdiction for
-   * the @city chip — constant per report; dm: nothing, so an already-resolved null).
-   */
+  /** Resolved in parallel with the row fetch (chat: the report's jurisdiction for the @city chip). */
   context(): Promise<Ctx>
-  /** Batch hydration for a page of rows (attachments/reactions/mentions/reply previews [+ polls]). */
   hydratePage(rows: Row[], viewerUserId: string | null, ctx: Ctx): Promise<ChatMessageDTO[]>
-  /**
-   * Single-row hydration for a one-row seek. Owns its own context resolution (the single-id loaders and
-   * the context query share one Promise.all in both repositories).
-   */
+  /** Resolves its own context so the single-id loaders and the context query share one Promise.all. */
   hydrateOne(row: Row, viewerUserId: string | null): Promise<ChatMessageDTO>
 }
 
 /**
- * Newest-first page of a room's live messages, optionally before a cursor id or centered on a target.
- *
- * The `before` cursor resolves to a keyset anchor whose (created_at, id) tuple deliberately NEVER leaves
- * the database (a row-valued subquery on the anchor id): round-tripping created_at through the driver
- * truncates microseconds to milliseconds (postgres-js serializes Date params via a JS Date), so
- * same-millisecond messages could repeat/skip across pages. The existence pre-check preserves the
- * stale-cursor fallback (an unknown/foreign-room `before` returns the newest page; without it the NULL-row
- * subquery would instead produce an all-NULL filter => empty page). No deleted_at filter on the anchor:
- * it is used solely for its keyset position, so a tombstoned cursor id must still page correctly. The
- * isUuid guard keeps `id = ${before}` from raising 22P02 -> 500 on a non-uuid string (DmHistoryQuerySchema
- * validates the uuid, ChatHistoryQuerySchema does not, so the guard belongs at the seam).
+ * The `before` anchor's (created_at, id) tuple deliberately never leaves the database (a row-valued
+ * subquery): postgres-js round-trips created_at through a JS Date, truncating microseconds, so
+ * same-millisecond messages could repeat or skip across pages. The existence pre-check keeps an
+ * unknown or foreign-room `before` falling back to the newest page instead of an all-NULL filter and
+ * an empty page. The anchor has no deleted_at filter: it is used only for its keyset position, so a
+ * tombstoned cursor id must still page correctly. The isUuid guard keeps a non-uuid string from
+ * raising 22P02 (a 500): ChatHistoryQuerySchema does not validate the uuid, so the guard belongs here.
  */
 export async function roomHistory<Row extends RoomScopeRow, Ctx>(
   sql: Sql,
@@ -122,8 +72,7 @@ export async function roomHistory<Row extends RoomScopeRow, Ctx>(
   viewerUserId: string | null,
   around?: string,
 ): Promise<ChatHistoryPage> {
-  // Around-mode (P2 2.4): a center-window fetch is a separate path; the before-mode fast path below stays
-  // untouched. The route schemas reject around+before together, so `before` is undefined here.
+  // The route schemas reject around+before together, so `before` is undefined on this path.
   if (around !== undefined) return roomHistoryAround(sql, spec, around, limit, viewerUserId)
 
   const alias = sql(spec.alias)
@@ -166,17 +115,11 @@ export async function roomHistory<Row extends RoomScopeRow, Ctx>(
 }
 
 /**
- * Around-mode history (P2 2.4): a window of ceil(limit/2) rows at-or-older than the target (the target row
- * INCLUDED) + floor(limit/2) strictly newer, merged newest-first — the same ordering as a before-mode
- * page. See chat-history-window.ts for the window/cursor semantics (nextCursor = older end, prevCursor =
- * newer end, each null when that side reaches the edge).
- *
- * The anchor lookup is scoped to THIS room and — unlike the `before` anchor — INCLUDES soft-deleted
- * targets: jumping to a deleted message's position is valid, and its tombstone rides in the window (every
- * OTHER deleted row stays filtered out, as in before-mode). A missing/foreign-room id is a 404: a jump
- * target the client explicitly named must exist, whereas an unknown `before` cursor just falls back to the
- * newest page. The anchor tuple stays entirely in SQL for the same microsecond reason as `before` — here a
- * truncated round-trip would eject the target from its own <=-window.
+ * The anchor lookup includes soft-deleted targets: jumping to a deleted message's position is valid
+ * and its tombstone rides in the window, while every other deleted row stays filtered out. A missing
+ * or foreign-room id is a 404, because a jump target the client named must exist, whereas an unknown
+ * `before` cursor just falls back to the newest page. The anchor tuple stays in SQL for the same
+ * microsecond reason as `before`; here a truncated round-trip would eject the target from its window.
  */
 export async function roomHistoryAround<Row extends RoomScopeRow, Ctx>(
   sql: Sql,
@@ -185,7 +128,7 @@ export async function roomHistoryAround<Row extends RoomScopeRow, Ctx>(
   limit: number,
   viewerUserId: string | null,
 ): Promise<ChatHistoryPage> {
-  // Non-uuid ids can never match; short-circuit to the same 404 (avoids a 22P02 cast error -> 500).
+  // A non-uuid id can never match; the short-circuit avoids a 22P02 cast error (a 500).
   if (!isUuid(around)) throw AppError.notFound("Message not found")
   const anchorRows = await sql<{ id: string }[]>`
     SELECT id FROM ${sql(spec.table)}
@@ -201,7 +144,6 @@ export async function roomHistoryAround<Row extends RoomScopeRow, Ctx>(
 
   const limits = aroundLimits(limit)
   const alias = sql(spec.alias)
-  // Fetch +1 on EACH side so has-more resolves independently per end.
   const [olderDesc, newerAsc, ctx] = await Promise.all([
     sql<Row[]>`
       SELECT ${spec.columns}
@@ -233,8 +175,8 @@ export async function roomHistoryAround<Row extends RoomScopeRow, Ctx>(
 }
 
 /**
- * One LIVE message of this room, fully hydrated for the viewer. Null when the id is unknown, belongs to
- * another room, or is soft-deleted — the caller maps that to 404/403 without distinguishing them.
+ * Null when the id is unknown, belongs to another room, or is soft-deleted; the caller maps all three to
+ * the same answer without distinguishing them.
  */
 export async function roomFindMessage<Row extends RoomScopeRow, Ctx>(
   sql: Sql,
@@ -255,11 +197,9 @@ export async function roomFindMessage<Row extends RoomScopeRow, Ctx>(
 }
 
 /**
- * Pin/unpin flip (P3). The WHERE gates room scope + live row + non-system kind + an ACTUAL state change
- * (`(pinned_at IS NULL) = pin` matches unpinned rows when pinning and pinned rows when unpinning), so a
- * repeat pin is a no-op that keeps the original pinned_at. The current DTO is then re-read (hydrated like
- * any history row) regardless of whether the UPDATE matched — idempotent calls return the same payload.
- * Authorization (who may pin) lives in the routes via the chat-powers resolver.
+ * `(pinned_at IS NULL) = pinned` only matches an actual state change, so a repeat pin is a no-op that
+ * keeps the original pinned_at, and the re-read returns the same payload either way. Who may pin is
+ * decided in the routes via the chat-powers resolver.
  */
 export async function roomSetPinned<Row extends RoomScopeRow, Ctx>(
   sql: Sql,
@@ -281,10 +221,6 @@ export async function roomSetPinned<Row extends RoomScopeRow, Ctx>(
   return roomFindMessage(sql, spec, messageId, userId)
 }
 
-/**
- * The room's pins, newest-pin first over the partial pin index, hydrated like a history page and capped at
- * PIN_LIST_CAP. Tombstoned rows never surface.
- */
 export async function roomListPins<Row extends RoomScopeRow, Ctx>(
   sql: Sql,
   spec: RoomScopeSql<Row, Ctx>,

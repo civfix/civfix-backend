@@ -21,7 +21,7 @@ let service: CleanupService
 
 /**
  * DECISIONS §40: `completeCleanup` is DEPRECATED. Status is derived from the clock, so the endpoint
- * writes nothing at all — it stays registered only so a mobile binary older than 0.46.0 neither crashes
+ * writes nothing at all; it stays registered only so a mobile binary older than 0.46.0 neither crashes
  * nor changes state. These tests pin the no-op contract: auth still applies, the call is idempotent, and
  * neither the stored status, `completed_at` nor the timeline moves.
  */
@@ -60,7 +60,7 @@ beforeEach(() => {
   })
 })
 
-describe("completeCleanup — the deprecated no-op contract", () => {
+describe("completeCleanup: the deprecated no-op contract", () => {
   it("returns the event unchanged: no status write, no completed_at, no timeline row", async () => {
     const id = seedEvent()
 
@@ -83,7 +83,7 @@ describe("completeCleanup — the deprecated no-op contract", () => {
     expect(statusRows(id)).toEqual([])
   })
 
-  it("no longer refuses an event that has not started — it simply does nothing", async () => {
+  it("no longer refuses an event that has not started: it simply does nothing", async () => {
     const id = seedEvent({
       scheduledAt: FUTURE,
       endsAt: new Date(FUTURE.getTime() + 4 * 3_600_000),
@@ -126,7 +126,7 @@ describe("completeCleanup — the deprecated no-op contract", () => {
   })
 })
 
-describe("completeCleanup — authorization still applies", () => {
+describe("completeCleanup: authorization still applies", () => {
   it("the organizer and a cohost may call it", async () => {
     const id = seedEvent()
 
@@ -163,7 +163,7 @@ describe("completeCleanup — authorization still applies", () => {
   })
 })
 
-describe("completeCleanup — B19: completion rings nobody", () => {
+describe("completeCleanup (B19): completion rings nobody", () => {
   it("emits NO notification, on a first call or a repeat", async () => {
     const bells: string[] = []
     const svc = makeCleanupService({

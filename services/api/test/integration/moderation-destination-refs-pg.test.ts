@@ -1,17 +1,7 @@
-/**
- * F160: the moderation queue's "where does this item live" column used to be a per-row correlated
- * subquery — for a chat subject `SELECT … FROM chat_messages WHERE id = subject_id`, for a photo a
- * media_assets → chat_messages id-only join. chat_messages is PARTITIONED on created_at, so an id-only
- * lookup cannot prune and probes EVERY monthly partition; a page of up to 101 rows therefore cost
- * ~101 × partitions index probes on top of the main scan. The page now resolves its chat/photo subjects
- * in ONE batched `WHERE id = ANY(...)` per lane after the page is cut.
- *
- * The batched path is only reachable through the Drizzle repository against the real partitioned schema,
- * which is what this file exercises (Docker-gated). The assertion that matters is EQUIVALENCE: the
- * batched list must resolve exactly the destinations the single-row getItem resolves, for every subject
- * shape (report / chat-in-report / chat-in-event / photo bound to a report / photo bound to an event
- * chat / unbound photo), or the queue's "open" link silently goes somewhere else.
- */
+// chat_messages is partitioned on created_at, so an id-only lookup probes every monthly partition; a
+// per-row correlated subquery cost ~101 × partitions probes per page. The page now resolves subjects in
+// one `WHERE id = ANY(...)` per lane. The batched list must resolve exactly what the single-row getItem
+// resolves for every subject shape, or the queue's "open" link silently goes somewhere else.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -200,11 +190,8 @@ describe.skipIf(!pg)("F160: batched destination refs match the per-item lookup",
     for (const [itemId, reportId] of expected) expect(seen.get(itemId)).toBe(reportId)
   })
 
-  /**
-   * The SHAPE of the query is the finding. A statement-capturing connection (postgres-js `debug`) proves
-   * the page no longer carries the per-row correlated lookups into the partitioned chat_messages, and
-   * that each lane resolves through a single `= ANY(...)` batch instead.
-   */
+  // The shape of the query is the finding, so a statement-capturing connection (postgres-js `debug`)
+  // asserts on the SQL itself.
   it("resolves the page with BATCHED lookups, not a per-row correlated subquery", async () => {
     const author = await newUser("Author")
     const reportId = await newReport()

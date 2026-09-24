@@ -1,19 +1,6 @@
-/**
- * Service-hours certificates against a live Postgres (Docker-gated).
- *
- * The unit suite runs the routes against the in-memory twin, which cannot exercise the two things that
- * actually make this feature safe:
- *
- *   1. The PARTIAL unique index `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL`. Two taps on
- *      "Prepare transcript" race with no lock and no advisory serialization: exactly ONE row must
- *      survive, the loser must recover by re-reading the winner, and both callers must see one document
- *      with one code. A twin that checks a Map in a single-threaded loop proves nothing about that.
- *   2. The PARTIAL-ness itself — revoking must FREE the slot so the holder can re-issue over the same
- *      ledger and get a NEW code.
- *
- * Plus the TOAST rule (a source grep for `SELECT *`, per DP §4.5/§8.8) and the tombstoned-holder
- * projection, which needs a real `users.deleted_at`.
- */
+// The in-memory twin cannot exercise what makes this feature safe: the partial unique index
+// `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL` resolving two unserialized "Prepare
+// transcript" taps to one row and one code, and revocation freeing that slot for a re-issue.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { readFileSync } from "node:fs"
@@ -52,7 +39,6 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     return u!.id
   }
 
-  /** A `done` event in LA_CITY, so `logEventHours` has something to credit against. */
   async function newCleanup(organizerId: string, title: string): Promise<string> {
     return await seedCleanup(h.sql, {
       organizerUserId: organizerId,
@@ -65,7 +51,6 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     })
   }
 
-  /** Credit `hours` to `userId` through the real ledger repo, exactly as a host would. */
   async function credit(
     organizerId: string,
     userId: string,
@@ -126,13 +111,11 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     const row = rows[0]!
     expect(row.code).toBe(certificate.code)
     expect(row.entry_count).toBe(1)
-    // jsonb round-trip: the stored model is exactly what was rendered.
     expect(row.snapshot.v).toBe(1)
     expect(row.snapshot.holder.displayName).toBe("Cert Holder")
     expect(row.snapshot.rows).toHaveLength(1)
     expect(row.snapshot.rows[0]!.hours).toBe(3.5)
 
-    // The object landed in the media bucket under the C16 prefix.
     expect(row.r2_key).toMatch(/^certificates\/service-hours\/\d{4}\/\d{2}\/[0-9a-f-]{36}\.pdf$/)
     expect(await storage.head(row.r2_key)).not.toBeNull()
   })
@@ -142,8 +125,7 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     const holder = await newUser("Race Holder")
     await credit(org, holder, 2)
 
-    // Two independent service instances, as two in-flight requests would be — no shared state beyond
-    // the database and the bucket.
+    // Two independent service instances, sharing nothing but the database and the bucket.
     const storage = new FakeStorage()
     const a = makeService(storage).service
     const b = makeService(storage).service
@@ -160,10 +142,9 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     const winner = rows[0]!
     expect(first.certificate.code).toBe(winner.code)
     expect(second.certificate.code).toBe(winner.code)
-    // Exactly one of the two rendered documents survives; the loser's object is swept best-effort.
+    // The loser's object is swept best-effort.
     const keys = [...storage.objects.keys()]
     expect(keys).toEqual([winner.r2_key])
-    // Exactly one of the two calls did a fresh render.
     expect([first.reused, second.reused].filter((r) => r === true)).toHaveLength(1)
   })
 
@@ -196,7 +177,6 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
 
     const revoked = await service.revoke(holder, first.certificate.code)
     expect(revoked.certificate.status).toBe("revoked")
-    // The download link dies with the object.
     expect(storage.objects.size).toBe(0)
 
     const second = await service.issue(holder)
@@ -215,16 +195,9 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     expect(rows.find((r) => r.code === second.certificate.code)!.revoked_at).toBeNull()
   })
 
-  /**
-   * THE OPERATOR REMEDY, end to end — `scripts/revoke-certificate.ts` (`pnpm db:certificate:revoke`).
-   *
-   * The product's revoke is holder-gated and hardcodes the reason `"holder"`, which would publicly blame
-   * the volunteer for a correction civfix made. The operator path is the SAME repository call with an
-   * operator reason, and it is the remedy `drizzle/0065_void_report_volunteer_hours.sql` and the runbook's
-   * §1b point at, so it is pinned here rather than left to a hand-written UPDATE: the reason must reach
-   * the PUBLIC verify projection verbatim, and the revoke must free the partial-index slot so the holder
-   * can re-issue a corrected transcript.
-   */
+  // The operator remedy (`scripts/revoke-certificate.ts`). The product's revoke hardcodes the reason
+  // `"holder"`, which would publicly blame the volunteer for a correction civfix made. The reason must
+  // reach the public verify projection verbatim and the revoke must free the slot for a re-issue.
   it("an OPERATOR revoke reaches verify() with its own reason and frees the re-issue slot", async () => {
     const org = await newUser("Operator Org")
     const holder = await newUser("Operator Holder")
@@ -234,8 +207,7 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     const issued = await service.issue(holder)
     expect(storage.objects.size).toBe(1)
 
-    // Exactly what the script does: find the row by its printed code, then revoke it BY THAT ROW'S OWN
-    // user id (the operator is not the holder and has no session), with an operator reason.
+    // As the script does: revoke by the row's own user id, since the operator has no session.
     const repo = makeDrizzleCertificateRepository(h.sql)
     const found = await repo.findByCode(issued.certificate.code)
     expect(found?.userId).toBe(holder)
@@ -247,17 +219,14 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     )
     expect(row?.revokedReason).toBe("ledger_corrected")
 
-    // The person holding the paper is told WHY, and is not told the volunteer withdrew it.
     const verified = await service.verify(issued.certificate.code)
     expect(verified.status).toBe("revoked")
     expect(verified.revokedReason).toBe("ledger_corrected")
 
-    // Idempotent: a second run never rewrites the first revocation's reason or timestamp.
     const again = await repo.revoke(holder, issued.certificate.code, "issued_in_error", new Date())
     expect(again?.revokedReason).toBe("ledger_corrected")
     expect(again?.revokedAt?.getTime()).toBe(row?.revokedAt?.getTime())
 
-    // The partial unique index is free again, so the holder can re-issue once the ledger is corrected.
     const reissued = await service.issue(holder)
     expect(reissued.reused).toBe(false)
     expect(reissued.certificate.code).not.toBe(issued.certificate.code)
@@ -299,11 +268,9 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     const res = await service.verify(issued.certificate.code)
     expect(res.status).toBe("revoked")
     expect(res.revokedReason).toBe("account_closed")
-    // The tombstone means the identity is not echoed back, but the code still answers honestly.
     expect(Object.keys(res)).not.toContain("holderName")
     expect(res.totalHours).toBe(2.5)
 
-    // And a tombstoned account can no longer issue.
     await expect(service.issue(holder)).rejects.toMatchObject({ code: "NOT_FOUND" })
   })
 
@@ -314,12 +281,8 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     expect(storage.objects.size).toBe(0)
   })
 
-  /**
-   * DP §4.5: `snapshot` is ~200 KB of jsonb at the 1000-entry cap and lives out of line in TOAST. A
-   * `SELECT *` on the list or public-verify path would detoast it on every read. Cheap source grep, same
-   * shape as the "THE RULE" grep tests in @civfix/ui — an assertion about the code, because no runtime
-   * assertion can see a detoast.
-   */
+  // `snapshot` is ~200 KB of jsonb at the 1000-entry cap and lives in TOAST; a `SELECT *` on the list or
+  // verify path would detoast it on every read. A source grep, because no runtime assertion sees a detoast.
   it("the certificate repo SQL never uses SELECT * and never SELECTs the snapshot column", () => {
     const raw = readFileSync(
       fileURLToPath(
@@ -332,16 +295,13 @@ describe.skipIf(!pg)("service-hours certificates (integration)", () => {
     const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
 
     expect(code).not.toMatch(/SELECT\s+\*/i)
-    // `snapshot` may appear ONLY in the INSERT column list — never in a projection. The SQL keyword is
-    // matched CASE-SENSITIVELY at a line start: the TypeScript row type is named `CertificateRowSelect`,
-    // and a case-insensitive `/select/` happily matches that identifier and then swallows the next
-    // statement whole.
+    // Matched case-sensitively at a line start: a case-insensitive `/select/` would match the
+    // `CertificateRowSelect` type name and swallow the next statement whole.
     const selectBlocks = code.match(/^\s*SELECT\b[\s\S]*?\bFROM\b/gm) ?? []
     expect(selectBlocks.length).toBeGreaterThan(0)
     for (const block of selectBlocks) {
       expect(block, "a read path selects the TOASTed snapshot column").not.toMatch(/\bsnapshot\b/)
     }
-    // …and the RETURNING projections must not drag it back either.
     for (const block of code.match(/^\s*RETURNING\b[\s\S]*?`/gm) ?? []) {
       expect(block, "a RETURNING projection selects the TOASTed snapshot column").not.toMatch(
         /\bsnapshot\b/,

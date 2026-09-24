@@ -1,11 +1,11 @@
 /**
- * F132: every anonymous submit opens a moderation_items row ("Held report" / "Hidden pending review")
- * inside the held-create transaction, but the AUTOMATED release path only ever flipped the report to
- * published — nothing closed the item. The admin queue lists `WHERE status='open'` with no join to the
+ * Every anonymous submit opens a moderation_items row ("Held report" / "Hidden pending review") inside
+ * the held-create transaction, but the AUTOMATED release path used to only flip the report to published,
+ * so nothing closed the item. The admin queue lists `WHERE status='open'` with no join to the
  * report's current status, so it accumulated one permanently-open row per anonymous report ever
  * submitted, each asserting a report is hidden pending review while it is in fact live on the public map.
  *
- * The item now closes ATOMICALLY with the release, in publishHeldReport's own transaction — which is the
+ * The item now closes ATOMICALLY with the release, in publishHeldReport's own transaction, which is the
  * only place it can be asserted, so this runs against the real schema (Docker-gated). The gate cases
  * matter as much as the happy one: a release that is REFUSED (media not ready, an open abuse flag) must
  * leave the item open for the human it is queued for.

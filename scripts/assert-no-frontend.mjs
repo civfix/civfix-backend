@@ -1,11 +1,7 @@
 #!/usr/bin/env node
-// Stage 0.7 (UI-unification) backend-isolation guard.
-//
-// The civfix backend (Fastify API + media worker) depends ONLY on @civfix/shared, the framework-free
-// contract. It must never pull in frontend runtime deps: React, React Native, react-native-web, or the
-// new @civfix/ui package (which carries React/RN peers). If any of those ever appear, an install or a
-// stray dependency edit introduced a leak between the backend and the UI layer, and this script fails
-// CI so it gets caught before it ships.
+// Backend-isolation guard, run in CI. The backend depends ONLY on @civfix/shared, the framework-free
+// contract. React, React Native, react-native-web or @civfix/ui (which carries React/RN peers)
+// appearing here means an install or a stray dependency edit leaked the UI layer into the backend.
 //
 // Two independent checks:
 //   1. pnpm-lock.yaml (read as TEXT) must contain no RESOLVED package whose key is react, react-dom,
@@ -17,7 +13,7 @@
 //   2. services/api and services/media-worker package.json must not list react / react-dom /
 //      react-native in dependencies or devDependencies.
 //
-// ESM, ASCII only. Run: node scripts/assert-no-frontend.mjs  (exit 0 = clean, exit 1 = leak found).
+// Run: node scripts/assert-no-frontend.mjs  (exit 0 = clean, exit 1 = leak found).
 
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
@@ -25,12 +21,8 @@ import { dirname, join } from "node:path"
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 
-/** Collected human-readable failures; non-empty => exit 1. */
 const failures = []
 
-// ---------------------------------------------------------------------------
-// Check 1: the pnpm lockfile must not RESOLVE any banned frontend package.
-//
 // In pnpm-lock v9 a resolved package is a key in the top-level `packages:` (and `snapshots:`) maps,
 // written as `  <name>@<version>:` at a two-space indent. A scoped name may be quoted. We anchor each
 // pattern to start-of-line + two spaces + the exact package name + `@`, so:
@@ -44,11 +36,9 @@ const failures = []
 //                             `@` boundary stops `react-native` from matching `react-native-b4a`).
 //   - `react-native-web@...`  has its own dedicated pattern.
 //   - `@civfix/ui@...`        matches whether or not the scoped key is quoted.
-// ---------------------------------------------------------------------------
 const LOCKFILE = "pnpm-lock.yaml"
 const lockfilePath = join(repoRoot, LOCKFILE)
 
-/** Each entry: a banned resolved-package name + the regex that matches its lockfile-v9 key line. */
 const BANNED_LOCKFILE_PACKAGES = [
   { name: "react", re: /^ {2}["']?react@/m },
   { name: "react-dom", re: /^ {2}["']?react-dom@/m },
@@ -76,9 +66,6 @@ for (const { name, re } of BANNED_LOCKFILE_PACKAGES) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Check 2: backend service manifests must not declare React/RN directly.
-// ---------------------------------------------------------------------------
 const BANNED_MANIFEST_DEPS = ["react", "react-dom", "react-native"]
 const SERVICE_MANIFESTS = ["services/api/package.json", "services/media-worker/package.json"]
 
@@ -99,9 +86,6 @@ for (const rel of SERVICE_MANIFESTS) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Report.
-// ---------------------------------------------------------------------------
 if (failures.length > 0) {
   console.error("[assert-no-frontend] FAIL: backend pulled in frontend runtime deps:")
   for (const f of failures) console.error(`  - ${f}`)

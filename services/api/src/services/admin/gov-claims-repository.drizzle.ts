@@ -1,24 +1,7 @@
-/**
- * Postgres-backed GovClaimsRepository (Phase 2): the production binding of the gov-provisioning seam.
- *
- * Written against the raw postgres-js tag (`Sql`) for the jsonb `checks` merge (jsonb_set / ||) and so
- * the approve/reject transitions write the claim row + the audit atomically in one transaction. Reads/
- * writes touch only gov_claims (owned) + audit_log (via writeAudit). The USER provisioning + role grant
- * are NOT here - they happen in the service via the UserProvisioner seam (the Phase 1 UserStore) before
- * approve() persists the claim transition + the user link, keeping the user-store concern out of this
- * raw-SQL repo.
- *
- * VERIFY (setCheck): merges one check object into the `checks` jsonb under its key, stamping `at` with
- * now(). Uses `checks || jsonb_build_object(key, value)` so the other checks are preserved.
- *
- * APPROVE: gov_claims.status='approved', user_id=<provisioned user>, decided_at/by, WHERE status='pending'
- * (0 rows when already decided -> null -> the service surfaces a conflict). The approved claim row IS the
- * user<->jurisdiction binding (the claim already carries jurisdiction_geoid); there is no separate
- * membership table. Audit gov_claim.approved.
- *
- * REJECT: gov_claims.status='rejected', reject_reason, decided_at/by, WHERE status='pending'. Audit
- * gov_claim.rejected.
- */
+// Each transition writes the claim row and its audit row in one transaction. User provisioning and the
+// role grant stay in the service (UserProvisioner seam), out of this raw-SQL repository. The approved
+// claim row IS the user<->jurisdiction binding (it carries jurisdiction_geoid); there is no separate
+// membership table.
 
 import type { Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
@@ -38,7 +21,6 @@ import {
 } from "./gov-claims-service.js"
 import type { GovCheckStatus, GovMethod, GovVerificationCheck } from "@civfix/shared"
 
-/** A gov_claims row (snake_case columns) as read from Postgres. */
 interface GovClaimRow {
   id: string
   user_id: string | null
@@ -54,21 +36,18 @@ interface GovClaimRow {
   created_at: Date
 }
 
-/** The valid check keys, used to narrow the parsed jsonb keys to the typed union. */
 const CHECK_KEYS: readonly string[] = ["linkedin", "directory", "callback"]
 
-/** The valid check-status values; an unknown/widened status reads back as 'pending' (never coerced). */
 const CHECK_STATUSES: readonly GovCheckStatus[] = ["verified", "pending"]
 
-/** Parse the `checks` jsonb into the typed per-check map, dropping unknown keys / malformed entries. */
 function parseChecks(raw: unknown): Partial<Record<GovVerificationCheck, GovCheckRecord>> {
   const out: Partial<Record<GovVerificationCheck, GovCheckRecord>> = {}
   if (!raw || typeof raw !== "object") return out
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!CHECK_KEYS.includes(key) || !value || typeof value !== "object") continue
     const v = value as Record<string, unknown>
-    // Validate against the real union (not "verified else pending") so a future widened status is not
-    // silently downgraded to verified/pending on read; an unrecognized value defaults to 'pending'.
+    // Checked against the real union, not "verified else pending", so an unrecognized status can never
+    // read back as verified.
     const status: GovCheckStatus = CHECK_STATUSES.includes(v.status as GovCheckStatus)
       ? (v.status as GovCheckStatus)
       : "pending"
@@ -81,7 +60,6 @@ function parseChecks(raw: unknown): Partial<Record<GovVerificationCheck, GovChec
   return out
 }
 
-/** Project a row into the service record. */
 function toRecord(row: GovClaimRow): GovClaimRecord {
   return {
     id: row.id,
@@ -100,7 +78,6 @@ function toRecord(row: GovClaimRow): GovClaimRecord {
 }
 
 export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
-  // The single 12-column projection shared by every SELECT/RETURNING (one source of truth for the row).
   const cols = sql`id, user_id, name, title, org, jurisdiction_geoid, method, contact_email, status,
     checks, reject_reason, created_at`
 
@@ -164,15 +141,13 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
       },
     ): Promise<GovClaimRecord | null> {
       return sql.begin(async (tx) => {
-        // Merge one check into the checks jsonb (preserving the others) and stamp `at`.
         const checkValue = {
           status: input.status,
           evidence: input.evidence,
           note: input.note,
           at: new Date().toISOString(),
         }
-        // WHERE status='pending' so an operator cannot mutate the checks of an already-decided claim (and
-        // write a spurious gov_claim.verified audit); a non-pending claim returns 0 rows -> 404/no-op.
+        // A decided claim's checks are immutable, which also keeps a spurious gov_claim.verified audit out.
         const rows = await tx<GovClaimRow[]>`
           UPDATE gov_claims
           SET checks = COALESCE(checks, '{}'::jsonb) || jsonb_build_object(

@@ -1,21 +1,11 @@
 /**
- * Shared keyset-cursor batch loops for the offline backfill CLIs.
+ * TERMINATION: every loop pages with a strictly advancing cursor and advances past the whole batch,
+ * including rows the batch left unchanged, so no row is visited twice and the loop ends on an empty page.
+ * Each loop only selects rows whose target column IS NULL, so it is idempotent.
  *
- * Two shapes were copy-pasted four times across backfill-jurisdictions-core.ts and
- * backfill-reference-codes-core.ts — the geom -> jurisdiction_geoid resolver (reports, cleanups) and the
- * reference-code stamper (reports, cleanups) — differing only in the table name, batch size and log label.
- * They live here once so termination, cursor advance and idempotency semantics have a single home.
+ * `table` is a closed union of literal names, never user input, interpolated as a postgres.js identifier.
  *
- * KEYSET CURSOR & TERMINATION: every loop pages with a STRICTLY advancing cursor and advances past the
- * WHOLE batch, including rows the batch left unchanged, so no row is visited twice and the loop ends when a
- * page comes back empty. Each loop is idempotent — it only selects rows whose target column IS NULL.
- *
- * `table` is a closed union of module-literal names (never user input), interpolated as a postgres.js
- * identifier (`sql(table)`) — the same house rule as makeMentionRepo / chat-reply-hydration. Geometry flows
- * ONLY through the raw `sql` tag, never Drizzle.
- *
- * No `main()` and no run-as-CLI guard here, so bundled entries can import this module freely (see
- * ingest-jurisdictions-core.ts for the tsup-bundling rationale behind the guard-free cores).
+ * Guard-free (no runIfMain) so bundled entries can import it; see ingest-jurisdictions-core.ts.
  */
 
 import type postgres from "postgres"
@@ -26,26 +16,21 @@ import { JURISDICTION_RESOLVE_ORDER_BY } from "./sql/jurisdiction.js"
 
 type SqlFragment = postgres.Fragment
 
-/** Tables carrying a `geom` + `jurisdiction_geoid` pair the spatial resolver can fill in. */
 export type JurisdictionGeomTable = "reports" | "cleanups"
 
-/** Tables carrying a `reference_code` + `jurisdiction_geoid` pair. */
 export type ReferenceCodeTable = "reports" | "cleanups"
 
 /**
- * Re-resolve every NULL `<table>.jurisdiction_geoid` from the row's own `geom`, in keyset-cursor batches
- * over the id. Returns `resolved` (rows that got a non-NULL geoid) and `stayedNull` (points outside all
- * loaded coverage, left NULL on purpose). `ids` narrows the pass to those rows, for a caller that must not
- * touch rows it did not null itself.
+ * `stayedNull` counts points outside all loaded coverage, left NULL on purpose. `ids` narrows the pass
+ * for a caller that must not touch rows it did not null itself.
  *
- * The candidate polygon is picked with the SHARED ordering constant the write-time resolver uses
- * (JURISDICTION_RESOLVE_ORDER_BY via `sql.unsafe` — a trusted, code-defined string, never user input), so a
- * backfilled row lands on exactly the jurisdiction a fresh insert would have chosen.
+ * The polygon is picked with the same ordering constant the write-time resolver uses (a trusted,
+ * code-defined string passed through `sql.unsafe`), so a backfilled row lands on exactly the jurisdiction
+ * a fresh insert would have chosen.
  *
- * SHAPE: a CTE + join, NOT `UPDATE <table> t ... FROM LATERAL (... t.geom ...)`: Postgres forbids a LATERAL
- * FROM-item from referencing the UPDATE target table (42P10). Inside the CTE's plain SELECT the correlation
- * IS allowed. Rows outside every polygon resolve to a NULL geoid, are filtered by `m.geoid IS NOT NULL` ->
- * stay NULL -> absent from RETURNING. The IN(...) / IS NULL guards keep the statement idempotent.
+ * SHAPE: a CTE + join, not `UPDATE ... FROM LATERAL (... t.geom ...)`, because Postgres forbids a LATERAL
+ * FROM-item from referencing the UPDATE target (42P10); inside the CTE's plain SELECT the correlation is
+ * allowed.
  */
 export async function resolveGeomJurisdictions(
   sql: Queryable,
@@ -54,12 +39,10 @@ export async function resolveGeomJurisdictions(
 ): Promise<{ resolved: number; stayedNull: number }> {
   let resolved = 0
   let stayedNull = 0
-  // The keyset cursor: the last id already paged past. NULL on the first iteration (no lower bound).
   let cursor: string | null = null
 
   for (;;) {
-    // Strict lower bound for this page, lifted into an explicitly-typed fragment (the codebase convention;
-    // the `: SqlFragment` annotation breaks the `sql` self-reference that would otherwise infer `any`).
+    // The `: SqlFragment` annotation breaks the `sql` self-reference that would otherwise infer `any`.
     const cursorFilter: SqlFragment = cursor === null ? sql`` : sql`AND id > ${cursor}`
     const idFilter: SqlFragment =
       opts.ids === undefined ? sql`` : sql`AND id = ANY(${opts.ids as string[]}::uuid[])`
@@ -100,7 +83,7 @@ export async function resolveGeomJurisdictions(
 
     resolved += updated.length
     stayedNull += batch.length - updated.length
-    // Advance past the whole batch — including rows that stayed NULL — so they are never revisited.
+    // Advance past the whole batch, including rows that stayed NULL, so they are never revisited.
     cursor = batch[batch.length - 1]!.id
 
     console.log(
@@ -113,29 +96,21 @@ export async function resolveGeomJurisdictions(
   return { resolved, stayedNull }
 }
 
-/** The columns every reference-code loop selects; `Row` adds whatever else its allocator needs. */
 export interface ReferenceCodeRow {
   id: string
   created_at: Date
   // The keyset bound. A millisecond Date bound sits below its own row, so a row that keeps failing at
   // the tail would be re-selected forever.
   cursor_at: string | null
-  /** jurisdictions.code joined through jurisdiction_geoid; NULL when unresolved or the row has no code. */
   jur_code: number | null
 }
 
 /**
- * Stamp `<table>.reference_code` for every row still NULL, oldest-first (created_at ASC, id ASC for a
- * stable tiebreak), in keyset-cursor batches. For each row the JURCODE comes from the joined
- * jurisdictions.code (UNKNOWN_JURCODE/0 when unresolved), `spec.allocate` mints the code from the SHARED
- * reference_counters allocator — the same one the live create paths use, so a backfill running concurrently
- * with live traffic can never collide — and the row is stamped. Returns how many rows were stamped.
+ * `spec.allocate` must use the shared reference_counters allocator the live create paths use, so a
+ * backfill running alongside live traffic can never collide.
  *
- * Each row runs in its OWN transaction: allocate (FIRST, per the reference-code lock-order contract) +
- * stamp commit together, so a mid-batch failure cannot leak a consumed counter value against an un-stamped
- * row beyond that single row. A failed row is counted and logged, never fatal.
- *
- * `spec.extraColumn` is the one extra column the allocator needs (reports: `type`); NULL selects none.
+ * Each row runs in its own transaction (allocate first, per the lock-order contract, then stamp), so a
+ * failure can waste at most one counter value. A failed row is counted and logged, never fatal.
  */
 export async function stampReferenceCodes<Row extends ReferenceCodeRow>(
   sql: Sql,
@@ -149,7 +124,6 @@ export async function stampReferenceCodes<Row extends ReferenceCodeRow>(
 ): Promise<{ stamped: number; failed: number }> {
   let stamped = 0
   let failed = 0
-  // Keyset cursor over (created_at, id). NULL on the first page (no lower bound).
   let cursor: { at: string | null; id: string } | null = null
   const extraColumns: SqlFragment =
     spec.extraColumn === null ? sql`` : sql`, t.${sql(spec.extraColumn)}`

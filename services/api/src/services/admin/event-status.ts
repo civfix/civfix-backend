@@ -1,17 +1,8 @@
 /**
- * Event status mapping: the one-way bridge from the DERIVED public CleanupStatus (0.46.0 — computed from
- * scheduled_at/ends_at by `cleanupStatusExpr`, never read from the stored column except for 'cancelled')
- * to the admin EventStatus wire enum.
- *
- * The map stays TOLERANT of every historical value so a legacy row, or a row an earlier admin build wrote
- * a Phase-2 value into, still resolves:
- *   active|in_progress      -> in_progress
- *   done|completed          -> completed
- *   cancelled               -> cancelled
- *   upcoming|anything else  -> upcoming
- *
- * There is no wire -> stored direction any more: status is a clock reading, and the only admin write is
- * Cancel (`adminEventStatusExpr` filters on the same derivation the reads project).
+ * Status is derived from scheduled_at/ends_at (the stored column is read only for 'cancelled'), so this
+ * maps one way, to the admin wire enum. It accepts both the public (active/done) and admin
+ * (in_progress/completed) vocabularies so a legacy row still resolves. There is no wire -> stored
+ * direction: status is a clock reading, and the only admin write is Cancel.
  */
 
 import type { EventStatus } from "@civfix/shared"

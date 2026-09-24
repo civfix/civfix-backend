@@ -3,7 +3,7 @@
  *
  * Registration used to close on the stored `done` a host set by hand. Nothing writes that value any
  * more, so the gate is the clock: `cancelled` (the one stored decision) OR the event's end having
- * passed. An UNDERWAY event stays open — walk-ups are the whole point of the check-in desk.
+ * passed. An UNDERWAY event stays open: walk-ups are the whole point of the check-in desk.
  */
 
 import { describe, expect, it } from "vitest"

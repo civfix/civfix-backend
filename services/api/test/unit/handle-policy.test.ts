@@ -1,10 +1,7 @@
 /**
- * src/auth/handle-policy.ts — the @handle write policy (auth finding #4 / D33).
- *
- * The module exists ONLY to stop the in-memory and Postgres UserStore.updateProfile impls from carrying
- * near-verbatim copies of the same rules and silently diverging — yet nothing exercised the rules it
- * centralizes: the rolling-30-day rename cooldown, the exact-30-days boundary, the
- * initial-set-leaves-the-clock-null rule, or the unchanged-handle no-op.
+ * The @handle write policy exists so the in-memory and Postgres UserStore.updateProfile impls share one
+ * copy of the rules instead of silently diverging: the rolling 30-day rename cooldown, the exact-30-days
+ * boundary, the initial set leaving the clock null, and the unchanged-handle no-op.
  *
  * Two layers are asserted:
  *   1. `handleChanged` + `decideHandleWrite` directly, with an injected clock (the policy itself);
@@ -86,7 +83,7 @@ describe("decideHandleWrite: the rolling 30-day rename cooldown", () => {
     expect(thrown).toMatchObject({ code: "RATE_LIMITED", httpStatus: 429 })
     expect((thrown as AppError).message).toBe(`You can change your username again on ${unlockAt}.`)
     // The date the user is told is the real unlock instant: 30 days after the last rename
-    // (2026-06-25T12:00Z), i.e. one day out from "now" — not 30 days out from now.
+    // (2026-06-25T12:00Z), i.e. one day out from "now", not 30 days out from now.
     expect(unlockAt).toBe("2026-07-25T12:00:00.000Z")
   })
 
@@ -97,7 +94,6 @@ describe("decideHandleWrite: the rolling 30-day rename cooldown", () => {
     expect(() => decideHandleWrite(input({ handleChangedAt: oneMsShort }))).toThrowError(
       expect.objectContaining({ code: "RATE_LIMITED" }),
     )
-    // Exactly 30 days later the rename is allowed and re-stamps the clock to now.
     expect(decideHandleWrite(input({ handleChangedAt: atBoundary }))).toEqual({
       handle: "newname",
       handleChangedAt: NOW,
@@ -163,9 +159,8 @@ describe("decideHandleWrite: format + uniqueness gates run BEFORE the cooldown",
 
 describe("decideHandleWrite: trim normalization (LOW/readability finding)", () => {
   it("PERSISTS the trimmed handle, not the submitted one", () => {
-    // The old code validated `submitted.trim()` but returned `submitted` verbatim, so " bob " passed the
-    // format check and stored the spaces. It only happened to be safe because the shared HandleSchema
-    // (.trim()) sanitizes upstream — a store-level source of truth must not depend on route-level zod.
+    // The shared HandleSchema (.trim()) sanitizes upstream, but a store-level source of truth must not
+    // depend on route-level zod: validating the trimmed value while storing the raw one keeps the spaces.
     expect(decideHandleWrite(input({ submitted: "  bob  " })).handle).toBe("bob")
     expect(decideHandleWrite(input({ submitted: "\tjane_doe\n" })).handle).toBe("jane_doe")
   })
@@ -218,7 +213,6 @@ describe("InMemoryUserStore.updateProfile DELEGATES to the policy (no divergent 
     await expect(
       store.updateProfile(user.id, { handle: "coach_a", displayName: "Coach" }),
     ).rejects.toMatchObject({ code: "RATE_LIMITED", httpStatus: 429 })
-    // The rejected write changed nothing.
     expect((await store.findById(user.id))!.handle).toBe("coach_ax")
 
     clock.value = new Date(renamed.handleChangedAt!.getTime() + HANDLE_RENAME_COOLDOWN_MS)

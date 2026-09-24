@@ -1,6 +1,4 @@
-// GET /admin/audit — read-only operator view of audit_log (no audit written for a read). The
-// requireOperator guard is applied by routes/admin/index.ts (this whole router runs inside the guarded
-// child context).
+// Reads of audit_log are not themselves audited.
 
 import { AuditListQuerySchema, type AuditListResponse } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
@@ -10,7 +8,7 @@ import { makeAuditService, type AuditRepository } from "../../services/admin/aud
 import { makeDrizzleAuditRepository } from "../../services/admin/audit-repository.drizzle.js"
 import { route } from "../../versioning/route.js"
 
-/** Injected audit-service deps (tests): an in-memory repo the route builds the service from offline. */
+/** Injected audit-service deps (tests), so the HTTP flow runs offline. */
 export interface AuditRouteOverrides {
   repo: AuditRepository
 }

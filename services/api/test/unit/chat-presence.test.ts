@@ -126,7 +126,6 @@ describe("gateway presence flow (snapshot to joiner, deltas to others)", () => {
 
     await handleClientFrame(bSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
     await handleClientFrame(a1Session, JSON.stringify({ type: "join", cleanupId: ROOM }))
-    // B saw Alice come online exactly once.
     expect(bConn.framesOfType("presence").filter((f) => f.userId === ALICE)).toHaveLength(1)
 
     // Alice opens a second device: B must NOT see another "join" for Alice (she was already online).

@@ -1,15 +1,13 @@
 /**
- * anon.hold.release.sweep cron: self-healing backstop for the hold-then-publish release (P2-8).
- *
- * WHY THIS EXISTS. The normal release path is the media.checks post-success HOOK: after a media asset
- * reaches a terminal status, the worker enqueues anon.hold.release for the media's report, and that job
- * re-evaluates + publishes the held anon report once all its media are ready + clean. That inline enqueue
- * is best-effort: if SIGTERM lands such that pg-boss begins stopping while a handler sits between
+ * Self-healing backstop for the anon hold-then-publish release. The normal release path is the
+ * media.checks post-success HOOK: after a media asset reaches a terminal status, the worker enqueues
+ * anon.hold.release for the media's report, and that job re-evaluates + publishes the held anon report
+ * once all its media are ready + clean. That inline enqueue is best-effort: if SIGTERM lands such that pg-boss begins stopping while a handler sits between
  * "persisted the media result" and "enqueued anon.hold.release", the enqueue can fail (boss stopping) and
  * is swallowed (the media job still completes). For a single-media anon report there is then no other
  * media event to ever re-trigger the release, so the report could stay HELD forever.
  *
- * THE GUARANTEE this sweep provides: a held anon report whose media are all ready + clean is ALWAYS
+ * This sweep guarantees that a held anon report whose media are all ready + clean is ALWAYS
  * eventually published, independent of whether any single inline enqueue was delivered. Every few minutes
  * (HOLD_RELEASE_SWEEP_CRON) the sweep lists held anon reports (reporter_user_id IS NULL, status 'held',
  * not deleted, bounded batch oldest-first) and runs the SAME idempotent release gate
@@ -29,7 +27,6 @@ import { resolveJobObs, type JobObsDeps } from "./obs.js"
 export interface HoldReleaseSweepDeps extends JobObsDeps {
   repo: AnonHoldReleaseRepo
   abuseChecks: AbuseChecks
-  /** Max held anon reports to re-check this run. */
   batchSize: number
 }
 
@@ -39,10 +36,6 @@ export interface HoldReleaseSweepResult {
   errors: number
 }
 
-/**
- * Run one hold-release sweep. Returns counts. Never throws; per-report failures are counted + logged +
- * reported. Idempotent end-to-end (the underlying release gate is a no-op on a no-longer-held report).
- */
 export async function runHoldReleaseSweep(
   deps: HoldReleaseSweepDeps,
 ): Promise<HoldReleaseSweepResult> {

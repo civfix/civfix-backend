@@ -198,7 +198,7 @@ describe("POST /reports/:id/chat/leave", () => {
   })
 })
 
-describe("DELETE /reports/:id/messages/:messageId — membership gate", () => {
+describe("DELETE /reports/:id/messages/:messageId (membership gate)", () => {
   it("403s a NON-member (isMember -> false), never touching softDeleteReport", async () => {
     const { app, token, chatRepo } = await makeHarness({ isMember: false })
     const messageId = await seedReportMessage(chatRepo, "someone-else")
@@ -232,7 +232,7 @@ describe("DELETE /reports/:id/messages/:messageId — membership gate", () => {
   })
 })
 
-describe("POST /reports/:id/messages/:messageId/reactions — membership gate", () => {
+describe("POST /reports/:id/messages/:messageId/reactions (membership gate)", () => {
   it("403s a NON-member (isMember -> false), keeping the room's Join copy", async () => {
     const { app, token, chatRepo, reportChat } = await makeHarness({ isMember: false })
     const messageId = await seedReportMessage(chatRepo, "someone-else")
@@ -247,7 +247,7 @@ describe("POST /reports/:id/messages/:messageId/reactions — membership gate", 
     expect(reportChat.isMember).toHaveBeenCalledTimes(1)
   })
 
-  it("404s (never 403) when the report is no longer visible — visibility gates before membership", async () => {
+  it("404s (never 403) when the report is no longer visible; visibility gates before membership", async () => {
     const { app, token, chatRepo, discussionRepo, reportChat } = await makeHarness({
       isMember: true,
     })

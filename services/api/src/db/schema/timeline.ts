@@ -1,10 +1,3 @@
-/**
- * report_timeline: append-only status history for a report (submitted -> held -> published -> ...).
- * Each row is one transition with an optional human note and the acting user (`actor_id` null for
- * system transitions). Deleting the report cascades. Indexed by (report_id, created_at) for the
- * ordered timeline render.
- */
-
 import { sql } from "drizzle-orm"
 import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { reports } from "./reports.js"
@@ -24,8 +17,8 @@ export const reportTimeline = pgTable(
       .references(() => reports.id, { onDelete: "cascade" }),
     status: text("status").$type<ReportStatus>().notNull(),
     note: text("note"),
-    // Issue #56 (D13): `note` stays the short collapsed preview; `kind` tags the entry type and `body`
-    // carries the full (untruncated) inbound text. Both NULLABLE (0031); legacy rows have neither.
+    // `note` stays the short collapsed preview while `body` carries the full inbound text; legacy rows
+    // have neither kind nor body.
     kind: text("kind"),
     body: text("body"),
     actorId: uuid("actor_id").references(() => users.id),
@@ -33,8 +26,7 @@ export const reportTimeline = pgTable(
   },
   (t) => [
     index("report_timeline_report_idx").on(t.reportId, t.createdAt),
-    // Partial index for the jurisdiction-directory last_routed_at subquery
-    // (MAX(created_at) WHERE status = 'acknowledged'). Added in drizzle/0013_perf_indexes.sql.
+    // Backs the jurisdiction-directory last_routed_at subquery.
     index("report_timeline_acknowledged_idx")
       .on(t.reportId, t.createdAt)
       .where(sql`status = 'acknowledged'`),

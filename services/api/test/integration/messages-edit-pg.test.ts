@@ -1,19 +1,3 @@
-/**
- * Unified chat-message EDIT integration test (Docker-gated; P0 Task 0.2). Boots against a live PostGIS
- * container (via withPg) and exercises chat-edit-service — the roomKind-dispatching edit path behind the
- * upcoming PATCH /messages route (Task 0.3) and the already-mounted DM edit route — against real Postgres:
- *
- *   - edit own cleanup text message: body updated, edited_at stamped, hydrated DTO returned, and a
- *     message_update frame is handed to the broadcast seam with the room's key;
- *   - the gate ladder: non-sender 403 (code not_sender), >EDIT_WINDOW_HOURS-old 403 (code
- *     edit_window_expired), soft-deleted 409, non-text / sender-less SYSTEM rows 422, wrong roomId 404,
- *     room-send permission re-checked (membership revoked -> 403);
- *   - PATCH /dm/:threadId/messages/:messageId (the OLD route, now delegating to the service) still edits a
- *     DM end-to-end over HTTP.
- *
- * When Docker is unavailable the whole block SKIPS so the local suite stays green; CI runs it for real.
- */
-
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -61,7 +45,6 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     await h.teardown()
   })
 
-  /** Insert a user and return its id. */
   async function newUser(name: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name) VALUES (${name}) RETURNING id
@@ -69,13 +52,8 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     return u!.id
   }
 
-  /**
-   * Insert a minimal report and return its id (fixture mirror of report-chat-members-pg).
-   *
-   * Defaults to 'submitted' — NOT a publicly-visible status. The service-level tests above wire no report
-   * lookup at all, so visibility is not part of what they exercise; the HTTP describe at the bottom
-   * ("report VISIBILITY gate") passes an explicit status because there the gate is live.
-   */
+  // Defaults to 'submitted', which is not publicly visible: the service-level tests wire no report lookup,
+  // and the "report VISIBILITY gate" describe passes an explicit status because there the gate is live.
   async function newReport(status = "submitted"): Promise<string> {
     const [r] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (idempotency_key, geom, geom_source, category, type, status, h3_cell)
@@ -85,7 +63,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     return r!.id
   }
 
-  /** Create a cleanup whose organizer is `organizerId` (organizer row == chat membership). */
+  // The organizer row doubles as the chat membership.
   async function newCleanup(organizerId: string): Promise<string> {
     const created = await makeCleanupService({
       tickets: TEST_TICKET_SIGNER,
@@ -105,7 +83,6 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     return created.id
   }
 
-  /** Build the service on the real Drizzle repos, capturing broadcast frames instead of fanning out. */
   function makeService(frames: { roomKey: string; frame: WsServerMessage }[] = []) {
     const chat = makeDrizzleChatRepository(h.sql)
     const dm = makeDrizzleDmRepository(h.sql)
@@ -154,12 +131,11 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     expect(updated.editedAt).toBeTruthy()
     expect(updated.mine).toBe(true)
 
-    // Persisted (not just projected): a fresh read shows the new body + edited_at.
     const reread = await chat.findMessage(cleanupId, msg.id, organizerId)
     expect(reread?.body).toBe("second draft")
     expect(reread?.editedAt).toBeTruthy()
 
-    // The message_update frame went to the cleanup's BARE room key with the refreshed DTO.
+    // Cleanup rooms use the bare cleanupId as their room key.
     expect(frames).toHaveLength(1)
     expect(frames[0]!.roomKey).toBe(cleanupId)
     expect(frames[0]!.frame).toMatchObject({
@@ -232,7 +208,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       { cleanupId, userId: organizerId, body: "old" },
       randomUUID(),
     )
-    // Backdate past the 48h window (60h). The DEFAULT partition catches any out-of-range month.
+    // The DEFAULT partition catches any out-of-range month.
     await h.sql`UPDATE chat_messages SET created_at = ${new Date(Date.now() - 60 * 3_600_000)} WHERE id = ${msg.id}`
 
     await expect(
@@ -328,7 +304,6 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       }),
     ).rejects.toMatchObject({ httpStatus: 404 })
 
-    // And an unknown message id is a plain 404 too.
     await expect(
       makeService().editMessage({
         roomKind: "cleanup",
@@ -348,7 +323,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       { cleanupId, userId: organizerId, body: "was member" },
       randomUUID(),
     )
-    // Revoke the membership out from under the sender (same check the WS send path uses).
+    // Same membership check the WS send path uses.
     await h.sql`DELETE FROM cleanup_members WHERE cleanup_id = ${cleanupId} AND user_id = ${organizerId}`
 
     await expect(
@@ -363,8 +338,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
   })
 
   it("PATCH /dm/:threadId/messages/:messageId (old route) still edits a DM end-to-end", async () => {
-    // Real Drizzle dm/blocks repos injected via chatOverrides (the established no-redis harness), with
-    // sessions minted directly for pg-created user ids so the FK from dm_messages.sender_id resolves.
+    // Sessions are minted directly for pg-created user ids so the dm_messages.sender_id FK resolves.
     const env = loadEnv({ NODE_ENV: "test" })
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
@@ -405,12 +379,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       expect(dto.body).toBe("hi bob (edited)")
       expect(dto.editedAt).toBeTruthy()
 
-      // Persisted: a fresh read shows the edit.
       const reread = await dm.findMessage(thread.id, msg.id, aliceId)
       expect(reread?.body).toBe("hi bob (edited)")
       expect(reread?.editedAt).toBeTruthy()
 
-      // Bob (non-sender) cannot edit Alice's message via the route: 403.
       const bobToken = await authServices.sessions.createSession(bobId, [])
       const forbidden = await app.inject({
         method: "PATCH",
@@ -425,8 +397,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
   })
 
   describe("PATCH /messages route + delete broadcasts (HTTP, P0 Task 0.3)", () => {
-    // One app over real Drizzle repos (chatOverrides) + the container's FakeChatService, whose
-    // joinRoom/broadcastEvent let a MockConnection stand in for a second connected WS client.
+    // FakeChatService's joinRoom/broadcastEvent let a MockConnection stand in for a second WS client.
     let app: FastifyInstance
     let container: Container
     let authServices: AuthServices
@@ -458,7 +429,6 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       await app.close()
     })
 
-    /** Let the fire-and-forget broadcast microtasks flush. */
     const flush = () => new Promise((resolve) => setImmediate(resolve))
 
     it("PATCH /messages edits a report-room message: 200 DTO + message_update to a second WS client", async () => {
@@ -474,7 +444,6 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
         randomUUID(),
       )
 
-      // A second connected client in the report room (FakeChatService joinRoom keys by room key).
       const watcher = new MockConnection("watcher")
       await container.chatService.joinRoom(roomKeyFor("report", reportId), watcher, watcherId)
 
@@ -520,12 +489,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       expect(dto.body).toBe("hey bob (edited)")
       expect(dto.editedAt).toBeTruthy()
 
-      // Persisted, not just projected.
       const reread = await dm.findMessage(thread.id, msg.id, aliceId)
       expect(reread?.body).toBe("hey bob (edited)")
       expect(reread?.editedAt).toBeTruthy()
 
-      // Non-sender still 403s through the unified route.
       const bobToken = await authServices.sessions.createSession(bobId, [])
       const forbidden = await app.inject({
         method: "PATCH",
@@ -545,7 +512,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
         randomUUID(),
       )
 
-      // Cleanup rooms use the BARE cleanupId as their room key.
+      // Cleanup rooms use the bare cleanupId as their room key.
       const watcher = new MockConnection("del-watcher")
       await container.chatService.joinRoom(roomKeyFor("cleanup", cleanupId), watcher, organizerId)
 
@@ -580,8 +547,8 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       )
       const token = await authServices.sessions.createSession(organizerId, [])
 
-      // Same pattern as the anon-routes 30/min test: earlier tests in this app already consumed a few
-      // slots on this route+key, so assert only that a 429 arrives before 40 attempts (limit is 30/min).
+      // Earlier tests in this app already consumed a few slots on this route+key, so assert only that a
+      // 429 arrives before 40 attempts (limit is 30/min).
       let saw429 = false
       for (let i = 1; i <= 40 && !saw429; i++) {
         const res = await app.inject({
@@ -597,17 +564,10 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     })
   })
 
-  /**
-   * The report-VISIBILITY gate on the unified /messages surfaces, over an app that wires
-   * `discussionOverrides` — i.e. the PRODUCTION shape.
-   *
-   * The describe above (and chat-polls-pg) deliberately wires chatOverrides with NO report lookup, which
-   * makes messages.routes' `isReportVisible` short-circuit to `true`; that is why those tests can drive
-   * report rooms whose report sits at 'submitted'. Production always builds the lookup, so a
-   * report_chat_members row — which OUTLIVES the report being held, unlisted or removed — must stop
-   * granting edit / react / pin / poll rights. All four routes answer 404 (never 403): an invisible report
-   * must not be distinguishable from a missing one, matching report-chat.routes' requireVisibleReport.
-   */
+  // Wires `discussionOverrides`, the production shape. The harness above has no report lookup, so
+  // `isReportVisible` short-circuits to true there. A report_chat_members row outlives the report being
+  // held, unlisted or removed, and must stop granting edit / react / pin / poll rights. All four answer
+  // 404, never 403, so an invisible report is indistinguishable from a missing one.
   describe("report VISIBILITY gate on the unified routes (discussionOverrides wired)", () => {
     let app: FastifyInstance
     let authServices: AuthServices
@@ -635,8 +595,8 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
         reportChat,
         groups,
         chatPolls: makeChatPollRepository(h.sql),
-        // The REAL powers resolver (the offline branch fails report/global roles closed, which would 403
-        // the PUBLISHED control's pin before the visibility gate could be shown to be the difference).
+        // The offline branch fails report/global roles closed, which would 403 the published control's
+        // pin before the visibility gate could be shown to be the difference.
         chatPowers: makeChatPowersResolver({
           isDmParticipant: (threadId, userId) => dm.isParticipant(threadId, userId),
           cleanupRoleOf: (cleanupId, userId) => cleanups.roleOf(cleanupId, userId),
@@ -650,7 +610,6 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
         container: buildContainer(env),
         authServices,
         chatOverrides: overrides,
-        // THE difference from the harness above: the real report lookup behind isReportVisible.
         discussionOverrides: { repo: makeDrizzleDiscussionRepository(h.sql) },
       })
     })
@@ -659,7 +618,6 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       await app.close()
     })
 
-    /** A report at `status` whose chat has `ownerId` joined as OWNER, plus one message they authored. */
     async function seedRoom(
       status: string,
       name: string,
@@ -693,7 +651,6 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       })
     }
 
-    /** The four unified surfaces, as (name, response) pairs for one seeded room. */
     async function hitAll(room: {
       reportId: string
       messageId: string
@@ -732,7 +689,6 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
         expect(res.statusCode, `${label} on a held report`).toBe(404)
       }
 
-      // Nothing was written: the message is untouched and no poll row exists for the room.
       const reread = await makeDrizzleChatRepository(h.sql).findReportMessage(
         room.reportId,
         room.messageId,
@@ -742,7 +698,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       expect(reread?.editedAt ?? null).toBeNull()
       expect(reread?.pinnedAt ?? null).toBeNull()
       expect(reread?.reactions).toEqual([])
-      // chat_polls is keyed on the message id, so count the poll MESSAGES in this room instead.
+      // chat_polls is keyed on the message id, so count the poll messages in this room instead.
       const polls = await h.sql<{ count: number }[]>`
         SELECT COUNT(*)::int AS count FROM chat_messages
         WHERE report_id = ${room.reportId} AND kind = 'poll'
@@ -758,7 +714,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       }
     })
 
-    it("a PUBLISHED report allows all four — so the 404s above are the gate, not the harness", async () => {
+    it("a PUBLISHED report allows all four, so the 404s above are the gate, not the harness", async () => {
       const room = await seedRoom("published", "Published Report Owner")
 
       for (const [label, res] of await hitAll(room)) {
@@ -799,8 +755,8 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       const strangerId = await newUser("Vis Stranger")
       const tok = await authServices.sessions.createSession(strangerId, [])
 
-      // Visible report, no membership row: the gate ladder falls through to the membership/powers 403 —
-      // the visibility check must not be doing double duty as the authorization check.
+      // The visibility check must not double as the authorization check: with no membership row a
+      // visible report still falls through to the membership/powers 403.
       const edit = await call(tok, "PATCH", "/v1/messages", {
         roomKind: "report",
         roomId: reportId,

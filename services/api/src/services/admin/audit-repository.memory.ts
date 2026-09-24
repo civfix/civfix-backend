@@ -1,16 +1,6 @@
-/**
- * In-memory AuditRepository for the offline audit-service unit tests (no DB, no Docker).
- *
- * Faithful to the Drizzle impl's observable behavior: newest-first ordering by (createdAt DESC, id DESC),
- * the actor / action / target filters (actor matches actorId OR actorName; action/target are
- * case-insensitive substring matches, mirroring the SQL ILIKE), and the shared "<iso>|<id>" keyset
- * cursor. seedRow appends rows; the public `rows` array is inspectable.
- */
-
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
 import { decodeCursor, paginate, type CursorAnchor } from "./pagination.js"
 
-/** Optional fields for a seeded audit row (sensible defaults fill the rest). */
 export interface SeedAuditInput {
   id?: string
   actorId?: string | null
@@ -22,12 +12,10 @@ export interface SeedAuditInput {
 }
 
 export class InMemoryAuditRepository implements AuditRepository {
-  /** All seeded rows (insertion order; the list() method sorts a copy). */
   readonly rows: AuditRecord[] = []
 
   private seq = 0
 
-  /** Append an audit row. Unspecified fields get deterministic defaults. */
   seedRow(input: SeedAuditInput = {}): AuditRecord {
     this.seq += 1
     const record: AuditRecord = {
@@ -60,7 +48,6 @@ export class InMemoryAuditRepository implements AuditRepository {
       return true
     })
 
-    // Newest first (createdAt DESC, id DESC), then drop anything not strictly before the cursor anchor.
     const sorted = [...filtered].sort(compareDesc)
     const windowed = anchor !== null ? sorted.filter((r) => beforeAnchor(r, anchor)) : sorted
 
@@ -72,14 +59,13 @@ export class InMemoryAuditRepository implements AuditRepository {
   }
 }
 
-/** Sort comparator: newest first, id DESC as the tiebreak (matches the SQL ORDER BY). */
 function compareDesc(a: AuditRecord, b: AuditRecord): number {
   const at = b.createdAt.getTime() - a.createdAt.getTime()
   if (at !== 0) return at
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0
 }
 
-/** True when `record` sorts strictly after the anchor (i.e. belongs on a later page). */
+// Strictly older than the anchor in the DESC order, i.e. on a later page.
 function beforeAnchor(record: AuditRecord, anchor: CursorAnchor): boolean {
   const t = record.createdAt.getTime()
   const at = anchor.createdAt.getTime()

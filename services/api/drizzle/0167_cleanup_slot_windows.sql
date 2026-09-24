@@ -20,7 +20,7 @@
 --
 --   * cleanup_slots_window_chk. The two columns it constrains are added by this very
 --     file, so every pre-existing row is NULL/NULL, which satisfies the CHECK
---     vacuously — the validation scan cannot find a violating row. The old image has
+--     vacuously: the validation scan cannot find a violating row. The old image has
 --     no code path that names starts_at or ends_at, so every row it goes on writing is
 --     NULL/NULL too and can never violate it. The scan takes ACCESS EXCLUSIVE, but
 --     cleanup_slots is small and is not on the hot-table list in

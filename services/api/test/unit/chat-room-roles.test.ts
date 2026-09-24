@@ -1,7 +1,6 @@
 /**
- * Offline unit tests for the P3 chat-room powers resolver (src/services/chat-room-roles.ts) —
- * the SINGLE source of truth for who may pin / delete-others in a chat room. Full §3.4 matrix,
- * stubbed deps, no DB:
+ * The chat-room powers resolver is the SINGLE source of truth for who may pin / delete-others in a
+ * chat room. The full matrix:
  *
  *   dm       participant        -> pin YES,  delete-others NO (always), not a moderator
  *   dm       non-participant    -> nothing
@@ -14,7 +13,7 @@
  *   unknown / non-member        -> nothing
  *
  * Lane isolation is asserted with throwing stubs: each room kind may only consult its own
- * lookup(s) (dm -> participant; cleanup -> cleanup role ONLY — operator status is deliberately
+ * lookup(s) (dm -> participant; cleanup -> cleanup role ONLY, operator status is deliberately
  * never consulted there; report -> report role + global role).
  */
 
@@ -30,7 +29,7 @@ const ROOM = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 const NONE: ChatPowers = { canPin: false, canDeleteOthers: false, isModerator: false }
 
-/** Deps where every lookup throws unless overridden — proves which lanes are consulted. */
+/** Deps where every lookup throws unless overridden, which proves which lanes are consulted. */
 function deps(overrides: Partial<ChatRoomRoleDeps>): ChatRoomRoleDeps {
   const never = (name: string) => async () => {
     throw new Error(`unexpected dep call: ${name}`)
@@ -45,7 +44,7 @@ function deps(overrides: Partial<ChatRoomRoleDeps>): ChatRoomRoleDeps {
   }
 }
 
-describe("resolveChatPowers — dm rooms", () => {
+describe("resolveChatPowers: dm rooms", () => {
   it("participant: canPin, NEVER canDeleteOthers, not a moderator (peer power, not moderation)", async () => {
     const resolve = makeChatPowersResolver(deps({ isDmParticipant: async () => true }))
     await expect(resolve({ roomKind: "dm", roomId: ROOM, userId: USER })).resolves.toEqual({
@@ -61,14 +60,14 @@ describe("resolveChatPowers — dm rooms", () => {
   })
 
   it("consults ONLY the participant lookup (an operator gets nothing extra in a dm)", async () => {
-    // cleanupRoleOf / reportChatRoleOf / globalRoleOf all throw — resolving must not touch them.
+    // cleanupRoleOf / reportChatRoleOf / globalRoleOf all throw: resolving must not touch them.
     const resolve = makeChatPowersResolver(deps({ isDmParticipant: async () => true }))
     const powers = await resolve({ roomKind: "dm", roomId: ROOM, userId: USER })
     expect(powers.canDeleteOthers).toBe(false)
   })
 })
 
-describe("resolveChatPowers — cleanup rooms", () => {
+describe("resolveChatPowers: cleanup rooms", () => {
   it("organizer: canPin AND canDeleteOthers (room moderator)", async () => {
     const resolve = makeChatPowersResolver(deps({ cleanupRoleOf: async () => "organizer" }))
     await expect(resolve({ roomKind: "cleanup", roomId: ROOM, userId: USER })).resolves.toEqual({
@@ -101,7 +100,7 @@ describe("resolveChatPowers — cleanup rooms", () => {
     )
   })
 
-  it("operator gets NOTHING beyond their cleanup role — globalRoleOf is never even consulted", async () => {
+  it("operator gets NOTHING beyond their cleanup role: globalRoleOf is never even consulted", async () => {
     // globalRoleOf throws; a plain-member operator must resolve to nothing without touching it.
     const resolve = makeChatPowersResolver(deps({ cleanupRoleOf: async () => "member" }))
     await expect(resolve({ roomKind: "cleanup", roomId: ROOM, userId: USER })).resolves.toEqual(
@@ -110,7 +109,7 @@ describe("resolveChatPowers — cleanup rooms", () => {
   })
 })
 
-describe("resolveChatPowers — report rooms", () => {
+describe("resolveChatPowers: report rooms", () => {
   it("owner: canPin but NOT canDeleteOthers (public civic space); still a moderator", async () => {
     const resolve = makeChatPowersResolver(
       deps({ reportChatRoleOf: async () => "owner", globalRoleOf: async () => "citizen" }),
@@ -177,8 +176,8 @@ describe("resolveChatPowers — report rooms", () => {
   })
 })
 
-describe("resolveChatPowers — group rooms (P4)", () => {
-  it("owner: both powers + moderator (only groupRoleOf consulted — throwing stubs prove isolation)", async () => {
+describe("resolveChatPowers: group rooms (P4)", () => {
+  it("owner: both powers + moderator (only groupRoleOf consulted; throwing stubs prove isolation)", async () => {
     const resolve = makeChatPowersResolver(deps({ groupRoleOf: async () => "owner" }))
     await expect(resolve({ roomKind: "group", roomId: ROOM, userId: USER })).resolves.toEqual({
       canPin: true,
@@ -208,7 +207,7 @@ describe("resolveChatPowers — group rooms (P4)", () => {
   })
 })
 
-describe("resolveChatPowers — unknown room kind", () => {
+describe("resolveChatPowers: unknown room kind", () => {
   it("resolves to nothing without consulting any lookup", async () => {
     const resolve = makeChatPowersResolver(deps({}))
     await expect(

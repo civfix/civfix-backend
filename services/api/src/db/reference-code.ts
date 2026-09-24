@@ -1,42 +1,28 @@
 /**
- * Reference-code allocation (issue #56). The single, DRY home for minting the human-readable, IMMUTABLE
- * reference codes stamped on reports + cleanups — shared by BOTH the live create paths (report /
- * anon / cleanup repositories) AND the post-deploy backfill scripts, so a code minted by one can never
- * collide with the other.
+ * The one allocator for the immutable reference codes on reports and cleanups, shared by the live create
+ * paths and the backfill scripts so a code minted by one can never collide with the other.
  *
- * Shape (D1):
  *   - reports: `{TYPECODE}-{JURCODE}-{NNNNNN}`  e.g. "DU-42-000001"
  *   - events : `EVENT-{JURCODE}-{NNNNNN}`       e.g. "EVENT-42-000001"
- *   where TYPECODE is the shared REPORT_TYPE_CODE entry (M6 — imported, never re-hardcoded), JURCODE is
- *   jurisdictions.code (0 = unknown bucket, D5), and NNNNNN is a 6-digit zero-padded per-scope counter.
  *
- * Allocation (D4): allocateNextSeq runs ONE atomic upsert against reference_counters. The counter is
- * per scope_key ("{typecode}:{jurcode}" for reports, "EVENT:{jurcode}" for events), so concurrent
- * creates in different scopes never contend, and same-scope creates serialize on the row lock.
+ * The counter is per scope, so creates in different scopes never contend and same-scope creates
+ * serialize on the counter row lock.
  *
- * LOCK-ORDER CONTRACT (D4): callers MUST invoke allocateNextSeq / allocateReferenceCode as the FIRST
- * statement inside their create transaction. Taking the counter-row lock before any report/cleanup row
- * lock gives every create path a consistent lock-acquisition order, so two concurrent creates can never
- * deadlock (no ABBA). The later agent wiring the live create paths is bound by this contract.
- *
- * Pure + dependency-free: the formatting/scope-key helpers are pure; the allocator takes the project's
- * `Queryable` tag (postgres.js Sql | TransactionSql) so it runs standalone OR inside a `sql.begin` tx.
+ * LOCK-ORDER CONTRACT: callers MUST allocate as the FIRST statement of their create transaction. Taking
+ * the counter-row lock before any report or cleanup row lock gives every create path the same
+ * acquisition order, so two concurrent creates can never deadlock ABBA.
  */
 
 import { REPORT_TYPE_CODE, type ReportType } from "@civfix/shared"
 import type { Queryable } from "./client.js"
 
-/** JURCODE used when a report/event has no resolved jurisdiction (the "unknown" bucket, D5). */
 export const UNKNOWN_JURCODE = 0
 
-/** Fixed prefix for the EVENT (cleanup) reference-code family + counter scope. */
 export const EVENT_PREFIX = "EVENT"
 
 /**
- * Resolve a jurisdiction GEOID to its compact integer JURCODE (jurisdictions.code) for the reference-code
- * JURCODE segment. Returns UNKNOWN_JURCODE (0) when the geoid is null OR the row has no code on file (D5),
- * so a code is always mintable and an unmapped/unknown-code report lands in the shared "0" bucket. Run
- * pre-tx by the create paths (the geoid is already resolved before the create transaction).
+ * Falls back to UNKNOWN_JURCODE rather than failing, so a code is always mintable. It is a plain SELECT
+ * that takes no row lock, so it cannot disturb the allocator's lock order wherever it is called.
  */
 export async function resolveJurisdictionCode(
   sql: Queryable,
@@ -50,44 +36,28 @@ export async function resolveJurisdictionCode(
   return code === null || code === undefined ? UNKNOWN_JURCODE : Number(code)
 }
 
-/** reference_counters scope_key for a report: `"{typecode}:{jurcode}"`. */
 export function reportScopeKey(typeCode: string, jurCode: number): string {
   return `${typeCode}:${jurCode}`
 }
 
-/** reference_counters scope_key for an event (cleanup): `"EVENT:{jurcode}"`. */
 export function eventScopeKey(jurCode: number): string {
   return `${EVENT_PREFIX}:${jurCode}`
 }
 
-/** Zero-pad a sequence value to the 6-digit NNNNNN segment of a reference code. */
 function pad6(seq: number): string {
   return String(seq).padStart(6, "0")
 }
 
-/**
- * Compose a reference code from its parts: `{PREFIX}-{JURCODE}-{NNNNNN}`. `prefix` is a report TYPECODE
- * (e.g. "DU") or the EVENT_PREFIX ("EVENT"); the seq is zero-padded to 6 digits.
- */
 export function formatReferenceCode(prefix: string, jurCode: number, seq: number): string {
   return `${prefix}-${jurCode}-${pad6(seq)}`
 }
 
-/**
- * Resolve a report TYPECODE from a report `type` via the shared REPORT_TYPE_CODE map (M6). Falls back to
- * the "other" code if an unrecognized type ever reaches here, so a code is always mintable.
- */
+/** Falls back to the "other" code for an unrecognized type, so a code is always mintable. */
 export function typeCodeFor(type: ReportType): string {
   return REPORT_TYPE_CODE[type] ?? REPORT_TYPE_CODE.other
 }
 
-/**
- * Atomically allocate (and return) the NEXT value for `scopeKey` from reference_counters. The first
- * allocation for a scope inserts next_val = 1; every subsequent one increments and returns. Returns the
- * bigint as a JS number (counts stay far below 2^53).
- *
- * D4 lock order: call this FIRST in the create transaction — see the module header.
- */
+/** Call this FIRST in the create transaction (see the lock-order contract above). */
 export async function allocateNextSeq(sql: Queryable, scopeKey: string): Promise<number> {
   const rows = await sql<{ next_val: number }[]>`
     INSERT INTO reference_counters (scope_key, next_val)
@@ -99,13 +69,7 @@ export async function allocateNextSeq(sql: Queryable, scopeKey: string): Promise
   return Number(rows[0]!.next_val)
 }
 
-/**
- * Allocate the next reference code for a REPORT: derives the TYPECODE from the report `type` and the
- * scope from (typecode, jurCode), bumps that scope's counter, and formats the code. `jurCode` is
- * jurisdictions.code, or UNKNOWN_JURCODE (0) when the report has no resolved jurisdiction (D5).
- *
- * D4 lock order: call this FIRST in the create transaction.
- */
+/** Call this FIRST in the create transaction (see the lock-order contract above). */
 export async function allocateReportReferenceCode(
   sql: Queryable,
   type: ReportType,
@@ -116,13 +80,7 @@ export async function allocateReportReferenceCode(
   return formatReferenceCode(typeCode, jurCode, seq)
 }
 
-/**
- * Allocate the next reference code for an EVENT (cleanup): bumps the `EVENT:{jurcode}` scope counter and
- * formats `EVENT-{jurcode}-{NNNNNN}`. `jurCode` is jurisdictions.code, or UNKNOWN_JURCODE (0) when the
- * event has no resolved jurisdiction.
- *
- * D4 lock order: call this FIRST in the create transaction.
- */
+/** Call this FIRST in the create transaction (see the lock-order contract above). */
 export async function allocateEventReferenceCode(
   sql: Queryable,
   jurCode: number = UNKNOWN_JURCODE,

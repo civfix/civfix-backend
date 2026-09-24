@@ -6,7 +6,7 @@
 -- the denormalized rollup from the surviving ledger.
 --
 -- SUPERSEDES 0035_volunteer_hours.sql's banner. That file describes
--- volunteer_hours as holding "a report auto-award (0.1h, once per report)" —
+-- volunteer_hours as holding "a report auto-award (0.1h, once per report)",
 -- that sentence is HISTORY as of this migration and MUST NOT be reinstated. The
 -- only writer of credited hours now is `logEventHours` (an event's organizer or
 -- cohost crediting an attendee for time actually served). `awardReportHours` was
@@ -15,18 +15,18 @@
 --
 -- WHY VOID RETROACTIVELY rather than only stopping the write: the rollup feeds a
 -- PUBLIC per-jurisdiction leaderboard, the "Total volunteer hours" number on every
--- profile, and — worst — signed, publicly verifiable PDF service transcripts that
+-- profile, and (worst) signed, publicly verifiable PDF service transcripts that
 -- get handed to schools, employers and courts. Leaving 0.1h-per-filing in place
 -- means every one of those overstates service, permanently and invisibly. The void
 -- is reversible in principle (clear `voided_at`); a wrongly-issued transcript is
 -- not. `hours numeric(6,2) CHECK (hours > 0)` (0035:29) forbids zeroing the rows,
--- so `voided_at` — dormant since 0035 and already filtered by EVERY read path — is
+-- so `voided_at` (dormant since 0035 and already filtered by EVERY read path) is
 -- the in-schema remedy, and the explanatory `note` travels with each row.
 --
 -- STATEMENT 2 IS A RECOMPUTE, NOT A SUBTRACTION. Subtracting the report totals is
 -- correct exactly once and silently wrong if replayed; a recompute is idempotent,
 -- and it also repairs any pre-existing rollup drift. It IS authoritative: any
--- total_hours with no backing non-voided ledger row is erased. Verified safe —
+-- total_hours with no backing non-voided ledger row is erased. Verified safe:
 -- `awardReportHours` (removed here) and `logEventHours` were the ONLY writers of
 -- user_jurisdiction_hours anywhere in the codebase, there is no `source='manual'`
 -- writer at all, and no script or worker touches either table, so no hand-made
@@ -55,9 +55,9 @@
 --       WHERE r->>'source' = 'report'
 --     );
 --
--- (valid because TranscriptModelRow carries `source` — certificate-model.ts). The
+-- (valid because TranscriptModelRow carries `source`; see certificate-model.ts). The
 -- window is tiny: 0064 shipped 2026-07-28. Remedy per row is operational, NOT part
--- of this migration — run, per code:
+-- of this migration; run, per code:
 --
 --   pnpm --filter @civfix/api db:certificate:revoke <code> --dry-run
 --   pnpm --filter @civfix/api db:certificate:revoke <code>
@@ -81,14 +81,14 @@
 -- own begin/commit on a reserved connection together with the _civfix_migrations
 -- bookkeeping INSERT; a file that opens its own transaction ends the runner's one
 -- mid-flight. test/unit/migrations-transaction-control.test.ts keeps it that way.
--- `LOCK TABLE` (statement 0) is NOT transaction control — it is a plain statement
+-- `LOCK TABLE` (statement 0) is NOT transaction control; it is a plain statement
 -- that joins the runner's transaction and is released by the runner's COMMIT.
 --
 -- WHY STATEMENT 0 LOCKS. The runner's transaction is READ COMMITTED (migrate.ts
 -- sets no isolation level) and the API may still be serving. Under READ COMMITTED
 -- an UPDATE that collides with a concurrently-committed row re-evaluates against
 -- the NEW version of that row but keeps its ORIGINAL snapshot for every OTHER
--- table — so statement 2's correlated SUM over `volunteer_hours` cannot see a
+-- table, so statement 2's correlated SUM over `volunteer_hours` cannot see a
 -- ledger row committed after the statement began. A verified host calling
 -- `logEventHours` in that window inserts its ledger row and adds its delta to
 -- `user_jurisdiction_hours`; statement 2 then overwrites that rollup with a total
@@ -125,7 +125,7 @@
 -- =============================================================================
 
 -- 0. Serialize against live `logEventHours` writers for the rest of this
---    transaction. See "WHY STATEMENT 0 LOCKS" above — without it statement 2 is a
+--    transaction. See "WHY STATEMENT 0 LOCKS" above: without it statement 2 is a
 --    READ COMMITTED lost update.
 LOCK TABLE volunteer_hours, user_jurisdiction_hours IN SHARE ROW EXCLUSIVE MODE;
 

@@ -1,12 +1,3 @@
-/**
- * cleanup_timeline: append-only activity history for a cleanup (event), mirroring report_timeline
- * (Phase 2). Each row is one event-domain activity entry (status change, attendee message, flag, ...)
- * with an optional human note and the acting user (`actor_id` null for system entries). Deleting the
- * cleanup cascades. Indexed by (cleanup_id, created_at) for the ordered timeline render.
- *
- * CANONICAL DDL: drizzle/0007_admin_phase2.sql. This mirror exists for typed queries / diff inspection.
- */
-
 import { sql } from "drizzle-orm"
 import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core"
 import { cleanups } from "./cleanups.js"

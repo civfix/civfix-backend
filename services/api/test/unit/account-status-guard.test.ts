@@ -71,7 +71,7 @@ describe("H4: suspended accounts are read-only", () => {
     expect(write.statusCode).toBe(200)
   })
 
-  it("REVIEW is a flag only — it restricts nothing", async () => {
+  it("REVIEW is a flag only; it restricts nothing", async () => {
     harness = await makeAuthHarness()
     const { token, userId } = await harness.signIn("under.review@example.com")
     harness.stores.users.setAccountStatus(userId, "review")

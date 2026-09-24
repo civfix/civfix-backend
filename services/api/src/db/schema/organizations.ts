@@ -36,7 +36,7 @@ export const organizations = pgTable(
     verifiedKind: text("verified_kind").$type<OrgVerificationKind>(),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
     createdBy: uuid("created_by").references(() => users.id),
-    // Operator suspension flag (0162): reversible, independent of verified_status and deleted_at.
+    // Reversible, and independent of verified_status and deleted_at.
     suspendedAt: timestamp("suspended_at", { withTimezone: true }),
     suspendedReason: text("suspended_reason"),
     suspendedBy: uuid("suspended_by").references(() => users.id),

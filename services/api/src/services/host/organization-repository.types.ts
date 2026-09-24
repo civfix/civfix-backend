@@ -250,7 +250,7 @@ export interface AdminSetMemberRoleArgs {
   now: Date
 }
 
-/** `sole_owner`: the target IS the owner and no transfer was requested — demotion needs a new owner first. */
+/** `sole_owner`: the target IS the owner and no transfer was requested; demotion needs a new owner first. */
 export type AdminSetMemberRoleOutcome = "updated" | "not_member" | "sole_owner"
 
 export interface OrganizationInviteRecord {
@@ -385,7 +385,6 @@ export interface OrganizationRepository {
   decideVerificationTx(args: DecideOrgVerificationArgs): Promise<DecideOrgVerificationOutcome>
   scrubDecidedEins(before: Date, limit: number): Promise<number>
 
-  // ---- Admin org management (0.41.0) ----
   adminFindOrganization(id: string): Promise<AdminOrganizationRecord | null>
   adminListOrganizations(query: AdminOrganizationListQuery): Promise<{
     items: AdminOrganizationRecord[]
@@ -402,7 +401,6 @@ export interface OrganizationRepository {
   adminAddMemberTx(args: AdminAddMemberArgs): Promise<AdminAddMemberOutcome>
   adminSetMemberRoleTx(args: AdminSetMemberRoleArgs): Promise<AdminSetMemberRoleOutcome>
 
-  // ---- Org invites (0.41.0) ----
   countPendingInvites(organizationId: string, now: Date): Promise<number>
   createInviteTx(args: CreateOrganizationInviteArgs): Promise<CreateOrganizationInviteOutcome>
   /** Pending first, newest first; rows past expires_at are flipped to `expired` on the way out. */
@@ -418,7 +416,7 @@ export interface OrganizationRepository {
     userId: string
     now: Date
   }): Promise<AcceptOrganizationInviteOutcome>
-  /** The invitee's own open invites: addressed to their id OR their verified email. Bounded by `limit`. */
+  /** The invitee's own open invites: addressed to their id OR their verified email. */
   listPendingInvitesForUser(args: {
     userId: string
     now: Date

@@ -35,16 +35,15 @@ export const reports = pgTable(
     title: text("title"),
     description: text("description"),
     addr: text("addr"),
-    /** 0179: where `addr` came from. NULL for legacy rows and for reports with no address. */
     addrSource: text("addr_source").$type<ReportAddressSource>(),
-    /** 0179: the ladder rung a RESOLVED addr reached. Always NULL when addrSource is 'user'. */
+    /** Always NULL when addrSource is 'user': only a resolved address has a precision. */
     addrPrecision: text("addr_precision").$type<AddressPrecision>(),
     status: text("status").$type<ReportStatus>().notNull(),
     visibility: text("visibility").$type<ReportVisibility>().notNull().default("public"),
     h3Cell: text("h3_cell").notNull(),
-    /** DEPRECATED (F150): never written since 0091; new rows carry NULL. DROP deferred one release. */
+    /** Dead: never written since 0091. The DROP is deferred one release. */
     claimCode: text("claim_code"),
-    /** SHA-256 hex of the per-report single-use claim code (0091). The only claim secret at rest. */
+    /** The only claim secret at rest: a SHA-256 hex, never the code itself. */
     claimCodeHash: text("claim_code_hash"),
     referenceCode: text("reference_code"),
     verificationVerdict: text("verification_verdict").$type<"approved" | "rejected">(),

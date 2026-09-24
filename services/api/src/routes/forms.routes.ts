@@ -108,7 +108,7 @@ export async function registerHomeTurfRoutes(
   function requireCounters(): CounterStore {
     const store = counters()
     if (store === null) {
-      app.log.error("home-turf form: no counter store (REDIS_URL unset) — refusing to send")
+      app.log.error("home-turf form: no counter store (REDIS_URL unset), refusing to send")
       throw exposeMessage(
         AppError.internal("This form is temporarily unavailable. Please try again later."),
       )
@@ -118,7 +118,7 @@ export async function registerHomeTurfRoutes(
 
   if (container.env.HOME_TURF_NOTIFY_TO === "") {
     app.log.warn(
-      "home-turf form: HOME_TURF_NOTIFY_TO is unset — POST /forms/home-turf is disabled and will accept no submissions",
+      "home-turf form: HOME_TURF_NOTIFY_TO is unset; POST /forms/home-turf is disabled and will accept no submissions",
     )
   }
 
@@ -233,7 +233,7 @@ export function buildConfirmationEmail(
   const { text, html } = renderEmailBody({
     preheader: subject,
     blocks: [
-      paragraph("Thanks — we received your Home Turf sign-up."),
+      paragraph("Thanks! We received your Home Turf sign-up."),
       paragraph(
         "The civfix event coordination team will call you soon to find a date that works for your season.",
       ),

@@ -124,7 +124,7 @@ user, with no capabilities and no environment:
   ```
 
   This is load-bearing, not decoration. The worker process must hold ambient `CAP_SETUID`/`CAP_SETGID`
-  to change a child's uid at all, and **ambient capabilities survive both fork and execve** — so a plain
+  to change a child's uid at all, and **ambient capabilities survive both fork and execve**, so a plain
   `uid: 1001` spawn handed ffmpeg `CAP_SETUID`, and a decoder RCE could `setuid(1000)` straight back to
   `node` and read `/proc/<pid>/environ` (a 1000→1001 change clears nothing; the kernel only clears
   capabilities when leaving uid 0, and `no-new-privileges` does not touch the ambient set). `setpriv`
@@ -141,26 +141,26 @@ user, with no capabilities and no environment:
   EPERM and the worker would crash-loop while `/readyz` (the API's) stayed green.
 - **The bounding set.** `--bounding-set=-all` is deliberately NOT passed (in the entrypoint or the
   decoder wrapper): `PR_CAPBSET_DROP` needs `CAP_SETPCAP` for the same reason, so requesting it would
-  fail the entrypoint and every decode. It is inert anyway — with `no_new_privs` and an empty
+  fail the entrypoint and every decode. It is inert anyway: with `no_new_privs` and an empty
   inheritable/ambient set, a non-empty bounding set grants a child nothing (file capabilities and setuid
   bits cannot elevate). If `SETPCAP` is ever added to `cap_add`, set `MEDIA_SANDBOX_DROP_BOUNDING=1` and
   the flag is passed and asserted as zero too.
 - **The child is untrusted output, not just untrusted input.** The image lane returns a JSON envelope,
   and the parent holds the credentials, so the parent accepts no paths, names or content types from it:
-  it reads two FIXED file names inside the scratch dir it created (each must be a regular file — not a
-  symlink — owned by the sandbox uid) and validates every scalar against the worker's own limits and
+  it reads two FIXED file names inside the scratch dir it created (each must be a regular file, not a
+  symlink, owned by the sandbox uid) and validates every scalar against the worker's own limits and
   allowlists before anything reaches a storage PUT or a DB row. Without that, a compromised child could
   name `../../proc/self/environ` as its output and have the parent publish `DATABASE_URL` and the R2
   keys to the public bucket.
 - **A decoder that will not START is an infra fault; one that DIES is a verdict.** `SandboxSpawnError`
-  (missing entry, unreadable `node_modules`, setpriv EPERM — "no process ever ran") propagates out of
+  (missing entry, unreadable `node_modules`, setpriv EPERM: "no process ever ran") propagates out of
   the pipeline and becomes `MediaInfraError`, so the job retries. It is the second deliberate throwable
   in the worker, alongside `MediaInfraError` itself. "Never ran" is proven by the absence of a pid (or a
-  failing `spawn` syscall), NOT by an errno allowlist: `EAGAIN` from the pids limit — exactly what a fork
-  bomb produces — `EMFILE` and `ENOMEM` are transient infra conditions, and rejecting on them would
+  failing `spawn` syscall), NOT by an errno allowlist: `EAGAIN` from the pids limit (exactly what a fork
+  bomb produces), `EMFILE` and `ENOMEM` are transient infra conditions, and rejecting on them would
   delete a resident's upload because the container briefly ran out of process slots. Everything else is
   a verdict on the bytes and is
-  `rejected`: a non-zero exit, a timeout, an over-large output, and — the distinction that matters —
+  `rejected`: a non-zero exit, a timeout, an over-large output, and (the distinction that matters)
   **death by signal**. execa reports `exitCode: undefined` for both "never spawned" and "killed by a
   signal", so a SIGSEGV/SIGABRT from a malformed file, or the cgroup OOM killer's SIGKILL on a decode
   bomb, would otherwise be retried ~36 times over five hours, re-crashing a decoder each attempt. The
@@ -171,19 +171,19 @@ user, with no capabilities and no environment:
   directory owner, which is what lets it unlink the child's files and remove the dir.
 
   Every decoder of every concurrent job runs as the SAME uid 1001, and a compromised child can fork a
-  survivor, so "the child is dead" is not a safety argument — a sibling or a survivor can `rename()`
+  survivor, so "the child is dead" is not a safety argument: a sibling or a survivor can `rename()`
   inside another job's scratch dir. Three things close that:
     1. **The dir is sealed before the parent looks at it.** Once the child exits, Node (the owner)
        `chmod 0700`s the dir, so no uid-1001 process can rename anything into it any more.
     2. **Outputs are opened once, never re-resolved.** `open(O_RDONLY|O_NOFOLLOW|O_NONBLOCK)`, then the
        checks (`isFile`, owner is the sandbox uid, `nlink === 1`) and the read run against THAT handle.
        `lstat`-then-`readFile` was a real race: a symlink swapped in between made the credentialed
-       parent read `/proc/self/environ` — `DATABASE_URL` and the R2 keys — and publish it as the
+       parent read `/proc/self/environ` (`DATABASE_URL` and the R2 keys) and publish it as the
        asset's bytes. `O_NOFOLLOW` fails a symlink with ELOOP and `O_NONBLOCK` refuses to block on a
        FIFO. The same read path is used for the video lane's remux and poster outputs.
     3. **Survivors are killed, and killed EARLY.** Each decoder is spawned in its own process group
        (`detached`), and the group is SIGKILLed the moment the leader exits and again on a timer at the
-       tool's own `timeoutMs` — both BEFORE the parent waits for the stdio drain. That ordering is the
+       tool's own `timeoutMs`, both BEFORE the parent waits for the stdio drain. That ordering is the
        whole point: execa does not settle until every pipe reaches EOF, so a grandchild that inherited
        fd 1/2 used to keep the call pending for as long as it lived (a 500 ms budget measured settling
        after 30 s), which voided every per-tool timeout and let an exploit's forks pile up while the job
@@ -201,8 +201,8 @@ user, with no capabilities and no environment:
 - **Boot self-check (`src/sandbox/preflight.ts`).** In production the worker asserts it is not root,
   resolves both binaries, hands over one scratch dir, runs the REAL image lane on a built-in 1×1 PNG and
   the pinned ffprobe through the wrapper (so a missing `dist/image-lane.js`, a `node_modules` the sandbox
-  uid cannot read, or a broken protocol refuses the boot instead of rejecting every upload), and — this
-  is the part that matters — spawns
+  uid cannot read, or a broken protocol refuses the boot instead of rejecting every upload), and (this
+  is the part that matters) spawns
   `cat /proc/self/status` **through the real wrapper** and requires the child to report
   `Uid: 1001 1001 1001 1001`, `Gid: 1001 1001 1001 1001` and `CapInh/CapPrm/CapEff/CapAmb` all zero
   (`CapBnd` must not exceed the container's own `{CAP_SETUID, CAP_SETGID}`). An `id -u` check would have
@@ -219,15 +219,15 @@ runs it inside the built image under the production capability set, so the entry
 contract is proven on every build rather than at deploy time.
 
 When a real NSFW model is vendored, it must score INSIDE the child (or in a second sandboxed call over
-the child's stripped output) — never in the parent. Decoding or running a model in the credentialed
+the child's stripped output), never in the parent. Decoding or running a model in the credentialed
 process would re-open exactly the hole this section closes.
 
 Never place an executable in `/tmp`: the compose tmpfs is `noexec`.
 
 ## 3. Where ffmpeg comes from (H8)
 
-`ffprobe-static@3.1.0` ships an FFmpeg **4.0.2 (2018)** binary — the tool that
-must interpret an untrusted container — with no security-patch channel. It is a
+`ffprobe-static@3.1.0` ships an FFmpeg **4.0.2 (2018)** binary (the tool that
+must interpret an untrusted container) with no security-patch channel. It is a
 **devDependency** now and is pruned out of the production image.
 
 The image installs a pinned, checksum-verified release instead: one BtbN
@@ -277,7 +277,7 @@ hosts. Neither the AWS SDK nor Node's `fetch` reads those variables, so:
 - `media-worker/src/download.ts` fetches the presigned GET through undici's
   `EnvHttpProxyAgent` dispatcher under the same condition.
 
-Both are exact no-ops when `HTTPS_PROXY` is unset — the API container, local dev,
+Both are exact no-ops when `HTTPS_PROXY` is unset: the API container, local dev,
 tests and the `dev/` stack are unchanged.
 
 `@sentry/node` (GlitchTip) reads only the **lowercase** `https_proxy`/`no_proxy`; the worker's compose
@@ -294,7 +294,7 @@ call fails closed.
 
 The worker deletes the upload object as soon as it publishes to `served_key`, but the client's presigned
 PUT for that key stays valid for its full 15-minute TTL. A re-PUT inside the window used to recreate the
-object *after* the only delete that would ever happen — the row is bound and terminal by then, so the
+object *after* the only delete that would ever happen: the row is bound and terminal by then, so the
 orphan sweep (unbound rows only) never matches it and the rejected-media cleanup never runs again. With
 `R2_PUBLIC_BASE` set, that is a permanent, unvetted object at a URL the uploader knows.
 
@@ -304,4 +304,4 @@ So every terminal `media.checks` outcome (and the stuck sweep's give-up path) en
 and differs from `r2_key`. A `validating` row, a legacy row whose `served_key` **is** `r2_key`
 (pre-0097 backfill shape), and a key another row still references are all left alone. A failed delete is
 tombstoned and retried by the orphan sweep's leak lane. The queue is created only by the worker, with an
-explicit `short` policy — the API never enqueues it.
+explicit `short` policy; the API never enqueues it.

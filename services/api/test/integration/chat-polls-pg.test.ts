@@ -1,5 +1,5 @@
 /**
- * P6 Tasks 6.3/6.4 integration test (Docker-gated): poll CREATE / VOTE / CLOSE + hydration, against a
+ * Integration test (Docker-gated): poll CREATE / VOTE / CLOSE + hydration, against a
  * live PostGIS container (via withPg).
  *
  *   A poll is a chat_messages row (kind='poll', body=question) plus the chat_polls trio. The three REST
@@ -79,7 +79,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     const reportChat = makeReportChatRepository(h.sql)
     const groups = makeChatGroupRepository(h.sql)
     // Real chat-powers resolver over the DB (the offline override branch fails cleanup/global roles
-    // closed, which would 403 the cleanup-organizer close test — inject the real one instead).
+    // closed, which would 403 the cleanup-organizer close test, so inject the real one instead).
     const chatPowers = makeChatPowersResolver({
       isDmParticipant: (t, u) => dmRepo.isParticipant(t, u),
       cleanupRoleOf: (c, u) => cleanups.roleOf(c, u),
@@ -194,8 +194,6 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     options: ["Sat", "Sun"],
     ...extra,
   })
-
-  // -- CREATE -----------------------------------------------------------------
 
   it("create in a group by a member 200; the poll rides the response + the broadcast message frame", async () => {
     const ownerId = await newUser("Poll Owner")
@@ -342,8 +340,6 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     expect(res.json().fields).toMatchObject({ code: "poll_forbidden" })
   })
 
-  // -- HYDRATION --------------------------------------------------------------
-
   it("history hydrates counts + myVote + totalVoters", async () => {
     const ownerId = await newUser("Hydr Owner")
     const bId = await newUser("Hydr B")
@@ -379,8 +375,6 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     ])
   })
 
-  // -- VOTE -------------------------------------------------------------------
-
   it("vote -> switch -> retract adjusts counts; totalVoters stays distinct on a multi-ballot", async () => {
     const ownerId = await newUser("Vote Owner")
     const groupId = await newGroup(ownerId, {})
@@ -392,7 +386,6 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     )
     const pollId = created.json().id
 
-    // Vote A(0).
     const a = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
       messageId: pollId,
       optionIdxs: [0],
@@ -447,7 +440,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
       optionIdxs: [0],
     })
     expect(voted.statusCode).toBe(200)
-    // The voter's OWN response stays viewer-aware — that half must not regress either.
+    // The voter's OWN response stays viewer-aware; that half must not regress either.
     expect(voted.json().poll.myVote).toEqual([0])
     expect(voted.json().poll.options[0].mine).toBe(true)
 
@@ -457,14 +450,14 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     }
     const voteFrame = watcher.framesOfType("message_update")[0]!
     const afterVote = (voteFrame as Framed).message.poll
-    // Tallies still ride the frame (the room needs them); the BALLOT does not — for an anonymous poll the
+    // Tallies still ride the frame (the room needs them); the BALLOT does not: for an anonymous poll the
     // voter's exact choices would otherwise be broadcast to every member, and clients reconciling the frame
     // in place would overwrite their own myVote with the voter's.
     expect(afterVote.options.map((o) => o.count)).toEqual([1, 0])
     expect(afterVote.myVote).toEqual([])
     expect(afterVote.options.every((o) => o.mine === false)).toBe(true)
     // WHY THE NEUTRAL VALUES ARE ASSERTED RATHER THAN OMITTED. A reviewer's instinct here is "don't send
-    // myVote/mine at all, then a merging client keeps its own" — and that is indeed the real fix, but it
+    // myVote/mine at all, then a merging client keeps its own", and that is indeed the real fix, but it
     // CANNOT be done from the server alone: PollDTOSchema requires both fields, and the clients parse every
     // inbound frame with WsServerMessageSchema and discard the whole frame on a miss (ui
     // chatSocketCore.handleRawFrame), so an omitted field would silently kill live vote counts and the
@@ -500,7 +493,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     )
     const pollId = created.json().id
 
-    // Schema-valid repeat idx: must NOT 500 on the votes PK — dedupe to a single ballot row.
+    // Schema-valid repeat idx: must NOT 500 on the votes PK; dedupe to a single ballot row.
     const res = await inject(await token(ownerId), "PUT", "/v1/messages/poll/vote", {
       messageId: pollId,
       optionIdxs: [0, 0],
@@ -596,8 +589,6 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     expect(stranger.json().fields).toMatchObject({ code: "poll_not_member" })
   })
 
-  // -- CLOSE ------------------------------------------------------------------
-
   it("close by the author 200s + broadcasts message_update; a plain member 403s", async () => {
     const ownerId = await newUser("Close Owner")
     const memberId = await newUser("Close Member")
@@ -678,7 +669,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     await reportChat.join(reportId, reportOwnerId, "owner")
     await reportChat.join(reportId, memberId, "member")
 
-    // Poll authored by the plain member; the report chat OWNER closes it — isModerator is true for a
+    // Poll authored by the plain member; the report chat OWNER closes it: isModerator is true for a
     // report owner (canPin), so close succeeds even though they hold no canDeleteOthers power.
     const created = await inject(
       await token(memberId),
@@ -695,8 +686,6 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     expect(closed.statusCode).toBe(200)
     expect(closed.json().poll.closed).toBe(true)
   })
-
-  // -- TOMBSTONE --------------------------------------------------------------
 
   it("a deleted poll hydrates as a plain tombstone with NO poll field", async () => {
     const ownerId = await newUser("Tomb Owner")
@@ -725,12 +714,10 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     expect(tombstone!.poll).toBeUndefined()
   })
 
-  // -- FAN-OUT (createPoll -> member bells) -----------------------------------
-  //
   // The bells the poll route raises come from makeContainerPollNotifier, which builds its report/group
   // lane notifiers out of container primitives and is a NO-OP under USE_FAKE_CHAT (true in the test env,
   // hence a no-op for the app above). Here it is constructed for real over the HARNESS pool, so createPoll
-  // writes actual `notifications` rows through the actual Drizzle notification repo — and, crucially, the
+  // writes actual `notifications` rows through the actual Drizzle notification repo and, crucially, the
   // mute and block gates run as their REAL SQL (conversation_mutes.mutedUserIdsFor and user_blocks), which
   // no unit test can reach.
   describe("createPoll member fan-out (real notifier over pg)", () => {
@@ -766,7 +753,7 @@ describe.skipIf(!pg)("chat polls: create / vote / close + hydration (integration
     /**
      * The fan-out is fire-and-forget behind createPoll's return AND every gate in it is a real round trip,
      * so there is no promise to await. Wait for the EXPECTED bell to land (proof the whole recipient batch
-     * ran — they are dispatched together, after the block/mute verdicts for the full set are resolved),
+     * ran, since they are dispatched together, after the block/mute verdicts for the full set are resolved),
      * then give the losers of the same batch a real-time grace window before asserting they got nothing.
      */
     const waitForBell = async (userId: string): Promise<void> => {

@@ -1,7 +1,6 @@
 /**
- * P4 Task 4.1 schema integration test (Docker-gated): migration 0047_chat_groups.sql against a live
- * PostGIS container (via withPg). Raw SQL only — no repos exist yet (they land in the following P4
- * tasks). Verifies the things only a real postgres can prove:
+ * Schema integration test (Docker-gated): migration 0047_chat_groups.sql against a live PostGIS
+ * container (via withPg), in raw SQL. Verifies the things only a real postgres can prove:
  *
  *   - chat_groups + chat_group_members exist, and the kind/visibility/role CHECKs reject bad values;
  *   - the swapped chat_messages_scope_chk is a true exactly-one-of-three on the PARTITIONED parent:
@@ -29,7 +28,6 @@ describe.skipIf(!pg)("chat groups schema (0047, integration)", () => {
     await h.teardown()
   })
 
-  /** Insert a user and return its id. */
   async function newUser(name: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name) VALUES (${name}) RETURNING id
@@ -46,7 +44,6 @@ describe.skipIf(!pg)("chat groups schema (0047, integration)", () => {
     return g!.id
   }
 
-  /** Insert a minimal cleanup and return its id. */
   async function newCleanup(): Promise<string> {
     const organizerId = await newUser("Cleanup organizer")
     return await seedCleanup(h.sql, {

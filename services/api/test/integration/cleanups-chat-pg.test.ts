@@ -43,7 +43,6 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     await h.teardown()
   })
 
-  /** Insert a user and return its id. */
   async function newUser(name: string): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name) VALUES (${name}) RETURNING id
@@ -324,7 +323,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
 
   it("P1: reaction toggle honors the WIDENED allowlist end-to-end (laugh -> 200 + summary; unknown -> 422)", async () => {
     // Full server against the real DB (same wiring as the membership-gated route test above) so the
-    // POST /cleanups/:id/messages/:messageId/reactions path — shared-schema parse included — runs for real.
+    // POST /cleanups/:id/messages/:messageId/reactions path, shared-schema parse included, runs for real.
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
     const container = buildContainer(env)
     const stores = makeInMemoryStores()
@@ -364,7 +363,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
         randomUUID(),
       )
 
-      // "laugh" is one of the two P1 additions (append-only widening 6 -> 8): the shared schema at the
+      // "laugh" is one of the two later additions (append-only widening 6 -> 8): the shared schema at the
       // route boundary must accept it and the toggle must land in chat_reactions.
       const on = await app.inject({
         method: "POST",
@@ -448,7 +447,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     const removed = await service.removeMember(created.id, organizerId, bobId)
     expect(removed).toEqual({ ok: true, going: 2 })
     expect(await repo.isMember(created.id, bobId)).toBe(false)
-    // M17: the same transaction wrote the ban that makes the removal stick — the self-service join
+    // The same transaction wrote the ban that makes the removal stick: the self-service join
     // now refuses instead of silently re-creating the membership row.
     expect(await repo.isBanned(created.id, bobId)).toBe(true)
     expect(await repo.joinCleanupTx(created.id, bobId, signupSeat())).toBe("banned")

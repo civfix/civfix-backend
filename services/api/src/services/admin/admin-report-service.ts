@@ -51,7 +51,7 @@ const ROUTABLE_FROM_STATUSES: readonly AdminReportStatus[] = ["submitted", "held
 export const ALREADY_ROUTED_CONFLICT = "This report has already been sent to its jurisdiction"
 
 export const SEND_IN_FLIGHT_CONFLICT =
-  "A send to this jurisdiction is still in progress. Check back shortly — the outcome will appear on the outreach trail."
+  "A send to this jurisdiction is still in progress. Check back shortly to see the outcome on the outreach trail."
 
 export function isAlreadyRoutedConflict(err: unknown): boolean {
   return (
@@ -247,7 +247,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         const current = await deps.repo.getReport(id)
         if (current?.status === input.status) return
         throw AppError.conflict(
-          "This report moved on while you were looking at it — reload and try again",
+          "This report moved on while you were looking at it. Reload and try again.",
         )
       }
       await notifyReporterOfStatus(deps, id, record.reporter?.id ?? null, input.status)
@@ -386,7 +386,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       const toAddr = routing?.contact ?? null
       if (toAddr === null || toAddr === "") {
         throw AppError.notRoutable(
-          "No routing contact for this report's jurisdiction — set one in Jurisdictions first",
+          "This report's jurisdiction has no routing contact. Set one in Jurisdictions first.",
         )
       }
 

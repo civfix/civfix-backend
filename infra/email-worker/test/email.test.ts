@@ -39,7 +39,7 @@ describe("hmacSha256Hex (must match the backend's node:crypto verifier)", () => 
     expect(ours).toBe(reference)
   })
 
-  // Frozen fixture — copy this exact (secret, body, signature) into the backend webhook test so the two
+  // Frozen fixture: copy this exact (secret, body, signature) into the backend webhook test so the two
   // halves can never silently drift. body is the canonical no-whitespace JSON the Worker POSTs.
   it("matches the frozen cross-repo fixture", async () => {
     const secret = "civfix-test-secret"

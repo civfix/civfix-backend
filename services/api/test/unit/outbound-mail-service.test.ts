@@ -362,7 +362,7 @@ describe("OutboundMailService.compose / appendOutbound", () => {
   })
 })
 
-describe("OutboundMailService — F110: References chain is trimmed (root + last 9)", () => {
+describe("OutboundMailService (F110): References chain is trimmed (root + last 9)", () => {
   it("emits root + the last 9 prior ids (never the unbounded middle); In-Reply-To stays the true latest", async () => {
     const { repo, mailer, svc } = harness()
     const t = repo.seedThread({ subject: "Digest" })
@@ -392,7 +392,7 @@ describe("OutboundMailService — F110: References chain is trimmed (root + last
   })
 })
 
-describe("OutboundMailService — F109: a delivered send never throws post-delivery", () => {
+describe("OutboundMailService (F109): a delivered send never throws post-delivery", () => {
   it("swallows a thread re-read failure after delivery so the throttle window is not reopened", async () => {
     const repo = new InMemoryMailRepository()
     const mailer = new FakeMailer()

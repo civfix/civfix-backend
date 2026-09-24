@@ -5,14 +5,12 @@
  * makeDb() therefore hands drizzle its OWN client and keeps a SEPARATE raw `sql` client (full default
  * serialization) for the hand-written PostGIS/transactional repositories. If that split ever regresses
  * (one shared client passed to drizzle AND reused for raw `sql`), binding a JS Date into a timestamp
- * column throws `TypeError [ERR_INVALID_ARG_TYPE]: ... Received an instance of Date` at runtime — the
+ * column throws `TypeError [ERR_INVALID_ARG_TYPE]: ... Received an instance of Date` at runtime: the
  * exact production crash this guards against (hosting a cleanup binds scheduled_at as a Date through the
  * raw tag in cleanup-repository.drizzle.ts).
  *
- * NO DATABASE NEEDED: postgres.js connects lazily, so makeDb() builds both clients (and drizzle runs its
- * in-place serializer mutation on its own client) without opening a socket. We only inspect serializer
- * config. This is the unit-level guard the Docker-gated integration tests cannot provide locally / in a
- * Docker-less CI.
+ * postgres.js connects lazily, so makeDb() builds both clients (and drizzle runs its in-place serializer
+ * mutation on its own client) without opening a socket; only serializer config is inspected.
  */
 
 import { describe, it, expect } from "vitest"
@@ -48,7 +46,7 @@ describe("makeDb: the raw sql client keeps postgres.js Date serializers (drizzle
 })
 
 /**
- * M15: postgres.js defaults `ssl` to false, so an unconfigured production link would ship credentials and
+ * postgres.js defaults `ssl` to false, so an unconfigured production link would ship credentials and
  * every row in cleartext. makeDb resolves the connection string's sslmode into an EXPLICIT ssl option and
  * applies it to both clients. loadEnv separately refuses to boot production without a TLS sslmode; this
  * locks the mapping that turns that promise into an actual TLS handshake.

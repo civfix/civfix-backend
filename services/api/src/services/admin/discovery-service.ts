@@ -1,30 +1,13 @@
-/**
- * Admin discovery service (Phase 2): the "Jurisdictions" onboarding queue.
- *
- * Pins land in places civfix has no routing contact for yet. The operator researches the jurisdiction
- * (by GEOID), saves a per-category routing contact, and reports start flowing. This service backs the
- * list (population-sorted), the detail (per-category waiting counts + existing contacts + mini-map
- * pins), and the note / flag / draft mutations. The "Save & route" action that actually persists
- * contacts + routes pending pins lives in jurisdiction-contacts-service.ts (it shares the same repo
- * concern of writing jurisdiction_contacts). See enumeration 2.B + endpoints #8-#12.
- *
- * REPOSITORY SEAM: every read/write goes through DiscoveryRepository (Drizzle impl in
- * discovery-repository.drizzle.ts; an in-memory impl in discovery-repository.memory.ts for the offline
- * unit tests), mirroring the Phase 1 report-service/report-repository split so the service is testable
- * with no database and no Docker.
- *
- * WAITING-REPORT MODEL: a report counts as "waiting on contact" for a geoid when it is non-deleted and
- * still open (status NOT IN ('rejected','resolved')) AND its jurisdiction has no usable routing contact.
- * The same notion drives the discovery queue (a task is "needs attention" when it has waiting reports
- * but a category is missing a contact). The repo computes the per-category waiting counts; this service
- * projects them into the DTO shape + computes the relative-age / SLA labels (pure, clock-injected).
- *
- * NOTES STORAGE: jurisdiction_discovery_tasks has no notes column and the foundation schema is frozen
- * (decisions: do NOT add a column). Operator notes are therefore persisted as audit_log rows with
- * action "discovery.note_added" (target = "discovery:<taskId>", meta.text + meta.who) and read back from
- * audit_log into the notes[] list. This keeps notes in the same audited store the activity feed + audit
- * view already read, with no schema change. See discovery-repository.drizzle.ts addNote/listNotes.
- */
+// "Save & route", which persists contacts and routes pending pins, lives in
+// jurisdiction-contacts-service.ts; this service backs the queue list, the detail and the note / flag /
+// draft mutations.
+//
+// A report is "waiting on contact" for a geoid when it is non-deleted, still open (status NOT IN
+// ('rejected','resolved')) and its jurisdiction has no usable routing contact.
+//
+// jurisdiction_discovery_tasks has no notes column, so operator notes are audit_log rows (action
+// "discovery.note_added", target "discovery:<taskId>", meta.text + meta.who). That keeps them in the
+// audited store the activity feed and audit view already read; see discovery-repository.drizzle.ts.
 
 import { AppError, REPORT_CATEGORY_LABELS, relativeAgo } from "@civfix/shared"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
@@ -43,30 +26,18 @@ import type {
 } from "@civfix/shared"
 
 /**
- * The canonical civfix report categories in display order. ONE derivation for the whole admin domain lives
- * in category-counts.ts (ADMIN_CATEGORIES, from the contract enum that db/schema/types.ts mirrors under a
- * drift test); this alias exists only so the discovery projections below keep reading in domain terms. A
- * second hand-copied list is how a new category silently drops out of the projections that iterate it —
- * per-category waiting counts, contact state, the dominant-category pin.
+ * An alias, never a hand-copied list: a second list is how a new category silently drops out of the
+ * per-category counts, the contact state and the dominant-category pin.
  */
 const DISCOVERY_CATEGORIES = ADMIN_CATEGORIES
 
-/** Discovery SLA: a task breaches when its oldest waiting report is older than this many hours. */
+/** A task breaches when its oldest waiting report is older than this. */
 export const DISCOVERY_SLA_HOURS = 24
 
-/**
- * A discovery task row joined with its jurisdiction, plus the derived waiting-report aggregates the
- * queue needs. `perCategory` is the count of waiting reports per category for the geoid; `total` is
- * their sum. `oldestWaitingAt` / `newestWaitingAt` are the oldest + newest waiting-report timestamps
- * (null when there are none). `contactCategories` is the set of categories that have a routing contact
- * (a category-specific jurisdiction_contacts row, OR any default/legacy contact when at least one
- * default exists), used to compute the routed/missing contact state.
- */
 export interface DiscoveryTaskRecord {
   id: string
   geoid: string
   place: string
-  /** The jurisdiction layer/type (place|county|state|federal|tribal); drives the queue row type chip. */
   layer: JurisdictionLayer
   population: number | null
   status: string
@@ -74,37 +45,29 @@ export interface DiscoveryTaskRecord {
   total: number
   oldestWaitingAt: Date | null
   newestWaitingAt: Date | null
-  /** Categories with a usable routing contact (per-category override OR a present default/legacy). */
   contactCategories: ReportCategory[]
-  /** Whether a default/all-categories or legacy contact is on file (drives the "all routed" fallback). */
   hasDefaultContact: boolean
 }
 
-/** An existing per-category routing contact (one email per category; null email = on file but blank). */
+/** A null email means the contact row is on file but blank. */
 export interface DiscoveryContactRecord {
   category: ReportCategory
   email: string | null
 }
 
-/** A waiting-report sample point for the jurisdiction mini-map. */
 export interface DiscoverySamplePinRecord {
   category: ReportCategory
   lat: number
   lng: number
 }
 
-/** A stored operator note (read back from audit_log rows of action discovery.note_added). */
 export interface DiscoveryNoteRecord {
   text: string
   who: string
   createdAt: Date
 }
 
-/**
- * A citizen-suggested routing contact for a geoid (public POST /map/jurisdictions/:geoid/suggest-contact,
- * stored as an audit_log `discovery.contact_suggested` row). Surfaced in the discovery detail as a
- * "Reporter" note so the operator triages it alongside operator notes in the existing UI.
- */
+/** Stored as an audit_log `discovery.contact_suggested` row by the public suggest-contact endpoint. */
 export interface DiscoveryContactSuggestionRecord {
   email: string | null
   formUrl: string | null
@@ -112,7 +75,6 @@ export interface DiscoveryContactSuggestionRecord {
   createdAt: Date
 }
 
-/** The detail bundle: the task record + its existing contacts + geometry + sample pins. */
 export interface DiscoveryDetailRecord {
   task: DiscoveryTaskRecord
   contacts: DiscoveryContactRecord[]
@@ -122,12 +84,9 @@ export interface DiscoveryDetailRecord {
   zoom: number | null
 }
 
-/** Filter facet for the list (mirrors the shared DiscoveryListQuery filter). */
 export type DiscoveryFilter = "all" | "attention" | "clear"
-/** Sort key for the list (mirrors the shared DiscoveryListQuery sort). */
 export type DiscoverySort = "pop" | "reports"
 
-/** Normalized list arguments the repo consumes (search + facet + sort + page window). */
 export interface ListDiscoveryArgs {
   q: string | null
   filter: DiscoveryFilter
@@ -136,50 +95,29 @@ export interface ListDiscoveryArgs {
   limit: number
 }
 
-/**
- * Persistence seam for the discovery domain. The Drizzle impl runs raw SQL (PostGIS for the sample
- * pins); the offline tests pass an in-memory impl. Keeping every read/write here is what makes the
- * service unit-testable with no DB.
- */
 export interface DiscoveryRepository {
-  /**
-   * Page the open discovery tasks (each joined with its jurisdiction + waiting aggregates), applying
-   * the search / facet filter and the sort, newest-id-keyset paged. Returns up to `limit` records plus
-   * the next cursor (null when exhausted). The repo is responsible for the filter + sort semantics so
-   * the service stays a pure projector.
-   */
+  /** The repository owns the filter and sort semantics so the service stays a pure projector. */
   listTasks(
     args: ListDiscoveryArgs,
   ): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }>
-  /** Load one task's full detail by task id, or null when the task does not exist. */
   getDetail(id: string): Promise<DiscoveryDetailRecord | null>
-  /** Load the notes for a task, oldest first. */
+  /** Oldest first. */
   listNotes(id: string): Promise<DiscoveryNoteRecord[]>
-  /**
-   * Load citizen contact suggestions for a geoid (public suggest-contact submissions), oldest first.
-   * Surfaced as "Reporter" notes in the detail so operators triage them in the existing discovery UI.
-   */
+  /** Oldest first. */
   listContactSuggestions(geoid: string): Promise<DiscoveryContactSuggestionRecord[]>
-  /** Load the bare task record (no contacts/geometry) by id, or null. Used to resolve geoid for writes. */
   getTask(id: string): Promise<DiscoveryTaskRecord | null>
-  /**
-   * Append an operator note for a task (persisted as an audit_log discovery.note_added row). `who` is
-   * the operator display label stored in the note. Returns the stored note.
-   */
   addNote(
     id: string,
     input: { text: string; actorId: string | null; who: string },
   ): Promise<DiscoveryNoteRecord>
   /**
-   * Flag a task for review: open an abuse_flag against the triggering sample report (subject_type
-   * 'report') when one is on file, and mark the task status 'in_progress'. Returns false when the task
-   * does not exist (so the route can 404).
+   * Opens an abuse_flag against the task's sample report when one is on file and marks the task
+   * in_progress. False when the task does not exist.
    */
   flagTask(id: string, input: { reason: string | null; actorId: string | null }): Promise<boolean>
   /**
-   * Save contact drafts WITHOUT routing: upsert the per-category + default jurisdiction_contacts rows
-   * and the form URL, but do NOT touch contact_updated_at, route pending pins, or enqueue outreach.
-   * Returns false when the task does not exist.
+   * Upserts contacts and the form URL without routing: contact_updated_at, pending pins and outreach are
+   * left alone. False when the task does not exist.
    */
   saveDraft(
     id: string,
@@ -191,16 +129,12 @@ export interface DiscoveryRepository {
     },
   ): Promise<boolean>
   /**
-   * Materialize (idempotently) an OPEN discovery task for a geoid: the `jurisdiction.discovery` worker
-   * calls this when a report's jurisdiction has no usable contact, so the operator's Discovery queue shows
-   * the un-onboarded jurisdiction. Inserts one row per geoid (ON CONFLICT (geoid) WHERE status <> 'done'
-   * DO NOTHING), wiring the population + a sample report. Returns whether a NEW task row was created (false
-   * when an open task already existed or the jurisdiction is unknown).
+   * Idempotent: at most one open task per geoid (ON CONFLICT (geoid) WHERE status <> 'done' DO NOTHING).
+   * False when an open task already existed or the jurisdiction is unknown.
    */
   materializeDiscoveryTask(input: { geoid: string; population?: number | null }): Promise<boolean>
 }
 
-/** Fill a per-category count map so every real category is present (0 when no waiting reports). */
 export function fullPerCategoryCounts(
   partial: Partial<Record<ReportCategory, number>>,
 ): PerCategoryCounts {
@@ -211,14 +145,10 @@ export function fullPerCategoryCounts(
   return out
 }
 
-/**
- * The dominant waiting category (the one with the most waiting reports; ties broken by the canonical
- * category order). Falls back to "other" when there are no waiting reports, so the row always has a pin.
- */
+/** Ties go to the canonical category order; "other" when nothing waits, so the row always has a pin. */
 export function dominantCategory(partial: Partial<Record<ReportCategory, number>>): ReportCategory {
   let best: ReportCategory = "other"
-  // Start at 0 so a category only becomes dominant when it has at least one waiting report; an all-zero
-  // map (no waiting reports) keeps the neutral "other" default rather than the first category.
+  // Starting at 0 keeps an all-zero map on "other" rather than the first category.
   let bestCount = 0
   for (const category of DISCOVERY_CATEGORIES) {
     const count = partial[category] ?? 0
@@ -231,11 +161,8 @@ export function dominantCategory(partial: Partial<Record<ReportCategory, number>
 }
 
 /**
- * Compute the routed-vs-missing contact state for a task. A category is "routed" when it has its own
- * per-category contact OR (a default/legacy contact exists). EVERY category with waiting reports that is
- * not routed is "missing"; categories with no waiting reports and no contact are neither (they do not
- * demand attention). This matches the design's "any report-type has reports waiting but no contact"
- * attention predicate.
+ * Categories with no waiting reports and no contact are neither routed nor missing: the attention
+ * predicate is "some category has reports waiting but no contact".
  */
 export function computeContactState(record: DiscoveryTaskRecord): {
   routed: ReportCategory[]
@@ -248,7 +175,6 @@ export function computeContactState(record: DiscoveryTaskRecord): {
     const waiting = (record.perCategory[category] ?? 0) > 0
     const hasContact = routedSet.has(category) || record.hasDefaultContact
     if (hasContact) {
-      // Only surface a routed category when it is relevant (has waiting reports OR an explicit contact).
       if (waiting || routedSet.has(category)) routed.push(category)
     } else if (waiting) {
       missing.push(category)
@@ -257,7 +183,6 @@ export function computeContactState(record: DiscoveryTaskRecord): {
   return { routed, missing }
 }
 
-/** Whether the oldest waiting report breaches the discovery SLA as of `now`. */
 export function isOverSla(oldestWaitingAt: Date | null, now: Date): boolean {
   if (oldestWaitingAt === null) return false
   const ageMs = now.getTime() - oldestWaitingAt.getTime()
@@ -265,10 +190,8 @@ export function isOverSla(oldestWaitingAt: Date | null, now: Date): boolean {
 }
 
 /**
- * Derive the urgency band (low|med|high) shown on a queue row. The design's `priority` is an urgency
- * band, NOT the jurisdictions.priority layer ordinal (place<county<state), so it is COMPUTED from the
- * queue signals rather than read from that column: an SLA breach is high; any waiting reports is med;
- * an idle task is low. Pure + clock-injected so the band is deterministic in tests.
+ * The row's `priority` is an urgency band, not the jurisdictions.priority layer ordinal
+ * (place<county<state), so it is computed from the queue signals rather than read from that column.
  */
 export function derivePriority(record: DiscoveryTaskRecord, now: Date): Priority {
   if (isOverSla(record.oldestWaitingAt, now)) return "high"
@@ -276,11 +199,6 @@ export function derivePriority(record: DiscoveryTaskRecord, now: Date): Priority
   return "low"
 }
 
-/**
- * Render a citizen contact suggestion as an operator-facing note record ("Reporter" + a one-line
- * summary of the offered email/form + any note). Pure so the projection is testable and identical
- * regardless of which repo loaded the suggestion.
- */
 export function suggestionToNote(s: DiscoveryContactSuggestionRecord): DiscoveryNoteRecord {
   const contact = [s.email, s.formUrl]
     .filter((v): v is string => !!v && v.trim() !== "")
@@ -288,14 +206,13 @@ export function suggestionToNote(s: DiscoveryContactSuggestionRecord): Discovery
   const head = `Suggested contact: ${contact || "(none provided)"}`
   return {
     who: "Reporter",
-    text: s.note && s.note.trim() !== "" ? `${head} — ${s.note.trim()}` : head,
+    text: s.note && s.note.trim() !== "" ? `${head} (note: ${s.note.trim()})` : head,
     createdAt: s.createdAt,
   }
 }
 
 export interface DiscoveryServiceDeps {
   repo: DiscoveryRepository
-  /** Injectable clock (defaults to Date.now) so the SLA + relative-age labels are deterministic. */
   now?: () => Date
 }
 
@@ -318,12 +235,10 @@ export interface DiscoveryService {
 export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryService {
   const now = deps.now ?? (() => new Date())
 
-  /** Project a stored note record into the wire DTO (relative "when" label). */
   function toNoteDTO(record: DiscoveryNoteRecord, ref: Date): DiscoveryNote {
     return { text: record.text, who: record.who, when: relativeAgo(record.createdAt, ref) }
   }
 
-  /** Project a task record (+ its notes) into the list/detail base DTO. */
   function toTaskDTO(
     record: DiscoveryTaskRecord,
     notes: DiscoveryNoteRecord[],
@@ -360,8 +275,8 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
         limit: query.limit ?? 25,
       }
       const { records, nextCursor } = await deps.repo.listTasks(args)
-      // The list rows do not render notes inline (only the detail does), so the list returns an empty
-      // notes[] per row rather than fanning out a note read per task (the DTO requires the field).
+      // Only the detail renders notes, so list rows carry an empty notes[] rather than a note read
+      // per task.
       const items = records.map((record) => toTaskDTO(record, [], ref))
       return { items, nextCursor }
     },
@@ -371,8 +286,6 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
       const [detail, notes] = await Promise.all([deps.repo.getDetail(id), deps.repo.listNotes(id)])
       if (!detail) throw AppError.notFound("Discovery task not found")
 
-      // Merge citizen contact suggestions (keyed by geoid) into the note stream as "Reporter" notes so
-      // operators see them inline in the existing discovery detail UI, interleaved oldest-first.
       const suggestions = await deps.repo.listContactSuggestions(detail.task.geoid)
       const merged = [...notes, ...suggestions.map(suggestionToNote)].sort(
         (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
@@ -387,7 +300,7 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
         category: p.category,
         lat: p.lat,
         lng: p.lng,
-        // Pins are real waiting reports (not operator-drafted markers), so draft is always false.
+        // Pins are real waiting reports, never operator-drafted markers.
         draft: false,
       }))
       return {

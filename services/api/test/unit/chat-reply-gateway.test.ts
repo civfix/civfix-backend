@@ -1,15 +1,15 @@
 /**
- * WS-layer reply test (P2 2.5, closing the 2.3 gap): drives the REAL handleClientFrame over the real
- * WsChatService + in-memory pub/sub + InMemoryChatRepository (which mirrors the drizzle reply
- * validation/hydration), asserting that:
+ * Replies at the WS layer: drives the REAL handleClientFrame over the real WsChatService + in-memory
+ * pub/sub + InMemoryChatRepository (which mirrors the drizzle reply validation/hydration), asserting
+ * that:
  *
  *   - a `send` frame carrying replyToId persists the reply and BOTH the ack and the broadcast frame
  *     carry replyToId + the hydrated replyTo preview;
- *   - the P2 2.5 reply bell seam (deps.onChatReply) fires exactly once for the target message's
+ *   - the reply bell seam (deps.onChatReply) fires exactly once for the target message's
  *     sender, and NOT when the author replies to their own message;
  *   - MENTION-vs-REPLY DEDUPE: when the replied-to user is also @-mentioned in the same message, the
- *     mention bell (notifyChatMention) is suppressed for that user — but the mention is still
- *     RECORDED and projected — while a different mentioned user still gets their mention bell;
+ *     mention bell (notifyChatMention) is suppressed for that user (the mention is still RECORDED
+ *     and projected), while a different mentioned user still gets their mention bell;
  *   - a replyToId pointing nowhere surfaces the machine subcode as a room-stamped error frame
  *     (reply_wrong_room) and produces no ack.
  */
@@ -124,7 +124,6 @@ describe("replies over the gateway send path (P2 2.5)", () => {
     await handleClientFrame(aSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
     await handleClientFrame(bSession, JSON.stringify({ type: "join", cleanupId: ROOM }))
 
-    // Alice posts the original.
     await handleClientFrame(
       aSession,
       JSON.stringify({ type: "send", cleanupId: ROOM, body: "original text", clientId: "c1" }),
@@ -132,7 +131,6 @@ describe("replies over the gateway send path (P2 2.5)", () => {
     const originalAck = aConn.framesOfType("ack").at(-1) as { message: ChatMessageDTO }
     const originalId = originalAck.message.id
 
-    // Bob replies to it.
     await handleClientFrame(
       bSession,
       JSON.stringify({
@@ -162,7 +160,6 @@ describe("replies over the gateway send path (P2 2.5)", () => {
       from: { id: ALICE, displayName: "Alice" },
     })
 
-    // The reply bell fired exactly once, targeting Alice (the replied-to sender).
     expect(seams.replyBells).toEqual([
       { kind: "cleanup", roomId: ROOM, actorUserId: BOB, targetUserId: ALICE },
     ])
@@ -222,7 +219,7 @@ describe("replies over the gateway send path (P2 2.5)", () => {
     )
     await flush()
 
-    // Both mentions recorded + projected (the row/broadcast are NOT deduped — only the bell is).
+    // The row and broadcast are NOT deduped; only the bell is.
     expect(seams.recorded).toHaveLength(1)
     expect(seams.recorded[0]!.ids.sort()).toEqual([BOB, CARA].sort())
     const ack = aConn.framesOfType("ack").at(-1) as { message: ChatMessageDTO }

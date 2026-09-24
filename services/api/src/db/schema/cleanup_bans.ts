@@ -1,15 +1,9 @@
 /**
- * cleanup_bans: one row per (event, removed user) — the enforcement record behind attendee removal.
- *
- * SECURITY (audit 2026-07-24, M17): removing an attendee used to be a bare DELETE of the
- * cleanup_members row while joining was an unconditional self-service INSERT, so a removed user
- * re-joined instantly and in a loop. The ban row is written in the SAME transaction as the membership
- * delete and is checked by joinCleanupTx before the membership insert. It deliberately lives OUTSIDE
- * cleanup_members because it has to survive that row's deletion.
- *
- * Composite PK(cleanup_id, user_id) — one ban per person per event; deleting the cleanup cascades, the
- * user FKs do not (bans survive user soft-delete, same convention as cleanup_members). Canonical DDL:
- * drizzle/0052_cleanup_bans.sql.
+ * The enforcement record behind attendee removal. SECURITY: joining is a self-service insert, so without
+ * a ban a removed user could re-join instantly. The ban is written in the same transaction as the
+ * membership delete and checked by joinCleanupTx before the membership insert; it lives outside
+ * cleanup_members because it must survive that row's deletion. The user FKs do not cascade, so bans
+ * survive user soft-delete.
  */
 
 import { index, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core"
@@ -25,10 +19,9 @@ export const cleanupBans = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id),
-    // The host who removed them. Nullable so a future operator-initiated removal can leave it unset
-    // rather than fabricate an actor.
+    // Nullable so an operator-initiated removal can leave it unset rather than fabricate an actor.
     bannedByUserId: uuid("banned_by_user_id").references(() => users.id),
-    // Free-text host note; unused by the current remove flow (no reason field on the wire).
+    // Unused by the current remove flow: the wire has no reason field.
     reason: text("reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

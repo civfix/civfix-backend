@@ -1,11 +1,7 @@
 /**
- * Unit tests for the Cloudflare Access JWT verifier (doc 16 §6.7).
- *
- * Fully offline: a local RSA keypair is generated, the public key is served via `createLocalJWKSet`
- * (injected into the verifier), and tokens are minted with jose's `SignJWT`. No network / no real CF
- * JWKS. We assert the verifier ACCEPTS a well-formed token and REJECTS the spoofing vectors the security
- * model depends on: wrong `aud`, wrong `iss`, expired, a signature from an unknown key, and a non-RS256
- * `alg` (alg-confusion). It also surfaces the email vs service-token (`common_name`) shapes.
+ * Offline: a local RSA keypair's public key is served via `createLocalJWKSet`, so no real CF JWKS is
+ * fetched. The verifier must REJECT every spoofing vector the security model depends on: wrong `aud`,
+ * wrong `iss`, expired, a signature from an unknown key, and a non-RS256 `alg` (alg-confusion).
  */
 
 import { describe, it, expect } from "vitest"

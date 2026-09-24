@@ -1,10 +1,6 @@
-/**
- * media_assets.upload_etag against a live PostGIS database (Docker-gated; SKIPS without Docker).
- *
- * Finalize stores the HEAD etag in the same UPDATE that claims finalized_at, and the stuck sweep reads
- * it back, so a requeued media.checks job keeps the overwrite check. Rows finalized before the column
- * existed stay NULL and requeue with no etag, as before.
- */
+// Finalize stores the HEAD etag in the same UPDATE that claims finalized_at, and the stuck sweep reads it
+// back, so a requeued media.checks job keeps the overwrite check. Rows finalized before the column existed
+// stay NULL and requeue with no etag.
 
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"

@@ -223,7 +223,7 @@ describe("PUT /threads/read", () => {
   })
 })
 
-describe("PUT /threads/read — participation gate (L9)", () => {
+describe("PUT /threads/read: participation gate (L9)", () => {
   it("403s a room the caller does not participate in, and writes NOTHING", async () => {
     const { app, token, dmRepo, reportMarkRead, groupMarkRead } = await makeHarness(false)
     const spy = vi.spyOn(dmRepo, "markRead")
@@ -249,7 +249,7 @@ describe("PUT /threads/read — participation gate (L9)", () => {
   })
 })
 
-describe("PUT /threads/read — abuse controls", () => {
+describe("PUT /threads/read: abuse controls", () => {
   it("carries a per-identity rate limit and the csrf guard", () => {
     expect(THREAD_READ_RATE_LIMIT).toMatchObject({ max: 60, timeWindow: "1 minute" })
     // Whitespace-collapsed so the assertion pins the declaration, not the formatter's line breaks.

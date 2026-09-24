@@ -16,7 +16,7 @@ const defaultFetchJson: CensusJsonFetch = async (url) => {
     const contentType = res.headers.get("content-type") ?? ""
     if (res.url.includes("missing_key") || (!contentType.includes("json") && res.redirected)) {
       throw new Error(
-        "Census API requires an API key — set CENSUS_API_KEY (free, instant: https://api.census.gov/data/key_signup.html)",
+        "Census API requires an API key: set CENSUS_API_KEY (free, instant: https://api.census.gov/data/key_signup.html)",
       )
     }
     if (!res.ok) throw new Error(`Census API ${res.status} ${res.statusText}`)
@@ -46,11 +46,9 @@ function acsUrl(
 }
 
 /**
- * The Census geography columns a response may carry, in the order they CONCATENATE into a GEOID
- * (state "06" + county "037" = "06037"; state "06" + place "44000" = "0644000"). Only these are used, and
- * always in this order — never header order — so an extra column (a `NAME` get-variable, a Census column
- * reshuffle) can never end up inside a geoid. Add a level here to support it; an unlisted level is ignored,
- * which is why every caller must fetch only the levels above.
+ * The order these columns concatenate into a GEOID (state "06" + county "037" = "06037"). They are always
+ * read in this order, never header order, so an extra column (a `NAME` variable, a Census reshuffle) can
+ * never end up inside a geoid. An unlisted level is ignored, so callers must fetch only these levels.
  */
 const ACS_GEO_COLUMNS = ["state", "county", "place"] as const
 
@@ -135,7 +133,7 @@ export async function backfillPopulation(
   const fetched = collected.length
   if (fetched === 0) {
     log(
-      "fetched 0 ACS rows — every Census call failed. The Census API requires CENSUS_API_KEY " +
+      "fetched 0 ACS rows: every Census call failed. The Census API requires CENSUS_API_KEY " +
         "(free, instant: https://api.census.gov/data/key_signup.html); set it and re-run.",
     )
     return { fetched: 0, updated: 0, states: states.length }

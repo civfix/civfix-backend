@@ -421,7 +421,7 @@ describe("hours ledger: getEventHours scope matrix (C10)", () => {
     return repo
   }
 
-  it("an acting host gets scope 'all' — every attendee's row, so the log form prefills", async () => {
+  it("an acting host gets scope 'all': every attendee's row, so the log form prefills", async () => {
     const repo = await seedEvent()
     const service = makeService(
       repo,

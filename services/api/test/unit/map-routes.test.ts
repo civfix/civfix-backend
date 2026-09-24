@@ -23,8 +23,8 @@ afterEach(async () => {
 })
 
 describe("GET /map/tileinfo", () => {
-  // Plan override: the map uses the OpenStreetMap (CARTO Voyager) RASTER basemap directly in the
-  // clients; the platform serves no pmtiles. tileinfo advertises that same raster basemap. pmtilesUrl is
+  // The clients draw the OpenStreetMap (CARTO Voyager) RASTER basemap directly and the platform serves
+  // no pmtiles, so tileinfo advertises that same raster basemap. pmtilesUrl is
   // always "" (no vector basemap); rasterUrl defaults to the CARTO Voyager template, overridable via the
   // optional TILES_RASTER_URL. minZoom/maxZoom/bounds remain env-tunable.
   it("advertises the default OpenStreetMap/CARTO Voyager raster basemap when unconfigured", async () => {
@@ -33,10 +33,8 @@ describe("GET /map/tileinfo", () => {
     const res = await app.inject({ method: "GET", url: "/v1/map/tileinfo" })
     expect(res.statusCode).toBe(200)
     const body = res.json()
-    // No self-hosted vector basemap.
     expect(body.pmtilesUrl).toBe("")
     expect(body.styleUrl).toBeUndefined()
-    // The OpenStreetMap-derived CARTO Voyager raster default.
     expect(body.rasterUrl).toBe(
       "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
     )
@@ -250,7 +248,7 @@ describe("POST /map/suggest", () => {
   }
 
   /**
-   * F162: the contract's `language` field (the caller's app locale) has to REACH the provider. The route
+   * The contract's `language` field (the caller's app locale) has to REACH the provider. The route
    * used to destructure only q/proximity/proximityZoom/limit, so every request was silently English and
    * the drop was invisible (200 + plausible results). "de" is one of Photon's supported languages, so a
    * forwarded value survives `photonLang` verbatim while a dropped one folds to the "en" default.

@@ -1,17 +1,3 @@
-/**
- * Media intake integration test (Docker-gated). Boots the real Fastify app against a live PostGIS
- * container (via withPg) with the Drizzle-backed MediaRepository (NO injected repo) and the default
- * FakeStorage/FakeJobs seams, then exercises the intake flow end-to-end through app.inject:
- *
- *   create   -> a media_assets row exists (status validating, report_id null, content-addressed key).
- *   finalize -> status stays VALIDATING and a media.checks worker job is enqueued (the worker strips
- *               EXIF/GPS + runs moderation, then promotes the row to ready).
- *   getMedia -> a ready row renders a MediaDTO with a url; a validating row 404s on the public path.
- *
- * When Docker is unavailable the whole describe block SKIPS (describe.skipIf) so the local suite stays
- * green; CI runs it for real. Reuses withPg() per the harness contract.
- */
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { withPg, type PgHarness } from "../helpers/pg.js"
@@ -34,8 +20,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
 
   beforeAll(async () => {
     h = pg as PgHarness
-    // Real DB; storage + jobs stay fakes (they default to fakes outside production). No injected repo,
-    // so the routes use the Drizzle-backed MediaRepository against the live database.
+    // No injected repo, so the routes use the Drizzle-backed MediaRepository.
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
     const container = buildContainer(env)
     app = await buildServer({ env, container })
@@ -65,7 +50,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     expect(rows[0]!.status).toBe("validating")
     expect(rows[0]!.report_id).toBeNull()
     // Intake keys the object by the server-minted uploadId (uploads/YYYY/MM/<uploadId>), NOT the
-    // client-claimed sha256 — trusting the client's hash as the physical path would let a caller
+    // client-claimed sha256: trusting the client's hash as the physical path would let a caller
     // collide/overwrite another object. The worker later promotes verified bytes to the content-
     // addressed uploads/YYYY/MM/<sha256> key for dedup (see media-worker-repo).
     expect(rows[0]!.r2_key).toMatch(new RegExp(`^uploads/\\d{4}/\\d{2}/${uploadId}$`))
@@ -83,7 +68,6 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     const [row] = await h.sql<{ id: string; r2_key: string }[]>`
       SELECT id, r2_key FROM media_assets WHERE upload_id = ${uploadId}
     `
-    // Simulate the direct-to-R2 PUT having landed so finalize's HEAD check passes.
     await storage.put(row!.r2_key, new Uint8Array(2048), { contentType: "image/png" })
 
     const finRes = await app.inject({ method: "POST", url: `/v1/media/${uploadId}/finalize` })
@@ -91,13 +75,12 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     expect(finRes.json().status).toBe("validating")
     expect(finRes.json().mediaId).toBe(row!.id)
 
-    // The row stays VALIDATING until the worker strips EXIF/GPS + moderates, then promotes it to ready.
+    // Only the worker promotes to ready, after stripping EXIF/GPS and moderating.
     const [after] = await h.sql<{ status: string }[]>`
       SELECT status FROM media_assets WHERE upload_id = ${uploadId}
     `
     expect(after!.status).toBe("validating")
 
-    // finalize enqueues exactly one media.checks job for this upload (deduped by uploadId singletonKey).
     const checks = jobs.jobsFor(MEDIA_CHECKS_JOB).filter((j) => {
       const d = j.data as { uploadId?: string }
       return d.uploadId === uploadId
@@ -105,7 +88,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     expect(checks).toHaveLength(1)
   })
 
-  it("F087: a repeat finalize is idempotent — finalized_at is stamped ONCE and no second media.checks job is enqueued", async () => {
+  it("F087: a repeat finalize is idempotent: finalized_at is stamped ONCE and no second media.checks job is enqueued", async () => {
     const createRes = await app.inject({
       method: "POST",
       url: "/v1/media/upload",
@@ -124,8 +107,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     `
     expect(stamped!.finalized_at).not.toBeNull()
 
-    // Every later finalize loses the compare-and-set: same success body, same finalized_at, NO enqueue.
-    // The old status-CAS could not catch this — the row is 'validating' for the whole processing window.
+    // A status CAS could not catch this: the row is 'validating' for the whole processing window.
     for (let i = 0; i < 3; i++) {
       const again = await app.inject({ method: "POST", url: `/v1/media/${uploadId}/finalize` })
       expect(again.statusCode).toBe(200)
@@ -155,12 +137,10 @@ describe.skipIf(!pg)("media routes (integration)", () => {
       SELECT id FROM media_assets WHERE upload_id = ${uploadId}
     `
 
-    // While validating -> 404 on the public path.
     const notReady = await app.inject({ method: "GET", url: `/v1/media/${row!.id}` })
     expect(notReady.statusCode).toBe(404)
 
-    // Flip to ready (as the worker would: publish the processed bytes to served_key, then CAS) and
-    // re-fetch. A ready row whose served_key is still NULL stays a 404 — that is the pre-0097 state
+    // A ready row whose served_key is still NULL stays a 404: that is the pre-0097 state
     // db:backfill-served-key adopts.
     const servedKey = await publishMediaAsReady(h.sql, row!.id)
     await h.sql`UPDATE media_assets SET width = 800, height = 600 WHERE id = ${row!.id}`

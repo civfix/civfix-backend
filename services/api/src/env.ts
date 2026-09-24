@@ -128,7 +128,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (isProd) {
     for (const { flag, consequence } of FAKE_SEAM_FLAGS) {
       if (fakeFlags[flag]) {
-        errors.push(`${flag}: must not be true in production — ${consequence}`)
+        errors.push(`${flag}: must not be true in production; ${consequence}`)
       }
     }
   }
@@ -276,7 +276,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     !isNonRoutableDbHost(DATABASE_URL)
   ) {
     errors.push(
-      "DATABASE_URL: production requires TLS — append ?sslmode=require (or verify-ca / verify-full); " +
+      "DATABASE_URL: production requires TLS; append ?sslmode=require (or verify-ca / verify-full); " +
         "postgres.js otherwise connects in cleartext",
     )
   }
@@ -315,7 +315,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   }
   if (usesLocalStorage && PUBLIC_API_URL.length === 0) {
     errors.push(
-      "PUBLIC_API_URL: required whenever LOCAL_STORAGE_DIR is set — the local-disk driver's presigned " +
+      "PUBLIC_API_URL: required whenever LOCAL_STORAGE_DIR is set: the local-disk driver's presigned " +
         "URLs must be absolute and reachable from the browser and the media worker",
     )
   }
@@ -323,7 +323,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 
   if (!fakeFlags.USE_FAKE_GEOCODER && DATABASE_URL.length === 0) {
     errors.push(
-      "DATABASE_URL: required whenever USE_FAKE_GEOCODER is false — the real geocoder resolves its " +
+      "DATABASE_URL: required whenever USE_FAKE_GEOCODER is false: the real geocoder resolves its " +
         '"City, ST" label from the jurisdictions PostGIS table, so there is nothing to query without a database',
     )
   }
@@ -340,7 +340,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (!fakeFlags.USE_FAKE_STORAGE && !usesLocalStorage) {
     if (R2_PUBLIC_BASE.length > 0 && R2_INBOUND_BUCKET.length === 0) {
       errors.push(
-        "R2_INBOUND_BUCKET: required [BOOT] whenever R2_PUBLIC_BASE is set — a shared bucket would " +
+        "R2_INBOUND_BUCKET: required [BOOT] whenever R2_PUBLIC_BASE is set: a shared bucket would " +
           "publish raw inbound email and its attachments on the public CDN",
       )
     }

@@ -1,24 +1,15 @@
 /**
- * Reserved @handle blocklist + the runtime jurisdiction-handle check.
- *
- * Two layers gate which @handles a user may take, on BOTH the write path (PUT /me/profile) and the
- * availability check (GET /me/handle-available):
- *   1) RESERVED_HANDLES - a static blocklist of system/role-impersonating names (admin, support, mod,
- *      official, ...). Matched case-insensitively (handles are citext); the comparison lowercases.
- *   2) every existing jurisdictions.handle - a citizen must not be able to register a @handle that
- *      collides with a city/jurisdiction handle (those are @mentionable in report discussions). This is
- *      checked at runtime against the live table via `handleCollidesWithJurisdiction`.
- *
- * Both layers report the same outcome: the handle is `reserved` (distinct from `taken` / `invalid`).
+ * Two layers gate which @handles a user may take, on both the write path (PUT /me/profile) and the
+ * availability check (GET /me/handle-available), and both report `reserved` (distinct from `taken` and
+ * `invalid`):
+ *   1) RESERVED_HANDLES, system and role names a citizen must not impersonate;
+ *   2) every existing jurisdictions.handle, checked live, because jurisdiction handles are @mentionable in
+ *      report discussions.
  */
 
 import type { Sql } from "../db/client.js"
 import { TOMBSTONE_HANDLE_RE } from "./stores.js"
 
-/**
- * Static reserved-handle blocklist (lowercase, base forms). System / role / route names a citizen must
- * not be able to impersonate. Matched case-insensitively against the (lowercased) submitted handle.
- */
 export const RESERVED_HANDLES: readonly string[] = [
   "admin",
   "administrator",
@@ -47,19 +38,16 @@ export const RESERVED_HANDLES: readonly string[] = [
   "undefined",
 ]
 
-/** Lowercased set for O(1) membership tests. */
 const RESERVED_SET = new Set(RESERVED_HANDLES.map((h) => h.toLowerCase()))
 
-/** True when `handle` is on the static reserved blocklist (case-insensitive). */
 export function isReservedHandle(handle: string): boolean {
   const h = handle.trim().toLowerCase()
   return RESERVED_SET.has(h) || TOMBSTONE_HANDLE_RE.test(h)
 }
 
 /**
- * True when `handle` collides (case-insensitively) with an existing jurisdictions.handle. `handle` is
- * citext; the lower() comparison matches the partial-unique index jurisdictions_handle_lower_key
- * (0017_report_discussion.sql). A NULL-handle jurisdiction never matches.
+ * The lower() comparison matches the partial-unique index jurisdictions_handle_lower_key
+ * (0017_report_discussion.sql).
  */
 export async function handleCollidesWithJurisdiction(sql: Sql, handle: string): Promise<boolean> {
   const rows = await sql<{ one: number }[]>`

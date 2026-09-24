@@ -93,7 +93,7 @@ async function requireIssuedNonce(
     }
     opts.log.warn(
       { control: "oauth-nonce" },
-      "native sign-in accepted with no nonce (OAUTH_REQUIRE_NONCE is off) — ID-token replay is not bounded for this client",
+      "native sign-in accepted with no nonce (OAUTH_REQUIRE_NONCE is off); ID-token replay is not bounded for this client",
     )
     return undefined
   }

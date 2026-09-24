@@ -1,5 +1,5 @@
 /**
- * P5 Task 5.2 integration test (Docker-gated): CHANNEL read-only enforcement + PUBLIC self-serve join,
+ * Integration test (Docker-gated): CHANNEL read-only enforcement + PUBLIC self-serve join,
  * against a live PostGIS container (via withPg).
  *
  *   Channels are chat_groups with kind='channel': every member reads, but only owner/admin post. A
@@ -220,7 +220,7 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
         members: [{ id: memberId, role: "member" }],
       })
       // A read-only member can't author, so target the OWNER's message: the gate 403s before the
-      // sender/window checks (belt-and-braces — a read-only member's edit is rejected like a WS send).
+      // sender/window checks (belt-and-braces: a read-only member's edit is rejected like a WS send).
       const msg = await chat().insertMessage(
         { cleanupId: channelId, roomKind: "group", userId: ownerId, body: "owner post" },
         randomUUID(),
@@ -250,7 +250,7 @@ describe.skipIf(!pg)("chat channels: read-only enforcement + public join (integr
         randomUUID(),
       )
 
-      // A joined (read-only) member may react — reactions stay MEMBER-gated, not send-gated.
+      // A joined (read-only) member may react: reactions stay MEMBER-gated, not send-gated.
       const ok = await inject(await token(memberId), "POST", "/v1/messages/reactions", {
         roomKind: "group",
         roomId: channelId,

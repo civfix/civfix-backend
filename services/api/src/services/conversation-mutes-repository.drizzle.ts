@@ -1,49 +1,27 @@
-/**
- * Task D-E1: per-conversation mute store (conversation_mutes, migration 0042).
- *
- * A user may mute notifications for a single room (a cleanup group chat, a DM thread, or a report
- * chat) without leaving/muting globally. Composite PK(user_id, room_kind, room_id) means "muted" is
- * simply "a row exists" -- no separate boolean column. See src/db/schema/conversation_mutes.ts for the
- * full column rationale (in particular why room_id is NOT a foreign key).
- *
- * Written against the raw postgres-js tag (`Sql`) to match the rest of the backend (e.g.
- * report-chat-repository.drizzle.ts).
- */
+// "Muted" means a row exists; there is no boolean column. src/db/schema/conversation_mutes.ts records
+// why room_id is NOT a foreign key.
 
 import type { FastifyBaseLogger } from "fastify"
 import type { Sql } from "../db/client.js"
 import type { ConversationMuteRoomKind } from "../db/schema/conversation_mutes.js"
 
 export interface ConversationMutesRepository {
-  /** Whether `userId` has muted this room. */
   isMuted(userId: string, roomKind: ConversationMuteRoomKind, roomId: string): Promise<boolean>
-  /**
-   * Set the mute state for a room. `muted: true` upserts the mute row (idempotent: ON CONFLICT DO
-   * NOTHING, so re-muting an already-muted room is a no-op rather than an error). `muted: false`
-   * deletes the row (also idempotent: deleting an absent row is a no-op).
-   */
+  /** Idempotent both ways: re-muting and unmuting an unmuted room are no-ops, not errors. */
   setMuted(
     userId: string,
     roomKind: ConversationMuteRoomKind,
     roomId: string,
     muted: boolean,
   ): Promise<void>
-  /**
-   * Batch lookup for a threads list: of the given `roomIds` (all the same `roomKind`), which ones has
-   * `userId` muted? Returns a Set for O(1) membership checks. Empty `roomIds` short-circuits to an
-   * empty Set with NO query -- callers (e.g. rendering an empty threads page) should not pay for a
-   * round trip that can only ever return nothing.
-   */
   mutedRoomIdsFor(
     userId: string,
     roomKind: ConversationMuteRoomKind,
     roomIds: string[],
   ): Promise<Set<string>>
   /**
-   * The INVERSE batch shape, for a room fan-out: of the given `userIds`, which ones have muted THIS room?
-   * Same short-circuit on an empty list. OPTIONAL on the interface so the offline fakes that predate it
-   * still satisfy it; callers must therefore probe (`repo.mutedUserIdsFor?.(...)`) and fall back to the
-   * per-user `isMuted`.
+   * Optional so the offline fakes that predate it still satisfy the interface; callers must probe
+   * (`repo.mutedUserIdsFor?.(...)`) and fall back to the per-user `isMuted`.
    */
   mutedUserIdsFor?(
     roomKind: ConversationMuteRoomKind,

@@ -1,10 +1,6 @@
 /**
- * post_mentions: one row = one user @-mentioned in one post. Mirrors chat_message_mentions
- * (schema/message_mentions.ts) — keyed by the mentioned USER, drives the post_mention notification
- * (gated by blocks + the `mentions` pref in the service). Unlike the chat table this one CAN FK
- * post_id (posts is a plain uuid PK, not partitioned). Reuses makeMentionRepo(sql, 'post_mentions').
- *
- * CANONICAL DDL: drizzle/0051_social_posts.sql. This mirror is for typed queries / diff only.
+ * Same shape as chat_message_mentions so makeMentionRepo serves both, except that post_id can carry an
+ * FK: posts is not partitioned.
  */
 
 import { index, pgTable, primaryKey, uuid } from "drizzle-orm/pg-core"

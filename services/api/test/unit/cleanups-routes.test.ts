@@ -1344,7 +1344,7 @@ describe("GET /cleanups/:id/ics", () => {
       const ics = (res.json() as { ics: string }).ics
       expect(ics).toContain(`DTSTART:${stamp(slotStart)}`)
       expect(ics).toContain(`DTEND:${stamp(slotEnd)}`)
-      expect(ics).toContain("SUMMARY:Sweep — Morning sweep")
+      expect(ics).toContain("SUMMARY:Sweep (Morning sweep)")
     })
 
     it("gives anyone WITHOUT that claim the event's own window and plain title", async () => {
@@ -1418,7 +1418,7 @@ describe("GET /cleanups/:id/ics", () => {
   })
 })
 
-describe("PATCH /cleanups/:id/members/:userId — the assignable roles", () => {
+describe("PATCH /cleanups/:id/members/:userId: the assignable roles", () => {
   async function seededEvent(): Promise<{ h: Harness; id: string; memberId: string }> {
     const h = await makeHarness()
     const id = await createCleanup(h.app, h.token)
@@ -1428,7 +1428,7 @@ describe("PATCH /cleanups/:id/members/:userId — the assignable roles", () => {
     return { h, id, memberId }
   }
 
-  it("accepts staff at the boundary — the contract enum carries it", async () => {
+  it("accepts staff at the boundary: the contract enum carries it", async () => {
     const { h, id, memberId } = await seededEvent()
     const res = await h.app.inject({
       method: "PATCH",
@@ -1440,7 +1440,7 @@ describe("PATCH /cleanups/:id/members/:userId — the assignable roles", () => {
     expect(await h.repo.roleOf(id, memberId)).toBe("staff")
   })
 
-  it("still refuses organizer — ownership moves by transfer, never by a role cell", async () => {
+  it("still refuses organizer: ownership moves by transfer, never by a role cell", async () => {
     const { h, id, memberId } = await seededEvent()
     const res = await h.app.inject({
       method: "PATCH",

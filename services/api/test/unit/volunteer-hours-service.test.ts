@@ -1028,7 +1028,7 @@ describe("volunteer hours routes: leaderboard T1/T4 tripwires", () => {
     expect(body.entries).toEqual([])
   })
 
-  it("T4: anon gets a SHARED cache TTL and authed gets no-store — both carrying Vary", async () => {
+  it("T4: anon gets a SHARED cache TTL and authed gets no-store; both carrying Vary", async () => {
     const { app: built, token } = await makeApp()
 
     const anon = await built.inject({

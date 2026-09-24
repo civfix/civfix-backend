@@ -11,24 +11,13 @@ import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../src/services/media-intake-service.js"
 
-/**
- * HTTP tests for the admin INBOX router (`src/routes/admin/inbox.routes.ts`), which had none: every other
- * admin router has a unit HTTP test, while the inbox had only a repository integration test. So the whole
- * route layer was unexercised — the list filters, the detail 404, the attachment presigning + its
- * MAX_INBOX_ATTACHMENTS cap, and the L6 operator threading on the status mutation.
- *
- * These run against the REAL Fastify stack (app.inject) with in-memory auth (stores + cache + an
- * ADMIN_EMAILS allowlist) and `app.adminInboxOverrides` supplying an in-memory InboundRepository plus a
- * recording Storage — no DB, no R2, no Docker. The operator authenticates with a BEARER token, which is
- * CSRF-exempt by transport (see auth/csrf.ts), so the mutation is reachable without a cookie dance; the
- * cookie/CSRF half of the admin surface is covered in admin-auth-guard.test.ts.
- */
+// The operator uses a bearer token, which is CSRF-exempt by transport, so the mutation is reachable
+// without a cookie dance; the cookie/CSRF half is covered in admin-auth-guard.test.ts.
 
 const OPERATOR = "ops@civfix.org"
-/** Mirrors MAX_INBOX_ATTACHMENTS in inbox.routes.ts (module-private there, by design). */
+// Mirrors MAX_INBOX_ATTACHMENTS in inbox.routes.ts, which is module-private by design.
 const ATTACHMENT_CAP = 50
 
-/** A Storage that records what was presigned (and with which TTL) so the cap is observable. */
 class RecordingStorage extends FakeStorage {
   readonly signed: { key: string; ttlSec: number }[] = []
   override presignGet(key: string, ttlSec: number): Promise<string> {
@@ -43,7 +32,6 @@ interface Harness {
   storage: RecordingStorage
   services: AuthServices
   stores: ReturnType<typeof makeInMemoryStores>
-  /** Bearer token for an allowlisted operator. */
   token: string
   operatorId: string
 }
@@ -81,7 +69,6 @@ afterEach(async () => {
   }
 })
 
-/** Insert one inbound email; `minute` orders rows deterministically (received_at DESC on the wire). */
 async function seed(
   h: Harness,
   opts: {
@@ -111,7 +98,6 @@ async function seed(
   return id
 }
 
-/** GET as the operator. */
 function get(h: Harness, url: string): Promise<{ statusCode: number; json: () => unknown }> {
   return h.app.inject({ method: "GET", url, headers: { authorization: `Bearer ${h.token}` } })
 }
@@ -157,7 +143,6 @@ describe("GET /admin/inbox (list)", () => {
     expect(top.status).toBe("unread")
     expect(top.unread).toBe(true)
     expect(top.hasAttachments).toBe(true)
-    // The list projection never ships bodies or attachment keys.
     expect(top).not.toHaveProperty("bodyHtml")
     expect(top).not.toHaveProperty("attachments")
   })
@@ -274,8 +259,7 @@ describe("GET /admin/inbox/:id (detail)", () => {
     expect(dto.bodyText).toBe("See attached.")
     expect(dto.bodyHtml).toBe("<p>See attached.</p>")
     expect(dto.messageId).toBe("<detail@x>")
-    // The RAW R2 key never reaches the wire; it is swapped for a time-limited GET URL, and the filename +
-    // size ride along unchanged so the console can render the link.
+    // The raw R2 key never reaches the wire; it is swapped for a time-limited GET URL.
     expect(dto.attachments).toEqual([
       { key: "memory://inbound-emails/d/permit.pdf", filename: "permit.pdf", size: 2048 },
       { key: "memory://inbound-emails/d/map.png", filename: "map.png", size: 512 },
@@ -300,7 +284,6 @@ describe("GET /admin/inbox/:id (detail)", () => {
     const dto = res.json() as { attachments: MailAttachment[]; hasAttachments: boolean }
     expect(dto.hasAttachments).toBe(true)
     expect(dto.attachments).toHaveLength(ATTACHMENT_CAP)
-    // The FIRST 50 in order, each presigned; the tail is neither signed nor shipped.
     expect(dto.attachments[0]?.key).toBe("memory://inbound-emails/cap/part-0.bin")
     expect(dto.attachments[ATTACHMENT_CAP - 1]?.key).toBe(
       `memory://inbound-emails/cap/part-${ATTACHMENT_CAP - 1}.bin`,
@@ -426,7 +409,6 @@ describe("inbox routes are operator-gated like every other admin router", () => 
       })
       expect(asCitizen.statusCode, `${r.method} ${r.url} citizen`).toBe(403)
     }
-    // Nothing leaked and nothing changed.
     expect(harness.storage.signed).toHaveLength(0)
     expect(harness.repo.audits).toHaveLength(0)
     expect(harness.repo.rows[0]?.status).toBe("unread")

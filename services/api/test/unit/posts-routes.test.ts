@@ -1,14 +1,13 @@
 /**
- * HTTP-layer tests for the 13 social-feed post routes (routes-core test gap: posts.routes.ts had NO
- * route-level coverage — route-coverage.test.ts only asserts the endpoints are REGISTERED, and
- * post-service.test.ts calls the service directly, so nothing exercised auth, CSRF, `:id`/query
- * validation, the status codes or the serialized DTO).
+ * HTTP-layer tests for the 13 social-feed post routes. route-coverage.test.ts only asserts the endpoints
+ * are REGISTERED and post-service.test.ts calls the service directly, so nothing else exercises auth,
+ * CSRF, `:id`/query validation, the status codes or the serialized DTO.
  *
  * Everything runs through the real Fastify stack (`app.inject`) with a real `makePostService` over an
  * in-memory PostRepository, so the route -> service -> repo path is genuine; only the SQL is replaced.
  *
  * SEAM: posts.routes.ts reads `container.getPostService()` and has no `app.*Overrides` hook, so the
- * container getter IS the injection point — the harness swaps that one method on the container it passes
+ * container getter IS the injection point: the harness swaps that one method on the container it passes
  * to buildServer. `sql` is a throwing stub: `resolveMentionTargets` short-circuits on an empty
  * `mentionedUserIds`, so every path here provably needs no database.
  */
@@ -45,10 +44,8 @@ const throwingSql = (() => {
   throw new Error("posts-routes.test: no SQL may be issued on these paths")
 }) as unknown as Sql
 
-// ---------------------------------------------------------------------------
-// In-memory PostRepository (a behavioral fake, not a stub: counts and viewer
-// flags are derived from stored state so the serialized DTO is meaningful)
-// ---------------------------------------------------------------------------
+// The in-memory PostRepository below is a behavioral fake, not a stub: counts and viewer flags are
+// derived from stored state so the serialized DTO is meaningful.
 
 interface StoredPost {
   id: string
@@ -287,7 +284,7 @@ class InMemoryPostRepository implements PostRepository {
 
   /**
    * The shared source for BOTH timeline feeds, so the reply exclusion below lands on each of them at
-   * once — exactly as `AND p.reply_to_id IS NULL` does in the two SQL queries.
+   * once, exactly as `AND p.reply_to_id IS NULL` does in the two SQL queries.
    */
   private byFilter(filter: "all" | "events" | "fixes"): StoredPost[] {
     return [...this.posts.values()].filter((p) => {
@@ -295,7 +292,7 @@ class InMemoryPostRepository implements PostRepository {
       // Both byFilter feeds are TOP-LEVEL only, matching `reply_to_id IS NULL` in homeFeed + publicFeed.
       // A reply is thread content and belongs to listReplies, not the timeline. Note this fake had drifted
       // BOTH ways: publicFeed's SQL always carried the predicate and the fake never did, while homeFeed's
-      // SQL was missing it entirely (the bug) — so the route suite was certifying a reply dump.
+      // SQL was missing it entirely (the bug), so the route suite was certifying a reply dump.
       if (p.replyToId !== null) return false
       if (filter === "events") return p.eventId !== null
       if (filter === "fixes") return p.reportId !== null
@@ -396,7 +393,7 @@ class InMemoryPostRepository implements PostRepository {
   }
 
   listUserPosts(authorId: string, args: PostListArgs): Promise<FeedPage> {
-    // `kind !== "reply"`, matching the SQL's `AND p.kind <> 'reply'` — the profile "Posts" tab is the
+    // `kind !== "reply"`, matching the SQL's `AND p.kind <> 'reply'`: the profile "Posts" tab is the
     // Twitter Posts-vs-Replies split. The fake had omitted this, so the profile-tab test below could have
     // certified a reply the real query rejects.
     const rows = [...this.posts.values()].filter(
@@ -413,10 +410,6 @@ class InMemoryPostRepository implements PostRepository {
     return Promise.resolve(this.page(rows, args.viewerId, args))
   }
 }
-
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
 
 /** A mobile (bearer) session: CSRF-exempt, used for everything except the CSRF suite. */
 interface Session {
@@ -549,8 +542,8 @@ const MUTATIONS = (
 
 /**
  * The auth-REQUIRED reads only. `homeFeed`, `listUserPosts` and `getPost` are `auth: "optional"` in the
- * shared registry — a public profile has to be readable signed-out (P10), so its "Posts" tab does too, and
- * a shared post link must preview signed-out (#136) — and each has its own signed-out test.
+ * shared registry: a public profile has to be readable signed-out, so its "Posts" tab does too, and a
+ * shared post link must preview signed-out (#136). Each has its own signed-out test.
  */
 const READS = (id: string, _authorId: string): ReadonlyArray<{ method: "GET"; url: string }> => [
   { method: "GET", url: `/v1/posts/${id}/replies` },
@@ -573,9 +566,9 @@ describe("posts routes: auth", () => {
   })
 
   /**
-   * P10: a public profile is readable signed-out, so its "Posts" tab must be too. The signed-out reader
+   * A public profile is readable signed-out, so its "Posts" tab must be too. The signed-out reader
    * is hydrated against the NIL viewer, so every VIEWER flag comes back false while the public counts
-   * stay real — the same substitution the public feed makes. A 401 here would have made the whole
+   * stay real, the same substitution the public feed makes. A 401 here would have made the whole
    * signed-out profile page a dead end.
    */
   it("serves GET /people/:id/posts to a SIGNED-OUT reader (auth: optional)", async () => {
@@ -751,7 +744,7 @@ describe("POST /posts (createPost)", () => {
     expect(h.repo.posts.size).toBe(0)
   })
 
-  it("422s kind:'repost' — the toggle has its own route", async () => {
+  it("422s kind:'repost'; the toggle has its own route", async () => {
     const h = await makeHarness()
     const me = await h.signIn("rp@example.com", "Rp")
     const target = h.repo.seed({ authorId: me.userId })
@@ -812,8 +805,6 @@ describe("POST /posts (createPost)", () => {
     expect(ok.statusCode).toBe(201)
   })
 
-  // --- content filter + rate limit (the "post to feed" hardening) ---------------------------------
-
   it("422s a body containing a slur, on every post kind that carries one", async () => {
     const h = await makeHarness()
     const me = await h.signIn("slur@example.com", "Slur")
@@ -839,7 +830,7 @@ describe("POST /posts (createPost)", () => {
     // The seeded parent is the only row: nothing slurred was written.
     expect(h.repo.posts.size).toBe(1)
 
-    // General profanity is explicitly OUT of scope for the filter — this must still post.
+    // General profanity is explicitly OUT of scope for the filter, so this must still post.
     const ok = await h.app.inject({
       method: "POST",
       url: "/v1/posts",
@@ -1499,7 +1490,7 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
       replyToId: parent,
       body: "count me in",
     })
-    // A repost of the reply: its OWN row is top-level (repost never sets replyToId), so it MUST survive —
+    // A repost of the reply: its OWN row is top-level (repost never sets replyToId), so it MUST survive:
     // amplifying is a deliberate act, and this is the documented carve-out, not an oversight.
     const repostOfReply = h.repo.seed({
       authorId: me.userId,
@@ -1515,7 +1506,7 @@ describe("list endpoints: replies / user posts / saves / home feed", () => {
     expect(homeIds).not.toContain(reply)
     expect(homeIds).toContain(repostOfReply)
 
-    // Signed-out reads the SAME shape — the whole point of using publicFeed's exact predicate.
+    // Signed-out reads the SAME shape: the whole point of using publicFeed's exact predicate.
     const publicIds = (await h.app.inject({ method: "GET", url: "/v1/feed/home" }))
       .json()
       .items.map((p: PostDTO) => p.id)

@@ -6,7 +6,7 @@ export { backfillPostGeom } from "./backfill-post-geom-core.js"
 async function main(): Promise<void> {
   await runDbCli(async (_db, sql) => {
     const { scanned, filled } = await backfillPostGeom(sql)
-    console.log(`backfill-post-geom: done — scanned=${scanned} filled=${filled}`)
+    console.log(`backfill-post-geom: done: scanned=${scanned} filled=${filled}`)
   })
 }
 

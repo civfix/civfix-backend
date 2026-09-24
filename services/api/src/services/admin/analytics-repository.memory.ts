@@ -1,11 +1,7 @@
 /**
- * In-memory AnalyticsRepository for the offline analytics-service unit tests (no DB, no Docker).
- *
- * Unlike the row-store memory repos elsewhere, analytics aggregation is the DATABASE's job (medians,
- * grouped counts, period windows), so reproducing it in JS would just re-implement the SQL. Instead this
- * repo lets a test SET the canned aggregate each method returns, so the test exercises the service's pure
- * SHAPING (pct, category fill, deltas, funnel, week/month/cohort alignment) against known inputs. The
- * Docker-gated integration test exercises the real SQL aggregates.
+ * Aggregation is the database's job, so reproducing it in JS would re-implement the SQL. Instead a test
+ * sets the canned aggregate each method returns and exercises the service's shaping against known inputs;
+ * the integration test covers the real SQL aggregates.
  */
 
 import type {
@@ -23,7 +19,7 @@ import type {
   WeekBucket,
 } from "./analytics-types.js"
 
-/** Default empty KPI aggregates (all zero) so a test only sets what it asserts. */
+/** All zero, so a test only sets what it asserts. */
 function zeroKpis(): KpiAggregates {
   return {
     pins: { current: 0, previous: 0 },

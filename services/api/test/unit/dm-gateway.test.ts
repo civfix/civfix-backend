@@ -174,8 +174,7 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     expect(msg.body).toBe("hi bob")
     expect(msg.cleanupId).toBe(THREAD)
     expect(msg.roomKind).toBe("dm")
-    // DM messages always have an author (no sender-less SYSTEM messages on the dm path); assert that
-    // before narrowing so the intent (author == Alice) stays explicit.
+    // The dm path has no sender-less SYSTEM messages, so `from` is always present here.
     expect(msg.from).toBeTruthy()
     expect(msg.from?.id).toBe(ALICE)
 
@@ -225,7 +224,7 @@ describe("DM gateway routing (join/send/ack/block)", () => {
     for (const raw of [...aConn.sent, ...bConn.sent]) assertServerFrame(raw)
   })
 
-  it("a slur in a CLEANUP (group) chat send is also BLOCKED — the gate is room-kind-agnostic", async () => {
+  it("a slur in a CLEANUP (group) chat send is also BLOCKED: the gate is room-kind-agnostic", async () => {
     const aConn = new MockConnection("A")
     const aSession = sessionFor(ALICE, aConn)
     await handleClientFrame(

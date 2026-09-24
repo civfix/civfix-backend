@@ -1,17 +1,7 @@
-/**
- * F158: the follower / following pages used to sort the whole joined edge set by users.display_name with
- * no supporting index — O(edges log edges) per page on a high-follower account, and a name cursor that
- * has to carry a text key. The pages now key on the EDGE's created_at (served by
- * follows_people_follower_created_idx / the followee_id index, drizzle/0093) and sort by name only
- * WITHIN the fetched page.
- *
- * That makes two things testable against the real schema (Docker-gated), neither of which held before:
- *   - a page is the next slice of the edge timeline (newest edges first), NOT the next slice of an
- *     alphabetical list — the fixture below deliberately names the OLDEST edge "Aaron" so a name-ordered
- *     implementation would put it on page 1;
- *   - walking the cursor visits every edge exactly once, including across a same-timestamp boundary,
- *     which is where a keyset that ignores the id tiebreak silently drops or repeats a row.
- */
+// Follower/following pages key on the edge's created_at (indexed, drizzle/0093) and sort by name only
+// within the fetched page; sorting the whole edge set by display_name was O(edges log edges) per page.
+// The oldest edge is deliberately named "Aaron" so a name-ordered implementation would put it on page 1,
+// and a same-timestamp boundary catches a keyset that ignores the id tiebreak.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, seedFollowEdge, testHandle, type PgHarness } from "../helpers/pg.js"

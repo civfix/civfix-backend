@@ -1,19 +1,18 @@
 /**
- * P9 signup slots — the HTTP surface, through `app.inject` with an injected in-memory repository (no
- * database, no Redis).
+ * Signup slots, the HTTP surface, through `app.inject` with an injected in-memory repository.
  *
  * The service suites own the rules; this file owns the things that only exist at the route layer and
  * that a service test can never catch:
  *
  *   - `claimEventSlot` is actually REGISTERED at `PUT /v1/cleanups/:id/slot` (the shared registry is
  *     frozen, so the method+path have to match it exactly);
- *   - the `{ ...body, id }` path-param merge — the typed client extracts `id` into the path, so a route
+ *   - the `{ ...body, id }` path-param merge: the typed client extracts `id` into the path, so a route
  *     that forgot the merge would 422 on every single call;
  *   - the CSRF preHandler is present on the mutation (a cookie-session browser client is the reason it
  *     exists at all);
  *   - the per-IP rate limit is configured at 30/min;
  *   - the response really is a CleanupDTO carrying the REFRESHED `slots`, so the client needs no
- *     refetch — and `slotCount` (not `slots`) is what the list read carries.
+ *     refetch, and `slotCount` (not `slots`) is what the list read carries.
  */
 
 import { describe, it, expect, afterEach } from "vitest"
@@ -88,7 +87,6 @@ afterEach(async () => {
 
 const FUTURE = new Date(Date.now() + 7 * 86_400_000).toISOString()
 
-/** Create an event WITH a slot board and return { id, slots }. */
 async function createWithSlots(
   app: FastifyInstance,
   token: string,
@@ -137,8 +135,8 @@ describe("PUT /cleanups/:id/slot", () => {
 
     expect(res.statusCode).toBe(200)
     const dto = res.json()
-    // C5 reuses GetCleanupResponseSchema precisely so this is possible: the caller updates its cache
-    // straight from the mutation response instead of refetching the event.
+    // The claim reuses GetCleanupResponseSchema precisely so this is possible: the caller updates
+    // its cache straight from the mutation response instead of refetching the event.
     expect(dto.id).toBe(id)
     expect(
       dto.slots.map((s: { title: string; claimed: number; mine?: boolean }) => [
@@ -271,7 +269,7 @@ describe("route configuration", () => {
     )
     // Whitespace-collapsed so the assertions pin the declarations, not the formatter's line breaks.
     const src = raw.replace(/\s+/g, " ")
-    // B29c: the OUTER, per-IP layer. The inner per-(event, user) budget is asserted behaviorally in
+    // The OUTER, per-IP layer. The inner per-(event, user) budget is asserted behaviorally in
     // cleanup-slots-claim.test.ts; this one would otherwise be untested until production.
     expect(src).toContain(
       'const CLAIM_SLOT_RATE_LIMIT = { max: 30, timeWindow: "1 minute" } as const',
@@ -296,7 +294,7 @@ describe("the other cleanup reads carry the slot fields", () => {
 
     const list = await app.inject({ method: "GET", url: "/v1/cleanups", headers: auth(token) })
     const card = list.json().items.find((c: { id: string }) => c.id === id)
-    // A feed card renders no board, so the list read pays for one aggregate instead of a join — and
+    // A feed card renders no board, so the list read pays for one aggregate instead of a join, and
     // `slotCount` is what keeps the empty `slots` from being ambiguous.
     expect(card.slots).toEqual([])
     expect(card.slotCount).toBe(2)

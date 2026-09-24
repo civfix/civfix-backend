@@ -56,7 +56,7 @@ describe("F147: dropping a media binding column must re-point its rows first", (
       )
       expect(
         repoint.test(before),
-        `${drop.file} drops media_assets.${drop.column} without re-pointing the bound rows first — ` +
+        `${drop.file} drops media_assets.${drop.column} without re-pointing the bound rows first: ` +
           "every row bound only by it becomes orphan-sweep bait (row DELETEd, R2 object deleted)",
       ).toBe(true)
     }

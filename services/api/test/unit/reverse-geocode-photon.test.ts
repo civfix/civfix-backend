@@ -8,10 +8,9 @@ import {
 } from "../../src/adapters/reverse-geocode.photon.js"
 
 /**
- * Unit tests for the best-effort Photon reverse geocoder. The factory takes an injected `fetchImpl`, so
- * the whole thing runs offline against canned responses. The contract under test: a usable result is
- * formatted into a one-line address; EVERYTHING else (bad coords, HTTP error, network throw, empty
- * result) resolves to null so report creation is never blocked.
+ * The Photon reverse geocoder is best-effort: a usable result is formatted into a one-line address;
+ * EVERYTHING else (bad coords, HTTP error, network throw, empty result) resolves to null so report
+ * creation is never blocked.
  */
 
 describe("formatPhotonReverse", () => {
@@ -43,7 +42,6 @@ describe("formatPhotonReverse", () => {
   })
 })
 
-/** A fake fetch returning a single Photon feature with the given properties. */
 function okFetch(props: unknown): typeof fetch {
   return (async () =>
     ({

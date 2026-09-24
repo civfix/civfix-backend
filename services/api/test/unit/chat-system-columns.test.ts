@@ -1,10 +1,7 @@
 /**
- * Task D-B1: widen the Drizzle mirror of chat_messages for sender-less SYSTEM messages (report
- * status/timeline events posted into report chat) and sync the related enum tuples. No database
- * needed: this only inspects the Drizzle table config + the const tuples in schema/types.ts.
- *
- * Nothing CONSUMES system_* yet (producers land in D-C1, triggers in D-D1, renderers later); this
- * test only asserts the storage + enum widening this task is responsible for.
+ * The Drizzle mirror of chat_messages carries the columns for sender-less SYSTEM messages (report
+ * status/timeline events posted into report chat), and the related enum tuples stay in sync. Only the
+ * Drizzle table config and the const tuples in schema/types.ts are inspected, so no database is needed.
  */
 
 import { describe, expect, it } from "vitest"

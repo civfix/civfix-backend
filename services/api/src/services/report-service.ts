@@ -100,7 +100,6 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       ...(pin.title !== null ? { title: pin.title } : {}),
       description: pin.description,
       thumbUrl,
-      // <reference>" headline). addr stays nullable; referenceCode is omitted when null, mirroring title.
       addr: pin.addr,
       ...(pin.referenceCode !== null ? { referenceCode: pin.referenceCode } : {}),
     }

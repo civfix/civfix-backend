@@ -52,7 +52,6 @@ describe("RedisChatPubSub over ioredis-mock", () => {
     expect(received).toHaveLength(1)
     expect(JSON.parse(received[0]!).message.body).toBe("hi")
 
-    // After unsubscribe, a further publish is not delivered.
     await unsubscribe()
     await pubsub.publish(chatChannel(ROOM), "ignored")
     await new Promise((r) => setTimeout(r, 20))
@@ -79,13 +78,11 @@ describe("RedisChatPubSub over ioredis-mock", () => {
     created.push({ close: () => worker2.close(), redis: redis2 })
     created.push({ close: () => Promise.resolve(), redis: root })
 
-    // Bob's socket is on worker 2.
     const bConn = new MockConnection("B")
     await worker2.joinRoom(ROOM, bConn, BOB)
     // Give the subscribe a tick to register on the mock.
     await new Promise((r) => setTimeout(r, 20))
 
-    // Alice sends from worker 1.
     const msg = await worker1.persist({
       cleanupId: ROOM,
       userId: ALICE,

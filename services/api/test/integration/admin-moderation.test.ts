@@ -476,7 +476,7 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
 
     // The account is erased after the suspension (softDeleteAndAnonymize). An overturn that upserted
     // account_status='active' unconditionally would resurrect it in the operator console as a live,
-    // unflagged account — and, with the session hook wired, lift its ban marker too.
+    // unflagged account and, with the session hook wired, lift its ban marker too.
     await h.sql`UPDATE users SET deleted_at = now() WHERE id = ${deleted}`
 
     const appealId = await insertModerationItem(h.sql, {

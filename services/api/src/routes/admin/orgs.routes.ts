@@ -64,9 +64,9 @@ export async function registerAdminOrgRoutes(
     reply.status(200).send(payload)
   })
 
-  // ---- Org management (0.41.0, DECISIONS §32). Every mutation's operator audit is written INSIDE the
-  // repository transaction (the decide precedent below), with the mandatory `reason` in its meta, so the
-  // audit row and the state change commit or roll back together. The routes add no second writeAudit.
+  // Every org-management mutation writes its operator audit, with the mandatory `reason` in its meta, inside
+  // the repository transaction, so the audit row and the state change commit or roll back together. The
+  // routes add no second writeAudit.
 
   route(app, "adminListOrgs", async (request, reply) => {
     const operatorId = requireOperator(request)
@@ -207,12 +207,9 @@ export async function registerAdminOrgRoutes(
     reply.status(200).send(payload)
   })
 
-  // Operator audit: unlike the sibling admin mutations (broadcasts/pages), which call writeAudit in the
-  // route after the effect, this decision is audited INSIDE the repository transaction
-  // (organization-repository.drizzle.ts decideVerificationTx -> writeHostAudit "org.verification_verified" /
-  // "org.verification_rejected" with actorId=operator, target=organization:<id>, meta={kind, reason}), so
-  // the audit row and the state change commit or roll back together. A route-level writeAudit here would
-  // double-write the same row, so the route deliberately relies on the repo's entry.
+  // Unlike broadcasts/pages, which call writeAudit in the route after the effect, this decision is audited
+  // inside the repository transaction (decideVerificationTx), so the audit row and the state change commit
+  // or roll back together. A route-level writeAudit here would double-write the row.
   route(app, "adminDecideOrgVerification", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(DecideOrgVerificationRequestSchema, request)

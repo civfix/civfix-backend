@@ -37,8 +37,8 @@ const GEOID = LA_CITY.geoid
 
 /**
  * The deciding operator's address. `actorId` is NON-NULL on the service's approve/reject (every caller is
- * an operator-guarded gov route), and it lands in `audit_log.actor_id` / `gov_claims.decided_by` — both
- * uuid columns REFERENCING users(id) — so the tests must pass a real user's id, not a placeholder string.
+ * an operator-guarded gov route), and it lands in `audit_log.actor_id` / `gov_claims.decided_by`, both
+ * uuid columns REFERENCING users(id), so the tests must pass a real user's id, not a placeholder string.
  * Kept off the '@lacity.gov' domain the per-test cleanup wipes so it cannot collide with a provisioned
  * gov user.
  */
@@ -62,7 +62,6 @@ function provisionerFromUserStore(store: UserStore): UserProvisioner {
   }
 }
 
-/** Insert a pending gov claim and return its id. */
 async function insertClaim(
   h: PgHarness,
   opts: { name?: string; org?: string; contactEmail?: string | null; geoid?: string | null },

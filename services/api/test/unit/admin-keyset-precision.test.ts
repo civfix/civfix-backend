@@ -1,9 +1,6 @@
-/**
- * Admin keyset cursors must carry the column's full microsecond instant. postgres-js hands timestamptz back
- * as a JS Date (millisecond precision) and serializes a Date param with toISOString(), so a cursor built
- * from the Date skips every row in the anchor's millisecond on a DESC list and repeats them on an ASC one.
- * Rows written by one transaction share now(), so a burst of audit rows is exactly that case.
- */
+// Admin keyset cursors must carry the column's full microsecond instant. postgres-js returns timestamptz
+// as a millisecond JS Date, so a cursor built from it skips rows in the anchor's millisecond on a DESC
+// list and repeats them on an ASC one; rows from one transaction share now(), so audit bursts hit this.
 
 import { describe, it, expect } from "vitest"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
@@ -22,7 +19,6 @@ const ID_A = "0b8f3a52-7a55-4d6e-9d0c-5a8f1b7c9e01"
 const ID_B = "0b8f3a52-7a55-4d6e-9d0c-5a8f1b7c9e02"
 const CURSOR = `${AT_TEXT}|${ID_A}`
 
-/** Two rows sharing one millisecond, so a limit-1 page has a next cursor anchored on the first. */
 function twoRows(extra: Record<string, unknown>): Record<string, unknown>[] {
   return [
     { id: ID_A, cursor_at: AT_TEXT, ...extra },
@@ -36,7 +32,6 @@ function lastStatement(ctl: FakeSqlControl, match: RegExp): { sql: string; value
   return hit
 }
 
-/** The page-2 statement binds the anchor as full-precision text cast to timestamptz, never a Date. */
 function expectExactAnchor(ctl: FakeSqlControl, match: RegExp): void {
   const stmt = lastStatement(ctl, match)
   expect(stmt.values).toContain(AT_TEXT)

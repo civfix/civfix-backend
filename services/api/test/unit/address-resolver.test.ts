@@ -1,20 +1,6 @@
-/**
- * The address ladder (src/services/address-resolver.ts) and its cache (src/services/geocode-cache.ts).
- *
- * This is the one place a coordinate becomes an address, so what is pinned here is the ORDER OF CLAIMS
- * and the failure behavior, not any vendor's wire format (the adapters' own tests cover that):
- *
- *   - the provider chain's rung wins when it has one, verbatim, including a RAW landmark line;
- *   - a chain miss degrades to the TIGER label at `locality`, which callers read as NOT LOCATED;
- *   - `cityStateLabel` comes back populated on every path, because the contract promises it;
- *   - a throwing provider, a throwing geocoder and an unreachable cache each cost one rung and never
- *     an error - this sits on the report-create path, where a geocoder outage must not cost a filing;
- *   - a cached point makes NO provider call, and ONLY a chain answer is cached: a chain miss leaves a
- *     short-TTL null row, so the locality rung is recomputed per request and an outage cannot lock a
- *     point at city grade for half a year.
- *
- * All offline: fake providers, a fake geocoder and an in-memory cache.
- */
+// Pins the order of claims and the failure behavior, not any vendor's wire format. The ladder sits on the
+// report-create path, so a failing provider, geocoder or cache costs one rung and never an error, and only
+// a chain answer is cached so an outage cannot lock a point at city grade for half a year.
 
 import { describe, it, expect } from "vitest"
 import { FakeGeocoder } from "@civfix/shared/fakes"
@@ -38,7 +24,6 @@ import type { Sql } from "../../src/db/client.js"
 
 const LA = { lat: 34.05223, lng: -118.24368 }
 
-/** A chain stand-in that records every call, so "did this cost a provider call" is assertable. */
 function chain(result: ReverseResult | null): ReverseGeocode & { calls: number } {
   const fn = Object.assign(
     async (): Promise<ReverseResult | null> => {
@@ -64,7 +49,6 @@ function memoryCache(): GeocodeCache & { rows: Map<string, GeocodeCacheEntry>; w
   return cache
 }
 
-/** The same store, but applying the REAL freshness rule against a clock the test moves. */
 function expiringCache(clock: { now: Date }): GeocodeCache & {
   rows: Map<string, GeocodeCacheEntry & { resolvedAt: Date }>
 } {
@@ -229,7 +213,7 @@ describe("makeAddressResolver caching", () => {
     })
 
     await resolve(LA.lat, LA.lng)
-    // Well inside the 5th decimal (~1.1 m), which is exactly what a dragged pin produces.
+    // Well inside the 5th decimal (~1.1 m), as a dragged pin produces.
     await resolve(LA.lat + 0.000001, LA.lng - 0.000002)
 
     expect(provider.calls).toBe(1)
@@ -308,13 +292,12 @@ describe("makeAddressResolver caching", () => {
       cache,
     })
 
-    // The outage: the chain has nothing, so every caller still gets the live locality rung...
     await expect(resolve(LA.lat, LA.lng)).resolves.toEqual({
       address: "Los Angeles, CA",
       precision: "locality",
       cityStateLabel: "Los Angeles, CA",
     })
-    // ...off a SHORT-TTL null row, which is what makes the re-run possible at all.
+    // The short-TTL null row is what makes the re-run possible at all.
     expect(cache.rows.get(geocodePointKey(LA))?.address).toBeNull()
 
     down = false
@@ -377,11 +360,8 @@ describe("makeAddressResolver caching", () => {
   })
 })
 
-/**
- * The cache adapter itself. `makeGeocodeCache` is the layer that must swallow a DB that is missing,
- * locked or absent entirely (the fully-faked offline server has no connection at all), so the resolver
- * above can treat it as infallible.
- */
+// `makeGeocodeCache` must swallow a DB that is missing, locked or absent entirely (the fully-faked offline
+// server has no connection at all), so the resolver can treat it as infallible.
 function fakeSql(rows: unknown[], calls: string[] = []): Sql {
   const fn = (strings: TemplateStringsArray, ..._values: unknown[]): Promise<unknown[]> => {
     calls.push(strings.join(""))

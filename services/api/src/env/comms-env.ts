@@ -60,7 +60,7 @@ export function loadCommsEnv(source: NodeJS.ProcessEnv, errors: string[]): Comms
 
   if (isProd && (source.PUBLIC_API_URL ?? "").trim().length === 0) {
     errors.push(
-      "PUBLIC_API_URL: required [BOOT] for host communications — the RFC 8058 List-Unsubscribe " +
+      "PUBLIC_API_URL: required [BOOT] for host communications: the RFC 8058 List-Unsubscribe " +
         "header in every broadcast email is an API-origin URL, and a wrong origin makes one-click " +
         "unsubscribe fail for every recipient",
     )

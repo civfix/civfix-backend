@@ -326,7 +326,7 @@ describe("runInboundSweep: crash-safe lease + idempotent re-drive (B4)", () => {
     return runInboundSweep(h.container, { deps: h.deps, effectsMinAgeMs: 0, now: () => at })
   }
 
-  it("a runner that DIES after claiming is re-driven once the lease expires — exactly once", async () => {
+  it("a runner that DIES after claiming is re-driven once the lease expires, exactly once", async () => {
     const h = harness()
     const reportId = "report-crash"
     const { inbound } = seed(h, reportId)

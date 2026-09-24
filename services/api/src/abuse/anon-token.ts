@@ -2,41 +2,24 @@
  * Anonymous reporting token: a signed, short-lived credential that lets a logged-out reporter submit a
  * bounded number of reports and later claim them into an account.
  *
- * Shape on the wire: `"<tokenId>.<hmac>"` where
- *   - tokenId is 256 bits of CSPRNG entropy (base64url), the PRIMARY KEY of an anon_tokens row, and
- *   - hmac is HMAC-SHA256(ANON_TOKEN_SIGNING_KEY, tokenId), base64url.
- * The HMAC makes the token UNFORGEABLE: a client cannot mint a tokenId that references a row without
- * the server's signing key. The server still loads the row to enforce per-token state (report_count,
- * expiry, flagged), so the token is a stateless authenticator over server-side state - it is never a
- * bearer of authority by itself.
+ * Wire form `"<tokenId>.<hmac>"`: tokenId is 256 bits of CSPRNG entropy and the anon_tokens primary key,
+ * hmac is HMAC-SHA256(ANON_TOKEN_SIGNING_KEY, tokenId). The HMAC makes the token unforgeable, but it only
+ * authenticates server-side state: the row still decides expiry, report_count and flagged, so the token
+ * never carries authority by itself.
  *
- * LIFETIME: 24h (ANON_TOKEN_TTL_SECONDS), stamped on the row's expires_at at issue time. An expired or
- * missing row makes the token invalid even if the HMAC checks out.
- *
- * PER-TOKEN CAP: a token may back at most ANON_TOKEN_REPORT_CAP reports in its lifetime. The cap is
- * enforced against the row's report_count, which the anon-service bumps inside the same transaction
- * that creates the report (so a crashed submit cannot leak quota).
- *
- * ISSUANCE: on the first anon submit with no valid token presented, the service calls `issueAnonToken`
- * to create a row + return the signed token; the client stores it (cookie for web, body for mobile -
- * the transport is documented on the anon route) and sends it back as `anonToken` next time.
- *
- * The signing/verification is PURE (sign/verify/parse take the key as an argument); the row lifecycle
- * sits behind a small AnonTokenStore seam with an in-memory impl, so every behavior (issue, verify,
- * cap, expiry, claim-code) is unit-testable with no database.
+ * The per-token cap is enforced against report_count, which anon-service bumps in the same transaction
+ * that creates the report, so a crashed submit cannot leak quota.
  */
 
 import { createHmac } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import { generateToken, constantTimeStringEqual } from "../auth/crypto.js"
 
-/** Anonymous token lifetime: 24 hours, in seconds. */
 export const ANON_TOKEN_TTL_SECONDS = 24 * 60 * 60
 
-/** Max reports a single anon token may back over its lifetime. */
 export const ANON_TOKEN_REPORT_CAP = 5
 
-/** Separator between the token id and its HMAC in the wire form. base64url never contains ".". */
+/** base64url never contains ".", so the separator cannot collide with the id or the HMAC. */
 const TOKEN_SEP = "."
 
 function hmac(tokenId: string, signingKey: string): string {
@@ -48,9 +31,7 @@ export function signAnonToken(tokenId: string, signingKey: string): string {
 }
 
 /**
- * Verify a presented wire token's signature and return its token id, or null when malformed / the HMAC
- * does not match. PURE. Does NOT consult the store (no expiry/cap check here) - this only proves the
- * token was minted by us. The caller loads the row to enforce state.
+ * Only proves the token was minted by us. Expiry and the cap live on the row, which the caller loads.
  */
 export function verifyAnonTokenSignature(token: string, signingKey: string): string | null {
   const idx = token.indexOf(TOKEN_SEP)
@@ -61,7 +42,6 @@ export function verifyAnonTokenSignature(token: string, signingKey: string): str
   return constantTimeStringEqual(sig, expected) ? tokenId : null
 }
 
-/** The anon_tokens row fields the abuse stack reads/writes. */
 export interface AnonTokenRecord {
   id: string
   createdAt: Date
@@ -71,11 +51,6 @@ export interface AnonTokenRecord {
   claimCode: string | null
 }
 
-/**
- * Persistence seam for anon_tokens. The production impl is Drizzle/Postgres; the offline tests pass an
- * in-memory implementation. Keeping the row lifecycle behind this interface is what makes the token
- * logic unit-testable with no DB.
- */
 export interface AnonTokenStore {
   insert(row: AnonTokenRecord): Promise<void>
   findById(id: string): Promise<AnonTokenRecord | null>
@@ -84,24 +59,16 @@ export interface AnonTokenStore {
 export interface AnonTokenDeps {
   store: AnonTokenStore
   signingKey: string
-  /** Injectable id factory (defaults to a 256-bit base64url token). */
   newId?: () => string
-  /** Injectable clock (defaults to Date.now). */
   now?: () => Date
 }
 
 export interface IssuedAnonToken {
-  /** The signed wire token to hand back to the client. */
   token: string
-  /** The persisted row (its id is the report's anon_session_id). */
+  /** Its id becomes the report's anon_session_id. */
   record: AnonTokenRecord
 }
 
-/**
- * Issue a brand-new anon token: mint a random id, persist an anon_tokens row (24h expiry, report_count
- * 0, not flagged, no claim code yet), and return the signed wire token + the row. Called on the first
- * anon submit when no valid token is presented.
- */
 export async function issueAnonToken(deps: AnonTokenDeps): Promise<IssuedAnonToken> {
   const newId = deps.newId ?? (() => generateToken())
   const now = deps.now ?? (() => new Date())
@@ -119,10 +86,8 @@ export async function issueAnonToken(deps: AnonTokenDeps): Promise<IssuedAnonTok
 }
 
 /**
- * Resolve a presented wire token to its valid, in-lifetime row. Returns null when the token is absent,
- * malformed, has a bad signature, references no row, or is expired. Does NOT enforce the report cap
- * (call `assertUnderReportCap` for that, so the caller can decide ordering). A flagged row still
- * resolves here; policy on flagged tokens is left to the caller.
+ * Leaves the report cap to `assertUnderReportCap` so the caller controls ordering, and still resolves a
+ * flagged row: policy on flagged tokens belongs to the caller.
  */
 export async function resolveAnonToken(
   token: string | undefined | null,
@@ -138,11 +103,6 @@ export async function resolveAnonToken(
   return row
 }
 
-/**
- * Assert a resolved token row is still under the per-token report cap. Throws AppError.rateLimited
- * (429) once report_count has reached ANON_TOKEN_REPORT_CAP, so the (cap+1)-th submit on the same
- * token is rejected. Returns the remaining allowance for logging.
- */
 export function assertUnderReportCap(
   row: AnonTokenRecord,
   cap: number = ANON_TOKEN_REPORT_CAP,
@@ -156,16 +116,9 @@ export function assertUnderReportCap(
 }
 
 /**
- * Enforce the per-token cap on an ALREADY-RESOLVED row, or issue a fresh token when there is none:
- *   - a resolved row must still be under the cap (throws 429 otherwise);
- *   - a null row (absent/invalid/expired presented token) causes a fresh one to be issued, which is
- *     trivially under the cap.
- * Returns the row to bind as anon_session_id plus, when freshly minted, the signed token to hand back
- * to the client (undefined when an existing token was reused, since the client already holds it).
- *
- * Split out of resolveOrIssueAnonToken because the anon-service must resolve the presented token
- * BEFORE its idempotency lookup (the stored idempotency row is owner-scoped by the token id, F028)
- * and must not re-read or re-issue the row afterwards.
+ * Split out of resolveOrIssueAnonToken because anon-service must resolve the presented token before its
+ * idempotency lookup (the stored idempotency row is owner-scoped by the token id) and must not re-read
+ * or re-issue the row afterwards.
  */
 export async function ensureAnonToken(
   existing: AnonTokenRecord | null,
@@ -179,10 +132,6 @@ export async function ensureAnonToken(
   return { record: issued.record, issuedToken: issued.token }
 }
 
-/**
- * Resolve OR issue an anon token, then enforce the per-token cap: resolveAnonToken composed with
- * ensureAnonToken, for callers that hold only the wire token and need nothing in between.
- */
 export async function resolveOrIssueAnonToken(
   presented: string | undefined | null,
   deps: AnonTokenDeps,

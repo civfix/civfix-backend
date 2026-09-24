@@ -1,5 +1,5 @@
 /**
- * P4 Task 4.5 integration test (Docker-gated): groups in the threads inbox + group_chat bells +
+ * Integration test (Docker-gated): groups in the threads inbox + group_chat bells +
  * the read-watermark / keyset carry-ins, against a live PostGIS container (via withPg).
  *
  *   Threads inbox (service-level, the threads-report-pg pattern):
@@ -11,7 +11,7 @@
  *       back (GREATEST semantics);
  *     - a conversation_mutes ('group') row flips the thread's muted to true.
  *
- *   Bells (WS seam: handleClientFrame over the SAME pieces chat-gateway-wiring composes —
+ *   Bells (WS seam: handleClientFrame over the SAME pieces chat-gateway-wiring composes:
  *   makeGroupChatNotifier fan-out via onGroupMessage, chat-bells mention/reply notifiers, presence,
  *   and the wiring-shaped markReadOnOpen):
  *     - a member send bells the UNMUTED absent member exactly once (group_chat,
@@ -23,7 +23,7 @@
  *     - markReadOnOpen (join) clears the room's group_chat bells and leaves other rooms' bells.
  *
  *   Keyset carry-in: five messages sharing ONE transaction timestamp (identical created_at to the
- *   microsecond) page with limit 2 into 3 pages with no dupes and no skips — group history AND dm
+ *   microsecond) page with limit 2 into 3 pages with no dupes and no skips, group history AND dm
  *   history (the anchor tuple now stays in SQL; a ms-truncated JS-Date anchor would return an empty
  *   second page).
  *
@@ -415,7 +415,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       expect(await bellsFor(mutedU)).toHaveLength(0)
     })
 
-    it("a reply in a MUTED group still bells the reply target — exactly ONE, reply-flavored", async () => {
+    it("a reply in a MUTED group still bells the reply target: exactly ONE, reply-flavored", async () => {
       const target = await newUser("Muted Reply Target")
       const actor = await newUser("Group Reply Actor")
       const groupId = await newGroup(target, [actor])
@@ -485,7 +485,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       })
       await settle()
 
-      // Mentioned member: exactly ONE bell — the mention-flavored one, never the fan-out copy.
+      // Mentioned member: exactly ONE bell, the mention-flavored one, never the fan-out copy.
       const mentionedFinal = await bellsFor(mentioned)
       expect(mentionedFinal).toHaveLength(1)
       expect(mentionedFinal[0]).toMatchObject({
@@ -494,7 +494,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
         link: `/messages/group/${groupId}`,
       })
       expect(mentionedBells[0]!.title).toBe("Group Mention Author mentioned you")
-      // Other member: exactly ONE bell — the plain fan-out copy.
+      // Other member: exactly ONE bell, the plain fan-out copy.
       const otherFinal = await bellsFor(other)
       expect(otherFinal).toHaveLength(1)
       expect(otherFinal[0]).toMatchObject({ type: "group_chat", title: "Group Mention Author" })
@@ -546,7 +546,7 @@ describe.skipIf(!pg)("chat groups: threads inbox + group_chat bells (integration
       })
       const remaining = await unreadLinks()
       expect(remaining).toEqual([`/messages/group/${otherGroupId}`])
-      // ...and the join also stamped the read watermark (the 4.4 behavior, unchanged).
+      // ...and the join also stamped the read watermark.
       const rows = await h.sql<{ last_read_at: Date | null }[]>`
         SELECT last_read_at FROM chat_group_members WHERE group_id = ${groupId} AND user_id = ${member}
       `

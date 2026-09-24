@@ -1,20 +1,11 @@
 /**
- * The reaction toggle for every room kind: resolve the target, authorize, tombstone-gate, toggle, re-read.
+ * Authorize BEFORE resolving the target: a caller with no power in the room must not be able to tell an
+ * unknown message id from a real one in a private room (the reverse order is an existence oracle), so the
+ * 404 only ever reaches someone allowed to react there. The tombstone check follows authorization for the
+ * same reason, and precedes the write so a reaction to a deleted message never inserts an orphan row.
  *
- * `toggleReaction` is the roomKind-dispatching entry point (the chat-edit-service pattern) and the one the
- * unified POST /messages/reactions route should call; the three legacy per-room methods are thin binders
- * onto the same core so the gate ladder exists ONCE. chat_message_reactions is room-agnostic (keyed on
- * message id), so only the resolve + authorize steps differ per kind.
- *
- * GATE ORDER — authorize BEFORE resolving the target. A caller with no power in the room must not be able
- * to tell an unknown message id from a real one in a private room (the reverse order is an existence
- * oracle), so the 403 comes first and the 404 only ever reaches someone allowed to react there. The
- * tombstone check runs AFTER authorization for the same reason, and BEFORE the write so a reaction to a
- * deleted message never inserts an orphan reactions row.
- *
- * WIRING: every dep is optional on the factory (the offline harnesses and the legacy routes wire only what
- * their lane needs) but each lane asserts its own deps at call time — a missing one is a wiring bug, so it
- * throws rather than silently skipping a gate.
+ * Every dep is optional on the factory, but each lane asserts its own deps at call time: a missing one is
+ * a wiring bug, so it throws rather than silently skipping a gate.
  */
 
 import { AppError, ReactionEmojiSchema } from "@civfix/shared"
@@ -25,38 +16,29 @@ import type { DmRepository } from "./dm-repository.drizzle.js"
 export const CHAT_REACTION_FORBIDDEN = "You can't react in this conversation."
 
 /**
- * The REPORT lane's own 403 copy. Report chat is view-only until you Join, and that is actionable, so the
- * room says how to fix it instead of the generic refusal. Lives here (not in the route) because the gate
- * itself lives here now: both the legacy per-room route and the unified /messages/reactions route reach
- * the report lane through this service, and they must not answer the same refusal with different copy.
+ * Report chat is view-only until you Join, which is actionable, so the refusal says how to fix it. It
+ * lives beside the gate so the legacy and unified routes never answer the same refusal differently.
  */
 export const REPORT_CHAT_REACTION_FORBIDDEN = "Join the chat to react to messages."
 
 export type IsCleanupMemberFn = (cleanupId: string, userId: string) => Promise<boolean>
 
-/** The room kinds a reaction can target (the shared ToggleMessageReactionRequest vocabulary). */
 export type ReactionRoomKind = "cleanup" | "report" | "group" | "dm"
 
 export interface ChatReactionServiceDeps {
   chat?: ChatRepository
   dm?: DmRepository
   isCleanupMember?: IsCleanupMemberFn
-  /**
-   * report_chat_members membership. The report lane's in-service gate: report chat is view-only until you
-   * Join, and relying on the route to have checked left any other caller of this service unauthorized-by-
-   * default (the cleanup and dm lanes have always gated in-service).
-   */
+  /** Gated in-service so a caller other than the report route is never unauthorized by default. */
   isReportChatMember?: (reportId: string, userId: string) => Promise<boolean>
   /**
-   * chat_group_members membership. Reacting follows MEMBERSHIP, not send permission: a channel's read-only
-   * member may react (and vote in polls — the same product stance), which is why this is not the
-   * canPostToGroup gate the edit lane uses.
+   * Reacting follows membership, not send permission: a channel's read-only member may react (and vote in
+   * polls), which is why this is not the canPostToGroup gate the edit lane uses.
    */
   isChatGroupMember?: (groupId: string, userId: string) => Promise<boolean>
   /**
-   * Report VISIBILITY (isReportVisibleTo: published+public, or the reporter's own). Optional: when wired
-   * it runs before membership so an unlisted / soft-deleted report answers 404 exactly like the
-   * report-chat routes' requireVisibleReport. Absent = not enforced in-service.
+   * Runs before membership so an unlisted or soft-deleted report answers 404 like the report-chat
+   * routes' requireVisibleReport. Absent means not enforced in-service.
    */
   isReportVisible?: (reportId: string, userId: string) => Promise<boolean>
   dmPeerOf?: (threadId: string, userId: string) => Promise<string | null>
@@ -72,7 +54,6 @@ export interface ToggleReactionInput {
 }
 
 export interface ChatReactionService {
-  /** Room-kind dispatching toggle (see the module banner for the gate ladder). */
   toggleReaction(input: ToggleReactionInput): Promise<ChatMessageDTO>
   toggleCleanupReaction(
     cleanupId: string,
@@ -104,21 +85,17 @@ const notWired = (what: string): Error => new Error(`chat-reaction-service: ${wh
 
 const messageNotFound = (): AppError => AppError.notFound("Message not found")
 
-/** The room-ref slice of a chat_messages row a lane matches its roomId against. */
 type RoomRefs = Pick<ChatMessageMeta, "cleanupId" | "reportId" | "groupId">
 
-/** One room kind's resolve / authorize / write seam, bound to the deps its lane needs. */
 interface ReactionLane {
-  /** Authorization for the room (throws 403/404); runs BEFORE the target is resolved. */
   authorize(roomId: string, userId: string): Promise<void>
-  /** The target's tombstone state, or null when it does not exist in THIS room. */
+  /** null when the message does not exist in THIS room. */
   resolve(roomId: string, messageId: string): Promise<{ deletedAt: Date | null } | null>
   toggle(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean>
   read(roomId: string, messageId: string, userId: string): Promise<ChatMessageDTO | null>
 }
 
 export function makeChatReactionService(deps: ChatReactionServiceDeps): ChatReactionService {
-  /** The report lane's gates: visibility (when wired) then membership. Throws 404 / 403; never returns false. */
   async function gateReportRoom(reportId: string, userId: string, strict: boolean): Promise<void> {
     if (deps.isReportVisible && !(await deps.isReportVisible(reportId, userId))) {
       throw AppError.notFound("Report not found")
@@ -161,7 +138,6 @@ export function makeChatReactionService(deps: ChatReactionServiceDeps): ChatReac
 
     const chat = deps.chat
     if (!chat) throw notWired("chat")
-    // The chat_messages meta carries all three room refs; the lane checks its own.
     const resolveScoped = async (
       roomId: string,
       messageId: string,
@@ -215,14 +191,10 @@ export function makeChatReactionService(deps: ChatReactionServiceDeps): ChatReac
     const { roomId, messageId, userId } = input
     const lane = laneFor(input.roomKind, strict)
     await lane.authorize(roomId, userId)
-    // Cheap meta resolve (id + room ref + deleted_at), NOT a full hydration: the pre-2026-07 version
-    // hydrated the whole DTO (reactions, mentions, attachment presigns, reply map, polls) purely to check
-    // existence and then threw the result away.
     const target = await lane.resolve(roomId, messageId)
     if (target === null || target.deletedAt !== null) throw messageNotFound()
     await lane.toggle(messageId, userId, emoji)
     const updated = await lane.read(roomId, messageId, userId)
-    // The gates above passed, so a null re-read is a lost race (the row vanished underneath us).
     if (updated === null) throw messageNotFound()
     return updated
   }

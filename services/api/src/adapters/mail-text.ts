@@ -1,11 +1,8 @@
-// Vendor-neutral text utilities shared by the mail adapter (mailer.oci.ts), the outbound-mail service,
-// and the admin report-packet builder. It lives under adapters/ rather than in any one consumer so a
-// service can import it without a service->adapter (or adapter->service) edge — there is no clean
-// "owner" of these helpers, so they sit in a dependency-free leaf module.
+// A dependency-free leaf shared by the mail adapter, the outbound-mail service and the admin report-packet
+// builder, so none of them needs a service->adapter (or adapter->service) import edge.
 
-const HEADER_VALUE_MAX = 998 // RFC 5322 line-length ceiling; a header value can't safely exceed it.
+const HEADER_VALUE_MAX = 998 // RFC 5322 line-length ceiling
 
-// The five HTML-significant characters, for the plain-text -> minimal-HTML body fallback. Order matters:
 // `&` MUST be escaped first or the later entity ampersands get double-escaped.
 export function escapeHtml(s: string): string {
   return s
@@ -16,11 +13,8 @@ export function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;")
 }
 
-// The domain of an email address, LOWERCASED, or null when absent/malformed. Accepts a bare address OR a
-// display-name form ("Name <local@domain>") — the latter is the per-thread From we now send, so a trailing
-// '>' is trimmed off the extracted domain. This is the nullable CORE: a caller that must not silently
-// invent a domain (DKIM alignment) uses it directly; `domainOf` is the fallback wrapper for the outbound
-// paths that need a Message-ID host no matter what.
+// Accepts the display-name form ("Name <local@domain>") used for the per-thread From, hence the trailing
+// '>' trim. A caller that must not silently invent a domain (DKIM alignment) uses this nullable form.
 export function domainOfOrNull(addr: string | null | undefined): string | null {
   if (!addr) return null
   const at = addr.lastIndexOf("@")
@@ -33,17 +27,15 @@ export function domainOfOrNull(addr: string | null | undefined): string | null {
   return domain.length > 0 ? domain : null
 }
 
-// The domain of an email address, falling back when absent/empty. NEVER null — for Message-ID / operator
-// copy. Do NOT use it for any comparison decision: the fallback would silently align an unparseable
-// address with civfix.org.
+// For Message-ID hosts and operator copy only. Never use it for a comparison decision: the fallback would
+// silently align an unparseable address with civfix.org.
 export function domainOf(addr: string, fallback = "civfix.org"): string {
   return domainOfOrNull(addr) ?? fallback
 }
 
-// Strip CR/LF (and NUL) then clamp, before interpolating user-controlled text into an email header
-// (subject/From/Reply-To/etc.). An un-stripped newline lets an attacker inject extra headers or a body
-// (SMTP header injection) — this has bitten the OCI From/Reply-To path in prod. NOT for envelope
-// addresses, which should be REJECTED on a bad char rather than silently sanitized.
+// An un-stripped newline in user-controlled header text lets an attacker inject extra headers or a body
+// (SMTP header injection); this has bitten the OCI From/Reply-To path in prod. Not for envelope addresses,
+// which must be REJECTED on a bad char rather than silently sanitized.
 export function sanitizeHeaderValue(value: string, maxLength = HEADER_VALUE_MAX): string {
   const stripped = value.replace(/[\r\n\0]/g, "")
   return stripped.length > maxLength ? stripped.slice(0, maxLength) : stripped

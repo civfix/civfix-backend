@@ -88,8 +88,8 @@ export function buildKpis(agg: KpiAggregates): AnalyticsKpi[] {
       dir: deltaDir(agg.cleanupsPlanned.current, agg.cleanupsPlanned.previous),
     },
     {
-      // Avg. route time is a Phase 3 (VRP) metric; reported as 0 until routing is deployed. The analytics
-      // page hides any label matching /route/i in its KPI strip, but the value is part of the contract.
+      // Reported as 0 until routing is deployed. The analytics page hides any label matching /route/i in
+      // its KPI strip, but the value is part of the contract.
       label: "Avg. route time",
       num: 0,
       delta: "Phase 3",
@@ -156,7 +156,7 @@ export function buildCoverage(counts: CoverageCounts): AnalyticsCoverageResponse
 
 /**
  * Align the repo's sparse weekly buckets to a fixed `weeks`-length trailing window ending at `ref`,
- * producing the value array + the design's labels ('', ..., 'last', 'now'). Pure (ref injected).
+ * producing the value array and the design's labels ('', ..., 'last', 'now').
  */
 export function buildPinsByWeek(
   buckets: WeekBucket[],

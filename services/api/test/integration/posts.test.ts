@@ -1,13 +1,5 @@
-/**
- * Posts integration test (Docker-gated). Exercises the REAL transaction path — the Drizzle/PostGIS
- * PostRepository + PostService (+ NotificationService for the fan-out) against a live PostGIS container
- * (via withPg). Driven at the service+repository layer (like reports-pg.test.ts / social-notifications),
- * so it needs no Redis/HTTP: it proves the create→get→like→repost→reply→save→delete round-trip + count
- * denormalization, home-feed follow fan-out, attach-event membership + delete authorization, and the
- * interaction-notification fan-out (like notifies the author not self, blocked → none, @mention).
- *
- * When Docker is unavailable the whole block SKIPS (describe.skipIf) so the local suite stays green.
- */
+// Driven at the service+repository layer against real PostGIS so the transaction paths and count
+// denormalization run for real without needing Redis or HTTP.
 
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
@@ -74,7 +66,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
   }
 
   /**
-   * A finalized, unattached media_asset — what media-intake plus the media-checks worker leave behind
+   * A finalized, unattached media_asset: what media-intake plus the media-checks worker leave behind
    * once the upload validates. `ready` (not `validating`) because loadMedia only renders `ready`
    * assets into the PostDTO, and a `ready` row carries the worker's published served_key, which is
    * the key the DTO presigns (never the client-writable r2_key).
@@ -92,7 +84,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     })
   }
 
-  it("F087c: a CONCURRENT double repost cannot double-count — the revival UPDATE carries the tombstone predicate itself", async () => {
+  it("F087c: a CONCURRENT double repost cannot double-count; the revival UPDATE carries the tombstone predicate itself", async () => {
     const svc = makeService()
     const author = await newUser("Race Author")
     const actor = await newUser("Race Actor")
@@ -108,7 +100,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     // the SAME tombstone with real overlap: T1 takes the row lock and holds it; T2 blocks on that lock
     // and, under READ COMMITTED, re-evaluates its WHERE against the row T1 committed. Because
     // `deleted_at IS NOT NULL` lives IN the UPDATE (not in an unlocked subselect), T2 now matches ZERO
-    // rows and skips its `repost_count + 1` — the drift 0074 had to reconcile.
+    // rows and skips its `repost_count + 1`, the drift 0074 had to reconcile.
     const revive = (tx: typeof h.sql) => tx<{ id: string }[]>`
       UPDATE posts SET deleted_at = NULL, updated_at = now()
       WHERE author_id = ${actor} AND kind = 'repost' AND repost_of_id = ${post.id}
@@ -146,7 +138,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(live[0]!.n).toBe(1)
 
     // The raw revive above bypassed the service, so the counter was never bumped for the row it made
-    // live — and the service stays consistent with that: a repost of an already-live repost is a no-op.
+    // live, and the service stays consistent with that: a repost of an already-live repost is a no-op.
     expect((await svc.repostPost(post.id, actor)).counts.reposts).toBe(0)
   })
 
@@ -203,30 +195,23 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(created.body).toBe("hello world")
     expect(created.counts).toEqual({ likes: 0, reposts: 0, replies: 0, saves: 0 })
 
-    // get by another viewer
     const fetched = await svc.getPost(created.id, actor)
     expect(fetched.id).toBe(created.id)
     expect(fetched.viewer).toEqual({ liked: false, reposted: false, saved: false })
 
-    // like
     const liked = await svc.likePost(created.id, actor)
     expect(liked.counts.likes).toBe(1)
     expect(liked.viewer.liked).toBe(true)
-    // idempotent (second like adds no count)
     expect((await svc.likePost(created.id, actor)).counts.likes).toBe(1)
-    // author's view reflects the count but not the viewer flag
     expect((await svc.getPost(created.id, author)).viewer.liked).toBe(false)
     expect((await svc.getPost(created.id, author)).counts.likes).toBe(1)
 
-    // repost (returns the target, patched)
     const reposted = await svc.repostPost(created.id, actor)
     expect(reposted.id).toBe(created.id)
     expect(reposted.counts.reposts).toBe(1)
     expect(reposted.viewer.reposted).toBe(true)
-    // idempotent
     expect((await svc.repostPost(created.id, actor)).counts.reposts).toBe(1)
 
-    // reply
     const reply = await svc.createPost(
       {
         kind: "reply",
@@ -249,17 +234,14 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     // ...and it survives the list projection too, not just the create response.
     expect(replies.items.find((p) => p.id === reply.id)?.replyTo?.id).toBe(created.id)
 
-    // A top-level post has no parent to preview.
     expect((await svc.getPost(created.id, author)).replyTo ?? null).toBeNull()
 
-    // save
     const saved = await svc.savePost(created.id, actor)
     expect(saved.counts.saves).toBe(1)
     expect(saved.viewer.saved).toBe(true)
     const saves = await svc.listSaves(actor, {})
     expect(saves.items.map((p) => p.id)).toContain(created.id)
 
-    // delete (author-only)
     await expect(svc.deletePost(created.id, author)).resolves.toEqual({ ok: true })
     await expect(svc.getPost(created.id, author)).rejects.toMatchObject({ httpStatus: 404 })
   })
@@ -427,14 +409,9 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(inner.authorReplies).toEqual([])
   })
 
-  // --- post media: the 0054 CHECK bug + the claim predicate --------------------------------------
-  // Every createPost in this file used to pass mediaUploadIds: [], so the claim path
-  // (`UPDATE media_assets SET post_id = $1, purpose = 'post'`) was NEVER exercised — and it could not
-  // succeed: 0051 introduced purpose='post' in the mirror, the shared enum and the claim SQL, but no
-  // migration widened the inline CHECK 0016 added (purpose IN ('report','verification')). Every post with
-  // a photo raised 23514, aborted the create transaction and 500'd. 0054_media_purpose_post.sql widened
-  // the CHECK; these are the tests that keep it widened.
-  // (The value-set half of the same class is guarded schema-wide in test/integration/schema.test.ts.)
+  // The post-media claim path once always failed: 0051 introduced purpose='post' but no migration widened
+  // the inline CHECK from 0016, so every post with a photo raised 23514 and 500'd. 0054 widened it; these
+  // tests keep it widened. The value-set half of the same class is guarded in schema.test.ts.
 
   it("creates a post WITH media: the asset is claimed (post_id + purpose='post') and renders on the DTO", async () => {
     const svc = makeService()
@@ -460,7 +437,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(created.media[0]!.url).toBe(`m://${media.servedKey}`)
     expect(created.media[0]!.thumbUrl).toBe(`m://${media.thumbKey}`)
 
-    // The claim landed in the database: bound to THIS post, repurposed, and still unbound to any report.
     const [row] = await h.sql<
       { post_id: string | null; purpose: string; report_id: string | null }[]
     >`
@@ -470,7 +446,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(row!.purpose).toBe("post")
     expect(row!.report_id).toBeNull()
 
-    // Another viewer sees the same gallery (media is not viewer-scoped).
     const fetched = await svc.getPost(created.id, reader)
     expect(fetched.media.map((m) => m.id)).toEqual([media.id])
   })
@@ -506,10 +481,8 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(quote.repostOf?.id).toBe(target.id)
     expect(quote.repostOf?.media.map((m) => m.id)).toEqual([media.id])
     expect(quote.repostOf?.media[0]!.url).toBe(`m://${media.servedKey}`)
-    // The quote itself still has none of its own.
     expect(quote.media).toEqual([])
 
-    // It survives the LIST projection too, not just the create response.
     const listed = await svc.listUserPosts(quoter, quoter, {})
     expect(listed.items.find((p) => p.id === quote.id)?.repostOf?.media.map((m) => m.id)).toEqual([
       media.id,
@@ -558,7 +531,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       SELECT post_id FROM media_assets WHERE id = ${media.id}
     `
     expect(row!.post_id).toBe(first.id)
-    // The rejected create rolled back completely — no orphan post row for the thief.
     const posts = await h.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM posts WHERE author_id = ${thief}
     `
@@ -583,7 +555,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       SELECT count(*)::int AS n FROM posts WHERE author_id = ${author}
     `
     expect(posts[0]!.n).toBe(0)
-    // The rejected asset was not repurposed on the way out.
     const [row] = await h.sql<{ post_id: string | null; purpose: string }[]>`
       SELECT post_id, purpose FROM media_assets WHERE id = ${rejected.id}
     `
@@ -597,7 +568,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const media = await seedMedia("validating")
 
     // media_assets rows are born 'validating' at PRESIGN time. Claiming one before finalize bound an
-    // asset with no bytes and no media.checks job behind it — invisible to the orphan sweep (bound) and
+    // asset with no bytes and no media.checks job behind it, invisible to the orphan sweep (bound) and
     // to the stuck sweep (no finalized_at watermark), so nothing would ever have reclaimed it.
     await expect(
       svc.createPost(
@@ -612,7 +583,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(unbound!.post_id).toBeNull()
     expect(unbound!.purpose).toBe("report")
 
-    // Once finalize stamps the watermark the same still-validating asset claims normally.
     await h.sql`UPDATE media_assets SET finalized_at = now() WHERE id = ${media.id}`
     const created = await svc.createPost(
       { kind: "post", body: "now ok", mediaUploadIds: [media.uploadId], mentionedUserIds: [] },
@@ -688,7 +658,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       author,
     )
     await expect(svc.deletePost(post.id, other)).rejects.toMatchObject({ httpStatus: 403 })
-    // still there
     expect((await svc.getPost(post.id, author)).id).toBe(post.id)
   })
 
@@ -719,13 +688,10 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(ids).not.toContain(hidden.id)
   })
 
-  // --- REGRESSION: replies must never reach the timeline -------------------------------------------
-  // `homeFeed` shipped WITHOUT the `AND p.reply_to_id IS NULL` term that `publicFeed` has always carried,
-  // so a signed-OUT reader got a clean timeline and a signed-IN reader got a reply dump. This is the only
-  // suite that executes the changed query (the route tests run against an in-memory fake), and it has to
-  // cover BOTH arms of the home-feed OR: the viewer's own reply arrives via `p.author_id = viewerId`, a
-  // followed author's via the follows_people subquery, and a test that seeds only one leaves the other
-  // unproven — which is exactly how the bug survived the fan-out test above.
+  // `homeFeed` once lacked the `AND p.reply_to_id IS NULL` term `publicFeed` carries, so signed-in readers
+  // got replies in the timeline. This is the only suite that runs the real query, and it must cover BOTH
+  // arms of the home-feed OR (own reply via `p.author_id = viewerId`, a followed author's via the
+  // follows_people subquery): seeding only one is how the bug survived the fan-out test above.
   it("home feed is TOP-LEVEL only: a reply never reaches the timeline, only the thread", async () => {
     const svc = makeService()
     const viewer = await newUser("Reply Viewer")
@@ -736,7 +702,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       { kind: "post", body: "the original thought", mediaUploadIds: [], mentionedUserIds: [] },
       author,
     )
-    // Arm 1: an author the viewer FOLLOWS replies.
     const theirReply = await svc.createPost(
       {
         kind: "reply",
@@ -747,7 +712,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       },
       author,
     )
-    // Arm 2: the VIEWER themself replies (the `p.author_id = viewerId` arm).
     const myReply = await svc.createPost(
       {
         kind: "reply",
@@ -766,24 +730,22 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(homeIds).not.toContain(theirReply.id)
     expect(homeIds).not.toContain(myReply.id)
 
-    // The signed-out feed agrees — the whole point of reusing publicFeed's exact predicate is that the two
-    // timelines can no longer disagree about what a timeline row IS.
+    // Both feeds share publicFeed's exact predicate so the two timelines cannot disagree about what a
+    // timeline row is.
     const publicIds = (await svc.publicFeed({ filter: "all" })).items.map((p) => p.id)
     expect(publicIds).toContain(parent.id)
     expect(publicIds).not.toContain(theirReply.id)
     expect(publicIds).not.toContain(myReply.id)
 
-    // Nothing was hidden, only relocated: the thread still holds both replies...
     const threadIds = (await svc.listReplies(parent.id, viewer, {})).items.map((p) => p.id)
     expect(threadIds).toContain(theirReply.id)
     expect(threadIds).toContain(myReply.id)
-    // ...and a reply is still readable by permalink (notification deep links land here).
+    // Notification deep links land on the reply permalink, so it must stay readable.
     expect((await svc.getPost(theirReply.id, viewer)).id).toBe(theirReply.id)
 
-    // THE DELIBERATE CARVE-OUT: a REPOST of a reply stays in the timeline. The repost's own row is
-    // `kind='repost', repost_of_id=<the reply>, reply_to_id=NULL`, so `reply_to_id IS NULL` keeps it —
-    // amplifying is a deliberate act by someone the viewer follows, exactly as on Twitter. Pinned here so
-    // a future "tighten the predicate" pass has to change this assertion on purpose.
+    // Deliberate carve-out: a repost of a reply stays in the timeline (its own row has reply_to_id NULL),
+    // because amplifying is a deliberate act by someone the viewer follows. Pinned so tightening the
+    // predicate has to change this assertion on purpose.
     await svc.repostPost(theirReply.id, viewer)
     const [repostRow] = await h.sql<{ id: string }[]>`
       SELECT id FROM posts
@@ -857,7 +819,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       host,
     )
 
-    // host is auto-joined as organizer → can attach
     const withEvent = await svc.createPost(
       {
         kind: "post",
@@ -871,7 +832,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(withEvent.event?.id).toBe(event.id)
     expect(withEvent.event?.title).toBe("Park Sweep")
 
-    // an outsider cannot attach an event they neither host nor attend
     await expect(
       svc.createPost(
         { kind: "post", body: "nope", eventId: event.id, mediaUploadIds: [], mentionedUserIds: [] },
@@ -880,12 +840,9 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     ).rejects.toMatchObject({ httpStatus: 403 })
   })
 
-  // --- "announce to the feed": the event auto-link ------------------------------------------------
-  // The create-an-event flow files the cleanup and then posts `{ eventId }` on the SAME wire surface a
-  // manual composer attachment uses. Two things have to hold for that to work with no server change:
-  // the organizer's `cleanup_members` row must exist in the SAME commit as the cleanup (otherwise the
-  // immediately-following createPost 403s on isEventMember), and the resulting post must reach the
-  // `events` filter, whose predicate is `p.event_id IS NOT NULL`.
+  // The create-an-event flow posts `{ eventId }` right after filing the cleanup, so the organizer's
+  // `cleanup_members` row must commit with the cleanup (else createPost 403s on isEventMember), and the
+  // post must reach the `events` filter (`p.event_id IS NOT NULL`).
 
   it("ANNOUNCE: the organizer can attach the event they just created, and the post lands in the `events` filter", async () => {
     const svc = makeService()
@@ -910,8 +867,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       host,
     )
 
-    // The organizer membership row is written inside createCleanupTx — this is what makes the very next
-    // createPost legal with no wait and no retry.
+    // createCleanupTx writes the organizer row in the same commit, so the next createPost needs no retry.
     const [member] = await h.sql<{ role: string }[]>`
       SELECT role FROM cleanup_members WHERE cleanup_id = ${event.id} AND user_id = ${host}
     `
@@ -940,18 +896,16 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(eventIds).toContain(announcement.id)
     expect(eventIds).not.toContain(plain.id)
 
-    // Signed-out readers see it too — that is the reach the announcement buys.
     const publicEvents = await svc.publicFeed({ filter: "events" })
     expect(publicEvents.items.map((p) => p.id)).toContain(announcement.id)
 
-    // ...and it is NOT a "fix": the events post has no report.
     expect((await svc.homeFeed(viewer, { filter: "fixes" })).items.map((p) => p.id)).not.toContain(
       announcement.id,
     )
   })
 
-  // --- H8: post report-attachment bypassed the report visibility gate ------------------------------
-  // Two independent holes, both now closed by the shared publicReportFilter() fragment:
+  // Post report-attachment once bypassed the report visibility gate through two holes, both closed by the
+  // shared publicReportFilter() fragment:
   //   (a) isReportAttachable checked `visibility` but NOT `status`, so an anonymous submitter could
   //       attach their own HELD (pre-moderation) report and publish its title, exact lat/lng, address
   //       and photo into the SIGNED-OUT public feed before any moderator saw it;
@@ -1030,17 +984,16 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(post.report?.id).toBe(report)
     expect(post.report?.title).toBe("Public report")
 
-    // The owner unlists it. This USED to change nothing about the rendered post: loadReports re-read the
-    // row every render and re-published the title, exact coordinates, address and photo regardless.
+    // Unlisting once changed nothing: loadReports re-read the row every render and republished the
+    // title, exact coordinates, address and photo regardless.
     await h.sql`UPDATE reports SET visibility = 'hidden' WHERE id = ${report}`
 
     const afterUnlist = await svc.getPost(post.id, reader)
     expect(afterUnlist.report).toBeNull()
-    // The post itself survives — hydrate degrades it to a body-only post rather than dropping the row.
+    // Hydrate degrades the post to body-only rather than dropping the row.
     expect(afterUnlist.id).toBe(post.id)
     expect(afterUnlist.body).toBe("my report")
 
-    // Same for a moderator pulling it back to `held`, and for a soft delete.
     await h.sql`UPDATE reports SET visibility = 'public', status = 'held' WHERE id = ${report}`
     expect((await svc.getPost(post.id, reader)).report).toBeNull()
     await h.sql`UPDATE reports SET status = 'published' WHERE id = ${report}`
@@ -1049,7 +1002,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect((await svc.getPost(post.id, reader)).report).toBeNull()
   })
 
-  // --- "share to the feed": the report auto-link, and the THUMB RACE ------------------------------
   // The report flow files the report and then posts `{ reportId }` 200-400 ms later. At that moment the
   // report's photo has been finalized but the media-checks worker has NOT flipped it to `ready`, and
   // firstReadyStillLateral hard-requires `status = 'ready'`. So the authoritative PostDTO comes back with
@@ -1057,7 +1009,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
   // optimistic thumbnail and then trusts the server row will make the photo appear and then vanish; this
   // test is the pin for that timing, so a client-side local-thumb overlay cannot be "optimized away".
 
-  /** A report-bound media asset in the state finalizeMedia leaves behind: `validating`, not `ready`. */
   async function attachReportMedia(
     reportId: string,
     status: SeedMediaStatus,
@@ -1082,7 +1033,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const reader = await newUser("Share Reader", "shrread")
     const reportId = await insertReport(author, "published", "public", "Couch on the sidewalk")
     await h.sql`UPDATE reports SET addr = '123 Main St' WHERE id = ${reportId}`
-    // Exactly what media-intake leaves behind when the wizard submits: finalized, checks still queued.
     const asset = await attachReportMedia(reportId, "validating")
 
     // The caption is optional on the wire: an attachment-only post is legal (PostComposeInputSchema's
@@ -1098,22 +1048,17 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(post.report?.status).toBe("published")
     expect(post.report?.lat).toBeCloseTo(34.1, 5)
     expect(post.report?.lng).toBeCloseTo(-118.35, 5)
-    // THE RACE: the photo exists, is bound to the report, and is still invisible to the feed card.
     expect(post.report?.thumbUrl ?? null).toBeNull()
 
-    // A refetch while the asset is still validating does NOT rescue it — so an "invalidate and refetch"
-    // repair on the client is not a fix either.
+    // A refetch while still validating does not rescue it, so client-side invalidate-and-refetch is no fix.
     expect((await svc.getPost(post.id, reader)).report?.thumbUrl ?? null).toBeNull()
 
-    // Once the media-checks worker flips the asset, the very next read presigns the real thumb, with no
-    // write to the post and no cache bust on the server side.
     await publishMediaAsReady(h.sql, asset.id)
     const afterWorker = await svc.getPost(post.id, reader)
     expect(afterWorker.report?.thumbUrl).toBeTruthy()
     expect(afterWorker.report?.thumbUrl).toContain(".thumb")
 
-    // A brand-new report is `published`, so the post is an "all" post, never a "fix" — it migrates into
-    // the fixes filter by itself the day the city resolves the report.
+    // A new report is `published`, so the post is not a "fix" until the city resolves the report.
     await h.sql`INSERT INTO follows_people (follower_id, followee_id) VALUES (${reader}, ${author})`
     expect((await svc.homeFeed(reader, { filter: "all" })).items.map((p) => p.id)).toContain(
       post.id,
@@ -1150,7 +1095,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     `
     expect(rows[0]?.n).toBe(0)
 
-    // The same caption without the slur posts fine — the filter is slurs only, not profanity.
+    // The filter is slurs only, not profanity.
     const ok = await svc.createPost(
       {
         kind: "post",
@@ -1164,14 +1109,9 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(ok.report?.id).toBe(reportId)
   })
 
-  // --- the `fixes` filter x report-card regression guard (H8-b) -----------------------------------
-  // H8's first fix routed BOTH post report paths through publicReportFilter(), whose status set was
-  // `status = 'published'` EXACTLY. That made the product's headline surface structurally unrenderable:
-  // the feeds' `fixes` filter selects posts whose report is `resolved`, so every post the filter could
-  // return was simultaneously stripped of the report card it exists to show — and `isReportAttachable`
-  // 404'd any attempt to create one in the first place. PUBLIC_REPORT_STATUSES now widens the predicate
-  // to published/acknowledged/in_progress/resolved (a report stays public while the city works it), and
-  // these tests are the guard: they FAIL if that set is ever narrowed back to 'published'.
+  // publicReportFilter() once matched `status = 'published'` only, so every `fixes` post (report
+  // `resolved`) lost its report card and could not be created at all. PUBLIC_REPORT_STATUSES keeps a
+  // report public while the city works it; these tests fail if that set narrows back to 'published'.
 
   it("FIXES FILTER: a RESOLVED report is attachable and its post renders the report card", async () => {
     const svc = makeService()
@@ -1179,7 +1119,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const reader = await newUser("Fix Reader", "fixread")
     const resolved = await insertReport(author, "resolved", "public", "Pothole fixed")
 
-    // isReportAttachable must accept `resolved` — this is the create that used to 404.
+    // isReportAttachable must accept `resolved`; this create used to 404.
     const post = await svc.createPost(
       {
         kind: "post",
@@ -1194,7 +1134,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(post.report?.title).toBe("Pothole fixed")
     expect(post.report?.status).toBe("resolved")
 
-    // ...and loadReports must still render the card on a later read, for a different viewer.
     const rendered = await svc.getPost(post.id, reader)
     expect(rendered.report?.id).toBe(resolved)
     expect(rendered.report?.status).toBe("resolved")
@@ -1204,7 +1143,6 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     const svc = makeService()
     const author = await newUser("Lifecycle Author", "lifeauth")
 
-    // The whole public set: a report stays visible while the city works it.
     for (const status of ["published", "acknowledged", "in_progress", "resolved"]) {
       const id = await insertReport(author, status, "public", `Report ${status}`)
       const post = await svc.createPost(
@@ -1221,7 +1159,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       expect((await svc.getPost(post.id, author)).report?.status).toBe(status)
     }
 
-    // The pre-publication + moderator-rejected states stay unattachable (the H8 half must not regress).
+    // Pre-publication and moderator-rejected states must stay unattachable.
     for (const status of ["submitted", "held", "rejected"]) {
       const id = await insertReport(author, status, "public", `Report ${status}`)
       await expect(
@@ -1278,24 +1216,22 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
     expect(homeIds).toContain(fixPost.id)
     expect(homeIds).not.toContain(wipPost.id)
     expect(homeIds).not.toContain(plainPost.id)
-    // THE regression the widened predicate exists for: the returned item carries its report card, so the
-    // filter and the renderer agree. Under `status = 'published'` this was null on every fixes-filter row.
+    // Under `status = 'published'` this was null on every fixes-filter row.
     expect(home.items.find((p) => p.id === fixPost.id)?.report?.id).toBe(resolved)
 
-    // Same for the signed-out public feed (no viewer, no follow scope).
     const publicFeed = await svc.publicFeed({ filter: "fixes" })
     const publicIds = publicFeed.items.map((p) => p.id)
     expect(publicIds).toContain(fixPost.id)
     expect(publicIds).not.toContain(wipPost.id)
     expect(publicFeed.items.find((p) => p.id === fixPost.id)?.report?.title).toBe("Fixed thing")
 
-    // Unfiltered, all three are in the home feed — so the exclusions above are the filter, not visibility.
+    // Unfiltered, all three are present, so the exclusions above come from the filter, not visibility.
     const all = await svc.homeFeed(viewer, { filter: "all" })
     const allIds = all.items.map((p) => p.id)
     expect(allIds).toContain(fixPost.id)
     expect(allIds).toContain(wipPost.id)
     expect(allIds).toContain(plainPost.id)
-    // ...and the in_progress report ALSO renders its card (mid-lifecycle is public, just not a "fix").
+    // Mid-lifecycle is public, just not a "fix".
     expect(all.items.find((p) => p.id === wipPost.id)?.report?.id).toBe(working)
   })
 
@@ -1334,26 +1270,21 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       author,
     )
 
-    // actor likes → author gets ONE post_like notification
     await svc.likePost(post.id, actor)
     const authorNotifs = await notifRepo.listNotifications(author, null, 50)
     const likeNotifs = authorNotifs.records.filter((n) => n.type === "post_like")
     expect(likeNotifs).toHaveLength(1)
 
-    // self-like → no new notification for the actor
     await svc.likePost(post.id, author)
     const actorNotifs = await notifRepo.listNotifications(author, null, 50)
-    // author still has exactly one post_like (their own self-like produced none)
     expect(actorNotifs.records.filter((n) => n.type === "post_like")).toHaveLength(1)
 
-    // blocked either way → the post is hidden and cannot be interacted with
     const blocker = await newUser("Blocker")
     await h.sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${author}, ${blocker})`
     await expect(svc.likePost(post.id, blocker)).rejects.toMatchObject({ code: "NOT_FOUND" })
     const afterBlock = await notifRepo.listNotifications(author, null, 50)
     expect(afterBlock.records.filter((n) => n.type === "post_like")).toHaveLength(1)
 
-    // @mention records a row + notifies the mentioned user
     const mentionPost = await svc.createPost(
       { kind: "post", body: "hey @notment", mediaUploadIds: [], mentionedUserIds: [mentioned] },
       author,

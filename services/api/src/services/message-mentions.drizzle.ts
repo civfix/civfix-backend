@@ -1,23 +1,16 @@
 import type { Queryable, Sql } from "../db/client.js"
 import type { UserMentionDTO } from "@civfix/shared"
 
-// The USER @-mention tables across the messaging stacks share an identical layout
-// (<idColumn>, mentioned_user_id) with PK(<idColumn>, mentioned_user_id); chat + DM share one physical
-// table. Only the table name (and, for posts, the id-column name) differs, so one parameterized repo
-// serves all of them. `table`/`idColumn` are module-constant union literals (never user input),
-// interpolated as postgres.js identifiers (`sql(table)` / `sql(idColumn)`).
-// ("report_message_user_mentions" is gone with the per-report discussion stack — report messages ride the
-// chat table; see src/db/schema/message_mentions.ts.)
+// `table` and `idColumn` are module-constant union literals, never user input, interpolated as postgres.js
+// identifiers.
 export type MentionTable = "chat_message_mentions" | "post_mentions"
 
-// The owning-row FK column: 'message_id' for the chat/report tables, 'post_id' for post_mentions (0051).
 export type MentionIdColumn = "message_id" | "post_id"
 
 export interface MessageMentionRepo {
-  // Replace the message's mention set (delete-then-insert). `mentionedUserIds` must already be deduped +
-  // self-excluded by the caller. Pass the create/edit tx so the replace is atomic with the message write.
+  // `mentionedUserIds` must already be deduped and self-excluded. Pass the create/edit tx so the
+  // delete-then-insert replace is atomic with the message write.
   recordFor(tx: Queryable, messageId: string, mentionedUserIds: string[]): Promise<void>
-  // Batched: one grouped join for the whole id set, never one query per message (the N+1 fix).
   loadFor(messageIds: string[]): Promise<Map<string, UserMentionDTO[]>>
 }
 
@@ -46,9 +39,8 @@ export function makeMentionRepo(
   }
 }
 
-// Standalone batched loader so a repo can pass its own transaction/tag. UserMentionDTO.handle is
-// non-null; a mentioned user always has a handle in practice (mentions resolve from @handles), but
-// coalesce defensively so a NULL-handle row never breaks the contract.
+// Standalone so a repo can pass its own transaction. UserMentionDTO.handle is non-null and mentions
+// resolve from @handles, but the coalesce keeps a NULL-handle row from breaking the contract.
 export async function loadMentionsFor(
   tag: Queryable,
   table: MentionTable,

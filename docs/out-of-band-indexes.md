@@ -12,13 +12,13 @@ holds `ACCESS EXCLUSIVE` for the whole build and queues live traffic behind it.
 So: **hot-table indexes are built out of band, by hand, against the live
 database, before or right after the deploy that needs them.** The migration
 that introduces the query path carries only an idempotent guard that logs a
-`WARNING` while the index is missing. Nothing breaks without the index — the
+`WARNING` while the index is missing. Nothing breaks without the index: the
 queries stay correct, they just fall back to a sequential scan.
 
 Run each command **outside** any transaction (a bare `psql` session is already
 outside one; do not wrap it in `BEGIN`). `CONCURRENTLY` builds do not block
 reads or writes, take roughly two table passes, and leave an `INVALID` index
-behind if interrupted — re-run `DROP INDEX CONCURRENTLY IF EXISTS <name>;` then
+behind if interrupted; re-run `DROP INDEX CONCURRENTLY IF EXISTS <name>;` then
 the create again if `\d users` shows one.
 
 ```sh
@@ -60,7 +60,7 @@ safe to re-run and safe to run while the API serves traffic):
 sudo -n docker exec $(sudo docker ps --format '{{.Names}}' | grep -m1 -E 'compose-api-(blue|green)') node dist/db/backfill-user-activity.js
 ```
 
-Verify — **against the real statement, with a viewer point that is an outer
+Verify **against the real statement, with a viewer point that is an outer
 reference, not a constant**. A constant-point `EXPLAIN` is not a valid check
 here: Postgres builds the KNN (`amcanorderbyop`) path only when the non-indexed
 operand of `<->` is Var-free, so a hand-written query with a literal point
@@ -89,7 +89,7 @@ CROSS JOIN LATERAL (
 ```
 
 The plan must show `Index Scan using users_last_activity_gist` **with an
-`Order By:` line under it** — that line is what distinguishes a KNN scan that
+`Order By:` line under it**: that line is what distinguishes a KNN scan that
 stops at `LIMIT 200` from a box scan of the whole 2.5° radius followed by a
 top-N sort. `Index Cond:` alone is the degraded plan.
 
@@ -107,11 +107,11 @@ Both index names are exported from
 `services/api/src/services/social-repository.drizzle.ts` and asserted by
 `test/integration/suggest-follows-pg.test.ts`, which builds the indexes itself
 (non-concurrently, on an empty testcontainer) and `EXPLAIN`s the **actual**
-statement through the exported `explainSuggestFollows`. The offline half —
-that the emitted SQL really is a `CROSS JOIN LATERAL` and not a same-level
-cross join — is `test/unit/social-suggest-sql.test.ts`.
+statement through the exported `explainSuggestFollows`. The offline half
+(that the emitted SQL really is a `CROSS JOIN LATERAL` and not a same-level
+cross join) is `test/unit/social-suggest-sql.test.ts`.
 
-### `posts.geom` backfill (migration 0176, issue #100) — data, not an index
+### `posts.geom` backfill (migration 0176, issue #100): data, not an index
 
 `posts` is NOT a hot table, so `posts_geom_gist` and
 `posts_author_public_recent_idx` are built inline by migrations 0176 and 0177
@@ -121,8 +121,8 @@ over the whole table inside the migration's single transaction is a lock
 hazard. The migration RAISEs a `WARNING` when any backfillable post is still
 unpopulated.
 
-Run it once the deploy is healthy — keyset-paged, idempotent, safe to re-run
-and safe while the API serves traffic:
+Run it once the deploy is healthy (keyset-paged, idempotent, safe to re-run
+and safe while the API serves traffic):
 
 ```sh
 sudo -n docker exec $(sudo docker ps --format '{{.Names}}' | grep -m1 -E 'compose-api-(blue|green)') node dist/db/backfill-post-geom.js
@@ -153,11 +153,11 @@ hook, and the backfill only touches rows where `geom IS NULL`. If a report or
 cleanup is later moved to a new coordinate, every post already linked to it
 keeps ranking against the OLD point indefinitely. That is acceptable for feed
 proximity (the post was about the place as it was), but it is a deliberate
-property, not an oversight — if live tracking is ever wanted, the relocation
+property, not an oversight; if live tracking is ever wanted, the relocation
 paths must update the derived posts explicitly.
 
 If `posts` has grown large enough that an inline `CREATE INDEX` would be
-disruptive, build both indexes with `CONCURRENTLY` BEFORE deploying — the
+disruptive, build both indexes with `CONCURRENTLY` BEFORE deploying; the
 migrations' `IF NOT EXISTS` guards then no-op:
 
 ```sql
@@ -211,5 +211,5 @@ organization logos, event cover/gallery, signup-page media) are evaluated on the
 
 ## Done
 
-_(none yet — move an entry here, with the date it was built on prod, once
+_(none yet; move an entry here, with the date it was built on prod, once
 `\d <table>` confirms the index exists.)_

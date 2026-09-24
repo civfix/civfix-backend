@@ -149,9 +149,9 @@ export class OAuthService {
   }
 
   /**
-   * Unlink EVERY provider identity held by `userId` (account deletion). The identity rows are what let a
-   * provider sign-in find an account, so leaving them behind means Google/Apple walks back into the
-   * tombstoned account the moment the ban marker's TTL lapses.
+   * Used by account deletion. The identity rows are what let a provider sign-in find an account, so leaving
+   * them behind means Google/Apple walks back into the tombstoned account the moment the ban marker's TTL
+   * lapses.
    */
   async unlinkAllForUser(userId: string): Promise<void> {
     await this.oauthStore.deleteAllForUser(userId)
@@ -165,11 +165,10 @@ export class OAuthService {
     const identity = await this.oauthStore.findByProvider(provider, claims.sub)
     if (identity) {
       const user = await this.users.findById(identity.userId)
-      // A SOFT-DELETED account is never resurrected by a provider identity that outlived it: deletion
-      // tombstones the row (kept for referential truth) but the account is gone, so the link is treated
-      // as absent and a fresh account is created below — linkIdentity then repoints this identity at it.
-      // The email path applies the same rule, and deleteAccount unlinks identities up front so this is
-      // only the backstop for links written before that landed.
+      // A soft-deleted account is never resurrected by a provider identity that outlived it: the tombstoned
+      // row stays for referential truth, but the link is treated as absent, a fresh account is created
+      // below, and linkIdentity repoints this identity at it. The email path applies the same rule;
+      // deleteAccount unlinks identities up front, so this is the backstop for links older than that.
       if (user && user.deletedAt === null) return user
     }
 

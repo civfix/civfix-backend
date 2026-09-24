@@ -1,15 +1,7 @@
-/**
- * "The report's first visible still" — ONE preview policy across every surface (Docker-gated).
- *
- * report-sql.ts:firstReadyStillLateral is the single join that decides which media asset stands in as a
- * report's thumbnail. The event gallery (cleanup-repository.drizzle.ts:loadLinkedReportsForCleanups) used to
- * hand-roll its own copy with a WIDER guard than the map/search/post-card sites, so a report whose only
- * ready asset was a video-with-poster showed a thumbnail in the gallery and nowhere else. These tests assert
- * the two surfaces agree, asset by asset — including the case the gallery's local copy was written for (a
- * thumbless video must never hand its raw .mp4 key back as a thumbnail).
- *
- * Both surfaces are exercised through their real repositories against a live PostGIS container.
- */
+// firstReadyStillLateral is the one join that picks a report's thumbnail. The event gallery once
+// hand-rolled a wider copy, so a video-with-poster report had a thumbnail there and nowhere else. These
+// assert the surfaces agree asset by asset, including that a thumbless video never hands back its raw
+// .mp4 key as a thumbnail.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -40,7 +32,6 @@ describe.skipIf(!pg)("first-visible-still preview policy (integration)", () => {
     return u!.id
   }
 
-  /** A published+public report at the in-city probe point (so it lands in the LA_CITY bbox query). */
   async function newReport(reporterId: string, title: string): Promise<string> {
     const [r] = await h.sql<{ id: string }[]>`
       INSERT INTO reports (
@@ -76,7 +67,6 @@ describe.skipIf(!pg)("first-visible-still preview policy (integration)", () => {
     })
   }
 
-  /** The event gallery's view of a report (via a cleanup it is linked to). */
   async function galleryThumb(reportId: string, organizerId: string): Promise<string | null> {
     const cleanupId = await seedCleanup(h.sql, {
       organizerUserId: organizerId,
@@ -95,7 +85,6 @@ describe.skipIf(!pg)("first-visible-still preview policy (integration)", () => {
     return view!.thumbKey
   }
 
-  /** The map pin's view of the same report (selectPublicPins -> firstReadyStillLateral). */
   async function pinKeys(
     reportId: string,
   ): Promise<{ thumbKey: string | null; r2Key: string | null }> {
@@ -116,11 +105,10 @@ describe.skipIf(!pg)("first-visible-still preview policy (integration)", () => {
       thumbKey: "media/clip-poster.jpg",
     })
 
-    // Map pin: the poster is offered as the thumb (the service prefers thumbKey over r2Key).
+    // The service prefers thumbKey over r2Key.
     const pin = await pinKeys(reportId)
     expect(pin.thumbKey).toBe("media/clip-poster.jpg")
     expect(pin.r2Key).toBe(servedKeyFor("media/clip.mp4"))
-    // Gallery: the single rendered key is the SAME poster (was the only surface that showed one before).
     expect(await galleryThumb(reportId, org)).toBe("media/clip-poster.jpg")
   })
 
@@ -149,7 +137,6 @@ describe.skipIf(!pg)("first-visible-still preview policy (integration)", () => {
   it("only READY assets can preview, and the earliest qualifying one wins on both surfaces", async () => {
     const org = await newUser("Still Org D")
     const reportId = await newReport(org, "Ordering")
-    // Still validating (invisible), oldest.
     await addMedia(reportId, {
       kind: "image",
       r2Key: "media/pending.jpg",
@@ -157,14 +144,12 @@ describe.skipIf(!pg)("first-visible-still preview policy (integration)", () => {
       status: "validating",
       createdAt: new Date("2026-01-01T00:00:00Z"),
     })
-    // Earliest READY asset: a video poster.
     await addMedia(reportId, {
       kind: "video",
       r2Key: "media/first.mp4",
       thumbKey: "media/first-poster.jpg",
       createdAt: new Date("2026-01-02T00:00:00Z"),
     })
-    // Later ready image must not win.
     await addMedia(reportId, {
       kind: "image",
       r2Key: "media/second.jpg",

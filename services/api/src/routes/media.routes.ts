@@ -1,50 +1,37 @@
 /**
- * Media route plugin.
- *
- *   POST /media/upload             createUpload: cheap pre-checks + presign a direct-to-R2 PUT.
- *   POST /media/:uploadId/finalize finalize: confirm the object + enqueue the "media.checks" job.
- *   GET  /media/:id                getMedia: render a MediaDTO with a presigned URL (ready + AUTHORIZED).
- *
- * AUTHORIZATION (security review H9). getMedia used to authorize NOTHING: any caller holding a media id
- * got a fresh presigned URL, which leaked private DM/group-chat attachments, media on held/unlisted
- * reports, and attachments on deleted posts. It now resolves the asset's binding and authorizes the
- * viewer against that subject's existing visibility rules — see services/media-authorization.ts. Every
- * deny is a 404, never a 403, so the endpoint is not an existence oracle.
+ * getMedia authorizes the viewer against the bound subject's own visibility rules
+ * (services/media-authorization.ts); without that, any holder of a media id got a fresh presigned URL to
+ * private DM/group-chat attachments, media on held/unlisted reports and attachments on deleted posts.
+ * Every deny is a 404, never a 403, so the endpoint is not an existence oracle.
  *
  * The write paths stay anon-reachable by necessity: an anonymous reporter uploads photos BEFORE the
- * report (and therefore before any anon session) exists, so there is no identity to require yet. They
- * are instead bounded by (a) the per-IP request cap below and (b) a cumulative per-caller BYTE quota
- * (M10, services/media-byte-quota.ts).
+ * report (and therefore any anon session) exists. They are bounded instead by the per-IP request cap
+ * below and a cumulative per-caller byte quota (services/media-byte-quota.ts).
  *
- * ============================================================================================
- * TODO (L1, CSRF on createMediaUpload + finalizeMedia) — DELIBERATELY NOT ENFORCED YET.
+ * CSRF is deliberately not enforced on createMediaUpload and finalizeMedia, the only two
+ * cookie-authenticated state-changing routes without `csrfProtect`. Adding it was tried and reverted
+ * because it cannot land on the backend alone:
  *
- * These are the only two cookie-authenticated state-changing routes with no `csrfProtect`
- * preHandler, and adding one was tried and REVERTED. It cannot land on the backend alone:
- *
- *   - csrfProtect enforces on any request with a session cookie and no bearer token — i.e. every
+ *   - csrfProtect enforces on any request with a session cookie and no bearer token, i.e. every
  *     signed-in civfix-web request (mobile is bearer and short-circuits).
  *   - the shared typed client only sends `X-CSRF-Token` when the ENDPOINT DEFINITION says so
  *     (@civfix/shared client: `if (endpoint.csrf && opts.getCsrfToken)`), and the published
  *     contract declares `createMediaUpload csrf: false` / `finalizeMedia csrf: false`.
  *
- * So enforcing here returns 403 "CSRF token missing or invalid." to every signed-in web user on
- * POST /v1/media/upload, breaking report photos, avatar upload and composer attachments. The
- * residual risk is LOW (a cross-origin POST is already blocked by the CORS preflight, and the
- * response — a presigned PUT URL — is not readable cross-origin), which does not justify a
- * guaranteed production break.
+ * Enforcing here would 403 every signed-in web user on POST /v1/media/upload, breaking report photos,
+ * avatar upload and composer attachments. The residual risk is low (a cross-origin POST is already
+ * blocked by the CORS preflight, and the response, a presigned PUT URL, is not readable cross-origin),
+ * which does not justify a guaranteed production break.
  *
- * Conditional enforcement ("enforce only when the client sent a header") is NOT an acceptable
- * middle ground: an attacker simply omits the header, so it protects nobody while looking like it
- * does.
+ * Conditional enforcement ("enforce only when the client sent a header") is not a middle ground: an
+ * attacker simply omits the header, so it protects nobody while looking like it does.
  *
- * TO RE-ADD: ship `csrf: true` for both endpoints in @civfix/shared FIRST, then in the SAME
- * release bump this service to that version and add `preHandler: csrfProtect` to both `route(...)`
- * calls below. Order matters — backend-first breaks web, shared-first is a no-op until this lands.
- * ============================================================================================
+ * Enabling it takes `csrf: true` for both endpoints in @civfix/shared FIRST, then, in the same release,
+ * this service adopting that version and adding `preHandler: csrfProtect` to both `route(...)` calls
+ * below. Backend-first breaks web; shared-first is a no-op until the backend follows.
  *
- * Pre-report-commit ownership remains CAPABILITY-BASED (the unguessable uploadId/media id is the proof)
- * and is bounded in time by media-authorization.ts UNBOUND_GRACE_MS. The DB handle is reached lazily via
+ * Pre-report-commit ownership is CAPABILITY-BASED (the unguessable uploadId/media id is the proof) and is
+ * bounded in time by media-authorization.ts UNBOUND_GRACE_MS. The DB handle is reached lazily via
  * container.getDb() inside handlers, so mounting this plugin never opens a connection.
  */
 
@@ -79,14 +66,11 @@ import { route } from "../versioning/route.js"
 
 declare module "fastify" {
   interface FastifyInstance {
-    // Optional injected media repository (tests) so the create/finalize/getMedia HTTP flow runs offline
-    // (no Docker) with an in-memory repo. Unset in production, where the routes reach the DB lazily.
-    mediaRepo?: MediaRepository
-    // Optional injected view authorizer (tests). Unset in production, where the DB-backed authorizer is
-    // built lazily below. When BOTH this and mediaRepo are unset the service falls back to its
+    // Tests inject these so the HTTP flow runs offline; production leaves them unset and reaches the DB
+    // and Redis lazily. With neither mediaRepo nor mediaAuthorizer set, the service falls back to its
     // fail-closed unbound-only authorizer.
+    mediaRepo?: MediaRepository
     mediaAuthorizer?: MediaViewAuthorizer
-    // Optional injected byte meter (tests). Unset in production, where Redis backs the quota.
     mediaByteMeter?: ByteMeter
   }
 }
@@ -97,7 +81,7 @@ const MediaIdParamsSchema = z.object({ id: IdSchema }).strict()
 // Per-IP cap on the anon-ok write paths above the global 300/min: createMediaUpload mints presigned R2
 // PUTs and finalizeMedia enqueues the untrusted-byte media.checks pipeline, so a tight per-route limit
 // bounds an unauthenticated client minting hundreds of presigns / pipeline jobs per minute. This bounds
-// FREQUENCY only — the cumulative byte quota below bounds VOLUME (M10).
+// frequency only; the cumulative byte quota bounds volume.
 export const MEDIA_WRITE_RATE_LIMIT = perHost({ max: 30, timeWindow: "1 minute" })
 
 export async function registerMediaRoutes(
@@ -114,20 +98,18 @@ export async function registerMediaRoutes(
   }
 
   function redisFallbackMeter(): ByteMeter | undefined {
-    // No Redis configured (no-infra boot) -> no byte quota; the per-route + global rate limits still
-    // apply. Production always has REDIS_URL, so the quota is always active there.
-    //
-    // container.getByteMeter() rather than a route-local RedisByteMeter: the container's wrapper resolves
-    // ONE RedisByteMeter per process on first add (and drops it in close(), so a post-close reuse cannot
-    // charge into a quit connection). Constructing it opens nothing, which is what mount time requires.
+    // Without Redis (no-infra boot) there is no byte quota, only the rate limits; production always has
+    // REDIS_URL. container.getByteMeter() rather than a route-local RedisByteMeter: the container's
+    // wrapper resolves ONE RedisByteMeter per process on first add (and drops it in close(), so a
+    // post-close reuse cannot charge into a quit connection). Constructing it opens nothing, which is
+    // what mount time requires.
     if (!container.env.REDIS_URL) return undefined
     return container.getByteMeter()
   }
 
   function service(): MediaIntakeService {
     const repo: MediaRepository = app.mediaRepo ?? makeDrizzleMediaRepository(container.getDb().db)
-    // An injected authorizer wins (tests). Otherwise: the DB-backed one when there is no injected repo
-    // (i.e. production), and the service's fail-closed default when an in-memory repo is in play.
+    // An in-memory repo gets the service's fail-closed default authorizer, never the DB-backed one.
     const authorizer =
       app.mediaAuthorizer ??
       (app.mediaRepo ? undefined : makeDrizzleMediaViewAuthorizer(container.getDb().sql))
@@ -142,7 +124,7 @@ export async function registerMediaRoutes(
     })
   }
 
-  // NO `preHandler: csrfProtect` HERE — see the CSRF block in the module header before adding one; it
+  // No `preHandler: csrfProtect` here: read the CSRF block in the module header before adding one. It
   // 403s every signed-in web caller until @civfix/shared declares `createMediaUpload csrf: true`.
   route(
     app,
@@ -166,8 +148,8 @@ export async function registerMediaRoutes(
     { config: { rateLimit: MEDIA_WRITE_RATE_LIMIT } },
     async (request, reply) => {
       const { uploadId } = parse(UploadIdParamsSchema, request.params)
-      // The body is empty/ignored; the uploadId in the path IS the request. Still validated via the shared
-      // schema so the contract (FinalizeMediaRequest { uploadId }) stays the single source.
+      // The uploadId in the path IS the request; it still goes through the shared schema so the contract
+      // stays the single source.
       const input = parse(FinalizeMediaRequestSchema, { uploadId })
       const payload: FinalizeMediaResponse = await service().finalize(input, ownerOf(request))
       reply.status(200).send(payload)

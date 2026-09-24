@@ -15,10 +15,7 @@ import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
 export const ADMIN_REPORT_CHAT_HISTORY_DEFAULT = 30
 export const ADMIN_REPORT_CHAT_HISTORY_MAX = 50
 
-/**
- * Tells connected clients that an operator changed a chat or DM message (removed it, or restored it on an
- * appeal), the way a member's own delete does. Called only after the change committed; never throws.
- */
+/** Called only after the operator's change committed; never throws. */
 export type MessageUpdateAnnouncer = (messageId: string) => Promise<void>
 
 export interface MessageUpdateAnnouncerDeps {

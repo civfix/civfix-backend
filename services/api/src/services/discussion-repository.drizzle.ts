@@ -1,10 +1,5 @@
-/**
- * Postgres-backed report lookup for the report-chat @city-forward + visibility path.
- *
- * All that remains of the former discussion persistence layer is a single read: resolve a report's
- * visibility handle + its jurisdiction + first usable contact email. (The discussion message CRUD /
- * reaction / mention repository was removed with the discussion system — report chat replaced it.)
- */
+// The only read left from the retired discussion system (report chat replaced it); it backs report-chat
+// visibility and the @city forward.
 
 import type { Sql } from "../db/client.js"
 import { firstUsableLegacyContactExpr, usableContactRowExpr } from "./admin/sql-fragments.js"

@@ -9,7 +9,7 @@ Korean fallback that keeps a Hangul name or event title from printing as `.notde
 records a SHA-256 per file and `test/unit/certificate-fonts.test.ts` re-hashes them on every run, which is
 the same guarantee civfix-app's `apps/community-web/scripts/copy-contract-fonts.mjs` gives the web app.
 
-Nothing in this directory was instanced, subsetted, renamed or otherwise modified by us — each file is a
+Nothing in this directory was instanced, subsetted, renamed or otherwise modified by us: each file is a
 byte-for-byte copy of an upstream static release, so the OFL's Reserved Font Name clause is not engaged.
 The required copyright notices and the full license text ship beside the fonts in `OFL.txt`.
 
@@ -19,8 +19,8 @@ Google Fonts publishes Baloo 2, Bricolage Grotesque, Hanken Grotesk and JetBrain
 `github.com/google/fonts` as **variable** TTFs only (`Baloo2[wght].ttf`,
 `BricolageGrotesque[opsz,wdth,wght].ttf`, `HankenGrotesk[wght].ttf`, `JetBrainsMono[wght].ttf`), which is
 exactly the trap described above. The static per-weight instances published by the
-`@expo-google-fonts/*` packages — the same files the community mobile app (civfix-app
-`apps/community-mobile`) already ships and renders with, so the printed document matches the app — were
+`@expo-google-fonts/*` packages (the same files the community mobile app, civfix-app
+`apps/community-mobile`, already ships and renders with, so the printed document matches the app) were
 vendored instead:
 
 | file | copied from | package version | font version |
@@ -35,12 +35,12 @@ Verified static, not variable, at vendoring time (fontkit): each file reports ze
 `OS/2.usWeightClass` in the table above's file name (400 / 600 / 800).
 
 - Upstream families and licenses:
-  - Baloo 2 — https://github.com/EkType/Baloo2 · https://github.com/google/fonts/tree/main/ofl/baloo2
-  - Bricolage Grotesque — https://github.com/ateliertriay/bricolage ·
+  - Baloo 2: https://github.com/EkType/Baloo2 · https://github.com/google/fonts/tree/main/ofl/baloo2
+  - Bricolage Grotesque: https://github.com/ateliertriay/bricolage ·
     https://github.com/google/fonts/tree/main/ofl/bricolagegrotesque
-  - Hanken Grotesk — https://github.com/marcologous/hanken-grotesk ·
+  - Hanken Grotesk: https://github.com/marcologous/hanken-grotesk ·
     https://github.com/google/fonts/tree/main/ofl/hankengrotesk
-  - JetBrains Mono — https://github.com/JetBrains/JetBrainsMono ·
+  - JetBrains Mono: https://github.com/JetBrains/JetBrainsMono ·
     https://github.com/google/fonts/tree/main/ofl/jetbrainsmono
 
 ## The Korean fallback
@@ -57,11 +57,11 @@ Verified static, not variable, at vendoring time (fontkit): each file reports ze
 **Why `.otf` and not `.ttf`.** Noto Sans KR has no static TTF anywhere upstream: `google/fonts` ships only
 `NotoSansKR[wght].ttf` (variable, 10.4 MB) and `notofonts/noto-cjk` ships statics as CFF-flavoured OpenType
 (`Sans/SubsetOTF/KR/*.otf`). Instancing the variable font would need `fonttools varLib.instancer`, i.e.
-Python, which the `node:22-bookworm-slim` runtime image does not have — and instancing at build time is
+Python, which the `node:22-bookworm-slim` runtime image does not have, and instancing at build time is
 forbidden for exactly that reason. pdfkit/fontkit embed and subset CFF OpenType as happily as TrueType
 (`Type0` / `CIDFontType0`), which the Hangul fixture in `test/unit/certificate-pdf.test.ts` proves on every
 run. The `SubsetOTF` in the upstream path means "Korean subset of the pan-CJK family", not "already
-subsetted for us" — fontkit still subsets it per document.
+subsetted for us"; fontkit still subsets it per document.
 
 Only the Regular weight is vendored, deliberately: a CJK Bold would add another ~4.8 MB to the image for
 one typographic nuance, so CJK headings render Regular.
@@ -71,7 +71,7 @@ one typographic nuance, so CJK headings render Regular.
 1. Replace the file with a fresh upstream **static** copy.
 2. `shasum -a 256 <file>` and update `MANIFEST.json`.
 3. Update the revision/version row above.
-4. `pnpm --filter @civfix/api test certificate-` — the manifest re-hash, the size bounds (no 0-byte file,
+4. `pnpm --filter @civfix/api test certificate-`: the manifest re-hash, the size bounds (no 0-byte file,
    nothing over 8 MB, which is how a committed Git-LFS pointer gets caught) and the Hangul render all run
    there.
 5. `pnpm --filter @civfix/api render:sample-certificate` and eyeball the output (written to

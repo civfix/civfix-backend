@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   const forced = process.argv.includes("--force")
   if (process.env.NODE_ENV === "production" && !forced) {
     console.log(
-      "seed: skipping — NODE_ENV=production. The dev jurisdiction fixtures (hand-made octagons + " +
+      "seed: skipping, NODE_ENV=production. The dev jurisdiction fixtures (hand-made octagons + " +
         "example.* contacts) are not for production; pass --force to override deliberately.",
     )
     return
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
     `
     if ((authoritative?.n ?? 0) > 0 && !forced) {
       console.log(
-        `seed: skipping — found ${authoritative?.n} authoritative (PADUS-/AIANNH-) jurisdictions ` +
+        `seed: skipping, found ${authoritative?.n} authoritative (PADUS-/AIANNH-) jurisdictions ` +
           `(a real boundary load). The dev seed would inject fixtures over real data; pass --force to override.`,
       )
       return

@@ -1,12 +1,8 @@
 /**
- * Admin activity-feed service (Phase 2): the merged recent-activity feed's CLASSIFICATION + query
- * normalization. The repository (activity-repository.drizzle.ts) unions the four sources and pages them;
- * this module turns a normalized source row into the wire DTO.
- *
- * The kind vocabulary is declared ONCE here (AUDIT_ACTION_RULES / KIND_SOURCES / MAIL_BOUNCE_EVENT_TYPES)
- * and read by BOTH `classifyAuditAction` below and the repository's `filter=<kind>` SQL predicate. A second
- * copy of those prefixes inside a WHERE clause is exactly how a facet starts disagreeing with the chip it
- * filters — the feed would show a row under one kind and hide it under that kind's own filter.
+ * The kind vocabulary is declared once here (AUDIT_ACTION_RULES / KIND_SOURCES / MAIL_BOUNCE_EVENT_TYPES)
+ * and read by both `classifyAuditAction` and the repository's `filter=<kind>` SQL predicate. A second copy
+ * of those prefixes in a WHERE clause is how a facet starts disagreeing with the chip it filters: the feed
+ * would show a row under one kind and hide it under that kind's own filter.
  */
 
 import { relativeAgo, ActivityKindSchema } from "@civfix/shared"
@@ -34,13 +30,10 @@ export interface ActivitySourceRecord {
 
 export const ACTIVITY_DEFAULT_LIMIT = 25
 
-/** The facet: "all" or one ActivityKind (the chip the operator clicked). */
 export type ActivityFilter = "all" | ActivityKind
 
-/** Feed direction. "newest" is the default; "oldest" walks the same keyset the other way. */
 export type ActivitySort = "newest" | "oldest"
 
-/** Normalized list arguments the repository consumes (search + facet + direction + page window). */
 export interface ListActivityArgs {
   q: string | null
   filter: ActivityFilter
@@ -50,15 +43,14 @@ export interface ListActivityArgs {
 }
 
 export interface ActivityRepository {
-  /** Page the merged feed applying the search + kind facet + direction. */
   list(
     args: ListActivityArgs,
   ): Promise<{ records: ActivitySourceRecord[]; nextCursor: string | null }>
 }
 
 /**
- * `filter` / `sort` are free-form `z.ZodString` on the wire (ActivityListQuerySchema), so an unrecognized
- * value must degrade to the default rather than 422 or reach SQL — the server owns this vocabulary.
+ * `filter` / `sort` are free-form strings on the wire (ActivityListQuerySchema), so an unrecognized value
+ * degrades to the default rather than 422 or reach SQL: the server owns this vocabulary.
  */
 export function parseActivityFilter(filter: string | undefined): ActivityFilter {
   if (filter === undefined || filter === "" || filter === "all") return "all"
@@ -81,32 +73,26 @@ const KIND_HUE: Record<ActivityKind, string> = {
   cleanup_plan: "#facc15",
 }
 
-/** One audit-action match: a dotted-namespace `prefix`, or one `exact` action. */
 export type AuditActionRule =
   | { kind: ActivityKind; prefix: string; exact?: undefined }
   | { kind: ActivityKind; exact: string; prefix?: undefined }
 
-/**
- * The audit-action -> ActivityKind rules in EVALUATION ORDER (first match wins). The repository builds its
- * `filter=<kind>` predicate for the audit branch from this same table, so the chip and the classifier
- * cannot disagree. Order matters: `report.routed` must be tested before the `report.` family falls through
- * to the catch-all.
- */
+// First match wins, so order matters: `report.routed` must be tested before the `report.` family falls
+// through to the catch-all.
 export const AUDIT_ACTION_RULES: readonly AuditActionRule[] = [
   { kind: "gov_onboard", prefix: "gov_claim." },
   { kind: "discovery_done", prefix: "discovery." },
   { kind: "outreach_open", prefix: "outreach." },
   { kind: "outreach_open", prefix: "mail." },
-  // Forwarding a report to its jurisdiction IS outreach, not moderation — the `report.` prefix would
+  // Forwarding a report to its jurisdiction is outreach, not moderation: the `report.` prefix would
   // otherwise paint it the amber mod-action hue alongside flags and removals.
   { kind: "outreach_open", exact: "report.routed" },
   { kind: "outreach_open", prefix: "inbox." },
 ]
 
-/** The kind an audit action matching NO rule falls back to (so a future action still renders). */
+/** Unmatched actions fall back here so a future action still renders. */
 export const AUDIT_FALLBACK_KIND: ActivityKind = "mod_action"
 
-/** The mail_events.type values that mean the outreach did not land (the rest are outreach_open). */
 export const MAIL_BOUNCE_EVENT_TYPES = ["bounced", "failed"] as const
 
 export function isMailBounceEventType(type: string): boolean {
@@ -114,10 +100,9 @@ export function isMailBounceEventType(type: string): boolean {
 }
 
 /**
- * Which union branches can produce each kind — the repository prunes branches with this, so a filtered
- * page never scans a source that cannot contribute a row. Maintained BESIDE classifyActivity below; the
- * failure mode of a wrong entry is an empty page, never a misfiled row (the branch's own predicate still
- * decides), which is why this is a lookup and not a second classifier.
+ * The repository prunes union branches with this, so a filtered page never scans a source that cannot
+ * contribute a row. A wrong entry yields an empty page, never a misfiled row (the branch's own predicate
+ * still decides), which is why this is a lookup and not a second classifier.
  */
 const KIND_SOURCES: Record<ActivityKind, readonly ActivitySource[]> = {
   pin: ["report"],
@@ -127,19 +112,18 @@ const KIND_SOURCES: Record<ActivityKind, readonly ActivitySource[]> = {
   gov_onboard: ["audit"],
   discovery_done: ["audit"],
   mod_action: ["audit"],
-  // NO source produces `claim` today: a gov claim arrives as a `gov_claim.*` audit row -> gov_onboard. The
+  // No source produces `claim` today: a gov claim arrives as a `gov_claim.*` audit row (gov_onboard). The
   // value stays in the contract enum, so filtering on it yields an empty page rather than an error.
   claim: [],
 }
 
-/** The union branches that can produce `kind`. */
 export function sourcesForKind(kind: ActivityKind): readonly ActivitySource[] {
   return KIND_SOURCES[kind]
 }
 
 /**
- * The rules whose kind is `kind`. EMPTY for AUDIT_FALLBACK_KIND — that kind is defined by EXCLUSION, so a
- * caller building SQL must negate every rule in AUDIT_ACTION_RULES instead of matching these.
+ * Empty for AUDIT_FALLBACK_KIND: that kind is defined by exclusion, so a caller building SQL must negate
+ * every rule in AUDIT_ACTION_RULES instead of matching these.
  */
 export function auditRulesForKind(kind: ActivityKind): readonly AuditActionRule[] {
   return AUDIT_ACTION_RULES.filter((rule) => rule.kind === kind)
@@ -157,10 +141,8 @@ export function classifyAuditAction(action: string): ActivityKind {
 }
 
 /**
- * Human label per audit action. Covers every literal in the AdminAuditAction catalogue (audit.ts) — an
- * unlabelled action renders as its raw dotted string in the operator's feed, which is how `report.routed`
- * and the user.verified family used to surface. An unknown//future action still falls back to the raw
- * string rather than failing.
+ * Keep this covering every AdminAuditAction (audit.ts): an unlabelled action renders as its raw dotted
+ * string in the operator's feed. An unknown action still falls back to that rather than failing.
  */
 export function describeAuditAction(action: string): string {
   const map: Record<string, string> = {
@@ -173,7 +155,7 @@ export function describeAuditAction(action: string): string {
     "discovery.draft_saved": "Saved a routing draft",
     "discovery.note_added": "Added a discovery note",
     "discovery.flagged": "Flagged a jurisdiction",
-    // Written by the PUBLIC suggest-contact endpoint, not an operator (the feed's `who` is the row's actor).
+    // Written by the public suggest-contact endpoint, not an operator (the feed's `who` is the row's actor).
     "discovery.contact_suggested": "Suggested a routing contact",
     "jurisdiction.patched": "Updated a jurisdiction",
     "report.status_changed": "Changed a report status",
@@ -222,8 +204,8 @@ export function describeAuditAction(action: string): string {
     "mail.reply_published": "Published a city reply",
     "outreach.digest_sent": "Sent an outreach digest",
     "inbox.status_changed": "Updated an inbox message",
-    // The L4 read audits are filtered out of the feed at the repo (AUDIT_READ_ACTIONS), so these labels
-    // only matter if a row reaches the classifier another way (a fake, or a future feed that includes them).
+    // Read audits are filtered out of the feed at the repo (AUDIT_READ_ACTIONS), so these labels only
+    // matter if a row reaches the classifier another way (a fake, or a future feed that includes them).
     "user.detail_viewed": "Viewed an account",
     "user.messages_viewed": "Viewed an account's messages",
     "inbox.message_viewed": "Viewed an inbox message",
@@ -251,8 +233,8 @@ export function classifyActivity(record: ActivitySourceRecord, ref: Date): Activ
   }
   if (record.source === "mail_event") {
     const type = record.eventType ?? ""
-    // The KIND comes from MAIL_BOUNCE_EVENT_TYPES (the same list the repo's outreach_bounce filter uses);
-    // only the label distinguishes the two members.
+    // The kind comes from the same list the repo's outreach_bounce filter uses; only the label
+    // distinguishes the two members.
     if (isMailBounceEventType(type)) {
       const what = type === "failed" ? "Outreach failed" : "Outreach bounced"
       return item("outreach_bounce", record.who || "Mail", what, record.where, ts)

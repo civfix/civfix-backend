@@ -7,7 +7,6 @@ const ISS = "https://accounts.google.com"
 const AUD = "test-client-id"
 const KID = "test-key-1"
 
-/** Sign a minimal RS256 JWT with the given private key + claims. */
 function signJwt(privateKey: KeyObject, claims: Record<string, unknown>): string {
   const header = { alg: "RS256", kid: KID, typ: "JWT" }
   const enc = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString("base64url")
@@ -18,7 +17,6 @@ function signJwt(privateKey: KeyObject, claims: Record<string, unknown>): string
   return `${signingInput}.${sig}`
 }
 
-/** Build a verifier whose JWKS fetch returns the public JWK for our generated key. */
 function makeVerifier(publicKey: KeyObject, nowSeconds: number) {
   const jwk = { ...(publicKey.export({ format: "jwk" }) as object), kid: KID, alg: "RS256" }
   const fetchImpl: FetchLike = async () => ({
@@ -82,7 +80,6 @@ describe("RemoteJwksVerifier", () => {
   })
 
   it("accepts a token whose aud matches any configured audience (multi-client)", async () => {
-    // A token minted for the iOS/Android native client id, verified against the set {web, iOS}.
     const token = signJwt(privateKey, { iss: ISS, aud: "ios-client", sub: "s", exp: NOW + 60 })
     const verifier = makeVerifier(publicKey, NOW)
     const result = await verifier.verify(token, params(NOW, [AUD, "ios-client"]))
@@ -103,7 +100,6 @@ describe("RemoteJwksVerifier", () => {
   it("rejects a token signed by the wrong key", async () => {
     const other = generateKeyPairSync("rsa", { modulusLength: 2048 })
     const token = signJwt(other.privateKey, { iss: ISS, aud: AUD, sub: "s", exp: NOW + 60 })
-    // Verifier only knows our public key, not `other`'s.
     const verifier = makeVerifier(publicKey, NOW)
     await expectUnauthorized(verifier.verify(token, params(NOW)))
   })
@@ -113,7 +109,7 @@ describe("RemoteJwksVerifier", () => {
     await expectUnauthorized(verifier.verify("not-a-jwt", params(NOW)))
   })
 
-  // P2-3: nonce binding (closes ID-token replay when the client issued a nonce).
+  // Closes ID-token replay when the client issued a nonce.
   describe("nonce binding (P2-3)", () => {
     it("accepts a token whose nonce claim equals the expected RAW nonce", async () => {
       const token = signJwt(privateKey, {
@@ -168,12 +164,10 @@ describe("RemoteJwksVerifier", () => {
       )
     })
 
-    it("a caller that passes NO expectedNonce gets no nonce checking — which is why sign-in always passes one", async () => {
-      // The verifier only checks what it is asked to check. That is a footgun, not a feature: it is
-      // exactly the shape H1 exploited when the sign-in route supplied the attacker's own nonce (or
-      // none). The route-level guarantee — a nonce is MANDATORY and must be one the server issued and
-      // has not yet spent — is asserted in auth-routes.test.ts ("server-issued single-use sign-in
-      // nonce (H1)"). No production call site may omit expectedNonce.
+    it("a caller that passes NO expectedNonce gets no nonce checking, which is why sign-in always passes one", async () => {
+      // The verifier only checks what it is asked to check, a footgun once exploited when sign-in
+      // supplied the attacker's own nonce. The route-level guarantee (mandatory, server-issued,
+      // single-use) is asserted in auth-routes.test.ts. No production call site may omit expectedNonce.
       const token = signJwt(privateKey, {
         iss: ISS,
         aud: AUD,
@@ -182,7 +176,7 @@ describe("RemoteJwksVerifier", () => {
         nonce: "whatever",
       })
       const verifier = makeVerifier(publicKey, NOW)
-      const result = await verifier.verify(token, params(NOW)) // no expectedNonce
+      const result = await verifier.verify(token, params(NOW))
       expect(result.sub).toBe("s")
     })
   })

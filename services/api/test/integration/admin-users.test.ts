@@ -12,7 +12,7 @@
  *   - toggleFlag upserts user_moderation.flagged + opens/resolves an abuse_flag (subject_type 'user')
  *     + audit;
  *   - setStatus upserts user_moderation.account_status (banned -> user.banned audit);
- *   - applyRole writes users.role + its user.role_changed audit row in ONE transaction (L5).
+ *   - applyRole writes users.role + its user.role_changed audit row in ONE transaction.
  *
  * The ban -> revoke-all-sessions behavior lives in SessionService (covered by the auth-session unit
  * test); this repo only persists the status. When Docker is unavailable the block SKIPS; CI runs it.
@@ -29,7 +29,6 @@ import { LA_CITY } from "../../src/db/seed-fixtures.js"
 const pg = await withPg()
 const GEOID = LA_CITY.geoid
 
-/** Insert a user and return its id. */
 async function insertUser(
   h: PgHarness,
   opts: { name?: string; handle?: string; role?: string; emailVerified?: boolean } = {},
@@ -48,7 +47,6 @@ async function insertUser(
   return rows[0]!.id
 }
 
-/** Insert a report authored by a user. */
 async function insertReport(h: PgHarness, reporterId: string, category = "trash"): Promise<string> {
   const rows = await h.sql<{ id: string }[]>`
     INSERT INTO reports (reporter_user_id, idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
@@ -110,7 +108,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
 
   it("search matches a user by the CITY (jurisdiction of their reports), not just name/handle", async () => {
     // The Drizzle search must match the derived city via the reports->jurisdictions join, like the
-    // in-memory repo + the documented contract (it previously only matched name/handle — a divergence).
+    // in-memory repo + the documented contract (it previously only matched name/handle, a divergence).
     const inLa = await insertUser(h, { name: "Ada", handle: "ada" })
     await insertReport(h, inLa) // resolves to LA_CITY
     const elsewhere = await insertUser(h, { name: "Bo", handle: "bob" }) // no reports -> no city
@@ -308,7 +306,7 @@ describe.skipIf(!pg)("admin user repository (integration: real schema)", () => {
     expect(audit).toHaveLength(1)
   })
 
-  // L5: the role UPDATE and its audit row are ONE transaction, so a committed privilege change can never
+  // The role UPDATE and its audit row are ONE transaction, so a committed privilege change can never
   // be missing its audit. Assert both landed AND that the prior role was captured on the audit meta.
   it("applyRole writes users.role AND a user.role_changed audit row in one transaction", async () => {
     const u = await insertUser(h)

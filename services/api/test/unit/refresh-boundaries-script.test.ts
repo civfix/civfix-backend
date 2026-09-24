@@ -1,18 +1,18 @@
 /**
- * scripts/refresh-boundaries.ts — the nationwide boundary refresh (TIGER + PAD-US). The script runs
+ * scripts/refresh-boundaries.ts, the nationwide boundary refresh (TIGER + PAD-US). The script runs
  * `main()` on import, so it cannot be exercised in-process; these are structural assertions over its
  * SOURCE, which is how the two failure modes below present themselves (both are ordering/configuration mistakes
  * that no runtime assertion in this repo can reach without a live Census download).
  *
- * F141: it is the only DB entry point that used the REQUEST-path timeouts. makeDb defaults to
+ * The script was the only DB entry point that used the REQUEST-path timeouts. makeDb defaults to
  * statementTimeoutMs 15s / idleInTxTimeoutMs 30s and pushes them as startup parameters; every other CLI
  * (src/db/cli.ts runDbCli, scripts/revoke-certificate.ts) deliberately disables both because these are
- * exactly the statements those timeouts exist to kill — a 1000-row correlated ST_Contains UPDATE, a
+ * exactly the statements those timeouts exist to kill: a 1000-row correlated ST_Contains UPDATE, a
  * full-table UPDATE over reports, and per-feature inserts of continent-scale multipolygons.
  *
- * F142: pruneNonAuthoritative COMMITS destructive deletes (jurisdictions + every FK pointer into them).
- * Running it before the fallible download/convert/ingest means any failure after it — a Census layer
- * that 404s, a missing ogr2ogr source, a statement timeout — strictly REDUCES coverage with no re-seed
+ * pruneNonAuthoritative COMMITS destructive deletes (jurisdictions + every FK pointer into them).
+ * Running it before the fallible download/convert/ingest means any failure after it (a Census layer
+ * that 404s, a missing ogr2ogr source, a statement timeout) strictly REDUCES coverage with no re-seed
  * path. In full-refresh mode the prune must therefore happen only AFTER the ingest loop succeeded;
  * --backfill-only keeps it up front, where nothing fallible precedes it.
  */

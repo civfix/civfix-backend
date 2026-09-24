@@ -1,14 +1,6 @@
 /**
- * Offline unit tests for the chat reaction service over the in-memory chat/dm/blocks repos (no DB, no
- * Docker). Exercises the ChatReactionService seam for BOTH room kinds:
- *   - toggleCleanupReaction: member-gated; toggles a reaction on a cleanup-chat message and returns the
- *     recomputed ChatMessageDTO (count + the viewer's `mine`); a second toggle removes it; a non-member 403s;
- *     a missing message 404s; an unsupported emoji 422s.
- *   - toggleDmReaction: participant + not-blocked gated; toggles + returns the recomputed message; a
- *     non-participant 403s; a blocked-either-way pair 403s; a missing message 404s.
- *
- * The Drizzle repos + the chat_message_reactions table are covered by the Docker-gated integration suite;
- * these fakes exercise the same seam.
+ * The chat reaction service over the in-memory chat/dm/blocks repos. The Drizzle repos and the
+ * chat_message_reactions table are covered by the integration suite; these fakes exercise the same seam.
  */
 
 import { describe, expect, it } from "vitest"
@@ -61,7 +53,7 @@ function makeHarness(): Harness {
   return { chat, dm, blocks, members, service }
 }
 
-describe("chat reaction service — cleanup group chat", () => {
+describe("chat reaction service: cleanup group chat", () => {
   it("toggles a reaction on, then off, recomputing the count + the viewer's mine", async () => {
     const h = makeHarness()
     await h.chat.insertMessage({ cleanupId: CLEANUP, userId: ALICE, body: "hi" }, MSG_ID)
@@ -106,7 +98,7 @@ describe("chat reaction service — cleanup group chat", () => {
   })
 })
 
-describe("chat reaction service — direct messages", () => {
+describe("chat reaction service: direct messages", () => {
   it("toggles a reaction on a dm message and recomputes for the viewer", async () => {
     const h = makeHarness()
     const thread = await h.dm.openOrCreateThread(ALICE, BOB)

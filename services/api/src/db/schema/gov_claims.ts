@@ -1,15 +1,9 @@
 /**
- * gov_claims: the government provisioning queue (Phase 2).
- *
- * An applicant claims authority over a jurisdiction; an operator verifies LinkedIn / municipal
- * Directory / phone Callback, then approves (which sets the linked user's role to gov_admin and links
- * the jurisdiction) or rejects. All transitions are audited via writeAudit.
+ * Government provisioning queue: approving a claim sets the linked user's role to gov_admin and links the
+ * jurisdiction, so every transition is audited via writeAudit.
  *
  * `checks` jsonb shape: { linkedin|directory|callback: { status:'verified'|'pending',
- * evidence?:string, note?:string, at?:timestamp } }. `method` records how the applicant arrived
- * (email | cold_outreach). The status CHECK is enforced in 0007_admin_phase2.sql.
- *
- * CANONICAL DDL: drizzle/0007_admin_phase2.sql. This mirror exists for typed queries / diff inspection.
+ * evidence?:string, note?:string, at?:timestamp } }.
  */
 
 import { sql } from "drizzle-orm"

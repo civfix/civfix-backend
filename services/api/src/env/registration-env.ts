@@ -45,7 +45,7 @@ export function loadRegistrationEnv(
     TICKET_TOKEN_SECRET.length < TICKET_TOKEN_SECRET_MIN_LENGTH
   ) {
     errors.push(
-      `TICKET_TOKEN_SECRET: must be at least ${TICKET_TOKEN_SECRET_MIN_LENGTH} characters — ` +
+      `TICKET_TOKEN_SECRET: must be at least ${TICKET_TOKEN_SECRET_MIN_LENGTH} characters: ` +
         "it is the only thing standing between a guessed string and a forged event ticket",
     )
   }

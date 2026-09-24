@@ -1,4 +1,4 @@
-# Location coarsening for public display — assessment & recommendation
+# Location coarsening for public display: assessment & recommendation
 
 **Audience:** internal (engineering + product + privacy counsel). Not served publicly.
 **Last updated:** 2026-09-23 (checked against the code; first written 2026-06-20).
@@ -34,7 +34,7 @@ ranked home feed's proximity pool is one bounded KNN scan. It is NOT a new
 class of data and NOT a new exposure: the value is copied server-side from a
 coordinate this platform already publishes at full precision on the linked
 report or event, it is never populated from a client-supplied coordinate, and
-it is never projected into any DTO — it only orders the feed, and the feed
+it is never projected into any DTO; it only orders the feed, and the feed
 emits `PostDTO`, which carries no post-level coordinate at all. The only
 derived value that leaves the server is the ranking score (inside the feed
 cursor), and the distance it is computed from is first rounded to 1 km
@@ -44,8 +44,8 @@ Consequence for any future coarsening decision: rounding the projected
 `lat`/`lng` would NOT cover `posts.geom`, which would keep ordering the feed at
 full precision. That is almost certainly the desired behaviour (proximity
 ranking is the point), but it must be a stated decision rather than an
-oversight, and a policy that requires coarsening at REST — not just in
-transit — has to cover this column, `reports.geom`, `cleanups.geom` and
+oversight, and a policy that requires coarsening at REST (not just in
+transit) has to cover this column, `reports.geom`, `cleanups.geom` and
 `users.last_activity_geom` together.
 
 ## Is a backend-only coarsening possible without a shared-contract change?
@@ -86,7 +86,7 @@ the map, is a product + counsel call.
 1. **Decide a public-display precision** (product + counsel). Suggested default:
    round public-display coordinates to **3 decimal places (~110 m)** for the
    browse map + search, and keep the **report DETAIL** at full precision for the
-   owner but coarsened for non-owners — OR snap to the existing H3 cell centroid
+   owner but coarsened for non-owners, OR snap to the existing H3 cell centroid
    for a uniform privacy cell.
 2. **Implement as a backend-only transform** once the radius is chosen: a
    `coarsenForPublicDisplay(lat, lng)` helper applied in `toMapPinDTO` and in

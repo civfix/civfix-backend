@@ -36,7 +36,7 @@ addresses outbound mail advertises live on `MAIL_REPLY_DOMAIN` (default `civfix.
 
 ## Layout
 
-Standalone — **not** in the backend pnpm/Turbo workspace (own `wrangler` toolchain).
+Standalone: **not** in the backend pnpm/Turbo workspace (own `wrangler` toolchain).
 
 ```
 src/index.ts   the email() handler
@@ -50,7 +50,7 @@ test/          vitest unit tests (id derivation, HMAC fixture shared with the ba
 1. **`wrangler.toml` → `bucket_name`**: set to the backend's `R2_INBOUND_BUCKET` value, so the
    backend sweep sees what the Worker writes. Never the media bucket `R2_BUCKET`.
 2. **`BACKEND_WEBHOOK_URL`**: must equal the backend `PUBLIC_API_URL` + `/webhooks/inbound-mail`.
-3. **Secret**: `wrangler secret put CF_EMAIL_WEBHOOK_SECRET --env production` — the **same value** the
+3. **Secret**: `wrangler secret put CF_EMAIL_WEBHOOK_SECRET --env production`, the **same value** the
    backend has for `CF_EMAIL_WEBHOOK_SECRET` (the HMAC key). They must be byte-identical.
 
 ## Develop
@@ -93,7 +93,7 @@ pnpm run deploy:staging  # wrangler deploy --env staging (after `wrangler login`
 CI does not deploy the Worker: a change under `src/` reaches Cloudflare only through `pnpm run deploy` (a bare `pnpm deploy` is pnpm's own workspace-deploy command and never runs this script).
 
 Then, in the Cloudflare dashboard (or API): enable **Email Routing** on `civfix.org` (auto-manages
-MX/TXT and **takes over inbound mail for the domain** — confirm no other inbound provider first), and
+MX/TXT and **takes over inbound mail for the domain**; confirm no other inbound provider first), and
 set the **catch-all** route Action to **Send to a Worker** → `civfix-inbound-email`. The
 `/webhooks/*` path stays un-gated by Cloudflare Access, so the Worker can POST it through the tunnel.
 

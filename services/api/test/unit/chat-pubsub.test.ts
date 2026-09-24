@@ -33,10 +33,8 @@ describe("Redis pub/sub fan-out across two workers (in-memory pub/sub)", () => {
     const repo2 = new InMemoryChatRepository()
     const worker2 = new WsChatService({ repo: repo2, pubsub })
 
-    // Bob's socket is on worker 2; he joins the room there.
     const bConn = new MockConnection("B-on-worker2")
     await worker2.joinRoom(ROOM, bConn, BOB)
-    // The shared pub/sub now has a subscriber for the room channel.
     expect(pubsub.channelCount).toBe(1)
 
     // Alice sends from worker 1: persist there, then broadcast (PUBLISH) on the shared pub/sub.
@@ -48,7 +46,6 @@ describe("Redis pub/sub fan-out across two workers (in-memory pub/sub)", () => {
     })
     await worker1.broadcast(ROOM, msg)
 
-    // Bob (worker 2) received the broadcast even though Alice's socket lives on a different worker.
     const frames = bConn.framesOfType("message")
     expect(frames).toHaveLength(1)
     expect((frames[0] as { message: ChatMessageDTO }).message.body).toBe("cross-worker hi")
@@ -86,7 +83,6 @@ describe("Redis pub/sub fan-out across two workers (in-memory pub/sub)", () => {
     const conn = new MockConnection()
     await worker.joinRoom(ROOM, conn, BOB)
 
-    // Broadcast to a different cleanup id; this room's connection must NOT receive it.
     const other = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
     const msg = await worker.persist({
       cleanupId: other,

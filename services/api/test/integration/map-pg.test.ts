@@ -1,17 +1,3 @@
-/**
- * Map routes integration test (Docker-gated). Boots the real Fastify app against a live PostGIS
- * container (via withPg, which seeds the canonical jurisdiction set) and exercises the DB-backed map
- * endpoints end-to-end through app.inject:
- *
- *   POST /map/resolve-jurisdiction  -> place for an in-city point, county for unincorporated land,
- *                                      and 200-null for a far point outside all coverage.
- *   GET  /map/cleanups              -> returns the pins whose Point falls inside the queried bbox,
- *                                      with a "going" count, and excludes ones outside the bbox.
- *
- * When Docker is unavailable the whole describe block SKIPS (describe.skipIf) so the local suite stays
- * green; CI runs it for real. Reuses withPg() per the harness contract.
- */
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
 import type { CleanupStatus } from "@civfix/shared"
@@ -45,7 +31,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
 
   beforeAll(async () => {
     h = pg as PgHarness
-    // Real DB; everything else stays a fake (jobs/geocoder/etc. default to fakes outside production).
+    // Every other seam defaults to its fake outside production.
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
     const container = buildContainer(env)
     app = await buildServer({ env, container })
@@ -68,7 +54,6 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     expect(body.geoid).toBe(LA_CITY.geoid)
     expect(body.layer).toBe("place")
     expect(typeof body.cityStateLabel).toBe("string")
-    // The public DTO now carries the routable flag (whether routing is configured for this jurisdiction).
     expect(typeof body.routable).toBe("boolean")
   })
 
@@ -95,7 +80,6 @@ describe.skipIf(!pg)("map routes (integration)", () => {
   })
 
   it("GET /map/cleanups returns only pins inside the bbox, with going counts", async () => {
-    // One organizer user + one extra member so the going count is observable.
     const [organizer] = await h.sql<{ id: string }[]>`
       INSERT INTO users (display_name) VALUES ('Organizer') RETURNING id
     `
@@ -105,7 +89,6 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     const organizerId = organizer!.id
     const memberId = member!.id
 
-    // Two cleanups inside the LA city box (near PROBE_INSIDE_CITY) and one far outside it.
     const insideLng = PROBE_INSIDE_CITY.lng
     const insideLat = PROBE_INSIDE_CITY.lat
     const near1Id = await seedCleanup(h.sql, {
@@ -122,7 +105,6 @@ describe.skipIf(!pg)("map routes (integration)", () => {
       lat: insideLat + 0.01,
       scheduledAt: new Date(Date.now() + 8 * 86_400_000),
     })
-    // Far away (outside the LA city bbox we will query).
     await seedCleanup(h.sql, {
       organizerUserId: organizerId,
       title: "Far",
@@ -131,15 +113,13 @@ describe.skipIf(!pg)("map routes (integration)", () => {
       scheduledAt: new Date(Date.now() + 9 * 86_400_000),
     })
 
-    // Two members going to near1 (organizer + member).
     await h.sql`
       INSERT INTO cleanup_members (cleanup_id, user_id, role) VALUES
         (${near1Id}, ${organizerId}, 'organizer'),
         (${near1Id}, ${memberId}, 'member')
     `
 
-    // Query the LA city box (LA_CITY.bbox = [xmin(lng), ymin(lat), xmax(lng), ymax(lat)]). bbox is sent
-    // as the shared client encodes it (a single JSON param), via clientQuery.
+    // bbox is sent as the shared client encodes it: a single JSON param.
     const [west, south, east, north] = LA_CITY.bbox
     const res = await app.inject({
       method: "GET",
@@ -148,7 +128,6 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     expect(res.statusCode).toBe(200)
     const body = res.json()
     const ids: string[] = body.pins.map((p: { id: string }) => p.id)
-    // Both near cleanups are inside; the far one is not.
     expect(ids).toContain(near1Id)
     expect(body.pins).toHaveLength(2)
 
@@ -275,14 +254,10 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     expect(rows[0]?.meta.source).toBe("anon")
   })
 
-  /**
-   * The write-time Census fallback against a REAL sequence (A15 follow-up).
-   *
-   * The lazily-inserted row has a NULL geom, so it can never satisfy the resolver's ST_Contains — every
-   * repeat resolve of the same point re-enters the fallback. With `nextval` in a VALUES list that burned one
-   * `jurisdiction_code_seq` value per request (VALUES is evaluated before the conflict is detected), on an
-   * anon-ok endpoint. Only a real DB can prove the NOT EXISTS guard actually leaves the sequence alone.
-   */
+  // The lazily-inserted row has a NULL geom, so it never satisfies the resolver's ST_Contains and every
+  // repeat resolve re-enters the fallback. `nextval` in a VALUES list burned one `jurisdiction_code_seq`
+  // value per request on an anon-ok endpoint (VALUES is evaluated before the conflict is detected). Only
+  // a real DB can prove the NOT EXISTS guard leaves the sequence alone.
   describe("write-time Census fallback (lazy jurisdiction insert)", () => {
     const FALLBACK_GEOID = "0699999"
 
@@ -302,7 +277,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
       })
     }
 
-    /** Counting lookup with a mutable answer, so a "Census renamed the place" case is expressible. */
+    // The answer is mutable so a "Census renamed the place" case is expressible.
     function countingLookup(hit: JurisdictionLookupResult): {
       lookup: JurisdictionLookup
       calls: () => number
@@ -338,17 +313,12 @@ describe.skipIf(!pg)("map routes (integration)", () => {
       `
       expect(created).toHaveLength(1)
       expect(created[0]?.code).not.toBeNull()
-      // NULL geom is what makes this row un-resolvable spatially (hence the repeat-call path below).
       expect(created[0]?.geom).toBeNull()
 
       const afterInsert = await seqState()
-      // The insert drew from the sequence (the stamped code above), so it has been called and cannot have
-      // gone backwards.
       expect(afterInsert.is_called).toBe(true)
       expect(Number(afterInsert.last_value)).toBeGreaterThanOrEqual(Number(before.last_value))
 
-      // Two more resolves of the same point: the lookup answers again (uncached service), the row already
-      // exists, and the sequence must not move.
       await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
       await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
       expect(probe.calls()).toBe(3)
@@ -368,8 +338,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
       const service = serviceWith(probe.lookup)
       await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
 
-      // A later lookup answers with a different label for the same geoid: the stored row keeps its name,
-      // so this fallback can never overwrite a curated/ingested one.
+      // The stored row keeps its name, so this fallback can never overwrite a curated or ingested one.
       probe.setName("Renamed By Census")
       const dto = await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
       expect(dto?.geoid).toBe(FALLBACK_GEOID)
@@ -391,7 +360,7 @@ describe.skipIf(!pg)("map routes (integration)", () => {
       await service.resolveForPoint(PROBE_OUTSIDE_ALL.lat, PROBE_OUTSIDE_ALL.lng)
 
       expect(probe.calls()).toBe(1)
-      // Row already existed from the tests above, so nothing was drawn at all here.
+      // The row already exists from the tests above.
       expect((await seqState()).last_value).toBe(before.last_value)
     })
   })

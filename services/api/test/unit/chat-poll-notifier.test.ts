@@ -1,18 +1,16 @@
 /**
- * P6 Task 6.3: the POLL-CREATE member fan-out (src/services/chat-poll-notifier.ts).
- *
- * makeContainerPollNotifier is the REST poll route's only bell path — it assembles the same two lane
- * notifiers the WS gateway wiring builds (report + group) out of container primitives. It had zero tests,
- * which is exactly how the M11 block gate came to be missing from this path in the first cut (a poll
- * create raises a member-wide push carrying the author's name, so the same gate the message fan-out
- * applies has to be here too). This file pins the module's whole contract:
+ * The POLL-CREATE member fan-out. makeContainerPollNotifier is the REST poll route's only bell path: it
+ * assembles the same two lane notifiers the WS gateway wiring builds (report + group) out of container
+ * primitives. Untested, it once shipped without the block gate (a poll create raises a member-wide push
+ * carrying the author's name, so it needs the same gate as the message fan-out). This file pins the
+ * module's whole contract:
  *
  *   - DISPATCH: report -> `report_chat` bells (/messages/report/:id), group -> `group_chat` bells
  *     (/messages/group/:id), cleanup -> NO fan-out at all (matching a plain cleanup send, which only
  *     bells @-mentions / reply targets) and no member scan either.
  *   - MUTE suppression, through the BATCH seam the module wires (mutedUserIdsFor), including that the
- *     lane's roomKind is carried into it — a mute on the group room must not silence the report room.
- *   - BLOCK suppression (M11), in BOTH directions of the block edge.
+ *     lane's roomKind is carried into it: a mute on the group room must not silence the report room.
+ *   - BLOCK suppression, in BOTH directions of the block edge.
  *   - The sender is never belled; a member's own poll doesn't ring their phone.
  *   - USE_FAKE_CHAT degrades to a no-op WITHOUT touching container.getDb().
  *
@@ -39,7 +37,7 @@ const stub = vi.hoisted(() => ({
   muted: new Set<string>(),
   /** Whether the stubbed mutes repo implements the OPTIONAL batch member lookup. */
   batchMutes: true,
-  /** Every DB-bound leaf call, in order — lets a test assert a lane was never even scanned. */
+  /** Every DB-bound leaf call, in order, so a test can assert a lane was never even scanned. */
   calls: [] as string[],
 }))
 
@@ -183,10 +181,10 @@ function containerFor(useFakeChat = false): Container {
 }
 
 /**
- * The M11 gate has two shapes: the required per-candidate `isBlockedEitherWay` and the OPTIONAL batch
+ * The block gate has two shapes: the required per-candidate `isBlockedEitherWay` and the OPTIONAL batch
  * `blockedIdsAmong` (one user_blocks query for the whole roster). Production's Drizzle repo implements
  * both; the in-memory repo implements only the first. `blockGateCalls`, when set, makes the container hand
- * out a repo carrying BOTH and records which shape the notifier actually used — the notifier treats a
+ * out a repo carrying BOTH and records which shape the notifier actually used. The notifier treats a
  * present batch seam as authoritative, so "which one ran" is the thing worth pinning.
  */
 let blockGateCalls: string[] | undefined
@@ -238,7 +236,7 @@ describe("makeContainerPollNotifier: report lane", () => {
     const bell = bells(A, "report_chat")[0]!
     expect(bell.title).toBe("Dana")
     expect(bell.link).toBe(`/messages/report/${ROOM}`)
-    // A poll is not a text message, so no preview leaks into the push body — the generic copy is used.
+    // A poll is not a text message, so no preview leaks into the push body; the generic copy is used.
     expect(bell.body).toBe("Sent you a message")
   })
 
@@ -367,11 +365,11 @@ describe("makeContainerPollNotifier: the M11 batch block seam", () => {
     notify("group", ROOM, pollMessage("group", ACTOR))
     await flush()
 
-    // Same verdicts as the per-candidate path (both block directions suppressed, everyone else belled)...
+    // Same verdicts as the per-candidate path (both block directions suppressed, everyone else belled),
     expect(bells(A, "group_chat")).toHaveLength(1)
     expect(bells(B, "group_chat")).toHaveLength(0)
     expect(bells(C, "group_chat")).toHaveLength(0)
-    // ...at one round trip for the three candidates instead of three, and the per-candidate gate is not
+    // at one round trip for the three candidates instead of three, and the per-candidate gate is not
     // ALSO run (the batch seam is authoritative in chat-room-fanout-notifier).
     expect(calls).toEqual(["batch:3"])
   })

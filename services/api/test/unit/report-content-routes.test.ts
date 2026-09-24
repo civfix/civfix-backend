@@ -12,8 +12,7 @@ import type { ContentSubjectGate } from "../../src/services/content-report-subje
 import { AppError } from "@civfix/shared"
 
 /**
- * Offline HTTP test for the PUBLIC content-report route (POST /content-reports). The route builds the
- * moderation service from the injected in-memory ModerationRepository (the SAME app.moderationOverrides
+ * The PUBLIC content-report route (POST /content-reports) builds the moderation service from the injected in-memory ModerationRepository (the SAME app.moderationOverrides
  * seam the admin queue uses), so the whole flow runs with no DB: a signed-in user files a report and an
  * OPEN `user_report` moderation item is enqueued (deduped by subject).
  */

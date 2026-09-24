@@ -1,10 +1,6 @@
 /**
- * The one place a coordinate becomes an address.
- *
- * Before this existed there were two answers to "what is at this point" and they disagreed: reports got
- * the street-level chain collapsed to a bare string, events got nothing at all, and the only
- * client-callable endpoint returned TIGER's "City, ST". This composes all of it once, honestly, and
- * hands every caller the same shape.
+ * The one place a coordinate becomes an address, so reports, events and the preview endpoint can never
+ * disagree about what is at a point.
  *
  * THE LADDER, top rung first:
  *
@@ -49,7 +45,6 @@ export interface ResolvedAddress {
   cityStateLabel: string
 }
 
-/** Coords -> the resolved address. The dep every service and route takes. */
 export type AddressResolver = (lat: number, lng: number) => Promise<ResolvedAddress>
 
 export interface AddressResolverDeps {
@@ -114,7 +109,6 @@ export function makeAddressResolver(deps: AddressResolverDeps): AddressResolver 
   }
 }
 
-/** What a report row records about its address: the text, where it came from, and how exact it is. */
 export interface ReportAddressWrite {
   addr: string | null
   addrSource: ReportAddressSource | null
@@ -122,8 +116,8 @@ export interface ReportAddressWrite {
 }
 
 /**
- * Decide a report's address provenance at creation. Shared by the signed-in and anonymous paths so the
- * two can never drift - they already write the same column and are read by the same DTO.
+ * Shared by the signed-in and anonymous create paths so the two can never drift: they write the same
+ * column and are read by the same DTO.
  *
  * The reporter's own text always wins and is marked 'user' with NO precision: a provider rung would be a
  * claim about text no provider produced. Otherwise the server's resolve is stored as 'resolved' with the

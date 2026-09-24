@@ -1,6 +1,4 @@
 /**
- * API VERSION-GATE BEHAVIOR TEST.
- *
  * Proves the `onRequest` version gate (`src/versioning/version-gate.ts`) enforces the served-versions
  * policy (`src/versioning/policy.ts`) correctly under TODAY's dormant policy: only `v1` exists and is
  * `current`, MIN_SUPPORTED is `v1`, and nothing is deprecated or sunset. Under that policy the gate's
@@ -21,7 +19,7 @@
  * Unknown (`/v2`, `/v99`) and below-floor (`/v0`) versions have NO registered route on purpose: the gate
  * runs at `onRequest`, ahead of route matching, so it rejects them with 400 UNSUPPORTED_API_VERSION
  * before Fastify could ever answer a route-missing 404. Asserting the 400 (not a 404) is exactly what
- * proves the gate — not the router — produced the rejection.
+ * proves the gate, not the router, produced the rejection.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
@@ -72,7 +70,7 @@ afterAll(async () => {
   await app.close()
 })
 
-describe("version gate — dormant policy (v1=current, MIN=v1, nothing deprecated/sunset)", () => {
+describe("version gate: dormant policy (v1=current, MIN=v1, nothing deprecated/sunset)", () => {
   it("lets a SERVED current version through to its handler: GET /v1/ping is not gate-rejected", async () => {
     const res = await app.inject({ method: "GET", url: "/v1/ping" })
     // The gate did not reject: the real handler ran. Specifically it is NOT the gate's 400/410, and the
@@ -137,7 +135,7 @@ describe("version gate — dormant policy (v1=current, MIN=v1, nothing deprecate
   })
 })
 
-describe("version policy — pure helpers (today's policy)", () => {
+describe("version policy: pure helpers (today's policy)", () => {
   it("isVersionSegment: matches /^v\\d+$/ only", () => {
     expect(isVersionSegment("v1")).toBe(true)
     expect(isVersionSegment("v0")).toBe(true)

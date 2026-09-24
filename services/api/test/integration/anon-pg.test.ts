@@ -4,16 +4,16 @@
  * service+repository layer (no HTTP/Redis) so it proves the spatial held-create transaction, the
  * held-stays-hidden invariant, the claim-code-gated status, and the release transition directly.
  *
- * Proven here (the Phase-1 done-criterion "held items stay hidden"):
+ * Proven here (held items stay hidden):
  *   - a held anon report has reporter_user_id NULL, anon_session_id = the token id, status 'held',
  *     published_at NULL, the resolved jurisdiction, geom round-trips, and a submitted+held timeline;
  *   - it is ABSENT from the report-service map candidates (published+public only) and 404s a stranger
  *     via getReport, while its status is visible via anonReportStatus with the right claim code;
  *   - releaseAnonHoldIfReady flips it to published once its media are ready + clean;
  *   - claimReport links it to a user (single-use code) - matching on the stored SHA-256 only, since
- *     the plaintext code is never written to reports.claim_code (F150 / 0091);
+ *     the plaintext code is never written to reports.claim_code (0091);
  *   - the idempotency snapshot is owner-scoped: another anon session reusing the key gets the
- *     retryable 409, never the first submitter's snapshot + claim code (F028 / 0078+0079).
+ *     retryable 409, never the first submitter's snapshot + claim code (0078+0079).
  *
  * Skips wholesale when Docker is unavailable (describe.skipIf), keeping the local suite green.
  */
@@ -98,7 +98,7 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
       lng: over.lng ?? PROBE_INSIDE_CITY.lng,
       geomSource: "device",
       mediaUploadIds: over.mediaUploadIds ?? [],
-      // Forward a presented anon token when the caller supplies one (the P0-1 cap test relies on all
+      // Forward a presented anon token when the caller supplies one (the per-token cap test relies on all
       // submits presenting the SAME seeded token; without this the token was dropped and every submit
       // minted a fresh one, so the per-token cap was never actually exercised).
       ...(over.anonToken !== undefined ? { anonToken: over.anonToken } : {}),
@@ -120,7 +120,6 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     const { response } = await anon.submitAnonReport(req(), { ip: "203.0.113.5", cfGeo: {} })
     expect(response.status).toBe("held")
 
-    // The row is held, anon, not published, jurisdiction resolved.
     const [row] = await h.sql<
       {
         reporter_user_id: string | null
@@ -139,7 +138,6 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     expect(row!.published_at).toBeNull()
     expect(row!.jurisdiction_geoid).toBeTruthy()
 
-    // Timeline: submitted + held.
     const tl = await h.sql<{ status: string }[]>`
       SELECT status FROM report_timeline WHERE report_id = ${response.reportId} ORDER BY created_at ASC, id ASC
     `
@@ -155,14 +153,12 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     const map = await reports.listReportsInBBox(bbox, null, null, 16)
     expect(map.pins.some((p) => p.id === response.reportId)).toBe(false)
 
-    // 404 to a stranger via getReport.
     await expect(
       reports.getReport(response.reportId, { userId: "stranger" }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
     })
 
-    // Status visible with the right claim code; 404 with a wrong one.
     const status = await anon.anonReportStatus(response.reportId, response.claimCode)
     expect(status.status).toBe("held")
     await expect(anon.anonReportStatus(response.reportId, "wrong")).rejects.toMatchObject({
@@ -220,9 +216,9 @@ describe.skipIf(!pg)("anon reporting (integration: real transaction path)", () =
     `
     expect(row!.status).toBe("published")
     expect(row!.published_at).not.toBeNull()
-    // Now it surfaces on the map. The bbox must be STREET-LEVEL: M14 clamps the effective zoom to what
+    // Now it surfaces on the map. The bbox must be STREET-LEVEL: the map query clamps the effective zoom to what
     // the bbox extent can imply (effectiveMapZoom), so the old +/-0.5 degree box implied zoom 10 and
-    // returned clusters only — `pins` would have been empty regardless of visibility.
+    // returned clusters only, so `pins` would have been empty regardless of visibility.
     const bbox = {
       west: PROBE_INSIDE_CITY.lng - 0.02,
       south: PROBE_INSIDE_CITY.lat - 0.01,

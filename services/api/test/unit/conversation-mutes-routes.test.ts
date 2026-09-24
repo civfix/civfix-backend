@@ -37,7 +37,7 @@ interface Harness {
   repo: ReturnType<typeof makeFakeRepo>
 }
 
-/** L9 participation gate seam (see ConversationRoutesOverrides.participates). */
+/** Participation gate seam (see ConversationRoutesOverrides.participates). */
 type Participates = NonNullable<ConversationRoutesOverrides["participates"]>
 
 let current: Harness | undefined
@@ -170,10 +170,10 @@ describe("PUT /conversations/mute", () => {
 })
 
 /**
- * L9 (2026-07-24 review): the route wrote an arbitrary roomId with NO existence or membership check, so
+ * The route used to write an arbitrary roomId with NO existence or membership check, so
  * an authenticated client could insert unbounded junk rows into conversation_mutes.
  */
-describe("PUT /conversations/mute — participation gate (L9)", () => {
+describe("PUT /conversations/mute: participation gate (L9)", () => {
   it("403s a room the caller does not participate in, and writes NOTHING", async () => {
     const { app, token, repo } = await makeHarness(() => Promise.resolve(false))
     const res = await app.inject({

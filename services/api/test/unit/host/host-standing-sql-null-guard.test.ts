@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { findParamNullTests } from "../../../../../scripts/check-dynamic-sql.mjs"
 
-describe("check:sql — uncast parameter in a NULL test", () => {
+describe("check:sql: uncast parameter in a NULL test", () => {
   it("flags a bare interpolated parameter used as a NULL test", () => {
     const found = findParamNullTests(
       "sql`LEFT JOIN cleanup_members m ON m.cleanup_id = c.id AND ${userId} IS NOT NULL`",

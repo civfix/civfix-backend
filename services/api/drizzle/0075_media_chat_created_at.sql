@@ -3,7 +3,7 @@
 -- -----------------------------------------------------------------------------
 -- FINDING F072: media_assets.chat_message_id carries the id of a chat/dm message
 -- an attachment belongs to, but those message tables are RANGE-partitioned with a
--- COMPOSITE PK (id, created_at) — the id alone is not a key, so an authorization
+-- COMPOSITE PK (id, created_at): the id alone is not a key, so an authorization
 -- probe that resolves an attachment to its message cannot prune to a partition and
 -- has no unique target. Add the partition key alongside the id so a NEW attachment
 -- records (chat_message_id, chat_message_created_at) and the probe can match the

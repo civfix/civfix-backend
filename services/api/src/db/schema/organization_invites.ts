@@ -11,7 +11,6 @@ import type {
 type OrganizationInviteRole = (typeof ORGANIZATION_INVITE_ROLE_VALUES)[number]
 type OrganizationInviteStatus = (typeof ORGANIZATION_INVITE_STATUS_VALUES)[number]
 
-/** Mirror of drizzle/0162_org_suspension_and_invites.sql, 0165 and 0182 (the SQL is canonical). */
 export const organizationInvites = pgTable(
   "organization_invites",
   {

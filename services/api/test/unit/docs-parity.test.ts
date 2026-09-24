@@ -1,6 +1,4 @@
 /**
- * Documentation-vs-tree parity guards.
- *
  * Two doc facts have already drifted from the code once and cost real time:
  *
  *   1. The README's reviewer-OTP bypass table listed only two of the three variables the loader
@@ -22,11 +20,8 @@ import { describe, expect, it } from "vitest"
 import { REVIEWER_OTP_CODE_MIN_LENGTH } from "../../src/env.js"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-/** services/api/drizzle */
 const DRIZZLE_DIR = join(HERE, "..", "..", "drizzle")
-/** services/api/src/env.ts — the source of truth for which variables exist. */
 const ENV_TS = join(HERE, "..", "..", "src", "env.ts")
-/** Repo root of civfix-backend (services/api/test/unit -> ../../../..). */
 const BACKEND_ROOT = join(HERE, "..", "..", "..", "..")
 const README = join(BACKEND_ROOT, "README.md")
 const DOCS_DIR = join(BACKEND_ROOT, "docs")

@@ -617,7 +617,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       for (const entry of input.entries) {
         if (entry.userId === input.actorId) {
           throw AppError.forbidden(
-            "You can't log volunteer hours for yourself — another host must credit you.",
+            "You can't log volunteer hours for yourself. Another host must credit you.",
           )
         }
         if (!(entry.hours >= MIN_EVENT_HOURS) || entry.hours > MAX_EVENT_HOURS) {

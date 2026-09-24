@@ -7,7 +7,7 @@
  * The container is NOT started here. test/global-setup-pg.ts starts ONE `postgis/postgis:16-3.4`
  * container per vitest run and applies the canonical migrations + jurisdiction seed once into a TEMPLATE
  * database; this helper clones that template (`CREATE DATABASE ... TEMPLATE ...`, an in-server file copy)
- * so each test FILE still gets an isolated database — the same isolation a private container gave it,
+ * so each test FILE still gets an isolated database (the same isolation a private container gave it),
  * without ~44 container boots and 44 × 60 migrations per run.
  *
  * CRITICAL for local dev: Docker may be absent (this repo is developed on machines with no Docker).
@@ -59,7 +59,7 @@ export interface PgHarness {
 /**
  * Memoized outcome. `undefined` = not attempted yet; `null` = attempted and Docker unavailable (skip);
  * otherwise the live harness. Per worker/module-registry, which is per test file under vitest's default
- * isolation — `torn` lets a file that already tore down (or a non-isolated worker running a second file)
+ * isolation; `torn` lets a file that already tore down (or a non-isolated worker running a second file)
  * get a fresh database instead of a closed pool.
  */
 let memo: PgHarness | null | undefined
@@ -70,7 +70,7 @@ let pending: Promise<PgHarness | null> | undefined
 /**
  * Get this file's Postgres harness, or null when Docker is unavailable (in which case the caller should
  * skip). On a developer machine the Docker-absent case never throws; in CI (or under CIVFIX_REQUIRE_PG)
- * it DOES — see assertPgSkipAllowed. A failed migration/seed/clone always throws, because that is a real
+ * it DOES (see assertPgSkipAllowed). A failed migration/seed/clone always throws, because that is a real
  * error and the test must fail rather than silently skip.
  */
 export async function withPg(): Promise<PgHarness | null> {
@@ -90,14 +90,14 @@ async function create(): Promise<PgHarness | null> {
 
   // No globalSetup in play (a bare/one-off vitest config), or it decided no pg test was selected and
   // one turned out to need it after all: fall back to this worker's own container, the pre-globalSetup
-  // behavior. Correctness first — a misread of the CLI filters must never silently skip a real test.
+  // behavior. Correctness first: a misread of the CLI filters must never silently skip a real test.
   if (provided === undefined || provided.kind === "not-started") {
     return await bootOwnContainer()
   }
 
   if (provided.kind === "unavailable") {
     // Belt to globalSetup's braces: it already refuses to report `unavailable` where a skip is
-    // forbidden, so reaching here in CI means the guard was bypassed — fail rather than skip.
+    // forbidden, so reaching here in CI means the guard was bypassed, so fail rather than skip.
     assertPgSkipAllowed(provided.reason)
     console.warn(`[pg harness] skipped: docker unavailable (${firstLine(provided.reason)})`)
     memo = null
@@ -171,7 +171,7 @@ async function bootOwnContainer(): Promise<PgHarness | null> {
 
 /**
  * Read the globalSetup channel. A config with no globalSetup provides nothing (inject yields undefined),
- * and outside a vitest worker inject throws while reaching for worker state — both are the same
+ * and outside a vitest worker inject throws while reaching for worker state; both are the same
  * "no shared container was handed to me" answer, not an error.
  */
 function readProvided(): ProvidedPg | undefined {
@@ -189,8 +189,8 @@ function firstLine(s: string): string {
 
 /**
  * A valid, unique-enough @handle (matches HANDLE_REGEX ^[A-Za-z0-9_]{3,20}$) for a fixture user whose
- * handle is immaterial to the test. Use where a helper passes handle EXPLICITLY (an explicit value —
- * even null — bypasses the SET DEFAULT applied to the test template); pass a real handle instead when the
+ * handle is immaterial to the test. Use where a helper passes handle EXPLICITLY (an explicit value,
+ * even null, bypasses the SET DEFAULT applied to the test template); pass a real handle instead when the
  * test asserts on it.
  */
 export function testHandle(): string {
@@ -198,13 +198,13 @@ export function testHandle(): string {
 }
 
 /**
- * Seed ONE follow edge the way production does — the edge row AND the two denormalized counters
+ * Seed ONE follow edge the way production does: the edge row AND the two denormalized counters
  * (drizzle/0059_users_follow_counters.sql).
  *
  * 0059 deliberately installs no trigger: "anything writing follows_people outside those two methods (a
  * psql session, a test fixture, a future bulk import) must bump the counters too". So a fixture that
  * `INSERT INTO follows_people` and nothing else leaves users.follower_count / following_count at 0 while
- * the edge exists, and every profile/roster read in that file reports `followers: 0` — a wrong-by-fixture
+ * the edge exists, and every profile/roster read in that file reports `followers: 0`, a wrong-by-fixture
  * number that looks exactly like a product bug. Use this (or the repository's addFollow) instead of a raw
  * INSERT whenever the test might read a count.
  *

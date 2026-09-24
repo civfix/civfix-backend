@@ -146,7 +146,7 @@ describe("threads service", () => {
   })
 })
 
-describe("threads cursor paging (F051 — no thread skipped at a same-ms boundary)", () => {
+describe("threads cursor paging (F051: no thread skipped at a same-ms boundary)", () => {
   const ids = [
     "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
     "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",

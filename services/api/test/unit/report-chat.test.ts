@@ -410,7 +410,7 @@ describe("report chat gateway", () => {
   })
 })
 
-describe("report chat gateway — member-only send/typing + read watermark (D-C3)", () => {
+describe("report chat gateway: member-only send/typing + read watermark (D-C3)", () => {
   it("still authorizes a report JOIN by a NON-member socket (public join preserved)", async () => {
     reportChat = makeReportChat(false)
     const conn = new MockConnection("A")

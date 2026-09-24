@@ -161,8 +161,8 @@ export class RealAbuseChecks implements AbuseChecks {
       this.nsfwNoticeLogged = true
       this.log(
         this.config.useRealNsfw
-          ? "NSFW model enabled (USE_REAL_NSFW) but not configured; NO VERDICT — anon media will be held for review"
-          : "NSFW model not configured; NO VERDICT — anon media will be held for review. Enable with USE_REAL_NSFW + a model.",
+          ? "NSFW model enabled (USE_REAL_NSFW) but not configured; NO VERDICT; anon media will be held for review"
+          : "NSFW model not configured; NO VERDICT; anon media will be held for review. Enable with USE_REAL_NSFW + a model.",
       )
     }
     return 0

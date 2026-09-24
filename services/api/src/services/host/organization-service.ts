@@ -62,14 +62,14 @@ export const ORG_MEMBERS_DEFAULT_LIMIT = 25
 
 export const EIN_RETENTION_DAYS = 90
 
-/** Org invites expire after 14 days, like event team invites. */
+/** Same lifetime as event team invites. */
 export const ORG_INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000
 
 export const ORG_INVITE_TOKEN_BYTES = 32
 
 export const ORG_INVITE_LIST_CAP = 100
 
-/** The invitee's own inbox is a short triage list, not a feed: newest 20 open invites. */
+/** The invitee's own inbox is a short triage list, not a feed. */
 export const MY_ORG_INVITES_CAP = 20
 
 export const ADMIN_ORGS_DEFAULT_LIMIT = 25
