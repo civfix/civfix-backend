@@ -104,6 +104,7 @@ describe.skipIf(!pg)("admin activity repository (integration: real schema)", () 
     // The audit row carries the actor name + action.
     const audit = records.find((r) => r.source === "audit")!
     expect(audit.who).toBe("Operator")
+    expect(audit.actorless).toBe(false)
     expect(audit.action).toBe("gov_claim.approved")
     // The report carries the category subject + the jurisdiction place.
     const report = records.find((r) => r.source === "report")!
@@ -113,6 +114,20 @@ describe.skipIf(!pg)("admin activity repository (integration: real schema)", () 
     // The mail event carries its type.
     const mail = records.find((r) => r.source === "mail_event")!
     expect(mail.eventType).toBe("bounced")
+  })
+
+  it("marks only an audit row with no actor as actorless", async () => {
+    await seedOneOfEachSource()
+    await h.sql`
+      INSERT INTO audit_log (actor_id, action, target)
+      VALUES (NULL, 'mail.reply_published_without_text', 'mail:1')
+    `
+
+    const { records } = await repo.list(listArgs())
+    expect(records).toHaveLength(5)
+    expect(records.filter((r) => r.actorless).map((r) => r.action)).toEqual([
+      "mail.reply_published_without_text",
+    ])
   })
 
   it("sort=oldest walks the same merged feed the other way", async () => {
