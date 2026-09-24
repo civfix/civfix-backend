@@ -16,6 +16,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs"
+import { readFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -62,18 +63,20 @@ export function fontManifest(): FontManifest {
 }
 
 /**
- * Parsed-file cache. pdfkit accepts a Buffer in `registerFont`, so the ~5 MB Noto face is read from disk
- * at most once per process; pdfkit still re-parses it per PDFDocument, which is why the CJK face is
- * registered LAZILY (only when `fontFor` actually picks it) rather than up front.
+ * File cache. pdfkit accepts a Buffer in `registerFont`, so the ~5 MB Noto face is read from disk at most
+ * once per process, and asynchronously, so that read never holds the event loop; pdfkit still re-parses
+ * it per PDFDocument, which is why the CJK face is registered LAZILY (only when `fontFor` actually picks
+ * it) rather than up front. A failed read is evicted so the next render retries it.
  */
-const buffers = new Map<string, Buffer>()
+const buffers = new Map<string, Promise<Buffer>>()
 
-export function fontBuffer(file: string): Buffer {
+export function fontBuffer(file: FontFile): Promise<Buffer> {
   const hit = buffers.get(file)
   if (hit) return hit
-  const bytes = readFileSync(join(fontsDir(), file))
-  buffers.set(file, bytes)
-  return bytes
+  const read = readFile(join(fontsDir(), file))
+  buffers.set(file, read)
+  read.catch(() => buffers.delete(file))
+  return read
 }
 
 /** Role -> vendored file. The only place a face's file name is written down. */
@@ -94,6 +97,8 @@ export const FONT = {
    */
   cjk: "NotoSansKR-Regular.otf",
 } as const
+
+export type FontFile = (typeof FONT)[keyof typeof FONT]
 
 /**
  * Codepoint ranges the Latin brand faces cannot cover, i.e. roughly what Noto Sans KR provides.
@@ -133,7 +138,7 @@ function needsCjk(text: string): boolean {
  * KNOWN LIMITATION: scripts outside the Noto Sans KR cmap (Arabic, Devanagari, Thai, ...) still render
  * `.notdef`. The follow-up is a NotoSans-Regular face plus a script-family map.
  */
-export function fontFor(text: string, weight: "regular" | "bold"): string {
+export function fontFor(text: string, weight: "regular" | "bold"): FontFile {
   if (needsCjk(text)) return FONT.cjk
   return weight === "bold" ? FONT.bodyBold : FONT.body
 }

@@ -20,6 +20,6 @@ export interface BlocksRepository {
   unblock(blockerId: string, blockedId: string): Promise<void>
   isBlockedEitherWay(a: string, b: string): Promise<boolean>
   blockState(viewerId: string, targetId: string): Promise<BlockState>
-  blockedIdsAmong?(actorId: string, candidateIds: string[]): Promise<Set<string>>
+  blockedIdsAmong(actorId: string, candidateIds: string[]): Promise<Set<string>>
   listBlocked(blockerId: string, args?: ListBlockedArgs): Promise<ListBlockedPage>
 }

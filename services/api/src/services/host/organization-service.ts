@@ -41,6 +41,7 @@ import type {
   AdminOrganizationRecord,
   AdminOrgListQuery,
   AdminOrgVerificationRecord,
+  OrganizationAccessRecord,
   OrganizationBaseRecord,
   OrganizationInviteRecord,
   OrganizationOwnerRecord,
@@ -368,7 +369,7 @@ function toInviteDTO(record: OrganizationInviteRecord): OrganizationInviteDTO {
  * invite acceptance are refused until an operator lifts the flag. The operator's reason is internal
  * (the admin console records it for the audit log), so members only ever see the generic sentence.
  */
-function assertNotSuspended(record: OrganizationBaseRecord): void {
+function assertNotSuspended(record: OrganizationAccessRecord): void {
   if (record.suspendedAt === null) return
   throw AppError.forbidden(
     "This organization has been suspended, so it can't be changed right now.",
@@ -478,8 +479,8 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     organizationId: string,
     actorId: string,
     capability: "manage_event" | "manage_org_link" | "manage_org_members",
-  ): Promise<OrganizationRecord> {
-    const record = await deps.repo.findOrganizationById(organizationId, actorId)
+  ): Promise<OrganizationAccessRecord> {
+    const record = await deps.repo.findOrganizationAccess(organizationId, actorId)
     if (record === null) notFoundOrganization()
     if (record.myRole === null) notFoundOrganization()
     if (!can({ eventRole: null, orgRole: record.myRole }, capability)) {
@@ -491,8 +492,8 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
   async function requireOrgMembership(
     organizationId: string,
     actorId: string,
-  ): Promise<OrganizationRecord> {
-    const record = await deps.repo.findOrganizationById(organizationId, actorId)
+  ): Promise<OrganizationAccessRecord> {
+    const record = await deps.repo.findOrganizationAccess(organizationId, actorId)
     if (record === null || record.myRole === null) notFoundOrganization()
     return record
   }
@@ -500,7 +501,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
   async function requireOrgOwner(
     organizationId: string,
     actorId: string,
-  ): Promise<OrganizationRecord> {
+  ): Promise<OrganizationAccessRecord> {
     const record = await requireOrgMembership(organizationId, actorId)
     if (record.myRole !== "owner") {
       throw AppError.forbidden("Only the organization owner can change member roles.")
@@ -724,7 +725,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
    */
   async function inviteByEmail(
     organizationId: string,
-    org: OrganizationRecord,
+    org: OrganizationAccessRecord,
     actorId: string,
     input: { email: string; role: "admin" | "member" },
     userId: string | null,
@@ -760,7 +761,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
    */
   async function seatByHandle(
     organizationId: string,
-    org: OrganizationRecord,
+    org: OrganizationAccessRecord,
     actorId: string,
     role: "admin" | "member",
     userId: string | null,

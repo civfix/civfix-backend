@@ -342,4 +342,26 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     expect(searched.submitted).toBe(1050)
     expect(searched.completed).toBe(0)
   })
+
+  it("flagged counts each live report with an open flag once, and skips deleted reports and resolved flags", async () => {
+    const twice = await insertReport(h, { title: "Twice flagged" })
+    const resolvedOnly = await insertReport(h, { title: "Resolved flag" })
+    const deleted = await insertReport(h, { title: "Deleted flagged" })
+    await insertReport(h, { title: "Never flagged" })
+    await h.sql`UPDATE reports SET deleted_at = now() WHERE id = ${deleted}`
+    await h.sql`
+      INSERT INTO abuse_flags (subject_type, subject_id, reason, source, resolved_at)
+      VALUES ('report', ${twice}, 'spam', 'user', NULL),
+             ('report', ${twice}, 'abuse', 'user', NULL),
+             ('report', ${resolvedOnly}, 'spam', 'user', now()),
+             ('report', ${deleted}, 'spam', 'user', NULL),
+             ('user', ${twice}, 'spam', 'user', NULL)
+    `
+
+    const counts = await repo.countByBucket({ q: null })
+    expect(counts.flagged).toBe(1)
+    expect(counts.all).toBe(3)
+    expect((await repo.countByBucket({ q: "Twice" })).flagged).toBe(1)
+    expect((await repo.countByBucket({ q: "Resolved" })).flagged).toBe(0)
+  })
 })

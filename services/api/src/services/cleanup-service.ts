@@ -1126,8 +1126,10 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
     ): Promise<CleanupDTO> {
       assertEventTextClean(patch)
       clampBring(patch.bring)
-      const standing = await standingOf(id, requesterUserId)
-      const current = await deps.repo.findCleanupById(id, null)
+      const [standing, current] = await Promise.all([
+        standingOf(id, requesterUserId),
+        deps.repo.findCleanupById(id, null),
+      ])
       if (!current) notFoundCleanup()
       const endedRefusal = assertEditable(current, standing, patch)
       const desiredLinks = await resolveEditedLinks(

@@ -475,6 +475,8 @@ export function makeContainer(env: Env): Container {
       sql: getDb().sql,
       notifier: getNotificationService(),
       isBlockedEitherWay: (a: string, b: string) => blocksRepo.get().isBlockedEitherWay(a, b),
+      blockedIdsAmong: (actorId: string, candidateIds: string[]) =>
+        blocksRepo.get().blockedIdsAmong(actorId, candidateIds),
       feedRanking: env.FEED_RANKING,
       feedPresence: feedPresence.get(),
       ...(env.USE_FAKE_USER_CHANNEL ? {} : { userChannel: userChannel.get() }),

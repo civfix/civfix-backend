@@ -243,11 +243,12 @@ async function connectionsPage(
   sql: Sql,
   args: { viewerId: string | null; cursor: string | null; limit: number },
   joinPredicate: SqlFragment,
+  edgePeer: SqlFragment,
 ): Promise<PeoplePage> {
   const cursor = parseKeysetCursor(args.cursor)
   const viewerId = args.viewerId
   const cursorFilter =
-    cursor !== null ? sql`AND ${keysetPredicate(sql, sql`f.created_at`, sql`u.id`, cursor)}` : sql``
+    cursor !== null ? sql`AND ${keysetPredicate(sql, sql`f.created_at`, edgePeer, cursor)}` : sql``
   const followingExpr =
     viewerId !== null
       ? sql`EXISTS (SELECT 1 FROM follows_people ff WHERE ff.follower_id = ${viewerId} AND ff.followee_id = u.id)`
@@ -286,7 +287,7 @@ async function connectionsPage(
       WHERE u.deleted_at IS NULL
         ${blockFilter}
         ${cursorFilter}
-      ORDER BY f.created_at DESC, u.id DESC
+      ORDER BY f.created_at DESC, ${edgePeer} DESC
       LIMIT ${args.limit + 1}
     ) u
     LEFT JOIN media_assets am ON am.id = u.avatar_media_id
@@ -530,11 +531,21 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
     },
 
     async listFollowers(args): Promise<PeoplePage> {
-      return connectionsPage(sql, args, sql`f.followee_id = ${args.id} AND f.follower_id = u.id`)
+      return connectionsPage(
+        sql,
+        args,
+        sql`f.followee_id = ${args.id} AND f.follower_id = u.id`,
+        sql`f.follower_id`,
+      )
     },
 
     async listFollowing(args): Promise<PeoplePage> {
-      return connectionsPage(sql, args, sql`f.follower_id = ${args.id} AND f.followee_id = u.id`)
+      return connectionsPage(
+        sql,
+        args,
+        sql`f.follower_id = ${args.id} AND f.followee_id = u.id`,
+        sql`f.followee_id`,
+      )
     },
 
     async findPersonById(id: string): Promise<PersonView | null> {

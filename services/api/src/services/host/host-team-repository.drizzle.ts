@@ -253,7 +253,7 @@ async function seatTeamMemberInTx(
   tx: Queryable,
   args: { cleanupId: string; userId: string; role: EventTeamRole; now: Date },
 ): Promise<CleanupMemberRole> {
-  await tx`
+  const seated = await tx<{ role: CleanupMemberRole }[]>`
     INSERT INTO cleanup_members (cleanup_id, user_id, role, joined_at)
     VALUES (${args.cleanupId}, ${args.userId}, ${args.role}, ${args.now})
     ON CONFLICT (cleanup_id, user_id)
@@ -268,7 +268,10 @@ async function seatTeamMemberInTx(
       ELSE EXCLUDED.role
     END
     WHERE cleanup_members.role <> 'organizer'
+    RETURNING role
   `
+  if (seated[0] !== undefined) return seated[0].role
+  // No row back means the organizer guard skipped the update; ON CONFLICT has already locked that row.
   return (await heldRoleInTx(tx, args.cleanupId, args.userId)) ?? args.role
 }
 

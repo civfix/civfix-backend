@@ -221,18 +221,18 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
       let events = 0
       let rows = 0
       for (;;) {
-        const cleanupIds = await deps.repo.listRollupEvents(since, after, ROLLUP_PAGE_SIZE)
-        for (const cleanupId of cleanupIds) {
-          const timezone = (await deps.repo.eventTimezone(cleanupId)) ?? DEFAULT_EVENT_TIME_ZONE
-          const computed = await deps.repo.recomputeFromSource(cleanupId, timezone, since)
+        const page = await deps.repo.listRollupEvents(since, after, ROLLUP_PAGE_SIZE)
+        for (const event of page) {
+          const timezone = event.timezone ?? DEFAULT_EVENT_TIME_ZONE
+          const computed = await deps.repo.recomputeFromSource(event.id, timezone, since)
           await deps.repo.upsertExact(computed)
           rows += computed.length
           await new Promise<void>((resolve) => setImmediate(resolve))
         }
-        events += cleanupIds.length
-        const last = cleanupIds.at(-1)
-        if (cleanupIds.length < ROLLUP_PAGE_SIZE || last === undefined) break
-        after = last
+        events += page.length
+        const last = page.at(-1)
+        if (page.length < ROLLUP_PAGE_SIZE || last === undefined) break
+        after = last.id
       }
       return { events, rows }
     },

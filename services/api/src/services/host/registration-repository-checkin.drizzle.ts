@@ -309,9 +309,11 @@ export function makeCheckinMethods(sql: Sql): CheckinMethods {
     },
 
     async checkinCounters(cleanupId: string): Promise<CheckinCountersRecord> {
-      const row = await checkinTotals(sql, cleanupId)
-      const byType = await checkinByTicketType(sql, cleanupId)
-      const arrivals = await arrivalBuckets(sql, cleanupId)
+      const [row, byType, arrivals] = await Promise.all([
+        checkinTotals(sql, cleanupId),
+        checkinByTicketType(sql, cleanupId),
+        arrivalBuckets(sql, cleanupId),
+      ])
       return {
         registered: row?.registered ?? 0,
         checkedIn: row?.checked_in ?? 0,

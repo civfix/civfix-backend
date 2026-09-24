@@ -46,6 +46,7 @@ describe.skipIf(!pg)("posts (integration: real transaction path)", () => {
       sql: h.sql,
       notifier,
       isBlockedEitherWay: (a, b) => blocks.isBlockedEitherWay(a, b),
+      blockedIdsAmong: (actorId, ids) => blocks.blockedIdsAmong(actorId, ids),
     })
   }
 

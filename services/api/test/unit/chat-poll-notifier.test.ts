@@ -181,11 +181,10 @@ function containerFor(useFakeChat = false): Container {
 }
 
 /**
- * The block gate has two shapes: the required per-candidate `isBlockedEitherWay` and the OPTIONAL batch
- * `blockedIdsAmong` (one user_blocks query for the whole roster). Production's Drizzle repo implements
- * both; the in-memory repo implements only the first. `blockGateCalls`, when set, makes the container hand
- * out a repo carrying BOTH and records which shape the notifier actually used. The notifier treats a
- * present batch seam as authoritative, so "which one ran" is the thing worth pinning.
+ * The block gate has two shapes: the per-candidate `isBlockedEitherWay` and the batch `blockedIdsAmong`
+ * (one user_blocks query for the whole roster); every blocks repo implements both. `blockGateCalls`, when
+ * set, makes the container hand out a repo that records which shape the notifier actually used. The
+ * notifier treats a present batch seam as authoritative, so "which one ran" is the thing worth pinning.
  */
 let blockGateCalls: string[] | undefined
 
@@ -375,11 +374,17 @@ describe("makeContainerPollNotifier: the M11 batch block seam", () => {
   })
 
   it("falls back to the per-candidate gate when the repo has no batch form (never to 'nobody blocked')", async () => {
-    // The in-memory repo (fake-chat + offline harnesses) implements only isBlockedEitherWay. Binding an
-    // absent batch method through a `?? new Set()` default would have unblocked the whole room.
+    // A partial blocks repo with only isBlockedEitherWay (every full repo also has the batch form). Binding
+    // an absent batch method through a `?? new Set()` default would have unblocked the whole room.
     stub.groupMembers = [A, B, ACTOR]
     await blocks.block(ACTOR, B)
-    const notify = makeContainerPollNotifier(containerFor())
+    const perCandidateOnly = {
+      isBlockedEitherWay: (a: string, b: string) => blocks.isBlockedEitherWay(a, b),
+    }
+    const notify = makeContainerPollNotifier({
+      ...containerFor(),
+      getBlocksRepo: () => perCandidateOnly,
+    } as unknown as Container)
 
     notify("group", ROOM, pollMessage("group", ACTOR))
     await flush()

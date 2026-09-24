@@ -1,4 +1,5 @@
 import { AppError } from "@civfix/shared"
+import type { OrganizationMemberRole, OrgVerificationStatus } from "@civfix/shared"
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { uploadedByClaimant } from "../media-bindings.js"
 import { userUploader } from "../media-uploader.js"
@@ -11,6 +12,7 @@ import {
 } from "./organization-repository-rows.drizzle.js"
 import type {
   CreateOrganizationArgs,
+  OrganizationAccessRecord,
   OrganizationRecord,
   OrganizationRepository,
   UpdateOrganizationAudit,
@@ -68,6 +70,15 @@ async function claimOrgLogoInTx(
   if (claimed.length !== 1) {
     throw AppError.validation({ logoMediaId: "That image is unavailable." })
   }
+}
+
+interface OrganizationAccessRow {
+  id: string
+  slug: string
+  name: string
+  suspended_at: Date | null
+  verified_status: OrgVerificationStatus
+  my_role: OrganizationMemberRole | null
 }
 
 async function readById(
@@ -142,6 +153,7 @@ export function makeOrganizationProfileMethods(
   OrganizationRepository,
   | "createOrganizationTx"
   | "findOrganizationById"
+  | "findOrganizationAccess"
   | "findOrganizationBySlug"
   | "listMyOrganizations"
   | "updateOrganizationTx"
@@ -206,6 +218,33 @@ export function makeOrganizationProfileMethods(
 
     findOrganizationById(id: string, viewerId: string | null): Promise<OrganizationRecord | null> {
       return readById(sql, id, viewerId)
+    },
+
+    async findOrganizationAccess(
+      id: string,
+      viewerId: string,
+    ): Promise<OrganizationAccessRecord | null> {
+      const rows = await sql<OrganizationAccessRow[]>`
+        SELECT o.id, o.slug, o.name, o.suspended_at, o.verified_status,
+               (
+                 SELECT om.role FROM organization_members om
+                 WHERE om.organization_id = o.id AND om.user_id = ${viewerId}::uuid
+                 LIMIT 1
+               ) AS my_role
+        FROM organizations o
+        WHERE o.id = ${id} AND o.deleted_at IS NULL
+        LIMIT 1
+      `
+      const row = rows[0]
+      if (row === undefined) return null
+      return {
+        id: row.id,
+        slug: row.slug,
+        name: row.name,
+        suspendedAt: row.suspended_at,
+        verifiedStatus: row.verified_status,
+        myRole: row.my_role,
+      }
     },
 
     async findOrganizationBySlug(

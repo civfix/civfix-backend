@@ -128,6 +128,7 @@ export function makeDrizzleAnalyticsRepository(
             )::text AS prev_resolved
           FROM reports
           WHERE deleted_at IS NULL AND visibility = 'public'
+            AND created_at >= date_trunc('month', now()) - interval '1 month'
         `,
         sql<
           {
@@ -155,6 +156,9 @@ export function makeDrizzleAnalyticsRepository(
                 AND scheduled_at < date_trunc('month', now())
             )::text AS prev_events
           FROM cleanups
+          WHERE created_at >= date_trunc('month', now()) - interval '1 month'
+             OR (scheduled_at >= date_trunc('month', now()) - interval '1 month'
+                 AND scheduled_at < date_trunc('month', now()) + interval '1 month')
         `,
         sql<{ cur_new: string; prev_new: string }[]>`
           SELECT
@@ -167,6 +171,7 @@ export function makeDrizzleAnalyticsRepository(
             )::text AS prev_new
           FROM users
           WHERE deleted_at IS NULL
+            AND created_at >= date_trunc('month', now()) - interval '1 month'
         `,
       ])
       const r = reportRows[0]

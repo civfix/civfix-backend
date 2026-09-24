@@ -70,7 +70,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
           COUNT(*) FILTER (WHERE r.status IN ('in_progress', 'acknowledged'))::text AS in_progress,
           COUNT(*) FILTER (WHERE r.status = 'resolved')::text AS completed
         FROM reports r
-        WHERE r.deleted_at IS NULL
+        WHERE r.deleted_at IS NULL AND r.status IN ('in_progress', 'acknowledged', 'resolved')
       `
       const r = rows[0]
       return {
@@ -81,19 +81,17 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
     },
 
     async eventsSummary(): Promise<EventsSectionCounts> {
+      // The WHERE keeps exactly the events the status expression calls upcoming or in progress (status and
+      // ends_at are NOT NULL), so the counts equal those over every event while the scan is an ends_at range.
       const rows = await sql<{ upcoming: string; live: string; attending: string }[]>`
         SELECT
           COUNT(*) FILTER (WHERE ${adminEventStatusExpr(sql)} = 'upcoming')::text AS upcoming,
           COUNT(*) FILTER (WHERE ${adminEventStatusExpr(sql)} = 'in_progress')::text AS live,
           COALESCE(SUM(
-            CASE WHEN ${adminEventStatusExpr(sql)} NOT IN ('completed', 'cancelled')
-              THEN COALESCE(mc.n, 0)
-              ELSE 0 END
+            (SELECT COUNT(*)::int FROM cleanup_members m WHERE m.cleanup_id = c.id)
           ), 0)::text AS attending
         FROM cleanups c
-        LEFT JOIN (
-          SELECT cleanup_id, COUNT(*)::int AS n FROM cleanup_members GROUP BY cleanup_id
-        ) mc ON mc.cleanup_id = c.id
+        WHERE c.status <> 'cancelled' AND c.ends_at > now()
       `
       const r = rows[0]
       return {
@@ -189,8 +187,8 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
             j.name AS place
           FROM reports r
           LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
-          WHERE r.deleted_at IS NULL AND r.visibility = 'public'
-          ORDER BY r.created_at DESC NULLS LAST
+          WHERE r.deleted_at IS NULL AND r.visibility = 'public' AND r.created_at IS NOT NULL
+          ORDER BY r.created_at DESC
           LIMIT ${half}
         `,
         sql<
@@ -217,7 +215,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
             c.address AS place,
             (SELECT COUNT(*) FROM cleanup_members m WHERE m.cleanup_id = c.id)::text AS attendees
           FROM cleanups c
-          ORDER BY c.scheduled_at DESC NULLS LAST
+          ORDER BY c.scheduled_at DESC
           LIMIT ${half}
         `,
       ])

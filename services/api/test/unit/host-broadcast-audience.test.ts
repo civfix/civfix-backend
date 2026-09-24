@@ -1,6 +1,20 @@
-import type { BroadcastKind } from "@civfix/shared"
-import { describe, expect, it } from "vitest"
-import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
+import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
+import { FakeMailer } from "@civfix/shared/fakes"
+import { describe, expect, it, vi } from "vitest"
+import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
+import type { Sql } from "../../src/db/client.js"
+import { audiencePages } from "../../src/services/host/broadcast-audience.js"
+import { makeDrizzleBroadcastAudienceRepository } from "../../src/services/host/broadcast-audience-repository.drizzle.js"
+import {
+  makeBroadcastService,
+  type BroadcastConfig,
+} from "../../src/services/host/broadcast-service.js"
+import {
+  InMemoryBroadcastRepository,
+  type MemoryGuest,
+  type MemoryMember,
+} from "../helpers/host/broadcast-repository.memory.js"
+import { makeSqlRecorder } from "../helpers/sql-recorder.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const TYPE_A = "00000000-0000-0000-0000-00000000aaaa"
@@ -249,5 +263,192 @@ describe("broadcast audience", () => {
       limit: 10,
     })
     expect(second.members).not.toContain(first.members[0])
+  })
+})
+
+const HOST = "00000000-0000-0000-0000-0000000000aa"
+const PREVIEW_CAP = 3
+
+const PREVIEW_CONFIG: BroadcastConfig = {
+  killSwitch: false,
+  perEventPerDay: 2,
+  recipientsPerDay: 10,
+  cooldownSec: 900,
+  minAccountAgeHours: 24,
+  maxRecipients: PREVIEW_CAP,
+  chunkSize: 200,
+  emailConcurrency: 4,
+  emailRatePerSec: 10,
+  linkAllowedHosts: [],
+  mailFromEvents: "events@civfix.org",
+  unsubscribeSigningKey: "unsubscribe-signing-key-for-tests-0123456789",
+  webBaseUrl: "https://civfix.org",
+  apiBaseUrl: "https://api.civfix.org",
+  eventUpdatePerEventPerHour: 3,
+}
+
+function previewRepo(members: number, guests: number): InMemoryBroadcastRepository {
+  const repo = new InMemoryBroadcastRepository()
+  repo.seedEvent({
+    cleanupId: EVENT,
+    title: "Beach Cleanup",
+    pageSlug: "beach-cleanup",
+    scheduledAt: new Date("2026-02-01T17:00:00Z"),
+    endsAt: null,
+    timezone: "UTC",
+    address: null,
+    status: "upcoming",
+    organizerUserId: HOST,
+    replyTo: null,
+    replyToVerified: false,
+  })
+  repo.seedHost(HOST, { accountCreatedAt: new Date("2020-01-01T00:00:00Z") })
+  repo.seedMembers(
+    EVENT,
+    Array.from({ length: members }, (_, i): MemoryMember => ({ userId: u(100 + i) })),
+  )
+  repo.seedGuests(
+    EVENT,
+    Array.from({ length: guests }, (_, i): MemoryGuest => ({ guestId: u(200 + i) })),
+  )
+  return repo
+}
+
+async function pagedCount(
+  repo: InMemoryBroadcastRepository,
+  segment: BroadcastSegment,
+  cap: number,
+): Promise<number> {
+  let total = 0
+  for await (const page of audiencePages(repo, {
+    cleanupId: EVENT,
+    segment,
+    kind: "host_broadcast",
+  })) {
+    total += page.members.length + page.guests.length
+    if (total >= cap) break
+  }
+  return Math.min(total, cap)
+}
+
+describe("broadcast preview audience count", () => {
+  const cases: { name: string; members: number; guests: number; segment: BroadcastSegment }[] = [
+    { name: "an empty audience", members: 0, guests: 0, segment: { kind: "all_registered" } },
+    {
+      name: "an audience under the cap",
+      members: 1,
+      guests: 1,
+      segment: { kind: "all_registered" },
+    },
+    { name: "an audience at the cap", members: 2, guests: 1, segment: { kind: "all_registered" } },
+    {
+      name: "an audience over the cap",
+      members: 4,
+      guests: 3,
+      segment: { kind: "all_registered" },
+    },
+    { name: "one side over the cap", members: 5, guests: 0, segment: { kind: "all_registered" } },
+    { name: "a guests_only segment", members: 4, guests: 2, segment: { kind: "guests_only" } },
+    {
+      name: "a guests_only segment over the cap",
+      members: 1,
+      guests: 5,
+      segment: { kind: "guests_only" },
+    },
+  ]
+
+  for (const c of cases) {
+    it(`counts ${c.name} with one count call and no page walk, matching the paged total`, async () => {
+      const expected = await pagedCount(previewRepo(c.members, c.guests), c.segment, PREVIEW_CAP)
+      const repo = previewRepo(c.members, c.guests)
+      const service = makeBroadcastService({
+        repo,
+        counters: new InMemoryCounterStore(),
+        config: PREVIEW_CONFIG,
+        mailer: new FakeMailer(),
+        enqueuePlan: () => Promise.resolve(),
+      })
+      const count = vi.spyOn(repo, "audienceCount")
+      const page = vi.spyOn(repo, "audiencePage")
+
+      const preview = await service.preview(EVENT, HOST, {
+        id: EVENT,
+        subject: "Hello",
+        bodyMd: "See you there.",
+        segment: c.segment,
+      })
+
+      expect(preview.recipientCount).toBe(expected)
+      expect(count).toHaveBeenCalledTimes(1)
+      expect(count).toHaveBeenCalledWith({
+        cleanupId: EVENT,
+        segment: c.segment,
+        kind: "host_broadcast",
+        cap: PREVIEW_CAP,
+      })
+      expect(page).not.toHaveBeenCalled()
+    })
+  }
+})
+
+describe("broadcast audience count SQL", () => {
+  it("counts each side with one statement that wraps the page statement, capped and from the start", async () => {
+    const rec = makeSqlRecorder()
+    const repo = makeDrizzleBroadcastAudienceRepository(rec.sql as unknown as Sql)
+    await repo.audiencePage({
+      cleanupId: EVENT,
+      segment: { kind: "all_registered" },
+      kind: "host_broadcast",
+      afterMember: null,
+      afterGuest: null,
+      limit: 5000,
+    })
+    const [memberPage, guestPage] = rec.queries
+    rec.reset()
+    rec.enqueue([{ n: 4 }], [{ n: 2 }])
+
+    const total = await repo.audienceCount({
+      cleanupId: EVENT,
+      segment: { kind: "all_registered" },
+      kind: "host_broadcast",
+      cap: 5000,
+    })
+
+    expect(total).toBe(6)
+    expect(rec.queries).toHaveLength(2)
+    expect(rec.queries.map((q) => q.text)).toEqual([
+      `SELECT count(*)::int AS n FROM ( ${memberPage?.text}) s`,
+      `SELECT count(*)::int AS n FROM ( ${guestPage?.text}) s`,
+    ])
+    expect(rec.queries.map((q) => q.params)).toEqual([memberPage?.params, guestPage?.params])
+  })
+
+  it("runs no member statement for guests_only and no guest statement for slots", async () => {
+    const rec = makeSqlRecorder()
+    const repo = makeDrizzleBroadcastAudienceRepository(rec.sql as unknown as Sql)
+    rec.enqueue([{ n: 2 }])
+    const guestsOnly = await repo.audienceCount({
+      cleanupId: EVENT,
+      segment: { kind: "guests_only" },
+      kind: "host_broadcast",
+      cap: 10,
+    })
+    expect(guestsOnly).toBe(2)
+    expect(rec.queries).toHaveLength(1)
+    expect(rec.queries[0]?.text).toMatch(/FROM \( SELECT g\.id FROM cleanup_guests g /)
+
+    rec.reset()
+    rec.enqueue([{ n: 1 }])
+    const slots = await repo.audienceCount({
+      cleanupId: EVENT,
+      segment: { kind: "slots", ids: [SLOT] },
+      kind: "host_broadcast",
+      cap: 10,
+    })
+    expect(slots).toBe(1)
+    expect(rec.queries).toHaveLength(1)
+    expect(rec.queries[0]?.text).toMatch(
+      /FROM \( SELECT DISTINCT u\.id FROM cleanup_slot_claims sc /,
+    )
   })
 })

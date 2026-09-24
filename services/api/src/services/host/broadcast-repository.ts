@@ -81,6 +81,13 @@ export interface AudiencePageQuery {
   limit: number
 }
 
+export interface AudienceCountQuery {
+  cleanupId: string
+  segment: BroadcastSegment
+  kind: BroadcastKind
+  cap: number
+}
+
 export interface AnnouncementCap {
   since: Date
   max: number
@@ -157,6 +164,8 @@ export interface BroadcastRepository {
   }): Promise<Map<string, string>>
 
   eventContext(cleanupId: string): Promise<EventBroadcastContext | null>
+  /** Contexts keyed by cleanup id; an id with no event is absent from the map. */
+  eventContexts(cleanupIds: readonly string[]): Promise<Map<string, EventBroadcastContext>>
   hostMessagingState(userId: string): Promise<HostMessagingState | null>
   /** Writes `audit` in the same transaction as the flag; false (and no audit row) for an unknown user. */
   setHostMessagingSuspended(
@@ -188,6 +197,8 @@ export interface BroadcastRepository {
   }): Promise<DueReminder[]>
 
   audiencePage(query: AudiencePageQuery): Promise<{ members: string[]; guests: string[] }>
+  /** Distinct members plus guests in the audience, each side counted up to `cap`. */
+  audienceCount(query: AudienceCountQuery): Promise<number>
 
   scrubBroadcastContent(cutoff: Date, batchSize: number): Promise<number>
   deleteOldDeliveries(cutoff: Date, batchSize: number): Promise<number>

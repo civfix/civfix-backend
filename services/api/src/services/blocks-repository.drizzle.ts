@@ -67,8 +67,8 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
       const rows = await sql<{ other_id: string }[]>`
         SELECT CASE WHEN b.blocker_id = ${actorId} THEN b.blocked_id ELSE b.blocker_id END AS other_id
         FROM user_blocks b
-        WHERE (b.blocker_id = ${actorId} AND b.blocked_id IN ${sql(candidateIds)})
-           OR (b.blocked_id = ${actorId} AND b.blocker_id IN ${sql(candidateIds)})
+        WHERE (b.blocker_id = ${actorId} AND b.blocked_id = ANY(${candidateIds}::uuid[]))
+           OR (b.blocked_id = ${actorId} AND b.blocker_id = ANY(${candidateIds}::uuid[]))
       `
       return new Set(rows.map((r) => r.other_id))
     },

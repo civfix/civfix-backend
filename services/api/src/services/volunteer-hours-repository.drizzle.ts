@@ -111,8 +111,8 @@ function toEntryView(r: LedgerRow): VolunteerHoursEntryView {
   }
 }
 
-async function computeTotalHours(sql: Sql, userId: string): Promise<number> {
-  const rows = await sql<{ total: number }[]>`
+function totalHoursQuery(sql: Sql, userId: string) {
+  return sql<{ total: number }[]>`
     SELECT (
       (SELECT COALESCE(SUM(total_hours), 0)
          FROM user_jurisdiction_hours
@@ -123,6 +123,9 @@ async function computeTotalHours(sql: Sql, userId: string): Promise<number> {
             AND source <> 'report' AND jurisdiction_geoid IS NULL)
     )::float8 AS total
   `
+}
+
+function totalHoursFrom(rows: readonly { total: number }[]): number {
   return round2(rows[0]?.total ?? 0)
 }
 
@@ -380,45 +383,51 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
     },
 
     async totalsFor(userId: string): Promise<MyVolunteerHoursTotals> {
-      const rows = await sql<{ geoid: string; name: string | null; hours: number }[]>`
-        SELECT
-          ujh.jurisdiction_geoid AS geoid,
-          j.name AS name,
-          ujh.total_hours::float8 AS hours
-        FROM user_jurisdiction_hours ujh
-        JOIN jurisdictions j ON j.geoid = ujh.jurisdiction_geoid
-        WHERE ujh.user_id = ${userId} AND ujh.total_hours > 0
-        ORDER BY ujh.total_hours DESC, ujh.jurisdiction_geoid
-      `
+      const [rows, orgRows, totalRows] = await Promise.all([
+        sql<{ geoid: string; name: string | null; hours: number }[]>`
+          SELECT
+            ujh.jurisdiction_geoid AS geoid,
+            j.name AS name,
+            ujh.total_hours::float8 AS hours
+          FROM user_jurisdiction_hours ujh
+          JOIN jurisdictions j ON j.geoid = ujh.jurisdiction_geoid
+          WHERE ujh.user_id = ${userId} AND ujh.total_hours > 0
+          ORDER BY ujh.total_hours DESC, ujh.jurisdiction_geoid
+        `,
+        sql<OrgHoursRow[]>`
+          SELECT
+            o.id,
+            o.slug,
+            o.name,
+            ${publicServedKeyExpr(sql, "am")} AS logo_key,
+            o.verified_status,
+            o.verified_kind,
+            sum(vh.hours)::float8 AS hours
+          FROM volunteer_hours vh
+          JOIN cleanups c ON c.id = vh.cleanup_id
+          JOIN organizations o ON o.id = c.organization_id
+          LEFT JOIN media_assets am ON am.id = o.logo_media_id
+          WHERE vh.user_id = ${userId}
+            AND vh.source = 'event'
+            AND vh.voided_at IS NULL
+            AND o.deleted_at IS NULL
+            AND o.suspended_at IS NULL
+          GROUP BY o.id, o.slug, o.name, am.id, o.verified_status, o.verified_kind
+          ORDER BY sum(vh.hours) DESC, o.id
+          LIMIT ${MAX_ORG_CHIPS_FETCH}
+        `,
+        totalHoursQuery(sql, userId),
+      ])
       const byJurisdiction = rows.map((r) => ({ geoid: r.geoid, name: r.name, hours: r.hours }))
-      const orgRows = await sql<OrgHoursRow[]>`
-        SELECT
-          o.id,
-          o.slug,
-          o.name,
-          ${publicServedKeyExpr(sql, "am")} AS logo_key,
-          o.verified_status,
-          o.verified_kind,
-          sum(vh.hours)::float8 AS hours
-        FROM volunteer_hours vh
-        JOIN cleanups c ON c.id = vh.cleanup_id
-        JOIN organizations o ON o.id = c.organization_id
-        LEFT JOIN media_assets am ON am.id = o.logo_media_id
-        WHERE vh.user_id = ${userId}
-          AND vh.source = 'event'
-          AND vh.voided_at IS NULL
-          AND o.deleted_at IS NULL
-          AND o.suspended_at IS NULL
-        GROUP BY o.id, o.slug, o.name, am.id, o.verified_status, o.verified_kind
-        ORDER BY sum(vh.hours) DESC, o.id
-        LIMIT ${MAX_ORG_CHIPS_FETCH}
-      `
-      const totalHours = await computeTotalHours(sql, userId)
-      return { totalHours, byJurisdiction, byOrganization: orgRows.map(toOrgHoursView) }
+      return {
+        totalHours: totalHoursFrom(totalRows),
+        byJurisdiction,
+        byOrganization: orgRows.map(toOrgHoursView),
+      }
     },
 
     async totalHoursFor(userId: string): Promise<number> {
-      return computeTotalHours(sql, userId)
+      return totalHoursFrom(await totalHoursQuery(sql, userId))
     },
 
     async leaderboard(
@@ -428,84 +437,80 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       viewerId: string | null,
       withExtras: boolean,
     ): Promise<LeaderboardPage> {
-      const jurRows = await sql<{ name: string }[]>`
-        SELECT name FROM jurisdictions WHERE geoid = ${geoid} LIMIT 1
-      `
-      const jurisdictionName = jurRows[0]?.name ?? null
-
       const blockedPair = blockedPairExpr(sql, viewerId, sql`ujh.user_id`)
 
-      const rows = await sql<
-        {
-          user_id: string
-          name: string
-          handle: string | null
-          avatar_url: string | null
-          hours: number
-          blocked_pair: boolean
-        }[]
-      >`
-        SELECT
-          ujh.user_id,
-          u.display_name AS name,
-          u.handle,
-          u.avatar_url,
-          ${blockedPair} AS blocked_pair,
-          ujh.total_hours::float8 AS hours
-        FROM user_jurisdiction_hours ujh
-        JOIN users u ON u.id = ujh.user_id
-        WHERE ujh.jurisdiction_geoid = ${geoid}
-          AND ujh.total_hours > 0
-          AND u.deleted_at IS NULL
-          AND u.show_volunteer_hours IS NOT FALSE
-        ORDER BY ujh.total_hours DESC, ujh.user_id
-        LIMIT ${limit + 1} OFFSET ${offset}
-      `
-
-      let viewerRank: number | null = null
-      let viewerHours: number | null = null
-      if (withExtras && viewerId !== null) {
-        const meRows = await sql<{ hours: number | null; rank: number | null }[]>`
-          WITH me AS (
-            SELECT ujh.total_hours
-            FROM user_jurisdiction_hours ujh
-            JOIN users u ON u.id = ujh.user_id
-            WHERE ujh.user_id = ${viewerId}
-              AND ujh.jurisdiction_geoid = ${geoid}
-              AND ujh.total_hours > 0
-              AND u.deleted_at IS NULL
-              AND u.show_volunteer_hours IS NOT FALSE
-          )
+      const [jurRows, rows, meRows, countRows] = await Promise.all([
+        sql<{ name: string }[]>`
+          SELECT name FROM jurisdictions WHERE geoid = ${geoid} LIMIT 1
+        `,
+        sql<
+          {
+            user_id: string
+            name: string
+            handle: string | null
+            avatar_url: string | null
+            hours: number
+            blocked_pair: boolean
+          }[]
+        >`
           SELECT
-            (SELECT total_hours::float8 FROM me) AS hours,
-            CASE WHEN EXISTS (SELECT 1 FROM me) THEN (
-              SELECT count(*)::int + 1
-              FROM user_jurisdiction_hours o
-              JOIN users ou ON ou.id = o.user_id
-              WHERE o.jurisdiction_geoid = ${geoid}
-                AND o.total_hours > (SELECT total_hours FROM me)
-                AND o.total_hours > 0
-                AND ou.deleted_at IS NULL
-                AND ou.show_volunteer_hours IS NOT FALSE
-            ) END AS rank
-        `
-        viewerHours = meRows[0]?.hours ?? null
-        viewerRank = meRows[0]?.rank ?? null
-      }
-
-      let participantCount: number | null = null
-      if (withExtras && offset === 0) {
-        const countRows = await sql<{ count: number }[]>`
-          SELECT count(*)::int AS count
+            ujh.user_id,
+            u.display_name AS name,
+            u.handle,
+            u.avatar_url,
+            ${blockedPair} AS blocked_pair,
+            ujh.total_hours::float8 AS hours
           FROM user_jurisdiction_hours ujh
           JOIN users u ON u.id = ujh.user_id
           WHERE ujh.jurisdiction_geoid = ${geoid}
             AND ujh.total_hours > 0
             AND u.deleted_at IS NULL
             AND u.show_volunteer_hours IS NOT FALSE
-        `
-        participantCount = countRows[0]?.count ?? 0
-      }
+          ORDER BY ujh.total_hours DESC, ujh.user_id
+          LIMIT ${limit + 1} OFFSET ${offset}
+        `,
+        withExtras && viewerId !== null
+          ? sql<{ hours: number | null; rank: number | null }[]>`
+              WITH me AS (
+                SELECT ujh.total_hours
+                FROM user_jurisdiction_hours ujh
+                JOIN users u ON u.id = ujh.user_id
+                WHERE ujh.user_id = ${viewerId}
+                  AND ujh.jurisdiction_geoid = ${geoid}
+                  AND ujh.total_hours > 0
+                  AND u.deleted_at IS NULL
+                  AND u.show_volunteer_hours IS NOT FALSE
+              )
+              SELECT
+                (SELECT total_hours::float8 FROM me) AS hours,
+                CASE WHEN EXISTS (SELECT 1 FROM me) THEN (
+                  SELECT count(*)::int + 1
+                  FROM user_jurisdiction_hours o
+                  JOIN users ou ON ou.id = o.user_id
+                  WHERE o.jurisdiction_geoid = ${geoid}
+                    AND o.total_hours > (SELECT total_hours FROM me)
+                    AND o.total_hours > 0
+                    AND ou.deleted_at IS NULL
+                    AND ou.show_volunteer_hours IS NOT FALSE
+                ) END AS rank
+            `
+          : null,
+        withExtras && offset === 0
+          ? sql<{ count: number }[]>`
+              SELECT count(*)::int AS count
+              FROM user_jurisdiction_hours ujh
+              JOIN users u ON u.id = ujh.user_id
+              WHERE ujh.jurisdiction_geoid = ${geoid}
+                AND ujh.total_hours > 0
+                AND u.deleted_at IS NULL
+                AND u.show_volunteer_hours IS NOT FALSE
+            `
+          : null,
+      ])
+      const jurisdictionName = jurRows[0]?.name ?? null
+      const viewerHours = meRows === null ? null : (meRows[0]?.hours ?? null)
+      const viewerRank = meRows === null ? null : (meRows[0]?.rank ?? null)
+      const participantCount = countRows === null ? null : (countRows[0]?.count ?? 0)
 
       const { items: page, nextCursor: more } = pageWith(rows, limit, () => MORE_PAGES)
       const entries: LeaderboardEntryDTO[] = page.map((r, i) => {
@@ -622,45 +627,47 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         args.geoid !== null ? sql`AND vh.jurisdiction_geoid = ${args.geoid}` : sql``
       const fromFilter = args.from !== null ? sql`AND vh.created_at >= ${args.from}` : sql``
       const toFilter = args.to !== null ? sql`AND vh.created_at <= ${args.to}` : sql``
-      const rows = await sql<LedgerRow[]>`
-        SELECT
-          vh.id,
-          vh.source,
-          vh.hours::float8 AS hours,
-          vh.created_at,
-          c.scheduled_at,
-          vh.cleanup_id,
-          c.title AS cleanup_title,
-          c.reference_code,
-          vh.report_id,
-          vh.jurisdiction_geoid,
-          j.name AS jurisdiction_name,
-          lb.id AS creditor_id,
-          lb.display_name AS creditor_name,
-          lb.handle AS creditor_handle
-        FROM volunteer_hours vh
-        LEFT JOIN cleanups c      ON c.id = vh.cleanup_id
-        LEFT JOIN jurisdictions j ON j.geoid = vh.jurisdiction_geoid
-        LEFT JOIN users lb        ON lb.id = vh.logged_by_user_id
-        WHERE vh.user_id = ${args.userId}
-          AND vh.voided_at IS NULL
-          AND vh.source <> 'report'
-          ${geoidFilter}
-          ${fromFilter}
-          ${toFilter}
-        ORDER BY vh.created_at DESC, vh.id DESC
-        LIMIT ${args.limit}
-      `
-      const countRows = await sql<{ count: number }[]>`
-        SELECT count(*)::int AS count
-        FROM volunteer_hours vh
-        WHERE vh.user_id = ${args.userId}
-          AND vh.voided_at IS NULL
-          AND vh.source <> 'report'
-          ${geoidFilter}
-          ${fromFilter}
-          ${toFilter}
-      `
+      const [rows, countRows] = await Promise.all([
+        sql<LedgerRow[]>`
+          SELECT
+            vh.id,
+            vh.source,
+            vh.hours::float8 AS hours,
+            vh.created_at,
+            c.scheduled_at,
+            vh.cleanup_id,
+            c.title AS cleanup_title,
+            c.reference_code,
+            vh.report_id,
+            vh.jurisdiction_geoid,
+            j.name AS jurisdiction_name,
+            lb.id AS creditor_id,
+            lb.display_name AS creditor_name,
+            lb.handle AS creditor_handle
+          FROM volunteer_hours vh
+          LEFT JOIN cleanups c      ON c.id = vh.cleanup_id
+          LEFT JOIN jurisdictions j ON j.geoid = vh.jurisdiction_geoid
+          LEFT JOIN users lb        ON lb.id = vh.logged_by_user_id
+          WHERE vh.user_id = ${args.userId}
+            AND vh.voided_at IS NULL
+            AND vh.source <> 'report'
+            ${geoidFilter}
+            ${fromFilter}
+            ${toFilter}
+          ORDER BY vh.created_at DESC, vh.id DESC
+          LIMIT ${args.limit}
+        `,
+        sql<{ count: number }[]>`
+          SELECT count(*)::int AS count
+          FROM volunteer_hours vh
+          WHERE vh.user_id = ${args.userId}
+            AND vh.voided_at IS NULL
+            AND vh.source <> 'report'
+            ${geoidFilter}
+            ${fromFilter}
+            ${toFilter}
+        `,
+      ])
       const items = rows.reverse().map(toEntryView)
       return {
         items,

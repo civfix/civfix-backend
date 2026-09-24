@@ -307,17 +307,22 @@ export function makeDrizzleChatRepository(sql: Sql, presign?: PresignMedia): Cha
     senderId: string,
     body: string,
   ): Promise<ChatMessageDTO | null> {
-    const rows = await sql<{ id: string }[]>`
-      UPDATE chat_messages
-      SET body = ${body}, edited_at = now()
-      WHERE id = ${messageId}
-        AND ${anchorScope(scope)}
-        AND sender_id = ${senderId}
-        AND deleted_at IS NULL
-      RETURNING id
+    const isReport = scope.column === "report_id"
+    const rows = await sql<ChatRowSelect[]>`
+      WITH updated AS (
+        UPDATE chat_messages
+        SET body = ${body}, edited_at = now()
+        WHERE id = ${messageId}
+          AND ${anchorScope(scope)}
+          AND sender_id = ${senderId}
+          AND deleted_at IS NULL
+        RETURNING id, cleanup_id, report_id, group_id, sender_id, body, kind, attachments, created_at, edited_at, deleted_at, reply_to_id, pinned_at, system_status, system_kind, system_body
+      )
+      ${selectChatRowFrom(sql, "updated", isReport)}
     `
-    if (!rows[0]) return null
-    return findMessageScoped(scope, messageId, senderId)
+    const row = rows[0]
+    if (!row) return null
+    return hydrateRow(scope, row, senderId)
   }
 
   function setPinnedScoped(

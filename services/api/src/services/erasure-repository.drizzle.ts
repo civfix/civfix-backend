@@ -18,7 +18,6 @@ async function transferHostedEvents(tx: DbTransaction, id: string): Promise<Tran
     ...(await transferToOrganizationOwners(tx, id)),
     ...(await transferToCohosts(tx, id)),
   ]
-  await auditHostTransfers(tx, id, moved)
   await demoteRemainingTeamRoles(tx, id)
   return moved
 }
@@ -47,6 +46,11 @@ async function transferToOrganizationOwners(
       SELECT cleanup_id, new_organizer, 'organizer' FROM moved
       ON CONFLICT (cleanup_id, user_id) DO UPDATE SET role = 'organizer'
       RETURNING cleanup_id
+    ), audited AS (
+      INSERT INTO audit_log (actor_id, action, target, meta)
+      SELECT ${id}::uuid, 'event.host_transferred', 'cleanup:' || moved.cleanup_id,
+             jsonb_build_object('newOrganizerId', moved.new_organizer::text)
+      FROM moved
     )
     SELECT m.cleanup_id, m.new_organizer, c.title
     FROM moved m JOIN cleanups c ON c.id = m.cleanup_id
@@ -71,28 +75,15 @@ async function transferToCohosts(tx: DbTransaction, id: string): Promise<Transfe
       FROM moved
       WHERE m.cleanup_id = moved.cleanup_id AND m.user_id = moved.new_organizer
       RETURNING m.cleanup_id
+    ), audited AS (
+      INSERT INTO audit_log (actor_id, action, target, meta)
+      SELECT ${id}::uuid, 'event.host_transferred', 'cleanup:' || moved.cleanup_id,
+             jsonb_build_object('newOrganizerId', moved.new_organizer::text)
+      FROM moved
     )
     SELECT m.cleanup_id, m.new_organizer, c.title
     FROM moved m JOIN cleanups c ON c.id = m.cleanup_id
   `)
-}
-
-async function auditHostTransfers(
-  tx: DbTransaction,
-  id: string,
-  moved: readonly TransferredEvent[],
-): Promise<void> {
-  for (const row of moved) {
-    await tx.execute(sql`
-      INSERT INTO audit_log (actor_id, action, target, meta)
-      VALUES (
-        ${id},
-        'event.host_transferred',
-        ${`cleanup:${row.cleanup_id}`},
-        jsonb_build_object('newOrganizerId', ${row.new_organizer}::text)
-      )
-    `)
-  }
 }
 
 async function demoteRemainingTeamRoles(tx: DbTransaction, id: string): Promise<void> {

@@ -22,7 +22,7 @@ function repoStub(): MetricsRepository & { greatest: MetricUpsert[]; exact: Metr
         slug === "beach-cleanup" ? { cleanupId: EVENT, timezone: "America/Los_Angeles" } : null,
       ),
     eventTimezone: () => Promise.resolve("America/Los_Angeles"),
-    listRollupEvents: () => Promise.resolve([EVENT]),
+    listRollupEvents: () => Promise.resolve([{ id: EVENT, timezone: "America/Los_Angeles" }]),
     recomputeFromSource: () =>
       Promise.resolve([
         { cleanupId: EVENT, day: "2026-02-01", metric: "registrations", bucket: "", value: 4 },

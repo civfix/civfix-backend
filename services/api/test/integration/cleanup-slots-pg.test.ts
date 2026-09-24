@@ -380,6 +380,57 @@ describe.skipIf(!pg)("signup slots (integration)", () => {
     ])
   })
 
+  it("createCleanupTx stores timed and untimed slots, a timed one first, with their windows", async () => {
+    const org = await newUser("Timed Create Host")
+    const cleanupId = randomUUID()
+    await repo.createCleanupTx({
+      cleanupId,
+      organizerUserId: org,
+      type: "site",
+      eventKind: "cleanup",
+      title: "Created with timed slots",
+      description: null,
+      lat: 34.05,
+      lng: -118.25,
+      scheduledAt: FUTURE,
+      status: "upcoming",
+      bring: null,
+      address: null,
+      addressSource: null,
+      jurisdictionGeoid: null,
+      jurCode: 0,
+      linkedReportIds: [],
+      slots: [
+        slot({
+          title: "Morning",
+          description: "Early crew",
+          capacity: 3,
+          sortOrder: 0,
+          ...MORNING,
+        }),
+        slot({ title: "Anytime", sortOrder: 1 }),
+        slot({ title: "Afternoon", sortOrder: 2, ...AFTERNOON }),
+      ],
+      host: { endsAt: new Date(FUTURE.getTime() + 4 * 60 * 60 * 1000) },
+    })
+
+    const board = await repo.listSlots(cleanupId, null)
+    expect(
+      board.map((s) => [
+        s.title,
+        s.description,
+        s.capacity,
+        s.sortOrder,
+        s.startsAt?.getTime() ?? null,
+        s.endsAt?.getTime() ?? null,
+      ]),
+    ).toEqual([
+      ["Morning", "Early crew", 3, 0, MORNING.startsAt.getTime(), MORNING.endsAt.getTime()],
+      ["Anytime", null, null, 1, null, null],
+      ["Afternoon", null, null, 2, AFTERNOON.startsAt.getTime(), AFTERNOON.endsAt.getTime()],
+    ])
+  })
+
   it("reconcileSlots adds, updates, deletes and reports the dropped claimants", async () => {
     const org = await newUser("Reconcile Host")
     const cleanupId = await newCleanup(org)

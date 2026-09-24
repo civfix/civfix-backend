@@ -233,7 +233,8 @@ export function makeDrizzleAdminReportRepository(
 
     async countByBucket(args: { q: string | null }): Promise<AdminReportCounts> {
       const search = searchReportsFragment(sql, args.q)
-      const flaggedSearch = searchReportsFragment(sql, args.q)
+      // One row per report here (j and u join on their keys), so counting the rows with an open flag equals
+      // counting the distinct flagged subject ids, without a second pass over reports.
       const rows = await sql<
         {
           submitted: string
@@ -250,16 +251,11 @@ export function makeDrizzleAdminReportRepository(
           )::text AS needs_verification,
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.in_progress}))::text AS in_progress,
           COUNT(*) FILTER (WHERE r.status = ANY(${STATUS_BUCKETS.completed}))::text AS completed,
-          (
-            SELECT COUNT(DISTINCT af.subject_id)
-            FROM abuse_flags af
-            JOIN reports r ON r.id::text = af.subject_id
-            LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
-            LEFT JOIN users u ON u.id = r.reporter_user_id
-            WHERE af.subject_type = 'report'
-              AND af.resolved_at IS NULL
-              AND r.deleted_at IS NULL
-              ${flaggedSearch}
+          COUNT(*) FILTER (
+            WHERE r.id::text IN (
+              SELECT af.subject_id FROM abuse_flags af
+              WHERE af.subject_type = 'report' AND af.resolved_at IS NULL
+            )
           )::text AS flagged
         FROM reports r
         LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid

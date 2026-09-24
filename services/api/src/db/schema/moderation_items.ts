@@ -45,6 +45,12 @@ export const moderationItems = pgTable(
     uniqueIndex("moderation_items_open_subject_key")
       .on(t.subjectType, t.subjectId)
       .where(sql`${t.status} = 'open'`),
+    index("moderation_items_meta_user_id_idx")
+      .on(sql`(${t.meta} -> 'user' ->> 'id')`)
+      .where(sql`(${t.meta} -> 'user' ->> 'id') IS NOT NULL`),
+    index("moderation_items_meta_reporter_user_id_idx")
+      .on(sql`(${t.meta} ->> 'reporterUserId')`)
+      .where(sql`(${t.meta} ->> 'reporterUserId') IS NOT NULL`),
   ],
 )
 

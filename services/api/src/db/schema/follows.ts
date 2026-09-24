@@ -20,6 +20,11 @@ export const followsPeople = pgTable(
       t.createdAt.desc(),
       t.followeeId.desc(),
     ),
+    index("follows_people_followee_created_idx").on(
+      t.followeeId,
+      t.createdAt.desc(),
+      t.followerId.desc(),
+    ),
   ],
 )
 

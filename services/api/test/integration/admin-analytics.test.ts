@@ -111,6 +111,22 @@ describe.skipIf(!pg)("admin analytics repository (integration: real schema)", ()
     expect(agg.resolvedRatio.current).toBeCloseTo(0.5, 5)
   })
 
+  it("kpis: last month counts toward the previous value and older reports count nowhere", async () => {
+    const now = new Date()
+    const monthsAgo = (n: number): Date =>
+      new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - n, 15, 12))
+    await insertReport(h, { status: "resolved" })
+    await insertReport(h, { status: "resolved", createdAt: monthsAgo(1) })
+    await insertReport(h, { status: "submitted", createdAt: monthsAgo(1) })
+    await insertReport(h, { status: "resolved", createdAt: monthsAgo(3) })
+
+    const agg = await repo.kpis()
+    expect(agg.pins.current).toBe(1)
+    expect(agg.pins.previous).toBe(2)
+    expect(agg.resolvedRatio.current).toBeCloseTo(1, 5)
+    expect(agg.resolvedRatio.previous).toBeCloseTo(0.5, 5)
+  })
+
   it("byCategory: grouped counts for public reports only", async () => {
     await insertReport(h, { category: "trash" })
     await insertReport(h, { category: "trash" })

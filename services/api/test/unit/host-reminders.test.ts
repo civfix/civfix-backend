@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 import { makeDrizzleBroadcastRepository } from "../../src/services/host/broadcast-repository.drizzle.js"
 import type { Sql } from "../../src/db/client.js"
@@ -61,6 +61,40 @@ describe("reminder sweep", () => {
     await lanes.runReminderSweep()
     expect(await lanes.runReminderSweep()).toEqual({ created: 0 })
     expect(planned).toHaveLength(1)
+  })
+
+  it("loads every due event's context in one read and skips a reminder whose event is gone", async () => {
+    const { repo, lanes, planned } = build()
+    const OTHER = "00000000-0000-0000-0000-0000000000ef"
+    const GONE = "00000000-0000-0000-0000-0000000000f0"
+    repo.seedEvent({ ...CONTEXT, cleanupId: OTHER, title: "Park Cleanup" })
+    repo.seedDueReminders([
+      { cleanupId: EVENT, offsetMin: 1440 },
+      { cleanupId: OTHER, offsetMin: 1440 },
+      { cleanupId: GONE, offsetMin: 1440 },
+      { cleanupId: EVENT, offsetMin: 180 },
+    ])
+    const batch = vi.spyOn(repo, "eventContexts")
+    const single = vi.spyOn(repo, "eventContext")
+
+    expect(await lanes.runReminderSweep()).toEqual({ created: 3 })
+
+    expect(batch).toHaveBeenCalledTimes(1)
+    expect(batch).toHaveBeenCalledWith([EVENT, OTHER, GONE])
+    expect(single).not.toHaveBeenCalled()
+    const created = await Promise.all(planned.map((id) => repo.findById(id)))
+    expect(created.map((b) => [b?.cleanupId, b?.reminderOffsetMin, b?.subject])).toEqual([
+      [EVENT, 1440, "Reminder: Beach Cleanup"],
+      [OTHER, 1440, "Reminder: Park Cleanup"],
+      [EVENT, 180, "Reminder: Beach Cleanup"],
+    ])
+  })
+
+  it("reads no event context when nothing is due", async () => {
+    const { repo, lanes } = build()
+    const batch = vi.spyOn(repo, "eventContexts")
+    expect(await lanes.runReminderSweep()).toEqual({ created: 0 })
+    expect(batch).not.toHaveBeenCalled()
   })
 
   it("ships the platform default offsets", () => {

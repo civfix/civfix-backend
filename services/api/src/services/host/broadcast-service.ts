@@ -36,7 +36,6 @@ import {
   verifiedReplyTo,
 } from "./broadcast-render.js"
 import { verifyUnsubscribeToken } from "./broadcast-capability-token.js"
-import { audiencePages } from "./broadcast-audience.js"
 
 const BROADCAST_DEFAULT_LIMIT = 20
 const BROADCAST_TEST_SENDS_PER_HOUR = 5
@@ -696,10 +695,6 @@ async function countAudience(
   cap: number,
 ): Promise<number> {
   if (cap <= 0) return cap
-  let total = 0
-  for await (const page of audiencePages(repo, { cleanupId, segment, kind: "host_broadcast" })) {
-    total += page.members.length + page.guests.length
-    if (total >= cap) break
-  }
+  const total = await repo.audienceCount({ cleanupId, segment, kind: "host_broadcast", cap })
   return Math.min(total, cap)
 }

@@ -119,16 +119,26 @@ function directoryMethodFilter(
   }
 }
 
-function directoryOrderBy(sql: Sql, sort: DirectorySort): SqlFragment {
+interface DirectorySortKeys {
+  waitingTotal: SqlFragment
+  oldestWaitingAt: SqlFragment
+  name: SqlFragment
+  population: SqlFragment
+  geoid: SqlFragment
+}
+
+// Every order ends in geoid, so it is total: re-sorting the page rows on the carried keys reproduces the
+// order the page was cut in.
+function directoryOrderBy(sql: Sql, sort: DirectorySort, keys: DirectorySortKeys): SqlFragment {
   switch (sort) {
     case "reports":
-      return sql`ORDER BY COALESCE(w.total, 0) DESC, j.geoid ASC`
+      return sql`ORDER BY COALESCE(${keys.waitingTotal}, 0) DESC, ${keys.geoid} ASC`
     case "name":
-      return sql`ORDER BY j.name ASC, j.geoid ASC`
+      return sql`ORDER BY ${keys.name} ASC, ${keys.geoid} ASC`
     case "oldest":
-      return sql`ORDER BY w.oldest_waiting_at ASC NULLS LAST, j.geoid ASC`
+      return sql`ORDER BY ${keys.oldestWaitingAt} ASC NULLS LAST, ${keys.geoid} ASC`
     default:
-      return sql`ORDER BY COALESCE(j.population, 0) DESC, j.geoid ASC`
+      return sql`ORDER BY COALESCE(${keys.population}, 0) DESC, ${keys.geoid} ASC`
   }
 }
 
@@ -283,7 +293,7 @@ export function makeDrizzleJurisdictionContactsRepository(
               throw AppError.conflict(HANDLE_TAKEN_BY_JURISDICTION)
             }
             const dupeUser = await tx<{ id: string }[]>`
-              SELECT id FROM users WHERE lower(handle::text) = lower(${handle}) LIMIT 1
+              SELECT id FROM users WHERE handle = ${handle}::citext LIMIT 1
             `
             if (dupeUser.length > 0) {
               throw AppError.conflict("That @handle is already taken by a member.")
@@ -356,8 +366,23 @@ export function makeDrizzleJurisdictionContactsRepository(
 
       const layerFilter = args.layer !== null ? sql`AND j.layer = ${args.layer}` : sql``
 
-      const orderBy = directoryOrderBy(sql, args.sort)
+      const orderBy = directoryOrderBy(sql, args.sort, {
+        waitingTotal: sql`w.total`,
+        oldestWaitingAt: sql`w.oldest_waiting_at`,
+        name: sql`j.name`,
+        population: sql`j.population`,
+        geoid: sql`j.geoid`,
+      })
+      const pageOrderBy = directoryOrderBy(sql, args.sort, {
+        waitingTotal: sql`p.waiting_total`,
+        oldestWaitingAt: sql`p.oldest_waiting_at`,
+        name: sql`p.name`,
+        population: sql`p.population`,
+        geoid: sql`p.geoid`,
+      })
 
+      // The per-row decorations are computed over the page CTE, so they run only for the page rows rather
+      // than for every filtered jurisdiction the window count and the sort had to visit.
       const rows = await sql<DirectoryRow[]>`
         WITH waiting AS (
           -- "Waiting" = open, un-routed reports: excludes acknowledged/in_progress (already routed) and
@@ -378,16 +403,40 @@ export function makeDrizzleJurisdictionContactsRepository(
             AND r.deleted_at IS NULL
             AND r.status NOT IN ('rejected', 'resolved', 'acknowledged', 'in_progress')
           GROUP BY r.jurisdiction_geoid
+        ),
+        page AS (
+          SELECT
+            j.geoid,
+            j.name,
+            j.contact_emails AS default_emails,
+            j.report_form_url,
+            j.contact_updated_at,
+            j.layer,
+            j.population,
+            j.flagged_at,
+            j.handle,
+            j.forward_subject_template,
+            j.forward_body_template,
+            COUNT(*) OVER()::text AS filtered_total,
+            w.total AS waiting_total,
+            COALESCE(w.total, 0)::text AS reports_waiting,
+            w.oldest_waiting_at,
+            ${categoryCountsProjection(sql, "w")}
+          FROM jurisdictions j
+          LEFT JOIN waiting w ON w.geoid = j.geoid
+          WHERE true
+          ${search}
+          ${methodFilter}
+          ${layerFilter}
+          ${orderBy}
+          OFFSET ${offset}
+          LIMIT ${limit + 1}
         )
         SELECT
-          j.geoid,
-          j.name,
-          j.contact_emails AS default_emails,
-          j.report_form_url,
-          j.contact_updated_at,
+          p.*,
           EXISTS (
             SELECT 1 FROM jurisdiction_contacts dc
-            WHERE dc.geoid = j.geoid AND dc.category IS NULL
+            WHERE dc.geoid = p.geoid AND dc.category IS NULL
               AND dc.email IS NOT NULL AND dc.email <> ''
           ) AS has_default_contact,
           (
@@ -396,13 +445,13 @@ export function makeDrizzleJurisdictionContactsRepository(
               '[]'::json
             )
             FROM jurisdiction_contacts cc
-            WHERE cc.geoid = j.geoid AND cc.category IS NOT NULL
+            WHERE cc.geoid = p.geoid AND cc.category IS NOT NULL
           ) AS category_emails,
           (
             SELECT MAX(rt.created_at)
             FROM report_timeline rt
             JOIN reports r2 ON r2.id = rt.report_id
-            WHERE r2.jurisdiction_geoid = j.geoid AND rt.status = 'acknowledged'
+            WHERE r2.jurisdiction_geoid = p.geoid AND rt.status = 'acknowledged'
           ) AS last_routed_at,
           (
             -- The legacy mail_events signal is OR'd in for threads with no per-contact row (a digest-only
@@ -411,34 +460,17 @@ export function makeDrizzleJurisdictionContactsRepository(
             -- row to 'bounced' forever even after a good address is re-entered.
             EXISTS (
               SELECT 1 FROM jurisdiction_contacts bc
-              WHERE bc.geoid = j.geoid AND bc.bounced_at IS NOT NULL
+              WHERE bc.geoid = p.geoid AND bc.bounced_at IS NOT NULL
             )
             OR EXISTS (
               SELECT 1 FROM mail_events me
               JOIN mail_threads mt ON mt.id = me.thread_id
-              WHERE mt.jurisdiction_geoid = j.geoid AND me.type = 'bounced'
-                AND (j.contact_updated_at IS NULL OR me.created_at > j.contact_updated_at)
+              WHERE mt.jurisdiction_geoid = p.geoid AND me.type = 'bounced'
+                AND (p.contact_updated_at IS NULL OR me.created_at > p.contact_updated_at)
             )
-          ) AS bounced,
-          j.layer,
-          j.population,
-          j.flagged_at,
-          j.handle,
-          j.forward_subject_template,
-          j.forward_body_template,
-          COUNT(*) OVER()::text AS filtered_total,
-          COALESCE(w.total, 0)::text AS reports_waiting,
-          w.oldest_waiting_at,
-          ${categoryCountsProjection(sql, "w")}
-        FROM jurisdictions j
-        LEFT JOIN waiting w ON w.geoid = j.geoid
-        WHERE true
-        ${search}
-        ${methodFilter}
-        ${layerFilter}
-        ${orderBy}
-        OFFSET ${offset}
-        LIMIT ${limit + 1}
+          ) AS bounced
+        FROM page p
+        ${pageOrderBy}
       `
 
       const hasMore = rows.length > limit
@@ -544,20 +576,32 @@ export async function upsertJurisdictionContacts(
   defaultEmails: string[],
   formUrl: string | null,
 ): Promise<void> {
+  const clears: ReportCategory[] = []
+  const setCategories: ReportCategory[] = []
+  const setEmails: string[] = []
   for (const [category, rawEmail] of Object.entries(contacts) as [
     ReportCategory,
     string | null,
   ][]) {
     const email = rawEmail && rawEmail.trim() !== "" ? rawEmail.trim() : null
     if (email === null) {
-      await tx`
-        DELETE FROM jurisdiction_contacts WHERE geoid = ${geoid} AND category = ${category}
-      `
-      continue
+      clears.push(category)
+    } else {
+      setCategories.push(category)
+      setEmails.push(email)
     }
+  }
+  if (clears.length > 0) {
+    await tx`
+      DELETE FROM jurisdiction_contacts WHERE geoid = ${geoid} AND category = ANY(${clears}::text[])
+    `
+  }
+  // Object keys are unique, so no category repeats in the unnest and the upsert can never touch a row twice.
+  if (setCategories.length > 0) {
     await tx`
       INSERT INTO jurisdiction_contacts (geoid, category, email, updated_at, bounced_at)
-      VALUES (${geoid}, ${category}, ${email}, now(), NULL)
+      SELECT ${geoid}, u.category, u.email, now(), NULL
+        FROM unnest(${setCategories}::text[], ${setEmails}::text[]) AS u(category, email)
       ON CONFLICT (geoid, category) WHERE category IS NOT NULL
       DO UPDATE SET email = EXCLUDED.email, updated_at = now(), bounced_at = NULL
     `
