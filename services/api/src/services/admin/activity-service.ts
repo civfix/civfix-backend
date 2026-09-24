@@ -207,7 +207,7 @@ export function describeAuditAction(action: string): string {
     "mail.status_changed": "Updated a mail thread",
     "mail.forward_template_set": "Updated the default forwarding template",
     "mail.reply_published_without_text": "A city reply was posted without its text",
-    "mail.reply_published": "Published a withheld city reply",
+    "mail.reply_published": "Published a city reply",
     "outreach.digest_sent": "Sent an outreach digest",
     "inbox.status_changed": "Updated an inbox message",
     // The L4 read audits are filtered out of the feed at the repo (AUDIT_READ_ACTIONS), so these labels

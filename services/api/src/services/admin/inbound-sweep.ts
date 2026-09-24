@@ -129,7 +129,7 @@ async function redriveEffects(
         mailRepo,
         thread,
         message,
-        () => now,
+        { now: () => now },
       )
       effectsRedriven += 1
     } catch (err) {

@@ -1,6 +1,11 @@
 import { AppError, type PublishMailReplyResponse } from "@civfix/shared"
 import { domainOf } from "../../adapters/inbound-mail.cf.js"
-import type { MailMessageRecord, MailRepository, MailThreadRecord } from "./mail-repository.js"
+import type {
+  MailAuditInput,
+  MailMessageRecord,
+  MailRepository,
+  MailThreadRecord,
+} from "./mail-repository.js"
 
 export const MAIL_REPLY_NOT_FOUND = "Reply not found on this thread."
 export const MAIL_REPLY_NOT_PUBLISHABLE =
@@ -12,7 +17,11 @@ export interface MailReplyPublishLogger {
 
 export interface MailReplyPublishServiceDeps {
   repo: MailRepository
-  applyEffects: (thread: MailThreadRecord, message: MailMessageRecord) => Promise<void>
+  applyEffects: (
+    thread: MailThreadRecord,
+    message: MailMessageRecord,
+    publishedBy: MailAuditInput,
+  ) => Promise<void>
   logger: MailReplyPublishLogger
 }
 
@@ -37,12 +46,12 @@ export function makeMailReplyPublishService(
     return message
   }
 
-  async function approve(
+  function publishAudit(
     thread: MailThreadRecord,
     message: MailMessageRecord,
     actorId: string,
-  ): Promise<MailMessageRecord> {
-    const approved = await repo.approveWithheldReply(message.id, {
+  ): MailAuditInput {
+    return {
       actorId,
       action: "mail.reply_published",
       target: `mail:${thread.id}`,
@@ -53,7 +62,18 @@ export function makeMailReplyPublishService(
         authVerdict: message.authVerdict,
         fromDomain: domainOf(message.fromAddr),
       },
-    })
+    }
+  }
+
+  async function approve(
+    thread: MailThreadRecord,
+    message: MailMessageRecord,
+    actorId: string,
+  ): Promise<MailMessageRecord> {
+    const approved = await repo.approveWithheldReply(
+      message.id,
+      publishAudit(thread, message, actorId),
+    )
     return approved ?? inboundMessage(thread.id, message.id)
   }
 
@@ -69,7 +89,7 @@ export function makeMailReplyPublishService(
 
       const approved = message.unaffiliated ? await approve(thread, message, actorId) : message
       try {
-        await deps.applyEffects(thread, approved)
+        await deps.applyEffects(thread, approved, publishAudit(thread, approved, actorId))
       } catch (err) {
         deps.logger.warn(
           { err, threadId, messageId },

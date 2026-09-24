@@ -561,4 +561,49 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
 
     await h.sql`DELETE FROM reports WHERE id = ${report!.id}`
   })
+
+  it("writes an operator's publish audit with the applied mark, once per reply", async () => {
+    const [report] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
+      VALUES (gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
+              'published', '8a2a1072b59ffff', ${GEOID})
+      RETURNING id
+    `
+    const t = await repo.findOrCreateReportThread(report!.id, { subject: "Publish audit" })
+    const inbound = (messageId: string, unaffiliated: boolean) =>
+      repo.insertMessage({ threadId: t.id, direction: "in", messageId, unaffiliated })
+    const verified = await inbound("<pub-v@lacity.gov>", false)
+    const withheld = await inbound("<pub-w@vendor.example>", true)
+    const swept = await inbound("<pub-s@lacity.gov>", false)
+    const audit = (messageId: string) =>
+      ({
+        actorId: null,
+        action: "mail.reply_published",
+        target: `mail:${t.id}`,
+        meta: { messageId },
+      }) as const
+    const audited = async (messageId: string) => {
+      const rows = await h.sql`
+        SELECT 1 FROM audit_log
+        WHERE action = 'mail.reply_published' AND meta->>'messageId' = ${messageId}
+      `
+      return rows.length
+    }
+
+    await repo.markMessageEffectsApplied(verified!.id, audit(verified!.id))
+    await repo.markMessageEffectsApplied(verified!.id, audit(verified!.id))
+    await repo.approveWithheldReply(withheld!.id, audit(withheld!.id))
+    await repo.markMessageEffectsApplied(withheld!.id, audit(withheld!.id))
+    await repo.markMessageEffectsApplied(swept!.id)
+    await repo.markMessageEffectsApplied(swept!.id, audit(swept!.id))
+
+    expect([
+      await audited(verified!.id),
+      await audited(withheld!.id),
+      await audited(swept!.id),
+    ]).toEqual([1, 1, 0])
+    expect((await repo.findInboundMessage(t.id, swept!.id))?.effectsAppliedAt).not.toBeNull()
+
+    await h.sql`DELETE FROM reports WHERE id = ${report!.id}`
+  })
 })
