@@ -16,14 +16,12 @@ export interface RoomReadDeps {
 
 export function makeMarkRoomRead(deps: RoomReadDeps): MarkRoomRead {
   const now = deps.now ?? (() => new Date())
-  const advanceFor = (kind: RoomKind): AdvanceReadAt | undefined =>
-    kind === "cleanup"
-      ? deps.cleanup
-      : kind === "dm"
-        ? deps.dm
-        : kind === "report"
-          ? deps.report
-          : deps.group
+  const advanceFor = (kind: RoomKind): AdvanceReadAt | undefined => {
+    if (kind === "cleanup") return deps.cleanup
+    if (kind === "dm") return deps.dm
+    if (kind === "report") return deps.report
+    return deps.group
+  }
 
   return async (kind, roomId, userId) => {
     const advance = advanceFor(kind)

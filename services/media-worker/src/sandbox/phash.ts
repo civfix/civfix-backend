@@ -59,3 +59,16 @@ export async function perceptualHash(bytes: Uint8Array, limits: WorkerLimits): P
   }
   return hex
 }
+
+// The hash only feeds the non-blocking near-duplicate note, so an image that already decoded still ships
+// without one.
+export async function bestEffortPerceptualHash(
+  bytes: Uint8Array,
+  limits: WorkerLimits,
+): Promise<string | null> {
+  try {
+    return await perceptualHash(bytes, limits)
+  } catch {
+    return null
+  }
+}

@@ -16,6 +16,11 @@ export type { StorageHeadWithEtag } from "./media-etag.js"
 export type WorkerAbuseReason = "nsfw" | "phash_dup" | "gps"
 
 const ANONYMOUS_REPORTER = "Anonymous"
+const DUPLICATE_MODERATION_FLAG = "Near-duplicate media"
+const HELD_MODERATION_FLAG = "Held media (NSFW)"
+const HELD_MODERATION_AUTO_ACTION = "Hidden pending review"
+
+export const PARTITION_MONTHS_AHEAD = 2
 
 export interface MediaWorkerAsset {
   id: string
@@ -307,38 +312,9 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
       kind?: "image" | "duplicate"
       note?: string | null
     }): Promise<void> {
-      // A held source folding into an open item means the owner's takedown is no longer its only
-      // origin, so removing it must strike the author again.
-      const foldIntoOpenItem = async (): Promise<boolean> => {
-        const folded = await db
-          .update(moderationItems)
-          .set({ meta: sql`${moderationItems.meta} - 'ownerTakedown'` })
-          .where(
-            and(
-              eq(moderationItems.subjectType, "report"),
-              eq(moderationItems.subjectId, input.reportId),
-              eq(moderationItems.status, "open"),
-            ),
-          )
-          .returning({ id: moderationItems.id })
-        return folded.length > 0
-      }
-      if (await foldIntoOpenItem()) return
+      if (await foldIntoOpenModerationItem(db, input.reportId)) return
 
-      const ctx = await db
-        .select({
-          category: reports.category,
-          description: reports.description,
-          place: jurisdictions.name,
-          reporterName: users.displayName,
-          reporterUserId: users.id,
-        })
-        .from(reports)
-        .leftJoin(jurisdictions, eq(jurisdictions.geoid, reports.jurisdictionGeoid))
-        .leftJoin(users, eq(users.id, reports.reporterUserId))
-        .where(eq(reports.id, input.reportId))
-        .limit(1)
-      const row = ctx[0]
+      const row = await loadModerationContext(db, input.reportId)
       if (!row) return
 
       const kind = input.kind ?? "image"
@@ -348,12 +324,12 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
           kind,
           subjectType: "report",
           subjectId: input.reportId,
-          flag: kind === "duplicate" ? "Near-duplicate media" : "Held media (NSFW)",
+          flag: kind === "duplicate" ? DUPLICATE_MODERATION_FLAG : HELD_MODERATION_FLAG,
           reason: input.reason,
           category: row.category,
           place: row.place,
           priority: "high",
-          autoAction: "Hidden pending review",
+          autoAction: HELD_MODERATION_AUTO_ACTION,
           status: "open",
           meta: {
             reporter: row.reporterName ?? ANONYMOUS_REPORTER,
@@ -367,7 +343,7 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
           where: sql`status = 'open'`,
         })
         .returning({ id: moderationItems.id })
-      if (inserted.length === 0) await foldIntoOpenItem()
+      if (inserted.length === 0) await foldIntoOpenModerationItem(db, input.reportId)
     },
 
     async recordLeakedObjects(input: {
@@ -415,6 +391,40 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
   }
 }
 
+// A held source folding into an open item means the owner's takedown is no longer its only origin, so
+// removing it must strike the author again.
+async function foldIntoOpenModerationItem(db: Db, reportId: string): Promise<boolean> {
+  const folded = await db
+    .update(moderationItems)
+    .set({ meta: sql`${moderationItems.meta} - 'ownerTakedown'` })
+    .where(
+      and(
+        eq(moderationItems.subjectType, "report"),
+        eq(moderationItems.subjectId, reportId),
+        eq(moderationItems.status, "open"),
+      ),
+    )
+    .returning({ id: moderationItems.id })
+  return folded.length > 0
+}
+
+async function loadModerationContext(db: Db, reportId: string) {
+  const ctx = await db
+    .select({
+      category: reports.category,
+      description: reports.description,
+      place: jurisdictions.name,
+      reporterName: users.displayName,
+      reporterUserId: users.id,
+    })
+    .from(reports)
+    .leftJoin(jurisdictions, eq(jurisdictions.geoid, reports.jurisdictionGeoid))
+    .leftJoin(users, eq(users.id, reports.reporterUserId))
+    .where(eq(reports.id, reportId))
+    .limit(1)
+  return ctx[0]
+}
+
 const ORPHAN_COLUMNS_SQL = (tag: Queryable) => tag`
   media_assets.id AS "id",
   media_assets.r2_key AS "r2Key",
@@ -436,7 +446,7 @@ export function orphanPredicate(tag: Queryable, olderThan: Date) {
 type MessageParent = "chat_messages" | "dm_messages"
 
 async function ensureMonthPartition(
-  sqlTag: import("../db/client.js").Sql,
+  sqlTag: Sql,
   parent: MessageParent,
   year: number,
   monthIndex0: number,
@@ -460,7 +470,7 @@ async function ensureMonthPartition(
 }
 
 async function ensureNextMonthPartition(
-  sqlTag: import("../db/client.js").Sql,
+  sqlTag: Sql,
   parent: MessageParent,
   now: Date,
 ): Promise<string> {
@@ -468,7 +478,7 @@ async function ensureNextMonthPartition(
 }
 
 async function ensurePartitionWindow(
-  sqlTag: import("../db/client.js").Sql,
+  sqlTag: Sql,
   parent: MessageParent,
   now: Date,
   monthsAhead: number,
@@ -482,37 +492,29 @@ async function ensurePartitionWindow(
   return tables
 }
 
-export function ensureNextMonthChatPartition(
-  sqlTag: import("../db/client.js").Sql,
-  now: Date = new Date(),
-): Promise<string> {
+export function ensureNextMonthChatPartition(sqlTag: Sql, now: Date = new Date()): Promise<string> {
   return ensureNextMonthPartition(sqlTag, "chat_messages", now)
 }
 
-export function ensureNextMonthDmPartition(
-  sqlTag: import("../db/client.js").Sql,
-  now: Date = new Date(),
-): Promise<string> {
+export function ensureNextMonthDmPartition(sqlTag: Sql, now: Date = new Date()): Promise<string> {
   return ensureNextMonthPartition(sqlTag, "dm_messages", now)
 }
 
 export function ensureChatPartitionWindow(
-  sqlTag: import("../db/client.js").Sql,
+  sqlTag: Sql,
   now: Date = new Date(),
-  monthsAhead = 2,
+  monthsAhead = PARTITION_MONTHS_AHEAD,
 ): Promise<string[]> {
   return ensurePartitionWindow(sqlTag, "chat_messages", now, monthsAhead)
 }
 
 export function ensureDmPartitionWindow(
-  sqlTag: import("../db/client.js").Sql,
+  sqlTag: Sql,
   now: Date = new Date(),
-  monthsAhead = 2,
+  monthsAhead = PARTITION_MONTHS_AHEAD,
 ): Promise<string[]> {
   return ensurePartitionWindow(sqlTag, "dm_messages", now, monthsAhead)
 }
 
 export { MEDIA_CHECKS_JOB } from "./media-intake-service.js"
 export type { MediaChecksJob } from "./media-intake-service.js"
-
-export { and, eq, isNull, lt, ne, sql }

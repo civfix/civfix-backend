@@ -29,7 +29,11 @@ import {
   type UnsignedReportPin,
 } from "./report-clustering.js"
 import { isPubliclyVisibleStatus } from "./report-visibility.js"
-import { addressProvenance, resolveAddressOrNull } from "./address-resolver.js"
+import {
+  addressProvenance,
+  resolveAddressOrNull,
+  type ResolvedAddress,
+} from "./address-resolver.js"
 import {
   REPORT_AUTOFORWARD_JOB,
   REPORT_CREATE_SCOPE,
@@ -55,9 +59,89 @@ export * from "./report-service.types.js"
 export * from "./report-clustering.js"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const REPORT_NOT_FOUND = "Report not found"
+const RESOLVED_BY_REPORTER_NOTE = "Marked resolved by the reporter"
+const REOPENED_BY_REPORTER_NOTE = "Reopened by the reporter"
+const HIDDEN_BY_REPORTER_NOTE = "Hidden from the public map by the reporter"
+const RELISTED_BY_REPORTER_NOTE = "Re-listed by the reporter"
 
 function isUuid(value: string): boolean {
   return UUID_RE.test(value)
+}
+
+type PresignMedia = ReportServiceDeps["presignMedia"]
+
+interface ReportViewFlags {
+  mine: boolean
+  mediaPending?: number
+  linkedEvents?: LinkedEventRef[]
+  discussionMeta?: ReportDiscussionMeta | null
+  chatMeta?: ReportChatMeta | null
+}
+
+async function toMediaDTO(view: ReportMediaView, presign: PresignMedia): Promise<MediaDTO> {
+  const { url, thumbUrl } = await presign(view.r2Key, view.thumbKey)
+  return {
+    id: view.id,
+    kind: view.kind,
+    codec: view.codec,
+    url,
+    ...(thumbUrl !== undefined ? { thumbUrl } : {}),
+    width: view.width,
+    height: view.height,
+    status: view.status,
+  }
+}
+
+async function toMapPinDTO(pin: UnsignedReportPin, presign: PresignMedia): Promise<ReportPinDTO> {
+  let thumbUrl: string | null = null
+  if (pin.r2Key !== null) {
+    const signed = await presign(pin.r2Key, pin.thumbKey)
+    thumbUrl = signed.thumbUrl ?? signed.url
+  }
+  return {
+    id: pin.id,
+    category: pin.category,
+    type: pin.type,
+    lat: pin.lat,
+    lng: pin.lng,
+    status: pin.status,
+    ...(pin.title !== null ? { title: pin.title } : {}),
+    description: pin.description,
+    thumbUrl,
+    addr: pin.addr,
+    ...(pin.referenceCode !== null ? { referenceCode: pin.referenceCode } : {}),
+  }
+}
+
+function toTimelineDTO(view: ReportTimelineView): ReportTimelineEntryDTO {
+  return {
+    status: view.status,
+    at: view.createdAt.toISOString(),
+    ...(view.note !== null ? { note: view.note } : {}),
+    ...(view.kind !== null ? { kind: view.kind } : {}),
+    ...(view.body !== null ? { body: view.body } : {}),
+  }
+}
+
+function discussionFields(meta: ReportDiscussionMeta | null): Partial<ReportDTO> {
+  if (meta === null) return {}
+  return {
+    discussionCount: meta.discussionCount,
+    cityHandle: meta.cityHandle,
+    cityName: meta.cityName,
+    canForwardToCity: meta.canForwardToCity,
+  }
+}
+
+function chatFields(chat: ReportChatMeta | null): Partial<ReportDTO> {
+  if (chat === null) return {}
+  return {
+    chatJoined: chat.joined,
+    chatMemberCount: chat.memberCount,
+    chatMessageCount: chat.messageCount,
+    chatUnread: chat.unread,
+  }
 }
 
 export function makeReportService(deps: ReportServiceDeps): ReportService {
@@ -67,73 +151,17 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
   const publicPresign = deps.presignMedia
   const privatePresign = deps.presignPrivateMedia ?? deps.presignMedia
 
-  async function toMediaDTO(
-    view: ReportMediaView,
-    presign: ReportServiceDeps["presignMedia"],
-  ): Promise<MediaDTO> {
-    const { url, thumbUrl } = await presign(view.r2Key, view.thumbKey)
-    return {
-      id: view.id,
-      kind: view.kind,
-      codec: view.codec,
-      url,
-      ...(thumbUrl !== undefined ? { thumbUrl } : {}),
-      width: view.width,
-      height: view.height,
-      status: view.status,
-    }
-  }
-
-  async function toMapPinDTO(pin: UnsignedReportPin): Promise<ReportPinDTO> {
-    let thumbUrl: string | null = null
-    if (pin.r2Key !== null) {
-      const signed = await deps.presignMedia(pin.r2Key, pin.thumbKey)
-      thumbUrl = signed.thumbUrl ?? signed.url
-    }
-    return {
-      id: pin.id,
-      category: pin.category,
-      type: pin.type,
-      lat: pin.lat,
-      lng: pin.lng,
-      status: pin.status,
-      ...(pin.title !== null ? { title: pin.title } : {}),
-      description: pin.description,
-      thumbUrl,
-      addr: pin.addr,
-      ...(pin.referenceCode !== null ? { referenceCode: pin.referenceCode } : {}),
-    }
-  }
-
-  function toTimelineDTO(view: ReportTimelineView): ReportTimelineEntryDTO {
-    return {
-      status: view.status,
-      at: view.createdAt.toISOString(),
-      ...(view.note !== null ? { note: view.note } : {}),
-      ...(view.kind !== null ? { kind: view.kind } : {}),
-      ...(view.body !== null ? { body: view.body } : {}),
-    }
-  }
-
   async function toReportDTO(
     record: ReportRecord,
     media: ReportMediaView[],
     timeline: ReportTimelineView[],
-    flags: {
-      mine: boolean
-      mediaPending?: number
-      linkedEvents?: LinkedEventRef[]
-      discussionMeta?: ReportDiscussionMeta | null
-      chatMeta?: ReportChatMeta | null
-    },
+    flags: ReportViewFlags,
   ): Promise<ReportDTO> {
     const reportIsPublic = isPubliclyVisibleStatus(record.status) && record.visibility === "public"
     const mediaDTOs = await mapWithLimit(media, PRESIGN_CONCURRENCY, (view) => {
       const usePrivate = !reportIsPublic || view.status === "validating"
       return toMediaDTO(view, usePrivate ? privatePresign : publicPresign)
     })
-    const meta = flags.discussionMeta ?? null
-    const chat = flags.chatMeta ?? null
     return {
       id: record.id,
       category: record.category,
@@ -159,22 +187,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       mediaPending: flags.mediaPending ?? 0,
       timeline: timeline.map(toTimelineDTO),
       linkedEvents: flags.linkedEvents ?? [],
-      ...(meta !== null
-        ? {
-            discussionCount: meta.discussionCount,
-            cityHandle: meta.cityHandle,
-            cityName: meta.cityName,
-            canForwardToCity: meta.canForwardToCity,
-          }
-        : {}),
-      ...(chat !== null
-        ? {
-            chatJoined: chat.joined,
-            chatMemberCount: chat.memberCount,
-            chatMessageCount: chat.messageCount,
-            chatUnread: chat.unread,
-          }
-        : {}),
+      ...discussionFields(flags.discussionMeta ?? null),
+      ...chatFields(flags.chatMeta ?? null),
     }
   }
 
@@ -265,16 +279,11 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const category = REPORT_TYPE_TO_CATEGORY[input.type]
 
       const suppliedAddr = input.addr?.trim() ?? ""
-      const [jurisdictionGeoid, reversed] = await Promise.all([
-        deps.resolveJurisdictionGeoid(input.lat, input.lng),
-        suppliedAddr.length > 0
-          ? Promise.resolve(null)
-          : resolveAddressOrNull(deps.resolveAddress, input.lat, input.lng),
-      ])
-      const jurCode =
-        deps.resolveJurisdictionCode !== undefined
-          ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
-          : UNKNOWN_JURCODE
+      const { jurisdictionGeoid, reversed, jurCode } = await resolvePlacement(
+        deps,
+        input,
+        suppliedAddr,
+      )
       const h3Cell = reportH3Cell(input.lat, input.lng)
       const publishedAt = now()
       const reportId = newId()
@@ -326,7 +335,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
         ? await deps.repo.findReportById(id)
         : await deps.repo.findReportByReferenceCode(id)
       const dto = record ? await viewReport(record, viewer.userId ?? null) : null
-      if (dto === null) throw AppError.notFound("Report not found")
+      if (dto === null) throw AppError.notFound(REPORT_NOT_FOUND)
       return dto
     },
 
@@ -372,10 +381,8 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const { clusters, pins: unsignedPins } = clusterByZoom(points, effectiveMapZoom(bbox, zoom))
       const counts = countByCategory(points)
 
-      const pins: ReportPinDTO[] = await mapWithLimit(
-        unsignedPins,
-        PRESIGN_CONCURRENCY,
-        toMapPinDTO,
+      const pins: ReportPinDTO[] = await mapWithLimit(unsignedPins, PRESIGN_CONCURRENCY, (pin) =>
+        toMapPinDTO(pin, deps.presignMedia),
       )
 
       return {
@@ -404,7 +411,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       })
 
       const items: ReportPinDTO[] = await mapWithLimit(points, PRESIGN_CONCURRENCY, (p) =>
-        toMapPinDTO(mapPointToUnsignedPin(p)),
+        toMapPinDTO(mapPointToUnsignedPin(p), deps.presignMedia),
       )
 
       return { items, nextCursor }
@@ -412,9 +419,9 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
 
     async resolveReport(userId: string, reportId: string, resolved: boolean): Promise<ReportDTO> {
       const status: OwnerToggleStatus = resolved ? "resolved" : "published"
-      const note = resolved ? "Marked resolved by the reporter" : "Reopened by the reporter"
+      const note = resolved ? RESOLVED_BY_REPORTER_NOTE : REOPENED_BY_REPORTER_NOTE
       const outcome = await deps.repo.resolveByOwner(reportId, userId, { status, note })
-      if (outcome === "not_found") throw AppError.notFound("Report not found")
+      if (outcome === "not_found") throw AppError.notFound(REPORT_NOT_FOUND)
       if (outcome === "forbidden") {
         throw AppError.forbidden("You can only change the status of your own report")
       }
@@ -429,15 +436,13 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     async unlistReport(userId: string, reportId: string, unlisted: boolean): Promise<ReportDTO> {
       const visibility: ReportVisibility = unlisted ? "hidden" : "public"
       const kind = REPORT_VISIBILITY_TIMELINE_KIND[visibility]
-      const note = unlisted
-        ? "Hidden from the public map by the reporter"
-        : "Re-listed by the reporter"
+      const note = unlisted ? HIDDEN_BY_REPORTER_NOTE : RELISTED_BY_REPORTER_NOTE
       const outcome = await deps.repo.setVisibilityByOwner(reportId, userId, {
         visibility,
         note,
         kind,
       })
-      if (outcome === "not_found") throw AppError.notFound("Report not found")
+      if (outcome === "not_found") throw AppError.notFound(REPORT_NOT_FOUND)
       if (outcome === "forbidden") {
         throw AppError.forbidden("You can only hide your own report")
       }
@@ -448,6 +453,28 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
     },
   }
   return service
+}
+
+async function resolvePlacement(
+  deps: ReportServiceDeps,
+  input: Pick<CreateReportRequest, "lat" | "lng">,
+  suppliedAddr: string,
+): Promise<{
+  jurisdictionGeoid: string | null
+  reversed: ResolvedAddress | null
+  jurCode: number
+}> {
+  const [jurisdictionGeoid, reversed] = await Promise.all([
+    deps.resolveJurisdictionGeoid(input.lat, input.lng),
+    suppliedAddr.length > 0
+      ? Promise.resolve(null)
+      : resolveAddressOrNull(deps.resolveAddress, input.lat, input.lng),
+  ])
+  const jurCode =
+    deps.resolveJurisdictionCode !== undefined
+      ? await deps.resolveJurisdictionCode(jurisdictionGeoid)
+      : UNKNOWN_JURCODE
+  return { jurisdictionGeoid, reversed, jurCode }
 }
 
 async function maybeEnqueueAutoForward(

@@ -1,9 +1,12 @@
 import type { AbuseChecks } from "@civfix/shared/interfaces"
 import type { LatLng } from "@civfix/shared"
 
-export const CF_LAT_HEADER = "cf-iplatitude"
-export const CF_LNG_HEADER = "cf-iplongitude"
+const CF_LAT_HEADER = "cf-iplatitude"
+const CF_LNG_HEADER = "cf-iplongitude"
 export const CF_CITY_HEADER = "cf-ipcity"
+
+const MAX_ABS_LATITUDE = 90
+const MAX_ABS_LONGITUDE = 180
 
 export type HeaderBag = Record<string, string | string[] | undefined>
 
@@ -22,7 +25,7 @@ export function parseCfGeo(headers: HeaderBag): LatLng | null {
   const lat = Number.parseFloat(latRaw)
   const lng = Number.parseFloat(lngRaw)
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
-  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null
+  if (Math.abs(lat) > MAX_ABS_LATITUDE || Math.abs(lng) > MAX_ABS_LONGITUDE) return null
   return { lat, lng }
 }
 

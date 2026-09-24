@@ -7,6 +7,7 @@ import { webBaseUrlOf } from "../lib/base-url.js"
 import { makeDrizzleGuestRsvpRepository } from "./guest-rsvp-repository.drizzle.js"
 import {
   makeGuestRsvpService,
+  type GuestRegistrationBridge,
   type GuestRsvpService,
   type GuestRsvpServiceDeps,
 } from "./guest-rsvp-service.js"
@@ -25,7 +26,7 @@ export interface GuestRsvpOverrides {
   now?: GuestRsvpServiceDeps["now"]
 }
 
-export function guestReviewerConfig(container: Container): GuestRsvpServiceDeps["reviewer"] {
+function guestReviewerConfig(container: Container): GuestRsvpServiceDeps["reviewer"] {
   const code = container.env.REVIEWER_OTP_CODE
   if (!container.env.REVIEWER_OTP_BYPASS || code === undefined || code.length === 0) {
     return undefined
@@ -33,19 +34,11 @@ export function guestReviewerConfig(container: Container): GuestRsvpServiceDeps[
   return { email: REVIEWER_OTP_EMAIL, code }
 }
 
-export function makeContainerGuestRsvpService(
+function containerRegistrationBridge(
   container: Container,
-  overrides?: GuestRsvpOverrides,
-  logger?: GuestRsvpServiceDeps["logger"],
-): GuestRsvpService {
-  const reviewer = overrides?.reviewer ?? guestReviewerConfig(container)
-  const repo = overrides?.repo ?? makeDrizzleGuestRsvpRepository(container.getDb().sql)
-  const requireGuestContact =
-    overrides?.requireGuestContact ??
-    (async (cleanupId: string, userId: string) => {
-      await requireCapability(container.getDb().sql, cleanupId, userId, "view_guest_contact")
-    })
-  const registrations: GuestRsvpServiceDeps["registrations"] = overrides?.registrations ?? {
+  logger: GuestRsvpServiceDeps["logger"],
+): GuestRegistrationBridge {
+  return {
     register: (input, subject) =>
       makeContainerRegistrationServices(container, undefined, logger).registrations.register(
         input,
@@ -85,6 +78,22 @@ export function makeContainerGuestRsvpService(
       }
     },
   }
+}
+
+export function makeContainerGuestRsvpService(
+  container: Container,
+  overrides?: GuestRsvpOverrides,
+  logger?: GuestRsvpServiceDeps["logger"],
+): GuestRsvpService {
+  const reviewer = overrides?.reviewer ?? guestReviewerConfig(container)
+  const repo = overrides?.repo ?? makeDrizzleGuestRsvpRepository(container.getDb().sql)
+  const requireGuestContact =
+    overrides?.requireGuestContact ??
+    (async (cleanupId: string, userId: string) => {
+      await requireCapability(container.getDb().sql, cleanupId, userId, "view_guest_contact")
+    })
+  const registrations: GuestRsvpServiceDeps["registrations"] =
+    overrides?.registrations ?? containerRegistrationBridge(container, logger)
   const audit: GuestRsvpServiceDeps["audit"] =
     overrides?.audit ??
     (async (input) => {

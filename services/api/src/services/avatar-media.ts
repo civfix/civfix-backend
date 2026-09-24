@@ -20,7 +20,8 @@ export interface AvatarMediaRow extends Record<string, unknown> {
   served_key: string | null
 }
 
-export const AVATAR_CLAIM_WINDOW_SECONDS = UNBOUND_GRACE_MS / 1000
+const MS_PER_SECOND = 1000
+const AVATAR_CLAIM_WINDOW_SECONDS = UNBOUND_GRACE_MS / MS_PER_SECOND
 
 type SqlTemplateTag<Q> = (strings: TemplateStringsArray, ...values: (string | number | null)[]) => Q
 

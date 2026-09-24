@@ -21,7 +21,11 @@ import type { Container } from "../di.js"
 import { requireAuth } from "../auth/context.js"
 import { parse, trimTextFields } from "./_validate.js"
 import { route } from "../versioning/route.js"
-import { chatHistoryPayload, deleteMessageWithPowers } from "./chat-route-helpers.js"
+import {
+  chatHistoryPayload,
+  clampChatHistoryLimit,
+  deleteMessageWithPowers,
+} from "./chat-route-helpers.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import {
   makeChatGroupRepository,
@@ -52,9 +56,6 @@ export const UpdateChatGroupBodySchema = trimTextFields(
 const GroupIdParamsSchema = z.object({ id: IdSchema }).strict()
 const GroupMemberParamsSchema = z.object({ id: IdSchema, userId: IdSchema }).strict()
 const GroupMessageParamsSchema = z.object({ id: IdSchema, messageId: IdSchema }).strict()
-
-const GROUP_HISTORY_DEFAULT = 30
-const GROUP_HISTORY_MAX = 50
 
 /** Creating rooms is rare and deliberate; 10/hour bounds scripted room spam per user/IP key. */
 export const CREATE_GROUP_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 hour" })
@@ -222,7 +223,7 @@ export async function registerChatGroupRoutes(
     const { id } = parse(GroupIdParamsSchema, request.params)
     const q = parse(GroupHistoryRequestSchema, { ...(request.query as object), id })
     await svc().requireReadable(userId, id)
-    const limit = Math.min(Math.max(q.limit ?? GROUP_HISTORY_DEFAULT, 1), GROUP_HISTORY_MAX)
+    const limit = clampChatHistoryLimit(q.limit)
     const payload: ChatHistoryResponse = await chatHistoryPayload(
       {
         history: (before, pageLimit, around) =>

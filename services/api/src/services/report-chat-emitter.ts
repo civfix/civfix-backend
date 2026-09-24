@@ -20,7 +20,7 @@ import {
   type ReportChatSystemEmitter,
 } from "./report-timeline-event.js"
 
-export const NOOP_REPORT_CHAT_EMITTER: ReportChatSystemEmitter = {
+const NOOP_REPORT_CHAT_EMITTER: ReportChatSystemEmitter = {
   emit: () => Promise.resolve(),
 }
 

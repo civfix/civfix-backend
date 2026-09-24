@@ -13,6 +13,8 @@
 
 import type { ChatMessageDTO } from "@civfix/shared"
 
+const EMIT_FAILED = "report-chat: system-message emit failed (suppressed)"
+
 export interface ReportTimelineEvent {
   reportId: string
   /** The report status AT this event (a valid ReportStatus; validated by insertSystemMessage). */
@@ -56,20 +58,14 @@ export function makeReportChatSystemEmitter(
         msg = await deps.reportChat.insertSystemMessage(event)
       } catch (err) {
         if (deps.propagateInsertFailure === true) throw err
-        warn(
-          { err, reportId: event.reportId },
-          "report-chat: system-message emit failed (suppressed)",
-        )
+        warn({ err, reportId: event.reportId }, EMIT_FAILED)
         return
       }
       try {
         await deps.broadcast(deps.roomKeyFor("report", event.reportId), msg)
         await deps.notify(event.reportId, msg)
       } catch (err) {
-        warn(
-          { err, reportId: event.reportId },
-          "report-chat: system-message emit failed (suppressed)",
-        )
+        warn({ err, reportId: event.reportId }, EMIT_FAILED)
       }
     },
   }

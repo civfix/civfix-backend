@@ -24,7 +24,7 @@ export interface ReplyRoomScope {
 
 export const REPLY_EXCERPT_MAX = 120
 
-export interface ReplyTargetRow {
+interface ReplyTargetRow {
   id: string
   room_ref?: string | null
   body: string | null
@@ -48,21 +48,21 @@ export const replyDeletedTarget = (): AppError =>
 /** A bar-chart glyph so a quoted poll reads as a poll. */
 const POLL_EXCERPT_PREFIX = "\u{1F4CA} "
 
-export function toReplyToDTO(row: ReplyTargetRow): ReplyToDTO {
+function liveExcerpt(row: Pick<ReplyTargetRow, "kind" | "body">): string {
+  const text = row.kind === "poll" ? POLL_EXCERPT_PREFIX + (row.body ?? "") : (row.body ?? "")
+  return text.slice(0, REPLY_EXCERPT_MAX)
+}
+
+function toReplyToDTO(row: ReplyTargetRow): ReplyToDTO {
   const deleted = row.deleted_at !== null
   const from =
     row.sender_id !== null && row.sender_deleted_at === null
       ? { id: row.sender_id, displayName: row.sender_display_name ?? "" }
       : null
-  const excerpt = deleted
-    ? ""
-    : row.kind === "poll"
-      ? (POLL_EXCERPT_PREFIX + (row.body ?? "")).slice(0, REPLY_EXCERPT_MAX)
-      : (row.body ?? "").slice(0, REPLY_EXCERPT_MAX)
   return {
     id: row.id,
     from,
-    excerpt,
+    excerpt: deleted ? "" : liveExcerpt(row),
     kind: row.kind,
     ...(deleted ? { deleted: true } : {}),
   }

@@ -9,7 +9,7 @@ import { OUTREACH_DIGEST_JOB } from "../services/admin/jurisdiction-contacts-typ
 import { INBOUND_SWEEP_JOB } from "../services/admin/inbound-jobs.js"
 import { REPORT_AUTOFORWARD_JOB } from "../services/report-service.types.js"
 import { DATA_EXPORT_JOB } from "../services/data-export-jobs.js"
-import { CLEANUP_CANCEL_FANOUT_JOB } from "../services/cleanup-service.js"
+import { CLEANUP_CANCEL_FANOUT_JOB } from "../services/cleanup-notifications.js"
 import {
   CLEANUP_GUEST_UPDATE_FANOUT_JOB,
   GUEST_RETENTION_SWEEP_JOB,

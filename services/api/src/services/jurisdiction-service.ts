@@ -11,7 +11,7 @@ import type {
 
 export const JURISDICTION_DISCOVERY_JOB = "jurisdiction.discovery"
 
-export const CONTACT_STALE_MONTHS = 18
+const CONTACT_STALE_MONTHS = 18
 
 export interface JurisdictionDiscoveryJob {
   geoid: string
@@ -30,26 +30,22 @@ function hasUsableLegacyContact(row: Pick<JurisdictionHealthRow, "contactEmails"
   return Array.isArray(row.contactEmails) && row.contactEmails.some((e) => e.trim() !== "")
 }
 
+function isValidDate(value: Date | null): value is Date {
+  return value instanceof Date && !Number.isNaN(value.getTime())
+}
+
 function isStale(updatedAt: Date | null, now: Date): boolean {
-  if (!(updatedAt instanceof Date) || Number.isNaN(updatedAt.getTime())) return true
+  if (!isValidDate(updatedAt)) return true
   const staleBefore = new Date(now)
   staleBefore.setMonth(staleBefore.getMonth() - CONTACT_STALE_MONTHS)
   return updatedAt.getTime() < staleBefore.getTime()
 }
 
 export function needsDiscovery(row: JurisdictionHealthRow, now: Date): boolean {
-  const hasRoutingContact = row.hasRoutingContact === true
-
-  if (!hasRoutingContact && !hasUsableLegacyContact(row)) return true
-
-  if (hasRoutingContact) {
-    if (!(row.contactUpdatedAt instanceof Date) || Number.isNaN(row.contactUpdatedAt.getTime())) {
-      return false
-    }
-    return isStale(row.contactUpdatedAt, now)
+  if (row.hasRoutingContact === true) {
+    return isValidDate(row.contactUpdatedAt) && isStale(row.contactUpdatedAt, now)
   }
-
-  return isStale(row.contactUpdatedAt, now)
+  return !hasUsableLegacyContact(row) || isStale(row.contactUpdatedAt, now)
 }
 
 export function isRoutable(

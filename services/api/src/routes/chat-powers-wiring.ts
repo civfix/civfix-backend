@@ -35,7 +35,7 @@ type GlobalRole = (typeof ROLE_VALUES)[number]
  * A thread the caller is not in resolves to no peer and answers false: isDmParticipant already gates
  * that case, and this helper's contract stays about blocks alone.
  */
-export function makeIsDmBlocked(
+function makeIsDmBlocked(
   dm: DmRepository,
   blocks: BlocksRepository,
 ): (threadId: string, userId: string) => Promise<boolean> {

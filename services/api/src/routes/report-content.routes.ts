@@ -24,6 +24,11 @@ export const REPORT_CONTENT_RATE_LIMIT = perIdentity({
   hostMax: 60,
 })
 
+const OWNER_TAKEDOWN_FLAG = "Owner takedown request"
+const USER_REPORT_FLAG = "User report"
+const FALLBACK_REPORTER_LABEL = "User"
+const TAKEDOWN_REQUESTED_AUDIT_ACTION = "report.takedown_requested"
+
 declare module "fastify" {
   interface FastifyInstance {
     contentSubjectGate?: ContentSubjectGate
@@ -67,11 +72,7 @@ export async function registerReportContentRoutes(
       await subjectGate().assertReportable(body.subjectType, body.subjectId, userId)
 
       const store = app.authServices?.users
-      const reporterUser = store ? await store.findById(userId) : null
-      const reporter =
-        reporterUser?.handle != null && reporterUser.handle !== ""
-          ? `@${reporterUser.handle}`
-          : (reporterUser?.displayName ?? "User")
+      const reporter = reporterLabel(store ? await store.findById(userId) : null)
 
       const isOwnerTakedown =
         body.subjectType === "report" &&
@@ -81,7 +82,7 @@ export async function registerReportContentRoutes(
         kind: "user_report",
         subjectType: body.subjectType,
         subjectId: body.subjectId,
-        flag: isOwnerTakedown ? "Owner takedown request" : "User report",
+        flag: isOwnerTakedown ? OWNER_TAKEDOWN_FLAG : USER_REPORT_FLAG,
         reason: body.reason,
         reporter,
         reporterUserId: userId,
@@ -93,7 +94,7 @@ export async function registerReportContentRoutes(
       if (isOwnerTakedown) {
         await writeAudit(container.getDb().sql, {
           actorId: userId,
-          action: "report.takedown_requested",
+          action: TAKEDOWN_REQUESTED_AUDIT_ACTION,
           target: `report:${body.subjectId}`,
           meta: { reason: body.reason, via: "content-reports" },
         })
@@ -103,6 +104,14 @@ export async function registerReportContentRoutes(
       reply.status(200).send(payload)
     },
   )
+}
+
+function reporterLabel(
+  user: { handle?: string | null; displayName?: string | null } | null | undefined,
+): string {
+  return user?.handle != null && user.handle !== ""
+    ? `@${user.handle}`
+    : (user?.displayName ?? FALLBACK_REPORTER_LABEL)
 }
 
 async function isOwnerTakedownReport(

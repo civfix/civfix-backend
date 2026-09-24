@@ -27,8 +27,6 @@ export const ATTENDEES_DEFAULT_LIMIT = 50
 
 export const THREAD_SIGNAL_MEMBER_CAP = 500
 
-export { MAX_LINKED_REPORTS } from "@civfix/shared"
-
 export const LINKED_REPORTS_LIST_PREVIEW = 6
 
 export function toAttendeePersonDTO(view: CleanupPersonView, isFollowing: boolean): PersonDTO {
@@ -49,7 +47,7 @@ export function toAttendeePersonDTO(view: CleanupPersonView, isFollowing: boolea
   }
 }
 
-export function toOrganizerPerson(view: CleanupPersonView): PersonDTO {
+function toOrganizerPerson(view: CleanupPersonView): PersonDTO {
   return toAttendeePersonDTO(view, false)
 }
 

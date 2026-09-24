@@ -27,6 +27,8 @@ export type RoomAlias = "cm" | "dm"
 
 export const PIN_LIST_CAP = 25
 
+const MESSAGE_NOT_FOUND = "Message not found"
+
 /** Everything else about the row shape belongs to the owning repository's hydrator. */
 export interface RoomScopeRow {
   id: string
@@ -129,13 +131,13 @@ export async function roomHistoryAround<Row extends RoomScopeRow, Ctx>(
   viewerUserId: string | null,
 ): Promise<ChatHistoryPage> {
   // A non-uuid id can never match; the short-circuit avoids a 22P02 cast error (a 500).
-  if (!isUuid(around)) throw AppError.notFound("Message not found")
+  if (!isUuid(around)) throw AppError.notFound(MESSAGE_NOT_FOUND)
   const anchorRows = await sql<{ id: string }[]>`
     SELECT id FROM ${sql(spec.table)}
     WHERE id = ${around} AND ${spec.scope(null)}
     LIMIT 1
   `
-  if (!anchorRows[0]) throw AppError.notFound("Message not found")
+  if (!anchorRows[0]) throw AppError.notFound(MESSAGE_NOT_FOUND)
   const anchorTuple = sql`(
     SELECT a.created_at, a.id
     FROM ${sql(spec.table)} a

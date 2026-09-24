@@ -30,8 +30,12 @@ import { route } from "../versioning/route.js"
 
 export { MAP_CLEANUPS_LIMIT }
 
-export const CARTO_VOYAGER_RASTER_URL =
+const CARTO_VOYAGER_RASTER_URL =
   "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+const CARTO_ATTRIBUTION = "(c) OpenStreetMap contributors, (c) CARTO"
+const TILE_INFO_CACHE_CONTROL = "public, max-age=3600"
+const MAP_CLEANUPS_CACHE_CONTROL = "public, max-age=60"
+const CONTACT_SUGGESTED_AUDIT_ACTION = "discovery.contact_suggested"
 
 const CleanupsQuerySchema = z.object({
   bbox: CappedBBoxQueryParam,
@@ -108,12 +112,12 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
     const payload: TileInfoResponse = {
       pmtilesUrl: "",
       rasterUrl: env.TILES_RASTER_URL ?? CARTO_VOYAGER_RASTER_URL,
-      attribution: "(c) OpenStreetMap contributors, (c) CARTO",
+      attribution: CARTO_ATTRIBUTION,
       minZoom: env.TILES_MIN_ZOOM,
       maxZoom: env.TILES_MAX_ZOOM,
       bounds: env.TILES_BOUNDS,
     }
-    reply.header("Cache-Control", "public, max-age=3600")
+    reply.header("Cache-Control", TILE_INFO_CACHE_CONTROL)
     reply.status(200).send(payload)
   })
 
@@ -199,7 +203,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
       const repo = makeCleanupMapRepository(container.getDb().sql)
       const pins = await repo.listCleanupPins(bbox, when)
       const payload: MapCleanupsResponse = { pins }
-      reply.header("Cache-Control", "public, max-age=60")
+      reply.header("Cache-Control", MAP_CLEANUPS_CACHE_CONTROL)
       reply.status(200).send(payload)
     },
   )
@@ -222,7 +226,7 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
 
       await writeAudit(container.getDb().sql, {
         actorId: null,
-        action: "discovery.contact_suggested",
+        action: CONTACT_SUGGESTED_AUDIT_ACTION,
         target: `jurisdiction:${geoid}`,
         meta: {
           email: body.email ?? null,

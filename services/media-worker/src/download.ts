@@ -39,11 +39,13 @@ function isInMemoryReadable(s: unknown): s is InMemoryReadable {
 }
 
 const DOWNLOAD_GET_TTL_SEC = 120
+const MAX_R2_KEY_LENGTH = 512
+const SAFE_R2_KEY_PATTERN = /^[A-Za-z0-9._\-/]+$/
 
 function isSafeR2Key(key: string): boolean {
-  if (key.length === 0 || key.length > 512) return false
+  if (key.length === 0 || key.length > MAX_R2_KEY_LENGTH) return false
   if (key.startsWith("/") || key.includes("..") || key.includes("\\")) return false
-  return /^[A-Za-z0-9._\-/]+$/.test(key)
+  return SAFE_R2_KEY_PATTERN.test(key)
 }
 
 export function makeDownloader(storage: Storage): DownloadFn {
@@ -53,14 +55,7 @@ export function makeDownloader(storage: Storage): DownloadFn {
     signal?: AbortSignal,
   ): Promise<DownloadedObject> {
     if (isInMemoryReadable(storage)) {
-      const bytes = storage.get(r2Key)
-      if (bytes === null) {
-        throw new StorageUnavailableError(r2Key)
-      }
-      if (bytes.byteLength > maxBytes) {
-        throw new DownloadTooLargeError(maxBytes)
-      }
-      return { bytes, etag: await headEtag(storage, r2Key) }
+      return downloadInMemory(storage, r2Key, maxBytes)
     }
 
     if (!isSafeR2Key(r2Key)) {
@@ -72,11 +67,7 @@ export function makeDownloader(storage: Storage): DownloadFn {
     } catch (err) {
       throw new StorageUnavailableError(r2Key, err)
     }
-    const controller = new AbortController()
-    if (signal) {
-      if (signal.aborted) controller.abort()
-      else signal.addEventListener("abort", () => controller.abort(), { once: true })
-    }
+    const controller = linkedAbortController(signal)
     let res: Response
     try {
       res = await proxyAwareFetch(url, controller.signal)
@@ -96,50 +87,90 @@ export function makeDownloader(storage: Storage): DownloadFn {
     }
 
     const etag = normalizeEtag(res.headers.get("etag"))
-
     const body = res.body
     if (!body) {
-      let buf: Uint8Array
-      try {
-        buf = new Uint8Array(await res.arrayBuffer())
-      } catch (err) {
-        throw new StorageUnavailableError(r2Key, err)
-      }
-      if (buf.byteLength > maxBytes) throw new DownloadTooLargeError(maxBytes)
-      return { bytes: buf, etag }
+      return { bytes: await readWholeBody(res, r2Key, maxBytes), etag }
     }
-
-    const reader = body.getReader()
-    const chunks: Uint8Array[] = []
-    let total = 0
-    try {
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (value) {
-          total += value.byteLength
-          if (total > maxBytes) {
-            controller.abort()
-            throw new DownloadTooLargeError(maxBytes)
-          }
-          chunks.push(value)
-        }
-      }
-    } catch (err) {
-      if (err instanceof DownloadTooLargeError) throw err
-      throw new StorageUnavailableError(r2Key, err)
-    } finally {
-      reader.releaseLock()
-    }
-
-    const out = new Uint8Array(total)
-    let offset = 0
-    for (const c of chunks) {
-      out.set(c, offset)
-      offset += c.byteLength
-    }
-    return { bytes: out, etag }
+    return { bytes: await readCappedStream(body, r2Key, maxBytes, controller), etag }
   }
+}
+
+async function downloadInMemory(
+  storage: Storage & InMemoryReadable,
+  r2Key: string,
+  maxBytes: number,
+): Promise<DownloadedObject> {
+  const bytes = storage.get(r2Key)
+  if (bytes === null) {
+    throw new StorageUnavailableError(r2Key)
+  }
+  if (bytes.byteLength > maxBytes) {
+    throw new DownloadTooLargeError(maxBytes)
+  }
+  return { bytes, etag: await headEtag(storage, r2Key) }
+}
+
+function linkedAbortController(signal: AbortSignal | undefined): AbortController {
+  const controller = new AbortController()
+  if (signal) {
+    if (signal.aborted) controller.abort()
+    else signal.addEventListener("abort", () => controller.abort(), { once: true })
+  }
+  return controller
+}
+
+async function readWholeBody(res: Response, r2Key: string, maxBytes: number): Promise<Uint8Array> {
+  let buf: Uint8Array
+  try {
+    buf = new Uint8Array(await res.arrayBuffer())
+  } catch (err) {
+    throw new StorageUnavailableError(r2Key, err)
+  }
+  if (buf.byteLength > maxBytes) throw new DownloadTooLargeError(maxBytes)
+  return buf
+}
+
+// The cap is enforced while streaming, so a body that lies about (or omits) its content-length is cut
+// off at maxBytes instead of being buffered whole.
+async function readCappedStream(
+  body: ReadableStream<Uint8Array>,
+  r2Key: string,
+  maxBytes: number,
+  controller: AbortController,
+): Promise<Uint8Array> {
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) {
+        total += value.byteLength
+        if (total > maxBytes) {
+          controller.abort()
+          throw new DownloadTooLargeError(maxBytes)
+        }
+        chunks.push(value)
+      }
+    }
+  } catch (err) {
+    if (err instanceof DownloadTooLargeError) throw err
+    throw new StorageUnavailableError(r2Key, err)
+  } finally {
+    reader.releaseLock()
+  }
+  return concatChunks(chunks, total)
+}
+
+function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const c of chunks) {
+    out.set(c, offset)
+    offset += c.byteLength
+  }
+  return out
 }
 
 async function headEtag(storage: Storage, r2Key: string): Promise<string | null> {

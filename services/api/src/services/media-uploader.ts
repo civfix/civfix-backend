@@ -2,12 +2,16 @@
 // ever means a row written before uploads were attributed. Never an IP: the column outlives the request.
 export const UNSESSIONED_UPLOADER = "anon"
 
+const USER_UPLOADER_PREFIX = "u:"
+
+const ANON_UPLOADER_PREFIX = "a:"
+
 export function userUploader(userId: string): string {
-  return `u:${userId}`
+  return `${USER_UPLOADER_PREFIX}${userId}`
 }
 
 export function anonUploader(anonSessionId: string): string {
-  return `a:${anonSessionId}`
+  return `${ANON_UPLOADER_PREFIX}${anonSessionId}`
 }
 
 export function uploaderOf(owner: {

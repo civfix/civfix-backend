@@ -67,6 +67,17 @@ export interface ChatMentionResolverDeps {
   listGroupMemberIds(groupId: string, candidateIds: string[]): Promise<string[]>
 }
 
+function mentionableMemberIds(
+  deps: ChatMentionResolverDeps,
+  kind: Exclude<RoomKind, "dm">,
+  roomId: string,
+  candidateIds: string[],
+): Promise<string[]> {
+  if (kind === "report") return deps.listReportChatMemberIds(roomId, candidateIds)
+  if (kind === "group") return deps.listGroupMemberIds(roomId, candidateIds)
+  return deps.listCleanupMemberIds(roomId, candidateIds)
+}
+
 export function makeChatMentionResolver(
   deps: ChatMentionResolverDeps,
 ): GatewayChatMentions["resolveChatMentions"] {
@@ -82,13 +93,9 @@ export function makeChatMentionResolver(
       return peer !== null ? resolved.filter((m) => m.id === peer) : []
     }
     const candidateIds = resolved.map((m) => m.id)
-    const members =
-      input.kind === "report"
-        ? await deps.listReportChatMemberIds(input.roomId, candidateIds)
-        : input.kind === "group"
-          ? await deps.listGroupMemberIds(input.roomId, candidateIds)
-          : await deps.listCleanupMemberIds(input.roomId, candidateIds)
-    const memberIds = new Set(members)
+    const memberIds = new Set(
+      await mentionableMemberIds(deps, input.kind, input.roomId, candidateIds),
+    )
     return resolved.filter((m) => memberIds.has(m.id))
   }
 }

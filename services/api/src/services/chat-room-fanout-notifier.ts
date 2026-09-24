@@ -27,6 +27,8 @@ export const ROOM_FANOUT_THROTTLE_MS = 15 * 1000
 
 const FANOUT_MARKER_SWEEP_THRESHOLD = 5000
 
+const NO_PREVIEW_BODY_KEY = "notification.message.no_preview" satisfies MessageKey
+
 export interface RoomFanoutNotifierDeps {
   notificationService: Pick<NotificationService, "createNotificationsReportingFailures">
   listMemberIds: (roomId: string, limit: number) => Promise<string[]>
@@ -138,6 +140,20 @@ async function mutedIds(
   return new Set(candidates.filter((_, i) => verdicts[i] === true))
 }
 
+async function presentIds(
+  deps: RoomFanoutNotifierDeps,
+  kind: RoomFanoutKind,
+  roomId: string,
+): Promise<string[]> {
+  if (!deps.presence) return []
+  try {
+    return await deps.presence.online(deps.roomKey(roomId))
+  } catch (err) {
+    deps.logger?.warn({ err, kind }, "room fan-out presence lookup failed")
+    return []
+  }
+}
+
 export function makeRoomFanoutNotifier(
   spec: RoomFanoutSpec,
   deps: RoomFanoutNotifierDeps,
@@ -198,16 +214,7 @@ export async function runRoomFanout(
   const cap = MEMBER_CAP_BY_KIND[spec.kind]
   const memberIds = (await deps.listMemberIds(roomId, cap)).slice(0, cap)
 
-  let present: string[] = []
-  if (deps.presence) {
-    try {
-      present = await deps.presence.online(deps.roomKey(roomId))
-    } catch (err) {
-      deps.logger?.warn({ err, kind: spec.kind }, "room fan-out presence lookup failed")
-      present = []
-    }
-  }
-  const presentSet = new Set(present)
+  const presentSet = new Set(await presentIds(deps, spec.kind, roomId))
 
   const replyTargetId = message.replyTo?.from?.id ?? null
   const mentionedIds = new Set(message.mentions.map((m) => m.id))
@@ -232,7 +239,7 @@ export async function runRoomFanout(
     {
       type: bell.type,
       ...(name !== null ? { title: name } : { titleKey: spec.titleFallbackKey }),
-      ...(preview !== null ? { body: preview } : { bodyKey: "notification.message.no_preview" }),
+      ...(preview !== null ? { body: preview } : { bodyKey: NO_PREVIEW_BODY_KEY }),
       link: bell.link(roomId),
       coalesceWindowMs,
     },

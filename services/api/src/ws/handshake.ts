@@ -121,4 +121,4 @@ export async function checkWsHandshake(
   }
 }
 
-export { originHeader, wsHasSessionCookie }
+export { originHeader }

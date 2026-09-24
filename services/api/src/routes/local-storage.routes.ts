@@ -1,7 +1,7 @@
 import { Transform, type Readable } from "node:stream"
 import { AppError, MAX_VIDEO_BYTES } from "@civfix/shared"
 import { z } from "zod"
-import type { FastifyInstance, FastifyRequest, RequestPayload } from "fastify"
+import type { FastifyInstance, FastifyReply, FastifyRequest, RequestPayload } from "fastify"
 import {
   isSafeObjectKey,
   LOCAL_STORAGE_ROUTE_PREFIX,
@@ -24,6 +24,9 @@ const OBJECT_ROUTE = `${LOCAL_STORAGE_ROUTE_PREFIX}/:namespace/*`
 const LOCAL_STORAGE_RATE_LIMIT = { max: 600, timeWindow: "1 minute" } as const
 
 const CROSS_ORIGIN_RESOURCE_POLICY_FOR_EMBEDDABLE_MEDIA = "cross-origin"
+const OBJECT_CACHE_CONTROL = "private, max-age=60"
+const OBJECT_NOT_FOUND = "Object not found"
+const SIZE_MISMATCH = "Upload size does not match the presigned Content-Length"
 
 const MEDIA_TYPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$/
 
@@ -96,7 +99,7 @@ export async function registerLocalStorageRoutes(
           throw AppError.mediaRejected("Upload body is missing")
         }
         if (body.byteLength !== grant.byteSize) {
-          throw AppError.mediaRejected("Upload size does not match the presigned Content-Length")
+          throw AppError.mediaRejected(SIZE_MISMATCH)
         }
         await grant.storage.put(grant.key, body, { contentType: grant.contentType })
         reply.status(200).send({ ok: true })
@@ -110,18 +113,9 @@ export async function registerLocalStorageRoutes(
         const { storage, key } = resolveGetGrant(request, byNamespace)
         const head = await storage.head(key)
         if (head === null) {
-          throw AppError.notFound("Object not found")
+          throw AppError.notFound(OBJECT_NOT_FOUND)
         }
-
-        reply.header("accept-ranges", "bytes")
-        reply.header("cache-control", "private, max-age=60")
-        if (head.etag !== undefined) {
-          reply.header("etag", `"${head.etag}"`)
-        }
-        reply.header(
-          "cross-origin-resource-policy",
-          CROSS_ORIGIN_RESOURCE_POLICY_FOR_EMBEDDABLE_MEDIA,
-        )
+        setObjectHeaders(reply, head)
 
         const range = parseRange(request.headers.range, head.size)
         if (range === "unsatisfiable") {
@@ -143,6 +137,15 @@ export async function registerLocalStorageRoutes(
       },
     )
   })
+}
+
+function setObjectHeaders(reply: FastifyReply, head: { etag?: string | undefined }): void {
+  reply.header("accept-ranges", "bytes")
+  reply.header("cache-control", OBJECT_CACHE_CONTROL)
+  if (head.etag !== undefined) {
+    reply.header("etag", `"${head.etag}"`)
+  }
+  reply.header("cross-origin-resource-policy", CROSS_ORIGIN_RESOURCE_POLICY_FOR_EMBEDDABLE_MEDIA)
 }
 
 function resolvePutGrant(
@@ -221,7 +224,7 @@ function assertDeclaredUploadMatchesGrant(request: FastifyRequest, grant: Resolv
   }
   const declaredLength = request.headers["content-length"]
   if (declaredLength !== undefined && Number(declaredLength) !== grant.byteSize) {
-    throw AppError.mediaRejected("Upload size does not match the presigned Content-Length")
+    throw AppError.mediaRejected(SIZE_MISMATCH)
   }
 }
 
@@ -232,7 +235,7 @@ function storageOf(
   const namespace = (request.params as Record<string, unknown>).namespace
   const storage = typeof namespace === "string" ? byNamespace.get(namespace) : undefined
   if (storage === undefined) {
-    throw AppError.notFound("Object not found")
+    throw AppError.notFound(OBJECT_NOT_FOUND)
   }
   return storage
 }
@@ -241,7 +244,7 @@ function objectKeyOf(request: FastifyRequest): string {
   const wildcard = (request.params as Record<string, unknown>)["*"]
   const key = typeof wildcard === "string" ? wildcard : ""
   if (!isSafeObjectKey(key)) {
-    throw AppError.notFound("Object not found")
+    throw AppError.notFound(OBJECT_NOT_FOUND)
   }
   return key
 }

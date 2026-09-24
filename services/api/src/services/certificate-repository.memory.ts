@@ -18,7 +18,6 @@
  * `snapshot` is stored but never read back, exactly as in production.
  */
 
-import { randomUUID } from "node:crypto"
 import {
   CertificateConflictError,
   type CertificateHolder,
@@ -28,6 +27,9 @@ import {
   type CertificateVerifyRow,
 } from "./certificate-service.js"
 import type { TranscriptModel } from "./certificate-model.js"
+
+/** Mirrors the `users.locale` column default. */
+const DEFAULT_HOLDER_LOCALE = "en"
 
 /** What a test registers so `findHolder` can answer, mirroring the users read. */
 export interface MemoryCertificateHolder {
@@ -148,7 +150,7 @@ export class InMemoryCertificateRepository implements CertificateRepository {
       userId,
       displayName: holder.displayName,
       handle: holder.handle ?? null,
-      locale: holder.locale ?? "en",
+      locale: holder.locale ?? DEFAULT_HOLDER_LOCALE,
     })
   }
 }
@@ -175,9 +177,4 @@ function clone(row: StoredCertificate): CertificateRow {
     revokedAt: row.revokedAt,
     revokedReason: row.revokedReason,
   }
-}
-
-/** Convenience for tests that need a plausible id without importing node:crypto. */
-export function newCertificateId(): string {
-  return randomUUID()
 }

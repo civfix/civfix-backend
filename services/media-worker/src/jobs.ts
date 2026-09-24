@@ -119,6 +119,47 @@ export function stopGraceMsFor(jobTimeoutMs: number): number {
   return STOP_GRACE_PHASES * jobTimeoutMs + STOP_GRACE_MARGIN_MS
 }
 
+/**
+ * pg-boss v10 delivers a BATCH array and treats the callback's outcome as a verdict on the WHOLE batch: it
+ * completes every id when the callback resolves and FAILS every id when it throws (manager.js onFetch).
+ * Both are wrong for us. The media.checks handler deliberately throws MediaInfraError to request a retry,
+ * so throwing out of the callback would re-deliver every clean sibling (burning its retryLimit and
+ * re-downloading/re-decoding/re-encoding bytes that already succeeded, which for a JPEG also means a
+ * second lossy pass; the abuse_flags rows themselves are safe, since
+ * drizzle/0056_abuse_flags_worker_open_unique.sql plus insertAbuseFlag's ON CONFLICT DO NOTHING keep one
+ * OPEN worker flag per subject+reason); resolving instead would mark the failed job COMPLETE and lose it.
+ * So each job is completed/failed INDIVIDUALLY by id and the callback resolves, leaving pg-boss's
+ * batch-level complete a no-op (completeJobs only matches state 'active', and a failed job has already
+ * left it).
+ *
+ * Any throw - not just MediaInfraError - fails that one job and gets the queue's bounded retry: an
+ * unexpected error is a bug, and silently completing the job would hide it AND wedge the asset.
+ */
+async function settleEachJob(
+  boss: PgBoss,
+  name: string,
+  jobs: PgBoss.Job[],
+  handler: JobHandler,
+): Promise<void> {
+  const settled = await Promise.allSettled(
+    jobs.map(async (j) => {
+      try {
+        await handler({ id: j.id, data: j.data })
+      } catch (err) {
+        await boss.fail(name, j.id, toFailureOutput(err))
+        return
+      }
+      await boss.complete(name, j.id)
+    }),
+  )
+  // A rejection here is the complete/fail WRITE failing (DB blip), not the handler: rethrow so pg-boss's
+  // batch-level fail retries the batch rather than losing the outcome silently. Jobs already marked
+  // complete are unaffected (failJobsById only matches state < 'completed').
+  const broken = settled.find((r): r is PromiseRejectedResult => r.status === "rejected")
+  if (broken)
+    throw broken.reason instanceof Error ? broken.reason : new Error(String(broken.reason))
+}
+
 export class PgBossWorkerJobs implements WorkerJobs {
   private readonly connectionString: string
   private readonly stopGraceMs: number
@@ -207,39 +248,7 @@ export class PgBossWorkerJobs implements WorkerJobs {
       options.pollingIntervalSeconds = settings.pollingIntervalSeconds
     }
     const boss = this.requireBoss()
-    await boss.work(name, options, async (jobs: PgBoss.Job[]) => {
-      // pg-boss v10 delivers a BATCH array and treats the callback's outcome as a verdict on the WHOLE
-      // batch: it completes every id when the callback resolves and FAILS every id when it throws
-      // (manager.js onFetch). Both are wrong for us. The media.checks handler deliberately throws
-      // MediaInfraError to request a retry, so throwing out of here would re-deliver every clean sibling
-      // (burning its retryLimit and re-downloading/re-decoding/re-encoding bytes that already succeeded,
-      // which for a JPEG also means a second lossy pass; the abuse_flags rows themselves are safe, since
-      // drizzle/0056_abuse_flags_worker_open_unique.sql plus insertAbuseFlag's ON CONFLICT DO NOTHING keep
-      // one OPEN worker flag per subject+reason); resolving instead would mark the failed
-      // job COMPLETE and lose it. So each job is completed/failed INDIVIDUALLY by id and the callback
-      // resolves, leaving pg-boss's batch-level complete a no-op (completeJobs only matches state
-      // 'active', and a failed job has already left it).
-      //
-      // Any throw - not just MediaInfraError - fails that one job and gets the queue's bounded retry: an
-      // unexpected error is a bug, and silently completing the job would hide it AND wedge the asset.
-      const settled = await Promise.allSettled(
-        jobs.map(async (j) => {
-          try {
-            await handler({ id: j.id, data: j.data })
-          } catch (err) {
-            await boss.fail(name, j.id, toFailureOutput(err))
-            return
-          }
-          await boss.complete(name, j.id)
-        }),
-      )
-      // A rejection here is the complete/fail WRITE failing (DB blip), not the handler: rethrow so
-      // pg-boss's batch-level fail retries the batch rather than losing the outcome silently. Jobs
-      // already marked complete are unaffected (failJobsById only matches state < 'completed').
-      const broken = settled.find((r): r is PromiseRejectedResult => r.status === "rejected")
-      if (broken)
-        throw broken.reason instanceof Error ? broken.reason : new Error(String(broken.reason))
-    })
+    await boss.work(name, options, (jobs: PgBoss.Job[]) => settleEachJob(boss, name, jobs, handler))
   }
 
   async complete(jobId: string): Promise<void> {

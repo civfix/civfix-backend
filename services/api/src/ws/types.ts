@@ -1,8 +1,15 @@
-import type { RoomKind } from "@civfix/shared"
+import type { ChatMessageDTO, ChatMessageKind, RoomKind, UserMentionDTO } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import type { ChatService, ChatConnection, UserChannel } from "@civfix/shared/interfaces"
 import type { ChatPresence } from "../adapters/chat-presence.js"
+import type { SocketStatusCheck } from "../auth/account-status.js"
+import type { SessionService } from "../auth/session-service.js"
+import type { AccountStatus } from "../auth/stores.js"
+import type { WsTicketPayload } from "../auth/ws-ticket.js"
 import type { RateLimiter } from "./report-rate-limit.js"
+import type { SendResilience } from "./send-resilience.js"
+
+export const WS_ROUTE = "/ws"
 
 export const WS_HEARTBEAT_MS = 30_000
 
@@ -47,6 +54,15 @@ export const WS_FRAME_RATE_LIMITED_MESSAGE = "You're sending frames too fast. Pl
 
 export const WS_FRAME_BACKLOG_REASON = "too many queued frames"
 
+export const WS_CONNECTION_CAP_REASON = "too many connections"
+
+// Group rooms have no bucket of their own: their sends spend the cleanup bucket, keyed per room.
+export const WS_SEND_LIMITS = {
+  cleanup: { capacity: 30, refillPerSec: 0.5 },
+  dm: { capacity: 20, refillPerSec: 0.5 },
+  report: { capacity: 30, refillPerSec: 0.5 },
+} as const
+
 export type IsMemberFn = (cleanupId: string, userId: string) => Promise<boolean>
 
 export type MarkReadFn = (cleanupId: string, userId: string, upToId: string) => Promise<void>
@@ -59,11 +75,11 @@ export interface GatewayDmDeps {
     threadId: string
     senderId: string
     body: string
-    kind?: import("@civfix/shared").ChatMessageKind
+    kind?: ChatMessageKind
     clientId?: string
     mediaUploadIds?: string[]
     replyToId?: string
-  }): Promise<import("@civfix/shared").ChatMessageDTO>
+  }): Promise<ChatMessageDTO>
   markRead(threadId: string, userId: string, upToId: string): Promise<void>
 }
 
@@ -74,26 +90,23 @@ export type ThreadRecipientsOf = (kind: RoomKind, id: string, senderId: string) 
 export type OnDmDelivered = (
   threadId: string,
   recipientId: string,
-  message: import("@civfix/shared").ChatMessageDTO,
+  message: ChatMessageDTO,
 ) => Promise<void>
 
 export type OnReportMessage = (
   reportId: string,
-  message: import("@civfix/shared").ChatMessageDTO,
+  message: ChatMessageDTO,
   actorUserId: string,
 ) => Promise<void>
 
-export type OnGroupMessage = (
-  groupId: string,
-  message: import("@civfix/shared").ChatMessageDTO,
-) => Promise<void>
+export type OnGroupMessage = (groupId: string, message: ChatMessageDTO) => Promise<void>
 
 export type OnChatReply = (input: {
   kind: RoomKind
   roomId: string
   actorUserId: string
   targetUserId: string
-  message: import("@civfix/shared").ChatMessageDTO
+  message: ChatMessageDTO
 }) => Promise<void>
 
 export interface GatewayReportChat {
@@ -120,7 +133,7 @@ export interface GatewayChatMentions {
     authorUserId: string
     kind: RoomKind
     roomId: string
-  }): Promise<import("@civfix/shared").UserMentionDTO[]>
+  }): Promise<UserMentionDTO[]>
   recordChatMentions(messageId: string, mentionedUserIds: string[]): Promise<void>
   logger?: Pick<FastifyBaseLogger, "warn"> | undefined
   notifyChatMention(input: {
@@ -128,7 +141,7 @@ export interface GatewayChatMentions {
     roomId: string
     actorUserId: string
     mentionedUserId: string
-    message: import("@civfix/shared").ChatMessageDTO
+    message: ChatMessageDTO
   }): Promise<void>
 }
 
@@ -138,7 +151,7 @@ export type GatewayChatService = Omit<ChatService, "broadcast"> & {
     msg: Parameters<ChatService["broadcast"]>[1],
     opts?: { excludeConnId?: string },
   ): Promise<void>
-  sendResilience?: import("./send-resilience.js").SendResilience | undefined
+  sendResilience?: SendResilience | undefined
 }
 
 export interface GatewayDeps {
@@ -170,8 +183,8 @@ export interface GatewaySession {
   readonly typingThrottle: Map<string, number>
   frameLimiter?: RateLimiter
   closed?: boolean
-  accountStatus?: import("../auth/stores.js").AccountStatus
-  revalidateStatus?: () => Promise<import("../auth/account-status.js").SocketStatusCheck>
+  accountStatus?: AccountStatus
+  revalidateStatus?: () => Promise<SocketStatusCheck>
   closeForAuth?: () => void
 }
 
@@ -180,17 +193,15 @@ export type WsHandshakeResult =
       ok: true
       userId: string
       sessionHash?: string
-      accountStatus?: import("../auth/stores.js").AccountStatus
+      accountStatus?: AccountStatus
     }
   | { ok: false; code: "FORBIDDEN" | "UNAUTHORIZED"; message: string; reason: string }
 
 export interface RegisterGatewayOptions {
   chat: ChatService
   isMember: IsMemberFn
-  sessions: import("../auth/session-service.js").SessionService | undefined
-  redeemTicket?:
-    | ((ticket: string) => Promise<import("../auth/ws-ticket.js").WsTicketPayload | null>)
-    | undefined
+  sessions: SessionService | undefined
+  redeemTicket?: ((ticket: string) => Promise<WsTicketPayload | null>) | undefined
   markRead?: MarkReadFn | undefined
   markReadOnOpen?: MarkReadOnOpenFn | undefined
   presence?: ChatPresence | undefined

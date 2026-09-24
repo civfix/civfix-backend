@@ -30,6 +30,22 @@ import { settleWithin } from "../timeout.js"
 sharp.cache(false)
 sharp.concurrency(1)
 
+export const ALLOWED_IMAGE_FORMATS = ["jpeg", "png", "webp"] as const
+export type AllowedImageFormat = (typeof ALLOWED_IMAGE_FORMATS)[number]
+
+const PNG_COMPRESSION_LEVEL = 9
+const STRIPPED_QUALITY = 90
+const THUMB_QUALITY = 80
+const THUMB_CONTENT_TYPE = "image/jpeg"
+const MS_PER_SECOND = 1000
+const MIN_SHARP_TIMEOUT_SEC = 1
+
+const JPEG_MAGIC = [0xff, 0xd8, 0xff]
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+const RIFF_MAGIC = [0x52, 0x49, 0x46, 0x46]
+const WEBP_FORM_TYPE = [0x57, 0x45, 0x42, 0x50]
+const WEBP_FORM_TYPE_OFFSET = 8
+
 export interface ExifGps {
   lat: number
   lng: number
@@ -73,7 +89,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 
 /** A spoofed-MIME input that libvips detects as anything else (SVG, TIFF, AVIF, GIF, ...) is rejected
  * before any full decode rather than re-encoded via an unintended codec. */
-const ALLOWED_DECODED_FORMATS: ReadonlySet<string> = new Set(["jpeg", "png", "webp"])
+const ALLOWED_DECODED_FORMATS: ReadonlySet<string> = new Set(ALLOWED_IMAGE_FORMATS)
 
 /**
  * The ALLOWED_DECODED_FORMATS check runs on `meta.format`, i.e. AFTER `metadata()`, and `metadata()`
@@ -92,37 +108,23 @@ const ALLOWED_DECODED_FORMATS: ReadonlySet<string> = new Set(["jpeg", "png", "we
  *   PNG   89 50 4E 47 0D 0A 1A 0A
  *   WebP  "RIFF" .... "WEBP"  (RIFF container, WEBP form type at offset 8)
  */
-export function sniffAllowedImageContainer(bytes: Uint8Array): "jpeg" | "png" | "webp" | null {
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return "jpeg"
-  }
+export function sniffAllowedImageContainer(bytes: Uint8Array): AllowedImageFormat | null {
+  if (hasBytesAt(bytes, 0, JPEG_MAGIC)) return "jpeg"
+  if (hasBytesAt(bytes, 0, PNG_MAGIC)) return "png"
   if (
-    bytes.length >= 8 &&
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47 &&
-    bytes[4] === 0x0d &&
-    bytes[5] === 0x0a &&
-    bytes[6] === 0x1a &&
-    bytes[7] === 0x0a
-  ) {
-    return "png"
-  }
-  if (
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x45 &&
-    bytes[10] === 0x42 &&
-    bytes[11] === 0x50
+    hasBytesAt(bytes, 0, RIFF_MAGIC) &&
+    hasBytesAt(bytes, WEBP_FORM_TYPE_OFFSET, WEBP_FORM_TYPE)
   ) {
     return "webp"
   }
   return null
+}
+
+function hasBytesAt(bytes: Uint8Array, offset: number, signature: readonly number[]): boolean {
+  return (
+    bytes.length >= offset + signature.length &&
+    signature.every((byte, i) => bytes[offset + i] === byte)
+  )
 }
 
 /**
@@ -147,7 +149,9 @@ export function guardedSharp(bytes: Uint8Array, limits: WorkerLimits): Sharp {
     // concurrent job under adversarial large-but-legal uploads).
     sequentialRead: true,
     // Seconds, rounded up so a sub-second config still yields >= 1s.
-  }).timeout({ seconds: Math.max(1, Math.ceil(limits.imageTimeoutMs / 1000)) })
+  }).timeout({
+    seconds: Math.max(MIN_SHARP_TIMEOUT_SEC, Math.ceil(limits.imageTimeoutMs / MS_PER_SECOND)),
+  })
 }
 
 function chooseOutput(format: string): {
@@ -156,11 +160,17 @@ function chooseOutput(format: string): {
 } {
   switch (format) {
     case "png":
-      return { apply: (s) => s.png({ compressionLevel: 9 }), contentType: "image/png" }
+      return {
+        apply: (s) => s.png({ compressionLevel: PNG_COMPRESSION_LEVEL }),
+        contentType: "image/png",
+      }
     case "webp":
-      return { apply: (s) => s.webp({ quality: 90 }), contentType: "image/webp" }
+      return { apply: (s) => s.webp({ quality: STRIPPED_QUALITY }), contentType: "image/webp" }
     default:
-      return { apply: (s) => s.jpeg({ quality: 90, mozjpeg: false }), contentType: "image/jpeg" }
+      return {
+        apply: (s) => s.jpeg({ quality: STRIPPED_QUALITY, mozjpeg: false }),
+        contentType: "image/jpeg",
+      }
   }
 }
 
@@ -193,6 +203,20 @@ export async function processImage(
   bytes: Uint8Array,
   limits: WorkerLimits,
 ): Promise<ProcessedImage> {
+  const meta = await readGuardedMeta(bytes, limits)
+  const exifGps = await readExifGps(bytes)
+  const encoded = await encodeStrippedOutputs(bytes, meta.format, limits)
+  return {
+    meta,
+    strippedBytes: encoded.strippedBytes,
+    strippedContentType: encoded.strippedContentType,
+    thumbnailBytes: encoded.thumbnailBytes,
+    thumbnailContentType: THUMB_CONTENT_TYPE,
+    exifGps,
+  }
+}
+
+async function readGuardedMeta(bytes: Uint8Array, limits: WorkerLimits): Promise<ImageMeta> {
   // metadata() parses the header and enforces limitInputPixels; a bomb or garbage throws here before any
   // full decode.
   const meta = await withTimeout(
@@ -216,15 +240,20 @@ export async function processImage(
       `image ${meta.width}x${meta.height}x${meta.pages ?? 1} exceeds pixel budget ${limits.maxImagePixels}`,
     )
   }
+  return { width: meta.width, height: meta.height, format: meta.format }
+}
 
-  const exifGps = await readExifGps(bytes)
-
+async function encodeStrippedOutputs(
+  bytes: Uint8Array,
+  format: string,
+  limits: WorkerLimits,
+): Promise<{ strippedBytes: Buffer; strippedContentType: string; thumbnailBytes: Buffer }> {
   // Stripped full image AND thumbnail from a SINGLE decode: a fresh guardedSharp() per output would run
   // an independent full libvips decode (roughly doubling per-image CPU + peak surface on this CPU-bound
   // worker). Instead build one guarded pipeline, bake the EXIF orientation into the pixels once
   // (`.rotate()` with no args), then `.clone()` per output so sharp shares the one decoded surface.
   // Neither output calls withMetadata(), so all EXIF/XMP/ICC metadata is dropped on re-encode.
-  const out = chooseOutput(meta.format)
+  const out = chooseOutput(format)
   const base = guardedSharp(bytes, limits).rotate()
   const [strippedBytes, thumbnailBytes] = await Promise.all([
     withTimeout(out.apply(base.clone()).toBuffer(), limits.imageTimeoutMs, "strip"),
@@ -237,24 +266,16 @@ export async function processImage(
           fit: "inside",
           withoutEnlargement: true,
         })
-        .jpeg({ quality: 80 })
+        .jpeg({ quality: THUMB_QUALITY })
         .toBuffer(),
       limits.imageTimeoutMs,
       "thumbnail",
     ),
   ])
-
-  return {
-    meta: { width: meta.width, height: meta.height, format: meta.format },
-    strippedBytes,
-    strippedContentType: out.contentType,
-    thumbnailBytes,
-    thumbnailContentType: "image/jpeg",
-    exifGps,
-  }
+  return { strippedBytes, strippedContentType: out.contentType, thumbnailBytes }
 }
 
-/** Proves the strip worked; used by tests and as a cheap post-strip self-check. */
+/** Proves the strip worked: true when no GPS survives in the re-encoded bytes. */
 export async function hasNoGps(bytes: Uint8Array): Promise<boolean> {
   return (await readExifGps(bytes)) === null
 }

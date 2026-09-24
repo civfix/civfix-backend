@@ -57,41 +57,63 @@ import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
 
 export const MAX_GUESTS_PER_EVENT = 500
 
-export const GUEST_OTP_TTL_SECONDS = OTP_TTL_SECONDS
+const GUEST_OTP_TTL_SECONDS = OTP_TTL_SECONDS
 
-export const GUEST_CONTACT_COOLDOWN_SECONDS = 60
+const GUEST_CONTACT_COOLDOWN_SECONDS = 60
 
 export const GUEST_CONTACT_MAX_PER_DAY = 5
 
 export const GUEST_IP_MAX_PER_HOUR = 10
 
-export const GUEST_IP_WINDOW_SECONDS = 60 * 60
+const GUEST_IP_WINDOW_SECONDS = 60 * 60
 
-export const DAY_SECONDS = 24 * 60 * 60
+const DAY_SECONDS = 24 * 60 * 60
 
-export const GUESTS_DEFAULT_LIMIT = 25
+const GUESTS_DEFAULT_LIMIT = 25
 
 type SmsPurpose = "otp" | "confirmation" | "notice"
 
-export const GUEST_SMS_NOTICE_CONCURRENCY = 8
+const GUEST_SMS_NOTICE_CONCURRENCY = 8
 
 export const SMS_BUDGET_KEY_PREFIX = "sms:day:"
 
-export const SMS_TITLE_MAX_CHARS = 20
+const SMS_TITLE_MAX_CHARS = 20
 
-export const GUEST_RETENTION_MAX_PAGES = 20
+const GUEST_RETENTION_MAX_PAGES = 20
 
-export const GUEST_CONTACT_RETENTION_DAYS = 30
+const GUEST_CONTACT_RETENTION_DAYS = 30
 
-export const GUEST_OTP_RETENTION_HOURS = 24
+const GUEST_OTP_RETENTION_HOURS = 24
 
-export const GUEST_RETENTION_BATCH = 500
+const GUEST_RETENTION_BATCH = 500
 
-export const GUEST_CONTACT_READ_COUNTER_KEY = "host:guestContactReads"
+const GUEST_CONTACT_READ_COUNTER_KEY = "host:guestContactReads"
 
-export const GUEST_CONTACT_READS_PER_HOUR = 50
+const GUEST_CONTACT_READS_PER_HOUR = 50
 
-export const GUEST_CONTACT_READ_WINDOW_SECONDS = 60 * 60
+const GUEST_CONTACT_READ_WINDOW_SECONDS = 60 * 60
+
+const MS_PER_SECOND = 1000
+
+const SECONDS_PER_MINUTE = 60
+
+const MS_PER_HOUR = 60 * 60 * MS_PER_SECOND
+
+const SMS_LOCALE = "en"
+
+const SMS_PLACE_COORD_DECIMALS = 5
+
+const GUEST_CODE_COOLDOWN_KEY_PREFIX = "guest:rl:code:"
+
+const GUEST_CONTACT_DAY_KEY_PREFIX = "guest:rl:contact:day:"
+
+const GUEST_IP_KEY_PREFIX = "guest:rl:ip:"
+
+const GUEST_CODE_FAIL_KEY_PREFIX = "guest:vf:code:"
+
+const GUEST_IP_FAIL_KEY_PREFIX = "guest:vf:ip:"
+
+const GUEST_REGISTRATION_IDEMPOTENCY_PREFIX = "guest:"
 
 export interface GuestRegistrationFields {
   ticketTypeId?: string
@@ -287,7 +309,7 @@ export interface GuestRsvpService {
   notifyGuestsBySms(cleanupId: string, kind: "cancelled" | "updated"): Promise<number>
 }
 
-export function smsUnavailableError(): AppError {
+function smsUnavailableError(): AppError {
   return new AppError(
     ErrorCode.CONFLICT,
     "Text message codes aren't available right now. Use email instead.",
@@ -295,7 +317,7 @@ export function smsUnavailableError(): AppError {
   )
 }
 
-export function smsOptedOutError(): AppError {
+function smsOptedOutError(): AppError {
   return new AppError(
     ErrorCode.CONFLICT,
     "That number has opted out of text messages. Use email instead.",
@@ -313,7 +335,7 @@ const RETRY_REQUEST = "Check your details, then try again."
 
 export const GUEST_REGISTRATION_ERROR_FIELD = "registration"
 
-export const GuestRegistrationRefusalReason = {
+const GuestRegistrationRefusalReason = {
   soldOut: "sold_out",
   registrationClosed: "registration_closed",
   salesClosed: "sales_closed",
@@ -325,7 +347,7 @@ export const GuestRegistrationRefusalReason = {
   answersInvalid: "answers_invalid",
 } as const
 
-export type GuestRegistrationRefusalReason =
+type GuestRegistrationRefusalReason =
   (typeof GuestRegistrationRefusalReason)[keyof typeof GuestRegistrationRefusalReason]
 
 type GuestSeat = Pick<
@@ -431,7 +453,7 @@ function withinWindow(at: Date, opensAt: Date | null, closesAt: Date | null): bo
  * see. It mirrors the order of the registration transaction and answers null whenever that
  * transaction could still accept, so verify stays the authority on everything else.
  */
-export function foreseeableGuestRefusal(
+function foreseeableGuestRefusal(
   gate: GuestRegistrationGate,
   fields: GuestRegistrationFields,
   at: Date,
@@ -475,7 +497,7 @@ function utcDayKey(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10)
 }
 
-export function guestContactOf(input: {
+function guestContactOf(input: {
   channel: GuestContactChannel
   email?: string | undefined
   phone?: string | undefined
@@ -490,7 +512,7 @@ export function guestContactOf(input: {
   return phone
 }
 
-export function registrationFieldsOf(
+function registrationFieldsOf(
   input: GuestRsvpRequestRequest | GuestRsvpVerifyRequest,
 ): GuestRegistrationFields {
   return {
@@ -502,7 +524,7 @@ export function registrationFieldsOf(
   }
 }
 
-export function toCleanupGuestDTO(row: GuestRosterRow): CleanupGuestDTO {
+function toCleanupGuestDTO(row: GuestRosterRow): CleanupGuestDTO {
   return {
     id: row.id,
     name: row.name,
@@ -532,23 +554,23 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
   }
 
   function cooldownKey(cleanupId: string, digest: string): string {
-    return `guest:rl:code:${cleanupId}:${digest}`
+    return `${GUEST_CODE_COOLDOWN_KEY_PREFIX}${cleanupId}:${digest}`
   }
 
   function contactDayKey(digest: string): string {
-    return `guest:rl:contact:day:${digest}`
+    return `${GUEST_CONTACT_DAY_KEY_PREFIX}${digest}`
   }
 
   function ipKey(bucket: string): string {
-    return `guest:rl:ip:${bucket}`
+    return `${GUEST_IP_KEY_PREFIX}${bucket}`
   }
 
   function codeFailKey(otpId: string): string {
-    return `guest:vf:code:${otpId}`
+    return `${GUEST_CODE_FAIL_KEY_PREFIX}${otpId}`
   }
 
   function ipFailKey(bucket: string): string {
-    return `guest:vf:ip:${bucket}`
+    return `${GUEST_IP_FAIL_KEY_PREFIX}${bucket}`
   }
 
   async function readCounter(key: string): Promise<number> {
@@ -617,13 +639,13 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       await deps.mailer.sendTransactional(args.contact, "guest_otp", {
         title: args.eventTitle,
         code: args.code,
-        minutes: String(Math.floor(GUEST_OTP_TTL_SECONDS / 60)),
+        minutes: String(Math.floor(GUEST_OTP_TTL_SECONDS / SECONDS_PER_MINUTE)),
       })
       return
     }
     await deps.smsSender.send(
       args.contact,
-      renderMessage("en", "sms.guest_otp.body", {
+      renderMessage(SMS_LOCALE, "sms.guest_otp.body", {
         title: smsTitle(args.eventTitle),
         code: args.code,
       }),
@@ -726,11 +748,13 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
 
     const body =
       kind === "cancelled"
-        ? renderMessage("en", "sms.guest_cancelled.body", { title: smsTitle(event.title) })
-        : renderMessage("en", "sms.guest_updated.body", {
+        ? renderMessage(SMS_LOCALE, "sms.guest_cancelled.body", { title: smsTitle(event.title) })
+        : renderMessage(SMS_LOCALE, "sms.guest_updated.body", {
             title: smsTitle(event.title),
             when: formatEventWhen(event.scheduledAt, event.timezone ?? DEFAULT_EVENT_TIME_ZONE),
-            place: event.address ?? `${event.lat.toFixed(5)}, ${event.lng.toFixed(5)}`,
+            place:
+              event.address ??
+              `${event.lat.toFixed(SMS_PLACE_COORD_DECIMALS)}, ${event.lng.toFixed(SMS_PLACE_COORD_DECIMALS)}`,
           })
 
     let sent = 0
@@ -773,7 +797,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       const response = await bridge.register(
         {
           id: cleanupId,
-          idempotencyKey: `guest:${guestId}`,
+          idempotencyKey: `${GUEST_REGISTRATION_IDEMPOTENCY_PREFIX}${guestId}`,
           partySize: registration.partySize ?? 1,
           joinWaitlistIfFull: false,
           ...(registration.ticketTypeId !== undefined
@@ -894,7 +918,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     }
     await deps.smsSender.send(
       args.contact,
-      renderMessage("en", "sms.guest_confirmed.body", {
+      renderMessage(SMS_LOCALE, "sms.guest_confirmed.body", {
         title: smsTitle(args.event.title),
         link: manageLink(args.rawToken),
       }),
@@ -943,6 +967,113 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     return total
   }
 
+  function validatedGuestName(raw: string): string {
+    const name = raw.trim()
+    if (name.length === 0 || name.length > MAX_GUEST_NAME) {
+      throw AppError.validation({ name: `must be 1-${MAX_GUEST_NAME} characters` })
+    }
+    assertNoSlur(name, "name")
+    return name
+  }
+
+  async function throttleCodeRequest(args: {
+    cleanupId: string
+    channel: GuestContactChannel
+    contact: string
+    ip: string | null
+  }): Promise<string> {
+    const digest = await contactDigest(args.contact)
+    const bucket = args.ip === null ? null : normalizeIp(args.ip)
+    if (bucket !== null) {
+      const hits = await deps.cache.incr(ipKey(bucket), GUEST_IP_WINDOW_SECONDS)
+      if (hits > GUEST_IP_MAX_PER_HOUR) {
+        throw AppError.rateLimited("Too many code requests from this network.")
+      }
+    }
+    const daily = await deps.cache.incr(contactDayKey(digest), DAY_SECONDS)
+    if (daily > GUEST_CONTACT_MAX_PER_DAY) {
+      throw AppError.rateLimited("Too many code requests for this contact today.")
+    }
+
+    if (args.channel === "sms" && (await deps.repo.isPhoneOptedOut(args.contact))) {
+      throw smsOptedOutError()
+    }
+
+    const cooldown = cooldownKey(args.cleanupId, digest)
+    const cooldownHits = await deps.cache.incr(cooldown, GUEST_CONTACT_COOLDOWN_SECONDS)
+    if (cooldownHits > 1) {
+      throw AppError.rateLimited("Please wait before requesting another code.")
+    }
+
+    if (args.channel === "sms" && !(await reserveSmsBudget("otp"))) {
+      await releaseCooldown(cooldown)
+      throw smsUnavailableError()
+    }
+    return cooldown
+  }
+
+  async function issueCode(args: {
+    event: GuestEventView
+    channel: GuestContactChannel
+    contact: string
+    name: string
+    cooldown: string
+  }): Promise<void> {
+    try {
+      const at = new Date(now())
+      await deps.repo.invalidateActiveOtps(args.event.id, args.contact, at)
+      const code = newCode()
+      const codeHash = await hashOtpCode(code)
+      await deps.repo.insertOtp({
+        cleanupId: args.event.id,
+        channel: args.channel,
+        contact: args.contact,
+        name: args.name,
+        codeHash,
+        expiresAt: new Date(now() + GUEST_OTP_TTL_SECONDS * MS_PER_SECOND),
+      })
+      await deliverCode({
+        channel: args.channel,
+        contact: args.contact,
+        code,
+        eventTitle: args.event.title,
+      })
+    } catch (err) {
+      await releaseCooldown(args.cooldown)
+      throw await mapDeliveryError(err, args.channel === "sms" ? args.contact : null)
+    }
+  }
+
+  async function consumeOtp(
+    record: GuestOtpRecord,
+    code: string,
+    at: Date,
+    bucket: string | null,
+  ): Promise<void> {
+    if ((await readCounter(codeFailKey(record.id))) >= OTP_VERIFY_CODE_FAIL_MAX) {
+      await deps.repo.markOtpConsumed(record.id, at)
+      throw attemptsExhaustedError()
+    }
+
+    const attempts = await deps.repo.incrementOtpAttempts(record.id)
+    if (attempts > OTP_MAX_ATTEMPTS) {
+      await deps.repo.markOtpConsumed(record.id, at)
+      await bumpVerifyFailure(record.id, bucket)
+      throw attemptsExhaustedError()
+    }
+
+    const ok = await verifyOtpCode(record.codeHash, code)
+    if (!ok) {
+      const burned = attempts >= OTP_MAX_ATTEMPTS
+      if (burned) await deps.repo.markOtpConsumed(record.id, at)
+      await bumpVerifyFailure(record.id, bucket)
+      throw burned ? attemptsExhaustedError() : invalidCodeError()
+    }
+
+    const claimed = await deps.repo.markOtpConsumed(record.id, at)
+    if (!claimed) throw invalidCodeError()
+  }
+
   return {
     async requestCode(
       input: GuestRsvpRequestRequest,
@@ -967,14 +1098,10 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       if (!human) throw AppError.turnstileFailed()
 
       const event = await loadOpenEvent(input.id)
-      await assertRegistrationInputValid(event.id, registrationFieldsOf(input))
+      const registration = registrationFieldsOf(input)
+      await assertRegistrationInputValid(event.id, registration)
 
-      const name = input.name.trim()
-      if (name.length === 0 || name.length > MAX_GUEST_NAME) {
-        throw AppError.validation({ name: `must be 1-${MAX_GUEST_NAME} characters` })
-      }
-      assertNoSlur(name, "name")
-
+      const name = validatedGuestName(input.name)
       const contact = guestContactOf(input)
 
       if (isReviewerContact(input.channel, contact)) {
@@ -982,7 +1109,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       }
 
       // Refused before any budget is spent or code sent: the guest can fix the form and ask again.
-      await refuseForeseeableRegistration(event.id, registrationFieldsOf(input))
+      await refuseForeseeableRegistration(event.id, registration)
 
       const active = await deps.repo.countActiveGuests(event.id)
       if (active >= MAX_GUESTS_PER_EVENT) {
@@ -991,53 +1118,13 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
 
       if (input.channel === "sms" && !deps.smsGuestEnabled) throw smsUnavailableError()
 
-      const digest = await contactDigest(contact)
-      const bucket = ctx.ip === null ? null : normalizeIp(ctx.ip)
-      if (bucket !== null) {
-        const hits = await deps.cache.incr(ipKey(bucket), GUEST_IP_WINDOW_SECONDS)
-        if (hits > GUEST_IP_MAX_PER_HOUR) {
-          throw AppError.rateLimited("Too many code requests from this network.")
-        }
-      }
-      const daily = await deps.cache.incr(contactDayKey(digest), DAY_SECONDS)
-      if (daily > GUEST_CONTACT_MAX_PER_DAY) {
-        throw AppError.rateLimited("Too many code requests for this contact today.")
-      }
-
-      if (input.channel === "sms" && (await deps.repo.isPhoneOptedOut(contact))) {
-        throw smsOptedOutError()
-      }
-
-      const cooldown = cooldownKey(event.id, digest)
-      const cooldownHits = await deps.cache.incr(cooldown, GUEST_CONTACT_COOLDOWN_SECONDS)
-      if (cooldownHits > 1) {
-        throw AppError.rateLimited("Please wait before requesting another code.")
-      }
-
-      if (input.channel === "sms" && !(await reserveSmsBudget("otp"))) {
-        await releaseCooldown(cooldown)
-        throw smsUnavailableError()
-      }
-
-      try {
-        const at = new Date(now())
-        await deps.repo.invalidateActiveOtps(event.id, contact, at)
-        const code = newCode()
-        const codeHash = await hashOtpCode(code)
-        await deps.repo.insertOtp({
-          cleanupId: event.id,
-          channel: input.channel,
-          contact,
-          name,
-          codeHash,
-          expiresAt: new Date(now() + GUEST_OTP_TTL_SECONDS * 1000),
-        })
-        await deliverCode({ channel: input.channel, contact, code, eventTitle: event.title })
-      } catch (err) {
-        await releaseCooldown(cooldown)
-        throw await mapDeliveryError(err, input.channel === "sms" ? contact : null)
-      }
-
+      const cooldown = await throttleCodeRequest({
+        cleanupId: event.id,
+        channel: input.channel,
+        contact,
+        ip: ctx.ip,
+      })
+      await issueCode({ event, channel: input.channel, contact, name, cooldown })
       return fakeSuccess
     },
 
@@ -1052,7 +1139,8 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
       }
 
       const event = await loadOpenEvent(input.id)
-      await assertRegistrationInputValid(event.id, registrationFieldsOf(input))
+      const registration = registrationFieldsOf(input)
+      await assertRegistrationInputValid(event.id, registration)
       const contact = guestContactOf(input)
 
       if (isReviewerContact(input.channel, contact)) {
@@ -1063,7 +1151,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
             channel: input.channel,
             contact,
             confirm: false,
-            registration: registrationFieldsOf(input),
+            registration,
           })
         }
         await bumpVerifyFailure(null, bucket)
@@ -1075,29 +1163,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         await bumpVerifyFailure(null, bucket)
         throw invalidCodeError()
       }
-
-      if ((await readCounter(codeFailKey(record.id))) >= OTP_VERIFY_CODE_FAIL_MAX) {
-        await deps.repo.markOtpConsumed(record.id, at)
-        throw attemptsExhaustedError()
-      }
-
-      const attempts = await deps.repo.incrementOtpAttempts(record.id)
-      if (attempts > OTP_MAX_ATTEMPTS) {
-        await deps.repo.markOtpConsumed(record.id, at)
-        await bumpVerifyFailure(record.id, bucket)
-        throw attemptsExhaustedError()
-      }
-
-      const ok = await verifyOtpCode(record.codeHash, input.code)
-      if (!ok) {
-        const burned = attempts >= OTP_MAX_ATTEMPTS
-        if (burned) await deps.repo.markOtpConsumed(record.id, at)
-        await bumpVerifyFailure(record.id, bucket)
-        throw burned ? attemptsExhaustedError() : invalidCodeError()
-      }
-
-      const claimed = await deps.repo.markOtpConsumed(record.id, at)
-      if (!claimed) throw invalidCodeError()
+      await consumeOtp(record, input.code, at, bucket)
 
       const digest = await contactDigest(contact)
       await deps.cache.del(cooldownKey(event.id, digest)).catch((err: unknown) => {
@@ -1113,7 +1179,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         channel: record.channel,
         contact,
         confirm: true,
-        registration: registrationFieldsOf(input),
+        registration,
       })
     },
 
@@ -1162,8 +1228,10 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
 
     async runRetentionSweep(): Promise<GuestRetentionResult> {
       const at = new Date(now())
-      const contactCutoff = new Date(now() - GUEST_CONTACT_RETENTION_DAYS * DAY_SECONDS * 1000)
-      const otpCutoff = new Date(now() - GUEST_OTP_RETENTION_HOURS * 60 * 60 * 1000)
+      const contactCutoff = new Date(
+        now() - GUEST_CONTACT_RETENTION_DAYS * DAY_SECONDS * MS_PER_SECOND,
+      )
+      const otpCutoff = new Date(now() - GUEST_OTP_RETENTION_HOURS * MS_PER_HOUR)
       const scrubbedGuests = await drainPages("guest contact scrub", (batchSize) =>
         deps.repo.scrubExpiredGuestContacts({ cutoff: contactCutoff, now: at, batchSize }),
       )

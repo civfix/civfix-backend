@@ -34,13 +34,16 @@ export interface RetentionSweepResult {
   errors: number
 }
 
-export const RETENTION_GRACE_MS = 60 * 60 * 1000
-export const RETENTION_BATCH = 5000
-export const RETENTION_IDEMPOTENCY_MS = 48 * 60 * 60 * 1000
-export const RETENTION_NOTIFICATIONS_MS = 90 * 24 * 60 * 60 * 1000
+const RETENTION_SWEEP = "retention.sweep"
+const HOUR_MS = 60 * 60 * 1000
+const DAY_MS = 24 * HOUR_MS
+
+export const RETENTION_GRACE_MS = HOUR_MS
+const RETENTION_BATCH = 5000
+const RETENTION_IDEMPOTENCY_MS = 48 * HOUR_MS
+const RETENTION_NOTIFICATIONS_MS = 90 * DAY_MS
 export const RETENTION_GEOCODE_CACHE_MS = GEOCODE_CACHE_TTL_MS
 export const RETENTION_INBOUND_EMAILS_MS = INBOUND_EMAIL_RETENTION_MS
-export const RETENTION_INBOUND_EMAILS_BATCH = INBOUND_EMAIL_RETENTION_BATCH
 export const RETENTION_MAX_PAGES = 20
 
 export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<RetentionSweepResult> {
@@ -84,7 +87,7 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
       await drainPages(deletePage, (rows) => onDeleted(rows.length), { pageSize, maxPages })
     } catch (err) {
       result.errors++
-      report(err, { job: "retention.sweep", table })
+      report(err, { job: RETENTION_SWEEP, table })
       log(`retention.sweep: ${table} failed`, { err: String(err) })
     }
   }
@@ -222,20 +225,7 @@ export async function runInboundEmailRetentionLane(
       async (rows) => {
         const reaped: string[] = []
         for (const row of rows) {
-          let objectsGone = true
-          for (const key of row.attachmentKeys) {
-            try {
-              await storage.delete(key)
-            } catch (err) {
-              objectsGone = false
-              result.inboundEmailObjectsLeaked += 1
-              opts.report(err, {
-                job: "retention.sweep",
-                table: "inbound_emails",
-                phase: "attachment",
-              })
-            }
-          }
+          const objectsGone = await deleteAttachments(row.attachmentKeys, storage, result, opts)
           if (objectsGone) reaped.push(row.id)
         }
         if (reaped.length === 0) {
@@ -248,7 +238,30 @@ export async function runInboundEmailRetentionLane(
     )
   } catch (err) {
     result.errors++
-    opts.report(err, { job: "retention.sweep", table: "inbound_emails" })
+    opts.report(err, { job: RETENTION_SWEEP, table: "inbound_emails" })
     opts.log("retention.sweep: inbound_emails failed", { err: String(err) })
   }
+}
+
+async function deleteAttachments(
+  keys: readonly string[],
+  storage: Pick<Storage, "delete">,
+  result: Pick<RetentionSweepResult, "inboundEmailObjectsLeaked">,
+  opts: Pick<InboundEmailRetentionLaneOptions, "report">,
+): Promise<boolean> {
+  let objectsGone = true
+  for (const key of keys) {
+    try {
+      await storage.delete(key)
+    } catch (err) {
+      objectsGone = false
+      result.inboundEmailObjectsLeaked += 1
+      opts.report(err, {
+        job: RETENTION_SWEEP,
+        table: "inbound_emails",
+        phase: "attachment",
+      })
+    }
+  }
+  return objectsGone
 }

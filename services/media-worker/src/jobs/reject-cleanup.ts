@@ -1,5 +1,5 @@
 import type { Storage } from "@civfix/shared/interfaces"
-import type { MediaWorkerRepo } from "@civfix/api/media-repo"
+import { MEDIA_CHECKS_JOB, type MediaWorkerRepo } from "@civfix/api/media-repo"
 import type { JobLogFn, JobReportFn } from "./obs.js"
 import { servedKey, thumbnailKey } from "./media-keys.js"
 
@@ -15,24 +15,35 @@ export interface RejectCleanupDeps {
   storage: Pick<Storage, "delete">
 }
 
+// A failed reference check counts as "still referenced": deleting bytes another row may serve is the
+// unrecoverable mistake, a leaked object is not.
+async function keepSharedBytes(
+  asset: { id: string; r2Key: string },
+  deps: RejectCleanupDeps,
+  log: JobLogFn,
+  report: JobReportFn,
+  failure: { phase: string; line: string },
+): Promise<boolean> {
+  try {
+    return await deps.repo.r2KeyReferencedByOthers(asset.id, asset.r2Key)
+  } catch (err) {
+    report(err, { job: MEDIA_CHECKS_JOB, phase: failure.phase, mediaId: asset.id })
+    log(failure.line, { mediaId: asset.id, err: String(err) })
+    return true
+  }
+}
+
 export async function deleteSupersededUpload(
   asset: { id: string; r2Key: string },
   deps: RejectCleanupDeps,
   log: JobLogFn,
   report: JobReportFn,
 ): Promise<void> {
-  let stillShared: boolean
-  try {
-    stillShared = await deps.repo.r2KeyReferencedByOthers(asset.id, asset.r2Key)
-  } catch (err) {
-    report(err, { job: "media.checks", phase: "upload-cleanup", mediaId: asset.id })
-    log("media.checks: superseded-upload reference check failed (bytes left in place)", {
-      mediaId: asset.id,
-      err: String(err),
-    })
-    return
-  }
-  if (stillShared) return
+  const keep = await keepSharedBytes(asset, deps, log, report, {
+    phase: "upload-cleanup",
+    line: "media.checks: superseded-upload reference check failed (bytes left in place)",
+  })
+  if (keep) return
 
   try {
     await deps.storage.delete(asset.r2Key)
@@ -59,7 +70,7 @@ export async function deleteSupersededUpload(
       }),
     )
   report(new Error("media.checks leaked the superseded upload object (tombstoned for retry)"), {
-    job: "media.checks",
+    job: MEDIA_CHECKS_JOB,
     phase: "upload-cleanup",
     mediaId: asset.id,
     key: asset.r2Key,
@@ -72,18 +83,11 @@ export async function deleteRejectedObjects(
   log: JobLogFn,
   report: JobReportFn,
 ): Promise<void> {
-  let stillShared: boolean
-  try {
-    stillShared = await deps.repo.r2KeyReferencedByOthers(asset.id, asset.r2Key)
-  } catch (err) {
-    report(err, { job: "media.checks", phase: "reject-cleanup", mediaId: asset.id })
-    log("media.checks: rejected-media reference check failed (bytes left in place)", {
-      mediaId: asset.id,
-      err: String(err),
-    })
-    return
-  }
-  if (stillShared) return
+  const keep = await keepSharedBytes(asset, deps, log, report, {
+    phase: "reject-cleanup",
+    line: "media.checks: rejected-media reference check failed (bytes left in place)",
+  })
+  if (keep) return
 
   const keys = [asset.r2Key, servedKey(asset.r2Key), thumbnailKey(asset.r2Key)]
   if (asset.servedKey && !keys.includes(asset.servedKey)) keys.push(asset.servedKey)
@@ -121,6 +125,6 @@ export async function deleteRejectedObjects(
     new Error(
       `media.checks leaked ${leaked.length} rejected-media R2 object(s) (tombstoned for retry)`,
     ),
-    { job: "media.checks", phase: "reject-cleanup", mediaId: asset.id, keys: leaked },
+    { job: MEDIA_CHECKS_JOB, phase: "reject-cleanup", mediaId: asset.id, keys: leaked },
   )
 }

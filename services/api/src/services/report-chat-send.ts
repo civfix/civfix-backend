@@ -9,7 +9,7 @@ import { mapWithLimit } from "./media-presign.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import type { GatewayChatMentions } from "../ws/types.js"
 
-export const REPORT_MENTION_BELL_CONCURRENCY = 4
+const REPORT_MENTION_BELL_CONCURRENCY = 4
 
 export type ReportChatMentionSeam = ChatMentionRecordSeam &
   Partial<Pick<GatewayChatMentions, "notifyChatMention">>

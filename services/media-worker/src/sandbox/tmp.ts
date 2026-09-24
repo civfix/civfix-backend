@@ -14,6 +14,15 @@ import { join } from "node:path"
 import { sandboxIdentity } from "./exec.js"
 
 const SCRATCH_PREFIX = "civfix-media-"
+const SCRATCH_STALE_MS = 60 * 60 * 1000
+const DEFAULT_INPUT_EXT = "bin"
+const SAFE_EXT_PATTERN = /^[a-z0-9]{1,8}$/i
+const UNSAFE_NAME_CHARS = /[^a-z0-9._-]/gi
+// Group-writable (setgid, so outputs inherit the sandbox group) while the sandboxed child writes;
+// owner-only once sealed for the read-back.
+const SHARED_DIR_MODE = 0o2770
+const SHARED_INPUT_MODE = 0o660
+const SEALED_DIR_MODE = 0o700
 
 export class ScratchOutputError extends Error {
   constructor(message: string, cause?: unknown) {
@@ -42,27 +51,27 @@ export interface Scratch {
   cleanup(): Promise<void>
 }
 
-export async function makeScratch(bytes?: Uint8Array, ext = "bin"): Promise<Scratch> {
+export async function makeScratch(bytes?: Uint8Array, ext = DEFAULT_INPUT_EXT): Promise<Scratch> {
   let dir: string
   try {
     dir = await mkdtemp(join(tmpdir(), SCRATCH_PREFIX))
   } catch (err) {
     throw new ScratchSetupError("could not create the sandbox scratch dir", err)
   }
-  const safeExt = /^[a-z0-9]{1,8}$/i.test(ext) ? ext : "bin"
+  const safeExt = SAFE_EXT_PATTERN.test(ext) ? ext : DEFAULT_INPUT_EXT
   const inputPath = join(dir, `input.${safeExt}`)
   try {
     const identity = sandboxIdentity()
     if (identity !== null) {
       await chown(dir, process.getuid?.() ?? -1, identity.gid)
-      await chmod(dir, 0o2770)
+      await chmod(dir, SHARED_DIR_MODE)
     }
     if (bytes !== undefined) {
       await writeFile(inputPath, bytes)
-      if (identity !== null) await chmod(inputPath, 0o660)
+      if (identity !== null) await chmod(inputPath, SHARED_INPUT_MODE)
     }
   } catch (err) {
-    await rm(dir, { recursive: true, force: true }).catch(() => {})
+    await removeQuietly(dir)
     throw new ScratchSetupError("could not prepare the sandbox scratch dir", err)
   }
   let cleaned = false
@@ -70,12 +79,12 @@ export async function makeScratch(bytes?: Uint8Array, ext = "bin"): Promise<Scra
     dir,
     inputPath,
     outPath(name: string): string {
-      const safe = name.replace(/[^a-z0-9._-]/gi, "_")
+      const safe = name.replace(UNSAFE_NAME_CHARS, "_")
       return join(dir, safe)
     },
     async seal(): Promise<void> {
       try {
-        await chmod(dir, 0o700)
+        await chmod(dir, SEALED_DIR_MODE)
       } catch (err) {
         throw new ScratchSetupError("could not seal the sandbox scratch dir", err)
       }
@@ -84,7 +93,7 @@ export async function makeScratch(bytes?: Uint8Array, ext = "bin"): Promise<Scra
       if (cleaned) return
       cleaned = true
       // A dir left behind is reaped by sweepStaleScratchDirs; cleanup must never mask the job's own outcome.
-      await rm(dir, { recursive: true, force: true }).catch(() => {})
+      await removeQuietly(dir)
     },
   }
 }
@@ -124,7 +133,11 @@ export async function readScratchOutput(
   }
 }
 
-export async function sweepStaleScratchDirs(maxAgeMs = 60 * 60 * 1000): Promise<number> {
+async function removeQuietly(dir: string): Promise<void> {
+  await rm(dir, { recursive: true, force: true }).catch(() => {})
+}
+
+export async function sweepStaleScratchDirs(maxAgeMs = SCRATCH_STALE_MS): Promise<number> {
   const root = tmpdir()
   const cutoff = Date.now() - maxAgeMs
   let removed = 0

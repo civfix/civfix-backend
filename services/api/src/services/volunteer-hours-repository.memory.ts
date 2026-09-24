@@ -73,8 +73,12 @@ interface LedgerEntry {
   voidedAt?: Date
 }
 
+const HOURS_ROUNDING_FACTOR = 100
+
+const DEFAULT_LEGACY_REPORT_HOURS = 0.1
+
 function round2(n: number): number {
-  return Math.round(n * 100) / 100
+  return Math.round(n * HOURS_ROUNDING_FACTOR) / HOURS_ROUNDING_FACTOR
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
@@ -125,7 +129,7 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
     userId: string,
     reportId: string,
     geoid: string | null,
-    hours = 0.1,
+    hours = DEFAULT_LEGACY_REPORT_HOURS,
   ): string {
     const id = this.newId()
     this.entries.push({

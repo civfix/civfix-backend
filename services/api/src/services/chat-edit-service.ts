@@ -14,10 +14,21 @@ import { parseUserMentions } from "./discussion-mentions.js"
 import { broadcastMessageUpdate } from "../ws/frame-handler.js"
 import { neutralizeChatViewerFields } from "./chat-viewer-fields.js"
 import type { GatewayChatMentions } from "../ws/types.js"
-import type { ChatRepository } from "./chat-repository.drizzle.js"
+import type { ChatMessageMeta, ChatRepository } from "./chat-repository.drizzle.js"
 import type { DmRepository } from "./dm-repository.drizzle.js"
 
-export const CHAT_EDIT_FORBIDDEN = "You can't edit this message."
+const CHAT_EDIT_FORBIDDEN = "You can't edit this message."
+
+const MESSAGE_DELETED = "This message was deleted."
+
+const MS_PER_HOUR = 3_600_000
+
+const EDIT_WINDOW_MS = EDIT_WINDOW_HOURS * MS_PER_HOUR
+
+const EDIT_ERROR_CODE = {
+  notSender: "not_sender",
+  editWindowExpired: "edit_window_expired",
+} as const
 
 export type IsRoomMemberFn = (roomId: string, userId: string) => Promise<boolean>
 
@@ -56,11 +67,13 @@ export interface ChatEditService {
 }
 
 const notSender = () =>
-  new AppError(ErrorCode.FORBIDDEN, CHAT_EDIT_FORBIDDEN, { fields: { code: "not_sender" } })
+  new AppError(ErrorCode.FORBIDDEN, CHAT_EDIT_FORBIDDEN, {
+    fields: { code: EDIT_ERROR_CODE.notSender },
+  })
 
 const editWindowExpired = () =>
   new AppError(ErrorCode.FORBIDDEN, "This message can no longer be edited.", {
-    fields: { code: "edit_window_expired" },
+    fields: { code: EDIT_ERROR_CODE.editWindowExpired },
   })
 
 function assertEditable(
@@ -68,14 +81,36 @@ function assertEditable(
   userId: string,
 ): void {
   if (meta.senderId !== null && meta.senderId !== userId) throw notSender()
-  if (meta.deletedAt !== null) throw AppError.conflict("This message was deleted.")
+  if (meta.deletedAt !== null) throw AppError.conflict(MESSAGE_DELETED)
   // A sender-less SYSTEM row lands here too (kind "system"), so it 422s rather than 403s.
   if (meta.kind !== "text") {
     throw AppError.validation({ kind: "Only text messages can be edited." })
   }
-  if (Date.now() - meta.createdAt.getTime() > EDIT_WINDOW_HOURS * 3_600_000) {
+  if (Date.now() - meta.createdAt.getTime() > EDIT_WINDOW_MS) {
     throw editWindowExpired()
   }
+}
+
+function roomRefOf(
+  meta: Pick<ChatMessageMeta, "cleanupId" | "reportId" | "groupId">,
+  roomKind: RoomKind,
+): string | null {
+  if (roomKind === "report") return meta.reportId
+  if (roomKind === "group") return meta.groupId
+  return meta.cleanupId
+}
+
+function editInRoom(
+  chat: ChatRepository,
+  roomKind: RoomKind,
+  roomId: string,
+  messageId: string,
+  userId: string,
+  body: string,
+): Promise<ChatMessageDTO | null> {
+  if (roomKind === "report") return chat.editReportMessage(roomId, messageId, userId, body)
+  if (roomKind === "group") return chat.editGroupMessage(roomId, messageId, userId, body)
+  return chat.editMessage(roomId, messageId, userId, body)
 }
 
 export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService {
@@ -140,56 +175,56 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     // message no reader ever hydrates.
     await rerecordMentions("dm", roomId, userId, messageId, body, input.mentionedUserIds)
     const updated = await dm.editMessage(roomId, messageId, userId, body)
-    if (updated === null) throw AppError.conflict("This message was deleted.")
+    if (updated === null) throw AppError.conflict(MESSAGE_DELETED)
     fireMessageUpdate("dm", roomId, updated)
     return updated
+  }
+
+  async function requireReportMember(reportId: string, userId: string): Promise<void> {
+    // Visibility first, so a held or unlisted report answers 404 rather than leaking a 403 keyed on a
+    // stale membership row.
+    if (deps.isReportVisible && !(await deps.isReportVisible(reportId, userId))) {
+      throw AppError.notFound("Report not found")
+    }
+    const isReportMember = deps.isReportMember
+    if (!isReportMember) throw new Error("chat-edit-service: report deps not wired")
+    if (!(await isReportMember(reportId, userId))) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)
+  }
+
+  async function requireRoomMember(
+    roomKind: RoomKind,
+    roomId: string,
+    userId: string,
+  ): Promise<void> {
+    if (roomKind === "report") return requireReportMember(roomId, userId)
+    if (roomKind === "group") {
+      const isGroupMember = deps.isGroupMember
+      if (!isGroupMember) throw new Error("chat-edit-service: group deps not wired")
+      if (!(await isGroupMember(roomId, userId))) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)
+      return
+    }
+    const isCleanupMember = deps.isCleanupMember
+    if (!isCleanupMember) throw new Error("chat-edit-service: cleanup deps not wired")
+    if (!(await isCleanupMember(roomId, userId))) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)
   }
 
   async function editRoomMessage(input: EditMessageInput): Promise<ChatMessageDTO> {
     const { roomKind, roomId, messageId, userId, body } = input
     const chat = deps.chat
     if (!chat) throw new Error("chat-edit-service: chat deps not wired")
-    const isReport = roomKind === "report"
-    const isGroup = roomKind === "group"
-    if (isReport) {
-      // Visibility first, so a held or unlisted report answers 404 rather than leaking a 403 keyed on a
-      // stale membership row.
-      if (deps.isReportVisible && !(await deps.isReportVisible(roomId, userId))) {
-        throw AppError.notFound("Report not found")
-      }
-      const isReportMember = deps.isReportMember
-      if (!isReportMember) throw new Error("chat-edit-service: report deps not wired")
-      if (!(await isReportMember(roomId, userId))) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)
-    } else if (isGroup) {
-      const isGroupMember = deps.isGroupMember
-      if (!isGroupMember) throw new Error("chat-edit-service: group deps not wired")
-      if (!(await isGroupMember(roomId, userId))) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)
-    } else {
-      const isCleanupMember = deps.isCleanupMember
-      if (!isCleanupMember) throw new Error("chat-edit-service: cleanup deps not wired")
-      if (!(await isCleanupMember(roomId, userId))) throw AppError.forbidden(CHAT_EDIT_FORBIDDEN)
-    }
+    await requireRoomMember(roomKind, roomId, userId)
     const meta = await chat.findMessageMeta(messageId)
-    const roomMatches =
-      meta !== null &&
-      (isReport
-        ? meta.reportId === roomId
-        : isGroup
-          ? meta.groupId === roomId
-          : meta.cleanupId === roomId)
-    if (meta === null || !roomMatches) throw AppError.notFound("Message not found")
+    if (meta === null || roomRefOf(meta, roomKind) !== roomId) {
+      throw AppError.notFound("Message not found")
+    }
     assertEditable(meta, userId)
     assertNoSlur(body, "body")
 
     // Mentions are replaced before the sender-gated UPDATE so the re-read DTO carries them; a lost race
     // leaves the residue on a tombstoned row no reader hydrates.
     await rerecordMentions(roomKind, roomId, userId, messageId, body, input.mentionedUserIds)
-    const updated = isReport
-      ? await chat.editReportMessage(roomId, messageId, userId, body)
-      : isGroup
-        ? await chat.editGroupMessage(roomId, messageId, userId, body)
-        : await chat.editMessage(roomId, messageId, userId, body)
-    if (updated === null) throw AppError.conflict("This message was deleted.")
+    const updated = await editInRoom(chat, roomKind, roomId, messageId, userId, body)
+    if (updated === null) throw AppError.conflict(MESSAGE_DELETED)
     fireMessageUpdate(roomKind, roomId, updated)
     return updated
   }

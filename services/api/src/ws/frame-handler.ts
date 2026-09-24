@@ -1,5 +1,6 @@
 import {
   AppError,
+  ErrorCode,
   WsClientMessageSchema,
   type RoomKind,
   type WsClientMessage,
@@ -33,19 +34,35 @@ import {
 
 const PASSTHROUGH_SEND_RESILIENCE: SendResilience = makeSendResilience()
 
+const DEFAULT_ROOM_KIND: RoomKind = "cleanup"
+
+const BAD_FRAME_CODE = "BAD_FRAME"
+
+const BLOCKED_CODE = "BLOCKED"
+
+const CHANNEL_READ_ONLY_CODE = "channel_read_only"
+
+const NOT_GROUP_MEMBER_MESSAGE = "You are not a member of this group."
+
+const DM_NOT_ALLOWED_MESSAGE = "You can't message in this conversation."
+
 type ClientFrame = WsClientMessage
 type ExtractFrame<T extends ClientFrame["type"]> = Extract<ClientFrame, { type: T }>
+
+interface FrameRoom {
+  kind: RoomKind
+  id: string
+}
+
+function frameRoomKind(frame: { roomKind?: RoomKind | undefined }): RoomKind {
+  return frame.roomKind ?? DEFAULT_ROOM_KIND
+}
 
 function serverFrame(frame: WsServerMessage): string {
   return JSON.stringify(frame)
 }
 
-function sendError(
-  conn: ChatConnection,
-  code: string,
-  message: string,
-  room?: { kind: RoomKind; id: string },
-): void {
+function sendError(conn: ChatConnection, code: string, message: string, room?: FrameRoom): void {
   conn.send(
     serverFrame({
       type: "error",
@@ -85,7 +102,7 @@ export function broadcastMessageUpdate(
   void Promise.resolve(chat.broadcastEvent?.(roomKeyFor(roomKind, roomId), frame)).catch(() => {})
 }
 
-function decodeRoomKey(roomKey: string): { kind: RoomKind; id: string } {
+function decodeRoomKey(roomKey: string): FrameRoom {
   if (roomKey.startsWith(DM_ROOM_PREFIX)) {
     return { kind: "dm", id: roomKey.slice(DM_ROOM_PREFIX.length) }
   }
@@ -95,7 +112,7 @@ function decodeRoomKey(roomKey: string): { kind: RoomKind; id: string } {
   if (roomKey.startsWith(GROUP_ROOM_PREFIX)) {
     return { kind: "group", id: roomKey.slice(GROUP_ROOM_PREFIX.length) }
   }
-  return { kind: "cleanup", id: roomKey }
+  return { kind: DEFAULT_ROOM_KIND, id: roomKey }
 }
 
 export async function leaveRoomAndAnnounce(
@@ -134,55 +151,59 @@ async function authorizeRoom(
     const ok = await deps.isMember(id, userId)
     return ok
       ? { ok: true }
-      : { ok: false, code: "FORBIDDEN", message: "You are not a member of this cleanup." }
+      : { ok: false, code: ErrorCode.FORBIDDEN, message: "You are not a member of this cleanup." }
   }
   if (kind === "report") {
     if (deps.reportVisible && !(await deps.reportVisible(id, userId))) {
-      return { ok: false, code: "NOT_FOUND", message: "Report not found." }
+      return { ok: false, code: ErrorCode.NOT_FOUND, message: "Report not found." }
     }
     if (requireMember) {
       if (!deps.reportChat) {
-        return { ok: false, code: "FORBIDDEN", message: "Report chat is not available." }
+        return { ok: false, code: ErrorCode.FORBIDDEN, message: "Report chat is not available." }
       }
       if (!(await deps.reportChat.isMember(id, userId))) {
-        return { ok: false, code: "FORBIDDEN", message: "Join this report chat to send messages." }
+        return {
+          ok: false,
+          code: ErrorCode.FORBIDDEN,
+          message: "Join this report chat to send messages.",
+        }
       }
     }
     return { ok: true }
   }
   if (kind === "group") {
     if (!deps.groupChat) {
-      return { ok: false, code: "FORBIDDEN", message: "Group chat is not available." }
+      return { ok: false, code: ErrorCode.FORBIDDEN, message: "Group chat is not available." }
     }
     const access = await deps.groupChat.access(id, userId)
     if (access === null) {
-      return { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
+      return { ok: false, code: ErrorCode.FORBIDDEN, message: NOT_GROUP_MEMBER_MESSAGE }
     }
     if (!requireMember) {
       if (access.isMember || access.visibility === "public") return { ok: true }
-      return { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
+      return { ok: false, code: ErrorCode.FORBIDDEN, message: NOT_GROUP_MEMBER_MESSAGE }
     }
     if (!access.isMember) {
-      return { ok: false, code: "FORBIDDEN", message: "You are not a member of this group." }
+      return { ok: false, code: ErrorCode.FORBIDDEN, message: NOT_GROUP_MEMBER_MESSAGE }
     }
     if (!access.canPost) {
       return {
         ok: false,
-        code: "channel_read_only",
+        code: CHANNEL_READ_ONLY_CODE,
         message: "Only owners and admins can post in this channel.",
       }
     }
     return { ok: true }
   }
   if (!deps.dm) {
-    return { ok: false, code: "FORBIDDEN", message: "Direct messages are not available." }
+    return { ok: false, code: ErrorCode.FORBIDDEN, message: "Direct messages are not available." }
   }
   const peer = await deps.dm.peerOf(id, userId)
   if (peer === null) {
-    return { ok: false, code: "FORBIDDEN", message: "You can't message in this conversation." }
+    return { ok: false, code: ErrorCode.FORBIDDEN, message: DM_NOT_ALLOWED_MESSAGE }
   }
   if (deps.isBlockedEitherWay && (await deps.isBlockedEitherWay(userId, peer))) {
-    return { ok: false, code: "FORBIDDEN", message: "You can't message in this conversation." }
+    return { ok: false, code: ErrorCode.FORBIDDEN, message: DM_NOT_ALLOWED_MESSAGE }
   }
   return { ok: true, peer }
 }
@@ -204,11 +225,13 @@ export async function reauthorizeJoinedRooms(session: GatewaySession): Promise<v
     if (session.closed) return
     if (!session.joined.has(roomKey)) continue
     if (await canStillRead(session, roomKey)) continue
-    const { kind, id } = decodeRoomKey(roomKey)
-    sendError(session.conn, "FORBIDDEN", "You no longer have access to this conversation.", {
-      kind,
-      id,
-    })
+    const room = decodeRoomKey(roomKey)
+    sendError(
+      session.conn,
+      ErrorCode.FORBIDDEN,
+      "You no longer have access to this conversation.",
+      room,
+    )
     await leaveRoomAndAnnounce(session, roomKey).catch(() => {})
   }
 }
@@ -219,7 +242,7 @@ function selfSignalThreads(channel: UserChannel | undefined, userId: string, id:
 
 async function handleJoin(session: GatewaySession, frame: ExtractFrame<"join">): Promise<void> {
   const { conn, deps, userId } = session
-  const kind: RoomKind = frame.roomKind ?? "cleanup"
+  const kind = frameRoomKind(frame)
   const id = frame.cleanupId
   const roomKey = roomKeyFor(kind, id)
   if (session.joined.has(roomKey)) {
@@ -238,7 +261,10 @@ async function handleJoin(session: GatewaySession, frame: ExtractFrame<"join">):
     return
   }
   if (session.joined.size >= WS_MAX_JOINED_ROOMS) {
-    sendError(conn, "RATE_LIMITED", "You've joined too many rooms. Leave one first.", { kind, id })
+    sendError(conn, ErrorCode.RATE_LIMITED, "You've joined too many rooms. Leave one first.", {
+      kind,
+      id,
+    })
     return
   }
   const auth = await authorizeRoom(deps, kind, id, userId)
@@ -286,7 +312,7 @@ async function handleJoin(session: GatewaySession, frame: ExtractFrame<"join">):
 }
 
 async function handleLeave(session: GatewaySession, frame: ExtractFrame<"leave">): Promise<void> {
-  const kind: RoomKind = frame.roomKind ?? "cleanup"
+  const kind = frameRoomKind(frame)
   const roomKey = roomKeyFor(kind, frame.cleanupId)
   if (!session.joined.has(roomKey)) return
   await leaveRoomAndAnnounce(session, roomKey)
@@ -299,54 +325,121 @@ const CLIENT_AUTHORABLE_KINDS: ReadonlySet<string> = new Set([
   "rsvp_change",
 ])
 
-const CLIENT_ID_MAX = 64
-
 export const MENTION_BELL_CONCURRENCY = 8
 
-async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">): Promise<void> {
-  const { conn, deps, userId } = session
-  const kind: RoomKind = frame.roomKind ?? "cleanup"
-  const id = frame.cleanupId
+type SendFrame = ExtractFrame<"send">
+
+async function rejectSendFrame(
+  session: GatewaySession,
+  frame: SendFrame,
+  body: string,
+  room: FrameRoom,
+): Promise<boolean> {
+  const { conn } = session
   const verdict = await socketWriteVerdict(session)
   if (verdict === "revoked") {
     if (session.closeForAuth) session.closeForAuth()
-    else sendError(conn, "UNAUTHORIZED", WS_SESSION_ENDED_MESSAGE, { kind, id })
-    return
+    else sendError(conn, ErrorCode.UNAUTHORIZED, WS_SESSION_ENDED_MESSAGE, room)
+    return true
   }
   if (verdict === "suspended") {
-    sendError(conn, "FORBIDDEN", SUSPENDED_MESSAGE, { kind, id })
-    return
+    sendError(conn, ErrorCode.FORBIDDEN, SUSPENDED_MESSAGE, room)
+    return true
   }
   if (frame.kind !== undefined && !CLIENT_AUTHORABLE_KINDS.has(frame.kind)) {
-    sendError(conn, "BAD_FRAME", "That message kind can't be sent by a client.", { kind, id })
-    return
-  }
-  if (frame.clientId.length > CLIENT_ID_MAX) {
-    sendError(conn, "BAD_FRAME", "clientId is too long.", { kind, id })
-    return
+    sendError(conn, BAD_FRAME_CODE, "That message kind can't be sent by a client.", room)
+    return true
   }
   if (containsSlur(frame.body)) {
-    sendError(conn, "BLOCKED", "This contains language that isn't allowed.", { kind, id })
-    return
+    sendError(conn, BLOCKED_CODE, "This contains language that isn't allowed.", room)
+    return true
   }
-  const body = frame.body.trim()
   const carriesMedia = (frame.mediaUploadIds?.length ?? 0) > 0
   const isTextFrame = frame.kind === undefined || frame.kind === "text"
   if (body.length === 0 && !carriesMedia && isTextFrame) {
-    sendError(conn, "BAD_FRAME", "A message needs text or an attachment.", { kind, id })
-    return
+    sendError(conn, BAD_FRAME_CODE, "A message needs text or an attachment.", room)
+    return true
   }
+  return false
+}
+
+function optionalSendFields(frame: SendFrame): {
+  kind?: NonNullable<SendFrame["kind"]>
+  clientId: string
+  mediaUploadIds?: string[]
+  replyToId?: string
+} {
+  const { mediaUploadIds } = frame
+  return {
+    ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
+    clientId: frame.clientId,
+    ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
+    ...(frame.replyToId !== undefined ? { replyToId: frame.replyToId } : {}),
+  }
+}
+
+function persistSendFrame(
+  deps: GatewayDeps,
+  room: FrameRoom,
+  userId: string,
+  frame: SendFrame,
+  body: string,
+): Promise<ChatMessageDTO> {
+  if (room.kind === "dm") {
+    return deps.dm!.persist({
+      threadId: room.id,
+      senderId: userId,
+      body,
+      ...optionalSendFields(frame),
+    })
+  }
+  return deps.chat.persist({
+    cleanupId: room.id,
+    roomKind: room.kind,
+    userId,
+    body,
+    ...optionalSendFields(frame),
+  })
+}
+
+function fireSendSideEffects(
+  deps: GatewayDeps,
+  room: FrameRoom,
+  userId: string,
+  peer: string | null,
+  roomKey: string,
+  message: ChatMessageDTO,
+  mentions: UserMentionDTO[],
+): void {
+  const { kind, id } = room
+  const replyTargetUserId = replyBellTarget(message, userId)
+  fireMentionBells(deps, kind, id, userId, mentions, message, replyTargetUserId)
+  fireThreadSignal(deps, kind, id, userId)
+  fireDmBell(deps, kind, id, peer, roomKey, message)
+  fireReplyBell(deps, kind, id, userId, replyTargetUserId, message)
+  fireReportCityForward(deps, kind, id, userId, message)
+  fireGroupFanOut(deps, kind, id, message)
+}
+
+async function handleSend(session: GatewaySession, frame: SendFrame): Promise<void> {
+  const { conn, deps, userId } = session
+  const room: FrameRoom = { kind: frameRoomKind(frame), id: frame.cleanupId }
+  const { kind, id } = room
+  const body = frame.body.trim()
+  if (await rejectSendFrame(session, frame, body, room)) return
   const roomKey = roomKeyFor(kind, id)
   const auth = await authorizeRoom(deps, kind, id, userId, true)
   if (!auth.ok) {
-    sendError(conn, auth.code, auth.message, { kind, id })
+    sendError(conn, auth.code, auth.message, room)
     return
   }
   if (deps.reportSendLimiter && !deps.reportSendLimiter.tryConsume(`${userId}:${roomKey}`)) {
-    sendError(conn, "RATE_LIMITED", "You're sending messages too fast. Please slow down.", {
-      kind,
-      id,
-    })
+    sendError(
+      conn,
+      ErrorCode.RATE_LIMITED,
+      "You're sending messages too fast. Please slow down.",
+      room,
+    )
     return
   }
   const resilience = deps.chat.sendResilience ?? PASSTHROUGH_SEND_RESILIENCE
@@ -359,39 +452,18 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
       return
     }
   }
-  const mediaUploadIds = frame.mediaUploadIds
   let message: ChatMessageDTO
   try {
-    if (kind === "dm") {
-      message = await deps.dm!.persist({
-        threadId: id,
-        senderId: userId,
-        body,
-        ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
-        clientId: frame.clientId,
-        ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
-        ...(frame.replyToId !== undefined ? { replyToId: frame.replyToId } : {}),
-      })
-    } else {
-      message = await deps.chat.persist({
-        cleanupId: id,
-        roomKind: kind,
-        userId,
-        body,
-        ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
-        clientId: frame.clientId,
-        ...(mediaUploadIds && mediaUploadIds.length > 0 ? { mediaUploadIds } : {}),
-        ...(frame.replyToId !== undefined ? { replyToId: frame.replyToId } : {}),
-      })
-    }
+    message = await persistSendFrame(deps, room, userId, frame, body)
   } catch (err) {
     if (reservation.state === "reserved") void resilience.release(dedupeKey)
     if (err instanceof AppError) {
-      sendError(conn, err.fields?.code ?? err.code, err.message, { kind, id })
+      sendError(conn, err.fields?.code ?? err.code, err.message, room)
       return
     }
     throw err
   }
+  // Committed before the mention lookup so a client retrying this clientId re-acks instead of inserting.
   void resilience.commit(dedupeKey, message.id)
   const mentions: UserMentionDTO[] = await resolveAndRecordChatMentions(deps.chatMentions, {
     body,
@@ -412,13 +484,7 @@ async function handleSend(session: GatewaySession, frame: ExtractFrame<"send">):
     conn.id,
   )
 
-  const replyTargetUserId = replyBellTarget(message, userId)
-  fireMentionBells(deps, kind, id, userId, mentions, message, replyTargetUserId)
-  fireThreadSignal(deps, kind, id, userId)
-  fireDmBell(deps, kind, id, auth.peer ?? null, roomKey, message)
-  fireReplyBell(deps, kind, id, userId, replyTargetUserId, message)
-  fireReportCityForward(deps, kind, id, userId, message)
-  fireGroupFanOut(deps, kind, id, message)
+  fireSendSideEffects(deps, room, userId, auth.peer ?? null, roomKey, message, mentions)
 }
 
 function replyBellTarget(message: ChatMessageDTO, authorUserId: string): string | null {
@@ -512,7 +578,7 @@ function fireDmBell(
 
 async function handleTyping(session: GatewaySession, frame: ExtractFrame<"typing">): Promise<void> {
   const { conn, deps, userId } = session
-  const kind: RoomKind = frame.roomKind ?? "cleanup"
+  const kind = frameRoomKind(frame)
   const id = frame.cleanupId
   const roomKey = roomKeyFor(kind, id)
   const now = Date.now()
@@ -541,7 +607,7 @@ async function handleAck(session: GatewaySession, frame: ExtractFrame<"ack">): P
   let kind: RoomKind
   let id: string
   if (frame.cleanupId !== undefined) {
-    kind = frame.roomKind ?? "cleanup"
+    kind = frameRoomKind(frame)
     id = frame.cleanupId
   } else {
     if (session.joined.size !== 1) return
@@ -588,19 +654,19 @@ export async function handleClientFrame(session: GatewaySession, raw: string): P
   if (session.closed) return
   const limiter = (session.frameLimiter ??= makeTokenBucketLimiter(WS_FRAME_LIMIT))
   if (!limiter.tryConsume(session.conn.id)) {
-    sendError(session.conn, "RATE_LIMITED", WS_FRAME_RATE_LIMITED_MESSAGE)
+    sendError(session.conn, ErrorCode.RATE_LIMITED, WS_FRAME_RATE_LIMITED_MESSAGE)
     return
   }
   let parsedJson: unknown
   try {
     parsedJson = JSON.parse(raw)
   } catch {
-    sendError(session.conn, "BAD_FRAME", "Malformed frame: not JSON.")
+    sendError(session.conn, BAD_FRAME_CODE, "Malformed frame: not JSON.")
     return
   }
   const result = WsClientMessageSchema.safeParse(parsedJson)
   if (!result.success) {
-    sendError(session.conn, "BAD_FRAME", "Frame failed schema validation.")
+    sendError(session.conn, BAD_FRAME_CODE, "Frame failed schema validation.")
     return
   }
   const frame = result.data

@@ -16,9 +16,20 @@ interface Bucket {
 
 const EVICT_PREFER_FULL_WINDOW = 32
 
+const DEFAULT_MAX_KEYS = 50_000
+
+const MS_PER_SECOND = 1000
+
+function refilledTokens(bucket: Bucket, at: number, opts: TokenBucketOptions): number {
+  return Math.min(
+    opts.capacity,
+    bucket.tokens + ((at - bucket.last) / MS_PER_SECOND) * opts.refillPerSec,
+  )
+}
+
 export function makeTokenBucketLimiter(opts: TokenBucketOptions): RateLimiter {
   const now = opts.now ?? (() => Date.now())
-  const maxKeys = Math.max(1, opts.maxKeys ?? 50_000)
+  const maxKeys = Math.max(1, opts.maxKeys ?? DEFAULT_MAX_KEYS)
   const buckets = new Map<string, Bucket>()
 
   const evictToCap = (): void => {
@@ -29,11 +40,7 @@ export function makeTokenBucketLimiter(opts: TokenBucketOptions): RateLimiter {
       for (const [k, b] of buckets) {
         if (scanned >= EVICT_PREFER_FULL_WINDOW) break
         scanned += 1
-        const refilled = Math.min(
-          opts.capacity,
-          b.tokens + ((t - b.last) / 1000) * opts.refillPerSec,
-        )
-        if (refilled >= opts.capacity) {
+        if (refilledTokens(b, t, opts) >= opts.capacity) {
           victim = k
           break
         }
@@ -50,7 +57,7 @@ export function makeTokenBucketLimiter(opts: TokenBucketOptions): RateLimiter {
       const existing = buckets.get(key)
       const b = existing ?? { tokens: opts.capacity, last: t }
       if (existing) buckets.delete(key)
-      b.tokens = Math.min(opts.capacity, b.tokens + ((t - b.last) / 1000) * opts.refillPerSec)
+      b.tokens = refilledTokens(b, t, opts)
       b.last = t
       const allowed = b.tokens >= 1
       if (allowed) b.tokens -= 1

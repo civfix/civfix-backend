@@ -104,6 +104,8 @@ export interface BuildTranscriptModelInput {
 // An en dash, not a hyphen: it reads as "no value" in print and matches the period range glyph.
 export const EMPTY_VALUE = "–"
 
+const COMMUNITIES_NAMED_ON_TILE = 2
+
 function toIso(value: Date | string): string {
   return typeof value === "string" ? new Date(value).toISOString() : value.toISOString()
 }
@@ -196,8 +198,8 @@ export function communitiesLabel(
   jurisdictions: readonly string[],
   t: CertificateTranslator,
 ): string {
-  const shown = jurisdictions.slice(0, 2).join(", ")
-  const extra = jurisdictions.length - 2
+  const shown = jurisdictions.slice(0, COMMUNITIES_NAMED_ON_TILE).join(", ")
+  const extra = jurisdictions.length - COMMUNITIES_NAMED_ON_TILE
   if (extra <= 0) return shown
   return `${shown} ${t("certificate.summary.more", { count: extra })}`.trim()
 }

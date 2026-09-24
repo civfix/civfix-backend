@@ -5,13 +5,14 @@ import type { Sql } from "../db/client.js"
 import type { ConversationHideRoomKind } from "../db/schema/conversation_hides.js"
 import { publicReportFilter } from "./report-sql.js"
 import type { TimeCursor } from "../db/cursor-helpers.js"
-import type {
-  GroupThreadAggregateView,
-  GroupThreadsSource,
-  ReportThreadAggregateView,
-  ReportThreadsSource,
-  ThreadAggregate,
-  ThreadsRepository,
+import {
+  THREADS_DEFAULT_LIMIT,
+  type GroupThreadAggregateView,
+  type GroupThreadsSource,
+  type ReportThreadAggregateView,
+  type ReportThreadsSource,
+  type ThreadAggregate,
+  type ThreadsRepository,
 } from "./threads-service.js"
 
 type SqlFragment = postgres.Fragment
@@ -201,7 +202,7 @@ export function makeDrizzleReportThreadsSource(sql: Sql): ReportThreadsSource {
   return {
     async listReportThreadsFor(
       userId: string,
-      limit = 30,
+      limit = THREADS_DEFAULT_LIMIT,
       cursor?: TimeCursor | null,
     ): Promise<ReportThreadAggregateView[]> {
       const rows = await listThreadFamily<
@@ -223,7 +224,7 @@ export function makeDrizzleGroupThreadsSource(sql: Sql): GroupThreadsSource {
   return {
     async listGroupThreadsFor(
       userId: string,
-      limit = 30,
+      limit = THREADS_DEFAULT_LIMIT,
       cursor?: TimeCursor | null,
     ): Promise<GroupThreadAggregateView[]> {
       const rows = await listThreadFamily<

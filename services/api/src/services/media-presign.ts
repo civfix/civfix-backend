@@ -14,13 +14,17 @@ interface PresignStorage {
   presignGet(key: string, ttlSec: number, opts?: { forceSigned?: boolean }): Promise<string>
 }
 
-export function makeMediaPresigner(storage: PresignStorage): PresignMedia {
+function makePairPresigner(sign: (key: string) => Promise<string>): PresignMedia {
   return async (r2Key, thumbKey) => {
-    const url = await storage.presignGet(r2Key, MEDIA_GET_URL_TTL_SEC)
+    const url = await sign(r2Key)
     if (thumbKey === null) return { url }
-    const thumbUrl = await storage.presignGet(thumbKey, MEDIA_GET_URL_TTL_SEC)
+    const thumbUrl = await sign(thumbKey)
     return { url, thumbUrl }
   }
+}
+
+export function makeMediaPresigner(storage: PresignStorage): PresignMedia {
+  return makePairPresigner((key) => storage.presignGet(key, MEDIA_GET_URL_TTL_SEC))
 }
 
 /**
@@ -33,16 +37,9 @@ export function makeMediaPresigner(storage: PresignStorage): PresignMedia {
  *   - a much shorter TTL, so a leaked URL expires in minutes rather than an hour.
  */
 export function makePrivateMediaPresigner(storage: PresignStorage): PresignMedia {
-  return async (r2Key, thumbKey) => {
-    const url = await storage.presignGet(r2Key, MEDIA_PRIVATE_GET_URL_TTL_SEC, {
-      forceSigned: true,
-    })
-    if (thumbKey === null) return { url }
-    const thumbUrl = await storage.presignGet(thumbKey, MEDIA_PRIVATE_GET_URL_TTL_SEC, {
-      forceSigned: true,
-    })
-    return { url, thumbUrl }
-  }
+  return makePairPresigner((key) =>
+    storage.presignGet(key, MEDIA_PRIVATE_GET_URL_TTL_SEC, { forceSigned: true }),
+  )
 }
 
 export const PACKET_MEDIA_URL_TTL_SEC = 7 * 24 * 60 * 60
