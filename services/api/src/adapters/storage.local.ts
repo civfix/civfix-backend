@@ -15,13 +15,12 @@ import type {
 } from "@civfix/shared/interfaces"
 
 export const LOCAL_STORAGE_ROUTE_PREFIX = "/_local-storage"
-export const LOCAL_STORAGE_PUT_TTL_SEC = 15 * 60
-export const LOCAL_STORAGE_DEFAULT_GET_TTL_SEC = 15 * 60
+const LOCAL_STORAGE_PUT_TTL_SEC = 15 * 60
+const LOCAL_STORAGE_DEFAULT_GET_TTL_SEC = 15 * 60
 export const LOCAL_STORAGE_DEV_SIGNING_KEY =
   "dev-insecure-local-storage-signing-key-do-not-use-in-prod"
 
-export const LOCAL_STORAGE_NAMESPACES = ["media", "inbound"] as const
-export type LocalStorageNamespace = (typeof LOCAL_STORAGE_NAMESPACES)[number]
+export type LocalStorageNamespace = "media" | "inbound"
 
 const OBJECT_KEY_MAX_LENGTH = 512
 const OBJECT_KEY_SEGMENT = "[A-Za-z0-9_][A-Za-z0-9._-]*"
@@ -30,6 +29,10 @@ export const SIGNATURE_PATTERN = /^[0-9a-f]{64}$/
 const DEFAULT_CONTENT_TYPE = "application/octet-stream"
 const DEFAULT_LIST_LIMIT = 1000
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"])
+const LOOPBACK_IPV4_PATTERN = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
+const TRAILING_SLASHES_RE = /\/+$/
+const STAGED_FILE_RANDOM_BYTES = 16
+const MS_PER_SECOND = 1000
 
 export type SignatureVerdict = "valid" | "expired" | "invalid"
 
@@ -75,29 +78,7 @@ export class LocalDiskStorage implements Storage {
   private readonly signingKey: string
 
   constructor(config: LocalDiskStorageConfig) {
-    if (config.nodeEnv === "production") {
-      throw new Error(
-        "LOCAL_STORAGE_DIR selects the local-disk storage driver, which serves objects from the API " +
-          "process and mounts development-only PUT/GET routes. It is refused in production; " +
-          "configure R2 (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET) instead.",
-      )
-    }
-    const rootDirectory = config.rootDirectory.trim()
-    if (rootDirectory.length === 0) {
-      throw new Error("LOCAL_STORAGE_DIR must name a directory for the local-disk storage driver")
-    }
-    if (!isAbsolute(rootDirectory)) {
-      throw new Error(
-        `LOCAL_STORAGE_DIR must be an ABSOLUTE path, got "${rootDirectory}". The API service ` +
-          "(services/api) and the media-worker service (services/media-worker) run from different " +
-          "working directories, so a relative path resolves against each process's own cwd and gives " +
-          "them two divergent storage trees, so the worker would write thumbnails the API then serves as " +
-          "404s. Set the SAME absolute path in LOCAL_STORAGE_DIR for both services.",
-      )
-    }
-    if (config.signingKey.length === 0) {
-      throw new Error("LOCAL_STORAGE_SIGNING_KEY must not be empty")
-    }
+    const rootDirectory = assertUsableRoot(config)
     this.baseUrl = normalizeBaseUrl(config.publicApiUrl)
     if (config.signingKey === LOCAL_STORAGE_DEV_SIGNING_KEY && !isLoopbackUrl(this.baseUrl)) {
       throw new Error(
@@ -321,7 +302,10 @@ export class LocalDiskStorage implements Storage {
   private async writeAtomic(target: string, bytes: Buffer): Promise<void> {
     await mkdir(dirname(target), { recursive: true })
     await mkdir(this.tempRoot, { recursive: true })
-    const staged = join(this.tempRoot, `${randomBytes(16).toString("hex")}.part`)
+    const staged = join(
+      this.tempRoot,
+      `${randomBytes(STAGED_FILE_RANDOM_BYTES).toString("hex")}.part`,
+    )
     try {
       await writeFile(staged, bytes)
       await rename(staged, target)
@@ -330,6 +314,33 @@ export class LocalDiskStorage implements Storage {
       throw err
     }
   }
+}
+
+function assertUsableRoot(config: LocalDiskStorageConfig): string {
+  if (config.nodeEnv === "production") {
+    throw new Error(
+      "LOCAL_STORAGE_DIR selects the local-disk storage driver, which serves objects from the API " +
+        "process and mounts development-only PUT/GET routes. It is refused in production; " +
+        "configure R2 (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET) instead.",
+    )
+  }
+  const rootDirectory = config.rootDirectory.trim()
+  if (rootDirectory.length === 0) {
+    throw new Error("LOCAL_STORAGE_DIR must name a directory for the local-disk storage driver")
+  }
+  if (!isAbsolute(rootDirectory)) {
+    throw new Error(
+      `LOCAL_STORAGE_DIR must be an ABSOLUTE path, got "${rootDirectory}". The API service ` +
+        "(services/api) and the media-worker service (services/media-worker) run from different " +
+        "working directories, so a relative path resolves against each process's own cwd and gives " +
+        "them two divergent storage trees, so the worker would write thumbnails the API then serves as " +
+        "404s. Set the SAME absolute path in LOCAL_STORAGE_DIR for both services.",
+    )
+  }
+  if (config.signingKey.length === 0) {
+    throw new Error("LOCAL_STORAGE_SIGNING_KEY must not be empty")
+  }
+  return rootDirectory
 }
 
 function contentEtag(body: Uint8Array | Buffer): string {
@@ -371,16 +382,16 @@ function normalizeBaseUrl(publicApiUrl: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`PUBLIC_API_URL must be http(s): ${trimmed}`)
   }
-  return trimmed.replace(/\/+$/, "")
+  return trimmed.replace(TRAILING_SLASHES_RE, "")
 }
 
 function isLoopbackUrl(baseUrl: string): boolean {
   const host = new URL(baseUrl).hostname.toLowerCase()
-  return LOOPBACK_HOSTS.has(host) || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+  return LOOPBACK_HOSTS.has(host) || LOOPBACK_IPV4_PATTERN.test(host)
 }
 
 export function nowSec(): number {
-  return Math.floor(Date.now() / 1000)
+  return Math.floor(Date.now() / MS_PER_SECOND)
 }
 
 function isNotFound(err: unknown): boolean {

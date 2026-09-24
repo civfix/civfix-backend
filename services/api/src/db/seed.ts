@@ -2,6 +2,7 @@ import type { Sql } from "./client.js"
 import { runDbCli, runIfMain } from "./cli.js"
 import { JURISDICTION_SEEDS } from "./seed-fixtures.js"
 import { FEDERAL_LANDS, federalLandGeoJson } from "./data/federal-lands.js"
+import { LAYER_RANK } from "./ingest-jurisdictions-core.js"
 
 export async function seedJurisdictions(sql: Sql): Promise<number> {
   let inserted = 0
@@ -28,11 +29,11 @@ export async function seedJurisdictions(sql: Sql): Promise<number> {
   return inserted
 }
 
-export async function seedFederalLands(sql: Sql): Promise<number> {
+async function seedFederalLands(sql: Sql): Promise<number> {
   let inserted = 0
   for (const land of FEDERAL_LANDS) {
     const geojson = federalLandGeoJson(land.bbox)
-    const priority = land.layer === "tribal" ? -1 : -2
+    const priority = LAYER_RANK[land.layer]
     const rows = await sql`
       INSERT INTO jurisdictions (geoid, name, layer, priority, geom, population, contact_emails, report_form_url, code)
       VALUES (

@@ -1,6 +1,8 @@
 import { attachRedisErrorHandler, type RedisClient } from "./redis.js"
 import { RefCountedSubscriptions } from "./ref-counted-subscriptions.js"
 
+const CHAT_CHANNEL_PREFIX = "chat:"
+
 export type ChatPubSubHandler = (payload: string) => void
 
 export interface ChatPubSub {
@@ -10,7 +12,7 @@ export interface ChatPubSub {
 }
 
 export function chatChannel(cleanupId: string): string {
-  return `chat:${cleanupId}`
+  return `${CHAT_CHANNEL_PREFIX}${cleanupId}`
 }
 
 export class RedisChatPubSub implements ChatPubSub {

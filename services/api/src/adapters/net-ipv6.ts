@@ -5,6 +5,8 @@
  * compressed address, exactly 8 hextets, and its own per-hextet check; a lenient one just reads `hextets`.
  */
 
+const IPV6_HEXTET_COUNT = 8
+
 export interface Ipv6Expansion {
   hextets: string[]
   runs: number
@@ -25,7 +27,7 @@ export function expandIpv6Hextets(addr: string): Ipv6Expansion {
   if (tail === null) {
     return { hextets: head, runs, fill: 0 }
   }
-  const fill = 8 - head.length - tail.length
+  const fill = IPV6_HEXTET_COUNT - head.length - tail.length
   return {
     hextets: [...head, ...Array<string>(Math.max(0, fill)).fill("0"), ...tail],
     runs,

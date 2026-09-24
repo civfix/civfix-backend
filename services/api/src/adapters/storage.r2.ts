@@ -19,17 +19,27 @@ export interface R2StorageConfig {
   publicBase?: string
 }
 
-export const R2_DEFAULT_GET_TTL_SEC = 15 * 60
+const R2_DEFAULT_GET_TTL_SEC = 15 * 60
 export const R2_PUT_TTL_SEC = 15 * 60
 
-export const R2_CONNECT_TIMEOUT_MS = 5_000
-export const R2_SOCKET_IDLE_TIMEOUT_MS = 30_000
+const R2_CONNECT_TIMEOUT_MS = 5_000
+const R2_SOCKET_IDLE_TIMEOUT_MS = 30_000
 export const R2_RESPONSE_TIMEOUT_MS = 30_000
-export const R2_MAX_ATTEMPTS = 3
+const R2_MAX_ATTEMPTS = 3
 // The handler's timers stop once response headers arrive, so only an abort signal bounds a body
 // that stalls mid-stream. Metadata calls sit on request paths; transfers move objects up to tens of MB.
-export const R2_METADATA_OPERATION_TIMEOUT_MS = 15_000
+const R2_METADATA_OPERATION_TIMEOUT_MS = 15_000
 export const R2_TRANSFER_OPERATION_TIMEOUT_MS = 120_000
+
+const R2_REGION = "auto"
+const R2_ENDPOINT_DOMAIN = "r2.cloudflarestorage.com"
+const DEFAULT_CONTENT_TYPE = "application/octet-stream"
+const HTTP_NOT_FOUND = 404
+const NOT_FOUND_ERROR_NAMES: ReadonlySet<string> = new Set(["NotFound", "NoSuchKey"])
+
+const TRAILING_SLASHES_RE = /\/+$/
+const LEADING_SLASHES_RE = /^\/+/
+const HTTP_SCHEME_RE = /^https?:\/\//i
 
 export class R2Storage implements Storage {
   private readonly config: R2StorageConfig
@@ -96,7 +106,7 @@ export class R2Storage implements Storage {
       const etag = normalizeEtag(res.ETag)
       return {
         size: typeof res.ContentLength === "number" ? res.ContentLength : 0,
-        contentType: res.ContentType ?? "application/octet-stream",
+        contentType: res.ContentType ?? DEFAULT_CONTENT_TYPE,
         ...(typeof res.ContentDisposition === "string"
           ? { contentDisposition: res.ContentDisposition }
           : {}),
@@ -186,9 +196,9 @@ export class R2Storage implements Storage {
   private async getClient(): Promise<S3Client> {
     if (!this.client) {
       const { S3Client: S3ClientCtor } = await import("@aws-sdk/client-s3")
-      const endpointHost = `${this.config.accountId}.r2.cloudflarestorage.com`
+      const endpointHost = `${this.config.accountId}.${R2_ENDPOINT_DOMAIN}`
       this.client = new S3ClientCtor({
-        region: "auto",
+        region: R2_REGION,
         endpoint: `https://${endpointHost}`,
         requestHandler: await boundedRequestHandler(endpointHost),
         maxAttempts: R2_MAX_ATTEMPTS,
@@ -235,13 +245,13 @@ async function boundedRequestHandler(host: string): Promise<S3ClientConfig["requ
 }
 
 function joinUrl(base: string, key: string): string {
-  const trimmedBase = base.replace(/\/+$/, "")
-  const trimmedKey = key.replace(/^\/+/, "")
+  const trimmedBase = base.replace(TRAILING_SLASHES_RE, "")
+  const trimmedKey = key.replace(LEADING_SLASHES_RE, "")
   return `${trimmedBase}/${trimmedKey}`
 }
 
 function ensureScheme(base: string): string {
-  return /^https?:\/\//i.test(base) ? base : `https://${base.replace(/^\/+/, "")}`
+  return HTTP_SCHEME_RE.test(base) ? base : `https://${base.replace(LEADING_SLASHES_RE, "")}`
 }
 
 function isNotFound(err: unknown): boolean {
@@ -251,6 +261,7 @@ function isNotFound(err: unknown): boolean {
     Code?: string
     $metadata?: { httpStatusCode?: number }
   }
-  if (e.name === "NotFound" || e.name === "NoSuchKey" || e.Code === "NoSuchKey") return true
-  return e.$metadata?.httpStatusCode === 404
+  if ((e.name !== undefined && NOT_FOUND_ERROR_NAMES.has(e.name)) || e.Code === "NoSuchKey")
+    return true
+  return e.$metadata?.httpStatusCode === HTTP_NOT_FOUND
 }

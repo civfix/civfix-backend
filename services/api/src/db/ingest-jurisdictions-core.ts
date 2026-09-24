@@ -20,7 +20,7 @@ export interface IngestRow {
   geometry: { type: string; coordinates: unknown }
 }
 
-function pickString(props: Record<string, unknown> | null, keys: string[]): string | null {
+function pickString(props: Record<string, unknown> | null, keys: readonly string[]): string | null {
   if (!props) return null
   for (const k of keys) {
     const v = props[k]
@@ -30,7 +30,7 @@ function pickString(props: Record<string, unknown> | null, keys: string[]): stri
   return null
 }
 
-function pickNumber(props: Record<string, unknown> | null, keys: string[]): number | null {
+function pickNumber(props: Record<string, unknown> | null, keys: readonly string[]): number | null {
   if (!props) return null
   for (const k of keys) {
     const v = props[k]
@@ -54,7 +54,16 @@ export function isIngestLayer(value: string): value is IngestRow["layer"] {
 
 const UPSERT_BATCH_SIZE = 1000
 
-export function normalizeFeature(
+// Property names tried in order, covering TIGER, PAD-US and hand-written GeoJSON sources.
+const GEOID_PROPERTY_KEYS = ["geoid", "GEOID", "UNIT_CODE", "unit_code", "id", "OBJECTID"]
+const NAME_PROPERTY_KEYS = ["name", "NAME", "UNIT_NAME", "unit_name", "Unit_Name"]
+const LAYER_PROPERTY_KEYS = ["layer", "LAYER", "owner_type", "Own_Type"]
+const POPULATION_PROPERTY_KEYS = ["population", "POPULATION", "POP", "pop"]
+
+/** RFC 8142 GeoJSON text sequences may prefix each record with an ASCII record separator. */
+const RECORD_SEPARATOR = 0x1e
+
+function normalizeFeature(
   f: GeoJsonFeature,
   defaultLayer: IngestRow["layer"],
   geoidPrefix?: string,
@@ -62,17 +71,10 @@ export function normalizeFeature(
   const geometry = f.geometry
   const isPolygon =
     geometry !== null && (geometry.type === "Polygon" || geometry.type === "MultiPolygon")
-  const geoid = pickString(f.properties, [
-    "geoid",
-    "GEOID",
-    "UNIT_CODE",
-    "unit_code",
-    "id",
-    "OBJECTID",
-  ])
+  const geoid = pickString(f.properties, GEOID_PROPERTY_KEYS)
   const prefixedGeoid = geoid !== null && geoidPrefix ? geoidPrefix + geoid : geoid
-  const name = pickString(f.properties, ["name", "NAME", "UNIT_NAME", "unit_name", "Unit_Name"])
-  const rawLayer = pickString(f.properties, ["layer", "LAYER", "owner_type", "Own_Type"])
+  const name = pickString(f.properties, NAME_PROPERTY_KEYS)
+  const rawLayer = pickString(f.properties, LAYER_PROPERTY_KEYS)
   const loweredLayer = rawLayer?.toLowerCase() ?? null
   const layer = loweredLayer !== null && isIngestLayer(loweredLayer) ? loweredLayer : defaultLayer
   if (!isPolygon || prefixedGeoid === null || name === null) return null
@@ -80,7 +82,7 @@ export function normalizeFeature(
     geoid: prefixedGeoid,
     name,
     layer,
-    population: pickNumber(f.properties, ["population", "POPULATION", "POP", "pop"]),
+    population: pickNumber(f.properties, POPULATION_PROPERTY_KEYS),
     geometry,
   }
 }
@@ -104,7 +106,7 @@ export function normalizeFeatures(
   return { rows, skipped }
 }
 
-export async function upsertJurisdictionBatch(
+async function upsertJurisdictionBatch(
   sql: Queryable,
   rows: readonly IngestRow[],
 ): Promise<number> {
@@ -207,7 +209,7 @@ export async function ingestGeoJsonSeqFile(
   }
   const lines = createInterface({ input: createReadStream(filePath, "utf8"), crlfDelay: Infinity })
   for await (const raw of lines) {
-    const line = (raw.charCodeAt(0) === 0x1e ? raw.slice(1) : raw).trim()
+    const line = (raw.charCodeAt(0) === RECORD_SEPARATOR ? raw.slice(1) : raw).trim()
     if (line === "") continue
     features += 1
     const row = normalizeFeature(JSON.parse(line) as GeoJsonFeature, defaultLayer, geoidPrefix)
@@ -221,5 +223,3 @@ export async function ingestGeoJsonSeqFile(
   await flush()
   return { upserted, skipped, features }
 }
-
-export type { GeoJsonFeature, GeoJsonFeatureCollection }

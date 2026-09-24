@@ -8,7 +8,7 @@
  * curating it changes routing.
  */
 
-import type { Sql } from "../client.js"
+import type { Queryable } from "../client.js"
 import type { JURISDICTION_LAYER_VALUES } from "../schema/types.js"
 
 export interface ResolvedJurisdiction {
@@ -42,7 +42,7 @@ ORDER BY ${JURISDICTION_RESOLVE_ORDER_BY}
 LIMIT 1` as const
 
 export async function resolveJurisdiction(
-  sql: Sql,
+  sql: Queryable,
   lng: number,
   lat: number,
 ): Promise<ResolvedJurisdiction | null> {

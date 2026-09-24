@@ -37,6 +37,16 @@ const LANDMARK_RADIUS_M = 60
 
 const EARTH_RADIUS_M = 6_371_000
 
+const PROVIDER_NAME = "photon"
+const RESPONSE_LANGUAGE = "en"
+
+const HOME_COUNTRY_NAMES: ReadonlySet<string> = new Set([
+  "United States",
+  "United States of America",
+])
+
+const RESIDENTIAL_PLACE_VALUES: ReadonlySet<string> = new Set(["house", "farm"])
+
 const LANDMARK_KEYS = new Set([
   "amenity",
   "leisure",
@@ -82,9 +92,7 @@ function addressLine(p: PhotonReverseProps, primary: string): string {
   const tail = [
     p.city && p.city !== primary ? p.city : null,
     p.state,
-    p.country && p.country !== "United States" && p.country !== "United States of America"
-      ? p.country
-      : null,
+    p.country && !HOME_COUNTRY_NAMES.has(p.country) ? p.country : null,
   ].filter((v): v is string => !!v)
   return [primary, ...tail].join(", ")
 }
@@ -98,8 +106,9 @@ export function formatPhotonReverse(p: PhotonReverseProps): string | null {
 
 export function isResidentialName(p: PhotonReverseProps): boolean {
   if (p.osm_key === "building") return true
-  if (p.osm_key === "place" && (p.osm_value === "house" || p.osm_value === "farm")) return true
-  return false
+  return (
+    p.osm_key === "place" && p.osm_value !== undefined && RESIDENTIAL_PLACE_VALUES.has(p.osm_value)
+  )
 }
 
 function namedRoad(p: PhotonReverseProps): string | null {
@@ -120,10 +129,17 @@ interface Candidate {
   meters: number
 }
 
+export type ComposedLine = { line: string; precision: AddressPrecision }
+
 export function composePhotonReverse(
   features: PhotonFeature[],
   at: { lat: number; lng: number },
-): { line: string; precision: AddressPrecision } | null {
+): ComposedLine | null {
+  const candidates = nearestFirst(features, at)
+  return exactAddress(candidates) ?? nearbyRoads(candidates) ?? nearbyLandmark(candidates)
+}
+
+function nearestFirst(features: PhotonFeature[], at: { lat: number; lng: number }): Candidate[] {
   const candidates: Candidate[] = []
   for (const f of features) {
     const props = f.properties
@@ -135,14 +151,17 @@ export function composePhotonReverse(
         : Number.POSITIVE_INFINITY
     candidates.push({ props, meters })
   }
-  candidates.sort((a, b) => a.meters - b.meters)
+  return candidates.sort((a, b) => a.meters - b.meters)
+}
 
+function exactAddress(candidates: Candidate[]): ComposedLine | null {
   const exact = candidates.find((c) => !!c.props.housenumber?.trim() && !!c.props.street?.trim())
-  if (exact) {
-    const line = formatPhotonReverse(exact.props)
-    if (line) return { line, precision: "street" }
-  }
+  if (!exact) return null
+  const line = formatPhotonReverse(exact.props)
+  return line ? { line, precision: "street" } : null
+}
 
+function nearbyRoads(candidates: Candidate[]): ComposedLine | null {
   const roads: string[] = []
   let roadProps: PhotonReverseProps | null = null
   for (const c of candidates) {
@@ -152,18 +171,18 @@ export function composePhotonReverse(
     roads.push(road)
     roadProps ??= c.props
   }
-  if (roadProps !== null && roads[0] !== undefined) {
-    const primary = roads.length >= 2 ? `${roads[0]} & ${roads[1]}` : roads[0]
-    return { line: addressLine(roadProps, primary), precision: "intersection" }
-  }
+  if (roadProps === null || roads[0] === undefined) return null
+  const primary = roads.length >= 2 ? `${roads[0]} & ${roads[1]}` : roads[0]
+  return { line: addressLine(roadProps, primary), precision: "intersection" }
+}
 
+function nearbyLandmark(candidates: Candidate[]): ComposedLine | null {
   for (const c of candidates) {
     if (c.meters > LANDMARK_RADIUS_M) continue
     const name = landmarkName(c.props)
     if (name === null) continue
     return { line: addressLine(c.props, name), precision: "landmark" }
   }
-
   return null
 }
 
@@ -186,7 +205,7 @@ export function makePhotonReverseGeocode(opts: PhotonReverseOptions = {}): Rever
       const u = new URL(baseUrl)
       u.searchParams.set("lat", String(lat))
       u.searchParams.set("lon", String(lng))
-      u.searchParams.set("lang", "en")
+      u.searchParams.set("lang", RESPONSE_LANGUAGE)
       u.searchParams.set("limit", String(REVERSE_LIMIT))
       u.searchParams.set("radius", String(REVERSE_RADIUS_KM))
       url = u.toString()
@@ -201,6 +220,6 @@ export function makePhotonReverseGeocode(opts: PhotonReverseOptions = {}): Rever
       init: { headers: { Accept: "application/json" } },
     })
     const composed = composePhotonReverse(data?.features ?? [], { lat, lng })
-    return composed === null ? null : { ...composed, provider: "photon" }
+    return composed === null ? null : { ...composed, provider: PROVIDER_NAME }
   }
 }

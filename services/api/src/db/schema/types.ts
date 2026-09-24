@@ -7,10 +7,12 @@ export interface GeometryConfig {
   srid?: number
 }
 
+const WGS84_SRID = 4326
+
 export const geometry = customType<{ data: unknown; driverData: string; config: GeometryConfig }>({
   dataType(config) {
     const subtype = config?.subtype ?? "Geometry"
-    const srid = config?.srid ?? 4326
+    const srid = config?.srid ?? WGS84_SRID
     return `geometry(${subtype},${srid})`
   },
 })

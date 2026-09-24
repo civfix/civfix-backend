@@ -70,7 +70,6 @@ export const ko: Partial<Record<MessageKey, string>> = {
     '{{title}}의 "{{slot}}" 교대 시간이 바뀌었어요. 이벤트를 열어 확인해 주세요.',
 
   "email.otp.subject": "civfix 로그인 코드",
-  "email.otp.body_line1": "civfix 로그인 코드는 {{code}}입니다.",
   "email.otp.body_expiry":
     "코드는 {{minutes}}분 후 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하세요.",
   "email.otp.html_intro": "civfix 로그인 코드:",

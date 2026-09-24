@@ -43,6 +43,16 @@ const DIGIT_LEET: Readonly<Record<string, string>> = {
 }
 const SYMBOL_LEET: Readonly<Record<string, string>> = { "!": "i", "|": "i", "@": "a" }
 
+const LETTER_RE = /[a-z]/i
+
+const SEPARATOR_BETWEEN_CHARS_RE = /([a-z0-9])[._\-*]+([a-z0-9])/gi
+
+const SPACED_OUT_RUN_RE = /\b[a-z0-9](?: [a-z0-9])+\b/gi
+
+const SPACE_RE = / /g
+
+const SLUR_MESSAGE = "This contains language that isn't allowed."
+
 function deLeet(s: string): string {
   let out = ""
   for (let i = 0; i < s.length; i++) {
@@ -54,7 +64,7 @@ function deLeet(s: string): string {
     }
     const digit = DIGIT_LEET[ch]
     if (digit !== undefined) {
-      const adjacentToLetter = /[a-z]/i.test(s.charAt(i - 1)) || /[a-z]/i.test(s.charAt(i + 1))
+      const adjacentToLetter = LETTER_RE.test(s.charAt(i - 1)) || LETTER_RE.test(s.charAt(i + 1))
       out += adjacentToLetter ? digit : ch
       continue
     }
@@ -69,9 +79,9 @@ function deobfuscate(text: string): string {
   let prev: string
   do {
     prev = collapsed
-    collapsed = collapsed.replace(/([a-z0-9])[._\-*]+([a-z0-9])/gi, "$1$2")
+    collapsed = collapsed.replace(SEPARATOR_BETWEEN_CHARS_RE, "$1$2")
   } while (collapsed !== prev)
-  return collapsed.replace(/\b[a-z0-9](?: [a-z0-9])+\b/gi, (run) => run.replace(/ /g, ""))
+  return collapsed.replace(SPACED_OUT_RUN_RE, (run) => run.replace(SPACE_RE, ""))
 }
 
 // Combining marks survive NFKD as separate code points and format characters (zero-width joiners, soft
@@ -96,6 +106,6 @@ export function containsSlur(text: string | null | undefined): boolean {
 
 export function assertNoSlur(text: string | null | undefined, field = "body"): void {
   if (containsSlur(text)) {
-    throw AppError.validation({ [field]: "This contains language that isn't allowed." })
+    throw AppError.validation({ [field]: SLUR_MESSAGE })
   }
 }

@@ -30,6 +30,18 @@ const APP_ERROR_CODES: ReadonlySet<string> = new Set<string>(Object.values(Error
 
 const MAX_CAUSE_DEPTH = 4
 
+export const SMTP_AUTH_FAILURE_CODE = "EAUTH"
+
+const SMTP_OVERSIZE_REPLY_CODES: ReadonlySet<number> = new Set([552, 523])
+
+const SMTP_PERMANENT_REPLY_CLASS = 5
+
+const SMTP_TRANSIENT_REPLY_CLASS = 4
+
+function smtpReplyClass(responseCode: number | undefined): number | undefined {
+  return responseCode === undefined ? undefined : Math.floor(responseCode / 100)
+}
+
 function readString(source: Record<string, unknown>, key: string): string | undefined {
   const value = source[key]
   return typeof value === "string" ? value : undefined
@@ -66,25 +78,25 @@ export function mailFailure(err: unknown): MailFailure {
   const command = readString(source, "command")
   const base = { responseCode, code, response, command }
 
-  if (code === "EAUTH") {
+  if (code === SMTP_AUTH_FAILURE_CODE) {
     return { ...base, kind: "auth", senderRejected: true }
   }
 
   if (
-    responseCode === 552 ||
-    responseCode === 523 ||
+    (responseCode !== undefined && SMTP_OVERSIZE_REPLY_CODES.has(responseCode)) ||
     (response !== undefined && OVERSIZE_RESPONSE_RE.test(response))
   ) {
     return { ...base, kind: "oversize", senderRejected: false }
   }
 
-  if (responseCode !== undefined && responseCode >= 500 && responseCode < 600) {
+  const replyClass = smtpReplyClass(responseCode)
+  if (replyClass === SMTP_PERMANENT_REPLY_CLASS) {
     return isRecipientRejection(response)
       ? { ...base, kind: "permanent", senderRejected: false }
       : { ...base, kind: "auth", senderRejected: true }
   }
 
-  if (responseCode !== undefined && responseCode >= 400 && responseCode < 500) {
+  if (replyClass === SMTP_TRANSIENT_REPLY_CLASS) {
     return { ...base, kind: "transient", senderRejected: false }
   }
 

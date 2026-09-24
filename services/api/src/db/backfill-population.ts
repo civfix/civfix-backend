@@ -9,7 +9,7 @@
  * Census API rejects unkeyed requests. A free key: https://api.census.gov/data/key_signup.html
  */
 
-import { runDbCli, runIfMain } from "./cli.js"
+import { EXIT_USAGE, runDbCli, runIfMain } from "./cli.js"
 import { backfillPopulation } from "./backfill-population-core.js"
 
 async function main(): Promise<void> {
@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   const year = yearArg ? Number(yearArg) : undefined
   if (yearArg && !Number.isInteger(year)) {
     console.error(`backfill-population: vintage must be a 4-digit year (got "${yearArg}")`)
-    process.exit(2)
+    process.exit(EXIT_USAGE)
   }
   await runDbCli(async (_db, sql) => {
     const { fetched, updated, states } = await backfillPopulation(sql, {

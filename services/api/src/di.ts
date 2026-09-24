@@ -70,7 +70,7 @@ import {
   type PostRepository,
 } from "./services/post-repository.drizzle.js"
 import { makePostService, type PostService } from "./services/post-service.js"
-import { makeFeedPresence, type FeedPresence } from "./services/feed-presence.js"
+import { makeFeedPresence } from "./services/feed-presence.js"
 import {
   makeNotificationService,
   type NotificationService,
@@ -82,7 +82,7 @@ import { RedisByteMeter, type ByteMeter } from "./services/media-byte-quota.js"
 import { makeTicketTokenSigner, type TicketTokenSigner } from "./services/host/ticket-token.js"
 import { RedisCounterStore, type CounterStore } from "./abuse/counter-store.js"
 import { InMemoryBlocksRepository, InMemoryDmRepository } from "./services/dm-repository.memory.js"
-import { MultiPushSender } from "./adapters/push-sender.js"
+import { MultiPushSender, type PushSenderConfig } from "./adapters/push-sender.js"
 import { HttpRoutingProvider } from "./adapters/routing-provider.js"
 import { RealAbuseChecks } from "./adapters/abuse-checks.js"
 import { PgBossJobs } from "./adapters/jobs.pgboss.js"
@@ -147,142 +147,324 @@ const PRE_SERVER_LOGGER: AdapterLogger = {
   error: (obj, msg) => console.error(msg ?? "", obj),
 }
 
-export function buildContainer(env: Env): Container {
-  let dbHandle: DbHandle | undefined
-  let redis: RedisClient | undefined
+interface Lazy<T> {
+  get(): T
+  readonly current: T | undefined
+  reset(): void
+}
 
-  let serverLogger: NotificationLogger | undefined
-
-  const csrf = makeCsrf(env)
-
-  // Adapters are built before buildServer hands over its logger, so they get a forwarder that resolves
-  // the server logger at call time instead of capturing a console fallback at construction.
-  const adapterLogger: AdapterLogger = {
-    warn: (obj, msg) => forwardLog("warn", obj, msg),
-    error: (obj, msg) => forwardLog("error", obj, msg),
+function lazy<T>(create: () => T): Lazy<T> {
+  let value: T | undefined
+  return {
+    get: () => (value ??= create()),
+    get current() {
+      return value
+    },
+    reset: () => {
+      value = undefined
+    },
   }
-  function forwardLog(level: "warn" | "error", obj: unknown, msg: string | undefined): void {
-    if (serverLogger !== undefined) serverLogger[level](obj, msg)
+}
+
+// Adapters are built before buildServer hands over its logger, so they get a forwarder that resolves
+// the server logger at call time instead of capturing a console fallback at construction.
+function forwardingLogger(resolve: () => NotificationLogger | undefined): AdapterLogger {
+  const forward = (level: "warn" | "error", obj: unknown, msg: string | undefined): void => {
+    const target = resolve()
+    if (target !== undefined) target[level](obj, msg)
     else PRE_SERVER_LOGGER[level](obj, msg)
   }
+  return {
+    warn: (obj, msg) => forward("warn", obj, msg),
+    error: (obj, msg) => forward("error", obj, msg),
+  }
+}
 
+interface Connections {
+  getDb(): DbHandle
+  getRedis(): RedisClient
+  readonly dbHandle: DbHandle | undefined
+  readonly redis: RedisClient | undefined
+  markClosed(): void
+  closeRedis(): Promise<boolean>
+  closeDb(): Promise<void>
+}
+
+function makeConnections(env: Env, logger: () => NotificationLogger | undefined): Connections {
+  let dbHandle: DbHandle | undefined
+  let redis: RedisClient | undefined
   let closed = false
   // A getter reached after shutdown would otherwise open a fresh pool that nothing ever closes.
   function assertOpen(): void {
     if (closed) throw new Error("DI container is closed")
   }
-
-  function getDb(): DbHandle {
-    assertOpen()
-    if (!dbHandle) dbHandle = makeDb(env.DATABASE_URL)
-    return dbHandle
-  }
-  function getRedis(): RedisClient {
-    assertOpen()
-    if (!redis) {
-      redis = makeRedis(env.REDIS_URL, {
-        onError: (err) => serverLogger?.error({ err, component: "redis" }, "redis client error"),
+  return {
+    getDb() {
+      assertOpen()
+      dbHandle ??= makeDb(env.DATABASE_URL)
+      return dbHandle
+    },
+    getRedis() {
+      assertOpen()
+      redis ??= makeRedis(env.REDIS_URL, {
+        onError: (err) => logger()?.error({ err, component: "redis" }, "redis client error"),
       })
-    }
-    return redis
+      return redis
+    },
+    get dbHandle() {
+      return dbHandle
+    },
+    get redis() {
+      return redis
+    },
+    markClosed() {
+      closed = true
+    },
+    async closeRedis() {
+      if (!redis) return false
+      await redis.quit().catch(() => redis?.disconnect())
+      redis = undefined
+      return true
+    },
+    async closeDb() {
+      if (!dbHandle) return
+      await dbHandle.close()
+      dbHandle = undefined
+    },
+  }
+}
+
+interface StorageSeams {
+  storage: Storage
+  inboundStorage: Storage
+  localObjectStores: readonly LocalDiskStorage[] | undefined
+}
+
+function makeStorageSeams(env: Env): StorageSeams {
+  const localStorageDir = env.LOCAL_STORAGE_DIR
+  if (localStorageDir !== undefined) {
+    const media = makeLocalDiskStorage(env, localStorageDir, "media")
+    const inbound = makeLocalDiskStorage(env, localStorageDir, "inbound")
+    return { storage: media, inboundStorage: inbound, localObjectStores: [media, inbound] }
+  }
+  if (env.USE_FAKE_STORAGE) {
+    const storage = new FakeStorage()
+    return { storage, inboundStorage: storage, localObjectStores: undefined }
   }
 
-  let dmRepo: DmRepository | undefined
-  let blocksRepo: BlocksRepository | undefined
-  let volunteerHoursRepo: VolunteerHoursRepository | undefined
-  function getVolunteerHoursRepo(): VolunteerHoursRepository {
-    if (!volunteerHoursRepo) {
-      volunteerHoursRepo = makeDrizzleVolunteerHoursRepository(getDb().sql)
-    }
-    return volunteerHoursRepo
+  const storage = new R2Storage({
+    ...r2Credentials(env),
+    bucket: env.R2_BUCKET,
+    ...(env.R2_PUBLIC_BASE !== undefined ? { publicBase: env.R2_PUBLIC_BASE } : {}),
+  })
+  const inboundBucket =
+    env.R2_INBOUND_BUCKET ?? (env.R2_PUBLIC_BASE === undefined ? env.R2_BUCKET : "")
+  if (inboundBucket.length === 0) {
+    throw new Error(
+      "R2_INBOUND_BUCKET is required when R2_PUBLIC_BASE is set: refusing to write raw inbound email " +
+        "into the public media bucket. Set a dedicated, non-public inbound bucket.",
+    )
   }
-  let certificateRepo: CertificateRepository | undefined
-  function getCertificateRepo(): CertificateRepository {
-    if (!certificateRepo) {
-      certificateRepo = makeDrizzleCertificateRepository(getDb().sql)
-    }
-    return certificateRepo
+  const inboundStorage = new R2Storage({ ...r2Credentials(env), bucket: inboundBucket })
+  return { storage, inboundStorage, localObjectStores: undefined }
+}
+
+function r2Credentials(env: Env): {
+  accountId: string
+  accessKeyId: string
+  secretAccessKey: string
+} {
+  return {
+    accountId: env.R2_ACCOUNT_ID,
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
   }
+}
+
+function makeLocalDiskStorage(
+  env: Env,
+  rootDirectory: string,
+  namespace: LocalStorageNamespace,
+): LocalDiskStorage {
+  return new LocalDiskStorage({
+    rootDirectory,
+    namespace,
+    publicApiUrl: env.PUBLIC_API_URL,
+    signingKey: env.LOCAL_STORAGE_SIGNING_KEY ?? LOCAL_STORAGE_DEV_SIGNING_KEY,
+    nodeEnv: env.NODE_ENV,
+  })
+}
+
+interface StatelessSeams {
+  mailer: Mailer
+  smsSender: SmsSender
+  geocoder: Geocoder
+  streetReverseGeocode: ReverseGeocode
+  jurisdictionLookup: JurisdictionLookup
+  inboundMail: InboundMail
+  routingProvider: RoutingProvider
+  abuseChecks: AbuseChecks
+}
+
+function makeStatelessSeams(
+  env: Env,
+  logger: AdapterLogger,
+  getDb: () => DbHandle,
+): StatelessSeams {
+  const isProduction = env.NODE_ENV === "production"
+  return {
+    mailer: env.USE_FAKE_MAILER
+      ? new FakeMailer()
+      : new OciMailer({
+          host: env.OCI_EMAIL_SMTP_HOST,
+          port: env.OCI_EMAIL_SMTP_PORT,
+          user: env.OCI_EMAIL_SMTP_USER,
+          pass: env.OCI_EMAIL_SMTP_PASS,
+          fromNoReply: env.MAIL_FROM_NOREPLY,
+          fromOutreach: env.MAIL_FROM_OUTREACH,
+          timeoutMs: env.OCI_EMAIL_SMTP_TIMEOUT_MS,
+          logger,
+        }),
+    smsSender: env.USE_FAKE_SMS
+      ? new FakeSmsSender()
+      : new TwilioSmsSender({
+          accountSid: env.TWILIO_ACCOUNT_SID,
+          authToken: env.TWILIO_AUTH_TOKEN,
+          from: env.TWILIO_SMS_FROM,
+        }),
+    geocoder: env.USE_FAKE_GEOCODER
+      ? new FakeGeocoder()
+      : new TigerGeocoder({ getSql: () => getDb().sql }),
+    streetReverseGeocode: chainReverse(
+      env.MAPBOX_TOKEN ? makeMapboxReverseGeocode({ token: env.MAPBOX_TOKEN }) : null,
+      makePhotonReverseGeocode(),
+    ),
+    jurisdictionLookup: isProduction
+      ? new CensusJurisdictionLookup({
+          baseUrl: env.CENSUS_GEOCODER_URL,
+          timeoutMs: env.CENSUS_GEOCODER_TIMEOUT_MS,
+        })
+      : new FakeJurisdictionLookup(),
+    inboundMail: isProduction
+      ? new CfInboundMail({ replyDomain: env.MAIL_REPLY_DOMAIN })
+      : new FakeInboundMail(env.MAIL_REPLY_DOMAIN),
+    routingProvider: isProduction ? new HttpRoutingProvider() : new FakeRoutingProvider(),
+    abuseChecks: env.USE_FAKE_ABUSE_NSFW
+      ? new FakeAbuseChecks()
+      : new RealAbuseChecks({
+          ...(env.CF_TURNSTILE_SECRET !== undefined
+            ? { turnstileSecret: env.CF_TURNSTILE_SECRET }
+            : {}),
+          ...(env.CF_TURNSTILE_HOSTNAMES.length > 0
+            ? { turnstileHostnames: env.CF_TURNSTILE_HOSTNAMES }
+            : {}),
+          useRealNsfw: env.USE_REAL_NSFW,
+          log: (line, extra) => logger.warn(extra ?? {}, line),
+        }),
+  }
+}
+
+async function closeIfClosable(seam: unknown): Promise<void> {
+  const closable = seam as { close?: () => Promise<void> }
+  if (typeof closable.close === "function") await closable.close()
+}
+
+export function buildContainer(env: Env): Container {
+  let serverLogger: NotificationLogger | undefined
+  const currentLogger = (): NotificationLogger | undefined => serverLogger
+  const adapterLogger = forwardingLogger(currentLogger)
+  const connections = makeConnections(env, currentLogger)
+  const { getDb, getRedis } = connections
+
+  const csrf = makeCsrf(env)
   const hasDatabase = env.DATABASE_URL.length > 0
-  function getBlocksRepo(): BlocksRepository {
-    if (!blocksRepo) {
-      blocksRepo = hasDatabase
-        ? makeDrizzleBlocksRepository(getDb().sql)
-        : new InMemoryBlocksRepository()
-    }
-    return blocksRepo
-  }
-  function getDmRepo(): DmRepository {
-    if (!dmRepo) {
-      if (hasDatabase) {
-        dmRepo = makeDrizzleDmRepository(getDb().sql, presignPrivateMedia)
-      } else {
-        const blocks = getBlocksRepo()
-        dmRepo = new InMemoryDmRepository((a, b) => blocks.isBlockedEitherWay(a, b))
-      }
-    }
-    return dmRepo
-  }
 
-  let postRepo: PostRepository | undefined
-  let affiliationLoader: AffiliationLoader | undefined
-  function getAffiliationLoader(): AffiliationLoader {
-    if (!affiliationLoader) {
-      affiliationLoader = makeAffiliationLoader(getDb().sql, (k: string) =>
-        storage.presignGet(k, MEDIA_GET_URL_TTL_SEC),
-      )
-    }
-    return affiliationLoader
-  }
+  const { storage, inboundStorage, localObjectStores } = makeStorageSeams(env)
+  const presignMedia = makeMediaPresigner(storage)
+  const presignPrivateMedia = makePrivateMediaPresigner(storage)
+  const presignAvatar = (k: string) => storage.presignGet(k, MEDIA_GET_URL_TTL_SEC)
 
-  function getPostRepo(): PostRepository {
-    if (!postRepo) {
-      postRepo = makeDrizzlePostRepository(getDb().sql, {
-        presignMedia,
-        presignAvatar: (k: string) => storage.presignGet(k, MEDIA_GET_URL_TTL_SEC),
-        affiliations: getAffiliationLoader(),
-      })
-    }
-    return postRepo
-  }
+  const seams = makeStatelessSeams(env, adapterLogger, getDb)
 
-  let feedPresence: FeedPresence | undefined
-  function getFeedPresence(): FeedPresence {
-    if (!feedPresence) {
-      feedPresence = makeFeedPresence({
-        ...(env.REDIS_URL.length > 0 ? { cache: getCache() } : {}),
-        config: env.FEED_RANKING,
-        ...(serverLogger !== undefined ? { logger: serverLogger } : {}),
-      })
-    }
-    return feedPresence
-  }
+  const volunteerHoursRepo = lazy(() => makeDrizzleVolunteerHoursRepository(getDb().sql))
+  const certificateRepo = lazy(() => makeDrizzleCertificateRepository(getDb().sql))
+  const blocksRepo = lazy<BlocksRepository>(() =>
+    hasDatabase ? makeDrizzleBlocksRepository(getDb().sql) : new InMemoryBlocksRepository(),
+  )
+  const dmRepo = lazy<DmRepository>(() => {
+    if (hasDatabase) return makeDrizzleDmRepository(getDb().sql, presignPrivateMedia)
+    const blocks = blocksRepo.get()
+    return new InMemoryDmRepository((a, b) => blocks.isBlockedEitherWay(a, b))
+  })
+  const affiliationLoader = lazy(() => makeAffiliationLoader(getDb().sql, presignAvatar))
+  const postRepo = lazy(() =>
+    makeDrizzlePostRepository(getDb().sql, {
+      presignMedia,
+      presignAvatar,
+      affiliations: affiliationLoader.get(),
+    }),
+  )
 
-  let postService: PostService | undefined
-  function getPostService(): PostService {
-    if (!postService) {
-      postService = makePostService({
-        repo: getPostRepo(),
-        sql: getDb().sql,
-        notifier: getNotificationService(),
-        isBlockedEitherWay: (a: string, b: string) => getBlocksRepo().isBlockedEitherWay(a, b),
-        feedRanking: env.FEED_RANKING,
-        feedPresence: getFeedPresence(),
-        ...(env.USE_FAKE_USER_CHANNEL ? {} : { userChannel: getUserChannel() }),
-      })
-    }
-    return postService
+  const cacheClient = lazy<CacheClient>(() => new RedisCacheClient(getRedis()))
+  const redisCounters = lazy(() => new RedisCounterStore(getRedis()))
+  const lazyCounters: CounterStore = {
+    incr: (key, ttlSeconds) => redisCounters.get().incr(key, ttlSeconds),
+    incrBy: (key, by, ttlSeconds) => redisCounters.get().incrBy(key, by, ttlSeconds),
+    decrBy: (key, by) => redisCounters.get().decrBy(key, by),
   }
+  const redisByteMeter = lazy(() => new RedisByteMeter(getRedis()))
+  const lazyByteMeter: ByteMeter = {
+    add: (subject, bytes) => redisByteMeter.get().add(subject, bytes),
+  }
+  const ticketTokenSigner = lazy(() => makeTicketTokenSigner(env.TICKET_TOKEN_SECRET.trim()))
+
+  const feedPresence = lazy(() =>
+    makeFeedPresence({
+      ...(env.REDIS_URL.length > 0 ? { cache: cacheClient.get() } : {}),
+      config: env.FEED_RANKING,
+      ...(serverLogger !== undefined ? { logger: serverLogger } : {}),
+    }),
+  )
+
+  const sharedPubSub = lazy(
+    () =>
+      new RedisChatPubSub(getRedis(), (err) =>
+        serverLogger?.error(
+          { err, component: "redis", role: "subscriber" },
+          "redis subscriber error",
+        ),
+      ),
+  )
+  const userChannel = lazy<UserChannel>(() =>
+    env.USE_FAKE_USER_CHANNEL
+      ? new FakeUserChannel()
+      : new RedisUserChannel({
+          pubsub: sharedPubSub.get(),
+          ...(serverLogger !== undefined ? { logger: serverLogger } : {}),
+        }),
+  )
+  const pushSender = lazy<PushSender>(() =>
+    env.USE_FAKE_PUSH
+      ? new FakePushSender()
+      : new MultiPushSender({
+          db: getDb().db,
+          config: buildPushConfig(env),
+          counters: lazyCounters,
+          logger: adapterLogger,
+        }),
+  )
 
   let notificationService: NotificationService | undefined
   let notificationLoggerWired = false
+  // Rebuilt once when the first logger arrives, so a service built earlier without one does not keep
+  // dropping delivery warnings.
   function getNotificationService(logger?: NotificationLogger): NotificationService {
     if (logger !== undefined) serverLogger ??= logger
     if (notificationService === undefined || (logger !== undefined && !notificationLoggerWired)) {
       notificationService = makeNotificationService({
         repo: makeDrizzleNotificationRepository(getDb().sql),
-        pushSender: getPushSender(),
-        userChannel: getUserChannel(),
+        pushSender: pushSender.get(),
+        userChannel: userChannel.get(),
         ...(logger !== undefined ? { logger } : {}),
       })
       notificationLoggerWired = logger !== undefined
@@ -290,263 +472,66 @@ export function buildContainer(env: Env): Container {
     return notificationService
   }
 
-  let redisCounters: CounterStore | undefined
-  const lazyCounters: CounterStore = {
-    incr: (key, ttlSeconds) =>
-      (redisCounters ??= new RedisCounterStore(getRedis())).incr(key, ttlSeconds),
-    incrBy: (key, by, ttlSeconds) =>
-      (redisCounters ??= new RedisCounterStore(getRedis())).incrBy(key, by, ttlSeconds),
-    decrBy: (key, by) => (redisCounters ??= new RedisCounterStore(getRedis())).decrBy(key, by),
-  }
-  function getCounterStore(): CounterStore {
-    return lazyCounters
-  }
-
-  let cacheClient: CacheClient | undefined
-  function getCache(): CacheClient {
-    if (!cacheClient) cacheClient = new RedisCacheClient(getRedis())
-    return cacheClient
-  }
-
-  let redisByteMeter: ByteMeter | undefined
-  const lazyByteMeter: ByteMeter = {
-    add: (subject, bytes) =>
-      (redisByteMeter ??= new RedisByteMeter(getRedis())).add(subject, bytes),
-  }
-  function getByteMeter(): ByteMeter {
-    return lazyByteMeter
-  }
-
-  let ticketTokenSigner: TicketTokenSigner | undefined
-  function getTicketTokenSigner(): TicketTokenSigner {
-    if (!ticketTokenSigner) {
-      ticketTokenSigner = makeTicketTokenSigner(env.TICKET_TOKEN_SECRET.trim())
-    }
-    return ticketTokenSigner
-  }
-
-  const localStorageDir = env.LOCAL_STORAGE_DIR
-  const usesR2 = localStorageDir === undefined && !env.USE_FAKE_STORAGE
-
-  function makeLocalDiskStorage(
-    rootDirectory: string,
-    namespace: LocalStorageNamespace,
-  ): LocalDiskStorage {
-    return new LocalDiskStorage({
-      rootDirectory,
-      namespace,
-      publicApiUrl: env.PUBLIC_API_URL,
-      signingKey: env.LOCAL_STORAGE_SIGNING_KEY ?? LOCAL_STORAGE_DEV_SIGNING_KEY,
-      nodeEnv: env.NODE_ENV,
-    })
-  }
-
-  const localMediaStore =
-    localStorageDir !== undefined ? makeLocalDiskStorage(localStorageDir, "media") : undefined
-  const localInboundStore =
-    localStorageDir !== undefined ? makeLocalDiskStorage(localStorageDir, "inbound") : undefined
-  const localObjectStores =
-    localMediaStore !== undefined && localInboundStore !== undefined
-      ? ([localMediaStore, localInboundStore] as const)
-      : undefined
-
-  const storage: Storage =
-    localMediaStore ??
-    (env.USE_FAKE_STORAGE
-      ? new FakeStorage()
-      : new R2Storage({
-          accountId: env.R2_ACCOUNT_ID,
-          accessKeyId: env.R2_ACCESS_KEY_ID,
-          secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-          bucket: env.R2_BUCKET,
-          ...(env.R2_PUBLIC_BASE !== undefined ? { publicBase: env.R2_PUBLIC_BASE } : {}),
-        }))
-
-  const presignMedia = makeMediaPresigner(storage)
-
-  const presignPrivateMedia = makePrivateMediaPresigner(storage)
-
-  const inboundBucket =
-    env.R2_INBOUND_BUCKET ?? (env.R2_PUBLIC_BASE === undefined ? env.R2_BUCKET : "")
-  if (usesR2 && inboundBucket.length === 0) {
-    throw new Error(
-      "R2_INBOUND_BUCKET is required when R2_PUBLIC_BASE is set: refusing to write raw inbound email " +
-        "into the public media bucket. Set a dedicated, non-public inbound bucket.",
-    )
-  }
-  const inboundStorage: Storage =
-    localInboundStore ??
-    (usesR2
-      ? new R2Storage({
-          accountId: env.R2_ACCOUNT_ID,
-          accessKeyId: env.R2_ACCESS_KEY_ID,
-          secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-          bucket: inboundBucket,
-        })
-      : storage)
-
-  const mailer: Mailer = env.USE_FAKE_MAILER
-    ? new FakeMailer()
-    : new OciMailer({
-        host: env.OCI_EMAIL_SMTP_HOST,
-        port: env.OCI_EMAIL_SMTP_PORT,
-        user: env.OCI_EMAIL_SMTP_USER,
-        pass: env.OCI_EMAIL_SMTP_PASS,
-        fromNoReply: env.MAIL_FROM_NOREPLY,
-        fromOutreach: env.MAIL_FROM_OUTREACH,
-        timeoutMs: env.OCI_EMAIL_SMTP_TIMEOUT_MS,
-        logger: adapterLogger,
-      })
-
-  const smsSender: SmsSender = env.USE_FAKE_SMS
-    ? new FakeSmsSender()
-    : new TwilioSmsSender({
-        accountSid: env.TWILIO_ACCOUNT_SID,
-        authToken: env.TWILIO_AUTH_TOKEN,
-        from: env.TWILIO_SMS_FROM,
-      })
-
-  const geocoder: Geocoder = env.USE_FAKE_GEOCODER
-    ? new FakeGeocoder()
-    : new TigerGeocoder({ getSql: () => getDb().sql })
-
-  const streetReverseGeocode: ReverseGeocode = chainReverse(
-    env.MAPBOX_TOKEN ? makeMapboxReverseGeocode({ token: env.MAPBOX_TOKEN }) : null,
-    makePhotonReverseGeocode(),
+  const postService = lazy(() =>
+    makePostService({
+      repo: postRepo.get(),
+      sql: getDb().sql,
+      notifier: getNotificationService(),
+      isBlockedEitherWay: (a: string, b: string) => blocksRepo.get().isBlockedEitherWay(a, b),
+      feedRanking: env.FEED_RANKING,
+      feedPresence: feedPresence.get(),
+      ...(env.USE_FAKE_USER_CHANNEL ? {} : { userChannel: userChannel.get() }),
+    }),
   )
-
-  const jurisdictionLookup: JurisdictionLookup =
-    env.NODE_ENV === "production"
-      ? new CensusJurisdictionLookup({
-          baseUrl: env.CENSUS_GEOCODER_URL,
-          timeoutMs: env.CENSUS_GEOCODER_TIMEOUT_MS,
-        })
-      : new FakeJurisdictionLookup()
-
-  const inboundMail: InboundMail =
-    env.NODE_ENV === "production"
-      ? new CfInboundMail({
-          replyDomain: env.MAIL_REPLY_DOMAIN,
-          ...(env.CF_EMAIL_WEBHOOK_SECRET !== undefined
-            ? { webhookSecret: env.CF_EMAIL_WEBHOOK_SECRET }
-            : {}),
-        })
-      : new FakeInboundMail(env.MAIL_REPLY_DOMAIN)
-
-  const routingProvider: RoutingProvider =
-    env.NODE_ENV === "production" ? new HttpRoutingProvider() : new FakeRoutingProvider()
-
-  const abuseChecks: AbuseChecks = env.USE_FAKE_ABUSE_NSFW
-    ? new FakeAbuseChecks()
-    : new RealAbuseChecks({
-        ...(env.CF_TURNSTILE_SECRET !== undefined
-          ? { turnstileSecret: env.CF_TURNSTILE_SECRET }
-          : {}),
-        ...(env.CF_TURNSTILE_HOSTNAMES.length > 0
-          ? { turnstileHostnames: env.CF_TURNSTILE_HOSTNAMES }
-          : {}),
-        useRealNsfw: env.USE_REAL_NSFW,
-        log: (line, extra) => adapterLogger.warn(extra ?? {}, line),
-      })
-
-  let sharedPubSub: RedisChatPubSub | undefined
-  function getSharedPubSub(): RedisChatPubSub {
-    if (!sharedPubSub) {
-      sharedPubSub = new RedisChatPubSub(getRedis(), (err) =>
-        serverLogger?.error(
-          { err, component: "redis", role: "subscriber" },
-          "redis subscriber error",
-        ),
-      )
-    }
-    return sharedPubSub
-  }
 
   const chatService: ChatService = env.USE_FAKE_CHAT
     ? new FakeChatService()
     : new WsChatService({
         repo: makeDrizzleChatRepository(getDb().sql, presignPrivateMedia),
-        pubsub: getSharedPubSub(),
+        pubsub: sharedPubSub.get(),
+        logger: adapterLogger,
       })
-
-  let userChannel: UserChannel | undefined
-  function getUserChannel(): UserChannel {
-    if (!userChannel) {
-      userChannel = env.USE_FAKE_USER_CHANNEL
-        ? new FakeUserChannel()
-        : new RedisUserChannel({
-            pubsub: getSharedPubSub(),
-            ...(serverLogger !== undefined ? { logger: serverLogger } : {}),
-          })
-    }
-    return userChannel
-  }
-
-  let pushSender: PushSender | undefined
-  function getPushSender(): PushSender {
-    if (!pushSender) {
-      pushSender = env.USE_FAKE_PUSH
-        ? new FakePushSender()
-        : new MultiPushSender({
-            db: getDb().db,
-            config: buildPushConfig(env),
-            counters: getCounterStore(),
-            logger: adapterLogger,
-          })
-    }
-    return pushSender
-  }
 
   const jobs: Jobs = env.USE_FAKE_JOBS
     ? new FakeJobs()
     : new PgBossJobs({ connectionString: env.DATABASE_URL, logger: adapterLogger })
+
+  const memoized: ReadonlyArray<Lazy<unknown>> = [
+    dmRepo,
+    blocksRepo,
+    volunteerHoursRepo,
+    certificateRepo,
+    postRepo,
+    affiliationLoader,
+    postService,
+    userChannel,
+    pushSender,
+  ]
 
   async function close(): Promise<void> {
     const maybePgBoss = jobs as { stop?: () => Promise<void> }
     if (typeof maybePgBoss.stop === "function") {
       await maybePgBoss.stop()
     }
-    if (userChannel) {
-      const maybeUserChannel = userChannel as { close?: () => Promise<void> }
-      if (typeof maybeUserChannel.close === "function") await maybeUserChannel.close()
-    }
-    const maybeChat = chatService as { close?: () => Promise<void> }
-    if (typeof maybeChat.close === "function") {
-      await maybeChat.close()
-    }
-    if (pushSender) {
-      const maybePush = pushSender as { close?: () => Promise<void> }
-      if (typeof maybePush.close === "function") await maybePush.close()
-    }
+    if (userChannel.current) await closeIfClosable(userChannel.current)
+    await closeIfClosable(chatService)
+    if (pushSender.current) await closeIfClosable(pushSender.current)
     // Only now: a graceful jobs stop waits for running handlers, which still need the pools, and
     // whatever they opened is torn down below.
-    closed = true
-    if (sharedPubSub) {
-      await sharedPubSub.close()
-      sharedPubSub = undefined
+    connections.markClosed()
+    if (sharedPubSub.current) {
+      await sharedPubSub.current.close()
+      sharedPubSub.reset()
     }
-    if (redis) {
-      await redis.quit().catch(() => redis?.disconnect())
-      redis = undefined
-      redisCounters = undefined
-      cacheClient = undefined
-      feedPresence = undefined
-      redisByteMeter = undefined
+    if (await connections.closeRedis()) {
+      redisCounters.reset()
+      cacheClient.reset()
+      feedPresence.reset()
+      redisByteMeter.reset()
     }
-    if (dbHandle) {
-      await dbHandle.close()
-      dbHandle = undefined
-    }
-    dmRepo = undefined
-    blocksRepo = undefined
-    volunteerHoursRepo = undefined
-    certificateRepo = undefined
-    postRepo = undefined
-    affiliationLoader = undefined
-    postService = undefined
+    await connections.closeDb()
+    for (const memo of memoized) memo.reset()
     notificationService = undefined
-    userChannel = undefined
-    pushSender = undefined
   }
 
   return {
@@ -555,44 +540,37 @@ export function buildContainer(env: Env): Container {
     storage,
     inboundStorage,
     developmentOnlyLocalObjectStores: localObjectStores,
-    mailer,
-    smsSender,
-    inboundMail,
-    geocoder,
-    streetReverseGeocode,
-    jurisdictionLookup,
+    ...seams,
     chatService,
     get userChannel() {
-      return getUserChannel()
+      return userChannel.get()
     },
     get pushSender() {
-      return getPushSender()
+      return pushSender.get()
     },
-    routingProvider,
-    abuseChecks,
     jobs,
     get dbHandle() {
-      return dbHandle
+      return connections.dbHandle
     },
     get redis() {
-      return redis
+      return connections.redis
     },
-    usesRealDb: env.DATABASE_URL.length > 0,
+    usesRealDb: hasDatabase,
     usesRealRedis: env.REDIS_URL.length > 0,
     getDb,
     getRedis,
-    getDmRepo,
-    getBlocksRepo,
-    getVolunteerHoursRepo,
-    getCertificateRepo,
-    getAffiliationLoader,
-    getPostRepo,
-    getPostService,
+    getDmRepo: dmRepo.get,
+    getBlocksRepo: blocksRepo.get,
+    getVolunteerHoursRepo: volunteerHoursRepo.get,
+    getCertificateRepo: certificateRepo.get,
+    getAffiliationLoader: affiliationLoader.get,
+    getPostRepo: postRepo.get,
+    getPostService: postService.get,
     getNotificationService,
-    getCounterStore,
-    getCache,
-    getByteMeter,
-    getTicketTokenSigner,
+    getCounterStore: () => lazyCounters,
+    getCache: cacheClient.get,
+    getByteMeter: () => lazyByteMeter,
+    getTicketTokenSigner: ticketTokenSigner.get,
     close,
   }
 }
@@ -615,8 +593,8 @@ export async function assertRedisReachable(container: Container): Promise<void> 
   }
 }
 
-function buildPushConfig(env: Env) {
-  const config: import("./adapters/push-sender.js").PushSenderConfig = {}
+function buildPushConfig(env: Env): PushSenderConfig {
+  const config: PushSenderConfig = {}
   if (env.APNS_KEY_ID && env.APNS_TEAM_ID && env.APNS_PRIVATE_KEY && env.APNS_BUNDLE_ID) {
     config.apns = {
       keyId: env.APNS_KEY_ID,

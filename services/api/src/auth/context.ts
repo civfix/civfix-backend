@@ -24,7 +24,7 @@ declare module "fastify" {
   }
 }
 
-export function anonymousAuth(anonSessionId?: string): AuthContext {
+function anonymousAuth(anonSessionId?: string): AuthContext {
   return {
     userId: null,
     roles: [],

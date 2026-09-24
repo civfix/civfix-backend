@@ -5,8 +5,4 @@
  * civfix-infra, which SETS (not appends) X-Forwarded-For so a client cannot pre-seed even the trusted hop.
  */
 
-export {
-  parseTrustProxy,
-  DEFAULT_TRUSTED_PROXY_CIDRS,
-  type TrustProxyValue,
-} from "../env/parsers.js"
+export { parseTrustProxy, DEFAULT_TRUSTED_PROXY_CIDRS } from "../env/parsers.js"

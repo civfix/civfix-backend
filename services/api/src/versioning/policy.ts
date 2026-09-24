@@ -15,19 +15,19 @@ export interface VersionStatus {
   readonly sunset?: string
 }
 
-export const SERVED_VERSIONS: readonly ApiVersion[] = ["v1"] as const
+const SERVED_VERSIONS: readonly ApiVersion[] = ["v1"] as const
 
-export const MIN_SUPPORTED_VERSION: ApiVersion = "v1"
+const MIN_SUPPORTED_VERSION: ApiVersion = "v1"
 
 /** `Record<ApiVersion, ...>` forces a compile error here when the contract gains a version with no policy. */
-export const VERSION_STATUS: Record<ApiVersion, VersionStatus> = {
+const VERSION_STATUS: Record<ApiVersion, VersionStatus> = {
   v1: { status: "current" },
 } as const
 
-const VERSION_SEGMENT_RE = /^v\d+$/
+const VERSION_SEGMENT_RE = /^v(\d+)$/
 
 function majorOf(seg: string): number | null {
-  const match = /^v(\d+)$/.exec(seg)
+  const match = VERSION_SEGMENT_RE.exec(seg)
   if (!match) return null
   return Number.parseInt(match[1]!, 10)
 }

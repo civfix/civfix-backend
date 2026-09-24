@@ -82,9 +82,3 @@ export const PROBE_OUTSIDE_ALL: ProbePoint = {
   lat: 40.0,
   expectGeoid: null,
 }
-
-export const PROBE_POINTS: readonly ProbePoint[] = [
-  PROBE_INSIDE_CITY,
-  PROBE_COUNTY_NOT_CITY,
-  PROBE_OUTSIDE_ALL,
-]

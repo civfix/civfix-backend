@@ -10,15 +10,24 @@ import {
 import { RemoteJwksVerifier, type JwksVerifier, type VerifiedIdToken } from "./jwks.js"
 import { newAccountDisplayName } from "./official-account.js"
 
-export const GOOGLE_ISSUERS = ["https://accounts.google.com", "accounts.google.com"]
-export const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
-export const APPLE_ISSUER = "https://appleid.apple.com"
-export const APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+const GOOGLE_ISSUERS = ["https://accounts.google.com", "accounts.google.com"]
+const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
+const APPLE_ISSUER = "https://appleid.apple.com"
+const APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+
+const GOOGLE_WEB_SCOPES = ["openid", "email", "profile"]
+const APPLE_WEB_SCOPES = ["name", "email"]
+// Apple requires form_post whenever the name or email scope is requested, so the callback arrives as a form
+// body (parsed in routes/auth.routes.ts).
+const APPLE_RESPONSE_MODE = "form_post"
+
+const APPLE_FALLBACK_DISPLAY_NAME = "Apple user"
+const GOOGLE_FALLBACK_DISPLAY_NAME = "Google user"
 
 export const PROVIDER_GOOGLE = "google"
 export const PROVIDER_APPLE = "apple"
 
-export const UNVERIFIED_ACCOUNT_EXISTS_MESSAGE =
+const UNVERIFIED_ACCOUNT_EXISTS_MESSAGE =
   "An account already uses this email address. Sign in the way you did before, or contact support."
 
 export interface OAuthConfig {
@@ -83,7 +92,7 @@ export class OAuthService {
     const client = this.requireGoogle()
     const state = generateState()
     const codeVerifier = generateCodeVerifier()
-    const url = client.createAuthorizationURL(state, codeVerifier, ["openid", "email", "profile"])
+    const url = client.createAuthorizationURL(state, codeVerifier, GOOGLE_WEB_SCOPES)
     return { url: url.toString(), state, codeVerifier }
   }
 
@@ -98,8 +107,8 @@ export class OAuthService {
   createAppleAuthUrl(): { url: string; state: string } {
     const client = this.requireAppleWeb()
     const state = generateState()
-    const url = client.createAuthorizationURL(state, ["name", "email"])
-    url.searchParams.set("response_mode", "form_post")
+    const url = client.createAuthorizationURL(state, APPLE_WEB_SCOPES)
+    url.searchParams.set("response_mode", APPLE_RESPONSE_MODE)
     return { url: url.toString(), state }
   }
 
@@ -292,7 +301,7 @@ function providerDisplayName(
 }
 
 function providerFallbackName(provider: string): string {
-  return provider === PROVIDER_APPLE ? "Apple user" : "Google user"
+  return provider === PROVIDER_APPLE ? APPLE_FALLBACK_DISPLAY_NAME : GOOGLE_FALLBACK_DISPLAY_NAME
 }
 
 function sanitizeDisplayName(raw: string | null | undefined): string | null {

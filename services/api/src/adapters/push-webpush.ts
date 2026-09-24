@@ -8,10 +8,17 @@ import {
 } from "../services/push-token-policy.js"
 import { mapWithLimit } from "../services/media-presign.js"
 import { Agent } from "node:https"
+import type WebPush from "web-push"
 
 const AGENT_CACHE_MAX = 64
 const AGENT_SOCKET_IDLE_MS = 30_000
 const AGENT_DRAIN_SWEEP_MS = 5_000
+
+const WEB_PUSH_PRUNE_STATUSES: ReadonlySet<number> = new Set([404, 410])
+
+function agentKey(address: string, family: 4 | 6): string {
+  return `${family}|${address}`
+}
 
 export interface PinnedAgentPool {
   get(address: string, family: 4 | 6): Agent
@@ -66,7 +73,7 @@ export function makePinnedAgentPool(
   }
 
   function get(address: string, family: 4 | 6): Agent {
-    const key = `${family}|${address}`
+    const key = agentKey(address, family)
     const cached = cache.get(key)
     if (cached) {
       cache.delete(key)
@@ -98,7 +105,7 @@ export function makePinnedAgentPool(
   }
 
   function drop(address: string, family: 4 | 6): void {
-    const key = `${family}|${address}`
+    const key = agentKey(address, family)
     const agent = cache.get(key)
     if (!agent) return
     cache.delete(key)
@@ -128,11 +135,11 @@ const agentPool = makePinnedAgentPool()
 
 const WEB_PUSH_CONCURRENCY = 16
 
-export const WEB_PUSH_REQUEST_TIMEOUT_MS = 8_000
+const WEB_PUSH_REQUEST_TIMEOUT_MS = 8_000
 
-export const WEB_PUSH_DEADLINE_SLACK_MS = 2_000
+const WEB_PUSH_DEADLINE_SLACK_MS = 2_000
 
-export const WEB_PUSH_BATCH_BUDGET_MS = 32_000
+const WEB_PUSH_BATCH_BUDGET_MS = 32_000
 
 export class WebPushDeadlineError extends Error {
   constructor(ms: number) {
@@ -182,6 +189,57 @@ export function makeWebPushDispatcher(
     return webpushPromise
   }
 
+  // Pushes onto invalidTokens directly (rather than returning a verdict) so concurrent sends record
+  // their prunes in the same order as they settle.
+  async function deliverToToken(
+    wp: Pick<typeof WebPush, "sendNotification">,
+    token: string,
+    body: string,
+    invalidTokens: string[],
+  ): Promise<void> {
+    const subscription = parseSubscription(token)
+    if (subscription === null) {
+      invalidTokens.push(token)
+      return
+    }
+    const target = await resolveSafePushTarget(subscription.endpoint, resolveAddresses)
+    if (target === null) {
+      logger.warn(
+        { endpointHash: hashForLog(subscription.endpoint) },
+        "push(webpush): refusing unsafe/internal endpoint; pruning",
+      )
+      invalidTokens.push(token)
+      return
+    }
+    try {
+      await withDeadline(
+        wp.sendNotification(subscription, body, {
+          agent: pool.get(target.address, target.family),
+          timeout: requestTimeoutMs,
+        }) as Promise<unknown>,
+        deadlineMs,
+        () => pool.drop(target.address, target.family),
+      )
+    } catch (err) {
+      if (err instanceof WebPushDeadlineError) {
+        logger.warn(
+          { deadlineMs, endpointHash: hashForLog(subscription.endpoint) },
+          "push(webpush): endpoint exceeded the hard deadline; request torn down",
+        )
+        return
+      }
+      const { prune, statusCode } = classifyWebPushError(err)
+      if (prune) {
+        invalidTokens.push(token)
+      } else {
+        logger.warn(
+          { statusCode, endpointHash: hashForLog(subscription.endpoint) },
+          "push(webpush): delivery failure",
+        )
+      }
+    }
+  }
+
   const dispatch: PlatformDispatcher = async (tokens, payload) => {
     const wp = await getWebPush()
     const body = JSON.stringify({
@@ -199,47 +257,7 @@ export function makeWebPushDispatcher(
         overBudget += 1
         return
       }
-      const subscription = parseSubscription(token)
-      if (subscription === null) {
-        invalidTokens.push(token)
-        return
-      }
-      const target = await resolveSafePushTarget(subscription.endpoint, resolveAddresses)
-      if (target === null) {
-        logger.warn(
-          { endpointHash: hashForLog(subscription.endpoint) },
-          "push(webpush): refusing unsafe/internal endpoint; pruning",
-        )
-        invalidTokens.push(token)
-        return
-      }
-      try {
-        await withDeadline(
-          wp.sendNotification(subscription, body, {
-            agent: pool.get(target.address, target.family),
-            timeout: requestTimeoutMs,
-          }) as Promise<unknown>,
-          deadlineMs,
-          () => pool.drop(target.address, target.family),
-        )
-      } catch (err) {
-        if (err instanceof WebPushDeadlineError) {
-          logger.warn(
-            { deadlineMs, endpointHash: hashForLog(subscription.endpoint) },
-            "push(webpush): endpoint exceeded the hard deadline; request torn down",
-          )
-          return
-        }
-        const { prune, statusCode } = classifyWebPushError(err)
-        if (prune) {
-          invalidTokens.push(token)
-        } else {
-          logger.warn(
-            { statusCode, endpointHash: hashForLog(subscription.endpoint) },
-            "push(webpush): delivery failure",
-          )
-        }
-      }
+      await deliverToToken(wp, token, body, invalidTokens)
     })
     if (overBudget > 0) {
       logger.warn(
@@ -266,5 +284,8 @@ export function classifyWebPushError(err: unknown): {
       ? (err as { statusCode?: unknown }).statusCode
       : undefined
   const statusCode = typeof raw === "number" ? raw : undefined
-  return { prune: statusCode === 404 || statusCode === 410, statusCode }
+  return {
+    prune: statusCode !== undefined && WEB_PUSH_PRUNE_STATUSES.has(statusCode),
+    statusCode,
+  }
 }

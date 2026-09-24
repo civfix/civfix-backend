@@ -3,7 +3,7 @@ import { AppError, ErrorCode, MailSendError } from "@civfix/shared"
 import type { Mailer, OutboundEmail, SentMail } from "@civfix/shared/interfaces"
 import type { Transporter } from "nodemailer"
 import { domainOf, escapeHtml, sanitizeHeaderValue } from "./mail-text.js"
-import { mailFailure } from "./mail-failure.js"
+import { mailFailure, SMTP_AUTH_FAILURE_CODE } from "./mail-failure.js"
 import {
   button,
   code,
@@ -62,6 +62,16 @@ const consoleLogger: OciMailerLogger = {
 
 export const OCI_MAILER_DEFAULT_TIMEOUT_MS = 15_000
 
+const SMTPS_IMPLICIT_TLS_PORT = 465
+
+const SECONDS_PER_MINUTE = 60
+
+const DEFAULT_EVENT_TITLE = "the event"
+
+const GUEST_OTP_DEFAULT_MINUTES = "5"
+
+const DEFAULT_CTA_LABEL = "Open"
+
 interface Rendered {
   subject: string
   text: string
@@ -80,7 +90,7 @@ function classifyMailError(err: unknown, from: string): MailSendError {
 
   switch (failure.kind) {
     case "auth":
-      return failure.code === "EAUTH"
+      return failure.code === SMTP_AUTH_FAILURE_CODE
         ? new MailSendError(
             ErrorCode.INTERNAL,
             `Email not sent: the SMTP server rejected our credentials. Check ` +
@@ -145,7 +155,7 @@ export class OciMailer implements Mailer {
       const transporter = nodemailer.createTransport({
         host: this.config.host,
         port: this.config.port,
-        secure: this.config.port === 465,
+        secure: this.config.port === SMTPS_IMPLICIT_TLS_PORT,
         requireTLS: true,
         auth: { user: this.config.user, pass: this.config.pass },
         connectionTimeout: timeout,
@@ -216,7 +226,7 @@ export function renderOtp(passcode: string, locale: Locale): Rendered {
       code(passcode),
       paragraph(
         renderMessage(locale, "email.otp.body_expiry", {
-          minutes: String(Math.floor(OTP_TTL_SECONDS / 60)),
+          minutes: String(Math.floor(OTP_TTL_SECONDS / SECONDS_PER_MINUTE)),
         }),
         { muted: true },
       ),
@@ -225,110 +235,128 @@ export function renderOtp(passcode: string, locale: Locale): Rendered {
   return { subject, text, html }
 }
 
-export function renderTemplate(template: string, vars: Record<string, unknown>): Rendered {
+export type TemplateVars = Record<string, unknown>
+
+interface TemplateContent {
+  subject: string
+  blocks: EmailBlock[]
+}
+
+type TemplateRenderer = (vars: TemplateVars, locale: Locale) => TemplateContent
+
+const TEMPLATES: ReadonlyMap<string, TemplateRenderer> = new Map([
+  ["report_update", renderReportUpdate],
+  ["guest_otp", renderGuestOtp],
+  ["guest_confirmed", renderGuestConfirmed],
+  ["guest_promoted", renderGuestPromoted],
+  ["action", renderAction],
+])
+
+export function renderTemplate(template: string, vars: TemplateVars): Rendered {
   const locale = resolveLocale(typeof vars.locale === "string" ? vars.locale : undefined)
-  switch (template) {
-    case "report_update": {
-      const status = stringVar(vars, "status", "updated")
-      const subject = renderMessage(locale, "email.report_update.subject", { status })
-      const message = renderMessage(locale, "email.report_update.body", { status })
-      const { text, html } = renderEmailBody({ preheader: subject, blocks: [paragraph(message)] })
-      return { subject, text, html }
-    }
-    case "guest_otp": {
-      const title = stringVar(vars, "title", "the event")
-      const passcode = stringVar(vars, "code", "")
-      const minutes = stringVar(vars, "minutes", "5")
-      const subject = renderMessage(locale, "email.guest_otp.subject", { title })
-      const { text, html } = renderEmailBody({
-        preheader: subject,
-        blocks: [
-          paragraph(renderMessage(locale, "email.guest_otp.html_intro", { title })),
-          code(passcode),
-          paragraph(renderMessage(locale, "email.guest_otp.body_expiry", { minutes }), {
-            muted: true,
-          }),
-        ],
-      })
-      return { subject, text, html }
-    }
-    case "guest_confirmed": {
-      const title = stringVar(vars, "title", "the event")
-      const when = optionalVar(vars, "when")
-      const place = optionalVar(vars, "place")
-      const cancelUrl = optionalVar(vars, "cancelUrl")
-      const subject = renderMessage(locale, "email.guest_confirmed.subject", { title })
-      const details: Array<[string, string]> = []
-      if (when !== undefined) details.push([renderMessage(locale, "email.event.when"), when])
-      if (place !== undefined) details.push([renderMessage(locale, "email.event.where"), place])
-      const blocks: EmailBlock[] = [heading(title)]
-      if (details.length > 0) blocks.push(kvTable(details))
-      blocks.push(paragraph(renderMessage(locale, "email.guest_confirmed.checkin")))
-      if (cancelUrl !== undefined) {
-        blocks.push(
-          paragraph(renderMessage(locale, "email.guest_confirmed.cancel_hint"), { muted: true }),
-          button(cancelUrl, renderMessage(locale, "email.guest_confirmed.cancel_cta")),
-        )
-      }
-      const { text, html } = renderEmailBody({ preheader: subject, blocks })
-      return { subject, text, html }
-    }
-    case "guest_promoted": {
-      const title = stringVar(vars, "title", "the event")
-      const when = stringVar(vars, "when", "")
-      const eventUrl = optionalVar(vars, "eventUrl")
-      const subject = renderMessage(locale, "email.guest_promoted.subject", { title })
-      const blocks: EmailBlock[] = [
-        paragraph(renderMessage(locale, "email.guest_promoted.intro", { title, when })),
-      ]
-      if (eventUrl !== undefined) {
-        blocks.push(button(eventUrl, renderMessage(locale, "email.guest_promoted.cta")))
-      }
-      blocks.push(paragraph(renderMessage(locale, "email.guest_promoted.ignore"), { muted: true }))
-      const { text, html } = renderEmailBody({ preheader: subject, blocks })
-      return { subject, text, html }
-    }
-    case "action": {
-      const subject = stringVar(vars, "subject", renderMessage(locale, "email.generic.subject"))
-      const blocks: EmailBlock[] = paragraphsVar(vars).map((p) => paragraph(p))
-      const quoteHeading = optionalVar(vars, "quoteHeading")
-      const quoted = optionalVar(vars, "quote")
-      if (quoted !== undefined) {
-        if (quoteHeading !== undefined) blocks.push(heading(quoteHeading))
-        blocks.push(quote(quoted))
-      }
-      const ctaUrl = optionalVar(vars, "ctaUrl")
-      if (ctaUrl !== undefined) {
-        blocks.push(button(ctaUrl, stringVar(vars, "ctaLabel", "Open")))
-      }
-      const note = optionalVar(vars, "note")
-      if (note !== undefined) blocks.push(paragraph(note, { muted: true }))
-      if (blocks.length === 0) {
-        blocks.push(paragraph(renderMessage(locale, "email.generic.body")))
-      }
-      const { text, html } = renderEmailBody({ preheader: subject, blocks })
-      return { subject, text, html }
-    }
-    default: {
-      const subject = stringVar(vars, "subject", renderMessage(locale, "email.generic.subject"))
-      const message = stringVar(vars, "message", renderMessage(locale, "email.generic.body"))
-      const { text, html } = renderEmailBody({ preheader: subject, blocks: [paragraph(message)] })
-      return { subject, text, html }
-    }
+  const render = TEMPLATES.get(template) ?? renderGeneric
+  const { subject, blocks } = render(vars, locale)
+  const { text, html } = renderEmailBody({ preheader: subject, blocks })
+  return { subject, text, html }
+}
+
+function renderReportUpdate(vars: TemplateVars, locale: Locale): TemplateContent {
+  const status = stringVar(vars, "status", "updated")
+  const subject = renderMessage(locale, "email.report_update.subject", { status })
+  const message = renderMessage(locale, "email.report_update.body", { status })
+  return { subject, blocks: [paragraph(message)] }
+}
+
+function renderGuestOtp(vars: TemplateVars, locale: Locale): TemplateContent {
+  const title = stringVar(vars, "title", DEFAULT_EVENT_TITLE)
+  const passcode = stringVar(vars, "code", "")
+  const minutes = stringVar(vars, "minutes", GUEST_OTP_DEFAULT_MINUTES)
+  return {
+    subject: renderMessage(locale, "email.guest_otp.subject", { title }),
+    blocks: [
+      paragraph(renderMessage(locale, "email.guest_otp.html_intro", { title })),
+      code(passcode),
+      paragraph(renderMessage(locale, "email.guest_otp.body_expiry", { minutes }), {
+        muted: true,
+      }),
+    ],
   }
 }
 
-function stringVar(vars: Record<string, unknown>, key: string, fallback: string): string {
+function renderGuestConfirmed(vars: TemplateVars, locale: Locale): TemplateContent {
+  const title = stringVar(vars, "title", DEFAULT_EVENT_TITLE)
+  const when = optionalVar(vars, "when")
+  const place = optionalVar(vars, "place")
+  const cancelUrl = optionalVar(vars, "cancelUrl")
+  const subject = renderMessage(locale, "email.guest_confirmed.subject", { title })
+  const details: Array<[string, string]> = []
+  if (when !== undefined) details.push([renderMessage(locale, "email.event.when"), when])
+  if (place !== undefined) details.push([renderMessage(locale, "email.event.where"), place])
+  const blocks: EmailBlock[] = [heading(title)]
+  if (details.length > 0) blocks.push(kvTable(details))
+  blocks.push(paragraph(renderMessage(locale, "email.guest_confirmed.checkin")))
+  if (cancelUrl !== undefined) {
+    blocks.push(
+      paragraph(renderMessage(locale, "email.guest_confirmed.cancel_hint"), { muted: true }),
+      button(cancelUrl, renderMessage(locale, "email.guest_confirmed.cancel_cta")),
+    )
+  }
+  return { subject, blocks }
+}
+
+function renderGuestPromoted(vars: TemplateVars, locale: Locale): TemplateContent {
+  const title = stringVar(vars, "title", DEFAULT_EVENT_TITLE)
+  const when = stringVar(vars, "when", "")
+  const eventUrl = optionalVar(vars, "eventUrl")
+  const subject = renderMessage(locale, "email.guest_promoted.subject", { title })
+  const blocks: EmailBlock[] = [
+    paragraph(renderMessage(locale, "email.guest_promoted.intro", { title, when })),
+  ]
+  if (eventUrl !== undefined) {
+    blocks.push(button(eventUrl, renderMessage(locale, "email.guest_promoted.cta")))
+  }
+  blocks.push(paragraph(renderMessage(locale, "email.guest_promoted.ignore"), { muted: true }))
+  return { subject, blocks }
+}
+
+function renderAction(vars: TemplateVars, locale: Locale): TemplateContent {
+  const subject = stringVar(vars, "subject", renderMessage(locale, "email.generic.subject"))
+  const blocks: EmailBlock[] = paragraphsVar(vars).map((p) => paragraph(p))
+  const quoteHeading = optionalVar(vars, "quoteHeading")
+  const quoted = optionalVar(vars, "quote")
+  if (quoted !== undefined) {
+    if (quoteHeading !== undefined) blocks.push(heading(quoteHeading))
+    blocks.push(quote(quoted))
+  }
+  const ctaUrl = optionalVar(vars, "ctaUrl")
+  if (ctaUrl !== undefined) {
+    blocks.push(button(ctaUrl, stringVar(vars, "ctaLabel", DEFAULT_CTA_LABEL)))
+  }
+  const note = optionalVar(vars, "note")
+  if (note !== undefined) blocks.push(paragraph(note, { muted: true }))
+  if (blocks.length === 0) {
+    blocks.push(paragraph(renderMessage(locale, "email.generic.body")))
+  }
+  return { subject, blocks }
+}
+
+function renderGeneric(vars: TemplateVars, locale: Locale): TemplateContent {
+  const subject = stringVar(vars, "subject", renderMessage(locale, "email.generic.subject"))
+  const message = stringVar(vars, "message", renderMessage(locale, "email.generic.body"))
+  return { subject, blocks: [paragraph(message)] }
+}
+
+function stringVar(vars: TemplateVars, key: string, fallback: string): string {
   const v = vars[key]
   return typeof v === "string" && v.length > 0 ? v : fallback
 }
 
-function optionalVar(vars: Record<string, unknown>, key: string): string | undefined {
+function optionalVar(vars: TemplateVars, key: string): string | undefined {
   const v = vars[key]
   return typeof v === "string" && v.length > 0 ? v : undefined
 }
 
-function paragraphsVar(vars: Record<string, unknown>): string[] {
+function paragraphsVar(vars: TemplateVars): string[] {
   const v = vars.paragraphs
   if (!Array.isArray(v)) return []
   return v.filter((p): p is string => typeof p === "string" && p.length > 0)

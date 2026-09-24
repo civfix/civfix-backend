@@ -2,11 +2,17 @@ import type { Sql } from "./client.js"
 
 export const ACS_POP_VAR = "B01003_001E"
 
-export const DEFAULT_ACS_YEAR = 2023
+const DEFAULT_ACS_YEAR = 2023
 
 export type CensusJsonFetch = (url: string) => Promise<unknown[][]>
 
 const CENSUS_FETCH_TIMEOUT_MS = 20_000
+
+const CENSUS_API_BASE = "https://api.census.gov/data"
+const CENSUS_KEY_SIGNUP_URL = "https://api.census.gov/data/key_signup.html"
+
+// One UPDATE per chunk keeps each unnest() parameter array bounded.
+const POPULATION_UPDATE_CHUNK = 1000
 
 const defaultFetchJson: CensusJsonFetch = async (url) => {
   const controller = new AbortController()
@@ -16,7 +22,7 @@ const defaultFetchJson: CensusJsonFetch = async (url) => {
     const contentType = res.headers.get("content-type") ?? ""
     if (res.url.includes("missing_key") || (!contentType.includes("json") && res.redirected)) {
       throw new Error(
-        "Census API requires an API key: set CENSUS_API_KEY (free, instant: https://api.census.gov/data/key_signup.html)",
+        `Census API requires an API key: set CENSUS_API_KEY (free, instant: ${CENSUS_KEY_SIGNUP_URL})`,
       )
     }
     if (!res.ok) throw new Error(`Census API ${res.status} ${res.statusText}`)
@@ -42,7 +48,7 @@ function acsUrl(
   params.set("for", forClause)
   if (inClause) params.set("in", inClause)
   if (key) params.set("key", key)
-  return `https://api.census.gov/data/${year}/acs/acs5?${params.toString()}`
+  return `${CENSUS_API_BASE}/${year}/acs/acs5?${params.toString()}`
 }
 
 /**
@@ -77,9 +83,8 @@ async function applyPopulations(
   rows: { geoid: string; population: number }[],
 ): Promise<number> {
   let updated = 0
-  const CHUNK = 1000
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    const chunk = rows.slice(i, i + CHUNK)
+  for (let i = 0; i < rows.length; i += POPULATION_UPDATE_CHUNK) {
+    const chunk = rows.slice(i, i + POPULATION_UPDATE_CHUNK)
     const geoids = chunk.map((c) => c.geoid)
     const pops = chunk.map((c) => c.population)
     const res = await sql`
@@ -134,7 +139,7 @@ export async function backfillPopulation(
   if (fetched === 0) {
     log(
       "fetched 0 ACS rows: every Census call failed. The Census API requires CENSUS_API_KEY " +
-        "(free, instant: https://api.census.gov/data/key_signup.html); set it and re-run.",
+        `(free, instant: ${CENSUS_KEY_SIGNUP_URL}); set it and re-run.`,
     )
     return { fetched: 0, updated: 0, states: states.length }
   }

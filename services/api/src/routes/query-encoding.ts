@@ -48,10 +48,9 @@ function csvOrRepeated<S extends z.ZodTypeAny>(element: S) {
  * build an empty ST_MakeEnvelope and SILENTLY return no rows, so a transposed bbox from a client bug is a
  * loud 422 here instead. The strict `<` also rejects a zero-area bbox, which can never contain a point.
  */
-export const BBoxQueryParam = jsonParam(BBoxSchema).refine(
-  (b) => b.west < b.east && b.south < b.north,
-  { message: "bbox must satisfy west < east and south < north" },
-)
+const BBoxQueryParam = jsonParam(BBoxSchema).refine((b) => b.west < b.east && b.south < b.north, {
+  message: "bbox must satisfy west < east and south < north",
+})
 
 /**
  * Square degrees. Defense in depth behind each read's own row cap: a world-spanning bbox still makes the DB

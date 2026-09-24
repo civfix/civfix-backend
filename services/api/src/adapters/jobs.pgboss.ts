@@ -3,6 +3,18 @@ import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces
 import { REGISTRATION_QUEUE_NAMES } from "../services/host/registration-queues.js"
 import { COMMS_QUEUE_NAMES } from "../services/host/broadcast-queues.js"
 import type { JobHandlerArgWithAttempt } from "../services/job-attempt.js"
+import { MEDIA_CHECKS_JOB } from "../services/media-intake-service.js"
+import { JURISDICTION_DISCOVERY_JOB } from "../services/jurisdiction-service.js"
+import { OUTREACH_DIGEST_JOB } from "../services/admin/jurisdiction-contacts-types.js"
+import { INBOUND_SWEEP_JOB } from "../services/admin/inbound-jobs.js"
+import { REPORT_AUTOFORWARD_JOB } from "../services/report-service.types.js"
+import { DATA_EXPORT_JOB } from "../services/data-export-jobs.js"
+import { CLEANUP_CANCEL_FANOUT_JOB } from "../services/cleanup-service.js"
+import {
+  CLEANUP_GUEST_UPDATE_FANOUT_JOB,
+  GUEST_RETENTION_SWEEP_JOB,
+} from "../services/guest-rsvp-service.js"
+import { CHAT_ROOM_FANOUT_JOB } from "../services/chat-fanout-jobs.js"
 
 export interface PgBossJobsLogger {
   error(obj: unknown, msg?: string): void
@@ -20,18 +32,25 @@ export interface PgBossJobsConfig {
   logger?: PgBossJobsLogger
 }
 
+// Enqueued by the claim route and worked by the media worker, which owns the exported constant.
+const ANON_HOLD_RELEASE_JOB = "anon.hold.release"
+
+// The media worker creates media.checks and anon.hold.release with this same policy. pg-boss keeps the
+// last createQueue/updateQueue policy, so a mismatch silently breaks singletonKey dedup on those queues.
+const SHARED_QUEUE_POLICY = "short"
+
 export const API_QUEUE_NAMES = [
-  "media.checks",
-  "jurisdiction.discovery",
-  "outreach.digest",
-  "inbound.sweep",
-  "report.autoforward",
-  "data.export",
-  "anon.hold.release",
-  "cleanup.cancel.fanout",
-  "cleanup.guest.update.fanout",
-  "guest.retention.sweep",
-  "chat.room.fanout",
+  MEDIA_CHECKS_JOB,
+  JURISDICTION_DISCOVERY_JOB,
+  OUTREACH_DIGEST_JOB,
+  INBOUND_SWEEP_JOB,
+  REPORT_AUTOFORWARD_JOB,
+  DATA_EXPORT_JOB,
+  ANON_HOLD_RELEASE_JOB,
+  CLEANUP_CANCEL_FANOUT_JOB,
+  CLEANUP_GUEST_UPDATE_FANOUT_JOB,
+  GUEST_RETENTION_SWEEP_JOB,
+  CHAT_ROOM_FANOUT_JOB,
   ...REGISTRATION_QUEUE_NAMES,
   ...COMMS_QUEUE_NAMES,
 ] as const
@@ -41,17 +60,22 @@ type ApiQueueName = (typeof API_QUEUE_NAMES)[number]
 type QueueRetryPolicy = Required<Pick<PgBoss.Queue, "retryLimit" | "retryDelay" | "retryBackoff">>
 
 const SECONDS_PER_MINUTE = 60
+const DATA_EXPORT_RETRY_LIMIT = 10
 
 // A data export that fails on a mail credential or approved-sender fault has to wait for an operator to
 // fix the config. pg-boss's default (2 immediate retries) would rebuild and resend the whole export three
 // times within seconds and then drop the request, so it backs off from a minute to hours instead; the
 // handler records the request for an operator on the last attempt.
 const QUEUE_RETRY_POLICIES: Partial<Record<ApiQueueName, QueueRetryPolicy>> = {
-  "data.export": { retryLimit: 10, retryDelay: SECONDS_PER_MINUTE, retryBackoff: true },
+  [DATA_EXPORT_JOB]: {
+    retryLimit: DATA_EXPORT_RETRY_LIMIT,
+    retryDelay: SECONDS_PER_MINUTE,
+    retryBackoff: true,
+  },
 }
 
 function queueOptions(name: ApiQueueName): PgBoss.Queue {
-  return { name, policy: "short", ...QUEUE_RETRY_POLICIES[name] }
+  return { name, policy: SHARED_QUEUE_POLICY, ...QUEUE_RETRY_POLICIES[name] }
 }
 
 function toSendOptions(opts?: EnqueueOptions): PgBoss.SendOptions {
@@ -127,13 +151,12 @@ export class PgBossJobs implements Jobs {
     )
   }
 
-  async complete(jobId: string): Promise<void> {
-    void jobId
+  // The work loop completes or fails each job from its handler's outcome; nothing calls these.
+  async complete(_jobId: string): Promise<void> {
     return Promise.resolve()
   }
 
-  async fail(jobId: string, _err?: unknown): Promise<void> {
-    void jobId
+  async fail(_jobId: string, _err?: unknown): Promise<void> {
     return Promise.resolve()
   }
 }

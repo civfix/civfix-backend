@@ -8,8 +8,6 @@
 import { runDbCli, runIfMain } from "./cli.js"
 import { backfillReports } from "./backfill-jurisdictions-core.js"
 
-export { backfillReports } from "./backfill-jurisdictions-core.js"
-
 async function main(): Promise<void> {
   await runDbCli(async (_db, sql) => {
     const { resolved, stayedNull } = await backfillReports(sql)

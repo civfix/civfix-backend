@@ -5,3 +5,5 @@
  * A real person can never sign up with this domain, so it is safe to key purges and lookups on it.
  */
 export const DEMO_EMAIL_DOMAIN = "demo-seed.civfix.org"
+
+export const DEMO_EMAIL_PATTERN = `%@${DEMO_EMAIL_DOMAIN}`

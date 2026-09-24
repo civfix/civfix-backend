@@ -58,7 +58,13 @@ export interface CensusJurisdictionLookupOptions {
   fetchImpl?: typeof fetch
 }
 
-const DEFAULT_TIMEOUT_MS = 2500
+export const CENSUS_DEFAULT_TIMEOUT_MS = 2500
+
+const CENSUS_QUERY_PARAMS = {
+  benchmark: "Public_AR_Current",
+  vintage: "Current_Current",
+  format: "json",
+} as const
 
 export class CensusJurisdictionLookup implements JurisdictionLookup {
   private readonly baseUrl: string
@@ -67,7 +73,7 @@ export class CensusJurisdictionLookup implements JurisdictionLookup {
 
   constructor(options: CensusJurisdictionLookupOptions) {
     this.baseUrl = options.baseUrl
-    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    this.timeoutMs = options.timeoutMs ?? CENSUS_DEFAULT_TIMEOUT_MS
     this.fetchImpl = options.fetchImpl
   }
 
@@ -76,9 +82,7 @@ export class CensusJurisdictionLookup implements JurisdictionLookup {
     const params = new URLSearchParams({
       x: String(lng),
       y: String(lat),
-      benchmark: "Public_AR_Current",
-      vintage: "Current_Current",
-      format: "json",
+      ...CENSUS_QUERY_PARAMS,
     })
     const result = await fetchJsonWithTimeout<unknown>(`${this.baseUrl}?${params.toString()}`, {
       timeoutMs: this.timeoutMs,
@@ -92,8 +96,8 @@ export class CensusJurisdictionLookup implements JurisdictionLookup {
 }
 
 export const JURISDICTION_LOOKUP_CACHE_TTL_MS = 5 * 60_000
-export const JURISDICTION_LOOKUP_CACHE_MAX_ENTRIES = 512
-export const JURISDICTION_LOOKUP_CACHE_DECIMALS = 4
+const JURISDICTION_LOOKUP_CACHE_MAX_ENTRIES = 512
+const JURISDICTION_LOOKUP_CACHE_DECIMALS = 4
 
 export interface CachedJurisdictionLookupOptions {
   ttlMs?: number

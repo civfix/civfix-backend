@@ -35,6 +35,10 @@ export const OPERATOR_ALLOWLIST_TTL_SECONDS = 60
 
 const OPERATOR_ALLOWLIST_PREFIX = "opallow:"
 
+const ALLOWLIST_VERDICT_ALLOWED = "1"
+
+const ALLOWLIST_VERDICT_DENIED = "0"
+
 /** Checks only the session's role claim; admin data routes need assertOperatorAuthority. */
 export function requireOperator(request: FastifyRequest): string {
   const userId = requireAuth(request)
@@ -46,7 +50,7 @@ export function requireOperator(request: FastifyRequest): string {
  * The cheap session-claim check runs first so an anonymous or citizen caller is rejected without any
  * lookup; only a caller already claiming `operator` reaches the allowlist resolution.
  */
-export async function assertOperatorAuthority(request: FastifyRequest): Promise<string> {
+async function assertOperatorAuthority(request: FastifyRequest): Promise<string> {
   const userId = requireOperator(request)
   if (!(await isAllowlistedOperator(request, userId))) {
     // Deliberately the same generic 403 requireRole produces: an off-boarded operator learns only that they
@@ -73,11 +77,15 @@ async function isAllowlistedOperator(request: FastifyRequest, userId: string): P
 
   const key = OPERATOR_ALLOWLIST_PREFIX + userId
   const cached = await services.cache.get(key)
-  if (cached !== null) return cached === "1"
+  if (cached !== null) return cached === ALLOWLIST_VERDICT_ALLOWED
 
   const user = await services.users.findById(userId)
   const allowed = user?.email != null && isAdminEmail(env, user.email)
   // A denied caller must not cost a user lookup per request either.
-  await services.cache.set(key, allowed ? "1" : "0", OPERATOR_ALLOWLIST_TTL_SECONDS)
+  await services.cache.set(
+    key,
+    allowed ? ALLOWLIST_VERDICT_ALLOWED : ALLOWLIST_VERDICT_DENIED,
+    OPERATOR_ALLOWLIST_TTL_SECONDS,
+  )
   return allowed
 }

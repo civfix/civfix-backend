@@ -1,5 +1,7 @@
-export const LOCAL_WEB_PORT = 3000
+const LOCAL_WEB_PORT = 3000
 export const DEFAULT_API_PORT = 8080
+
+const TRAILING_SLASHES_RE = /\/+$/
 
 export interface BaseUrlEnv {
   NODE_ENV?: string
@@ -19,7 +21,7 @@ function baseUrlOr(
   env: BaseUrlEnv,
   port: number,
 ): string {
-  const trimmed = (configured ?? "").trim().replace(/\/+$/, "")
+  const trimmed = (configured ?? "").trim().replace(TRAILING_SLASHES_RE, "")
   if (trimmed.length > 0) return trimmed
   if (env.NODE_ENV === "production") throw new Error(`${variable} is required in production`)
   return `http://localhost:${port}`

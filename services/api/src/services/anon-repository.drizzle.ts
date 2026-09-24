@@ -22,7 +22,7 @@
  * after the winner committed, which is a client that lost the first response.
  */
 
-import type { Sql } from "../db/client.js"
+import type { Sql, TransactionSql } from "../db/client.js"
 import { generateToken, sha256Hex } from "../auth/crypto.js"
 import type {
   AnonReportRepository,
@@ -32,7 +32,11 @@ import type {
 } from "./anon-service.js"
 import { ANON_REPORT_CREATE_SCOPE } from "./anon-service.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
-import type { AnonTokenRecord, AnonTokenStore } from "../abuse/anon-token.js"
+import {
+  ANON_REPORT_CAP_MESSAGE,
+  type AnonTokenRecord,
+  type AnonTokenStore,
+} from "../abuse/anon-token.js"
 import type { ClaimRepository, PendingAnonReport } from "./claim-service.js"
 import { AppError } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
@@ -40,6 +44,20 @@ import { insertModerationItem } from "./admin/moderation-repository.drizzle.js"
 import { claimableAsReportMedia, lockUploadsForClaim } from "./media-bindings.js"
 
 const PG_UNIQUE_VIOLATION = "23505"
+
+const HELD_REVIEW_NOTE = "Awaiting automated review"
+
+const HELD_REPORT_FLAG = "Held report"
+
+const HELD_AUTO_ACTION = "Hidden pending review"
+
+const ANON_REPORTER_LABEL = "Anonymous"
+
+const MEDIA_UNAVAILABLE_MESSAGE = "One or more media uploads are unavailable."
+
+const KEY_RACE_MESSAGE = "Report submit is still settling; retry"
+
+const REPLAY_UNCLAIMABLE_MESSAGE = "This report was already submitted and can no longer be claimed."
 
 function isUniqueViolation(err: unknown): boolean {
   return (
@@ -88,8 +106,6 @@ function anonTokenStore(sql: Sql): AnonTokenStore {
 }
 
 type StoredAnonSnapshot = Omit<AnonReportResponse, "claimCode">
-
-const REPLAY_UNCLAIMABLE_MESSAGE = "This report was already submitted and can no longer be claimed."
 
 export interface DrizzleAnonReportRepositoryOptions {
   newClaimCode?: () => string
@@ -152,94 +168,10 @@ export function makeDrizzleAnonReportRepository(
           // path takes the counter-row lock before any report or token row lock; that consistent order rules
           // out an ABBA deadlock. Anon reports still get a code; they simply never auto-forward.
           const referenceCode = await allocateReportReferenceCode(tx, args.type, args.jurCode)
-
-          // Folding the cap into the WHERE makes check-and-consume a single statement, so concurrent submits
-          // on one token cannot all pass a stale read and overshoot. Zero rows means the cap is reached, and
-          // the throw rolls the whole transaction back.
-          const bumped = await tx<{ report_count: number }[]>`
-            UPDATE anon_tokens
-            SET report_count = report_count + 1
-            WHERE id = ${args.anonSessionId} AND report_count < ${args.reportCap}
-            RETURNING report_count
-          `
-          if (bumped.length === 0) {
-            throw AppError.rateLimited(
-              "This anonymous session has reached its report limit. Sign in to continue.",
-            )
-          }
-
-          // The plaintext claim_code column is written NULL: the code never rests in the database, so a
-          // dump, backup or replica leak cannot bind anyone else's anonymous report to an account, and the
-          // column's deferred DROP changes nothing here.
-          await tx`
-            INSERT INTO reports (
-              id, reporter_user_id, anon_session_id, idempotency_key, geom, geom_source,
-              jurisdiction_geoid, category, type, title, description, addr, addr_source, addr_precision,
-              status, visibility, h3_cell,
-              claim_code, claim_code_hash, reference_code, published_at
-            ) VALUES (
-              ${args.reportId},
-              ${null},
-              ${args.anonSessionId},
-              ${args.idempotencyKey},
-              ST_SetSRID(ST_MakePoint(${args.lng}, ${args.lat}), 4326),
-              ${args.geomSource},
-              ${args.jurisdictionGeoid},
-              ${args.category},
-              ${args.type},
-              ${args.title},
-              ${args.description},
-              ${args.addr},
-              ${args.addrSource},
-              ${args.addrPrecision},
-              ${"held"},
-              ${"public"},
-              ${args.h3Cell},
-              ${null},
-              ${args.claimCodeHash},
-              ${referenceCode},
-              ${null}
-            )
-          `
-
-          // An asset bound to a post, a chat or DM message or any other owner is never re-bindable to a
-          // report, or the holder of an uploadId could cross-publish private media into a public report
-          // gallery. One set-based UPDATE rather than a per-id loop, so N photos don't lengthen the
-          // transaction while it holds the report and token row locks; skipped with no ids because `IN ()`
-          // is invalid SQL.
-          if (args.mediaUploadIds.length > 0) {
-            await lockUploadsForClaim(tx, args.mediaUploadIds)
-            const claimed = await tx<{ upload_id: string }[]>`
-              UPDATE media_assets
-              SET report_id = ${args.reportId}
-              WHERE upload_id IN ${tx(args.mediaUploadIds)}
-                AND (report_id IS NULL OR report_id = ${args.reportId})
-                AND post_id IS NULL AND chat_message_id IS NULL
-                AND ${claimableAsReportMedia(tx, args.mediaUploaders)}
-                AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
-              RETURNING upload_id
-            `
-            // Reject the whole submit when any id is unclaimable (unknown, rejected, or already bound
-            // elsewhere) rather than commit a report with the photo silently missing, the same rule the
-            // authed create path and post-repository.createPost enforce. The throw also rolls back the
-            // token quota bump.
-            if (claimed.length !== new Set(args.mediaUploadIds).size) {
-              throw AppError.validation({
-                mediaUploadIds: "One or more media uploads are unavailable.",
-              })
-            }
-          }
-
-          // Both rows would share now() (constant within a transaction) and report_timeline.id is a random
-          // uuid, so ORDER BY created_at, id has no stable tiebreaker; held is stamped 1ms later so every
-          // reader sees submitted first.
-          await tx`
-            INSERT INTO report_timeline (report_id, status, note, actor_id, created_at)
-            VALUES
-              (${args.reportId}, ${"submitted"}, ${null}, ${null}, now()),
-              (${args.reportId}, ${"held"}, ${"Awaiting automated review"}, ${null}, now() + interval '1 millisecond')
-          `
-
+          await consumeTokenQuota(tx, args)
+          await insertHeldReport(tx, args, referenceCode)
+          await attachReportMedia(tx, args)
+          await insertInitialTimeline(tx, args.reportId)
           // Every anon report is held pending automated review, so the operator moderation queue surfaces it
           // immediately. The same transaction keeps the item and the held report atomic; signals and user
           // are enriched later by the media worker or abuse detection.
@@ -247,28 +179,14 @@ export function makeDrizzleAnonReportRepository(
             kind: "image",
             subjectType: "report",
             subjectId: args.reportId,
-            flag: "Held report",
-            reason: "Awaiting automated review",
+            flag: HELD_REPORT_FLAG,
+            reason: HELD_REVIEW_NOTE,
             category: args.category,
-            autoAction: "Hidden pending review",
-            reporter: "Anonymous",
+            autoAction: HELD_AUTO_ACTION,
+            reporter: ANON_REPORTER_LABEL,
             desc: args.description ?? "",
           })
-
-          // Stored without the plaintext claim code: a replay mints a fresh one instead.
-          const storedSnapshot: StoredAnonSnapshot = {
-            reportId: args.responseSnapshot.reportId,
-            status: args.responseSnapshot.status,
-          }
-          await tx`
-            INSERT INTO idempotency_keys (key, scope, user_or_anon, response_snapshot)
-            VALUES (
-              ${args.idempotencyKey},
-              ${ANON_REPORT_CREATE_SCOPE},
-              ${args.anonSessionId},
-              ${sql.json(storedSnapshot as Parameters<typeof sql.json>[0])}
-            )
-          `
+          await persistIdempotencySnapshot(sql, tx, args)
           return args.responseSnapshot
         })
         return { kind: "created", snapshot }
@@ -279,7 +197,7 @@ export function makeDrizzleAnonReportRepository(
           // the same key reaches findIdempotentSnapshot, which rotates for a client that lost that
           // response. A key held by a different anon session lands here too (reports.idempotency_key is
           // globally unique) and gets the same answer, never that session's report.
-          throw AppError.conflict("Report submit is still settling; retry")
+          throw AppError.conflict(KEY_RACE_MESSAGE)
         }
         // A cap-reached AppError (or any other) propagates unchanged: the tx already rolled back, so no
         // report row, timeline, media-attach, or quota bump persisted.
@@ -314,6 +232,119 @@ export function makeDrizzleAnonReportRepository(
       }
     },
   }
+}
+
+// Folding the cap into the WHERE makes check-and-consume a single statement, so concurrent submits on one
+// token cannot all pass a stale read and overshoot. Zero rows means the cap is reached, and the throw rolls
+// the whole transaction back.
+async function consumeTokenQuota(tx: TransactionSql, args: CreateAnonReportTxArgs): Promise<void> {
+  const bumped = await tx<{ report_count: number }[]>`
+            UPDATE anon_tokens
+            SET report_count = report_count + 1
+            WHERE id = ${args.anonSessionId} AND report_count < ${args.reportCap}
+            RETURNING report_count
+          `
+  if (bumped.length === 0) {
+    throw AppError.rateLimited(ANON_REPORT_CAP_MESSAGE)
+  }
+}
+
+// The plaintext claim_code column is written NULL: the code never rests in the database, so a dump, backup
+// or replica leak cannot bind anyone else's anonymous report to an account, and the column's deferred DROP
+// changes nothing here.
+async function insertHeldReport(
+  tx: TransactionSql,
+  args: CreateAnonReportTxArgs,
+  referenceCode: string,
+): Promise<void> {
+  await tx`
+            INSERT INTO reports (
+              id, reporter_user_id, anon_session_id, idempotency_key, geom, geom_source,
+              jurisdiction_geoid, category, type, title, description, addr, addr_source, addr_precision,
+              status, visibility, h3_cell,
+              claim_code, claim_code_hash, reference_code, published_at
+            ) VALUES (
+              ${args.reportId},
+              ${null},
+              ${args.anonSessionId},
+              ${args.idempotencyKey},
+              ST_SetSRID(ST_MakePoint(${args.lng}, ${args.lat}), 4326),
+              ${args.geomSource},
+              ${args.jurisdictionGeoid},
+              ${args.category},
+              ${args.type},
+              ${args.title},
+              ${args.description},
+              ${args.addr},
+              ${args.addrSource},
+              ${args.addrPrecision},
+              ${"held"},
+              ${"public"},
+              ${args.h3Cell},
+              ${null},
+              ${args.claimCodeHash},
+              ${referenceCode},
+              ${null}
+            )
+          `
+}
+
+// An asset bound to a post, a chat or DM message or any other owner is never re-bindable to a report, or
+// the holder of an uploadId could cross-publish private media into a public report gallery. One set-based
+// UPDATE rather than a per-id loop, so N photos don't lengthen the transaction while it holds the report and
+// token row locks; skipped with no ids because `IN ()` is invalid SQL.
+async function attachReportMedia(tx: TransactionSql, args: CreateAnonReportTxArgs): Promise<void> {
+  if (args.mediaUploadIds.length === 0) return
+  await lockUploadsForClaim(tx, args.mediaUploadIds)
+  const claimed = await tx<{ upload_id: string }[]>`
+              UPDATE media_assets
+              SET report_id = ${args.reportId}
+              WHERE upload_id IN ${tx(args.mediaUploadIds)}
+                AND (report_id IS NULL OR report_id = ${args.reportId})
+                AND post_id IS NULL AND chat_message_id IS NULL
+                AND ${claimableAsReportMedia(tx, args.mediaUploaders)}
+                AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
+              RETURNING upload_id
+            `
+  // Reject the whole submit when any id is unclaimable (unknown, rejected, or already bound elsewhere)
+  // rather than commit a report with the photo silently missing, the same rule the authed create path and
+  // post-repository.createPost enforce. The throw also rolls back the token quota bump.
+  if (claimed.length !== new Set(args.mediaUploadIds).size) {
+    throw AppError.validation({ mediaUploadIds: MEDIA_UNAVAILABLE_MESSAGE })
+  }
+}
+
+// Both rows would share now() (constant within a transaction) and report_timeline.id is a random uuid, so
+// ORDER BY created_at, id has no stable tiebreaker; held is stamped 1ms later so every reader sees
+// submitted first.
+async function insertInitialTimeline(tx: TransactionSql, reportId: string): Promise<void> {
+  await tx`
+            INSERT INTO report_timeline (report_id, status, note, actor_id, created_at)
+            VALUES
+              (${reportId}, ${"submitted"}, ${null}, ${null}, now()),
+              (${reportId}, ${"held"}, ${HELD_REVIEW_NOTE}, ${null}, now() + interval '1 millisecond')
+          `
+}
+
+// Stored without the plaintext claim code: a replay mints a fresh one instead.
+async function persistIdempotencySnapshot(
+  sql: Sql,
+  tx: TransactionSql,
+  args: CreateAnonReportTxArgs,
+): Promise<void> {
+  const storedSnapshot: StoredAnonSnapshot = {
+    reportId: args.responseSnapshot.reportId,
+    status: args.responseSnapshot.status,
+  }
+  await tx`
+            INSERT INTO idempotency_keys (key, scope, user_or_anon, response_snapshot)
+            VALUES (
+              ${args.idempotencyKey},
+              ${ANON_REPORT_CREATE_SCOPE},
+              ${args.anonSessionId},
+              ${sql.json(storedSnapshot as Parameters<typeof sql.json>[0])}
+            )
+          `
 }
 
 export function makeDrizzleClaimRepository(sql: Sql): ClaimRepository {

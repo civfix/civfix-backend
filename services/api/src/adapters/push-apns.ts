@@ -1,8 +1,14 @@
 import type { PushSenderConfig, PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { hashForLog } from "./push-sender.js"
 
+const APNS_GONE_STATUS = "410"
+
+const APNS_PRUNE_REASONS: ReadonlySet<string> = new Set(["Unregistered", "BadDeviceToken"])
+
+const APNS_SOUND = "default"
+
 export function isApnsPruneFailure(status: string, reason: string): boolean {
-  return status === "410" || reason === "Unregistered" || reason === "BadDeviceToken"
+  return status === APNS_GONE_STATUS || APNS_PRUNE_REASONS.has(reason)
 }
 
 export function makeApnsDispatcher(
@@ -33,7 +39,7 @@ export function makeApnsDispatcher(
       title: payload.title,
       ...(payload.body !== undefined ? { body: payload.body } : {}),
     }
-    note.sound = "default"
+    note.sound = APNS_SOUND
     note.payload = {
       ...(payload.data ?? {}),
       ...(payload.link !== undefined ? { link: payload.link } : {}),

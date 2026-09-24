@@ -105,6 +105,15 @@ const SECRET_ASSIGN_RE =
   /\b(access_token|refresh_token|token|password|passwd|secret|api[_-]?key|authorization|auth|otp)\b(\s*[=:]\s*)([^\s,;&"']+)/gi
 const MAX_MESSAGE_LEN = 2000
 
+const GLITCHTIP_FLUSH_TIMEOUT_MS = 2000
+
+// Tracing would ship request spans (URLs, timings) to the error tracker; only errors are reported.
+const TRACES_SAMPLE_RATE = 0
+
+// Network and query breadcrumbs carry URLs and SQL text, so they are dropped whole.
+const DROPPED_BREADCRUMB_CATEGORIES: ReadonlySet<string> = new Set(["http", "fetch", "xhr"])
+const QUERY_BREADCRUMB_MARKER = "query"
+
 function scrubMessage(text: string): string {
   const redacted = redactPans(
     text
@@ -180,12 +189,7 @@ export function scrubEvent<T extends SentryEventLike>(event: T): T {
 
 export function scrubBreadcrumb<T extends SentryBreadcrumbLike>(crumb: T): T | null {
   const category = typeof crumb.category === "string" ? crumb.category.toLowerCase() : ""
-  if (
-    category === "http" ||
-    category === "fetch" ||
-    category === "xhr" ||
-    category.includes("query")
-  ) {
+  if (DROPPED_BREADCRUMB_CATEGORIES.has(category) || category.includes(QUERY_BREADCRUMB_MARKER)) {
     return null
   }
   const out = { ...crumb } as SentryBreadcrumbLike
@@ -206,7 +210,7 @@ export async function initErrorReporting(opts: ErrorReportingOptions): Promise<b
       dsn: opts.dsn,
       environment: opts.environment,
       release: opts.release,
-      tracesSampleRate: 0,
+      tracesSampleRate: TRACES_SAMPLE_RATE,
       sendDefaultPii: false,
       beforeSend: (event) => scrubEvent(event as unknown as SentryEventLike) as never,
       beforeBreadcrumb: (crumb) =>
@@ -222,16 +226,12 @@ export async function initErrorReporting(opts: ErrorReportingOptions): Promise<b
   }
 }
 
-export function isErrorReportingEnabled(): boolean {
-  return enabled
-}
-
 export function captureError(err: unknown, context?: Record<string, unknown>): void {
   if (!enabled || !sentry) return
   sentry.captureException(err, context ? { extra: context } : undefined)
 }
 
-export async function flushErrorReporting(timeoutMs = 2000): Promise<void> {
+export async function flushErrorReporting(timeoutMs = GLITCHTIP_FLUSH_TIMEOUT_MS): Promise<void> {
   if (!enabled || !sentry) return
   try {
     await sentry.flush(timeoutMs)

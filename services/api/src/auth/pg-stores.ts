@@ -55,6 +55,14 @@ import {
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0]
 
+const ERASURE_HANDLE_RETRIES = 5
+
+const PG_UNIQUE_VIOLATION = "23505"
+
+const HOST_TRANSFER_TITLE_KEY = "notification.cleanup_role.promoted.title"
+
+const HOST_TRANSFER_BODY_KEY = "notification.cleanup_role.promoted.body"
+
 interface TransferredEvent extends Record<string, unknown> {
   cleanup_id: string
   new_organizer: string
@@ -371,7 +379,20 @@ export class PgUserStore implements UserStore {
   }
 
   private async transferHostedEvents(tx: DbTransaction, id: string): Promise<TransferredEvent[]> {
-    const toOrgOwner = await tx.execute<TransferredEvent>(sql`
+    const moved = [
+      ...(await this.transferToOrganizationOwners(tx, id)),
+      ...(await this.transferToCohosts(tx, id)),
+    ]
+    await this.auditHostTransfers(tx, id, moved)
+    await this.demoteRemainingTeamRoles(tx, id)
+    return moved
+  }
+
+  private async transferToOrganizationOwners(
+    tx: DbTransaction,
+    id: string,
+  ): Promise<TransferredEvent[]> {
+    return tx.execute<TransferredEvent>(sql`
       WITH candidate AS (
         SELECT c.id AS cleanup_id, om.user_id AS new_organizer
         FROM cleanups c
@@ -395,8 +416,10 @@ export class PgUserStore implements UserStore {
       SELECT m.cleanup_id, m.new_organizer, c.title
       FROM moved m JOIN cleanups c ON c.id = m.cleanup_id
     `)
+  }
 
-    const toCohost = await tx.execute<TransferredEvent>(sql`
+  private async transferToCohosts(tx: DbTransaction, id: string): Promise<TransferredEvent[]> {
+    return tx.execute<TransferredEvent>(sql`
       WITH candidate AS (
         SELECT DISTINCT ON (c.id) c.id AS cleanup_id, m.user_id AS new_organizer
         FROM cleanups c
@@ -417,8 +440,13 @@ export class PgUserStore implements UserStore {
       SELECT m.cleanup_id, m.new_organizer, c.title
       FROM moved m JOIN cleanups c ON c.id = m.cleanup_id
     `)
+  }
 
-    const moved = [...toOrgOwner, ...toCohost]
+  private async auditHostTransfers(
+    tx: DbTransaction,
+    id: string,
+    moved: readonly TransferredEvent[],
+  ): Promise<void> {
     for (const row of moved) {
       await tx.execute(sql`
         INSERT INTO audit_log (actor_id, action, target, meta)
@@ -430,7 +458,9 @@ export class PgUserStore implements UserStore {
         )
       `)
     }
+  }
 
+  private async demoteRemainingTeamRoles(tx: DbTransaction, id: string): Promise<void> {
     await tx.execute(sql`
       UPDATE cleanup_members SET role = 'member'
       WHERE user_id = ${id} AND role = 'organizer'
@@ -454,19 +484,10 @@ export class PgUserStore implements UserStore {
              jsonb_build_object('targetUserId', ${id}::text, 'from', h.role, 'to', 'member')
       FROM held h
     `)
-    return moved
   }
 
   private async releaseOrganizations(tx: DbTransaction, id: string): Promise<void> {
-    await tx.execute(sql`
-      SELECT o.id FROM organizations o
-      WHERE EXISTS (
-        SELECT 1 FROM organization_members om
-        WHERE om.organization_id = o.id AND om.user_id = ${id} AND om.role = 'owner'
-      )
-      ORDER BY o.id
-      FOR UPDATE
-    `)
+    await this.lockOwnedOrganizations(tx, id)
     const owned = await tx.execute<{ organization_id: string }>(sql`
       UPDATE organization_members SET role = 'admin'
       WHERE user_id = ${id} AND role = 'owner'
@@ -527,6 +548,21 @@ export class PgUserStore implements UserStore {
     `)
   }
 
+  // Every membership mutation locks its organization row first, so taking those same row locks (in id
+  // order, so two erasures cannot deadlock) before the owner step-down keeps a concurrent member or role
+  // change from racing the successor pick.
+  private async lockOwnedOrganizations(tx: DbTransaction, id: string): Promise<void> {
+    await tx.execute(sql`
+      SELECT o.id FROM organizations o
+      WHERE EXISTS (
+        SELECT 1 FROM organization_members om
+        WHERE om.organization_id = o.id AND om.user_id = ${id} AND om.role = 'owner'
+      )
+      ORDER BY o.id
+      FOR UPDATE
+    `)
+  }
+
   private async scrubAttendeeContributions(tx: DbTransaction, id: string): Promise<string[]> {
     // Waitlist and ticket-type rows before registrations, the order applyBanIn and the waitlist sweep
     // take, so an erasure racing a ban on one of the user's events cannot deadlock with it.
@@ -577,131 +613,158 @@ export class PgUserStore implements UserStore {
 
   private async runErasure(id: string): Promise<UserRecord> {
     const erasure = await this.db.transaction(async (tx) => {
-      const updated = await tx
-        .update(users)
-        .set({
-          deletedAt: sql`COALESCE(${users.deletedAt}, now())`,
-          allowDirectMessages: false,
-          email: null,
-          emailVerified: false,
-          displayName: DELETED_USER_LABEL,
-          handle: generateTombstoneHandle(),
-          bio: null,
-          avatarUrl: null,
-          avatarMediaId: null,
-          socialLinks: null,
-          donationUrl: null,
-          lastActivityGeom: null,
-          lastActivityAt: null,
-          primaryOrganizationId: null,
-        })
-        .where(eq(users.id, id))
-        .returning()
-      const r = updated[0]
-      if (!r) throw new Error("PgUserStore.softDeleteAndAnonymize: user not found")
+      const tombstoned = await this.tombstoneUser(tx, id)
       // Revocation commits with the tombstone: if these ran after commit, a failure between the two would
       // leave a deleted account whose tokens still authenticate and whose devices still get pushes.
-      await tx.delete(sessions).where(eq(sessions.userId, id))
-      await tx.delete(pushTokens).where(eq(pushTokens.userId, id))
-      await tx.delete(notifications).where(eq(notifications.userId, id))
+      await this.revokeSessionsAndDevices(tx, id)
       await tx
         .update(reports)
         .set({ visibility: "hidden" })
         .where(and(eq(reports.reporterUserId, id), eq(reports.visibility, "public")))
       await this.releaseOrganizations(tx, id)
       const moved = await this.transferHostedEvents(tx, id)
-      await tx
-        .update(cleanups)
-        .set({ status: "cancelled" })
-        .where(
-          and(
-            eq(cleanups.organizerUserId, id),
-            ne(cleanups.status, "cancelled"),
-            gt(cleanups.endsAt, new Date()),
-          ),
-        )
+      await this.cancelRemainingHostedEvents(tx, id)
       const releasedTicketTypeIds = await this.scrubAttendeeContributions(tx, id)
       await tx
         .update(posts)
         .set({ visibility: "hidden" })
         .where(and(eq(posts.authorId, id), eq(posts.visibility, "public")))
-
-      const certificates = await tx
-        .update(serviceHoursCertificates)
-        .set({
-          revokedAt: sql`COALESCE(${serviceHoursCertificates.revokedAt}, now())`,
-          revokedReason: sql`COALESCE(${serviceHoursCertificates.revokedReason}, 'account_closed')`,
-          holderName: DELETED_USER_LABEL,
-          holderHandle: null,
-          snapshot: {},
-        })
-        .where(eq(serviceHoursCertificates.userId, id))
-        .returning({ r2Key: serviceHoursCertificates.r2Key })
-
-      await tx.execute(sql`
-        UPDATE moderation_items
-        SET meta = jsonb_set(
-          jsonb_set(
-            jsonb_set(
-              jsonb_set(meta, '{user,name}', to_jsonb(${DELETED_USER_LABEL}::text), false),
-              '{user,handle}', to_jsonb(''::text), false),
-            '{user,device}', to_jsonb(''::text), false),
-          '{user,joined}', to_jsonb(''::text), false)
-        WHERE meta->'user'->>'id' = ${id}
-      `)
-      await tx.execute(sql`
-        UPDATE moderation_items
-        SET meta = jsonb_set(
-          jsonb_set(meta, '{reporter}', to_jsonb(${DELETED_USER_LABEL}::text), false),
-          '{desc}', to_jsonb(''::text), false)
-        WHERE meta->>'reporterUserId' = ${id}
-      `)
-
-      const verificationMedia = await tx.execute<{
-        r2_key: string
-        served_key: string | null
-        thumb_key: string | null
-      }>(sql`
-        DELETE FROM media_assets
-        WHERE purpose = 'verification'
-          AND id IN (
-            SELECT (doc->>'mediaId')::uuid
-            FROM user_verification uv,
-                 jsonb_array_elements(uv.documents) AS doc
-            WHERE uv.user_id = ${id} AND doc->>'mediaId' IS NOT NULL
-          )
-        RETURNING r2_key, served_key, thumb_key
-      `)
-      await tx.execute(sql`
-        UPDATE user_verification
-        SET note = NULL, rejection_reason = NULL, documents = '[]'::jsonb, updated_at = now()
-        WHERE user_id = ${id}
-      `)
-
-      const objectKeys = [
-        ...certificates.map((c) => c.r2Key),
-        ...verificationMedia.flatMap((m) =>
-          [m.r2_key, m.served_key, m.thumb_key].filter((k): k is string => k !== null),
-        ),
-      ]
-      return { record: toUserRecord(r), objectKeys, moved, releasedTicketTypeIds }
+      const certificateKeys = await this.revokeCertificates(tx, id)
+      await this.scrubModerationItems(tx, id)
+      const verificationKeys = await this.purgeVerificationDocuments(tx, id)
+      return {
+        record: toUserRecord(tombstoned),
+        objectKeys: [...certificateKeys, ...verificationKeys],
+        moved,
+        releasedTicketTypeIds,
+      }
     })
 
     await this.notifyNewOrganizers(erasure.moved)
     await enqueueWaitlistPromotion(this.jobs, erasure.releasedTicketTypeIds, this.logger)
+    await this.deleteErasedObjects(id, erasure.objectKeys)
+    return erasure.record
+  }
 
-    for (const key of erasure.objectKeys) {
+  private async tombstoneUser(tx: DbTransaction, id: string): Promise<typeof users.$inferSelect> {
+    const updated = await tx
+      .update(users)
+      .set({
+        deletedAt: sql`COALESCE(${users.deletedAt}, now())`,
+        allowDirectMessages: false,
+        email: null,
+        emailVerified: false,
+        displayName: DELETED_USER_LABEL,
+        handle: generateTombstoneHandle(),
+        bio: null,
+        avatarUrl: null,
+        avatarMediaId: null,
+        socialLinks: null,
+        donationUrl: null,
+        lastActivityGeom: null,
+        lastActivityAt: null,
+        primaryOrganizationId: null,
+      })
+      .where(eq(users.id, id))
+      .returning()
+    const r = updated[0]
+    if (!r) throw new Error("PgUserStore.softDeleteAndAnonymize: user not found")
+    return r
+  }
+
+  private async revokeSessionsAndDevices(tx: DbTransaction, id: string): Promise<void> {
+    await tx.delete(sessions).where(eq(sessions.userId, id))
+    await tx.delete(pushTokens).where(eq(pushTokens.userId, id))
+    await tx.delete(notifications).where(eq(notifications.userId, id))
+  }
+
+  private async cancelRemainingHostedEvents(tx: DbTransaction, id: string): Promise<void> {
+    await tx
+      .update(cleanups)
+      .set({ status: "cancelled" })
+      .where(
+        and(
+          eq(cleanups.organizerUserId, id),
+          ne(cleanups.status, "cancelled"),
+          gt(cleanups.endsAt, new Date()),
+        ),
+      )
+  }
+
+  private async revokeCertificates(tx: DbTransaction, id: string): Promise<string[]> {
+    const certificates = await tx
+      .update(serviceHoursCertificates)
+      .set({
+        revokedAt: sql`COALESCE(${serviceHoursCertificates.revokedAt}, now())`,
+        revokedReason: sql`COALESCE(${serviceHoursCertificates.revokedReason}, 'account_closed')`,
+        holderName: DELETED_USER_LABEL,
+        holderHandle: null,
+        snapshot: {},
+      })
+      .where(eq(serviceHoursCertificates.userId, id))
+      .returning({ r2Key: serviceHoursCertificates.r2Key })
+    return certificates.map((c) => c.r2Key)
+  }
+
+  private async scrubModerationItems(tx: DbTransaction, id: string): Promise<void> {
+    await tx.execute(sql`
+      UPDATE moderation_items
+      SET meta = jsonb_set(
+        jsonb_set(
+          jsonb_set(
+            jsonb_set(meta, '{user,name}', to_jsonb(${DELETED_USER_LABEL}::text), false),
+            '{user,handle}', to_jsonb(''::text), false),
+          '{user,device}', to_jsonb(''::text), false),
+        '{user,joined}', to_jsonb(''::text), false)
+      WHERE meta->'user'->>'id' = ${id}
+    `)
+    await tx.execute(sql`
+      UPDATE moderation_items
+      SET meta = jsonb_set(
+        jsonb_set(meta, '{reporter}', to_jsonb(${DELETED_USER_LABEL}::text), false),
+        '{desc}', to_jsonb(''::text), false)
+      WHERE meta->>'reporterUserId' = ${id}
+    `)
+  }
+
+  private async purgeVerificationDocuments(tx: DbTransaction, id: string): Promise<string[]> {
+    const verificationMedia = await tx.execute<{
+      r2_key: string
+      served_key: string | null
+      thumb_key: string | null
+    }>(sql`
+      DELETE FROM media_assets
+      WHERE purpose = 'verification'
+        AND id IN (
+          SELECT (doc->>'mediaId')::uuid
+          FROM user_verification uv,
+               jsonb_array_elements(uv.documents) AS doc
+          WHERE uv.user_id = ${id} AND doc->>'mediaId' IS NOT NULL
+        )
+      RETURNING r2_key, served_key, thumb_key
+    `)
+    await tx.execute(sql`
+      UPDATE user_verification
+      SET note = NULL, rejection_reason = NULL, documents = '[]'::jsonb, updated_at = now()
+      WHERE user_id = ${id}
+    `)
+    return verificationMedia.flatMap((m) =>
+      [m.r2_key, m.served_key, m.thumb_key].filter((k): k is string => k !== null),
+    )
+  }
+
+  private async deleteErasedObjects(userId: string, keys: readonly string[]): Promise<void> {
+    for (const key of keys) {
       if (this.certificateObjects === undefined) {
-        this.logger?.warn({ userId: id, key }, "erasure object not deleted: no object store wired")
+        this.logger?.warn({ userId, key }, "erasure object not deleted: no object store wired")
         continue
       }
       try {
         await this.certificateObjects.delete(key)
       } catch (err) {
-        this.logger?.warn({ err, userId: id, key }, "erasure object delete failed")
+        this.logger?.warn({ err, userId, key }, "erasure object delete failed")
       }
     }
-    return erasure.record
   }
 
   private async notifyNewOrganizers(moved: readonly TransferredEvent[]): Promise<void> {
@@ -710,8 +773,8 @@ export class PgUserStore implements UserStore {
       try {
         await this.notifier.createNotification(row.new_organizer, {
           type: "cleanup_role",
-          titleKey: "notification.cleanup_role.promoted.title",
-          bodyKey: "notification.cleanup_role.promoted.body",
+          titleKey: HOST_TRANSFER_TITLE_KEY,
+          bodyKey: HOST_TRANSFER_BODY_KEY,
           vars: { title: row.title },
           link: `/cleanups/${row.cleanup_id}`,
         })
@@ -909,10 +972,6 @@ function toOtpRecord(r: OtpRowLike): OtpRecord {
 function rolesFor(role: Role): Role[] {
   return [role]
 }
-
-const ERASURE_HANDLE_RETRIES = 5
-
-const PG_UNIQUE_VIOLATION = "23505"
 
 function isUniqueViolation(err: unknown): boolean {
   return (

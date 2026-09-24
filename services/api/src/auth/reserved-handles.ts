@@ -10,7 +10,7 @@
 import type { Sql } from "../db/client.js"
 import { TOMBSTONE_HANDLE_RE } from "./stores.js"
 
-export const RESERVED_HANDLES: readonly string[] = [
+const RESERVED_HANDLES: readonly string[] = [
   "admin",
   "administrator",
   "civfix",

@@ -54,20 +54,31 @@ export function vintageTag(tigerVintage: number, padusVersion: string = PADUS_VE
   return `tiger${tigerVintage}-padus${padusVersion}`
 }
 
-/** For the runbook and citation (DOI 10.5066/P96WBCHS); the machine fetch uses PADUS_GDB_URL. */
-export const PADUS_DOWNLOAD_URL =
-  "https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-data-download"
-
 /**
+ * The human download page, for the runbook and citation (DOI 10.5066/P96WBCHS), is
+ * https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-data-download.
+ *
  * The ScienceBase item id is specific to the 4.1 release and not derivable from the version, so bumping
  * PADUS_VERSION means finding the new "Full Inventory Database" item. Only the catalog/file/get pattern
  * serves the zip (the `manager/` hosts serve an HTML shell), and it ignores HTTP Range, so the full
  * ~1.5 GB is pulled every run.
  */
-export const PADUS_GDB_URL =
+const PADUS_GDB_URL =
   "https://www.sciencebase.gov/catalog/file/get/652d4fc5d34e44db0e2ee45e?name=PADUS4_1Geodatabase.zip"
 
 const PADUS_VERSION_NODOT = PADUS_VERSION.replace(/\./g, "_")
+
+const FIRST_TIGER_VINTAGE = 2007
+const MAX_TIGER_VINTAGE = 2100
+
+/** The CRS the geom column and the ST_GeomFromGeoJSON ingest path assume (invariant 1 above). */
+const TARGET_SRS = "EPSG:4326"
+
+/** MTFCC of an incorporated place with governmental authority (see the header). */
+const INCORPORATED_PLACE_MTFCC = "G4110"
+
+const AIANNH_GEOID_PREFIX = "AIANNH-"
+const PADUS_GEOID_PREFIX = "PADUS-"
 
 /**
  * Territories and DC (11, 60, 66, 69, 72, 78) are deliberately not covered yet. Order matches the
@@ -134,8 +145,8 @@ export function boundaryManifest(
   vintage: number | "latest" = DEFAULT_TIGER_VINTAGE,
 ): BoundaryJob[] {
   const year = vintage === "latest" ? DEFAULT_TIGER_VINTAGE : vintage
-  // Fail here rather than 404 later on a URL like .../TIGERNaN. TIGER began in 2007.
-  if (!Number.isInteger(year) || year < 2007 || year > 2100) {
+  // Fail here rather than 404 later on a URL like .../TIGERNaN.
+  if (!Number.isInteger(year) || year < FIRST_TIGER_VINTAGE || year > MAX_TIGER_VINTAGE) {
     throw new Error(`boundaryManifest: invalid TIGER vintage ${String(vintage)}`)
   }
   const root = tigerRoot(year)
@@ -145,7 +156,7 @@ export function boundaryManifest(
   jobs.push({
     sourceUrl: `${root}/STATE/tl_${year}_us_state.zip`,
     layer: "state",
-    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326", "-makevalid"],
+    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", TARGET_SRS, "-makevalid"],
     outFile: "states.geojson",
     sourcePath: `tl_${year}_us_state.shp`,
     ingestGeoidPrefix: null,
@@ -154,7 +165,7 @@ export function boundaryManifest(
   jobs.push({
     sourceUrl: `${root}/COUNTY/tl_${year}_us_county.zip`,
     layer: "county",
-    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326", "-makevalid"],
+    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", TARGET_SRS, "-makevalid"],
     outFile: "counties.geojson",
     sourcePath: `tl_${year}_us_county.shp`,
     ingestGeoidPrefix: null,
@@ -168,10 +179,10 @@ export function boundaryManifest(
         "-f",
         "GeoJSON",
         "-t_srs",
-        "EPSG:4326",
+        TARGET_SRS,
         "-makevalid",
         "-where",
-        "MTFCC='G4110'",
+        `MTFCC='${INCORPORATED_PLACE_MTFCC}'`,
       ],
       outFile: `places_${ss}.geojson`,
       sourcePath: `tl_${year}_${ss}_place.shp`,
@@ -183,10 +194,10 @@ export function boundaryManifest(
   jobs.push({
     sourceUrl: `${root}/AIANNH/tl_${year}_us_aiannh.zip`,
     layer: "tribal",
-    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", "EPSG:4326", "-makevalid"],
+    ogr2ogrArgs: ["-f", "GeoJSON", "-t_srs", TARGET_SRS, "-makevalid"],
     outFile: "aiannh.geojson",
     sourcePath: `tl_${year}_us_aiannh.shp`,
-    ingestGeoidPrefix: "AIANNH-",
+    ingestGeoidPrefix: AIANNH_GEOID_PREFIX,
   })
 
   // The default OGR SQL dialect, not SQLITE: with an explicit column projection SQLITE can drop the
@@ -209,7 +220,7 @@ export function boundaryManifest(
       "-f",
       "GeoJSONSeq",
       "-t_srs",
-      "EPSG:4326",
+      TARGET_SRS,
       "-makevalid",
       "-sql",
       `SELECT OBJECTID AS GEOID, Unit_Nm AS NAME FROM PADUS${PADUS_VERSION_NODOT}Fee WHERE Mang_Type='FED'`,
@@ -218,7 +229,7 @@ export function boundaryManifest(
     ],
     outFile: "federal.geojsonl",
     sourcePath: `PADUS${PADUS_VERSION_NODOT}Geodatabase.gdb`,
-    ingestGeoidPrefix: "PADUS-",
+    ingestGeoidPrefix: PADUS_GEOID_PREFIX,
   })
 
   return jobs

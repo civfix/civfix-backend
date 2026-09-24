@@ -3,7 +3,7 @@ import type { Sql } from "./client.js"
 
 type SqlFragment = postgres.Fragment
 
-export const POST_GEOM_BACKFILL_BATCH = 1000
+const POST_GEOM_BACKFILL_BATCH = 1000
 
 export async function backfillPostGeom(
   sql: Sql,

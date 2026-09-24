@@ -8,6 +8,9 @@ import fastifyHelmet from "@fastify/helmet"
 import type { FastifyInstance } from "fastify"
 import { isProd } from "../env.js"
 
+const SECONDS_PER_YEAR = 365 * 24 * 60 * 60
+const HSTS_MAX_AGE_SEC = 2 * SECONDS_PER_YEAR
+
 export async function registerHelmet(app: FastifyInstance): Promise<void> {
   await app.register(fastifyHelmet, {
     contentSecurityPolicy: {
@@ -26,7 +29,7 @@ export async function registerHelmet(app: FastifyInstance): Promise<void> {
     ...(isProd()
       ? {
           strictTransportSecurity: {
-            maxAge: 63072000,
+            maxAge: HSTS_MAX_AGE_SEC,
             includeSubDomains: true,
             preload: true,
           },

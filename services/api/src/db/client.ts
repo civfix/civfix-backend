@@ -13,6 +13,15 @@ export interface DbHandle {
   close(): Promise<void>
 }
 
+const DEFAULT_STATEMENT_TIMEOUT_MS = 15_000
+const DEFAULT_IDLE_IN_TX_TIMEOUT_MS = 30_000
+const CONNECT_TIMEOUT_S = 10
+const IDLE_TIMEOUT_S = 60
+const MAX_LIFETIME_S = 30 * 60
+const CLOSE_TIMEOUT_S = 5
+const DEFAULT_POOL_MAX = 10
+const DRIZZLE_POOL_MAX = 4
+
 /** `false` = plaintext, for dev and testcontainers only. */
 export type DbSslOption = false | "require" | "verify-full" | { rejectUnauthorized: true }
 
@@ -56,8 +65,8 @@ export function makeDb(
   if (!databaseUrl) {
     throw new Error("makeDb: databaseUrl is required")
   }
-  const statementTimeoutMs = opts.statementTimeoutMs ?? 15_000
-  const idleInTxTimeoutMs = opts.idleInTxTimeoutMs ?? 30_000
+  const statementTimeoutMs = opts.statementTimeoutMs ?? DEFAULT_STATEMENT_TIMEOUT_MS
+  const idleInTxTimeoutMs = opts.idleInTxTimeoutMs ?? DEFAULT_IDLE_IN_TX_TIMEOUT_MS
   const connection: Record<string, string> = { TimeZone: "UTC" }
   if (statementTimeoutMs > 0) connection.statement_timeout = String(statementTimeoutMs)
   if (idleInTxTimeoutMs > 0) {
@@ -67,21 +76,24 @@ export function makeDb(
     // Explicit on both clients: postgres.js's default is plaintext, so this is the single place TLS is
     // decided for every query the API and the raw repositories make.
     ssl: opts.ssl ?? sslOptionForUrl(databaseUrl),
-    connect_timeout: 10,
-    idle_timeout: 60,
-    max_lifetime: 60 * 30,
+    connect_timeout: CONNECT_TIMEOUT_S,
+    idle_timeout: IDLE_TIMEOUT_S,
+    max_lifetime: MAX_LIFETIME_S,
     onnotice: () => {},
     connection,
   }
-  const sql = postgres(databaseUrl, { ...common, max: opts.max ?? 10 })
-  const drizzleSql = postgres(databaseUrl, { ...common, max: 4 })
+  const sql = postgres(databaseUrl, { ...common, max: opts.max ?? DEFAULT_POOL_MAX })
+  const drizzleSql = postgres(databaseUrl, { ...common, max: DRIZZLE_POOL_MAX })
   const db = drizzle(drizzleSql, { schema })
 
   let closed = false
   async function close(): Promise<void> {
     if (closed) return
     closed = true
-    await Promise.all([sql.end({ timeout: 5 }), drizzleSql.end({ timeout: 5 })])
+    await Promise.all([
+      sql.end({ timeout: CLOSE_TIMEOUT_S }),
+      drizzleSql.end({ timeout: CLOSE_TIMEOUT_S }),
+    ])
   }
 
   return { db, sql, close }

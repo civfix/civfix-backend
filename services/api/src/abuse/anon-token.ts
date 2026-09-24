@@ -19,6 +19,9 @@ export const ANON_TOKEN_TTL_SECONDS = 24 * 60 * 60
 
 export const ANON_TOKEN_REPORT_CAP = 5
 
+export const ANON_REPORT_CAP_MESSAGE =
+  "This anonymous session has reached its report limit. Sign in to continue."
+
 /** base64url never contains ".", so the separator cannot collide with the id or the HMAC. */
 const TOKEN_SEP = "."
 
@@ -108,9 +111,7 @@ export function assertUnderReportCap(
   cap: number = ANON_TOKEN_REPORT_CAP,
 ): { remaining: number } {
   if (row.reportCount >= cap) {
-    throw AppError.rateLimited(
-      "This anonymous session has reached its report limit. Sign in to continue.",
-    )
+    throw AppError.rateLimited(ANON_REPORT_CAP_MESSAGE)
   }
   return { remaining: cap - row.reportCount }
 }

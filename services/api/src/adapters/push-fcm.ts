@@ -4,6 +4,8 @@ import { hashForLog } from "./push-sender.js"
 
 const FCM_MULTICAST_MAX = 500
 
+const FCM_APP_NAME = "civfix-push"
+
 const PRUNE_CODES = new Set([
   "messaging/registration-token-not-registered",
   "messaging/invalid-registration-token",
@@ -19,13 +21,13 @@ export function isFcmPruneCode(code: string): boolean {
 
 type FcmSendResponse = { success: boolean; error?: { code?: string; message?: string } }
 
-export interface FcmSliceVerdict {
+interface FcmSliceVerdict {
   invalidTokens: string[]
   payloadRejected: { message: string | undefined } | null
   failures: { code: string; token: string | undefined }[]
 }
 
-export function classifyFcmResponses(
+function classifyFcmResponses(
   tokens: readonly string[],
   responses: readonly FcmSendResponse[],
 ): FcmSliceVerdict {
@@ -50,7 +52,6 @@ export function makeFcmDispatcher(
   fcm: NonNullable<PushSenderConfig["fcm"]>,
   logger: PushLogger,
 ): PlatformDispatcher {
-  const appName = "civfix-push"
   let initPromise: Promise<{ messaging: any; deleteApp: () => Promise<void> }> | null = null
 
   async function getMessaging() {
@@ -59,7 +60,7 @@ export function makeFcmDispatcher(
         const admin = await import("firebase-admin/app")
         const messaging = await import("firebase-admin/messaging")
         const serviceAccount = JSON.parse(fcm.serviceAccountJson) as Record<string, unknown>
-        const existing = admin.getApps().find((a) => a.name === appName)
+        const existing = admin.getApps().find((a) => a.name === FCM_APP_NAME)
         const app =
           existing ??
           admin.initializeApp(
@@ -67,7 +68,7 @@ export function makeFcmDispatcher(
               credential: admin.cert(serviceAccount as never),
               ...(fcm.projectId !== undefined ? { projectId: fcm.projectId } : {}),
             },
-            appName,
+            FCM_APP_NAME,
           )
         return { messaging: messaging.getMessaging(app), deleteApp: () => admin.deleteApp(app) }
       })()

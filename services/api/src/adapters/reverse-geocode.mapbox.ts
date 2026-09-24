@@ -15,6 +15,15 @@ import { fetchJsonOrNull } from "./http-fetch.js"
 
 const MAPBOX_REVERSE_URL = "https://api.mapbox.com/search/geocode/v6/reverse"
 const DEFAULT_TIMEOUT_MS = 4000
+const HOME_COUNTRY_CODE = "US"
+const PROVIDER_NAME = "mapbox"
+const LEADING_DIGIT_RE = /^\d/
+
+const MAPBOX_QUERY_PARAMS = {
+  limit: "1",
+  types: "address",
+  language: "en",
+} as const
 
 interface MapboxReverseContext {
   address?: { name?: string; address_number?: string; street_name?: string }
@@ -47,7 +56,7 @@ export function formatMapboxReverse(p: MapboxReverseProps): string | null {
   const tail = [
     ctx.place?.name && ctx.place.name !== primary ? ctx.place.name : null,
     region,
-    cc && cc.toUpperCase() !== "US" ? (ctx.country?.name ?? cc.toUpperCase()) : null,
+    cc && cc.toUpperCase() !== HOME_COUNTRY_CODE ? (ctx.country?.name ?? cc.toUpperCase()) : null,
   ].filter((v): v is string => !!v)
   return [primary, ...tail].join(", ")
 }
@@ -57,7 +66,7 @@ export function formatMapboxReverse(p: MapboxReverseProps): string | null {
  * address. A digit can lead any POI name ("24 Hour Fitness"), and a POI is not a rooftop.
  */
 function startsWithHouseNumber(name: string | undefined): boolean {
-  return name !== undefined && /^\d/.test(name.trim())
+  return name !== undefined && LEADING_DIGIT_RE.test(name.trim())
 }
 
 export function mapboxPrecision(p: MapboxReverseProps): AddressPrecision | null {
@@ -85,9 +94,7 @@ export function makeMapboxReverseGeocode(opts: MapboxReverseOptions): ReverseGeo
       u.searchParams.set("longitude", String(lng))
       u.searchParams.set("latitude", String(lat))
       u.searchParams.set("access_token", opts.token)
-      u.searchParams.set("limit", "1")
-      u.searchParams.set("types", "address")
-      u.searchParams.set("language", "en")
+      for (const [key, value] of Object.entries(MAPBOX_QUERY_PARAMS)) u.searchParams.set(key, value)
       url = u.toString()
     } catch {
       return null
@@ -102,6 +109,6 @@ export function makeMapboxReverseGeocode(opts: MapboxReverseOptions): ReverseGeo
     const precision = mapboxPrecision(props)
     if (precision === null) return null
     const line = formatMapboxReverse(props)
-    return line === null ? null : { line, precision, provider: "mapbox" }
+    return line === null ? null : { line, precision, provider: PROVIDER_NAME }
   }
 }

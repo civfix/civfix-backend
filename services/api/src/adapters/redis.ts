@@ -4,6 +4,8 @@ export type RedisClient = Redis
 
 export const REDIS_COMMAND_TIMEOUT_MS = 5000
 
+const REDIS_MAX_RETRIES_PER_REQUEST = 2
+
 export interface MakeRedisOptions {
   onError?: (err: Error) => void
   commandTimeout?: number
@@ -21,7 +23,7 @@ export function makeRedis(redisUrl: string, opts: MakeRedisOptions = {}): RedisC
   }
   const client = new Redis(redisUrl, {
     lazyConnect: true,
-    maxRetriesPerRequest: 2,
+    maxRetriesPerRequest: REDIS_MAX_RETRIES_PER_REQUEST,
     commandTimeout: opts.commandTimeout ?? REDIS_COMMAND_TIMEOUT_MS,
     enableReadyCheck: true,
     enableAutoPipelining: true,

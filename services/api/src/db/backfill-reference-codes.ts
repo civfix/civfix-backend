@@ -9,8 +9,6 @@
 import { runDbCli, runIfMain } from "./cli.js"
 import { backfillReferenceCodes } from "./backfill-reference-codes-core.js"
 
-export { backfillReferenceCodes } from "./backfill-reference-codes-core.js"
-
 async function main(): Promise<void> {
   await runDbCli(async (_db, sql) => {
     const { reports, cleanupJurisdictions, cleanups } = await backfillReferenceCodes(sql)
