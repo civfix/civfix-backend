@@ -83,4 +83,14 @@ describe("orderMigrationFiles", () => {
       "0009_dm_and_privacy.sql",
     ])
   })
+
+  // Two branches that each take "highest + 1" land the same number. Both files still apply (the ledger is
+  // keyed by filename), but their relative order then depends on the name after the number, not on intent.
+  it("gives every migration in the REAL services/api/drizzle directory its own number", () => {
+    const numbers = orderMigrationFiles(readdirSync(DRIZZLE_DIR)).map((name) =>
+      name.slice(0, name.indexOf("_")),
+    )
+    const duplicates = numbers.filter((n, i) => numbers.indexOf(n) !== i)
+    expect(duplicates).toEqual([])
+  })
 })
