@@ -80,6 +80,12 @@ message of that thread qualifies (404 otherwise), and a thread with no report or
 or another runner holds the lease, the answer is `pending`: the cleared flag makes the reply eligible
 for the sweep, which finishes it.
 
+The same endpoint finishes a verified reply whose effects are still owed (`pending`, for instance after
+a failed chat insert). When the operator's call is the run that completes the effects, the transaction
+that marks them applied also writes a `mail.reply_published` row naming that operator, unless the reply
+already has one from its approval. A reply therefore carries at most one such row however many
+operators or retries publish it, and a reply the sweep finishes carries none.
+
 ## Stage 2 publishes the city's reply text (product decision)
 
 The `report_timeline` row (stage 1) and the reporter's push (stage 3) still carry **fixed copy only** —

@@ -188,7 +188,7 @@ export interface MailRepository {
   hasSendInFlight(threadId: string): Promise<boolean>
   claimMessageEffects(id: string, input: ClaimEffectsInput): Promise<number | null>
   setMessageEffectsStage(id: string, stage: number): Promise<void>
-  markMessageEffectsApplied(id: string): Promise<void>
+  markMessageEffectsApplied(id: string, publishedBy?: MailAuditInput): Promise<void>
   releaseMessageEffects(id: string): Promise<void>
   settleRepliedThread(input: SettleRepliedThreadInput): Promise<void>
   settleThreadStatus(input: SettleThreadStatusInput): Promise<void>

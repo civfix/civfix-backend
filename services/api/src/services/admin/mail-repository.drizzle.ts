@@ -616,12 +616,30 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       `
     },
 
-    async markMessageEffectsApplied(id: string): Promise<void> {
-      await sql`
-        UPDATE mail_messages
-        SET effects_applied_at = now()
-        WHERE id = ${id} AND effects_applied_at IS NULL
-      `
+    async markMessageEffectsApplied(id: string, publishedBy?: MailAuditInput): Promise<void> {
+      await sql.begin(async (tx) => {
+        const applied = await tx<{ id: string }[]>`
+          UPDATE mail_messages
+          SET effects_applied_at = now()
+          WHERE id = ${id} AND effects_applied_at IS NULL
+          RETURNING id
+        `
+        if (applied.length === 0 || publishedBy === undefined) return
+        const audited = await tx<{ id: string }[]>`
+          SELECT id FROM audit_log
+          WHERE action = ${publishedBy.action}
+            AND target = ${publishedBy.target}
+            AND meta->>'messageId' = ${id}
+          LIMIT 1
+        `
+        if (audited.length > 0) return
+        await writeAudit(tx, {
+          actorId: publishedBy.actorId,
+          action: publishedBy.action,
+          target: publishedBy.target,
+          meta: publishedBy.meta ?? null,
+        })
+      })
     },
 
     async releaseMessageEffects(id: string): Promise<void> {

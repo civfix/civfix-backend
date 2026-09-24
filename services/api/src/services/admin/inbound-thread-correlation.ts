@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import type { Container } from "../../di.js"
 import type { ParsedMail } from "@civfix/shared/interfaces"
 import type {
+  MailAuditInput,
   MailMessageRecord,
   MailRepository,
   MailThreadRecord,
@@ -205,17 +206,23 @@ export async function isJurisdictionSender(
   return false
 }
 
+export interface ApplyEffectsOptions {
+  now?: () => Date
+  publishedBy?: MailAuditInput
+}
+
 export async function applyInboundEffects(
   container: Container,
   injected: InboundEffectDeps,
   mailRepo: MailRepository,
   thread: MailThreadRecord,
   message: MailMessageRecord,
-  now: () => Date = () => new Date(),
+  opts: ApplyEffectsOptions = {},
 ): Promise<void> {
   if (message.direction !== "in") return
   if (message.unaffiliated) return
   if (thread.reportId === null && thread.cleanupId === null) return
+  const now = opts.now ?? (() => new Date())
   const leaseBefore = new Date(now().getTime() - EFFECTS_LEASE_MS)
   const stage = await mailRepo.claimMessageEffects(message.id, { leaseBefore })
   if (stage === null) return
@@ -225,7 +232,7 @@ export async function applyInboundEffects(
     } else {
       await onEventReply(container, injected.cleanupRepo, mailRepo, thread, message, stage)
     }
-    await mailRepo.markMessageEffectsApplied(message.id)
+    await mailRepo.markMessageEffectsApplied(message.id, opts.publishedBy)
   } catch (err) {
     await mailRepo.releaseMessageEffects(message.id).catch((releaseErr: unknown) => {
       injected.logger?.warn(

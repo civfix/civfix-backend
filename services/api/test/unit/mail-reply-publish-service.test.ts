@@ -51,8 +51,8 @@ function harness() {
   const container = { env: {} } as unknown as Container
   const service = makeMailReplyPublishService({
     repo,
-    applyEffects: (thread, message) =>
-      applyInboundEffects(container, effects, repo, thread, message),
+    applyEffects: (thread, message, publishedBy) =>
+      applyInboundEffects(container, effects, repo, thread, message, { publishedBy }),
     logger: { warn: (_obj, msg) => warnings.push(msg) },
   })
   const withheld = (link: { reportId?: string; cleanupId?: string }) => {
@@ -67,7 +67,19 @@ function harness() {
     })
     return { threadId: thread.id, messageId: message.id, message, actorId: OPERATOR_ID }
   }
-  return { repo, reports, cleanups, notifier, emitted, chat, warnings, service, withheld }
+  return {
+    repo,
+    reports,
+    cleanups,
+    notifier,
+    emitted,
+    chat,
+    warnings,
+    service,
+    withheld,
+    container,
+    effects,
+  }
 }
 
 describe("makeMailReplyPublishService", () => {
@@ -185,5 +197,52 @@ describe("makeMailReplyPublishService", () => {
     })
     expect(h.repo.audits).toHaveLength(0)
     expect([input.message.unaffiliated, loose.message.unaffiliated]).toEqual([true, true])
+  })
+
+  it("audits the operator who publishes a verified reply whose effects are still owed", async () => {
+    const h = harness()
+    const input = h.withheld({ reportId: REPORT_ID })
+    input.message.unaffiliated = false
+    input.message.authVerdict = "pass"
+
+    expect(await h.service.publish(input)).toEqual({ publication: "published" })
+    expect(await h.service.publish({ ...input, actorId: "operator-2" })).toEqual({
+      publication: "published",
+    })
+    expect(h.repo.audits).toEqual([
+      expect.objectContaining({
+        actorId: OPERATOR_ID,
+        action: "mail.reply_published",
+        meta: expect.objectContaining({ messageId: input.messageId, authVerdict: "pass" }),
+      }),
+    ])
+  })
+
+  it("writes one publish audit row when operators publish the same reply at once", async () => {
+    const h = harness()
+    const verified = h.withheld({ reportId: REPORT_ID })
+    verified.message.unaffiliated = false
+    const withheld = h.withheld({ cleanupId: "cleanup-1" })
+
+    for (const input of [verified, withheld]) {
+      const racers = ["operator-2", "operator-3"].map((actorId) =>
+        h.service.publish({ ...input, actorId }),
+      )
+      await Promise.all(racers)
+      expect(input.message.effectsAppliedAt).not.toBeNull()
+    }
+    const published = h.repo.audits.map((a) => a.meta?.["messageId"])
+    expect(published.sort()).toEqual([verified.messageId, withheld.messageId].sort())
+  })
+
+  it("leaves no operator audit on a reply the sweep published", async () => {
+    const h = harness()
+    const input = h.withheld({ reportId: REPORT_ID })
+    input.message.unaffiliated = false
+    const thread = (await h.repo.getThreadRecord(input.threadId))!
+    await applyInboundEffects(h.container, h.effects, h.repo, thread, input.message)
+
+    expect(await h.service.publish(input)).toEqual({ publication: "published" })
+    expect(h.repo.audits).toHaveLength(0)
   })
 })

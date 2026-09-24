@@ -441,9 +441,18 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve()
   }
 
-  markMessageEffectsApplied(id: string): Promise<void> {
+  markMessageEffectsApplied(id: string, publishedBy?: MailAuditInput): Promise<void> {
     const message = this.messages.find((m) => m.id === id)
-    if (message && message.effectsAppliedAt === null) message.effectsAppliedAt = this.nextDate()
+    if (!message || message.effectsAppliedAt !== null) return Promise.resolve()
+    message.effectsAppliedAt = this.nextDate()
+    if (publishedBy === undefined) return Promise.resolve()
+    const audited = this.audits.some(
+      (a) =>
+        a.action === publishedBy.action &&
+        a.target === publishedBy.target &&
+        a.meta?.["messageId"] === id,
+    )
+    if (!audited) this.recordAudit(publishedBy)
     return Promise.resolve()
   }
 

@@ -140,9 +140,11 @@ export async function registerAdminMailRoutes(
     (overrides): MailReplyPublishService =>
       makeMailReplyPublishService({
         repo: overrides.repo,
-        applyEffects: (thread, message) => {
+        applyEffects: (thread, message, publishedBy) => {
           const effects = overrides.inboundEffects ?? {}
-          return applyInboundEffects(container, effects, overrides.repo, thread, message)
+          return applyInboundEffects(container, effects, overrides.repo, thread, message, {
+            publishedBy,
+          })
         },
         logger: app.log,
       }),
@@ -150,8 +152,10 @@ export async function registerAdminMailRoutes(
       const repo = makeDrizzleMailRepository(container.getDb().sql)
       return makeMailReplyPublishService({
         repo,
-        applyEffects: (thread, message) =>
-          applyInboundEffects(container, { logger: app.log }, repo, thread, message),
+        applyEffects: (thread, message, publishedBy) =>
+          applyInboundEffects(container, { logger: app.log }, repo, thread, message, {
+            publishedBy,
+          }),
         logger: app.log,
       })
     },
