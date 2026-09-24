@@ -22,11 +22,16 @@ const DSN_SCAN_PREFIX_BYTES = 64 * 1024
 const DAEMON_LOCAL_PARTS: readonly string[] = ["mailer-daemon", "postmaster"]
 const DAEMON_SENDER_RE = new RegExp(`(${DAEMON_LOCAL_PARTS.join("|")})@`, "i")
 const DSN_CONTENT_TYPE_RE = /report-type["']?\s*[=:]\s*["']?delivery-status/i
-const FINAL_RECIPIENT_LINE_RE = /^final-recipient:\s*(?:rfc822;)?\s*(.+)$/im
+// Two adjacent \s* around an optional token split a whitespace run every possible way, so a run of
+// newlines after the label backtracks quadratically; nesting the second \s* keeps it linear.
+const FINAL_RECIPIENT_LINE_RE = /^final-recipient:\s*(?:rfc822;\s*)?(.+)$/im
 const TO_LINE_RE = /^to:\s*(.+)$/im
 const ORIGINAL_MESSAGE_ID_LINE_RE = /^original-message-id:\s*(.+)$/im
 const MESSAGE_ID_LINE_RE = /^message-id:\s*(.+)$/im
-const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/
+// A match found from inside a run of local-part characters is also found from the run's start, which
+// is further left, so the lookbehind changes no first match; without it every position of a long run
+// with no @ rescans the rest of the run (quadratic on an attacker-sized header).
+const EMAIL_RE = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/
 const BRACKET_ID_RE = /<[^>]+>/
 
 export interface BounceDetection {
@@ -237,8 +242,9 @@ function matchLine(body: string, re: RegExp): string | null {
 
 function matchBracketId(value: string | null): string | null {
   if (value === null) return null
-  const m = value.match(BRACKET_ID_RE)
-  if (m) return m[0]
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
+  // Every match ends at a ">", so text after the last one cannot change the result; cutting it off
+  // stops a long run of "<" with no ">" from rescanning itself at every position.
+  const lastClose = value.lastIndexOf(">")
+  const m = lastClose === -1 ? null : value.slice(0, lastClose + 1).match(BRACKET_ID_RE)
+  return m ? m[0] : value.trim().length > 0 ? value.trim() : null
 }
