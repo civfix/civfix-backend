@@ -2,14 +2,14 @@ import { afterEach, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer, FakeStorage } from "@civfix/shared/fakes"
 import { InboxFeedResponseSchema, type InboxFeedResponse } from "@civfix/shared"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { InMemoryInboxFeedRepository } from "../helpers/admin/inbox-feed-repository.memory.js"
 
 const OPERATOR = "ops@civfix.org"
@@ -31,7 +31,7 @@ afterEach(async () => {
 
 async function makeHarness(): Promise<Harness> {
   const stores = makeInMemoryStores()
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores,
     cache: new InMemoryCacheClient(() => Date.now()),
     mailer: new FakeMailer(),
@@ -40,7 +40,7 @@ async function makeHarness(): Promise<Harness> {
     now: () => Date.now(),
   })
   const env = loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: OPERATOR })
-  const app = await buildServer({ env, authServices: services })
+  const app = await makeServer({ env, authServices: services })
   const inbound = new InMemoryInboundRepository()
   const mail = new InMemoryMailRepository()
   const feed = new InMemoryInboxFeedRepository(inbound, mail)

@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer, FakeStorage } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { RecordingNotifier } from "../helpers/notifications.js"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
+import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 
 const OPERATOR = "ops@civfix.org"
@@ -22,7 +22,7 @@ afterEach(async () => {
 
 async function makeHarness() {
   const stores = makeInMemoryStores()
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores,
     cache: new InMemoryCacheClient(() => Date.now()),
     mailer: new FakeMailer(),
@@ -30,7 +30,7 @@ async function makeHarness() {
     verifier: new StubJwksVerifier(),
     now: () => Date.now(),
   })
-  app = await buildServer({
+  app = await makeServer({
     env: loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: OPERATOR }),
     authServices: services,
   })

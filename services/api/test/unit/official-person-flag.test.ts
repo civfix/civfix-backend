@@ -15,11 +15,11 @@ import {
 import { toReportParticipantDTO } from "../../src/services/report-chat-repository.drizzle.js"
 import { toMemberView } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
-import { makeDrizzleAnnouncementIdentityRepository } from "../../src/services/host/announcement-repository.drizzle.js"
+import { makeDrizzleAnnouncementIdentityRepository } from "../../src/services/host/announcement-identity-repository.drizzle.js"
 import { makeSocialService, toPersonDTO } from "../../src/services/social-service.js"
-import { toAttendeeDTO, toOrganizerPerson } from "../../src/services/cleanup-dto.js"
+import { toAttendeeDTO, toLinkedEventRef } from "../../src/services/cleanup-dto.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
-import { toRegistrantPerson } from "../../src/services/host/registration-dto.js"
+import { toWaitlistEntryDTO } from "../../src/services/host/registration-dto.js"
 import { InMemoryChatReadState, makeThreadsService } from "../../src/services/threads-service.js"
 import { makeDmService } from "../../src/services/dm-service.js"
 
@@ -103,10 +103,7 @@ const rosterRow = (userId: string, over: { deleted?: boolean; blocked?: boolean 
 
 function rosterUsers(userId: string, over: { deleted?: boolean; blocked?: boolean } = {}) {
   const row = rosterRow(userId, over)
-  return [
-    toReportParticipantDTO(row).user,
-    toMemberView(row).user,
-  ]
+  return [toReportParticipantDTO(row).user, toMemberView(row).user]
 }
 
 async function attendeeRosterUser(userId: string, blocked: boolean) {
@@ -206,7 +203,39 @@ async function dmThreadPeer(dm: InMemoryDmRepository) {
 }
 
 const registrant = (userId: string, deletedAt: Date | null = null) =>
-  toRegistrantPerson({ ...person, userId, deletedAt })
+  toWaitlistEntryDTO({
+    id: MESSAGE,
+    cleanupId: EVENT,
+    ticketTypeId: ORIGINAL,
+    ticketTypeName: null,
+    userId,
+    guestId: null,
+    guestName: null,
+    identity: { ...person, userId, deletedAt },
+    partySize: 1,
+    status: "waiting",
+    position: 1,
+    createdAt: AT,
+    offeredAt: null,
+    claimExpiresAt: null,
+  }).person
+
+const linkedEventOrganizer = (view: typeof person & { id: string }) =>
+  toLinkedEventRef({
+    reportId: ROOM,
+    id: EVENT,
+    title: "Sweep",
+    eventKind: "cleanup",
+    status: "upcoming",
+    scheduledAt: AT,
+    endsAt: null,
+    timezone: null,
+    lat: 0,
+    lng: 0,
+    going: 0,
+    organizer: view,
+    linkedAt: AT,
+  }).organizer
 
 describe("officialPersonFlag", () => {
   it("flags only the official id, in any letter case, and omits the key for anyone else", () => {
@@ -256,7 +285,7 @@ describe.each(PEOPLE)("PersonDTO projections of %s", (_label, id, official) => {
     const view = { ...person, id }
     expectFlag(toAttendeeDTO({ ...view, isFollowing: false, role: "member" }, false), official)
     expectFlag(await attendeeRosterUser(id, false), official)
-    expectFlag(toOrganizerPerson(view), official)
+    expectFlag(linkedEventOrganizer(view), official)
     expectFlag(registrant(id), official)
   })
 
