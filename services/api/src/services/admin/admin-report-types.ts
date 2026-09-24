@@ -27,7 +27,6 @@ export interface AdminReportMediaRecord {
   kind: "image" | "video"
   r2Key: string
   thumbKey: string | null
-  contentType?: string | null
 }
 
 export interface AdminReportTimelineRecord {
@@ -171,7 +170,6 @@ export interface AdminReportServiceDeps {
   loadLinkedEventsForReports?: (
     reportIds: string[],
   ) => Promise<Map<string, LinkedEventView[]>>
-  loadMediaBytes?: (r2Key: string) => Promise<Uint8Array | null>
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter
   forwardTemplates?: ForwardTemplateReader

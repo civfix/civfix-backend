@@ -11,20 +11,12 @@ import type {
 } from "@civfix/shared"
 import type { ListThreadsInput, MailRepository } from "./mail-repository.drizzle.js"
 import { domainOf } from "../../adapters/mail-text.js"
-import type { PacketAttachment } from "./outbound-mail-service.js"
-import { attachmentContentType, SEND_IN_FLIGHT_CONFLICT } from "./admin-report-service.js"
-import {
-  MAX_PACKET_ATTACHMENTS,
-  MAX_PACKET_ATTACHMENT_BYTES,
-  MAX_PACKET_TOTAL_BYTES,
-} from "./mail-format.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { SEND_IN_FLIGHT_CONFLICT } from "./admin-report-service.js"
 import type { OutboundMailService } from "./outbound-mail-service.js"
 
 export interface MailServiceDeps {
   repo: MailRepository
   outboundMail: OutboundMailService
-  loadAttachmentBytes?: (key: string) => Promise<Uint8Array | null>
 }
 
 export interface MailService {
@@ -40,37 +32,6 @@ export interface MailService {
 
 export function makeMailService(deps: MailServiceDeps): MailService {
   const { repo, outboundMail } = deps
-
-  async function replayAttachments(
-    attachments: readonly { key: string; filename: string }[],
-  ): Promise<PacketAttachment[]> {
-    const load = deps.loadAttachmentBytes
-    if (load === undefined) return []
-    let total = 0
-    const loaded = await mapWithLimit(
-      attachments.slice(0, MAX_PACKET_ATTACHMENTS),
-      PRESIGN_CONCURRENCY,
-      async (att) => {
-        if (total >= MAX_PACKET_TOTAL_BYTES) return null
-        const bytes = await load(att.key)
-        if (bytes === null || bytes.byteLength > MAX_PACKET_ATTACHMENT_BYTES) return null
-        if (total + bytes.byteLength > MAX_PACKET_TOTAL_BYTES) return null
-        total += bytes.byteLength
-        return { key: att.key, filename: att.filename, bytes }
-      },
-    )
-    const replayed: PacketAttachment[] = []
-    for (const att of loaded) {
-      if (att === null) continue
-      replayed.push({
-        key: att.key,
-        filename: att.filename,
-        contentType: attachmentContentType(null, att.bytes),
-        content: att.bytes,
-      })
-    }
-    return replayed
-  }
 
   async function requireThreadDTO(id: string): Promise<MailThreadDTO> {
     const dto = await repo.getThread(id)
@@ -171,13 +132,11 @@ export function makeMailService(deps: MailServiceDeps): MailService {
         throw AppError.validation({ to: "No recipient address on this thread to resend to." })
       }
       const subject = last.subject ?? thread.subject ?? ""
-      const attachments = await replayAttachments(last.attachments)
       await outboundMail.appendOutbound(id, {
         body: last.body,
         toAddr,
         ...(subject.length > 0 ? { subject } : {}),
         ...(last.html !== null ? { html: last.html } : {}),
-        ...(attachments.length > 0 ? { attachments } : {}),
         kind: "resend",
         audit: { actorId, action: "mail.resent", meta: { to: toAddr } },
       })

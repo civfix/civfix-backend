@@ -28,32 +28,6 @@ import type { MarkdownInline } from "@civfix/shared/markdown"
 
 export const NO_PHOTO_LINKS = "(none)"
 
-export const MAX_PACKET_ATTACHMENTS = 10
-export const MAX_PACKET_ATTACHMENT_BYTES = 10 * 1024 * 1024
-export const MAX_PACKET_TOTAL_BYTES = 8 * 1024 * 1024
-
-const ATTACHMENT_EXTENSIONS: Record<string, string> = {
-  "image/jpeg": ".jpg",
-  "image/png": ".png",
-  "image/webp": ".webp",
-}
-
-const EXTENSION_FALLBACK = ".jpg"
-
-function hasExtension(name: string): boolean {
-  return /\.[A-Za-z0-9]{2,5}$/.test(name)
-}
-
-export function attachmentFilename(r2Key: string, index: number, contentType?: string): string {
-  const ext =
-    ATTACHMENT_EXTENSIONS[(contentType ?? "").trim().toLowerCase()] ?? EXTENSION_FALLBACK
-  const tail = r2Key.split("/").pop() ?? ""
-  const cleaned = tail.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "")
-  if (cleaned.length === 0) return `photo-${index + 1}${ext}`
-  if (hasExtension(cleaned)) return cleaned.slice(0, 120)
-  return `${cleaned.slice(0, 120 - ext.length)}${ext}`
-}
-
 export interface ReportPacket {
   subject: string
   text: string

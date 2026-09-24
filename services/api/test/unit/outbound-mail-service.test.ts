@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
-import type { Mailer, OutboundAttachment, SentMail } from "@civfix/shared/interfaces"
+import type { Mailer, SentMail } from "@civfix/shared/interfaces"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import {
   assertOutboundSendPolicy,
@@ -42,13 +42,8 @@ function harness(): {
 }
 
 describe("OutboundMailService.sendReportToJurisdiction", () => {
-  function png(): OutboundAttachment {
-    return { filename: "photo.png", contentType: "image/png", content: new Uint8Array([1, 2, 3, 4]) }
-  }
-
-  it("sends a per-report packet via sendOutbound From the report- reply address, no Reply-To, + attachments", async () => {
+  it("sends a per-report packet via sendOutbound From the report- reply address, no Reply-To, no attachments", async () => {
     const { repo, mailer, svc } = harness()
-    const attachments = [png()]
     const { thread, messageId } = await svc.sendReportToJurisdiction({
       reportId: "report-1",
       geoid: "0644000",
@@ -57,7 +52,6 @@ describe("OutboundMailService.sendReportToJurisdiction", () => {
       subject: "civfix report: Pothole [abcd1234]",
       text: "A pothole on Main St.",
       html: "<p>A pothole on Main St.</p>",
-      attachments,
     })
 
     expect(thread.reportId).toBe("report-1")
@@ -73,9 +67,7 @@ describe("OutboundMailService.sendReportToJurisdiction", () => {
     expect(env?.to).toBe("clerk@lacity.gov")
     expect(env?.subject).toBe("civfix report: Pothole [abcd1234]")
     expect(env?.html).toBe("<p>A pothole on Main St.</p>")
-    expect(env?.attachments).toHaveLength(1)
-    expect(env?.attachments?.[0]?.filename).toBe("photo.png")
-    expect(env?.attachments?.[0]?.contentType).toBe("image/png")
+    expect(env?.attachments).toBeUndefined()
     expect(messageId).toMatch(/^<out-.+@civfix\.org>$/)
     expect(env?.messageId).toBe(messageId)
 
@@ -407,7 +399,7 @@ describe("OutboundMailService — F109: a delivered send never throws post-deliv
 })
 
 describe("OutboundMailService: the outbound row is a true snapshot of what was sent", () => {
-  it("stores the per-thread From, the html part, the kind and the attachment metadata", async () => {
+  it("stores the per-thread From, the html part and the kind, with no attachments", async () => {
     const { repo, svc } = harness()
     const { thread } = await svc.sendReportToJurisdiction({
       reportId: "report-1",
@@ -416,17 +408,13 @@ describe("OutboundMailService: the outbound row is a true snapshot of what was s
       subject: "civfix report: Pothole",
       text: "A pothole on Main St.",
       html: "<p>A pothole on Main St.</p>",
-      attachments: [
-        { key: "media/r2/photo.jpg", filename: "photo.jpg", contentType: "image/jpeg", content: new Uint8Array([1, 2, 3]) },
-        { filename: "keyless.jpg", contentType: "image/jpeg", content: new Uint8Array([4]) },
-      ],
     })
 
     const stored = repo.messagesOf(thread.id)[0]
     expect(stored?.fromAddr).toBe(`"civfix Reports" <report-${thread.threadToken}@civfix.org>`)
     expect(stored?.html).toBe("<p>A pothole on Main St.</p>")
     expect(stored?.kind).toBe("packet")
-    expect(stored?.attachments).toEqual([{ key: "media/r2/photo.jpg", filename: "photo.jpg", size: 3 }])
+    expect(stored?.attachments).toEqual([])
   })
 
   it("stamps the kind each entry point owns", async () => {
@@ -838,18 +826,10 @@ describe("OutboundMailService: total send deadline", () => {
     expect(eightMiB).toBeGreaterThan(oneMiB)
   })
 
-  it("payload bytes count the text, the html part and attachments AS BASE64 (what goes on the wire)", () => {
+  it("payload bytes count the text and the html part in UTF-8", () => {
     expect(outboundPayloadBytes({ body: "abc" })).toBe(3)
     expect(outboundPayloadBytes({ body: "abc", html: "<p>de</p>" })).toBe(3 + 9)
-    expect(
-      outboundPayloadBytes({
-        body: "abc",
-        attachments: [
-          { filename: "a.jpg", contentType: "image/jpeg", content: new Uint8Array(1000) },
-          { filename: "b.jpg", contentType: "image/jpeg", content: new Uint8Array(2000) },
-        ],
-      }),
-    ).toBe(3 + base64Bytes(3000))
+    expect(outboundPayloadBytes({ body: "é" })).toBe(2)
     expect(base64Bytes(3000)).toBe(4000)
   })
 

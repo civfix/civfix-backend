@@ -247,7 +247,7 @@ non-delivery**:
 - `assertRoutable` refuses a re-route (409, `SEND_IN_FLIGHT_CONFLICT`) while the newest attempt is in
   flight — including the `retargeted` branch. `MailService.reply`/`resend` apply the same guard.
 - `runAutoForwardWith` classifies the deadline error distinctly and does **not** retry it. Retrying would
-  put a second multi-MB packet in front of a government contact for a message that very likely sent.
+  put a second packet in front of a government contact for a message that very likely sent.
 - The operator sees a **409 CONFLICT** with "the send is still in progress", not a 500 — so the console's
   existing conflict handling applies and the error tracker is not spammed for an expected outcome.
 
@@ -263,8 +263,9 @@ in flight; any other `failed` → failed; no event and older than the stale wind
 
 `assertOutboundSendPolicy` runs in `loadEnv`, so the process refuses to boot when the knobs would let one
 send outlive the guard: `OUTBOUND_SEND_MIN_THROUGHPUT_BPS` must be ≥ 1024, `OCI_EMAIL_SMTP_TIMEOUT_MS`
-must be ≤ 60 000, and the largest computable deadline — sized for `MAX_PACKET_TOTAL_BYTES` (8 MiB) after
-base64 expansion (+33%, which is what actually crosses the wire) — must fit inside the 900 s window. At
+must be ≤ 60 000, and the largest computable deadline — sized for `OUTBOUND_PAYLOAD_BUDGET_BYTES` (8 MiB)
+after base64 expansion (+33%), far above any packet now that report media goes out as links rather than
+attachments — must fit inside the 900 s window. At
 the defaults that largest deadline is ≈ 88 s, comfortably inside it.
 
 | Env var | Default | Notes |

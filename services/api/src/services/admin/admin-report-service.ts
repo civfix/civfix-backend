@@ -18,7 +18,6 @@ import type {
   ReportRouting,
   ReportTimelineItem,
 } from "@civfix/shared"
-import type { PacketAttachment } from "./outbound-mail-service.js"
 import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"
@@ -30,14 +29,7 @@ import {
   statusChangeNote,
   timelineKindForStatus,
 } from "./admin-report-status.js"
-import {
-  attachmentFilename,
-  buildReportPacket,
-  MAX_PACKET_ATTACHMENTS,
-  MAX_PACKET_ATTACHMENT_BYTES,
-  MAX_PACKET_TOTAL_BYTES,
-  type PacketMediaLink,
-} from "./mail-format.js"
+import { buildReportPacket, type PacketMediaLink } from "./mail-format.js"
 import { pickPreviewMedia, previewThumbnailUrl } from "./admin-report-types.js"
 import type {
   AdminReportMediaRecord,
@@ -53,13 +45,7 @@ import type {
 
 export * from "./admin-report-types.js"
 export * from "./admin-report-status.js"
-export {
-  buildReportPacket,
-  attachmentFilename,
-  MAX_PACKET_ATTACHMENTS,
-  MAX_PACKET_ATTACHMENT_BYTES,
-  type ReportPacket,
-} from "./mail-format.js"
+export { buildReportPacket, type ReportPacket } from "./mail-format.js"
 
 const ROUTABLE_FROM_STATUSES: readonly AdminReportStatus[] = ["submitted", "held", "published"]
 
@@ -395,22 +381,8 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       const publiclyVisible =
         isPubliclyVisibleStatus(record.status) && record.visibility === "public"
       const packetMedia: PacketMediaLink[] = []
-      const attachments: PacketAttachment[] = []
-      let attachedBytesTotal = 0
       for (const m of media) {
         packetMedia.push({ kind: m.kind, url: await presignPacketMedia(m.r2Key, publiclyVisible) })
-        if (m.kind !== "image" || attachments.length >= MAX_PACKET_ATTACHMENTS) continue
-        const bytes = deps.loadMediaBytes ? await deps.loadMediaBytes(m.r2Key) : null
-        if (bytes === null || bytes.byteLength > MAX_PACKET_ATTACHMENT_BYTES) continue
-        if (attachedBytesTotal + bytes.byteLength > MAX_PACKET_TOTAL_BYTES) continue
-        attachedBytesTotal += bytes.byteLength
-        const contentType = attachmentContentType(m.contentType, bytes)
-        attachments.push({
-          key: m.r2Key,
-          filename: attachmentFilename(m.r2Key, attachments.length, contentType),
-          contentType,
-          content: bytes,
-        })
       }
 
       const defaults =
@@ -431,7 +403,6 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
           subject: packet.subject,
           text: packet.text,
           html: packet.html,
-          ...(attachments.length > 0 ? { attachments } : {}),
           audit: {
             actorId: input.actorId,
             action: "report.routed",
@@ -489,36 +460,6 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       })
     },
   }
-}
-
-export function attachmentContentType(
-  stored: string | null | undefined,
-  bytes: Uint8Array,
-): string {
-  if (stored !== null && stored !== undefined && stored.trim() !== "") return stored
-  return sniffImageMime(bytes) ?? "image/jpeg"
-}
-
-function sniffImageMime(bytes: Uint8Array): string | null {
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return "image/jpeg"
-  }
-  const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
-  if (bytes.length >= PNG.length && PNG.every((b, i) => bytes[i] === b)) return "image/png"
-  if (
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x45 &&
-    bytes[10] === 0x42 &&
-    bytes[11] === 0x50
-  ) {
-    return "image/webp"
-  }
-  return null
 }
 
 function sameAddress(a: string, b: string): boolean {

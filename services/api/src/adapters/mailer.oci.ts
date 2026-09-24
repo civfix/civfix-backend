@@ -80,8 +80,7 @@ function classifyMailError(err: unknown, from: string): MailSendError {
     case "oversize":
       return new MailSendError(
         ErrorCode.CONFLICT,
-        `Email not sent: the message (with its attachments) is too large for the mail provider. ` +
-          `Send fewer or smaller photos — the rest remain available as links.${detail}`,
+        `Email not sent: the message is too large for the mail provider.${detail}`,
         smtp,
         { cause: err },
       )
