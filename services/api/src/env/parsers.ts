@@ -14,6 +14,29 @@ export function parseBool(raw: string | undefined, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase())
 }
 
+// The single-letter forms are accepted because deployed boxes already hold one-character values for
+// strict flags, and a boot failure over an unambiguous spelling would take the API down on deploy.
+const STRICT_TRUE_FORMS = ["true", "t", "yes", "y", "on", "1"]
+const STRICT_FALSE_FORMS = ["false", "f", "no", "n", "off", "0"]
+const STRICT_TRUE = new Set(STRICT_TRUE_FORMS)
+const STRICT_FALSE = new Set(STRICT_FALSE_FORMS)
+
+export const STRICT_BOOL_ACCEPTED_FORMS = `${STRICT_TRUE_FORMS.join("/")} or ${STRICT_FALSE_FORMS.join("/")}`
+
+export function parseStrictBool(raw: string): boolean | undefined {
+  const value = raw.trim().toLowerCase()
+  if (STRICT_TRUE.has(value)) return true
+  if (STRICT_FALSE.has(value)) return false
+  return undefined
+}
+
+export interface EnvIssueSink {
+  key: string
+  errors: string[]
+}
+
+const INTEGER_PATTERN = /^-?\d+$/
+
 export function parseCsv(raw: string | undefined): string[] {
   if (!raw) return []
   return raw
@@ -30,22 +53,34 @@ export function parseCsvLower(raw: string | undefined): string[] {
   return [...seen]
 }
 
-export function parseIntOr(raw: string | undefined, fallback: number): number {
+export function parseIntOr(raw: string | undefined, fallback: number, sink?: EnvIssueSink): number {
   if (raw === undefined || raw.trim() === "") return fallback
-  const n = Number.parseInt(raw.trim(), 10)
-  return Number.isFinite(n) ? n : fallback
+  const value = raw.trim()
+  if (!INTEGER_PATTERN.test(value)) {
+    sink?.errors.push(`${sink.key}: must be an integer`)
+    return fallback
+  }
+  return Number.parseInt(value, 10)
 }
 
-export function parsePositiveIntOr(raw: string | undefined, fallback: number): number {
-  const n = parseIntOr(raw, fallback)
-  return n >= 1 ? n : fallback
+export function parsePositiveIntOr(
+  raw: string | undefined,
+  fallback: number,
+  sink?: EnvIssueSink,
+): number {
+  const n = parseIntOr(raw, fallback, sink)
+  if (n >= 1) return n
+  sink?.errors.push(`${sink.key}: must be a positive integer`)
+  return fallback
 }
 
 export const SHUTDOWN_DRAIN_MS_MAX = 10_000
 
+// Deliberately lenient (leading digits, as parseInt reads them) unlike every other integer: a boot
+// failure over shutdown timing is worse than draining for the digits the operator plainly meant.
 export function parseDrainMs(raw: string | undefined): number {
-  const n = parseIntOr(raw, 0)
-  if (n < 0) return 0
+  const n = Number.parseInt((raw ?? "").trim(), 10)
+  if (!Number.isFinite(n) || n < 0) return 0
   return Math.min(n, SHUTDOWN_DRAIN_MS_MAX)
 }
 

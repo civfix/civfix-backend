@@ -6,7 +6,10 @@ import { makeReportChatNotifier } from "./report-chat-notifier.js"
 import { makeChatMentionNotifier, type ChatBellDeps } from "./chat-bells.js"
 import { makeNotificationService } from "./notification-service.js"
 import { makeDrizzleNotificationRepository } from "./notification-repository.drizzle.js"
-import { makeConversationMutesRepository } from "./conversation-mutes-repository.drizzle.js"
+import {
+  makeConversationMutesRepository,
+  makeFailOpenMuteCheck,
+} from "./conversation-mutes-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "./cleanup-repository.drizzle.js"
 import { makeChatGroupRepository } from "./chat-group-repository.drizzle.js"
 import { makeContainerReportCityForward } from "./report-city-forward-wiring.js"
@@ -62,17 +65,7 @@ export function makeContainerReportChatSendDeps(
   })
 
   const conversationMutes = makeConversationMutesRepository(sql)
-  const isMutedFor = async (
-    userId: string,
-    kind: "dm" | "cleanup" | "report" | "group",
-    roomId: string,
-  ): Promise<boolean> => {
-    try {
-      return await conversationMutes.isMuted(userId, kind, roomId)
-    } catch {
-      return false
-    }
-  }
+  const isMutedFor = makeFailOpenMuteCheck(conversationMutes, logger)
 
   const mutedUserIdsFor = (():
     | ((roomId: string, userIds: string[]) => Promise<Set<string>>)
@@ -112,18 +105,22 @@ export function makeContainerReportChatSendDeps(
 
   const notifyMembers = makeReportChatNotifier({
     notificationService,
-    reportChatRepo: { listMemberIds: (reportId) => reportChatRepo.listMemberIds(reportId) },
-    isMuted: (userId, roomId) => isMutedFor(userId, "report", roomId),
+    reportChatRepo,
+    isMuted: (userId, roomId) => conversationMutes.isMuted(userId, "report", roomId),
     ...(mutedUserIdsFor ? { mutedUserIdsFor } : {}),
     roomKeyFor,
     isBlockedEitherWay,
     ...(blockedIdsFor ? { blockedIdsFor } : {}),
+    logger,
   })
 
   return {
     ...base,
     notifyMembers,
-    forwardCityMention: makeContainerReportCityForward(container),
+    forwardCityMention: makeContainerReportCityForward(
+      container,
+      logger !== undefined ? { logger } : {},
+    ),
     ...(options.mentions
       ? { mentions: { ...options.mentions, notifyChatMention: makeChatMentionNotifier(bellDeps) } }
       : {}),

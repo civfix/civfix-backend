@@ -22,7 +22,13 @@
 
 import type { Sql } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
-import { decodeCursor, clampLimit, paginate } from "./pagination.js"
+import {
+  decodeCursor,
+  clampLimit,
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+} from "./pagination.js"
 import { ilikeAnyOf } from "./sql-fragments.js"
 import {
   type GovCheckRecord,
@@ -113,15 +119,15 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
           : sql``
       const keyset = !anchor
         ? sql``
-        : newestFirst
-          ? sql`AND (created_at, id) < (${anchor.createdAt}, ${anchor.id}::uuid)`
-          : sql`AND (created_at, id) > (${anchor.createdAt}, ${anchor.id}::uuid)`
+        : sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, anchor, {
+            direction: newestFirst ? "desc" : "asc",
+          })}`
       const order = newestFirst
         ? sql`ORDER BY created_at DESC, id DESC`
         : sql`ORDER BY created_at ASC, id ASC`
 
-      const rows = await sql<GovClaimRow[]>`
-        SELECT ${cols}
+      const rows = await sql<(GovClaimRow & { cursor_at: string })[]>`
+        SELECT ${cols}, ${keysetInstant(sql, sql`created_at`)} AS cursor_at
         FROM gov_claims
         WHERE true
         ${facet}
@@ -131,10 +137,8 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
         LIMIT ${limit + 1}
       `
 
-      // paginate() owns the has-more split AND the cursor format; this site used to hand-concatenate
-      // "<iso>|<id>" itself, so a change to the shared encoding would have silently skipped it.
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({
-        createdAt: r.created_at,
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
         id: r.id,
       }))
       return { records: items.map(toRecord), nextCursor }

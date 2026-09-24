@@ -46,9 +46,10 @@ export async function registerPageViewRoutes(
           ...(userAgent !== undefined ? { userAgent } : {}),
         })
       } catch (err) {
+        // A view counter is analytics, not state the visitor depends on: the beacon never fails.
         request.log.warn({ err }, "page view: counter write failed (view not counted)")
       }
-      reply.status(204).send()
+      reply.status(200).send({ ok: true })
     },
   )
 }

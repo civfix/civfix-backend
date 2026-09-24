@@ -30,14 +30,32 @@ interface AnalyticsCacheEntry {
   value: Promise<unknown>
 }
 
-const analyticsCache = new Map<string, AnalyticsCacheEntry>()
+// Module-scoped because the admin routes rebuild the repository per request; keyed by the sql handle so
+// two repositories over different databases in one process never read each other's aggregates.
+const analyticsCaches = new WeakMap<Sql, Map<string, AnalyticsCacheEntry>>()
 
-function withCache<T>(ttlMs: number, key: string, run: () => Promise<T>): Promise<T> {
+function cacheFor(sql: Sql): Map<string, AnalyticsCacheEntry> {
+  let cache = analyticsCaches.get(sql)
+  if (cache === undefined) {
+    cache = new Map()
+    analyticsCaches.set(sql, cache)
+  }
+  return cache
+}
+
+function withCacheIn<T>(
+  analyticsCache: Map<string, AnalyticsCacheEntry>,
+  ttlMs: number,
+  key: string,
+  run: () => Promise<T>,
+): Promise<T> {
   if (ttlMs <= 0) return run()
   const hit = analyticsCache.get(key)
   if (hit !== undefined && Date.now() - hit.at <= ttlMs) return hit.value as Promise<T>
   const value = run()
   analyticsCache.set(key, { at: Date.now(), value })
+  // The caller awaits `value` and sees the rejection itself; this handler only evicts the failed entry so
+  // the next call retries instead of serving a cached failure for the whole TTL.
   void value.catch(() => {
     const cur = analyticsCache.get(key)
     if (cur !== undefined && cur.value === value) analyticsCache.delete(key)
@@ -303,7 +321,7 @@ export function makeDrizzleAnalyticsRepository(
         WITH report_counts AS (
           SELECT reporter_user_id AS user_id, COUNT(*)::int AS n
           FROM reports
-          WHERE deleted_at IS NULL AND reporter_user_id IS NOT NULL
+          WHERE deleted_at IS NULL AND visibility = 'public' AND reporter_user_id IS NOT NULL
           GROUP BY reporter_user_id
         ),
         cleanup_counts AS (
@@ -328,7 +346,10 @@ export function makeDrizzleAnalyticsRepository(
           ) t
           LEFT JOIN report_counts rc ON rc.user_id = t.user_id
           LEFT JOIN cleanup_counts cc ON cc.user_id = t.user_id
-          WHERE t.total > 0
+          -- Filtered before the LIMIT so a deleted or banned account never takes a leaderboard slot.
+          JOIN users tu ON tu.id = t.user_id AND tu.deleted_at IS NULL
+          LEFT JOIN user_moderation tm ON tm.user_id = t.user_id
+          WHERE t.total > 0 AND COALESCE(tm.account_status, 'active') <> 'banned'
           ORDER BY t.total DESC, t.user_id ASC
           LIMIT ${limit}
         ),
@@ -471,6 +492,9 @@ export function makeDrizzleAnalyticsRepository(
   const ttl = opts?.cacheTtlMs ?? 0
   if (ttl <= 0) return base
 
+  const cache = cacheFor(sql)
+  const withCache = <T>(ttlMs: number, key: string, run: () => Promise<T>): Promise<T> =>
+    withCacheIn(cache, ttlMs, key, run)
   return {
     kpis: () => withCache(ttl, "kpis", () => base.kpis()),
     pinsByWeek: (weeks) => withCache(ttl, `pinsByWeek:${weeks}`, () => base.pinsByWeek(weeks)),

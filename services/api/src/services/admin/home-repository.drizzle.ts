@@ -1,6 +1,7 @@
 import type { Sql } from "../../db/client.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
 import { flaggedReportExpr } from "./admin-report-repository.drizzle.js"
+import { flaggedEventExpr } from "./admin-event-sql.js"
 import { reportRoutableExpr } from "./sql-fragments.js"
 import { toEventStatus } from "./event-status.js"
 import { DISCOVERY_SLA_HOURS } from "./discovery-service.js"
@@ -202,6 +203,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
             title: string
             place: string | null
             attendees: string
+            flagged: boolean
           }[]
         >`
           SELECT
@@ -209,6 +211,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
             ST_Y(c.geom) AS lat,
             ST_X(c.geom) AS lng,
             ${adminEventStatusExpr(sql)} AS status,
+            ${flaggedEventExpr(sql)} AS flagged,
             c.event_kind AS event_kind,
             c.title AS title,
             c.address AS place,
@@ -239,7 +242,7 @@ export function makeDrizzleHomeRepository(sql: Sql): HomeRepository {
         lng: e.lng,
         category: null,
         status: toEventStatus(e.status),
-        flagged: false,
+        flagged: e.flagged,
         title: e.title,
         place: e.place ?? "",
         attendees: num(e.attendees),

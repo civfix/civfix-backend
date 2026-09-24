@@ -229,6 +229,7 @@ describe("ticket type service", () => {
       counters: {
         incr: () => Promise.reject(new Error("redis is down")),
         incrBy: () => Promise.reject(new Error("redis is down")),
+        decrBy: () => Promise.reject(new Error("redis is down")),
       },
     })
     await expect(broken.create({ ...base, name: "Nope" }, HOST)).rejects.toThrow(

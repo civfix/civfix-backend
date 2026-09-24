@@ -1,9 +1,12 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { OutboundEmail } from "@civfix/shared/interfaces"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import { InMemoryOutreachRepository } from "../../src/services/admin/outreach-repository.memory.js"
-import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
+import {
+  makeOutboundMailService,
+  OutboundSendDeadlineError,
+} from "../../src/services/admin/outbound-mail-service.js"
 import {
   makeOutreachService,
   type OutreachService,
@@ -249,6 +252,36 @@ describe("outreach digest: a delivered digest is never re-sent (F109)", () => {
 
     await expect(svc.runForGeoid(GEOID)).rejects.toThrow("thread re-read failed after delivery")
     expect(state.get(GEOID)?.lastOutreachAt).toEqual(NOW)
+  })
+
+  it("keeps the claim when the send hit its deadline, because the digest may still be delivered", async () => {
+    const { svc, state } = serviceWith(() => Promise.reject(new OutboundSendDeadlineError(1000)))
+
+    await expect(svc.runForGeoid(GEOID)).rejects.toMatchObject({ outboundSendDeadline: true })
+    expect(state.get(GEOID)?.lastOutreachAt).toEqual(NOW)
+  })
+
+  it("logs a failed claim release instead of swallowing it, and still surfaces the send error", async () => {
+    const { outreachRepo, mailRepo } = harness()
+    const warn = vi.fn()
+    const releaseFailure = new Error("db down")
+    mailRepo.setOutreachState = () => Promise.reject(releaseFailure)
+    const svc = makeOutreachService({
+      outreachRepo,
+      mailRepo,
+      outboundMail: {
+        sendToCity: () => Promise.reject(new Error("OCI mail transient 500")),
+      } as unknown as OutboundMailService,
+      throttleDays: THROTTLE_DAYS,
+      now: () => NOW,
+      logger: { warn },
+    })
+
+    await expect(svc.runForGeoid(GEOID)).rejects.toThrow("OCI mail transient 500")
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ geoid: GEOID, err: releaseFailure }),
+      expect.any(String),
+    )
   })
 
   it("STILL releases the claim on a plain delivery failure (untagged error), so it retries", async () => {

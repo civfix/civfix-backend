@@ -18,6 +18,7 @@ import { clampLimit } from "./pagination.js"
 import { timelineKindForStatus } from "./admin-report-status.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "../media-presign.js"
 import type { ReportChatSystemEmitter } from "../report-timeline-event.js"
+import type { MessageUpdateAnnouncer } from "./admin-report-chat-service.js"
 
 export type ModerationFilter = "all" | ModerationKind | "high"
 
@@ -152,6 +153,11 @@ export interface ModerationServiceDeps {
   now?: () => Date
   reportChatEmitter?: ReportChatSystemEmitter
   sessions?: ModerationSessionControl
+  announceMessageUpdate?: MessageUpdateAnnouncer
+}
+
+function isMessageSubject(subjectType: ModerationItemRecord["subjectType"]): boolean {
+  return subjectType === "chat" || subjectType === "message"
 }
 
 export interface ModerationService {
@@ -266,6 +272,9 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
     ): Promise<void> {
       const result = await deps.repo.remove(id, input)
       if (!result) throw AppError.notFound("Moderation item not found")
+      if (isMessageSubject(result.subjectType)) {
+        await deps.announceMessageUpdate?.(result.subjectId)
+      }
       if (result.suspendedUserId && deps.sessions) {
         await deps.sessions.applyStatus(result.suspendedUserId, "suspended")
       }
@@ -290,6 +299,9 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
     ): Promise<void> {
       const result = await deps.repo.decideAppeal(id, input)
       if (!result) throw AppError.notFound("Moderation item not found")
+      if (input.decision === "overturn" && isMessageSubject(result.subjectType)) {
+        await deps.announceMessageUpdate?.(result.subjectId)
+      }
       if (result.restoredUserId && deps.sessions) {
         await deps.sessions.applyStatus(result.restoredUserId, "active")
       }

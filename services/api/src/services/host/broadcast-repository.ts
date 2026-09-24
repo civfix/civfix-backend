@@ -4,6 +4,7 @@ import type {
   BroadcastStatus,
   DeliveryStatus,
 } from "@civfix/shared"
+import type { KeysetCursor } from "../../db/cursor-helpers.js"
 import type { NotificationPrefsRecord } from "../notification-service.js"
 import type { WriteAuditInput } from "../admin/audit.js"
 import type {
@@ -27,7 +28,7 @@ import type {
 export interface BroadcastListQuery {
   cleanupId: string
   status?: BroadcastStatus
-  cursor: { createdAt: Date; id: string } | null
+  cursor: KeysetCursor | null
   limit: number
 }
 
@@ -35,7 +36,7 @@ export interface DeliveryListQuery {
   broadcastId: string
   status?: DeliveryStatus
   channel?: string
-  cursor: { createdAt: Date; id: string } | null
+  cursor: KeysetCursor | null
   limit: number
 }
 
@@ -58,15 +59,18 @@ export interface AdminBroadcastListQuery {
   createdBy?: string
   from?: Date
   to?: Date
-  cursor: { createdAt: Date; id: string } | null
+  cursor: KeysetCursor | null
   limit: number
 }
 
 export interface AnnouncementListQuery {
   cleanupId: string
-  cursor: { createdAt: Date; id: string } | null
+  cursor: KeysetCursor | null
   limit: number
 }
+
+/** A listed row plus its keyset instant rendered at microsecond precision, for the next cursor. */
+export type KeysetRow<T> = T & { cursorAt: string }
 
 export interface AudiencePageQuery {
   cleanupId: string
@@ -92,11 +96,12 @@ export interface BroadcastRepository {
 
   findById(broadcastId: string): Promise<BroadcastRecord | null>
   findForEvent(cleanupId: string, broadcastId: string): Promise<BroadcastRecord | null>
-  list(query: BroadcastListQuery): Promise<BroadcastRecord[]>
-  listAnnouncements(query: AnnouncementListQuery): Promise<BroadcastRecord[]>
+  findEventCancellation(cleanupId: string): Promise<BroadcastRecord | null>
+  list(query: BroadcastListQuery): Promise<KeysetRow<BroadcastRecord>[]>
+  listAnnouncements(query: AnnouncementListQuery): Promise<KeysetRow<BroadcastRecord>[]>
   countAnnouncementsSince(cleanupId: string, since: Date): Promise<number>
-  listAdmin(query: AdminBroadcastListQuery): Promise<AdminBroadcastRow[]>
-  listAdminHosts(params: AdminHostListParams): Promise<AdminHostRow[]>
+  listAdmin(query: AdminBroadcastListQuery): Promise<KeysetRow<AdminBroadcastRow>[]>
+  listAdminHosts(params: AdminHostListParams): Promise<KeysetRow<AdminHostRow>[]>
 
   updateDraft(
     cleanupId: string,
@@ -140,7 +145,7 @@ export interface BroadcastRepository {
   suppressRemaining(broadcastId: string, reason: string): Promise<number>
   deliveryCounts(broadcastId: string): Promise<DeliveryCounts>
   refreshCounts(broadcastId: string): Promise<BroadcastRecord | null>
-  listDeliveries(query: DeliveryListQuery): Promise<DeliveryListRow[]>
+  listDeliveries(query: DeliveryListQuery): Promise<KeysetRow<DeliveryListRow>[]>
 
   memberContacts(userIds: readonly string[]): Promise<Map<string, MemberContact>>
   pushPrefs(userIds: readonly string[]): Promise<Map<string, NotificationPrefsRecord>>

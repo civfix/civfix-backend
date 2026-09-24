@@ -11,6 +11,7 @@ export const EXPORT_DOWNLOAD_URL_TTL_SEC = 300
 export const EXPORT_LIST_LIMIT = 50
 export const EXPORT_YIELD_EVERY_ROWS = 1000
 export const EXPORT_RUN_STALE_MS = 10 * 60 * 1000
+export const EXPORT_ABANDON_AFTER_MS = 60 * 60 * 1000
 
 export interface HostExportConfig {
   maxRows: number
@@ -74,10 +75,32 @@ export interface HostExportService {
 export function makeHostExportService(deps: HostExportServiceDeps): HostExportService {
   const now = deps.now ?? (() => new Date())
 
-  function storageKey(exportId: string, at: Date): string {
+  /**
+   * Each run writes its own object: two runs of one export in one month would otherwise share a key,
+   * and a superseded run discarding "its" object would delete the winner's. The export id stays the
+   * last segment because the download filename is read from it.
+   */
+  function storageKey(claimed: HostExportRecord, at: Date): string {
     const year = at.getUTCFullYear()
     const month = String(at.getUTCMonth() + 1).padStart(2, "0")
-    return `exports/host/${year}/${month}/${exportId}.csv`
+    const run = claimed.runToken === null ? "" : `${claimed.runToken}/`
+    return `exports/host/${year}/${month}/${run}${claimed.id}.csv`
+  }
+
+  /** The failed row keeps its key until this succeeds, so the reaper can finish a partial cleanup. */
+  async function discardFailedObject(claimed: HostExportRecord, key: string): Promise<void> {
+    try {
+      await deps.storage.delete(key)
+      await deps.repo.releaseObject(
+        { id: claimed.id, status: "failed", runToken: claimed.runToken },
+        "build_failed",
+      )
+    } catch (err) {
+      deps.logger?.warn(
+        { err, exportId: claimed.id },
+        "host export: failed run could not clean up its object; the reaper will retry",
+      )
+    }
   }
 
   return {
@@ -126,10 +149,11 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
             { err, exportId: claimed.id },
             "host export refused: the requester no longer holds the capability",
           )
-          await deps.repo.markFailed(claimed.id, "forbidden")
+          await deps.repo.markFailed(claimed.id, "forbidden", claimed.runToken)
           return { status: "failed" }
         }
       }
+      let key: string | null = null
       const ctx: HostExportContext = {
         exportId: claimed.id,
         cleanupId: claimed.cleanupId,
@@ -179,7 +203,22 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
           bytes += note.byteLength
         }
 
-        const key = storageKey(claimed.id, at)
+        // A re-claimed row still names the crashed run's object. It is deleted before this run's key
+        // replaces it; if the delete fails the row fails holding that key, so the reaper finishes it.
+        if (claimed.r2Key !== null) await deps.storage.delete(claimed.r2Key)
+        key = storageKey(claimed, at)
+        const owned = await deps.repo.recordObjectKey(claimed.id, {
+          r2Key: key,
+          runToken: claimed.runToken,
+          replaces: claimed.r2Key,
+        })
+        if (!owned) {
+          deps.logger?.warn(
+            { evt: "host.export.superseded", exportId: claimed.id },
+            "host export run superseded by a newer claim before it uploaded",
+          )
+          return { status: "skipped" }
+        }
         await deps.storage.put(key, Buffer.concat(parts), {
           contentType: "text/csv; charset=utf-8",
           contentDisposition: `attachment; filename="${builder.filename(ctx)}"`,
@@ -213,7 +252,8 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
         return { status: "ready" }
       } catch (err) {
         deps.logger?.error({ err, exportId: claimed.id }, "host export failed")
-        await deps.repo.markFailed(claimed.id, "build_failed")
+        await deps.repo.markFailed(claimed.id, "build_failed", claimed.runToken)
+        if (key !== null) await discardFailedObject(claimed, key)
         return { status: "failed" }
       }
     },
@@ -221,6 +261,9 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
     async downloadUrl(record) {
       if (record.status !== "ready" || record.r2Key === null) {
         throw AppError.conflict("That export is not ready to download.")
+      }
+      if (record.expiresAt !== null && record.expiresAt.getTime() <= now().getTime()) {
+        throw AppError.conflict("That export has expired.")
       }
       const url = await deps.storage.presignGet(record.r2Key, EXPORT_DOWNLOAD_URL_TTL_SEC, {
         forceSigned: true,
@@ -250,6 +293,40 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
         }
         await deps.repo.markExpired(record.id)
         reaped += 1
+      }
+      const orphaned = await deps.repo.listOrphaned({
+        staleBefore: new Date(now().getTime() - EXPORT_ABANDON_AFTER_MS),
+        limit,
+      })
+      for (const record of orphaned) {
+        const errorCode = record.status === "queued" ? "not_started" : "build_failed"
+        // Fence first: failing the row under its run token makes a still-live run's markReady miss, so
+        // no ready row can end up naming the object deleted below. The key stays on the failed row
+        // until the delete succeeds.
+        if (
+          record.status !== "failed" &&
+          !(await deps.repo.markFailed(record.id, errorCode, record.runToken))
+        ) {
+          continue
+        }
+        if (record.r2Key === null) {
+          reaped += 1
+          continue
+        }
+        try {
+          await deps.storage.delete(record.r2Key)
+        } catch (err) {
+          deps.logger?.warn(
+            { err, exportId: record.id },
+            "host export reap: orphaned object delete failed; row kept for the next pass",
+          )
+          continue
+        }
+        const released = await deps.repo.releaseObject(
+          { id: record.id, status: "failed", runToken: record.runToken },
+          errorCode,
+        )
+        if (released) reaped += 1
       }
       return { reaped }
     },

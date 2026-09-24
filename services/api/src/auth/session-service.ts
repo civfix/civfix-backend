@@ -58,6 +58,10 @@ interface UserGate {
 
 const REVOKED_STATUSES: ReadonlySet<AccountStatus> = new Set<AccountStatus>(["banned"])
 
+function isMintRefused(status: AccountStatus): boolean {
+  return status === "banned" || status === "suspended"
+}
+
 export interface SessionUserLookup {
   accountStatus(id: string): Promise<AccountStatus>
   findById(id: string): Promise<{ role: Role } | null>
@@ -129,7 +133,7 @@ export class SessionService {
         ? this.users.accountStatus(userId)
         : Promise.resolve(meta.accountStatus ?? "active"),
     ])
-    if (mintStatus === "banned" || mintStatus === "suspended") {
+    if (isMintRefused(mintStatus)) {
       throw AppError.forbidden("This account cannot start a new session.")
     }
     await this.store.insert({
@@ -142,6 +146,10 @@ export class SessionService {
       ip: meta.ip ?? null,
     })
 
+    // A suspension bumps the epoch BEFORE it deletes the user's rows, so an insert that lands after
+    // that delete always observes a moved epoch here; only then is the status re-read.
+    const settled = await this.settleMint(userId, hash, epoch, mintStatus)
+
     await this.writeCache(
       hash,
       {
@@ -149,12 +157,28 @@ export class SessionService {
         roles: [...roles],
         expiresAtMs: expiresAt.getTime(),
         createdAtMs: nowMs,
-        epoch,
-        accountStatus: mintStatus,
+        epoch: settled.epoch,
+        accountStatus: settled.status,
       },
       nowMs,
     )
     return token
+  }
+
+  private async settleMint(
+    userId: string,
+    hash: string,
+    mintEpoch: number,
+    mintStatus: AccountStatus,
+  ): Promise<{ epoch: number; status: AccountStatus }> {
+    const epoch = await this.currentEpoch(userId)
+    if (epoch === mintEpoch || !this.users) return { epoch, status: mintStatus }
+    const status = await this.users.accountStatus(userId)
+    if (isMintRefused(status)) {
+      await this.store.deleteById(hash)
+      throw AppError.forbidden("This account cannot start a new session.")
+    }
+    return { epoch, status }
   }
 
   async resolveSession(token: string): Promise<ResolveResult | null> {
@@ -185,7 +209,7 @@ export class SessionService {
           }
         }
       }
-      await this.cache.del(sessionKey(hash)).catch(() => {})
+      await this.evictSessionCache(hash, "rejected session cache eviction failed")
     }
 
     const row = await this.store.findById(hash)
@@ -324,7 +348,15 @@ export class SessionService {
 
   private async expireSession(hash: string): Promise<void> {
     await this.store.deleteById(hash)
-    await this.cache.del(sessionKey(hash)).catch(() => {})
+    await this.evictSessionCache(hash, "expired session cache eviction failed")
+  }
+
+  // Fail-open on purpose: a projection that failed its checks keeps failing them on every later
+  // read (expiry, epoch and ban are re-checked each time), so a stranded entry never authenticates.
+  private async evictSessionCache(hash: string, msg: string): Promise<void> {
+    await this.cache.del(sessionKey(hash)).catch((err: unknown) => {
+      this.logger?.error({ hash, err }, msg)
+    })
   }
 
   private async maybeSlide(
@@ -377,6 +409,7 @@ export class SessionService {
       }
       return null
     } catch {
+      // A corrupt entry is treated as a cache miss, so the durable row is re-read and re-checked.
       return null
     }
   }

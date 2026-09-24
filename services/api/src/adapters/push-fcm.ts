@@ -7,11 +7,43 @@ const FCM_MULTICAST_MAX = 500
 const PRUNE_CODES = new Set([
   "messaging/registration-token-not-registered",
   "messaging/invalid-registration-token",
-  "messaging/invalid-argument",
 ])
+
+// FCM v1 answers both a malformed token and a bad payload (too large, reserved data key) with
+// INVALID_ARGUMENT, so it only proves a token fault when the same payload reached another token.
+const AMBIGUOUS_INVALID_CODE = "messaging/invalid-argument"
 
 export function isFcmPruneCode(code: string): boolean {
   return PRUNE_CODES.has(code)
+}
+
+type FcmSendResponse = { success: boolean; error?: { code?: string; message?: string } }
+
+export interface FcmSliceVerdict {
+  invalidTokens: string[]
+  payloadRejected: { message: string | undefined } | null
+  failures: { code: string; token: string | undefined }[]
+}
+
+export function classifyFcmResponses(
+  tokens: readonly string[],
+  responses: readonly FcmSendResponse[],
+): FcmSliceVerdict {
+  const payloadAccepted = responses.some((r) => r.success)
+  const verdict: FcmSliceVerdict = { invalidTokens: [], payloadRejected: null, failures: [] }
+  responses.forEach((r, i) => {
+    if (r.success) return
+    const code = r.error?.code ?? ""
+    const token = tokens[i]
+    if (isFcmPruneCode(code) || (code === AMBIGUOUS_INVALID_CODE && payloadAccepted)) {
+      if (token !== undefined) verdict.invalidTokens.push(token)
+    } else if (code === AMBIGUOUS_INVALID_CODE) {
+      verdict.payloadRejected ??= { message: r.error?.message }
+    } else {
+      verdict.failures.push({ code, token })
+    }
+  })
+  return verdict
 }
 
 export function makeFcmDispatcher(
@@ -48,7 +80,7 @@ export function makeFcmDispatcher(
     tokens: string[],
     payload: PushPayload,
     invalidTokens: string[],
-  ): Promise<void> {
+  ): Promise<FcmSliceVerdict["payloadRejected"]> {
     const message = {
       tokens,
       notification: {
@@ -61,31 +93,46 @@ export function makeFcmDispatcher(
       }),
     }
     try {
-      const resp = await messaging.sendEachForMulticast(message)
-      resp.responses.forEach((r: { success: boolean; error?: { code?: string } }, i: number) => {
-        if (r.success) return
-        const code: string = r.error?.code ?? ""
-        if (isFcmPruneCode(code)) {
-          const tok = tokens[i]
-          if (tok !== undefined) invalidTokens.push(tok)
-        } else {
-          const tok = tokens[i]
-          logger.warn(
-            { code, tokenHash: typeof tok === "string" ? hashForLog(tok) : undefined },
-            "push(fcm): delivery failure",
-          )
-        }
-      })
+      const resp = (await messaging.sendEachForMulticast(message)) as {
+        responses: FcmSendResponse[]
+      }
+      const verdict = classifyFcmResponses(tokens, resp.responses)
+      invalidTokens.push(...verdict.invalidTokens)
+      for (const { code, token } of verdict.failures) {
+        logger.warn(
+          { code, tokenHash: typeof token === "string" ? hashForLog(token) : undefined },
+          "push(fcm): delivery failure",
+        )
+      }
+      return verdict.payloadRejected
     } catch (err) {
       logger.error({ err }, "push(fcm): send threw")
+      return null
     }
   }
 
   const dispatch: PlatformDispatcher = async (tokens, payload) => {
     const messaging = await getMessaging()
     const invalidTokens: string[] = []
+    let payloadRejection: FcmSliceVerdict["payloadRejected"] = null
+    let rejectedSlices = 0
     for (let i = 0; i < tokens.length; i += FCM_MULTICAST_MAX) {
-      await dispatchSlice(messaging, tokens.slice(i, i + FCM_MULTICAST_MAX), payload, invalidTokens)
+      const rejection = await dispatchSlice(
+        messaging,
+        tokens.slice(i, i + FCM_MULTICAST_MAX),
+        payload,
+        invalidTokens,
+      )
+      if (rejection !== null) {
+        rejectedSlices += 1
+        payloadRejection ??= rejection
+      }
+    }
+    if (payloadRejection !== null) {
+      logger.warn(
+        { code: AMBIGUOUS_INVALID_CODE, detail: payloadRejection.message, rejectedSlices },
+        "push(fcm): payload rejected for every token in a batch; no tokens pruned",
+      )
     }
     return { invalidTokens }
   }

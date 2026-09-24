@@ -103,8 +103,32 @@ export const ALLOWED_VIDEO_CODECS: ReadonlySet<string> = new Set(["h264", "hevc"
 
 const ONE_MB = 1024 * 1024
 
+const IMAGE_LANE_SPAWN_OVERHEAD_MS = 5_000
+
+// The child bounds metadata, strip + thumbnail, and the perceptual hash by imageTimeoutMs EACH and runs them
+// in sequence, so killing it at a single imageTimeoutMs rejected (and deleted) slow but legitimate photos.
+const IMAGE_LANE_TIMED_PHASES = 3
+
+export function imageLaneTimeoutMs(limits: Pick<WorkerLimits, "imageTimeoutMs">): number {
+  return IMAGE_LANE_TIMED_PHASES * limits.imageTimeoutMs + IMAGE_LANE_SPAWN_OVERHEAD_MS
+}
+
+// The lane must be killed inside the processing phase's job budget: a lane still running when that budget
+// fires surfaces as a JobTimeoutError, which media.checks retries as infra instead of rejecting the bytes,
+// so a slow hostile image would be retried rather than refused.
+function assertImageLaneFitsJobBudget(limits: WorkerLimits): void {
+  const laneMs = imageLaneTimeoutMs(limits)
+  if (laneMs < limits.jobTimeoutMs) return
+  throw new Error(
+    `media-worker: MEDIA_IMAGE_TIMEOUT_MS=${limits.imageTimeoutMs} gives an image lane budget of ` +
+      `${laneMs}ms (${IMAGE_LANE_TIMED_PHASES} phases + ${IMAGE_LANE_SPAWN_OVERHEAD_MS}ms spawn overhead), ` +
+      `which must stay below MEDIA_JOB_TIMEOUT_MS=${limits.jobTimeoutMs}. Lower the image timeout or ` +
+      "raise the job timeout.",
+  )
+}
+
 export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimits {
-  return {
+  const limits: WorkerLimits = {
     maxDownloadBytes: parsePosInt(source.MEDIA_MAX_DOWNLOAD_BYTES, MAX_VIDEO_BYTES),
     maxImagePixels: parsePosInt(source.MEDIA_MAX_IMAGE_PIXELS, 24_000_000),
     sharpPixelLimit: parsePosInt(source.MEDIA_SHARP_PIXEL_LIMIT, 32_000_000),
@@ -133,6 +157,8 @@ export function loadLimits(source: NodeJS.ProcessEnv = process.env): WorkerLimit
     stuckSweepBatch: parsePosInt(source.MEDIA_STUCK_SWEEP_BATCH, 500),
     stuckSweepMaxAttempts: parsePosInt(source.MEDIA_STUCK_SWEEP_MAX_ATTEMPTS, 5),
   }
+  assertImageLaneFitsJobBudget(limits)
+  return limits
 }
 
 function clampUnit(raw: string | undefined, fallback: number): number {

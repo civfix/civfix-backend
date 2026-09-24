@@ -184,6 +184,31 @@ describe.skipIf(!pg)("admin report repository (integration: real schema)", () =>
     expect(routing?.routed).toBe(true)
   })
 
+  it("getRouting skips a bounced per-category contact and a bounced legacy address", async () => {
+    const id = await insertReport(h, { category: "hazard" })
+    await h.sql`UPDATE jurisdictions SET contact_emails = ARRAY['dead@lacity.gov', 'live@lacity.gov'], contact_updated_at = NULL WHERE geoid = ${GEOID}`
+    const threads = await h.sql<{ id: string }[]>`
+      INSERT INTO mail_threads (thread_token, jurisdiction_geoid, subject, status, report_id)
+      VALUES (${`bounce-${Math.random().toString(36).slice(2, 14)}`}, ${GEOID}, 'S', 'bounced', ${id})
+      RETURNING id
+    `
+    const threadId = threads[0]!.id
+    await h.sql`
+      INSERT INTO mail_events (thread_id, type, meta)
+      VALUES (${threadId}, 'bounced', ${h.sql.json({ failedRecipient: "DEAD@lacity.gov" })})
+    `
+    expect((await repo.getRouting(id))?.contact).toBe("live@lacity.gov")
+
+    await h.sql`INSERT INTO jurisdiction_contacts (geoid, category, email, bounced_at) VALUES (${GEOID}, 'hazard', 'hazard@lacity.gov', now())`
+    expect((await repo.getRouting(id))?.contact).toBe("live@lacity.gov")
+
+    await h.sql`UPDATE jurisdictions SET contact_emails = ARRAY['dead@lacity.gov'] WHERE geoid = ${GEOID}`
+    expect(await repo.getRouting(id)).toMatchObject({ contact: null, routed: false })
+
+    await h.sql`DELETE FROM mail_events WHERE thread_id = ${threadId}`
+    await h.sql`DELETE FROM mail_threads WHERE id = ${threadId}`
+  })
+
   it("setStatus writes report_timeline + an audit row", async () => {
     const id = await insertReport(h, { status: "submitted" })
     const ok = await repo.setStatus(id, { status: "in_progress", note: "moving", actorId: null })

@@ -247,6 +247,25 @@ function resolveAuthServices(
   return undefined
 }
 
+export async function startBackgroundJobs(app: FastifyInstance, env: Env): Promise<void> {
+  const startableJobs = app.container.jobs as { start?: () => Promise<void> }
+  if (typeof startableJobs.start !== "function" || !env.DATABASE_URL) return
+  await startableJobs.start()
+  app.log.info("jobs: queue started")
+
+  await registerOutreachJobs(app.container, app.log)
+  await registerInboundJobs(app.container)
+  await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
+  await registerDiscoveryJobs(app.container)
+  if (env.REPORT_AUTOFORWARD_ENABLED) await registerAutoForwardJobs(app.container, app.log)
+  await registerDataExportJobs(app.container, { logger: app.log })
+  await registerCleanupCancelFanoutJob(app.container, app.log)
+  await registerGuestJobs(app.container, app.log)
+  await registerChatRoomFanoutJob(app.container, app.log)
+  await registerRegistrationJobs(app.container, app.log)
+  await registerCommsJobs(app.container, app.log)
+}
+
 export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
   await initErrorReporting({
     ...(env.GLITCHTIP_DSN !== undefined ? { dsn: env.GLITCHTIP_DSN } : {}),
@@ -255,24 +274,7 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
   })
 
   const app = await buildServer({ env })
-
-  const startableJobs = app.container.jobs as { start?: () => Promise<void> }
-  if (typeof startableJobs.start === "function" && env.DATABASE_URL) {
-    await startableJobs.start()
-    app.log.info("jobs: queue started")
-
-    await registerOutreachJobs(app.container)
-    await registerInboundJobs(app.container)
-    await app.container.jobs.enqueue(INBOUND_SWEEP_JOB, {})
-    await registerDiscoveryJobs(app.container)
-    if (env.REPORT_AUTOFORWARD_ENABLED) await registerAutoForwardJobs(app.container, app.log)
-    await registerDataExportJobs(app.container, { logger: app.log })
-    await registerCleanupCancelFanoutJob(app.container, app.log)
-    await registerGuestJobs(app.container, app.log)
-    await registerChatRoomFanoutJob(app.container, app.log)
-    await registerRegistrationJobs(app.container, app.log)
-    await registerCommsJobs(app.container, app.log)
-  }
+  await startBackgroundJobs(app, env)
 
   const shutdown = makeShutdown(app, {
     drainMs: env.SHUTDOWN_DRAIN_MS,

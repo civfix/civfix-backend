@@ -199,6 +199,8 @@ export interface CertificateServiceDeps {
   /** The ledger read lives on the volunteer-hours repo; this service owns only the certificate rows. */
   hours: Pick<VolunteerHoursRepository, "entriesForCertificate">
   storage: CertificateStorage
+  /** Printed and QR-encoded on every document; the deployment's own web origin, so staging never points at production. */
+  verifyBaseUrl?: string
   now?: () => Date
   newId?: () => string
   /** Injected in tests to force the code-collision retry. */
@@ -365,6 +367,7 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
         code: existing.code,
         issuedAt: existing.issuedAt,
         fingerprint,
+        ...(deps.verifyBaseUrl !== undefined ? { verifyBaseUrl: deps.verifyBaseUrl } : {}),
       })
       const documentSha256 = sha256Hex(bytes)
       await storage.put(existing.r2Key, bytes, {
@@ -398,7 +401,13 @@ export function makeCertificateService(deps: CertificateServiceDeps): Certificat
       // The code is PRINTED on the document, so a re-mint must re-render. The key is derived from the
       // row id, which does not change across attempts, so the re-put overwrites rather than orphaning.
       const code = mintCode()
-      const bytes = await buildServiceHoursPdf({ model, code, issuedAt: at, fingerprint })
+      const bytes = await buildServiceHoursPdf({
+        model,
+        code,
+        issuedAt: at,
+        fingerprint,
+        ...(deps.verifyBaseUrl !== undefined ? { verifyBaseUrl: deps.verifyBaseUrl } : {}),
+      })
       const documentSha256 = sha256Hex(bytes)
       await storage.put(r2Key, bytes, {
         contentType: "application/pdf",

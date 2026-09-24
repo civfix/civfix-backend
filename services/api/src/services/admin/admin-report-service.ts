@@ -265,6 +265,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
     ): Promise<boolean> {
       const flagged = await deps.repo.toggleFlag(id, input)
       if (flagged === null) throw AppError.notFound("Report not found")
+      // The toggle is committed; failing the request would invite a retry, and a retried toggle unflags.
       try {
         const record = await deps.repo.getReport(id)
         if (record) {
@@ -275,8 +276,8 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
             note: flagged ? "Flagged for review" : "Flag cleared",
           })
         }
-      } catch {
-        void 0
+      } catch (err) {
+        deps.logger?.warn({ err, reportId: id }, "report flag chat mirror failed")
       }
       return flagged
     },
@@ -315,17 +316,18 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         if (notifications === undefined) {
           throw AppError.internal("Reporter notifications are not wired on this instance")
         }
-        await notifications.createNotification(reporterId, {
-          type: "report_update",
-          title: "Update on your report",
-          body: input.body,
-          link: `/reports/${id}`,
-        })
+        // Audit before the citizen is messaged, so no operator message ever reaches a reporter unrecorded.
         await recordFollowup(deps, id, {
           note: "Follow-up sent to the reporter",
           actorId: input.actorId,
           to: "reporter",
           destination: reporterId,
+        })
+        await notifications.createNotification(reporterId, {
+          type: "report_update",
+          title: "Update on your report",
+          body: input.body,
+          link: `/reports/${id}`,
         })
         await emitTimeline({
           reportId: id,
@@ -458,14 +460,14 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
       verdict: "approved" | "rejected"
       actorId: string | null
     }): Promise<void> {
+      const note =
+        input.verdict === "approved" ? "Approved by an operator" : "Rejected by an operator"
       const ok = await deps.repo.setReportVerdict(input.id, {
         verdict: input.verdict,
         actorId: input.actorId,
+        note,
       })
       if (!ok) throw AppError.notFound("Report not found")
-      const note =
-        input.verdict === "approved" ? "Approved by an operator" : "Rejected by an operator"
-      await deps.repo.appendSystemTimeline(input.id, { note, kind: "status" })
       const record = await deps.repo.getReport(input.id)
       await emitTimeline({
         reportId: input.id,

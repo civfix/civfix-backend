@@ -1,7 +1,17 @@
 import { AppError, IdSchema, type AdminOkResponse } from "@civfix/shared"
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
+import type { FastifyBaseLogger, FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import type { ZodTypeAny, z } from "zod"
 import { parse } from "../_validate.js"
+import type { Container } from "../../di.js"
+import { broadcastMessageUpdate } from "../../ws/gateway.js"
+import { makeDrizzleChatRepository } from "../../services/chat-repository.drizzle.js"
+import { makeDrizzleDmRepository } from "../../services/dm-repository.drizzle.js"
+import { makePrivateMediaPresigner } from "../../services/media-presign.js"
+import { findMessageRoom } from "../../services/admin/admin-report-chat-repository.drizzle.js"
+import {
+  makeMessageUpdateAnnouncer,
+  type MessageUpdateAnnouncer,
+} from "../../services/admin/admin-report-chat-service.js"
 
 export { parse }
 
@@ -81,6 +91,39 @@ export function overridableService<K extends keyof FastifyInstance, S>(
       ? fromContainer()
       : fromOverrides(overrides as NonNullable<FastifyInstance[K]>)
   }
+}
+
+/**
+ * The container-backed announcer for operator message removals and restores. The message is re-read
+ * through the room's around-history window, the one read path that returns a tombstoned target, so the
+ * frame carries exactly what a member's own delete would broadcast.
+ */
+export function makeContainerMessageUpdateAnnouncer(
+  container: Container,
+  logger: FastifyBaseLogger,
+): MessageUpdateAnnouncer {
+  const sql = container.getDb().sql
+  const presign = makePrivateMediaPresigner(container.storage)
+  const chatRepo = makeDrizzleChatRepository(sql, presign)
+  const dmRepo = makeDrizzleDmRepository(sql, presign)
+  const TARGET_ONLY = 1
+  return makeMessageUpdateAnnouncer({
+    findRoom: (messageId) => findMessageRoom(sql, messageId),
+    loadMessage: async (kind, roomId, messageId) => {
+      const page =
+        kind === "dm"
+          ? await dmRepo.history(roomId, undefined, TARGET_ONLY, null, messageId)
+          : kind === "report"
+            ? await chatRepo.reportHistory(roomId, undefined, TARGET_ONLY, null, messageId)
+            : kind === "group"
+              ? await chatRepo.groupHistory(roomId, undefined, TARGET_ONLY, null, messageId)
+              : await chatRepo.history(roomId, undefined, TARGET_ONLY, null, messageId)
+      return page.items.find((m) => m.id === messageId) ?? null
+    },
+    broadcast: (kind, roomId, message) =>
+      broadcastMessageUpdate(container.chatService, kind, roomId, message),
+    logger,
+  })
 }
 
 /**

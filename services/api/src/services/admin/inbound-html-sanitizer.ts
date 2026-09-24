@@ -283,8 +283,9 @@ function sanitizeAttributes(tag: string, raw: string): string {
     }
     if (!allowed.has(name) || seen.has(name)) continue
     seen.add(name)
-    const value = decodeEntities(rawValue)
-    if (name === "href" && !SAFE_URL_RE.test(value.trim())) continue
+    const decoded = decodeEntities(rawValue)
+    const value = name === "href" ? normalizeUrlAttr(decoded) : decoded
+    if (name === "href" && !SAFE_URL_RE.test(value)) continue
     out.push(`${name}="${escapeAttr(value)}"`)
   }
   return out.length > 0 ? ` ${out.join(" ")}` : ""
@@ -296,18 +297,47 @@ function skipSpace(raw: string, from: number): number {
   return i
 }
 
+// Browsers remove tab/newline anywhere in a URL and trim C0 controls and spaces at either end. The scheme
+// is judged on exactly that cleaned value, which is also the href emitted, so the browser reads the same
+// scheme the check saw: "java\tscript:" is refused, and "h ttp:x" (a relative link to a browser) is too.
+const URL_TAB_NEWLINE_RE = /[\t\n\r]/g
+// A trailing run can only start its match at the run's first character; without the lookbehind every
+// character of an interior run rescans the rest of it, which is quadratic on a crafted href.
+// eslint-disable-next-line no-control-regex
+const URL_EDGE_NOISE_RE = /^[\u0000-\u0020]+|(?<![\u0000-\u0020])[\u0000-\u0020]+$/g
+
+// eslint-disable-next-line no-control-regex
+const ATTR_CONTROL_CHARS_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g
+
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  quot: '"',
+  apos: "'",
+  lt: "<",
+  gt: ">",
+  nbsp: "\u00a0",
+  tab: "\t",
+  newline: "\n",
+}
+
+const ENTITY_RE = /&(?:#x([0-9a-f]+);?|#(\d+);?|(amp|quot|apos|lt|gt|nbsp|tab|newline);)/gi
+
+function normalizeUrlAttr(value: string): string {
+  return value.replace(URL_TAB_NEWLINE_RE, "").replace(URL_EDGE_NOISE_RE, "")
+}
+
+// One pass, so a decoded "&" can never start a second entity ("&amp;quot;" stays the text "&quot;").
 function decodeEntities(value: string): string {
-  return (
-    value
-      .replace(/&#x([0-9a-f]+);?/gi, (_m, hex: string) =>
-        safeFromCodePoint(Number.parseInt(hex, 16)),
-      )
-      .replace(/&#(\d+);?/g, (_m, dec: string) => safeFromCodePoint(Number.parseInt(dec, 10)))
-      .replace(/&(?:tab|newline);/gi, "")
-      .replace(/&amp;/gi, "&")
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\u0000-\u0020]/g, "")
-  )
+  return value
+    .replace(
+      ENTITY_RE,
+      (_m, hex: string | undefined, dec: string | undefined, named: string | undefined) => {
+        if (hex !== undefined) return safeFromCodePoint(Number.parseInt(hex, 16))
+        if (dec !== undefined) return safeFromCodePoint(Number.parseInt(dec, 10))
+        return NAMED_ENTITIES[(named ?? "").toLowerCase()] ?? ""
+      },
+    )
+    .replace(ATTR_CONTROL_CHARS_RE, "")
 }
 
 function safeFromCodePoint(code: number): string {

@@ -15,6 +15,9 @@ export function canManageOrgMembers(role: OrganizationMemberRole | null): boolea
   return role !== null && can({ eventRole: null, orgRole: role }, "manage_org_members")
 }
 
+export const ORG_INVITE_CAP_MESSAGE =
+  "This organization already has the maximum number of open invitations."
+
 /**
  * A role change that takes away the power to invite withdraws the invites already sent with it, so
  * they stop showing up as open in the inviter's org and the invitee's inbox.

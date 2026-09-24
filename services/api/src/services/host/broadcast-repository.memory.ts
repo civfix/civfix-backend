@@ -10,10 +10,12 @@ import type {
   BroadcastRepository,
   DeliveryListQuery,
   DeliveryListRow,
+  KeysetRow,
 } from "./broadcast-repository.js"
 import { DEFAULT_PREFS } from "../notification-helpers.js"
 import type { NotificationPrefsRecord } from "../notification-service.js"
 import type { WriteAuditInput } from "../admin/audit.js"
+import type { KeysetCursor } from "../../db/cursor-helpers.js"
 import type {
   AdminBroadcastRow,
   AdminHostListParams,
@@ -79,6 +81,26 @@ export interface MemoryGuest {
   name?: string
 }
 
+interface Keyed {
+  createdAt: Date
+  id: string
+}
+
+function isBeforeCursor(row: Keyed, cursor: KeysetCursor | null): boolean {
+  if (cursor === null) return true
+  const at = row.createdAt.getTime()
+  const cursorAt = cursor.at.getTime()
+  return at < cursorAt || (at === cursorAt && row.id < cursor.id)
+}
+
+function newestFirst(a: Keyed, b: Keyed): number {
+  return b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : -1)
+}
+
+function withCursorAt<T extends Keyed>(row: T): KeysetRow<T> {
+  return { ...row, cursorAt: row.createdAt.toISOString() }
+}
+
 export class InMemoryBroadcastRepository implements BroadcastRepository {
   private readonly broadcasts = new Map<string, BroadcastRecord>()
   private readonly deliveries = new Map<string, DeliveryRow>()
@@ -89,6 +111,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   private readonly guests = new Map<string, MemoryGuest[]>()
   private readonly events = new Map<string, EventBroadcastContext>()
   private readonly hosts = new Map<string, HostMessagingState>()
+  private readonly deletedHosts = new Set<string>()
   private dueReminders: DueReminder[] = []
   readonly audits: WriteAuditInput[] = []
 
@@ -116,6 +139,11 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
       emailVerified: state.emailVerified ?? true,
       accountCreatedAt: state.accountCreatedAt ?? new Date(0),
     })
+  }
+
+  /** Mirrors a soft-deleted users row: the SQL reads and upserts filter `deleted_at IS NULL`. */
+  softDeleteHost(userId: string): void {
+    this.deletedHosts.add(userId)
   }
 
   seedMembers(cleanupId: string, rows: readonly MemoryMember[]): void {
@@ -170,7 +198,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
       replyTo: input.replyTo ?? null,
       scheduledAt: input.scheduledAt ?? null,
       plannedAt: null,
-      startedAt: null,
+      startedAt: input.startedAt ?? null,
       finishedAt: null,
       chunkSize: input.chunkSize ?? 200,
       chunkCount: 0,
@@ -201,12 +229,11 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   }
 
   async createIfAbsent(input: BroadcastCreateInput): Promise<BroadcastRecord | null> {
-    const exists = [...this.broadcasts.values()].some(
-      (b) =>
-        b.cleanupId === input.cleanupId &&
-        b.kind === input.kind &&
-        b.reminderOffsetMin === (input.reminderOffsetMin ?? null),
-    )
+    const exists = [...this.broadcasts.values()].some((b) => {
+      if (b.cleanupId !== input.cleanupId || b.kind !== input.kind) return false
+      if (input.kind === "event_cancelled") return true
+      return input.kind === "reminder" && b.reminderOffsetMin === (input.reminderOffsetMin ?? null)
+    })
     if (exists) return null
     return this.create(input)
   }
@@ -220,27 +247,30 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     return Promise.resolve(found && found.cleanupId === cleanupId ? found : null)
   }
 
-  list(query: BroadcastListQuery): Promise<BroadcastRecord[]> {
+  findEventCancellation(cleanupId: string): Promise<BroadcastRecord | null> {
+    const found = [...this.broadcasts.values()].find(
+      (b) => b.cleanupId === cleanupId && b.kind === "event_cancelled",
+    )
+    return Promise.resolve(found ?? null)
+  }
+
+  list(query: BroadcastListQuery): Promise<KeysetRow<BroadcastRecord>[]> {
     const rows = [...this.broadcasts.values()]
       .filter((b) => b.cleanupId === query.cleanupId)
       .filter((b) => query.status === undefined || b.status === query.status)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-    return Promise.resolve(rows.slice(0, query.limit))
+      .filter((b) => isBeforeCursor(b, query.cursor))
+      .sort(newestFirst)
+    return Promise.resolve(rows.slice(0, query.limit).map(withCursorAt))
   }
 
-  listAnnouncements(query: AnnouncementListQuery): Promise<BroadcastRecord[]> {
+  listAnnouncements(query: AnnouncementListQuery): Promise<KeysetRow<BroadcastRecord>[]> {
     const rows = [...this.broadcasts.values()]
       .filter((b) => b.cleanupId === query.cleanupId)
       .filter((b) => b.kind === ANNOUNCEMENT_BROADCAST_KIND)
       .filter((b) => ANNOUNCEMENT_VISIBLE_STATUSES.includes(b.status))
-      .filter(
-        (b) =>
-          query.cursor === null ||
-          b.createdAt.getTime() < query.cursor.createdAt.getTime() ||
-          (b.createdAt.getTime() === query.cursor.createdAt.getTime() && b.id < query.cursor.id),
-      )
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : -1))
-    return Promise.resolve(rows.slice(0, query.limit))
+      .filter((b) => isBeforeCursor(b, query.cursor))
+      .sort(newestFirst)
+    return Promise.resolve(rows.slice(0, query.limit).map(withCursorAt))
   }
 
   countAnnouncementsSince(cleanupId: string, since: Date): Promise<number> {
@@ -254,7 +284,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     return Promise.resolve(rows.length)
   }
 
-  listAdmin(query: AdminBroadcastListQuery): Promise<AdminBroadcastRow[]> {
+  listAdmin(query: AdminBroadcastListQuery): Promise<KeysetRow<AdminBroadcastRow>[]> {
     const rows = [...this.broadcasts.values()]
       .filter((b) => query.status === undefined || b.status === query.status)
       .filter((b) => query.kind === undefined || b.kind === query.kind)
@@ -262,10 +292,11 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
       .filter((b) => query.createdBy === undefined || b.createdBy === query.createdBy)
       .filter((b) => query.from === undefined || b.createdAt >= query.from)
       .filter((b) => query.to === undefined || b.createdAt <= query.to)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .filter((b) => isBeforeCursor(b, query.cursor))
+      .sort(newestFirst)
       .slice(0, query.limit)
       .map((b) => ({
-        ...b,
+        ...withCursorAt(b),
         eventTitle: this.events.get(b.cleanupId)?.title ?? null,
         createdByName: null,
         createdByHandle: null,
@@ -274,7 +305,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     return Promise.resolve(rows)
   }
 
-  listAdminHosts(params: AdminHostListParams): Promise<AdminHostRow[]> {
+  listAdminHosts(params: AdminHostListParams): Promise<KeysetRow<AdminHostRow>[]> {
     const byUser = new Map<string, AdminHostRow>()
     const blank = (userId: string): AdminHostRow => ({
       userId,
@@ -294,7 +325,6 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
       suppressedCount: 0,
       eventsMessaged: 0,
       lastBroadcastAt: null,
-      sortAt: new Date(0),
     })
     for (const b of this.broadcasts.values()) {
       if (b.createdBy === null || b.createdAt < params.windowStart) continue
@@ -306,7 +336,6 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
       row.suppressedCount += b.suppressedCount
       if (row.lastBroadcastAt === null || b.createdAt > row.lastBroadcastAt) {
         row.lastBroadcastAt = b.createdAt
-        row.sortAt = b.createdAt
       }
       byUser.set(b.createdBy, row)
     }
@@ -315,8 +344,11 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     }
     const rows = [...byUser.values()]
       .filter((r) => params.suspended === undefined || r.messagingSuspended === params.suspended)
-      .sort((a, b) => b.sortAt.getTime() - a.sortAt.getTime())
+      .map((r) => ({ row: r, createdAt: r.lastBroadcastAt ?? new Date(0), id: r.userId }))
+      .filter((keyed) => isBeforeCursor(keyed, params.cursor))
+      .sort(newestFirst)
       .slice(0, params.limit)
+      .map((keyed) => ({ ...keyed.row, cursorAt: keyed.createdAt.toISOString() }))
     return Promise.resolve(rows)
   }
 
@@ -574,12 +606,13 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     return next
   }
 
-  listDeliveries(query: DeliveryListQuery): Promise<DeliveryListRow[]> {
+  listDeliveries(query: DeliveryListQuery): Promise<KeysetRow<DeliveryListRow>[]> {
     const rows = [...this.deliveries.values()]
       .filter((d) => d.broadcastId === query.broadcastId)
       .filter((d) => query.status === undefined || d.status === query.status)
       .filter((d) => query.channel === undefined || d.channel === query.channel)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .filter((d) => isBeforeCursor(d, query.cursor))
+      .sort(newestFirst)
       .slice(0, query.limit)
       .map((d) => ({
         id: d.id,
@@ -591,6 +624,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
         attempts: d.attempts,
         sentAt: d.sentAt,
         createdAt: d.createdAt,
+        cursorAt: d.createdAt.toISOString(),
       }))
     return Promise.resolve(rows)
   }
@@ -671,6 +705,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   }
 
   hostMessagingState(userId: string): Promise<HostMessagingState | null> {
+    if (this.deletedHosts.has(userId)) return Promise.resolve(null)
     return Promise.resolve(this.hosts.get(userId) ?? null)
   }
 
@@ -679,10 +714,10 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     suspended: boolean,
     audit: WriteAuditInput,
   ): Promise<boolean> {
-    // A seeded host stands in for a users row: the Postgres upsert selects from users, so an
-    // unknown id changes nothing and writes no audit row.
+    // A seeded host stands in for a users row: the Postgres upsert selects from live users, so an
+    // unknown or soft-deleted id changes nothing and writes no audit row.
     const existing = this.hosts.get(userId)
-    if (existing === undefined) return Promise.resolve(false)
+    if (existing === undefined || this.deletedHosts.has(userId)) return Promise.resolve(false)
     this.hosts.set(userId, { ...existing, suspended })
     this.audits.push(audit)
     return Promise.resolve(true)

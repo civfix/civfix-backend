@@ -175,6 +175,7 @@ export function makeContainerRegistrationServices(
     registrations,
     tickets: makeTicketTypeService({
       repo,
+      jobs: container.jobs,
       counters,
       insightsInvalidator,
       ...(overrides?.now !== undefined ? { now: overrides.now } : {}),

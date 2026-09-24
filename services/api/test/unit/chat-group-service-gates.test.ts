@@ -71,6 +71,7 @@ function fakeRepo(opts: FakeOpts = {}): FakeRepo {
     removeMember: () => Promise.resolve(true),
     banMember,
     isBanned: (_g: string, userId: string) => Promise.resolve(bannedSet.has(userId)),
+    joinUnlessBanned: (_g: string, userId: string) => Promise.resolve(!bannedSet.has(userId)),
     bannedSet,
     listMembers: () => Promise.resolve({ members: [], nextCursor: null }),
   } as unknown as FakeRepo

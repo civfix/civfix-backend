@@ -32,6 +32,7 @@ import type {
   JoinWaitlistOutcome,
   PageRecord,
   PublicPageRecord,
+  PublishPageOutcome,
   QuestionRecord,
   RegisterTxArgs,
   RegisterTxOutcome,
@@ -411,8 +412,21 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       waitlistId: null,
       now: args.now,
     })
-    if (outcome.kind !== "registered") this.guests.delete(guestId)
-    return outcome
+    if (outcome.kind !== "registered") {
+      this.guests.delete(guestId)
+      return outcome
+    }
+    const checkIn = args.checkIn
+    if (checkIn === undefined || checkIn === null) return outcome
+    const registration = this.registrations.get(outcome.registration.id)
+    if (registration === undefined) return outcome
+    for (const seat of registration.seats) {
+      if (seat.status !== "active" || seat.checkedInAt !== null) continue
+      seat.checkedInAt = args.now
+      seat.checkedInBy = checkIn.actorId
+      seat.checkinMethod = checkIn.method
+    }
+    return { kind: "registered", registration: this.toRecord(registration) }
   }
 
   ensureSignupRegistration(args: {
@@ -509,13 +523,6 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     const event = this.events.get(args.cleanupId)
     if (event === undefined) return { kind: "not_found" }
     if (guestSelfRegistrationOnPrivateEvent(args, event.visibility)) return { kind: "not_found" }
-    if (event.status === "cancelled") return { kind: "closed" }
-    if (!withinWindow(args.now, event.registrationOpensAt, event.registrationClosesAt)) {
-      return { kind: "registration_closed" }
-    }
-    if (args.subject.kind === "user" && this.isBanned(args.cleanupId, args.subject.userId)) {
-      return { kind: "banned" }
-    }
 
     const owner =
       args.idempotencyOwner ??
@@ -530,6 +537,14 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
         kind: "replayed",
         registration: existing === undefined ? null : this.toRecord(existing),
       }
+    }
+
+    if (event.status === "cancelled") return { kind: "closed" }
+    if (!withinWindow(args.now, event.registrationOpensAt, event.registrationClosesAt)) {
+      return { kind: "registration_closed" }
+    }
+    if (args.subject.kind === "user" && this.isBanned(args.cleanupId, args.subject.userId)) {
+      return { kind: "banned" }
     }
 
     const active = [...this.registrations.values()].find(
@@ -888,6 +903,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     if (target.capacity !== null && target.reservedSeats + record.partySize > target.capacity) {
       return { kind: "full" }
     }
+    const previousTicketTypeId = record.ticketTypeId
     target.reservedSeats += record.partySize
     if (record.ticketTypeId !== null) {
       const previous = this.ticketTypes.get(record.ticketTypeId)
@@ -899,11 +915,17 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     record.ticketTypeId = target.id
     record.source = "transfer"
     this.recomputeSold(target.id)
-    return { kind: "transferred", registration: this.toRecord(record) }
+    return { kind: "transferred", registration: this.toRecord(record), previousTicketTypeId }
   }
 
   private isBanned(cleanupId: string, userId: string): boolean {
     return this.bans.has(`${cleanupId}:${userId}`)
+  }
+
+  private eventStillLive(cleanupId: string, now: Date): boolean {
+    const event = this.events.get(cleanupId)
+    if (event === undefined || event.status === "cancelled") return false
+    return !hasEventEnded(eventWindowOf(event), now.getTime())
   }
 
   private entryBanned(entry: WaitlistRecord): boolean {
@@ -1073,6 +1095,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     const candidates = [...this.waitlist.values()]
       .filter((w) => w.ticketTypeId === args.ticketTypeId && w.status === "waiting")
       .filter((w) => w.userId === null || !this.isBanned(w.cleanupId, w.userId))
+      .filter((w) => this.eventStillLive(w.cleanupId, args.now))
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
     const candidate = candidates[0]
     if (candidate === undefined) return null
@@ -1108,6 +1131,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     if (candidate.userId !== null && this.isBanned(candidate.cleanupId, candidate.userId)) {
       return null
     }
+    if (!this.eventStillLive(candidate.cleanupId, args.now)) return null
     const type = this.ticketTypes.get(candidate.ticketTypeId)
     if (type === undefined) return null
     if (type.capacity !== null && type.reservedSeats + candidate.partySize > type.capacity) {
@@ -1162,6 +1186,14 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     }
     if (args.subject !== null && !subjectMatches(entry, args.subject)) return { kind: "not_found" }
     if (entry.partySize !== args.seats.slice(0, entry.partySize).length) {
+      return { kind: "not_offered" }
+    }
+
+    const event = this.events.get(args.cleanupId)
+    if (event !== undefined && hasEventEnded(eventWindowOf(event), args.now.getTime())) {
+      entry.status = "expired"
+      const type = this.ticketTypes.get(entry.ticketTypeId)
+      if (type !== undefined) type.reservedSeats = Math.max(type.reservedSeats - entry.partySize, 0)
       return { kind: "not_offered" }
     }
 
@@ -1426,13 +1458,14 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     published: boolean
     actorId: string
     now: Date
-  }): Promise<PageRecord | null> {
+  }): Promise<PublishPageOutcome> {
     const current = this.pages.get(args.cleanupId)
-    if (current === undefined) return null
+    if (current === undefined) return { kind: "not_found" }
+    if (args.published && current.flaggedAt !== null) return { kind: "flagged" }
     current.status = args.published ? "published" : "unpublished"
     if (args.published) current.publishedAt = args.now
     current.updatedAt = args.now
-    return { ...current }
+    return { kind: "published", record: { ...current } }
   }
 
   readonly mediaKeys = new Map<string, string>()

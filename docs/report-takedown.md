@@ -63,12 +63,12 @@ resolving after the takedown for anyone who already holds it.
 
 ## Offline / no-DB behavior
 
-The ownership check is DB-gated: with no `DATABASE_URL` (all-fakes boot) it
-returns `false` without querying, so the route degrades to the ordinary
-user-report path (the request is still filed, just not flagged as an owner
-takedown). It does not swallow errors: a failing ownership query fails the
-request, and nothing is filed. The audit write only runs when ownership was
-confirmed, which implies a real DB is present.
+`reportOwnedBy` is DB-gated: with no `DATABASE_URL` (all-fakes boot) it returns
+`false`, so the route degrades to the ordinary user-report path (the request is
+still filed, just not flagged as an owner takedown). A query error is not caught:
+it propagates and the request fails with 500 (not filed), so a transient DB error
+never downgrades an owner takedown to a third-party report. The audit write only
+runs when ownership was confirmed, which implies a real DB is present.
 
 ## What this does NOT do (product/counsel DECISIONS)
 

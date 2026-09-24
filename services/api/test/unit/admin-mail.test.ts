@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import type { InsertMessageInput } from "../../src/services/admin/mail-repository.js"
+import { ROUTE_CLAIM_STALE_SECONDS } from "../../src/services/admin/outbound-send-policy.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 import {
   makeMailService,
@@ -26,6 +28,14 @@ function harness(): Harness {
   })
   const svc = makeMailService({ repo, outboundMail })
   return { repo, mailer, svc }
+}
+
+async function seedDeliveredOut(
+  repo: InMemoryMailRepository,
+  input: Omit<InsertMessageInput, "direction">,
+): Promise<void> {
+  const out = await repo.insertMessage({ ...input, direction: "out" })
+  await repo.recordEvent({ threadId: input.threadId, messageId: out!.id, type: "sent" })
 }
 
 describe("mail-service recipient-resolution helpers", () => {
@@ -247,9 +257,8 @@ describe("mail-service: reply", () => {
   it("appends an OUT reply to the thread's jurisdiction contact, delivers, marks replied + read", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Question", org: "City of LA" })
-    await repo.insertMessage({
+    await seedDeliveredOut(repo, {
       threadId: t.id,
-      direction: "out",
       fromAddr: FROM_OUTREACH,
       toAddr: "clerk@city.gov",
       body: "Original packet.",
@@ -279,9 +288,8 @@ describe("mail-service: reply", () => {
   it("H5: Reply targets the jurisdiction contact even after an unrelated sender joins the thread", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Pothole", org: "City of LA" })
-    await repo.insertMessage({
+    await seedDeliveredOut(repo, {
       threadId: t.id,
-      direction: "out",
       fromAddr: FROM_OUTREACH,
       toAddr: "publicworks@lacity.gov",
       body: "Report packet.",
@@ -306,9 +314,8 @@ describe("mail-service: reply", () => {
   it("H5: Resend re-sends the last outbound packet to the jurisdiction contact, not the inbound sender", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Pothole", org: "City of LA" })
-    await repo.insertMessage({
+    await seedDeliveredOut(repo, {
       threadId: t.id,
-      direction: "out",
       fromAddr: FROM_OUTREACH,
       toAddr: "publicworks@lacity.gov",
       body: "Report packet.",
@@ -363,6 +370,40 @@ describe("mail-service: reply", () => {
     await expect(svc.reply(t.id, { body: "any update?" }, "op-1")).resolves.toBeDefined()
   })
 
+  it("refuses Reply and Resend while the newest outbound attempt is still transmitting with no outcome yet", async () => {
+    const { repo, mailer, svc } = harness()
+    const t = await repo.createThread({ subject: "Pothole", org: "City of LA" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      toAddr: "pw@lacity.gov",
+      body: "packet",
+    })
+
+    await expect(svc.resend(t.id, "op-1")).rejects.toMatchObject({ httpStatus: 409 })
+    await expect(svc.reply(t.id, { body: "any update?" }, "op-1")).rejects.toMatchObject({
+      httpStatus: 409,
+    })
+    expect(mailer.sent).toHaveLength(0)
+  })
+
+  it("treats an outcome-less attempt older than the claim window as crashed, not in flight", async () => {
+    const { repo, mailer, svc } = harness()
+    const t = await repo.createThread({ subject: "Pothole", org: "City of LA" })
+    await repo.insertMessage({
+      threadId: t.id,
+      direction: "out",
+      fromAddr: FROM_OUTREACH,
+      toAddr: "pw@lacity.gov",
+      body: "packet",
+    })
+    repo.now = new Date(repo.now.getTime() + (ROUTE_CLAIM_STALE_SECONDS + 1) * 1000)
+
+    await svc.resend(t.id, "op-1")
+    expect(mailer.sent.at(-1)?.to).toBe("pw@lacity.gov")
+  })
+
   it("H5: a thread with ONLY an inbound message has no jurisdiction contact, so Reply is refused", async () => {
     const { repo, svc } = harness()
     const t = await repo.createThread({ subject: "Cold inbound" })
@@ -378,9 +419,8 @@ describe("mail-service: reply", () => {
   it("M1: replies to a composed outbound-only thread using the stored OUT to_addr", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Intro" })
-    await repo.insertMessage({
+    await seedDeliveredOut(repo, {
       threadId: t.id,
-      direction: "out",
       fromAddr: FROM_OUTREACH,
       toAddr: "mayor@city.gov",
       body: "Hello.",
@@ -393,9 +433,8 @@ describe("mail-service: reply", () => {
   it("F025: resolves the recipient through the point reads, not by loading every body in the thread", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Question", org: "City of LA" })
-    await repo.insertMessage({
+    await seedDeliveredOut(repo, {
       threadId: t.id,
-      direction: "out",
       fromAddr: FROM_OUTREACH,
       toAddr: "clerk@city.gov",
       body: "Original packet.",
@@ -435,9 +474,8 @@ describe("mail-service: reply", () => {
       httpStatus: 404,
     })
     const t = await repo.createThread({ subject: "S" })
-    await repo.insertMessage({
+    await seedDeliveredOut(repo, {
       threadId: t.id,
-      direction: "out",
       fromAddr: FROM_OUTREACH,
       body: "hi",
     })
@@ -480,9 +518,8 @@ describe("mail-service: resend", () => {
       fromAddr: "clerk@city.gov",
       body: "Q?",
     })
-    await repo.insertMessage({
+    await seedDeliveredOut(repo, {
       threadId: t.id,
-      direction: "out",
       fromAddr: FROM_OUTREACH,
       toAddr: "clerk@city.gov",
       body: "original outbound",
@@ -502,9 +539,8 @@ describe("mail-service: resend", () => {
   it("M1: resends a composed outbound-only thread using the stored OUT to_addr", async () => {
     const { repo, mailer, svc } = harness()
     const t = await repo.createThread({ subject: "Intro" })
-    await repo.insertMessage({
+    await seedDeliveredOut(repo, {
       threadId: t.id,
-      direction: "out",
       fromAddr: FROM_OUTREACH,
       toAddr: "mayor@city.gov",
       body: "Hello.",
@@ -517,9 +553,8 @@ describe("mail-service: resend", () => {
     const h = harness()
     const body = "x".repeat(100_000)
     const t = await h.repo.createThread({ subject: "Pothole", org: "City of LA" })
-    await h.repo.insertMessage({
+    await seedDeliveredOut(h.repo, {
       threadId: t.id,
-      direction: "out",
       fromAddr: '"civfix Reports" <report-abcd2345wxyz@civfix.org>',
       toAddr: "clerk@city.gov",
       subject: "civfix report: Pothole",

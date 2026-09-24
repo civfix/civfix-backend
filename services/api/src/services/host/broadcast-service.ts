@@ -18,9 +18,13 @@ import type { Mailer } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
-import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
+import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
-import type { BroadcastRecord, EventBroadcastContext } from "./broadcast-types.js"
+import type {
+  BroadcastDraftPatch,
+  BroadcastRecord,
+  EventBroadcastContext,
+} from "./broadcast-types.js"
 import { CRITICAL_BROADCAST_KINDS } from "./broadcast-types.js"
 import {
   assertBroadcastLinkPolicy,
@@ -33,6 +37,7 @@ import { verifyUnsubscribeToken } from "./broadcast-capability-token.js"
 
 export const BROADCAST_DEFAULT_LIMIT = 20
 export const BROADCAST_TEST_SENDS_PER_HOUR = 5
+export const TEST_SEND_WINDOW_SEC = 60 * 60
 export const DAY_SECONDS = 24 * 60 * 60
 export const AUDIENCE_PAGE_SIZE = 1000
 export const AUDIENCE_MAX_PAGES = 100
@@ -74,6 +79,7 @@ export type CapKind =
   | "cooldown"
   | "per_event_per_day"
   | "recipients_per_day"
+  | "test_sends"
   | "counter_unavailable"
 
 export class BroadcastCapError extends Error {
@@ -94,6 +100,7 @@ const CAP_COPY: Record<CapKind, string> = {
   cooldown: "You just sent a message for this event. Give it a few minutes.",
   per_event_per_day: "This event has reached its daily message limit.",
   recipients_per_day: "You have reached today's limit for how many people you can message.",
+  test_sends: "You have sent several test messages. Try again in an hour.",
   counter_unavailable: "Messaging is temporarily unavailable. Try again in a moment.",
 }
 
@@ -232,7 +239,21 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       deps.logger?.warn({ err, kind }, "broadcast: cap counter unavailable; refusing (fail closed)")
       throw new BroadcastCapError("counter_unavailable", CAP_COPY.counter_unavailable)
     }
-    if (used > limit) throw new BroadcastCapError(kind, CAP_COPY[kind])
+    if (used > limit) {
+      await giveBack(key, kind)
+      throw new BroadcastCapError(kind, CAP_COPY[kind])
+    }
+  }
+
+  async function giveBack(key: string, kind: CapKind): Promise<void> {
+    try {
+      await deps.counters.decrBy(key, 1)
+    } catch (err) {
+      deps.logger?.warn(
+        { err, kind },
+        "broadcast: a refused send could not give its charge back; it stays spent until the window ends",
+      )
+    }
   }
 
   function linkPolicyText(bodyMd: string, ctaUrl: string | null | undefined): string {
@@ -246,13 +267,19 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
   }
 
   async function reserveSendCounters(cleanupId: string, actorId: string): Promise<void> {
-    await reserve(`bcast:cool:${actorId}:${cleanupId}`, config.cooldownSec, 1, "cooldown")
-    await reserve(
-      `bcast:event:${cleanupId}:${utcDayKey(now())}`,
-      DAY_SECONDS,
-      config.perEventPerDay,
-      "per_event_per_day",
-    )
+    const cooldownKey = `bcast:cool:${actorId}:${cleanupId}`
+    await reserve(cooldownKey, config.cooldownSec, 1, "cooldown")
+    try {
+      await reserve(
+        `bcast:event:${cleanupId}:${utcDayKey(now())}`,
+        DAY_SECONDS,
+        config.perEventPerDay,
+        "per_event_per_day",
+      )
+    } catch (err) {
+      await giveBack(cooldownKey, "cooldown")
+      throw err
+    }
   }
 
   async function reserveSendSlot(cleanupId: string, actorId: string): Promise<void> {
@@ -323,27 +350,48 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
         throw err
       }
     }
-    await deps.enqueuePlan(broadcastId)
+    try {
+      await deps.enqueuePlan(broadcastId)
+    } catch (err) {
+      await releaseUnplannedSend(broadcastId, record.status)
+      throw err
+    }
     return toBroadcastDTO(moved)
+  }
+
+  /**
+   * The host is told the send failed, so the row must not stay 'sending': the stale-sending sweep would
+   * deliver it minutes later anyway. Rolling back is safe even when the enqueue did land, because plan()
+   * skips any broadcast that is no longer 'sending'.
+   */
+  async function releaseUnplannedSend(
+    broadcastId: string,
+    previous: BroadcastStatus,
+  ): Promise<void> {
+    try {
+      await repo.transition(broadcastId, ["sending"], previous, { startedAt: null })
+    } catch (err) {
+      deps.logger?.error(
+        { err, broadcastId },
+        "broadcast: could not roll back a send whose plan job failed to enqueue; the sweep will send it",
+      )
+    }
   }
 
   return {
     async list(cleanupId, query) {
       const limit = query.limit ?? BROADCAST_DEFAULT_LIMIT
-      const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
       const rows = await repo.list({
         cleanupId,
         ...(query.status !== undefined ? { status: query.status } : {}),
-        cursor: cursor === null ? null : { createdAt: cursor.at, id: cursor.id },
+        cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
         limit: limit + 1,
       })
-      const page = rows.slice(0, limit)
-      const last = page.at(-1)
-      const nextCursor =
-        rows.length > limit && last !== undefined
-          ? encodeTimeCursor({ at: last.createdAt, id: last.id })
-          : null
-      return { items: page.map(toBroadcastDTO), nextCursor }
+      const { items, nextCursor } = paginateKeyset(rows, limit, (row) => ({
+        atText: row.cursorAt,
+        id: row.id,
+      }))
+      return { items: items.map(toBroadcastDTO), nextCursor }
     },
 
     async get(cleanupId, broadcastId) {
@@ -381,7 +429,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       const bodyMd = body.bodyMd ?? current.bodyMd ?? ""
       const ctaUrl = "ctaUrl" in body ? (body.ctaUrl ?? null) : current.ctaUrl
       assertContent(subject, bodyMd, ctaUrl)
-      const patch = {
+      const patch: BroadcastDraftPatch = {
         ...(body.subject !== undefined ? { subject: body.subject } : {}),
         ...(body.bodyMd !== undefined ? { bodyMd: body.bodyMd } : {}),
         ...("ctaLabel" in body ? { ctaLabel: body.ctaLabel ?? null } : {}),
@@ -389,7 +437,10 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
         ...(body.segment !== undefined ? { segment: body.segment } : {}),
         ...(body.channels !== undefined ? { channels: body.channels as BroadcastChannel[] } : {}),
       }
-      const updated = await repo.updateDraft(cleanupId, body.broadcastId, patch)
+      let updated: BroadcastRecord | null = current.status === "draft" ? current : null
+      if (Object.keys(patch).length > 0) {
+        updated = await repo.updateDraft(cleanupId, body.broadcastId, patch)
+      }
       if (updated === null) {
         throw AppError.conflict("That message has already been sent or scheduled.")
       }
@@ -454,9 +505,9 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       await guardHost(actorId)
       await reserve(
         `bcast:test:${actorId}`,
-        3600,
+        TEST_SEND_WINDOW_SEC,
         BROADCAST_TEST_SENDS_PER_HOUR,
-        "per_event_per_day",
+        "test_sends",
       )
       const record = await requireDraft(cleanupId, broadcastId)
       const event = await repo.eventContext(cleanupId)
@@ -542,22 +593,19 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       const record = await repo.findForEvent(cleanupId, query.broadcastId)
       if (record === null) throw notFound()
       const limit = query.limit ?? BROADCAST_DEFAULT_LIMIT
-      const cursor = parseTimeCursor(query.cursor, { direction: "desc" })
       const rows = await repo.listDeliveries({
         broadcastId: query.broadcastId,
         ...(query.status !== undefined ? { status: query.status } : {}),
         ...(query.channel !== undefined ? { channel: query.channel } : {}),
-        cursor: cursor === null ? null : { createdAt: cursor.at, id: cursor.id },
+        cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
         limit: limit + 1,
       })
-      const page = rows.slice(0, limit)
-      const last = page.at(-1)
-      const nextCursor =
-        rows.length > limit && last !== undefined
-          ? encodeTimeCursor({ at: last.createdAt, id: last.id })
-          : null
+      const { items, nextCursor } = paginateKeyset(rows, limit, (row) => ({
+        atText: row.cursorAt,
+        id: row.id,
+      }))
       return {
-        items: page.map((row) => ({
+        items: items.map((row) => ({
           id: row.id,
           channel: row.channel as BroadcastChannel,
           recipientKind: row.recipientKind,
@@ -603,13 +651,10 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
 
     async reserveRecipientBudget(actorId, recipients) {
       if (recipients <= 0) return true
+      const chargedKey = `bcast:host:${actorId}:${utcDayKey(now())}`
+      let used: number
       try {
-        const used = await deps.counters.incrBy(
-          `bcast:host:${actorId}:${utcDayKey(now())}`,
-          recipients,
-          DAY_SECONDS,
-        )
-        return used <= config.recipientsPerDay
+        used = await deps.counters.incrBy(chargedKey, recipients, DAY_SECONDS)
       } catch (err) {
         deps.logger?.warn(
           { err, actorId },
@@ -617,6 +662,16 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
         )
         return false
       }
+      if (used <= config.recipientsPerDay) return true
+      try {
+        await deps.counters.decrBy(chargedKey, recipients)
+      } catch (err) {
+        deps.logger?.warn(
+          { err, actorId, recipients },
+          "broadcast: refused recipients could not be given back; they stay charged until the UTC day rolls",
+        )
+      }
+      return false
     },
   }
 }

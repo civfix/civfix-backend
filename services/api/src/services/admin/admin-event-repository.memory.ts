@@ -21,7 +21,11 @@
 import { randomUUID } from "node:crypto"
 import { isUuid } from "../../db/cursor-helpers.js"
 import { pageInMemoryById } from "./pagination.js"
-import { flaggedFromTimeline } from "./admin-event-helpers.js"
+import {
+  ADMIN_EVENT_MESSAGE_CAP,
+  eventOutcomeNote,
+  flaggedFromTimeline,
+} from "./admin-event-helpers.js"
 import { isPubliclyVisibleStatus } from "../report-visibility.js"
 import { toEventStatus } from "./event-status.js"
 import { CIVFIX_OFFICIAL_DISPLAY_NAME } from "../../auth/official-account.js"
@@ -310,13 +314,19 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
   }
 
   async listMessages(id: string): Promise<AdminEventMessageRecord[]> {
-    return [...(this.messages.get(id) ?? [])]
+    return (this.messages.get(id) ?? []).slice(-ADMIN_EVENT_MESSAGE_CAP)
   }
 
   async setBags(id: string, input: { bags: number; actorId: string | null }): Promise<boolean> {
     const seeded = this.events.get(id)
     if (!seeded) return false
     seeded.record.bags = input.bags
+    this.appendTimeline(id, {
+      kind: "outcome",
+      note: eventOutcomeNote(input.bags),
+      who: "operator",
+      createdAt: this.nextDate(),
+    })
     this.audits.push({
       action: "event.outcome_logged",
       target: `cleanup:${id}`,

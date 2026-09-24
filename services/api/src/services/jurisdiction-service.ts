@@ -2,6 +2,7 @@ import type { JurisdictionDTO } from "@civfix/shared"
 import type { Geocoder, Jobs } from "@civfix/shared/interfaces"
 import type { Sql } from "../db/client.js"
 import { resolveJurisdiction } from "../db/sql/jurisdiction.js"
+import { legacyContactEmailUsable } from "./admin/sql-fragments.js"
 import { formatCityStateLabel, uspsFromGeoid } from "../adapters/geocoder.tiger.js"
 import type {
   JurisdictionLookup,
@@ -124,6 +125,8 @@ async function resolveViaLookup(
   try {
     hit = await lookup.lookup(lat, lng)
   } catch {
+    // Census is only the fallback after a local miss: its outage leaves the point unmapped and must never
+    // fail the report, anon report or cleanup being filed.
     return null
   }
   if (!hit) return null
@@ -165,12 +168,22 @@ async function loadHealth(sql: Sql, geoid: string): Promise<JurisdictionHealthRo
   >`
     SELECT
       j.geoid,
-      j.contact_emails,
+      -- Only legacy addresses that have not bounced since the last contact save make the
+      -- jurisdiction routable, so a bounce re-triggers discovery here as it does in the job.
+      ARRAY(
+        SELECT e FROM unnest(j.contact_emails) AS e
+        WHERE ${legacyContactEmailUsable(sql, {
+          email: sql`e`,
+          geoid: sql`j.geoid`,
+          contactUpdatedAt: sql`j.contact_updated_at`,
+        })}
+      ) AS contact_emails,
       j.contact_updated_at,
       j.population,
       EXISTS (
         SELECT 1 FROM jurisdiction_contacts jc
         WHERE jc.geoid = j.geoid AND jc.email IS NOT NULL AND jc.email <> ''
+          AND jc.bounced_at IS NULL
       ) AS has_routing_contact
     FROM jurisdictions j
     WHERE j.geoid = ${geoid}

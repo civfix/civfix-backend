@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest"
-import { TwilioSmsSender, classifyTwilioError } from "../../src/adapters/sms-twilio.js"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import {
+  SMS_SEND_TIMEOUT_MS,
+  TwilioSmsSender,
+  classifyTwilioError,
+} from "../../src/adapters/sms-twilio.js"
 import { smsFailureKind } from "../../src/errors/sms-failure.js"
 
 interface Recorded {
@@ -137,5 +141,48 @@ describe("TwilioSmsSender", () => {
     const err = await sender.send("+15552223333", "x").catch((e: unknown) => e)
     expect(String((err as Error).message)).not.toContain("+15552223333")
     expect(String((err as Error).message)).toContain("provider code 21211")
+  })
+
+  describe("response body", () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it("keeps the send deadline running while the body is read, and does not retry an accepted send", async () => {
+      vi.useFakeTimers()
+      const { sender } = senderWith(
+        () => new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 201 }),
+      )
+
+      const outcome = sender.send("+15552223333", "x").catch((e: unknown) => e)
+      await vi.advanceTimersByTimeAsync(SMS_SEND_TIMEOUT_MS + 1)
+
+      const settled = await Promise.race([outcome, Promise.resolve("still pending")])
+      expect(settled).not.toBe("still pending")
+      expect(smsFailureKind(settled)).toBe("permanent")
+    })
+
+    it("stops reading an error body without content-length once it passes the size cap", async () => {
+      const chunk = new Uint8Array(16 * 1024)
+      const maxChunks = 128
+      let pulled = 0
+      const { sender } = senderWith(
+        () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                pulled += 1
+                if (pulled > maxChunks) controller.close()
+                else controller.enqueue(chunk)
+              },
+            }),
+            { status: 400 },
+          ),
+      )
+
+      const err = await sender.send("+15552223333", "x").catch((e: unknown) => e)
+      expect(smsFailureKind(err)).toBe("permanent")
+      expect(pulled).toBeLessThan(maxChunks / 2)
+    })
   })
 })

@@ -194,6 +194,7 @@ export async function canStillRead(session: GatewaySession, roomKey: string): Pr
     const auth = await authorizeRoom(deps, kind, id, userId)
     return auth.ok
   } catch {
+    // A lookup outage keeps the socket in its rooms; the next reauthorization pass decides again.
     return true
   }
 }

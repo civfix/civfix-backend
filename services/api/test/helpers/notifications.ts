@@ -233,13 +233,10 @@ export class InMemoryNotificationRepository implements NotificationRepository {
     return Promise.resolve()
   }
 
-  findRecentDuplicate(args: {
-    userId: string
-    type: NotificationType
-    link: string | null
-    body: string | null
-    since: Date
-  }): Promise<NotificationRecord | null> {
+  // Find and insert run in one synchronous step, the single-threaded twin of the SQL key lock.
+  insertUnlessRecentDuplicate(
+    args: NewNotificationArgs & { since: Date },
+  ): Promise<{ record: NotificationRecord; deduped: boolean }> {
     const match = this.notifications
       .filter(
         (n) =>
@@ -250,7 +247,14 @@ export class InMemoryNotificationRepository implements NotificationRepository {
           n.createdAt.getTime() > args.since.getTime(),
       )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]
-    return Promise.resolve(match ?? null)
+    if (match) return Promise.resolve({ record: match, deduped: true })
+    return this.insertNotification({
+      userId: args.userId,
+      type: args.type,
+      title: args.title,
+      body: args.body,
+      link: args.link,
+    }).then((record) => ({ record, deduped: false }))
   }
 
   refreshUnreadNotification(args: {

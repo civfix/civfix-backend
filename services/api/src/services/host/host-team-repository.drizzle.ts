@@ -1,5 +1,6 @@
 import {
   AppError,
+  MAX_TEAM_INVITES_PER_EVENT,
   type CleanupMemberRole,
   type CleanupStatus,
   type EventTeamInviteStatus,
@@ -7,7 +8,12 @@ import {
   type EventVisibility,
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
-import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { publicServedKeyExpr } from "../media-served-key.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
 import { writeHostAudit } from "./host-audit.js"
@@ -26,6 +32,7 @@ import type {
   PendingInviteForUserRecord,
   RevokeTeamInviteOutcome,
 } from "./host-team-repository.types.js"
+import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.types.js"
 
 interface InviteRowSelect {
   id: string
@@ -390,6 +397,15 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
           }
           const open = await reofferOpenInvite(tx, args)
           if (open !== null) return open
+          // Serializes concurrent inviters on one event so the cap is counted, not raced.
+          await tx`SELECT pg_advisory_xact_lock(hashtext('team_invites:' || ${args.cleanupId}))`
+          const pending = await tx<{ count: number }[]>`
+            SELECT count(*)::int AS count FROM cleanup_team_invites
+            WHERE cleanup_id = ${args.cleanupId} AND status = 'pending'
+          `
+          if ((pending[0]?.count ?? 0) >= MAX_TEAM_INVITES_PER_EVENT) {
+            throw AppError.conflict(TEAM_INVITE_CAP_MESSAGE)
+          }
           const inserted = await tx<InviteRowSelect[]>`
             WITH ins AS (
               INSERT INTO cleanup_team_invites (
@@ -537,12 +553,15 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
     async listInvitesForUser(
       args: ListInvitesForUserArgs,
     ): Promise<{ items: PendingInviteForUserRecord[]; nextCursor: string | null }> {
-      const cursor = parseTimeCursor(args.cursor)
+      const cursor = parseKeysetCursor(args.cursor)
       const cursorFilter =
-        cursor !== null ? sql`AND (i.created_at, i.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``
-      const rows = await sql<PendingInviteForUserRowSelect[]>`
+        cursor !== null
+          ? sql`AND ${keysetPredicate(sql, sql`i.created_at`, sql`i.id`, cursor)}`
+          : sql``
+      const rows = await sql<(PendingInviteForUserRowSelect & { cursor_at: string })[]>`
         SELECT
           i.id,
+          ${keysetInstant(sql, sql`i.created_at`)} AS cursor_at,
           i.role,
           i.created_at,
           i.expires_at,
@@ -570,9 +589,11 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
         ORDER BY i.created_at DESC, i.id DESC
         LIMIT ${args.limit + 1}
       `
-      return pageWith(rows.map(toPendingInviteForUser), args.limit, (last) =>
-        encodeTimeCursor({ at: last.createdAt, id: last.id }),
-      )
+      const page = paginateKeyset(rows, args.limit, (last) => ({
+        atText: last.cursor_at,
+        id: last.id,
+      }))
+      return { items: page.items.map(toPendingInviteForUser), nextCursor: page.nextCursor }
     },
 
     async acceptInviteByIdTx(args: {

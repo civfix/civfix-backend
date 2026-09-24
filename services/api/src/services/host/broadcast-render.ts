@@ -99,6 +99,7 @@ export function formatEventWhen(scheduledAt: Date, timezone: string | null): str
       timeZoneName: "short",
     }).format(scheduledAt)
   } catch {
+    // A stored zone Intl does not know must not block a send; the instant is still unambiguous.
     return scheduledAt.toISOString()
   }
 }

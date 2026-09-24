@@ -43,7 +43,7 @@ function pageRow(patch: Partial<AdminEventPageRow> = {}): AdminEventPageRow {
     flaggedByName: null,
     flaggedByHandle: null,
     flaggedByJoined: null,
-    sortAt: new Date("2026-08-01T00:00:00.000Z"),
+    cursorAt: "2026-08-01T00:00:00.000000Z",
     ...patch,
   }
 }

@@ -453,7 +453,8 @@ describe("buildJobs seam selection", () => {
     const handle = buildJobs({
       NODE_ENV: "production",
       DATABASE_URL: "postgres://stub/civfix",
-      MEDIA_JOB_TIMEOUT_MS: "1000",
+      MEDIA_JOB_TIMEOUT_MS: "10000",
+      MEDIA_IMAGE_TIMEOUT_MS: "1000",
     } as NodeJS.ProcessEnv)
     expect(handle.jobs).toBeInstanceOf(PgBossWorkerJobs)
 
@@ -461,6 +462,6 @@ describe("buildJobs seam selection", () => {
     await handle.stop()
 
     expect(lastBoss().connectionString).toBe("postgres://stub/civfix")
-    expect(lastBoss().stopCalls).toEqual([{ graceful: true, wait: true, timeout: 7_000 }])
+    expect(lastBoss().stopCalls).toEqual([{ graceful: true, wait: true, timeout: 25_000 }])
   })
 })

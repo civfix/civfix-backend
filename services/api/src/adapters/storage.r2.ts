@@ -22,6 +22,15 @@ export interface R2StorageConfig {
 export const R2_DEFAULT_GET_TTL_SEC = 15 * 60
 export const R2_PUT_TTL_SEC = 15 * 60
 
+export const R2_CONNECT_TIMEOUT_MS = 5_000
+export const R2_SOCKET_IDLE_TIMEOUT_MS = 30_000
+export const R2_RESPONSE_TIMEOUT_MS = 30_000
+export const R2_MAX_ATTEMPTS = 3
+// The handler's timers stop once response headers arrive, so only an abort signal bounds a body
+// that stalls mid-stream. Metadata calls sit on request paths; transfers move objects up to tens of MB.
+export const R2_METADATA_OPERATION_TIMEOUT_MS = 15_000
+export const R2_TRANSFER_OPERATION_TIMEOUT_MS = 120_000
+
 export class R2Storage implements Storage {
   private readonly config: R2StorageConfig
   private client: S3Client | undefined
@@ -80,7 +89,10 @@ export class R2Storage implements Storage {
     const { HeadObjectCommand } = await import("@aws-sdk/client-s3")
     const client = await this.getClient()
     try {
-      const res = await client.send(new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }))
+      const res = await client.send(
+        new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }),
+        metadataDeadline(),
+      )
       const etag = normalizeEtag(res.ETag)
       return {
         size: typeof res.ContentLength === "number" ? res.ContentLength : 0,
@@ -100,7 +112,10 @@ export class R2Storage implements Storage {
     const { DeleteObjectCommand } = await import("@aws-sdk/client-s3")
     const client = await this.getClient()
     try {
-      await client.send(new DeleteObjectCommand({ Bucket: this.config.bucket, Key: key }))
+      await client.send(
+        new DeleteObjectCommand({ Bucket: this.config.bucket, Key: key }),
+        metadataDeadline(),
+      )
     } catch (err) {
       throw new AppError(ErrorCode.INTERNAL, "R2 delete failed", { cause: err })
     }
@@ -120,6 +135,7 @@ export class R2Storage implements Storage {
             ? { ContentDisposition: meta.contentDisposition }
             : {}),
         }),
+        transferDeadline(),
       )
     } catch (err) {
       throw new AppError(ErrorCode.INTERNAL, "R2 put failed", { cause: err })
@@ -137,6 +153,7 @@ export class R2Storage implements Storage {
           ...(opts?.cursor ? { ContinuationToken: opts.cursor } : {}),
           ...(opts?.limit && opts.limit > 0 ? { MaxKeys: opts.limit } : {}),
         }),
+        metadataDeadline(),
       )
       const keys = (res.Contents ?? [])
         .map((o) => o.Key)
@@ -153,7 +170,10 @@ export class R2Storage implements Storage {
     const { GetObjectCommand } = await import("@aws-sdk/client-s3")
     const client = await this.getClient()
     try {
-      const res = await client.send(new GetObjectCommand({ Bucket: this.config.bucket, Key: key }))
+      const res = await client.send(
+        new GetObjectCommand({ Bucket: this.config.bucket, Key: key }),
+        transferDeadline(),
+      )
       if (!res.Body) return null
       const bytes = await res.Body.transformToByteArray()
       return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
@@ -170,7 +190,8 @@ export class R2Storage implements Storage {
       this.client = new S3ClientCtor({
         region: "auto",
         endpoint: `https://${endpointHost}`,
-        ...(await proxyRequestHandler(endpointHost)),
+        requestHandler: await boundedRequestHandler(endpointHost),
+        maxAttempts: R2_MAX_ATTEMPTS,
         forcePathStyle: true,
         requestChecksumCalculation: "WHEN_REQUIRED",
         credentials: {
@@ -183,14 +204,34 @@ export class R2Storage implements Storage {
   }
 }
 
-async function proxyRequestHandler(host: string): Promise<Pick<S3ClientConfig, "requestHandler">> {
+function metadataDeadline(): { abortSignal: AbortSignal } {
+  return { abortSignal: AbortSignal.timeout(R2_METADATA_OPERATION_TIMEOUT_MS) }
+}
+
+// The handler's requestTimeout runs from before the body is written until the response arrives, so
+// the default response wait would cap a large upload at R2_RESPONSE_TIMEOUT_MS per attempt.
+function transferDeadline(): { abortSignal: AbortSignal; requestTimeout: number } {
+  return {
+    abortSignal: AbortSignal.timeout(R2_TRANSFER_OPERATION_TIMEOUT_MS),
+    requestTimeout: R2_TRANSFER_OPERATION_TIMEOUT_MS,
+  }
+}
+
+async function boundedRequestHandler(host: string): Promise<S3ClientConfig["requestHandler"]> {
+  const { NodeHttpHandler } = await import("@smithy/node-http-handler")
   const settings = readProxySettings()
-  if (settings === null || !shouldProxyHost(host, settings)) return {}
-  const [{ NodeHttpHandler }, { HttpsProxyAgent }] = await Promise.all([
-    import("@smithy/node-http-handler"),
-    import("https-proxy-agent"),
-  ])
-  return { requestHandler: new NodeHttpHandler({ httpsAgent: new HttpsProxyAgent(settings.url) }) }
+  const httpsAgent =
+    settings !== null && shouldProxyHost(host, settings)
+      ? new (await import("https-proxy-agent")).HttpsProxyAgent(settings.url)
+      : undefined
+  // Without throwOnRequestTimeout the SDK only logs a warning when requestTimeout elapses.
+  return new NodeHttpHandler({
+    connectionTimeout: R2_CONNECT_TIMEOUT_MS,
+    socketTimeout: R2_SOCKET_IDLE_TIMEOUT_MS,
+    requestTimeout: R2_RESPONSE_TIMEOUT_MS,
+    throwOnRequestTimeout: true,
+    ...(httpsAgent !== undefined ? { httpsAgent } : {}),
+  })
 }
 
 function joinUrl(base: string, key: string): string {

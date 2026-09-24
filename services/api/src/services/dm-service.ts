@@ -73,6 +73,7 @@ export function makeDmService(deps: DmServiceDeps): DmService {
 
       const thread = existing ?? (await deps.dm.openOrCreateThread(viewerId, targetUserId))
 
+      // The mute flag and unread badge are display hints: their lookup failing must not block opening a DM.
       const [page, muted, unread] = await Promise.all([
         deps.dm.history(thread.id, undefined, 1),
         deps.isMutedFor

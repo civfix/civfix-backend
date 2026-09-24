@@ -75,7 +75,8 @@ export const es: Partial<Record<MessageKey, string>> = {
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "Tu código de acceso a civfix",
   "email.otp.body_line1": "Tu código de acceso a civfix es {{code}}.",
-  "email.otp.body_expiry": "Caduca en 5 minutos. Si no lo solicitaste, puedes ignorar este correo.",
+  "email.otp.body_expiry":
+    "Caduca en {{minutes}} minutos. Si no lo solicitaste, puedes ignorar este correo.",
   "email.otp.html_intro": "Tu código de acceso a civfix es:",
 
   "email.report_update.subject": "Tu reporte en civfix fue {{status}}",
@@ -110,7 +111,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   "certificate.seal.line": "Registro verificado",
   "certificate.issuer.line": "Emitido por civfix · civfix.org",
   "certificate.issuer.generated": "Generado {{timestamp}}",
-  "certificate.verify.prompt": "Verifica este registro en civfix.org/service-record",
+  "certificate.verify.prompt": "Verifica este registro en {{url}}",
   "certificate.verify.fingerprint": "Huella del documento",
   "certificate.footer.page": "Página {{page}} de {{total}}",
   "certificate.footer.timezone":

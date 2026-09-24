@@ -1,6 +1,11 @@
 import type { CleanupStatus, EventVisibility, GuestContactChannel } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
-import { encodeTimeCursor, pageWith, type TimeCursor } from "../db/cursor-helpers.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  type KeysetCursor,
+} from "../db/cursor-helpers.js"
 import type {
   GuestEventView,
   GuestNoticeTarget,
@@ -187,8 +192,8 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
       return rows.length > 0
     },
 
-    async upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string }> {
-      const rows = await sql<{ id: string }[]>`
+    async upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string; created: boolean }> {
+      const rows = await sql<{ id: string; created: boolean }[]>`
         INSERT INTO cleanup_guests (
           cleanup_id, name, channel, email, phone, contact_key, manage_token_hash, verified_at
         ) VALUES (
@@ -204,11 +209,11 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
           manage_token_hash = EXCLUDED.manage_token_hash,
           verified_at = EXCLUDED.verified_at,
           contact_scrubbed_at = NULL
-        RETURNING id
+        RETURNING id, (xmax = 0) AS created
       `
       const row = rows[0]
       if (row === undefined) throw new Error("guest rsvp: upsert returned no row")
-      return { id: row.id }
+      return { id: row.id, created: row.created }
     },
 
     async findGuestByManageTokenHash(
@@ -316,24 +321,26 @@ export function makeDrizzleGuestRsvpRepository(sql: Sql): GuestRsvpRepository {
 
     async listGuests(args: {
       cleanupId: string
-      cursor: TimeCursor | null
+      cursor: KeysetCursor | null
       limit: number
     }): Promise<{ rows: GuestRosterRow[]; nextCursor: string | null }> {
       const cursorFilter =
         args.cursor !== null
-          ? sql`AND (created_at, id) < (${args.cursor.at}, ${args.cursor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, args.cursor)}`
           : sql``
-      const rows = await sql<GuestRowSelect[]>`
-        SELECT id, name, channel, email, phone, verified_at, cancelled_at, created_at
+      const rows = await sql<(GuestRowSelect & { cursor_at: string })[]>`
+        SELECT id, name, channel, email, phone, verified_at, cancelled_at, created_at,
+               ${keysetInstant(sql, sql`created_at`)} AS cursor_at
         FROM cleanup_guests
         WHERE cleanup_id = ${args.cleanupId}
           ${cursorFilter}
         ORDER BY created_at DESC, id DESC
         LIMIT ${args.limit + 1}
       `
-      const { items, nextCursor } = pageWith(rows, args.limit, (last) =>
-        encodeTimeCursor({ at: last.created_at, id: last.id }),
-      )
+      const { items, nextCursor } = paginateKeyset(rows, args.limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       return { rows: items.map(toRosterRow), nextCursor }
     },
 

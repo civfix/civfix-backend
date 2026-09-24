@@ -157,6 +157,7 @@ function killProcessGroup(pid: number | undefined): void {
   try {
     process.kill(-pid, "SIGKILL")
   } catch (ignored) {
+    // ESRCH: the group already exited, which is the state this call exists to reach.
     void ignored
   }
 }

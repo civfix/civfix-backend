@@ -34,6 +34,15 @@ describe("htmlToText", () => {
     )
   })
 
+  it("decodes the typographic named entities Outlook and Gmail emit", () => {
+    expect(
+      htmlToText("<p>Hello&rsquo;s &ldquo;crew&rdquo; &ndash; Mon&mdash;Fri&hellip; &copy;</p>"),
+    ).toBe("Hello\u2019s \u201ccrew\u201d \u2013 Mon\u2014Fri\u2026 \u00a9")
+    expect(htmlToText("<p>&amp;rsquo; &bogus; &toString; &AMP;</p>")).toBe(
+      "&rsquo; &bogus; &toString; &",
+    )
+  })
+
   it("keeps the line breaks inside <pre> and collapses them everywhere else", () => {
     expect(htmlToText("a\nb<pre>c\n<b>d</b>\n\ne</pre>f\ng")).toBe("a b\nc\nd\n\ne\nf g")
     expect(htmlToText("<blockquote><pre>q1\r\nq2</pre></blockquote>")).toBe("> q1\n> q2")

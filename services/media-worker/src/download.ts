@@ -84,6 +84,7 @@ export function makeDownloader(storage: Storage): DownloadFn {
       throw new StorageUnavailableError(r2Key, err)
     }
     if (!res.ok) {
+      // Only frees the socket; the status error below is what the caller acts on.
       await res.body?.cancel().catch(() => {})
       throw new StorageUnavailableError(r2Key, `HTTP ${res.status}`)
     }

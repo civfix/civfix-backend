@@ -71,9 +71,9 @@ export interface ChatGroupRepository {
   roleOf(groupId: string, userId: string): Promise<GroupMemberRole | null>
   accessOf(groupId: string, userId: string): Promise<GroupRoomAccess | null>
   addMembers(groupId: string, userIds: string[]): Promise<void>
+  joinUnlessBanned(groupId: string, userId: string): Promise<boolean>
   removeMember(groupId: string, userId: string): Promise<boolean>
   banMember(groupId: string, userId: string, bannedBy: string): Promise<void>
-  isBanned(groupId: string, userId: string): Promise<boolean>
   setRole(groupId: string, userId: string, role: "admin" | "member"): Promise<boolean>
   findMember(
     groupId: string,
@@ -333,22 +333,35 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       return rows.length > 0
     },
 
-    async banMember(groupId: string, userId: string, bannedBy: string): Promise<void> {
-      await sql`
-        INSERT INTO chat_group_bans (group_id, user_id, banned_by)
-        VALUES (${groupId}, ${userId}, ${bannedBy})
-        ON CONFLICT (group_id, user_id)
-          DO UPDATE SET banned_by = ${bannedBy}, banned_at = now()
-      `
-    },
-
-    async isBanned(groupId: string, userId: string): Promise<boolean> {
-      const rows = await sql<{ one: number }[]>`
-        SELECT 1 AS one FROM chat_group_bans
-        WHERE group_id = ${groupId} AND user_id = ${userId}
-        LIMIT 1
+    async joinUnlessBanned(groupId: string, userId: string): Promise<boolean> {
+      // The ban check and the insert are one statement, so a kick that commits after the caller's own
+      // checks still keeps the user out, and a self-join never clears a ban the way an invite does.
+      const rows = await sql<{ user_id: string }[]>`
+        INSERT INTO chat_group_members (group_id, user_id, role)
+        SELECT ${groupId}::uuid, ${userId}::uuid, 'member'
+        WHERE NOT EXISTS (
+          SELECT 1 FROM chat_group_bans
+          WHERE group_id = ${groupId} AND user_id = ${userId}
+        )
+        ON CONFLICT (group_id, user_id) DO NOTHING
+        RETURNING user_id
       `
       return rows.length > 0
+    },
+
+    async banMember(groupId: string, userId: string, bannedBy: string): Promise<void> {
+      await sql.begin(async (tx) => {
+        await tx`
+          DELETE FROM chat_group_members
+          WHERE group_id = ${groupId} AND user_id = ${userId}
+        `
+        await tx`
+          INSERT INTO chat_group_bans (group_id, user_id, banned_by)
+          VALUES (${groupId}, ${userId}, ${bannedBy})
+          ON CONFLICT (group_id, user_id)
+            DO UPDATE SET banned_by = ${bannedBy}, banned_at = now()
+        `
+      })
     },
 
     async setRole(groupId: string, userId: string, role: "admin" | "member"): Promise<boolean> {

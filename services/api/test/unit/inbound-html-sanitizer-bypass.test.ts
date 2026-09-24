@@ -200,6 +200,94 @@ describe("sanitizer is linear at the size cap (H14)", () => {
     expect(sanitizeInboundHtml('<img alt="a" alt="b">')).toBe('<img alt="a">')
   })
 
+  it("keeps the spaces in title and alt text", () => {
+    expect(sanitizeInboundHtml('<a title="Click here now" href="https://x.test/a">go</a>')).toBe(
+      '<a title="Click here now" href="https://x.test/a">go</a>',
+    )
+    expect(sanitizeInboundHtml('<img alt="City of Los Angeles logo">')).toBe(
+      '<img alt="City of Los Angeles logo">',
+    )
+  })
+
+  it("keeps an href's own spaces so the link still points where the sender meant", () => {
+    expect(sanitizeInboundHtml('<a href=" https://x.test/a b ">go</a>')).toBe(
+      '<a href="https://x.test/a b">go</a>',
+    )
+  })
+
+  it("decodes common named entities once instead of double-encoding them", () => {
+    expect(sanitizeInboundHtml('<a title="Tom &quot;T&quot; &amp; co">x</a>')).toBe(
+      '<a title="Tom &quot;T&quot; &amp; co">x</a>',
+    )
+    expect(sanitizeInboundHtml('<img alt="a&nbsp;b &lt;c&gt; it&apos;s">')).toBe(
+      '<img alt="a\u00a0b &lt;c&gt; it\'s">',
+    )
+  })
+
+  it("still refuses a script scheme hidden behind spaces, controls or named entities", () => {
+    for (const href of [
+      "java script:alert(1)",
+      " \u0001javascript:alert(1)",
+      "java&Tab;script:alert(1)",
+      "javascript&colon;alert(1)",
+      "&#x6A;ava&#x09;script:alert(1)",
+    ]) {
+      expect(sanitizeInboundHtml(`<a href="${href}">x</a>`)).toBe("<a>x</a>")
+    }
+  })
+
+  it("drops an href whose scheme only reads as http once inner spaces are removed", () => {
+    for (const href of ["h ttp:x", "ht tp://evil.test/", "mail to:someone@x.test", "http :x"]) {
+      expect(sanitizeInboundHtml(`<a href="${href}">x</a>`)).toBe("<a>x</a>")
+    }
+  })
+
+  it("keeps an absolute link a browser reads the same way after its own URL cleanup", () => {
+    expect(sanitizeInboundHtml('<a href="&#x20;\u0001https://x.test/a">go</a>')).toBe(
+      '<a href="https://x.test/a">go</a>',
+    )
+    expect(sanitizeInboundHtml('<a href="ht&#x09;tps://x.test/&#x0A;a">go</a>')).toBe(
+      '<a href="https://x.test/a">go</a>',
+    )
+  })
+
+  it("refuses every hostile href and attribute from the review probe", () => {
+    const hostile = [
+      '<a href="java&#x09;script:alert(1)">x</a>',
+      '<a href="java&#9;script:alert(1)">x</a>',
+      '<a href="&#x20;javascript:alert(1)">x</a>',
+      '<a href="&#32;&#32;javascript:alert(1)">x</a>',
+      '<a href="javascript&colon;alert(1)">x</a>',
+      '<a href="&amp;#106;avascript:alert(1)">x</a>',
+      '<a href="&#106;&#97;&#118;&#97;script:alert(1)">x</a>',
+      '<a href="&#0;javascript:alert(1)">x</a>',
+      '<a href="java\u0000script:alert(1)">x</a>',
+      '<a href="java&NewLine;script:alert(1)">x</a>',
+      '<a href="&NewLine;javascript:alert(1)">x</a>',
+      '<a href="JaVaScRiPt:alert(1)">x</a>',
+      "<a href='JAVASCRIPT:alert(1)'>x</a>",
+      '<a href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">x</a>',
+      '<a href="DaTa:text/html,<script>alert(1)</script>">x</a>',
+      '<a href=" data:text/html,x">x</a>',
+      '<a href="vbscript:msgbox(1)">x</a>',
+      '<a href="x&quot; onclick=&quot;alert(1)">x</a>',
+      '<a href="https://x.test/&quot; onclick=&quot;alert(1)">x</a>',
+      '<img src=x onerror="alert(1)" alt="a">',
+      '<a href="https://x.test" style="position:fixed;inset:0">x</a>',
+      '<img alt="a" style="background:url(javascript:alert(1))">',
+    ]
+    expect(hostile).toHaveLength(22)
+    for (const html of hostile) {
+      const out = sanitizeInboundHtml(html) ?? ""
+      const hrefs = [...out.matchAll(/href="([^"]*)"/g)].map((m) => m[1]!)
+      for (const href of hrefs) expect(href).toMatch(/^(?:https?:|mailto:)/i)
+      const attributeNames = [...out.replace(/="[^"]*"/g, "").matchAll(/\s([^\s=>]+)/g)].map((m) =>
+        m[1]!.toLowerCase(),
+      )
+      for (const name of attributeNames) expect(["href", "title", "alt"]).toContain(name)
+    }
+  })
+
   it("still refuses a body over the size cap", () => {
     expect(sanitizeInboundHtml("a".repeat(INBOUND_HTML_MAX_CHARS + 1))).toBeNull()
   })

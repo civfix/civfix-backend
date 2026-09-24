@@ -28,6 +28,7 @@ import {
   type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
 import { chatHistoryPayload, neutralizeChatViewerFields } from "./chat-route-helpers.js"
+import { chatMentionDeps, type ChatMentionSeam } from "./chat-gateway-wiring.js"
 
 const DmIdParamsSchema = z.object({ id: IdSchema }).strict()
 
@@ -53,6 +54,10 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
   }
 
   const peerOf = makeDmPeerOf({ getThread: (threadId) => dmRepo().getThread(threadId) })
+
+  const chatMentions: ChatMentionSeam | undefined =
+    app.chatOverrides?.chatMentions ??
+    (container.env.USE_FAKE_CHAT ? undefined : chatMentionDeps(app, container))
 
   const loadUser: DmUserLookup = async (userId) => {
     const store = app.authServices?.users
@@ -145,6 +150,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
         dm: dmRepo(),
         dmPeerOf: peerOf,
         isBlockedEitherWay: (a, b) => blocksRepo().isBlockedEitherWay(a, b),
+        ...(chatMentions ? { chatMentions } : {}),
         broadcastEvent: (roomKey, frame) => container.chatService.broadcastEvent?.(roomKey, frame),
       })
       const updated = await edits.editMessage({

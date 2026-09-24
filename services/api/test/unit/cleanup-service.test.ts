@@ -826,7 +826,11 @@ describe("requestResources (D19 event resource request)", () => {
     const creator = makeCleanupService({
       tickets: TEST_TICKET_SIGNER,
       repo: r,
-      counters: { incr: () => Promise.resolve(1), incrBy: () => Promise.resolve(1) },
+      counters: {
+        incr: () => Promise.resolve(1),
+        incrBy: () => Promise.resolve(1),
+        decrBy: () => Promise.resolve(0),
+      },
     })
     return { repo: r, svc, sends, creator, organizationId: organization.id }
   }

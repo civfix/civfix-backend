@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { AppError, MAX_ORG_INVITES_PER_ORG } from "@civfix/shared"
 import type {
   OrganizationInviteRole,
   OrganizationInviteStatus,
@@ -52,6 +53,7 @@ import {
   inviterRevocationReason,
   roleChangeWithdrawsInvites,
 } from "./organization-repository.types.js"
+import { ORG_INVITE_CAP_MESSAGE } from "./organization-repository.types.js"
 
 interface StoredOrganization {
   id: string
@@ -463,7 +465,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     })
     this.audits.push({
       actorId: args.actorId,
-      action: "org.member_role_changed",
+      action: "org.member_added",
       target: `organization:${args.organizationId}`,
     })
     return Promise.resolve("added")
@@ -951,6 +953,15 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       return Promise.resolve({ kind: "forbidden" })
     }
     this.expireInvites(args.organizationId, args.now)
+    const pending = this.invites.filter(
+      (i) =>
+        i.organizationId === args.organizationId &&
+        i.status === "pending" &&
+        i.expiresAt.getTime() > args.now.getTime(),
+    ).length
+    if (pending >= MAX_ORG_INVITES_PER_ORG) {
+      return Promise.reject(AppError.conflict(ORG_INVITE_CAP_MESSAGE))
+    }
     const email = args.email.toLowerCase()
     const open = this.invites.find(
       (i) =>

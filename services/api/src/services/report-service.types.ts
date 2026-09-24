@@ -178,14 +178,16 @@ export interface ReportRepository {
   resolveByOwner(
     reportId: string,
     userId: string,
-    input: { status: ReportStatus; note: string },
-  ): Promise<"updated" | "not_found" | "forbidden" | "invalid_state">
+    input: { status: OwnerToggleStatus; note: string },
+  ): Promise<"updated" | "unchanged" | "not_found" | "forbidden" | "invalid_state">
   setVisibilityByOwner(
     reportId: string,
     userId: string,
     input: { visibility: ReportVisibility; note: string; kind: ReportVisibilityTimelineKind },
   ): Promise<"updated" | "unchanged" | "not_found" | "forbidden">
 }
+
+export type OwnerToggleStatus = Extract<ReportStatus, "resolved" | "published">
 
 export interface BBox {
   west: number

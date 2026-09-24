@@ -1,4 +1,4 @@
-import { AppError, MAX_EVENT_PAGE_BLOCKS } from "@civfix/shared"
+import { AppError, MAX_EVENT_PAGE_BLOCKS, PAGE_SLUG_MAX, PageSlugSchema } from "@civfix/shared"
 import type {
   CheckEventPageSlugRequest,
   CheckEventPageSlugResponse,
@@ -26,6 +26,20 @@ export const HOST_PAGE_PUBLISH_COUNTER_KEY = "host:pagePublish"
 export const HOST_PAGE_PUBLISH_PER_DAY = 20
 
 export const DAY_SECONDS = 24 * 60 * 60
+
+const RESERVED_SLUG_SUFFIXES = ["-event", "-2", "-3"] as const
+
+const TAKEN_SLUG_SUFFIXES = ["-2", "-3", "-4"] as const
+
+function pageUnderReviewError(): AppError {
+  return AppError.forbidden("This page is under review and cannot be published.")
+}
+
+function slugWithSuffix(slug: string, suffix: string): string | null {
+  const base = slug.slice(0, PAGE_SLUG_MAX - suffix.length).replace(/-+$/u, "")
+  const candidate = `${base}${suffix}`
+  return PageSlugSchema.safeParse(candidate).success ? candidate : null
+}
 
 export interface PageServiceDeps {
   repo: HostRegistrationRepository
@@ -228,6 +242,7 @@ export function makePageService(deps: PageServiceDeps): PageService {
 
   async function coverUrlOf(record: PageRecord): Promise<string | null> {
     if (record.coverKey === null || deps.presignCover === undefined) return null
+    // A signing failure costs the page its image, never the page: presigning is decoration.
     try {
       return (await deps.presignCover(record.coverKey)).url
     } catch (err) {
@@ -242,13 +257,7 @@ export function makePageService(deps: PageServiceDeps): PageService {
   ): Promise<EventPageBlock[]> {
     const ids = blockMediaIds(blocks)
     if (ids.length === 0 || deps.presignCover === undefined) return [...blocks]
-    let keys: Map<string, string>
-    try {
-      keys = await deps.repo.mediaKeysFor(cleanupId, ids)
-    } catch (err) {
-      deps.logger?.warn({ err }, "event page: block media lookup failed (suppressed)")
-      return [...blocks]
-    }
+    const keys = await deps.repo.mediaKeysFor(cleanupId, ids)
     const urls = new Map<string, string>()
     await mapWithLimit([...keys.entries()], PRESIGN_CONCURRENCY, async ([id, key]) => {
       try {
@@ -293,6 +302,19 @@ export function makePageService(deps: PageServiceDeps): PageService {
       { ...record, blocks: await resolveBlockMedia(record.cleanupId, record.blocks) },
       await coverUrlOf(record),
     )
+  }
+
+  async function freeSlugSuggestion(
+    cleanupId: string,
+    slug: string,
+    suffixes: readonly string[],
+  ): Promise<string | null> {
+    for (const suffix of suffixes) {
+      const candidate = slugWithSuffix(slug, suffix)
+      if (candidate === null || RESERVED_SLUGS.has(candidate)) continue
+      if (!(await deps.repo.slugTaken(cleanupId, candidate))) return candidate
+    }
+    return null
   }
 
   async function reservePublishBudget(actorId: string): Promise<void> {
@@ -349,7 +371,6 @@ export function makePageService(deps: PageServiceDeps): PageService {
     },
 
     async publish(input, actorId): Promise<EventPageDTO> {
-      await reservePublishBudget(actorId)
       const current = await deps.repo.getPage(input.id)
       if (current === null) throw AppError.notFound("Cleanup not found")
       if (input.published) {
@@ -359,18 +380,19 @@ export function makePageService(deps: PageServiceDeps): PageService {
         if (current.blocks.length === 0) {
           throw AppError.validation({ blocks: "add at least one block before publishing" })
         }
-        if (current.flaggedAt !== null) {
-          throw AppError.forbidden("This page is under review and cannot be published.")
-        }
+        if (current.flaggedAt !== null) throw pageUnderReviewError()
       }
 
-      const record = await deps.repo.publishPage({
+      await reservePublishBudget(actorId)
+      const outcome = await deps.repo.publishPage({
         cleanupId: input.id,
         published: input.published,
         actorId,
         now: now(),
       })
-      if (record === null) throw AppError.notFound("Cleanup not found")
+      if (outcome.kind === "not_found") throw AppError.notFound("Cleanup not found")
+      if (outcome.kind === "flagged") throw pageUnderReviewError()
+      const record = outcome.record
       await deps.audit?.({
         actorId,
         action: "event.page_published",
@@ -382,11 +404,19 @@ export function makePageService(deps: PageServiceDeps): PageService {
 
     async checkSlug(query): Promise<CheckEventPageSlugResponse> {
       if (RESERVED_SLUGS.has(query.slug)) {
-        return { available: false, reason: "reserved", suggestion: `${query.slug}-event` }
+        return {
+          available: false,
+          reason: "reserved",
+          suggestion: await freeSlugSuggestion(query.id, query.slug, RESERVED_SLUG_SUFFIXES),
+        }
       }
       const taken = await deps.repo.slugTaken(query.id, query.slug)
       if (!taken) return { available: true, reason: null, suggestion: null }
-      return { available: false, reason: "taken", suggestion: `${query.slug}-2` }
+      return {
+        available: false,
+        reason: "taken",
+        suggestion: await freeSlugSuggestion(query.id, query.slug, TAKEN_SLUG_SUFFIXES),
+      }
     },
 
     async getPublicEventPage(query, viewerUserId): Promise<PublicEventPageDTO> {

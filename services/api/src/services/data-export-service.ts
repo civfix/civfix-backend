@@ -1,8 +1,11 @@
+import { AppError, ErrorCode } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
 import type { Mailer } from "@civfix/shared/interfaces"
 import type { UserStore } from "../auth/stores.js"
 import { heading, paragraph } from "../adapters/email-blocks.js"
 import { renderEmailBody } from "../adapters/email-layout.js"
+import { mailFailure } from "../adapters/mail-failure.js"
+import { writeAudit } from "./admin/audit.js"
 
 export interface DataExportServiceDeps {
   sql: Sql
@@ -12,8 +15,17 @@ export interface DataExportServiceDeps {
   supportEmail: string
 }
 
+/**
+ * Why a built export never reached the user: the provider refused its size, refused the address, or
+ * refused the message itself (or kept refusing it until the retries ran out).
+ */
+export type DataExportUndeliverable = "oversize" | "permanent" | "rejected"
+
 export interface DataExportService {
-  exportData(userId: string): Promise<{ ok: true; email: string | null }>
+  exportData(
+    userId: string,
+  ): Promise<{ ok: true; email: string | null; undeliverable?: DataExportUndeliverable }>
+  recordUndeliverable(userId: string, kind: DataExportUndeliverable): Promise<void>
 }
 
 export const DATA_EXPORT_MAX_ROWS = 50_000
@@ -54,11 +66,83 @@ export function buildDataExportEmail(
   return { subject, text, html }
 }
 
+/**
+ * The JSON key order of the export's sections. Truncation is reported in this order even though the byte
+ * budget is spent on the small structured sections first.
+ */
+const DATA_EXPORT_SECTION_ORDER = [
+  "reports",
+  "posts",
+  "comments",
+  "chatMessages",
+  "dmMessages",
+  "volunteerHours",
+  "cleanupsOrganized",
+  "cleanupsJoined",
+  "following",
+  "followers",
+  "blocks",
+  "pushTokens",
+  "certificates",
+  "organizations",
+  "eventTeamMemberships",
+  "eventConsents",
+  "eventRegistrations",
+  "eventAnswers",
+  "eventCheckins",
+] as const
+
+export function buildDataExportUndeliverableEmail(supportEmail: string): {
+  subject: string
+  text: string
+  html: string
+} {
+  const subject = "Your civfix data export"
+  const blocks = [
+    heading("Your civfix data export"),
+    paragraph(
+      "Your data export was too large to send by email. Your request is on record, and our team " +
+        `will send you a complete copy. You can also email ${supportEmail} about it.`,
+    ),
+    paragraph("If you did not request this, you can ignore this email.", { muted: true }),
+  ]
+  const { text, html } = renderEmailBody({ preheader: subject, blocks })
+  return { subject, text, html }
+}
+
 export function makeDataExportService(deps: DataExportServiceDeps): DataExportService {
   const { sql, mailer, users, fromNoReply, supportEmail } = deps
 
+  /**
+   * The operator-visible trail for an export that has to be fulfilled by hand. Written before any notice
+   * so the request is on record even if the notice fails. Carries no address or export content.
+   */
+  async function recordUndeliverable(userId: string, kind: DataExportUndeliverable): Promise<void> {
+    await writeAudit(sql, {
+      actorId: null,
+      action: "data_export.undeliverable",
+      target: `user:${userId}`,
+      meta: { reason: kind },
+    })
+  }
+
+  async function sendUndeliverableNotice(to: string): Promise<void> {
+    const notice = buildDataExportUndeliverableEmail(supportEmail)
+    try {
+      await mailer.sendOutbound({ from: fromNoReply, to, ...notice })
+    } catch (err) {
+      // The request is already on record for an operator, so a failed notice completes the job rather
+      // than retrying, which would rebuild the export and hit the same size refusal again.
+      throw new AppError(ErrorCode.CONFLICT, "The data export notice could not be sent", {
+        cause: err,
+      })
+    }
+  }
+
   return {
-    async exportData(userId: string): Promise<{ ok: true; email: string | null }> {
+    async exportData(
+      userId: string,
+    ): Promise<{ ok: true; email: string | null; undeliverable?: DataExportUndeliverable }> {
       const profileRows = await sql<
         {
           id: string
@@ -385,10 +469,14 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
       const email =
         profile?.email ?? (users ? ((await users.findById(userId))?.email ?? null) : null)
 
-      const truncatedSections: string[] = []
+      const truncatedCaps = new Map<string, number>()
       let usedBytes = 0
 
-      const fit = <T>(name: string, rows: T[], rowCap: number): T[] => {
+      const fit = <T>(
+        name: (typeof DATA_EXPORT_SECTION_ORDER)[number],
+        rows: T[],
+        rowCap: number,
+      ): T[] => {
         let truncated = false
         let source = rows
         if (source.length > rowCap) {
@@ -405,54 +493,90 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
           usedBytes += size
           kept.push(row)
         }
-        if (truncated) truncatedSections.push(name)
+        if (truncated) truncatedCaps.set(name, rowCap)
         return kept
       }
+
+      // The budget is spent on the small structured sections first, so one heavy free-text history
+      // (thousands of chat messages) cannot crowd out a user's certificates, consents or registrations.
+      const pushTokensFit = fit(
+        "pushTokens",
+        pushTokenRows.map((t) => ({
+          id: t.id,
+          platform: t.platform,
+          token: "[REDACTED]",
+          createdAt: t.created_at,
+          revokedAt: t.revoked_at,
+        })),
+        DATA_EXPORT_MAX_ROWS,
+      )
+      const certificatesFit = fit("certificates", certificateRows, DATA_EXPORT_MAX_ROWS)
+      const organizationsFit = fit("organizations", organizationRows, DATA_EXPORT_MAX_ROWS)
+      const eventConsentsFit = fit("eventConsents", eventConsentRows, DATA_EXPORT_MAX_ROWS)
+      const eventRegistrationsFit = fit(
+        "eventRegistrations",
+        eventRegistrationRows,
+        DATA_EXPORT_MAX_ROWS,
+      )
+      const eventCheckinsFit = fit("eventCheckins", eventCheckinRows, DATA_EXPORT_MAX_ROWS)
+      const eventTeamMembershipsFit = fit(
+        "eventTeamMemberships",
+        eventTeamMembershipRows,
+        DATA_EXPORT_MAX_ROWS,
+      )
+      const volunteerHoursFit = fit("volunteerHours", volunteerHourRows, DATA_EXPORT_MAX_ROWS)
+      const cleanupsOrganizedFit = fit(
+        "cleanupsOrganized",
+        cleanupsOrganizedRows,
+        DATA_EXPORT_MAX_ROWS,
+      )
+      const cleanupsJoinedFit = fit("cleanupsJoined", cleanupsJoinedRows, DATA_EXPORT_MAX_ROWS)
+      const followingFit = fit("following", followingRows, DATA_EXPORT_MAX_ROWS)
+      const followersFit = fit("followers", followerRows, DATA_EXPORT_MAX_ROWS)
+      const blocksFit = fit("blocks", blockRows, DATA_EXPORT_MAX_ROWS)
+      const reportsFit = fit("reports", reportRows, DATA_EXPORT_MAX_ROWS)
+      const commentsFit = fit("comments", commentRows, DATA_EXPORT_MAX_ROWS)
+      const eventAnswersFit = fit("eventAnswers", eventAnswerRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS)
+      const postsFit = fit("posts", postRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS)
+      const chatMessagesFit = fit("chatMessages", chatRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS)
+      const dmMessagesFit = fit("dmMessages", dmRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS)
+
+      const truncatedSections = DATA_EXPORT_SECTION_ORDER.filter((name) => truncatedCaps.has(name))
+      const sectionCaps = Object.fromEntries(
+        truncatedSections.map((name) => [name, truncatedCaps.get(name)]),
+      )
 
       const exportObject = {
         exportedAt: new Date().toISOString(),
         format: "civfix-data-export@1",
         userId,
         profile,
-        reports: fit("reports", reportRows, DATA_EXPORT_MAX_ROWS),
-        posts: fit("posts", postRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS),
-        comments: fit("comments", commentRows, DATA_EXPORT_MAX_ROWS),
-        chatMessages: fit("chatMessages", chatRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS),
-        dmMessages: fit("dmMessages", dmRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS),
-        volunteerHours: fit("volunteerHours", volunteerHourRows, DATA_EXPORT_MAX_ROWS),
-        cleanupsOrganized: fit("cleanupsOrganized", cleanupsOrganizedRows, DATA_EXPORT_MAX_ROWS),
-        cleanupsJoined: fit("cleanupsJoined", cleanupsJoinedRows, DATA_EXPORT_MAX_ROWS),
-        following: fit("following", followingRows, DATA_EXPORT_MAX_ROWS).map((f) => f.followee_id),
-        followers: fit("followers", followerRows, DATA_EXPORT_MAX_ROWS).map((f) => f.follower_id),
-        blocks: fit("blocks", blockRows, DATA_EXPORT_MAX_ROWS).map((b) => b.blocked_id),
+        reports: reportsFit,
+        posts: postsFit,
+        comments: commentsFit,
+        chatMessages: chatMessagesFit,
+        dmMessages: dmMessagesFit,
+        volunteerHours: volunteerHoursFit,
+        cleanupsOrganized: cleanupsOrganizedFit,
+        cleanupsJoined: cleanupsJoinedFit,
+        following: followingFit.map((f) => f.followee_id),
+        followers: followersFit.map((f) => f.follower_id),
+        blocks: blocksFit.map((b) => b.blocked_id),
         notificationPrefs: notificationPrefRows[0] ?? null,
-        pushTokens: fit(
-          "pushTokens",
-          pushTokenRows.map((t) => ({
-            id: t.id,
-            platform: t.platform,
-            token: "[REDACTED]",
-            createdAt: t.created_at,
-            revokedAt: t.revoked_at,
-          })),
-          DATA_EXPORT_MAX_ROWS,
-        ),
-        certificates: fit("certificates", certificateRows, DATA_EXPORT_MAX_ROWS),
-        organizations: fit("organizations", organizationRows, DATA_EXPORT_MAX_ROWS),
-        eventTeamMemberships: fit(
-          "eventTeamMemberships",
-          eventTeamMembershipRows,
-          DATA_EXPORT_MAX_ROWS,
-        ),
-        eventConsents: fit("eventConsents", eventConsentRows, DATA_EXPORT_MAX_ROWS),
-        eventRegistrations: fit("eventRegistrations", eventRegistrationRows, DATA_EXPORT_MAX_ROWS),
-        eventAnswers: fit("eventAnswers", eventAnswerRows, DATA_EXPORT_FREE_TEXT_MAX_ROWS),
-        eventCheckins: fit("eventCheckins", eventCheckinRows, DATA_EXPORT_MAX_ROWS),
+        pushTokens: pushTokensFit,
+        certificates: certificatesFit,
+        organizations: organizationsFit,
+        eventTeamMemberships: eventTeamMembershipsFit,
+        eventConsents: eventConsentsFit,
+        eventRegistrations: eventRegistrationsFit,
+        eventAnswers: eventAnswersFit,
+        eventCheckins: eventCheckinsFit,
         truncated:
           truncatedSections.length > 0
             ? {
                 sections: truncatedSections,
                 capPerSection: DATA_EXPORT_MAX_ROWS,
+                sectionCaps,
                 byteBudget: DATA_EXPORT_BYTE_BUDGET,
                 note: `These sections were clipped because this export reached its per-section or overall size limit. Email ${supportEmail} to request a complete copy of the truncated sections.`,
               }
@@ -465,22 +589,53 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
 
       const rendered = buildDataExportEmail(supportEmail, truncatedSections)
 
-      await mailer.sendOutbound({
-        from: fromNoReply,
-        to: email,
-        subject: rendered.subject,
-        text: rendered.text,
-        html: rendered.html,
-        attachments: [
-          {
-            filename: "civfix-export.json",
-            contentType: "application/json",
-            content: bytes,
-          },
-        ],
-      })
+      try {
+        await mailer.sendOutbound({
+          from: fromNoReply,
+          to: email,
+          subject: rendered.subject,
+          text: rendered.text,
+          html: rendered.html,
+          attachments: [
+            {
+              filename: "civfix-export.json",
+              contentType: "application/json",
+              content: bytes,
+            },
+          ],
+        })
+      } catch (err) {
+        const kind = undeliverableKind(err)
+        if (kind === null) throw err
+        await recordUndeliverable(userId, kind)
+        // A rejected recipient would bounce a notice too; only a size refusal can still reach the user.
+        if (kind === "oversize") await sendUndeliverableNotice(email)
+        return { ok: true, email, undeliverable: kind }
+      }
 
       return { ok: true, email }
     },
+
+    recordUndeliverable,
   }
+}
+
+const SMTP_PERMANENT_MIN = 500
+
+// A 5xx the provider sends in answer to the message body refuses this message, not our credentials or
+// sender, so rebuilding and resending the same export can only be refused again.
+function isMessageRejection(failure: ReturnType<typeof mailFailure>): boolean {
+  return (
+    failure.code === "EMESSAGE" &&
+    failure.command === "DATA" &&
+    failure.responseCode !== undefined &&
+    failure.responseCode >= SMTP_PERMANENT_MIN
+  )
+}
+
+function undeliverableKind(err: unknown): DataExportUndeliverable | null {
+  const failure = mailFailure(err)
+  if (failure.kind === "oversize" || failure.kind === "permanent") return failure.kind
+  if (isMessageRejection(failure)) return "rejected"
+  return null
 }

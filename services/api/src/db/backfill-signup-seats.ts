@@ -32,6 +32,20 @@ type SqlFragment = postgres.Fragment
 
 export const SIGNUP_SEAT_BACKFILL_BATCH = 500
 
+export const SIGNUP_SEAT_BACKFILL_MAX_BATCH = 5000
+
+const BATCH_FLAG = "--batch"
+
+// undefined = flag absent (use the default); null = a value that is not a usable LIMIT.
+export function parseSignupSeatBatchArg(argv: readonly string[]): number | undefined | null {
+  const at = argv.indexOf(BATCH_FLAG)
+  if (at < 0) return undefined
+  const raw = argv[at + 1]
+  if (raw === undefined || !/^\d+$/.test(raw)) return null
+  const size = Number(raw)
+  return size >= 1 && size <= SIGNUP_SEAT_BACKFILL_MAX_BATCH ? size : null
+}
+
 class RehearsalRollback extends Error {
   constructor(readonly written: number) {
     super("rehearsal rollback")
@@ -203,9 +217,13 @@ export async function backfillSignupSeats(
 
 export async function main(): Promise<void> {
   const commit = process.argv.includes("--yes")
-  const batchIndex = process.argv.indexOf("--batch")
-  const batchSize =
-    batchIndex >= 0 ? Number(process.argv[batchIndex + 1] ?? SIGNUP_SEAT_BACKFILL_BATCH) : undefined
+  const batchSize = parseSignupSeatBatchArg(process.argv)
+  if (batchSize === null) {
+    console.error(
+      `backfill-signup-seats: ${BATCH_FLAG} takes an integer from 1 to ${SIGNUP_SEAT_BACKFILL_MAX_BATCH}`,
+    )
+    process.exit(2)
+  }
   const signer = makeTicketTokenSigner(loadEnv().TICKET_TOKEN_SECRET.trim())
 
   console.log(

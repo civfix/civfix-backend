@@ -413,6 +413,7 @@ describe("guest rsvp: the SMS channel is gated and cost-capped", () => {
     const broken: CounterStore = {
       incr: () => Promise.reject(new Error("redis is down")),
       incrBy: () => Promise.reject(new Error("redis is down")),
+      decrBy: () => Promise.reject(new Error("redis is down")),
     }
     const h = build({ smsGuestEnabled: true, counters: broken })
 
@@ -805,7 +806,7 @@ describe("guest rsvp: cancelling", () => {
     expect(h.repo.guests).toHaveLength(1)
   })
 
-  it("reports the registration outcome when the event has no seat left", async () => {
+  it("refuses the verify when the event has no seat left, taking the new guest back off the list", async () => {
     const h = build({
       registrations: {
         register: () =>
@@ -813,11 +814,12 @@ describe("guest rsvp: cancelling", () => {
       },
     })
     await h.service.requestCode(emailRequest(), ctx)
-    const verified = await h.service.verifyCode(emailVerify(), ctx)
 
-    expect(verified.joined).toBe(true)
-    expect(verified.registration).toBeNull()
-    expect(verified.registrationOutcome).toBe("full")
+    await expect(h.service.verifyCode(emailVerify(), ctx)).rejects.toMatchObject({
+      code: "CONFLICT",
+    })
+    expect(h.repo.guests).toHaveLength(1)
+    expect(h.repo.guests[0]?.cancelledAt).not.toBeNull()
   })
 
   it("refuses a stale consent version before the code is ever sent", async () => {

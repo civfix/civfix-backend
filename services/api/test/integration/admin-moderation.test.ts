@@ -301,6 +301,66 @@ describe.skipIf(!pg)("admin moderation repository (integration: real schema)", (
     expect(um?.removals).toBe(1)
   })
 
+  describe("owner takedown strikes", () => {
+    async function strikesFor(userId: string): Promise<number> {
+      const rows = await h.sql<{ strikes: number }[]>`
+        SELECT strikes FROM user_moderation WHERE user_id = ${userId}
+      `
+      return rows[0]?.strikes ?? 0
+    }
+
+    function ownerRequest(reportId: string, reporterUserId: string) {
+      return {
+        kind: "user_report" as const,
+        subjectType: "report" as const,
+        subjectId: reportId,
+        flag: "Owner takedown request",
+        reason: "please remove",
+        reporter: "@owner",
+        reporterUserId,
+        priority: "high" as const,
+        dedupeOpen: true,
+      }
+    }
+
+    it("a pure owner takedown skips the strike", async () => {
+      const owner = await insertUser(h, testHandle())
+      const reportId = await insertReport(h, { status: "published", reporterUserId: owner })
+      const id = (await repo.createItem(ownerRequest(reportId, owner)))!
+      await repo.remove(id, { actorId: null, reason: null })
+      expect(await strikesFor(owner)).toBe(0)
+    })
+
+    it("an owner request folded into a pipeline hold still strikes", async () => {
+      const owner = await insertUser(h, testHandle())
+      const reportId = await insertReport(h, { status: "held", reporterUserId: owner })
+      const id = await insertModerationItem(h.sql, {
+        kind: "image",
+        subjectType: "report",
+        subjectId: reportId,
+        flag: "Held media (NSFW)",
+        priority: "high",
+      })
+      await expect(repo.createItem(ownerRequest(reportId, owner))).resolves.toBeNull()
+      await repo.remove(id, { actorId: null, reason: null })
+      expect(await strikesFor(owner)).toBe(1)
+    })
+
+    it("a third-party report folded into an owner's item still strikes", async () => {
+      const owner = await insertUser(h, testHandle())
+      const other = await insertUser(h, testHandle())
+      const reportId = await insertReport(h, { status: "published", reporterUserId: owner })
+      const id = (await repo.createItem(ownerRequest(reportId, owner)))!
+      await repo.createItem({
+        ...ownerRequest(reportId, other),
+        flag: "User report",
+        priority: "med",
+      })
+      await repo.remove(id, { actorId: null, reason: null })
+      expect(await strikesFor(owner)).toBe(1)
+    })
+  })
+
   it("hold extends the hold (report stays held; item leaves the queue)", async () => {
     const reportId = await insertReport(h, { status: "held" })
     const id = (await repo.createItem({

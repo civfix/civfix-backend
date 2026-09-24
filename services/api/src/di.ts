@@ -135,6 +135,18 @@ export interface Container {
 
 export type NotificationLogger = Pick<FastifyBaseLogger, "warn" | "error">
 
+interface AdapterLogger {
+  warn(obj: unknown, msg?: string): void
+  error(obj: unknown, msg?: string): void
+}
+
+// Only reached when no server logger was ever attached (a run without a database never builds the
+// notification service that carries it).
+const PRE_SERVER_LOGGER: AdapterLogger = {
+  warn: (obj, msg) => console.warn(msg ?? "", obj),
+  error: (obj, msg) => console.error(msg ?? "", obj),
+}
+
 export function buildContainer(env: Env): Container {
   let dbHandle: DbHandle | undefined
   let redis: RedisClient | undefined
@@ -143,11 +155,30 @@ export function buildContainer(env: Env): Container {
 
   const csrf = makeCsrf(env)
 
+  // Adapters are built before buildServer hands over its logger, so they get a forwarder that resolves
+  // the server logger at call time instead of capturing a console fallback at construction.
+  const adapterLogger: AdapterLogger = {
+    warn: (obj, msg) => forwardLog("warn", obj, msg),
+    error: (obj, msg) => forwardLog("error", obj, msg),
+  }
+  function forwardLog(level: "warn" | "error", obj: unknown, msg: string | undefined): void {
+    if (serverLogger !== undefined) serverLogger[level](obj, msg)
+    else PRE_SERVER_LOGGER[level](obj, msg)
+  }
+
+  let closed = false
+  // A getter reached after shutdown would otherwise open a fresh pool that nothing ever closes.
+  function assertOpen(): void {
+    if (closed) throw new Error("DI container is closed")
+  }
+
   function getDb(): DbHandle {
+    assertOpen()
     if (!dbHandle) dbHandle = makeDb(env.DATABASE_URL)
     return dbHandle
   }
   function getRedis(): RedisClient {
+    assertOpen()
     if (!redis) {
       redis = makeRedis(env.REDIS_URL, {
         onError: (err) => serverLogger?.error({ err, component: "redis" }, "redis client error"),
@@ -265,6 +296,7 @@ export function buildContainer(env: Env): Container {
       (redisCounters ??= new RedisCounterStore(getRedis())).incr(key, ttlSeconds),
     incrBy: (key, by, ttlSeconds) =>
       (redisCounters ??= new RedisCounterStore(getRedis())).incrBy(key, by, ttlSeconds),
+    decrBy: (key, by) => (redisCounters ??= new RedisCounterStore(getRedis())).decrBy(key, by),
   }
   function getCounterStore(): CounterStore {
     return lazyCounters
@@ -363,6 +395,7 @@ export function buildContainer(env: Env): Container {
         fromNoReply: env.MAIL_FROM_NOREPLY,
         fromOutreach: env.MAIL_FROM_OUTREACH,
         timeoutMs: env.OCI_EMAIL_SMTP_TIMEOUT_MS,
+        logger: adapterLogger,
       })
 
   const smsSender: SmsSender = env.USE_FAKE_SMS
@@ -413,6 +446,7 @@ export function buildContainer(env: Env): Container {
           ? { turnstileHostnames: env.CF_TURNSTILE_HOSTNAMES }
           : {}),
         useRealNsfw: env.USE_REAL_NSFW,
+        log: (line, extra) => adapterLogger.warn(extra ?? {}, line),
       })
 
   let sharedPubSub: RedisChatPubSub | undefined
@@ -457,7 +491,7 @@ export function buildContainer(env: Env): Container {
             db: getDb().db,
             config: buildPushConfig(env),
             counters: getCounterStore(),
-            ...(serverLogger !== undefined ? { logger: serverLogger } : {}),
+            logger: adapterLogger,
           })
     }
     return pushSender
@@ -465,7 +499,7 @@ export function buildContainer(env: Env): Container {
 
   const jobs: Jobs = env.USE_FAKE_JOBS
     ? new FakeJobs()
-    : new PgBossJobs({ connectionString: env.DATABASE_URL })
+    : new PgBossJobs({ connectionString: env.DATABASE_URL, logger: adapterLogger })
 
   async function close(): Promise<void> {
     const maybePgBoss = jobs as { stop?: () => Promise<void> }
@@ -484,6 +518,9 @@ export function buildContainer(env: Env): Container {
       const maybePush = pushSender as { close?: () => Promise<void> }
       if (typeof maybePush.close === "function") await maybePush.close()
     }
+    // Only now: a graceful jobs stop waits for running handlers, which still need the pools, and
+    // whatever they opened is torn down below.
+    closed = true
     if (sharedPubSub) {
       await sharedPubSub.close()
       sharedPubSub = undefined
@@ -500,6 +537,16 @@ export function buildContainer(env: Env): Container {
       await dbHandle.close()
       dbHandle = undefined
     }
+    dmRepo = undefined
+    blocksRepo = undefined
+    volunteerHoursRepo = undefined
+    certificateRepo = undefined
+    postRepo = undefined
+    affiliationLoader = undefined
+    postService = undefined
+    notificationService = undefined
+    userChannel = undefined
+    pushSender = undefined
   }
 
   return {
@@ -576,7 +623,9 @@ function buildPushConfig(env: Env) {
       teamId: env.APNS_TEAM_ID,
       privateKey: env.APNS_PRIVATE_KEY,
       bundleId: env.APNS_BUNDLE_ID,
-      production: env.APNS_PRODUCTION ?? false,
+      // App Store and TestFlight builds register production-gateway tokens; only Xcode debug builds
+      // need the sandbox, so an unset flag must not route real devices to it.
+      production: env.APNS_PRODUCTION ?? true,
     }
   }
   if (env.FCM_SERVICE_ACCOUNT_JSON) {

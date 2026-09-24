@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { AppError, MAX_TEAM_INVITES_PER_EVENT } from "@civfix/shared"
 import type {
   CleanupMemberRole,
   CleanupStatus,
@@ -24,6 +25,7 @@ import type {
   PendingInviteForUserRecord,
   RevokeTeamInviteOutcome,
 } from "./host-team-repository.types.js"
+import { TEAM_INVITE_CAP_MESSAGE } from "./host-team-repository.types.js"
 
 interface StoredInvite {
   id: string
@@ -278,6 +280,12 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
         meta: { inviteId: open.id, from, to: args.role },
       })
       return Promise.resolve({ kind: "updated", invite: this.toInviteRecord(open) })
+    }
+    const pending = this.invites.filter(
+      (i) => i.cleanupId === args.cleanupId && i.status === "pending",
+    ).length
+    if (pending >= MAX_TEAM_INVITES_PER_EVENT) {
+      return Promise.reject(AppError.conflict(TEAM_INVITE_CAP_MESSAGE))
     }
     const invite: StoredInvite = {
       id: args.inviteId,

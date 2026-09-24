@@ -4,7 +4,7 @@ import type {
   NewMediaAsset,
 } from "../../src/services/media-intake-service.js"
 
-type StoredMedia = MediaAssetView
+type StoredMedia = MediaAssetView & { uploadEtag: string | null }
 
 export class InMemoryMediaRepository implements MediaRepository {
   readonly byId = new Map<string, StoredMedia>()
@@ -30,6 +30,7 @@ export class InMemoryMediaRepository implements MediaRepository {
       chatMessageId: null,
       postId: null,
       finalizedAt: null,
+      uploadEtag: null,
       createdAt: new Date(),
       uploader: row.uploader,
     }
@@ -50,13 +51,14 @@ export class InMemoryMediaRepository implements MediaRepository {
     return Promise.resolve(row ? { ...row } : null)
   }
 
-  markFinalized(uploadId: string): Promise<MediaAssetView | null> {
+  markFinalized(uploadId: string, uploadEtag: string | null): Promise<MediaAssetView | null> {
     const id = this.uploadIndex.get(uploadId)
     if (!id) return Promise.resolve(null)
     const row = this.byId.get(id)
     if (!row) return Promise.resolve(null)
     if (row.finalizedAt != null) return Promise.resolve(null)
     row.finalizedAt = new Date()
+    row.uploadEtag = uploadEtag
     return Promise.resolve({ ...row })
   }
 

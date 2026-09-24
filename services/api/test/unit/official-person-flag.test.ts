@@ -104,7 +104,7 @@ const rosterRow = (userId: string, over: { deleted?: boolean; blocked?: boolean 
 function rosterUsers(userId: string, over: { deleted?: boolean; blocked?: boolean } = {}) {
   const row = rosterRow(userId, over)
   return [
-    toReportParticipantDTO({ ...row, joined_at: AT.toISOString() }).user,
+    toReportParticipantDTO(row).user,
     toMemberView(row).user,
   ]
 }

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs"
 import { z } from "zod"
-import { loadImageLaneEntry, type WorkerLimits } from "../config.js"
+import { imageLaneTimeoutMs, loadImageLaneEntry, type WorkerLimits } from "../config.js"
 import { ImageProcessingError, processImage, type ProcessedImage } from "./image.js"
 import { perceptualHash } from "./phash.js"
 import { runTool, sandboxIdentity, SandboxSpawnError } from "./exec.js"
@@ -11,7 +11,7 @@ export interface ImageLaneResult extends ProcessedImage {
   phash: string | null
 }
 
-const SPAWN_OVERHEAD_MS = 5_000
+export { imageLaneTimeoutMs }
 
 export const ALLOWED_OUTPUT_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp"] as const
 
@@ -70,7 +70,7 @@ export async function processImageLane(
       )
     }
     const res = await runTool("image-lane", process.execPath, [entry, RUN_FLAG, request], {
-      timeoutMs: limits.imageTimeoutMs + SPAWN_OVERHEAD_MS,
+      timeoutMs: imageLaneTimeoutMs(limits),
       maxStdoutBytes: limits.maxToolStdoutBytes,
       cwd: scratch.dir,
     })
@@ -115,6 +115,7 @@ async function processInProcess(bytes: Uint8Array, limits: WorkerLimits): Promis
   try {
     phash = await perceptualHash(bytes, limits)
   } catch {
+    // The hash only feeds the non-blocking near-duplicate note; an image that decoded above still ships.
     phash = null
   }
   return { ...processed, phash }

@@ -93,6 +93,14 @@ export function makeQuestionService(deps: QuestionServiceDeps): QuestionService 
         }
       }
 
+      const typeIds = desired.map((q) => q.ticketTypeId).filter((id): id is string => id !== null)
+      if (typeIds.length > 0) {
+        const own = new Set((await deps.repo.listTicketTypes(input.id)).map((type) => type.id))
+        if (typeIds.some((id) => !own.has(id))) {
+          throw AppError.validation({ ticketTypeId: "not a ticket type on this event" })
+        }
+      }
+
       const records = await deps.repo.reconcileQuestions(input.id, desired, now())
       return { items: records.map(toEventQuestionDTO) }
     },

@@ -3,8 +3,8 @@
  *
  * Faithful to the Drizzle impl's observable behavior: it merges all seeded source records, drops the L4
  * read audits the SQL branch excludes, applies the same search / kind facet / direction, and keyset-pages
- * on (ts, id) through the shared pageInMemoryById helper so the cursor STRINGS match the Drizzle impl for
- * the same page. seedRecord appends a normalized source record; the public `records` array is inspectable.
+ * on (ts, id) through the shared pageInMemoryById helper so the cursors share the Drizzle impl's format
+ * (the Drizzle cursor carries microseconds a JS Date cannot hold, so the strings differ in precision). seedRecord appends a normalized source record; the public `records` array is inspectable.
  *
  * The kind facet is evaluated by CLASSIFYING each record (classifyActivity) rather than by re-deriving the
  * action prefixes — the fake is allowed the round trip the SQL branch cannot afford, and it is the sharper

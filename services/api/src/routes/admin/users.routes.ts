@@ -18,6 +18,7 @@ import { requireOperator } from "../../auth/admin-guard.js"
 import { route } from "../../versioning/route.js"
 import {
   idParam,
+  makeContainerMessageUpdateAnnouncer,
   overridableService,
   parse,
   parseBodyWithId,
@@ -67,7 +68,11 @@ export async function registerAdminUsersRoutes(
         applyStatus: (userId, status) => sessionSvc.applyAccountStatus(userId, status),
         revokeAll: (userId) => sessionSvc.revokeAllForUser(userId),
       }
-      return makeAdminUserService({ repo, sessions })
+      return makeAdminUserService({
+        repo,
+        sessions,
+        announceMessageUpdate: makeContainerMessageUpdateAnnouncer(container, app.log),
+      })
     },
   )
 

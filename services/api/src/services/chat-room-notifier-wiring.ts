@@ -7,7 +7,6 @@ import { makeDrizzleNotificationRepository } from "./notification-repository.dri
 import { makeConversationMutesRepository } from "./conversation-mutes-repository.drizzle.js"
 import { RedisChatPresence } from "../adapters/chat-presence.js"
 import { roomKeyFor } from "../ws/gateway.js"
-import { REPORT_CHAT_FANOUT_MEMBER_CAP } from "./report-chat-notifier.js"
 import {
   ROOM_FANOUT_THROTTLE_MS,
   type RoomFanoutKind,
@@ -36,18 +35,6 @@ export function makeContainerRoomFanoutDeps(
   })
 
   const conversationMutes = makeConversationMutesRepository(sql)
-  const isMuted = async (
-    userId: string,
-    kind: RoomFanoutKind,
-    roomId: string,
-  ): Promise<boolean> => {
-    try {
-      return await conversationMutes.isMuted(userId, kind, roomId)
-    } catch (err) {
-      logger?.warn({ err, kind }, "room fan-out mute lookup failed; notifying anyway")
-      return false
-    }
-  }
   const mutedUserIdsForRoom = (
     kind: RoomFanoutKind,
   ): ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined => {
@@ -73,7 +60,7 @@ export function makeContainerRoomFanoutDeps(
 
   const common = (kind: RoomFanoutKind): Omit<RoomFanoutNotifierDeps, "listMemberIds"> => ({
     notificationService,
-    isMuted: (userId, roomId) => isMuted(userId, kind, roomId),
+    isMuted: (userId, roomId) => conversationMutes.isMuted(userId, kind, roomId),
     ...(mutedUserIdsForRoom(kind) ? { mutedUserIdsFor: mutedUserIdsForRoom(kind) } : {}),
     ...(presence !== undefined ? { presence } : {}),
     roomKey: (roomId) => roomKeyFor(kind, roomId),
@@ -88,12 +75,11 @@ export function makeContainerRoomFanoutDeps(
   return {
     report: {
       ...common("report"),
-      listMemberIds: (reportId) =>
-        reportChatRepo.listMemberIds(reportId, REPORT_CHAT_FANOUT_MEMBER_CAP),
+      listMemberIds: (reportId, limit) => reportChatRepo.listMemberIds(reportId, limit),
     },
     group: {
       ...common("group"),
-      listMemberIds: (groupId) => groupRepo.listMemberIds(groupId),
+      listMemberIds: (groupId, limit) => groupRepo.listMemberIds(groupId, limit),
     },
   }
 }

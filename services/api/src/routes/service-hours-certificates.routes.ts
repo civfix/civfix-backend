@@ -21,7 +21,9 @@ import { z } from "zod"
 import type { FastifyInstance } from "fastify"
 import { perHost, perIdentity } from "../plugins/rate-limit.js"
 import type { Container } from "../di.js"
+import { webBaseUrlOf } from "../lib/base-url.js"
 import { requireAuth } from "../auth/context.js"
+import { CERTIFICATE_VERIFY_PATH } from "../services/certificate-pdf.js"
 import {
   makeCertificateService,
   type CertificateRepository,
@@ -93,6 +95,7 @@ export async function registerServiceHoursCertificateRoutes(
             }
           : container.getVolunteerHoursRepo()),
       storage: overrides?.storage ?? container.storage,
+      verifyBaseUrl: `${webBaseUrlOf(container.env)}${CERTIFICATE_VERIFY_PATH}`,
       logger: app.log,
     })
   }

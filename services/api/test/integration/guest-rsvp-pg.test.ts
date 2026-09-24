@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import type { CleanupStatus } from "@civfix/shared"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
-import { parseTimeCursor, type TimeCursor } from "../../src/db/cursor-helpers.js"
+import { parseKeysetCursor, type KeysetCursor } from "../../src/db/cursor-helpers.js"
 import { makeDrizzleGuestRsvpRepository } from "../../src/services/guest-rsvp-repository.drizzle.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
 import type { GuestRsvpRepository } from "../../src/services/guest-rsvp-service.js"
@@ -212,7 +212,7 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
     }
 
     const seen: string[] = []
-    let cursor: TimeCursor | null = null
+    let cursor: KeysetCursor | null = null
     for (let page = 0; page < 5; page++) {
       const result: { rows: { id: string }[]; nextCursor: string | null } = await repo.listGuests({
         cleanupId,
@@ -220,7 +220,7 @@ describe.skipIf(!pg)("guest rsvp storage (integration)", () => {
         limit: 2,
       })
       seen.push(...result.rows.map((r) => r.id))
-      cursor = parseTimeCursor(result.nextCursor, { direction: "desc" })
+      cursor = parseKeysetCursor(result.nextCursor, { direction: "desc" })
       if (cursor === null) break
     }
 

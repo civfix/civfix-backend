@@ -155,7 +155,9 @@ export const en = {
   "certificate.seal.line": "Verified record",
   "certificate.issuer.line": "Issued by civfix · civfix.org",
   "certificate.issuer.generated": "Generated {{timestamp}}",
-  "certificate.verify.prompt": "Verify this record at civfix.org/service-record",
+  // {{url}} = the deployment's verify page without its scheme, so a staging PDF never sends a reader to
+  // production to check it.
+  "certificate.verify.prompt": "Verify this record at {{url}}",
   "certificate.verify.fingerprint": "Document fingerprint",
   "certificate.footer.page": "Page {{page}} of {{total}}",
   "certificate.footer.timezone": "Dates shown in Pacific Time (America/Los_Angeles).",
@@ -167,7 +169,7 @@ export const en = {
   "email.otp.subject": "Your civfix sign-in code",
   "email.otp.body_line1": "Your civfix sign-in code is {{code}}.",
   "email.otp.body_expiry":
-    "It expires in 5 minutes. If you did not request it, you can ignore this email.",
+    "It expires in {{minutes}} minutes. If you did not request it, you can ignore this email.",
   // HTML-variant intro (the code itself is rendered in a styled block by the template).
   "email.otp.html_intro": "Your civfix sign-in code is:",
 

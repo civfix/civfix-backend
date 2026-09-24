@@ -130,6 +130,12 @@ export type HostEventPatch = Pick<
   | "hostReplyTo"
 > & { scheduledAt?: string }
 
+// `joined` means an RSVP (a cleanup_members row, which the organizer always has). Org standing
+// grants host powers and visibility, not attendance: clients key Join/Leave off this flag.
+function isAttending(standing: HostStanding): boolean {
+  return standing.eventRole !== null
+}
+
 function toDateOrNull(value: string | null | undefined): Date | null {
   if (value === null || value === undefined) return null
   return new Date(value)
@@ -162,6 +168,37 @@ const EVENT_CLOSED_MESSAGE = "This event is closed."
  * lone punctuation mark, short enough to allow a genuinely terse one ("Pier 3").
  */
 const MIN_EVENT_ADDRESS_LENGTH = 3
+
+const CANCELLED_EVENT_EDIT_MESSAGE = "This event has been cancelled and can no longer be edited."
+
+function refusalOnceEnded(
+  patch: UpdateCleanupPatchRequest,
+  current: CleanupRecord,
+): AppError | null {
+  const frozen =
+    patch.title !== undefined ||
+    patch.scheduledAt !== undefined ||
+    patch.lat !== undefined ||
+    patch.lng !== undefined ||
+    patch.type !== undefined ||
+    patch.eventKind !== undefined
+  if (frozen) {
+    return AppError.conflict(
+      "An event that has ended can't change its date, title, location or type.",
+    )
+  }
+  if (
+    patch.endsAt !== undefined &&
+    patch.endsAt !== null &&
+    new Date(patch.endsAt).getTime() !== current.endsAt.getTime()
+  ) {
+    return AppError.conflict("An event that has ended can't change its end time.")
+  }
+  if (patch.slots !== undefined) {
+    return AppError.validation({ slots: "Slots can't be changed after an event has ended." })
+  }
+  return null
+}
 
 function assertScheduledAtNotBackdated(next: string | undefined, stored: Date): void {
   if (next === undefined) return
@@ -1053,7 +1090,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       eventMediaUrls(record, { gallery: true }),
     ])
     return enrichOne(
-      toCleanupDTO(record, standing.eventRole !== null, linkedReports, standing.eventRole, {
+      toCleanupDTO(record, isAttending(standing), linkedReports, standing.eventRole, {
         slots: slotBoard,
         myCapabilities: capabilityList(standing),
         ...media,
@@ -1154,23 +1191,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       }
       const requesterRole = standing.eventRole
       if (current.status === "cancelled") {
-        throw AppError.conflict("This event has been cancelled and can no longer be edited.")
+        throw AppError.conflict(CANCELLED_EVENT_EDIT_MESSAGE)
       }
       const hasEnded = deriveCleanupStatus(eventWindowOf(current), Date.now()) === "done"
-      if (hasEnded) {
-        const frozen =
-          patch.title !== undefined ||
-          patch.scheduledAt !== undefined ||
-          patch.lat !== undefined ||
-          patch.lng !== undefined ||
-          patch.type !== undefined ||
-          patch.eventKind !== undefined
-        if (frozen) {
-          throw AppError.conflict(
-            "An event that has ended can't change its date, title, location or type.",
-          )
-        }
-      }
+      const endedRefusal = refusalOnceEnded(patch, current)
+      if (hasEnded && endedRefusal !== null) throw endedRefusal
       assertScheduledAtNotBackdated(patch.scheduledAt, current.scheduledAt)
       const effectiveKind = patch.eventKind ?? current.eventKind
 
@@ -1191,13 +1216,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
       if (patch.endsAt === null) {
         throw AppError.validation({ endsAt: "an event must have an end time" })
       }
-      if (
-        hasEnded &&
-        patch.endsAt !== undefined &&
-        new Date(patch.endsAt).getTime() !== current.endsAt.getTime()
-      ) {
-        throw AppError.conflict("An event that has ended can't change its end time.")
-      }
       const effectiveWindow: EventWindow = {
         status: current.status,
         scheduledAt:
@@ -1208,9 +1226,6 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         effectiveWindow.scheduledAt.getTime() !== current.scheduledAt.getTime() ||
         (effectiveWindow.endsAt?.getTime() ?? null) !== (current.endsAt?.getTime() ?? null)
 
-      if (patch.slots !== undefined && hasEnded) {
-        throw AppError.validation({ slots: "Slots can't be changed after an event has ended." })
-      }
       if (patch.slots !== undefined && patch.slots.length === 0) {
         throw AppError.validation({ slots: EVENT_NEEDS_A_SLOT_MESSAGE })
       }
@@ -1272,22 +1287,20 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         ...(patch.eventKind !== undefined ? { eventKind: patch.eventKind } : {}),
         ...(patch.type !== undefined ? { type: patch.type } : {}),
         ...(patch.scheduledAt !== undefined ? { scheduledAt: new Date(patch.scheduledAt) } : {}),
-        ...(patch.lat !== undefined ? { lat: patch.lat } : {}),
-        ...(patch.lng !== undefined ? { lng: patch.lng } : {}),
+        ...(movedTo ?? {}),
         ...addressPatch,
         ...(patch.bring !== undefined ? { bring: patch.bring } : {}),
         ...(reresolvedGeoid !== undefined ? { jurisdictionGeoid: reresolvedGeoid } : {}),
       }
-      const updated = await deps.repo.updateCleanup(id, scalarPatch, requesterUserId)
-      if (!updated) notFoundCleanup()
-
-      if (desiredLinks !== null) {
-        await deps.repo.reconcileLinkedReports(id, desiredLinks, requesterUserId)
-      }
-      const slotDiff =
-        desiredSlots !== null
-          ? await deps.repo.reconcileSlots(id, desiredSlots, requesterUserId)
-          : null
+      const outcome = await deps.repo.updateCleanupWithEdits(id, scalarPatch, {
+        actorUserId: requesterUserId,
+        links: desiredLinks,
+        slots: desiredSlots,
+        refusalOnceEnded: endedRefusal,
+      })
+      if (outcome.kind === "not_found") notFoundCleanup()
+      if (outcome.kind === "cancelled") throw AppError.conflict(CANCELLED_EVENT_EDIT_MESSAGE)
+      const { slotDiff } = outcome
 
       const record = await deps.repo.findCleanupById(id, null)
       if (!record) notFoundCleanup()
@@ -1306,7 +1319,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         eventMediaUrls(record, { gallery: true }),
       ])
       return enrichOne(
-        toCleanupDTO(record, standing.eventRole !== null, linkedReports, requesterRole, {
+        toCleanupDTO(record, isAttending(standing), linkedReports, requesterRole, {
           slots: slotBoard,
           myCapabilities: capabilityList(standing),
           ...media,
@@ -1350,11 +1363,17 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         eventMediaUrls(record, { gallery: true }),
       ])
       return enrichOne(
-        toCleanupDTO(record, true, linkedReports, standing.eventRole ?? "organizer", {
-          slots: slotBoard,
-          myCapabilities: capabilityList(standing),
-          ...media,
-        }),
+        toCleanupDTO(
+          record,
+          isAttending(standing),
+          linkedReports,
+          standing.eventRole ?? "organizer",
+          {
+            slots: slotBoard,
+            myCapabilities: capabilityList(standing),
+            ...media,
+          },
+        ),
         requesterUserId,
       )
     },
@@ -1379,7 +1398,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         eventMediaUrls(record, { gallery: true }),
       ])
       return enrichOne(
-        toCleanupDTO(record, standing.eventRole !== null, linkedReports, requesterRole, {
+        toCleanupDTO(record, isAttending(standing), linkedReports, requesterRole, {
           slots: slotBoard,
           myCapabilities: capabilityList(standing),
           ...media,
@@ -1416,7 +1435,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         const standing = standingsById.get(record.id) ?? NO_HOST_STANDING
         return toCleanupDTO(
           record,
-          hasHostStanding(standing),
+          isAttending(standing),
           linkedByCleanup.get(record.id) ?? [],
           standing.eventRole,
           {
@@ -1460,7 +1479,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         const standing = standingsById.get(record.id) ?? NO_HOST_STANDING
         return toCleanupDTO(
           record,
-          hasHostStanding(standing),
+          isAttending(standing),
           linkedByCleanup.get(record.id) ?? [],
           standing.eventRole,
           {
@@ -1488,7 +1507,7 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         eventMediaUrls(record, { gallery: true }),
       ])
       return enrichOne(
-        toCleanupDTO(record, hasHostStanding(standing), linkedReports, standing.eventRole, {
+        toCleanupDTO(record, isAttending(standing), linkedReports, standing.eventRole, {
           slots: slotBoard,
           myCapabilities: capabilityList(standing),
           ...media,
@@ -1697,17 +1716,11 @@ export function makeCleanupService(deps: CleanupServiceDeps): CleanupService {
         eventMediaUrls(updated, { gallery: true }),
       ])
       return enrichOne(
-        toCleanupDTO(
-          updated,
-          hasHostStanding(nextStanding),
-          linkedReports,
-          nextStanding.eventRole,
-          {
-            slots: slotBoard,
-            myCapabilities: capabilityList(nextStanding),
-            ...media,
-          },
-        ),
+        toCleanupDTO(updated, isAttending(nextStanding), linkedReports, nextStanding.eventRole, {
+          slots: slotBoard,
+          myCapabilities: capabilityList(nextStanding),
+          ...media,
+        }),
         userId,
       )
     },
@@ -1809,8 +1822,10 @@ function guestVisibleChange(
     if (!Number.isNaN(next) && next !== current.scheduledAt.getTime()) return true
   }
   if (patch.address !== undefined && (patch.address ?? null) !== current.address) return true
-  if (patch.lat !== undefined && patch.lat !== current.lat) return true
-  if (patch.lng !== undefined && patch.lng !== current.lng) return true
+  // The contract lets lat and lng arrive alone, but the location only moves when both do.
+  if (patch.lat !== undefined && patch.lng !== undefined) {
+    if (patch.lat !== current.lat || patch.lng !== current.lng) return true
+  }
   return false
 }
 

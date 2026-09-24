@@ -319,9 +319,7 @@ describe("membership", () => {
   it("audits every role change", async () => {
     const id = await seeded()
     await service.setMemberRole(id, OWNER, MEMBER, "admin")
-    expect(
-      repo.audits.filter((a) => a.action === "org.member_role_changed").length,
-    ).toBeGreaterThanOrEqual(3)
+    expect(repo.audits.filter((a) => a.action === "org.member_role_changed").length).toBe(1)
   })
 
   it("refuses to let anyone change their own role", async () => {

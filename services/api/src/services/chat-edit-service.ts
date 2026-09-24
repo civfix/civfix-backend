@@ -18,8 +18,8 @@
  *   5. kind === "text" only -> 422.
  *   6. Within EDIT_WINDOW_HOURS of created_at -> 403 (code "edit_window_expired").
  * Then: slur filter (App Store 1.2a, same helper as WS send / the old DM edit), the sender-gated UPDATE
- * (body + edited_at = now()), mention re-resolution under the existing scope rules (report rooms stay
- * mention-free; the recorded set is REPLACED so dropped @mentions clear), a {type:"message_update"}
+ * (body + edited_at = now()), mention re-resolution under the same scope rules the send path records
+ * with (the recorded set is REPLACED so dropped @mentions clear), a {type:"message_update"}
  * broadcast to the room key, and the refreshed fully-hydrated ChatMessageDTO back to the caller.
  *
  * The machine subcodes ride AppError's `fields` ({ code: "..." }) because ErrorCode is a closed enum;
@@ -62,7 +62,7 @@ export interface ChatEditServiceDeps {
    * Optional mention seam (resolve + record). Absent -> the edit leaves the recorded mentions as-is.
    * notifyChatMention is deliberately excluded: editing a message never re-fires mention bells.
    */
-  chatMentions?: Pick<GatewayChatMentions, "resolveChatMentions" | "recordChatMentions">
+  chatMentions?: Pick<GatewayChatMentions, "resolveChatMentions" | "recordChatMentions" | "logger">
   /** Room fan-out seam (chatService.broadcastEvent). Best-effort: a failure never fails the edit. */
   broadcastEvent?: (roomKey: string, frame: WsServerMessage) => Promise<void> | void
 }
@@ -106,9 +106,9 @@ function assertEditable(
 
 export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService {
   /**
-   * Re-resolve + REPLACE the message's recorded mention set from the edited body (existing scope rules:
-   * the resolver filters to the dm peer / cleanup members; report rooms stay mention-free so they skip
-   * entirely). Best-effort like the WS send path — a mention failure never fails the edit.
+   * Re-resolve + REPLACE the message's recorded mention set from the edited body (the resolver scopes it
+   * to the dm peer or the room's members). Best-effort like the WS send path: a mention failure never
+   * fails the edit.
    */
   async function rerecordMentions(
     kind: RoomKind,
@@ -119,7 +119,7 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
     mentionedUserIds: string[] | undefined,
   ): Promise<void> {
     const mentions = deps.chatMentions
-    if (!mentions || kind === "report") return
+    if (!mentions) return
     try {
       const resolved = await mentions.resolveChatMentions({
         handles: parseUserMentions(body),
@@ -133,8 +133,11 @@ export function makeChatEditService(deps: ChatEditServiceDeps): ChatEditService 
         messageId,
         resolved.map((m) => m.id),
       )
-    } catch {
-      // Best-effort, like the WS send path: a mention failure never fails the edit.
+    } catch (err) {
+      mentions.logger?.warn(
+        { err, messageId, kind, roomId },
+        "chat mentions could not be re-recorded on edit; keeping the edit",
+      )
     }
   }
 

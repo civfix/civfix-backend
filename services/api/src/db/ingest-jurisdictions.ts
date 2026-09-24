@@ -13,7 +13,12 @@
 
 import { readFile } from "node:fs/promises"
 import { runDbCli, runIfMain } from "./cli.js"
-import { LAYER_RANK, ingestGeoJsonFile, type IngestRow } from "./ingest-jurisdictions-core.js"
+import {
+  LAYER_RANK,
+  ingestGeoJsonFile,
+  isIngestLayer,
+  type IngestRow,
+} from "./ingest-jurisdictions-core.js"
 
 // Re-export the core API from the historical path so existing importers (e.g. the unit test importing
 // `normalizeFeatures` from this module) keep resolving against this module.
@@ -35,7 +40,7 @@ async function main(): Promise<void> {
     )
     process.exit(2)
   }
-  if (!(defaultLayer in LAYER_RANK)) {
+  if (!isIngestLayer(defaultLayer)) {
     console.error(
       `ingest: unknown layer "${defaultLayer}" (expected one of ${Object.keys(LAYER_RANK).join(", ")})`,
     )

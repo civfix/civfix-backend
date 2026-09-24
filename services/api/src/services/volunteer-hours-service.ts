@@ -26,7 +26,7 @@ import type {
   VolunteerHoursSource,
 } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
-import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
+import { parseKeysetCursor, type KeysetCursor } from "../db/cursor-helpers.js"
 import { MIN_EVENT_DURATION_MS, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
 import type { AffiliationLoader } from "./affiliation.js"
@@ -160,7 +160,7 @@ export const ITEMISED_SOURCES: readonly VolunteerHoursSource[] = ["event", "manu
 
 export interface ListEntriesArgs {
   userId: string
-  cursor: TimeCursor | null
+  cursor: KeysetCursor | null
   limit: number
   sources?: VolunteerHoursSource[]
 }
@@ -291,6 +291,12 @@ function clampLimit(limit: number | undefined): number {
 function clampOffset(offset: number | undefined): number {
   if (offset === undefined) return 0
   return Math.min(Math.max(0, Math.floor(offset)), LEADERBOARD_MAX_OFFSET)
+}
+
+// An offset past the ceiling clamps back onto the page just served, so a client following it would
+// loop on that page forever.
+function reachableNextOffset(next: number | null): number | null {
+  return next !== null && next <= LEADERBOARD_MAX_OFFSET ? next : null
 }
 
 function clampEntriesLimit(limit: number | undefined): number {
@@ -498,7 +504,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
     ): Promise<MyVolunteerHoursEntriesResponse> {
       const limit = clampEntriesLimit(query.limit)
       const [page, totalHours] = await Promise.all([
-        deps.repo.listEntries({ userId, cursor: parseTimeCursor(query.cursor), limit }),
+        deps.repo.listEntries({ userId, cursor: parseKeysetCursor(query.cursor), limit }),
         deps.repo.totalHoursFor(userId),
       ])
       return {
@@ -534,7 +540,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         visibility.items
           ? deps.repo.listEntries({
               userId,
-              cursor: parseTimeCursor(query.cursor),
+              cursor: parseKeysetCursor(query.cursor),
               limit,
               sources: ["event"],
             })
@@ -670,7 +676,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         geoid,
         jurisdictionName: page.jurisdictionName,
         entries: page.entries,
-        nextOffset: page.nextOffset,
+        nextOffset: reachableNextOffset(page.nextOffset),
         ...(page.participantCount !== null ? { participantCount: page.participantCount } : {}),
         ...(viewerId !== null && withExtras
           ? { viewerRank: page.viewerRank, viewerHours: page.viewerHours }

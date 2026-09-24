@@ -363,6 +363,7 @@ describe("per-user push rate cap (H15)", () => {
       counters: {
         incr: () => Promise.reject(new Error("redis down")),
         incrBy: () => Promise.reject(new Error("redis down")),
+        decrBy: () => Promise.reject(new Error("redis down")),
       },
       logger: { warn: () => {}, error: () => {} },
     })

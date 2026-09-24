@@ -77,7 +77,7 @@ export const de: Partial<Record<MessageKey, string>> = {
   "email.otp.subject": "Dein civfix-Anmeldecode",
   "email.otp.body_line1": "Dein civfix-Anmeldecode lautet {{code}}.",
   "email.otp.body_expiry":
-    "Er läuft in 5 Minuten ab. Falls du ihn nicht angefordert hast, kannst du diese E-Mail ignorieren.",
+    "Er läuft in {{minutes}} Minuten ab. Falls du ihn nicht angefordert hast, kannst du diese E-Mail ignorieren.",
   "email.otp.html_intro": "Dein civfix-Anmeldecode lautet:",
 
   "email.report_update.subject": "Dein civfix-Bericht wurde {{status}}",
@@ -112,7 +112,7 @@ export const de: Partial<Record<MessageKey, string>> = {
   "certificate.seal.line": "Verifizierter Nachweis",
   "certificate.issuer.line": "Ausgestellt von civfix · civfix.org",
   "certificate.issuer.generated": "Erstellt {{timestamp}}",
-  "certificate.verify.prompt": "Diesen Nachweis auf civfix.org/service-record prüfen",
+  "certificate.verify.prompt": "Diesen Nachweis auf {{url}} prüfen",
   "certificate.verify.fingerprint": "Dokument-Fingerabdruck",
   "certificate.footer.page": "Seite {{page}} von {{total}}",
   "certificate.footer.timezone": "Datumsangaben in Pazifikzeit (America/Los_Angeles).",

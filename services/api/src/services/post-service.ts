@@ -37,11 +37,34 @@ import {
   type RankedCandidate,
 } from "./feed-ranking.js"
 import { mapWithLimit } from "./media-presign.js"
+import { hiddenIdentity } from "./hidden-identity.js"
 import type { FeedPresence, FeedSnapshotEntry } from "./feed-presence.js"
 import type { PostNotifier } from "./notification-service.js"
 
 function isVisible(brief: PostBrief): boolean {
   return brief.deletedAt === null && brief.visibility === "public"
+}
+
+// The success answer for taking back a repost of a post the caller can no longer read: it clears the
+// caller's repost state without carrying the original's author, text or counts.
+function withdrawnPostDTO(brief: PostBrief, atMs: number): PostDTO {
+  return {
+    id: brief.id,
+    author: {
+      id: brief.authorId,
+      ...hiddenIdentity(brief.authorId),
+      followers: 0,
+      following: 0,
+      isFollowing: false,
+    },
+    kind: brief.kind,
+    body: null,
+    createdAt: new Date(atMs).toISOString(),
+    counts: { likes: 0, reposts: 0, replies: 0, saves: 0 },
+    viewer: { liked: false, reposted: false, saved: false },
+    media: [],
+    mentions: [],
+  }
 }
 
 interface FeedScoreCursor {
@@ -215,10 +238,15 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
     const presence = presenceFor(viewerId)
     if (presence !== undefined) {
+      // A repost card shows the original's counts, and count changes are announced under the
+      // original's id, so the viewer index needs it too or the card never hears about them.
       void presence
         .recordServed(
           viewerId,
-          items.map((item) => item.id),
+          items.flatMap((item) => {
+            const originalId = item.kind === "repost" ? item.repostOf?.id : undefined
+            return originalId === undefined ? [item.id] : [item.id, originalId]
+          }),
         )
         .catch((err: unknown) => {
           deps.logger?.warn({ err }, "post: feed served-set write failed (suppressed)")
@@ -307,6 +335,8 @@ export function makePostService(deps: PostServiceDeps): PostService {
     try {
       return await presence.writeSnapshot(viewerId, filter, ranked)
     } catch {
+      // An unstored snapshot means the page-1 cursor cannot resolve, so the caller serves the
+      // reproducible bucket order instead and logs that fallback.
       return false
     }
   }
@@ -377,19 +407,23 @@ export function makePostService(deps: PostServiceDeps): PostService {
     return dto
   }
 
-  async function requireReadable(id: string, viewerId: string) {
+  async function readableSubject(id: string, viewerId: string): Promise<PostBrief | null> {
     const brief = await deps.repo.getPostBrief(id)
-    if (!brief || !isVisible(brief) || (await isBlocked(viewerId, brief.authorId))) {
-      throw AppError.notFound("Post not found")
-    }
+    if (!brief || !isVisible(brief) || (await isBlocked(viewerId, brief.authorId))) return null
     if (brief.repostOfId) {
       const target = await deps.repo.getPostBrief(brief.repostOfId)
       if (!target || !isVisible(target) || (await isBlocked(viewerId, target.authorId))) {
-        throw AppError.notFound("Post not found")
+        return null
       }
       if (brief.kind === "repost") return target
     }
     return brief
+  }
+
+  async function requireReadable(id: string, viewerId: string): Promise<PostBrief> {
+    const subject = await readableSubject(id, viewerId)
+    if (subject === null) throw AppError.notFound("Post not found")
+    return subject
   }
 
   return {
@@ -582,10 +616,17 @@ export function makePostService(deps: PostServiceDeps): PostService {
     },
 
     async unrepostPost(id: string, viewerId: string): Promise<PostDTO> {
-      await requireReadable(id, viewerId)
+      // No readability gate on the removal: the repository only ever removes the caller's own repost,
+      // and a reposter must be able to take one back after the original went hidden or its author
+      // blocked them. The original's content is still answered only to a caller who can read it.
       const { targetId, removed } = await deps.repo.unrepost(id, viewerId)
       if (removed) await announceCountChange(targetId, viewerId)
-      return hydrateOrThrow(targetId, viewerId)
+      if ((await readableSubject(targetId, viewerId)) !== null) {
+        return hydrateOrThrow(targetId, viewerId)
+      }
+      const target = removed ? await deps.repo.getPostBrief(targetId) : null
+      if (target === null) throw AppError.notFound("Post not found")
+      return withdrawnPostDTO(target, nowMs())
     },
 
     async homeFeed(

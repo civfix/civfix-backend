@@ -77,6 +77,13 @@ export function timelineDefaultNote(kind: string): string {
   }
 }
 
+/** The event detail shows at most this many chat messages: the most recent ones. */
+export const ADMIN_EVENT_MESSAGE_CAP = 100
+
+export function eventOutcomeNote(bags: number): string {
+  return bags === 1 ? "Outcome logged: 1 bag" : `Outcome logged: ${bags} bags`
+}
+
 // Map a stored cleanup_timeline kind to the design's event-timeline icon kind. The stored 'flag'/'unflag'
 // map to 'warn'.
 export function eventTimelineKind(stored: string): EventTimelineItem["kind"] {

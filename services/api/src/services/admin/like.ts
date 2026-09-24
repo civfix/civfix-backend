@@ -21,3 +21,8 @@ export function escapeLike(term: string): string {
 export function likeContains(term: string): string {
   return "%" + escapeLike(term) + "%"
 }
+
+/** Build a literal "starts with" pattern: <escaped term>%. Use with `ESCAPE '\\'` in the query. */
+export function likePrefix(term: string): string {
+  return escapeLike(term) + "%"
+}

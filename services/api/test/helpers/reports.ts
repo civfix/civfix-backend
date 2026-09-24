@@ -3,6 +3,7 @@ import type {
   BBox,
   CreateReportTxArgs,
   CreateReportTxResult,
+  OwnerToggleStatus,
   ReportMapPoint,
   ReportMediaView,
   ReportRecord,
@@ -11,7 +12,10 @@ import type {
   ReportVisibilityTimelineKind,
 } from "../../src/services/report-service.js"
 import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
-import { isPubliclyVisibleStatus } from "../../src/services/report-visibility.js"
+import {
+  isPubliclyVisibleStatus,
+  ownerStatusTransition,
+} from "../../src/services/report-visibility.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"
 import type { ReportDTO } from "@civfix/shared"
 
@@ -404,12 +408,13 @@ export class InMemoryReportRepository implements ReportRepository {
   resolveByOwner(
     reportId: string,
     userId: string,
-    input: { status: ReportRecord["status"]; note: string },
-  ): Promise<"updated" | "not_found" | "forbidden" | "invalid_state"> {
+    input: { status: OwnerToggleStatus; note: string },
+  ): Promise<"updated" | "unchanged" | "not_found" | "forbidden" | "invalid_state"> {
     const r = this.reports.get(reportId)
     if (!r || r.deletedAt !== null) return Promise.resolve("not_found")
     if (r.reporterUserId !== userId) return Promise.resolve(notOwnerOutcome(r))
-    if (!isPubliclyVisibleStatus(r.status)) return Promise.resolve("invalid_state")
+    const transition = ownerStatusTransition(r.status, input.status)
+    if (transition !== "apply") return Promise.resolve(transition)
     r.status = input.status
     this.timeline.push({
       reportId,

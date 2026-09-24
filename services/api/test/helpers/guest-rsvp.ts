@@ -176,7 +176,7 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
     return Promise.resolve(true)
   }
 
-  upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string }> {
+  upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string; created: boolean }> {
     const existing = this.guests.find(
       (g) =>
         g.cleanupId === args.cleanupId &&
@@ -191,7 +191,7 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
       existing.manageTokenHash = args.manageTokenHash
       existing.verifiedAt = args.now
       existing.contactScrubbedAt = null
-      return Promise.resolve({ id: existing.id })
+      return Promise.resolve({ id: existing.id, created: false })
     }
     const row: StoredGuest = {
       id: randomUUID(),
@@ -208,7 +208,7 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
       createdAt: this.nextCreatedAt(),
     }
     this.guests.push(row)
-    return Promise.resolve({ id: row.id })
+    return Promise.resolve({ id: row.id, created: true })
   }
 
   findGuestByManageTokenHash(

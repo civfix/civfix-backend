@@ -110,6 +110,13 @@ function harness(
       }
       return Promise.resolve(current)
     },
+    recordObjectKey: (_id, args) => {
+      if (current.status !== "running" || args.runToken !== current.runToken) {
+        return Promise.resolve(false)
+      }
+      current = { ...current, r2Key: args.r2Key }
+      return Promise.resolve(true)
+    },
     markReady: (_id, args) => {
       if (args.runToken !== current.runToken) return Promise.resolve(null)
       const { runToken: _ignored, ...fields } = args
@@ -118,13 +125,15 @@ function harness(
     },
     markFailed: (_id, errorCode) => {
       current = { ...current, status: "failed", errorCode }
-      return Promise.resolve()
+      return Promise.resolve(true)
     },
     listExpired: () => Promise.resolve(current.status === "ready" ? [current] : []),
     markExpired: () => {
       current = { ...current, status: "expired", r2Key: null }
       return Promise.resolve()
     },
+    listOrphaned: () => Promise.resolve([]),
+    releaseObject: () => Promise.resolve(false),
     deleteOlderThan: () => Promise.resolve(0),
   }
   const service = makeHostExportService({
@@ -165,7 +174,7 @@ describe("host export build", () => {
     ])
     expect(await h.service.run(EXPORT_ID)).toEqual({ status: "ready" })
     const put = h.puts[0]!
-    expect(put.key).toBe("exports/host/2026/02/00000000-0000-0000-0000-0000000000e1.csv")
+    expect(put.key).toBe("exports/host/2026/02/run-1/00000000-0000-0000-0000-0000000000e1.csv")
     expect(put.meta).toMatchObject({ contentType: "text/csv; charset=utf-8" })
     expect(
       String(put.meta && (put.meta as { contentDisposition: string }).contentDisposition),
@@ -218,6 +227,19 @@ describe("host export build", () => {
     expect(h.puts).toHaveLength(1)
   })
 
+  it("gives every run of one export its own object, so a superseded run cannot discard the winner's", async () => {
+    const h = harness([["1", "x"]])
+    await h.service.run(EXPORT_ID)
+    h.setCurrent({ status: "queued" })
+    await h.service.run(EXPORT_ID)
+
+    const [first, second] = h.puts.map((p) => p.key)
+    expect(first).not.toBe(second)
+    expect(first).toMatch(/^exports\/host\/2026\/02\/run-1\//)
+    expect(second).toMatch(/^exports\/host\/2026\/02\/run-2\//)
+    expect(h.current().r2Key).toBe(second)
+  })
+
   it("mints a SHORT forceSigned download url", async () => {
     const h = harness([["1", "x"]])
     await h.service.run(EXPORT_ID)
@@ -250,6 +272,7 @@ describe("host export build", () => {
         ...({} as HostExportRepository),
         listExpired: () => Promise.resolve([h.current()]),
         markExpired: () => Promise.reject(new Error("should not be called")),
+        listOrphaned: () => Promise.resolve([]),
       } as HostExportRepository,
       storage: {
         put: () => Promise.resolve(),
@@ -371,6 +394,7 @@ describe("host export claim token", () => {
     expect(await h.service.run(EXPORT_ID)).toEqual({ status: "skipped" })
     expect(h.current().status).toBe("running")
     expect(h.current().r2Key).toBeNull()
-    expect(h.deletes).toEqual([h.puts[0]!.key])
+    expect(h.puts).toHaveLength(0)
+    expect(h.deletes).toEqual([])
   })
 })

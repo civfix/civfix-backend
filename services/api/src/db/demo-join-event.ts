@@ -1,6 +1,7 @@
 /**
  * demo-join-event: joins a subset of the seeded demo users (seed-demo-la.ts) to ONE existing event,
- * exactly the way the live join path does — a cleanup_members row per user (role 'member'), refusing
+ * exactly the way the live join path does — a cleanup_members row per user (role 'member') plus, on an
+ * event with no ticket types, the free registration + seat the roster and check-in read, refusing
  * closed (done/cancelled) events and banned users, and never exceeding the event's RSVP capacity
  * (counting existing members + non-cancelled guests, the same sum goingCount uses). If the event has
  * signup slots with open capacity, some joiners also claim one (one slot per person, capacity
@@ -11,7 +12,11 @@
  * SAFETY: same stance as seed-demo-la — the default run is a REHEARSAL (everything runs in one
  * transaction, prints what it would do, then rolls back). Pass --yes to commit.
  *
- * Usage (inside the api container, or anywhere with DATABASE_URL):
+ * The seat token hash is keyed by TICKET_TOKEN_SECRET, resolved exactly as the API resolves it (the
+ * development fallback included), or the demo seats will not scan at check-in; the api container
+ * already carries it.
+ *
+ * Usage (inside the api container, or anywhere with DATABASE_URL and TICKET_TOKEN_SECRET):
  *   node dist/db/demo-join-event.js --event 1695-000006            # rehearse
  *   node dist/db/demo-join-event.js --event 1695-000006 --yes      # commit
  *   --event accepts the EVENT reference code with or without the "EVENT-" prefix, or the cleanup's
@@ -21,6 +26,7 @@
 import { makeDb, type TransactionSql } from "./client.js"
 import { runIfMain } from "./cli.js"
 import { DEMO_EMAIL_DOMAIN } from "./seed-demo-domain.js"
+import { demoTicketTokenHasher, mintDemoSignupSeats } from "./demo-signup-seats.js"
 import { deriveCleanupStatus, eventWindowOf } from "../services/cleanup-rules.js"
 
 // --- deterministic PRNG (mulberry32), same generator seed-demo-la uses ---------------------------
@@ -113,6 +119,7 @@ export async function main(): Promise<void> {
     throw new Error("--count must be 1..200")
   const databaseUrl = process.env.DATABASE_URL
   if (!databaseUrl) throw new Error("DATABASE_URL is required")
+  const hashFor = demoTicketTokenHasher()
 
   console.log(`target database: ${new URL(databaseUrl).host}`)
   console.log(
@@ -197,6 +204,11 @@ export async function main(): Promise<void> {
           }))
           .sort((a, b) => a.joined_at.getTime() - b.joined_at.getTime())
         await tx`INSERT INTO cleanup_members ${tx(memberRows)}`
+        const seats = await mintDemoSignupSeats(tx, {
+          cleanupId: event.id,
+          members: memberRows,
+          hashFor,
+        })
 
         // Some joiners claim an open signup slot, respecting per-slot capacity + one-claim-per-person.
         const slots = await tx<
@@ -228,7 +240,8 @@ export async function main(): Promise<void> {
 
         const handles = joiners.map((u) => `@${u.handle}`).join(", ")
         console.log(
-          `joining ${memberRows.length} demo users${claimed > 0 ? ` (${claimed} slot claims)` : ""}:`,
+          `joining ${memberRows.length} demo users (${seats} registrations)` +
+            `${claimed > 0 ? ` (${claimed} slot claims)` : ""}:`,
         )
         console.log(`  ${handles}`)
 

@@ -33,13 +33,21 @@ export type CityForwardGate = (
   actorUserId: string,
 ) => Promise<boolean>
 
+export interface CityForwardLogger {
+  warn(obj: unknown, msg?: string): void
+}
+
 export interface CityForwardOptions {
   canForward?: CityForwardGate
   audit?: ReportForwardAudit
   messageId?: string
+  logger?: CityForwardLogger
 }
 
-export function makeCityForwardThrottle(counters: CounterStore): CityForwardGate {
+export function makeCityForwardThrottle(
+  counters: CounterStore,
+  logger?: CityForwardLogger,
+): CityForwardGate {
   return async (reportId, geoid, actorUserId) => {
     try {
       const dedup = await counters.incr(
@@ -58,7 +66,9 @@ export function makeCityForwardThrottle(counters: CounterStore): CityForwardGate
       if (perGeoid > CITY_FORWARD_PER_GEOID_PER_HOUR) return false
 
       return true
-    } catch {
+    } catch (err) {
+      // Fail closed: without the counters nothing bounds how often one sender can mail a city.
+      logger?.warn({ err, reportId, geoid }, "city forward throttle unavailable; forward skipped")
       return false
     }
   }
@@ -84,7 +94,7 @@ export async function forwardReportCityMention(
   if (contact === null || contact === "") {
     return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
   }
-  const thread = await existingReportThread(outboundMail, ctx.reportId)
+  const thread = await existingReportThread(outboundMail, ctx.reportId, opts.logger)
   if (thread === null) {
     return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
   }
@@ -115,7 +125,8 @@ export async function forwardReportCityMention(
     })
     await markForwarded(opts, geoid)
     return { mentioned: true, geoid, forwarded: true, forwardedAt: createdAt }
-  } catch {
+  } catch (err) {
+    opts.logger?.warn({ err, reportId: ctx.reportId, geoid }, "city forward send failed")
     return { mentioned: true, geoid, forwarded: false, forwardedAt: null }
   }
 }
@@ -128,20 +139,32 @@ export function discussionForwardSubject(threadSubject: string | null, fallback:
 async function existingReportThread(
   outboundMail: OutboundMailService,
   reportId: string,
+  logger: CityForwardLogger | undefined,
 ): Promise<MailThreadRecord | null> {
   try {
     return await outboundMail.findReportThread(reportId)
-  } catch {
+  } catch (err) {
+    logger?.warn({ err, reportId }, "city forward thread lookup failed; forward skipped")
     return null
   }
 }
 
 async function recordMention(opts: CityForwardOptions, geoid: string): Promise<void> {
   if (opts.audit === undefined || opts.messageId === undefined) return
-  await opts.audit.recordMention(opts.messageId, geoid).catch(() => {})
+  const messageId = opts.messageId
+  await opts.audit
+    .recordMention(messageId, geoid)
+    .catch((err: unknown) =>
+      opts.logger?.warn({ err, messageId, geoid }, "city forward mention audit write failed"),
+    )
 }
 
 async function markForwarded(opts: CityForwardOptions, geoid: string): Promise<void> {
   if (opts.audit === undefined || opts.messageId === undefined) return
-  await opts.audit.markForwarded(opts.messageId, geoid).catch(() => {})
+  const messageId = opts.messageId
+  await opts.audit
+    .markForwarded(messageId, geoid)
+    .catch((err: unknown) =>
+      opts.logger?.warn({ err, messageId, geoid }, "city forward delivery audit write failed"),
+    )
 }

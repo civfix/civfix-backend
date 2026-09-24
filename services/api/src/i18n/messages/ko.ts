@@ -75,7 +75,8 @@ export const ko: Partial<Record<MessageKey, string>> = {
   // ---- Account / OTP emails --------------------------------------------------------------------
   "email.otp.subject": "civfix 로그인 코드",
   "email.otp.body_line1": "civfix 로그인 코드는 {{code}}입니다.",
-  "email.otp.body_expiry": "코드는 5분 후 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하세요.",
+  "email.otp.body_expiry":
+    "코드는 {{minutes}}분 후 만료됩니다. 요청하지 않으셨다면 이 이메일을 무시하세요.",
   "email.otp.html_intro": "civfix 로그인 코드:",
 
   "email.report_update.subject": "civfix 제보가 {{status}} 처리되었어요",
@@ -110,7 +111,7 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "certificate.seal.line": "확인된 기록",
   "certificate.issuer.line": "civfix 발급 · civfix.org",
   "certificate.issuer.generated": "생성 {{timestamp}}",
-  "certificate.verify.prompt": "civfix.org/service-record에서 이 기록을 확인하세요",
+  "certificate.verify.prompt": "{{url}}에서 이 기록을 확인하세요",
   "certificate.verify.fingerprint": "문서 지문",
   "certificate.footer.page": "{{total}}페이지 중 {{page}}페이지",
   "certificate.footer.timezone": "날짜는 태평양 시간(America/Los_Angeles) 기준이에요.",

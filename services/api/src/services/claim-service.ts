@@ -20,6 +20,7 @@ export interface ClaimServiceDeps {
   enqueueHoldRelease?: (reportId: string) => Promise<void>
   newClaimCode?: () => string
   now?: () => Date
+  logger?: { warn(obj: unknown, msg?: string): void }
 }
 
 export interface ClaimService {
@@ -55,7 +56,13 @@ export function makeClaimService(deps: ClaimServiceDeps): ClaimService {
         throw AppError.notFound("Claim code not found")
       }
       if (deps.enqueueHoldRelease !== undefined) {
-        await deps.enqueueHoldRelease(claimed.reportId).catch(() => {})
+        // The claim already committed; the media-worker hold-release sweep is the backstop.
+        await deps.enqueueHoldRelease(claimed.reportId).catch((err: unknown) => {
+          deps.logger?.warn(
+            { err, reportId: claimed.reportId },
+            "claim: hold-release enqueue failed (suppressed; the sweep releases it)",
+          )
+        })
       }
       const report = await deps.getReportForOwner(claimed.reportId, { userId })
       return { report }

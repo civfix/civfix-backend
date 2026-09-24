@@ -152,4 +152,42 @@ describe("PgBossJobs (API enqueue adapter)", () => {
     await jobs.stop()
     expect(lastBoss.stop).toHaveBeenCalledWith({ graceful: true, wait: true })
   })
+
+  it("gives data.export a backoff retry policy that outlasts a mail config outage", async () => {
+    const OUTAGE_SECONDS = 6 * 60 * 60
+    const jobs = new PgBossJobs({ connectionString: "postgres://localhost/civfix" })
+    await jobs.start()
+    for (const call of [lastBoss.createQueue, lastBoss.updateQueue]) {
+      const policy = call.mock.calls.find((c) => c[0] === "data.export")?.[1] as {
+        policy: string
+        retryLimit: number
+        retryDelay: number
+        retryBackoff: boolean
+      }
+      expect(policy).toMatchObject({ policy: "short", retryBackoff: true })
+      const minimumSpan = policy.retryDelay * (2 ** policy.retryLimit - 1)
+      expect(minimumSpan).toBeGreaterThanOrEqual(OUTAGE_SECONDS)
+    }
+    const other = lastBoss.createQueue.mock.calls.find((c) => c[0] === "media.checks")?.[1]
+    expect(other).toEqual({ name: "media.checks", policy: "short" })
+  })
+
+  it("work() hands each job its retry count and limit", async () => {
+    const jobs = new PgBossJobs({ connectionString: "postgres://localhost/civfix" })
+    await jobs.start()
+    const seen: unknown[] = []
+    await jobs.work("data.export", (job) => {
+      seen.push(job)
+      return Promise.resolve()
+    })
+    const [name, options, poll] = lastBoss.work.mock.calls[0]! as [
+      string,
+      { includeMetadata: boolean },
+      (batch: unknown[]) => Promise<void>,
+    ]
+    expect(name).toBe("data.export")
+    expect(options).toMatchObject({ includeMetadata: true })
+    await poll([{ id: "j1", data: { userId: "u1" }, retryCount: 3, retryLimit: 10 }])
+    expect(seen).toEqual([{ id: "j1", data: { userId: "u1" }, retryCount: 3, retryLimit: 10 }])
+  })
 })

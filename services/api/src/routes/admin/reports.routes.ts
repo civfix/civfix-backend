@@ -98,7 +98,9 @@ export async function registerAdminReportsRoutes(
       }),
     () => {
       const sql = container.getDb().sql
-      const repo: AdminReportRepository = makeDrizzleAdminReportRepository(sql)
+      const repo: AdminReportRepository = makeDrizzleAdminReportRepository(sql, {
+        logger: app.log,
+      })
       const outboundMail = makeContainerOutboundMailService(container, { logger: app.log })
       const cleanupRepo = makeDrizzleCleanupRepository(sql)
       return makeAdminReportService({

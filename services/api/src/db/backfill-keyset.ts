@@ -20,6 +20,7 @@
 
 import type postgres from "postgres"
 import type { Queryable, Sql } from "./client.js"
+import { TIME_CURSOR_SQL_FORMAT } from "./cursor-helpers.js"
 import { UNKNOWN_JURCODE } from "./reference-code.js"
 import { JURISDICTION_RESOLVE_ORDER_BY } from "./sql/jurisdiction.js"
 
@@ -115,8 +116,10 @@ export async function resolveGeomJurisdictions(
 /** The columns every reference-code loop selects; `Row` adds whatever else its allocator needs. */
 export interface ReferenceCodeRow {
   id: string
-  /** timestamptz — postgres.js returns a Date, and the driver serializes it back for the cursor bound. */
   created_at: Date
+  // The keyset bound. A millisecond Date bound sits below its own row, so a row that keeps failing at
+  // the tail would be re-selected forever.
+  cursor_at: string | null
   /** jurisdictions.code joined through jurisdiction_geoid; NULL when unresolved or the row has no code. */
   jur_code: number | null
 }
@@ -147,15 +150,19 @@ export async function stampReferenceCodes<Row extends ReferenceCodeRow>(
   let stamped = 0
   let failed = 0
   // Keyset cursor over (created_at, id). NULL on the first page (no lower bound).
-  let cursor: { createdAt: Date; id: string } | null = null
+  let cursor: { at: string | null; id: string } | null = null
   const extraColumns: SqlFragment =
     spec.extraColumn === null ? sql`` : sql`, t.${sql(spec.extraColumn)}`
 
   for (;;) {
     const cursorFilter: SqlFragment =
-      cursor === null ? sql`` : sql`AND (t.created_at, t.id) > (${cursor.createdAt}, ${cursor.id})`
+      cursor === null
+        ? sql``
+        : sql`AND (t.created_at, t.id) > (${cursor.at}::timestamptz, ${cursor.id})`
     const batch = await sql<Row[]>`
-      SELECT t.id, t.created_at, j.code AS jur_code${extraColumns}
+      SELECT t.id, t.created_at,
+        to_char(t.created_at AT TIME ZONE 'UTC', ${TIME_CURSOR_SQL_FORMAT}) AS cursor_at,
+        j.code AS jur_code${extraColumns}
       FROM ${sql(spec.table)} t
       LEFT JOIN jurisdictions j ON j.geoid = t.jurisdiction_geoid
       WHERE t.reference_code IS NULL
@@ -184,7 +191,7 @@ export async function stampReferenceCodes<Row extends ReferenceCodeRow>(
     }
 
     const last = batch[batch.length - 1]!
-    cursor = { createdAt: last.created_at, id: last.id }
+    cursor = { at: last.cursor_at, id: last.id }
     console.log(
       `${spec.label}: ${spec.table} batch of ${batch.length} (running stamped=${stamped}, failed=${failed})`,
     )

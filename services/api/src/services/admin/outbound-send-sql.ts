@@ -32,19 +32,28 @@ export function attemptEventExists(
   `
 }
 
+// The outbound row is inserted before transmission starts, so a young attempt with no outcome yet is
+// still on the wire; it is in flight until the same stale window after which sendFailedExpr calls it
+// crashed.
 export function sendInFlightExpr(sql: Queryable, threadRef: SqlFragment): SqlFragment {
   return sql`
     COALESCE(
       (
         SELECT
-          ${attemptEventExists(
-            sql,
-            threadRef,
-            "failed",
-            sql`AND e.meta->>'reason' = 'deadline'
-                AND e.created_at > now() - make_interval(secs => ${ROUTE_DEADLINE_INFLIGHT_SECONDS})`,
-          )}
-          AND NOT ${attemptEventExists(sql, threadRef, "sent", sql``)}
+          NOT ${attemptEventExists(sql, threadRef, "sent", sql``)}
+          AND (
+            ${attemptEventExists(
+              sql,
+              threadRef,
+              "failed",
+              sql`AND e.meta->>'reason' = 'deadline'
+                  AND e.created_at > now() - make_interval(secs => ${ROUTE_DEADLINE_INFLIGHT_SECONDS})`,
+            )}
+            OR (
+              NOT ${attemptEventExists(sql, threadRef, "failed", sql``)}
+              AND latest.created_at > now() - make_interval(secs => ${ROUTE_CLAIM_STALE_SECONDS})
+            )
+          )
         FROM (${latestOutboundAttempt(sql, threadRef)}) latest
       ),
       false

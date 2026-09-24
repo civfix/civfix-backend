@@ -8,7 +8,7 @@ import { loadEnv } from "../../src/env.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import {
   enforceHomeTurfIpCap,
-  enforceHomeTurfRecipientCap,
+  claimHomeTurfConfirmation,
   HOME_TURF_EMAIL_LIMIT_PER_DAY,
   HOME_TURF_IP_LIMIT_PER_HOUR,
   HOME_TURF_RATE_LIMIT,
@@ -264,7 +264,7 @@ describe("POST /forms/home-turf", () => {
     expect(sent[1]!.to).toBe("coach@example.org")
   })
 
-  it(`still charges the budget on SUCCESS: a same-address resubmit 429s (limit ${HOME_TURF_EMAIL_LIMIT_PER_DAY}/day)`, async () => {
+  it(`still charges the budget on SUCCESS: a same-address resubmit reaches staff but gets no second confirmation (limit ${HOME_TURF_EMAIL_LIMIT_PER_DAY}/day)`, async () => {
     const { app, mailer } = await makeHarness()
     const first = await app.inject({
       method: "POST",
@@ -278,8 +278,8 @@ describe("POST /forms/home-turf", () => {
       url: "/forms/home-turf",
       payload: formPayload(),
     })
-    expect(second.statusCode).toBe(429)
-    expect(second.json().code).toBe("RATE_LIMITED")
+    expect(second.statusCode).toBe(200)
+    expect(second.json()).toEqual({ ok: true })
 
     const sent = outbounds(mailer)
     expect(sent).toHaveLength(3)
@@ -338,58 +338,38 @@ describe("Turnstile action (F128)", () => {
   })
 })
 
-describe("enforceHomeTurfRecipientCap (M8)", () => {
-  it(`allows ${HOME_TURF_EMAIL_LIMIT_PER_DAY} confirmation per address per day and 429s the next`, async () => {
+describe("claimHomeTurfConfirmation (M8)", () => {
+  it(`allows ${HOME_TURF_EMAIL_LIMIT_PER_DAY} confirmation per address per day and refuses the next`, async () => {
     const counters = new InMemoryCounterStore(() => 0)
     for (let i = 0; i < HOME_TURF_EMAIL_LIMIT_PER_DAY; i++) {
-      await expect(
-        enforceHomeTurfRecipientCap("victim@example.org", counters),
-      ).resolves.toBeUndefined()
+      await expect(claimHomeTurfConfirmation("victim@example.org", counters)).resolves.toBe(true)
     }
-    await expect(enforceHomeTurfRecipientCap("victim@example.org", counters)).rejects.toMatchObject(
-      {
-        code: "RATE_LIMITED",
-      },
+    await expect(claimHomeTurfConfirmation("victim@example.org", counters)).resolves.toBe(false)
+    await expect(claimHomeTurfConfirmation("someone-else@example.org", counters)).resolves.toBe(
+      true,
     )
-    await expect(
-      enforceHomeTurfRecipientCap("someone-else@example.org", counters),
-    ).resolves.toBeUndefined()
   })
 
   it("normalizes case and surrounding whitespace so the bucket cannot be trivially varied", async () => {
     const counters = new InMemoryCounterStore(() => 0)
-    await enforceHomeTurfRecipientCap("Victim@Example.org", counters)
-    await expect(
-      enforceHomeTurfRecipientCap("  victim@example.ORG ", counters),
-    ).rejects.toMatchObject({
-      code: "RATE_LIMITED",
-    })
+    await claimHomeTurfConfirmation("Victim@Example.org", counters)
+    await expect(claimHomeTurfConfirmation("  victim@example.ORG ", counters)).resolves.toBe(false)
   })
 
   it("folds gmail +tags, dots and googlemail into one recipient bucket (F138)", async () => {
     const counters = new InMemoryCounterStore(() => 0)
-    await enforceHomeTurfRecipientCap("victim@gmail.com", counters)
-    await expect(
-      enforceHomeTurfRecipientCap("victim+abc@gmail.com", counters),
-    ).rejects.toMatchObject({
-      code: "RATE_LIMITED",
-    })
-    await expect(
-      enforceHomeTurfRecipientCap("v.i.c.t.i.m@googlemail.com", counters),
-    ).rejects.toMatchObject({ code: "RATE_LIMITED" })
+    await claimHomeTurfConfirmation("victim@gmail.com", counters)
+    await expect(claimHomeTurfConfirmation("victim+abc@gmail.com", counters)).resolves.toBe(false)
+    await expect(claimHomeTurfConfirmation("v.i.c.t.i.m@googlemail.com", counters)).resolves.toBe(
+      false,
+    )
   })
 
   it("strips +tags for non-gmail providers, but keeps dots significant (F138)", async () => {
     const counters = new InMemoryCounterStore(() => 0)
-    await enforceHomeTurfRecipientCap("victim@example.org", counters)
-    await expect(
-      enforceHomeTurfRecipientCap("victim+1@example.org", counters),
-    ).rejects.toMatchObject({
-      code: "RATE_LIMITED",
-    })
-    await expect(
-      enforceHomeTurfRecipientCap("v.ictim@example.org", counters),
-    ).resolves.toBeUndefined()
+    await claimHomeTurfConfirmation("victim@example.org", counters)
+    await expect(claimHomeTurfConfirmation("victim+1@example.org", counters)).resolves.toBe(false)
+    await expect(claimHomeTurfConfirmation("v.ictim@example.org", counters)).resolves.toBe(true)
   })
 })
 

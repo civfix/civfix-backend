@@ -4,6 +4,8 @@ import type { EventMediaPresigner } from "./event-media.js"
 import type {
   HostedEventRecord,
   HostPortfolioRepository,
+  HostPortfolioTotals,
+  HostPortfolioTotalsArgs,
 } from "./host-portfolio-repository.drizzle.js"
 import { ZERO_HOSTED_EVENT_COUNTS, type HostedEventCounts } from "./portfolio-counts.js"
 import { isEventPubliclyVisible } from "./authz.js"
@@ -15,9 +17,14 @@ export interface HostPortfolioCountsLoader {
   (cleanupIds: readonly string[]): Promise<Map<string, HostedEventCounts>>
 }
 
+export interface HostPortfolioTotalsLoader {
+  (args: HostPortfolioTotalsArgs): Promise<HostPortfolioTotals>
+}
+
 export interface HostPortfolioServiceDeps {
   repo: HostPortfolioRepository
   counts: HostPortfolioCountsLoader
+  totals: HostPortfolioTotalsLoader
   presignEventMedia?: EventMediaPresigner
   now?: () => Date
 }
@@ -62,9 +69,10 @@ export function makeHostPortfolioService(deps: HostPortfolioServiceDeps): HostPo
         limit,
       })
       const ids = items.map((r) => r.id)
-      const [counts, kpiBase] = await Promise.all([
+      const [counts, kpiBase, totals] = await Promise.all([
         deps.counts(ids),
         deps.repo.kpisFor({ userId, organizationId, now: now() }),
+        deps.totals({ userId, organizationId }),
       ])
 
       const presign = deps.presignEventMedia
@@ -77,13 +85,9 @@ export function makeHostPortfolioService(deps: HostPortfolioServiceDeps): HostPo
       )
 
       const dtos: HostedEventDTO[] = []
-      let totalRegistrations = 0
-      let totalCheckedIn = 0
       for (const [index, record] of items.entries()) {
         const standing = standingOf(record)
         const rowCounts = counts.get(record.id) ?? ZERO_HOSTED_EVENT_COUNTS
-        totalRegistrations += rowCounts.registered
-        totalCheckedIn += rowCounts.checkedIn
         const coverThumbUrl = coverUrls[index] ?? null
         dtos.push({
           id: record.id,
@@ -105,15 +109,15 @@ export function makeHostPortfolioService(deps: HostPortfolioServiceDeps): HostPo
           orgId: record.orgId,
           orgName: record.orgName,
           pageSlug: record.pageSlug,
-          pageStatus: null,
+          pageStatus: record.pageStatus,
         })
       }
 
       const kpis: HostPortfolioKpis = {
         eventsHosted: kpiBase.eventsHosted,
         upcomingEvents: kpiBase.upcomingEvents,
-        totalRegistrations,
-        totalCheckedIn,
+        totalRegistrations: totals.totalRegistrations,
+        totalCheckedIn: totals.totalCheckedIn,
       }
       return { items: dtos, nextCursor, kpis }
     },

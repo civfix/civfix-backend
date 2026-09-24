@@ -1,5 +1,6 @@
 import type postgres from "postgres"
 import type { Queryable } from "../db/client.js"
+import { keysetInstant } from "../db/cursor-helpers.js"
 import type {
   AddressPrecision,
   ReportAddressSource,
@@ -160,6 +161,7 @@ export interface PublicPinRow {
   thumb_key: string | null
   r2_key: string | null
   created_at: Date
+  cursor_at: string | null
 }
 
 export function toMapPoint(r: PublicPinRow): ReportMapPoint {
@@ -199,7 +201,8 @@ export async function selectPublicPins(
       r.reference_code,
       m.thumb_key,
       m.r2_key,
-      r.created_at
+      r.created_at,
+      ${keysetInstant(sql, sql`r.created_at`)} AS cursor_at
     FROM reports r
     ${firstReadyStillLateral(sql)}
     WHERE ${publicReportFilter(sql)}

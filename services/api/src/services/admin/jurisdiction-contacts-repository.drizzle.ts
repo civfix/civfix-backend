@@ -1,7 +1,12 @@
 import type { Sql } from "../../db/client.js"
 import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination.js"
 import { writeAudit } from "./audit.js"
-import { upsertJurisdictionContacts } from "./discovery-repository.drizzle.js"
+import {
+  invalidateDirectoryFacetCache,
+  readDirectoryFacetCache,
+  upsertJurisdictionContacts,
+  writeDirectoryFacetCache,
+} from "./discovery-repository.drizzle.js"
 import { buildUnmappedRecord, shouldIncludeUnmapped } from "./jurisdiction-directory-projection.js"
 import {
   ADMIN_CATEGORIES,
@@ -24,8 +29,6 @@ import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import { ilikeAnyOf } from "./sql-fragments.js"
 
-const DIRECTORY_FACET_TTL_MS = 30_000
-
 const PG_UNIQUE_VIOLATION = "23505"
 const JURISDICTION_HANDLE_CONSTRAINT = "jurisdictions_handle_lower_key"
 
@@ -33,30 +36,6 @@ function isJurisdictionHandleConflict(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false
   const e = err as { code?: unknown; constraint_name?: unknown }
   return e.code === PG_UNIQUE_VIOLATION && e.constraint_name === JURISDICTION_HANDLE_CONSTRAINT
-}
-
-interface DirectoryFacetAggregate {
-  total: number
-  facets: { routed: number; unrouted: number }
-}
-
-let defaultFacetCache: { at: number; value: DirectoryFacetAggregate } | null = null
-
-function readDefaultFacetCache(): DirectoryFacetAggregate | null {
-  if (defaultFacetCache === null) return null
-  if (Date.now() - defaultFacetCache.at > DIRECTORY_FACET_TTL_MS) {
-    defaultFacetCache = null
-    return null
-  }
-  return defaultFacetCache.value
-}
-
-function writeDefaultFacetCache(value: DirectoryFacetAggregate): void {
-  defaultFacetCache = { at: Date.now(), value }
-}
-
-function invalidateDefaultFacetCache(): void {
-  defaultFacetCache = null
 }
 
 interface DirectoryRow extends CategoryCountRow {
@@ -188,7 +167,7 @@ export function makeDrizzleJurisdictionContactsRepository(
 
         return { taskResolved }
       })
-      invalidateDefaultFacetCache()
+      invalidateDirectoryFacetCache()
       return { taskResolved: committed.taskResolved }
     },
 
@@ -277,7 +256,7 @@ export function makeDrizzleJurisdictionContactsRepository(
         })
         return true
       })
-      invalidateDefaultFacetCache()
+      invalidateDirectoryFacetCache()
       return result
     },
 
@@ -430,7 +409,7 @@ export function makeDrizzleJurisdictionContactsRepository(
       let facets: { routed: number; unrouted: number } | null = null
       if (offset === 0) {
         const isDefaultView = args.q === null && args.layer === null
-        const cached = args.filter === "all" && isDefaultView ? readDefaultFacetCache() : null
+        const cached = args.filter === "all" && isDefaultView ? readDirectoryFacetCache() : null
         if (cached !== null) {
           total = cached.total
           facets = cached.facets
@@ -447,7 +426,7 @@ export function makeDrizzleJurisdictionContactsRepository(
           total = Number(rows[0]?.filtered_total ?? "0")
           facets = { routed: Number(a?.routed ?? "0"), unrouted: Number(a?.unrouted ?? "0") }
           if (args.filter === "all" && isDefaultView) {
-            writeDefaultFacetCache({ total: Number(a?.total ?? "0"), facets })
+            writeDirectoryFacetCache({ total: Number(a?.total ?? "0"), facets })
           }
         }
       }

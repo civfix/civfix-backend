@@ -56,10 +56,13 @@ export function makeDrizzleMediaRepository(db: Db): MediaRepository {
       return row ? toView(row) : null
     },
 
-    async markFinalized(uploadId: string): Promise<MediaAssetView | null> {
+    async markFinalized(
+      uploadId: string,
+      uploadEtag: string | null,
+    ): Promise<MediaAssetView | null> {
       const rows = await db
         .update(mediaAssets)
-        .set({ finalizedAt: sql`now()` })
+        .set({ finalizedAt: sql`now()`, uploadEtag })
         .where(and(eq(mediaAssets.uploadId, uploadId), isNull(mediaAssets.finalizedAt)))
         .returning()
       const row = rows[0]

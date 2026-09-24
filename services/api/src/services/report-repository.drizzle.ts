@@ -8,14 +8,20 @@ import type {
   ReportVisibility,
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../db/client.js"
-import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
-import { isPubliclyVisibleStatus } from "./report-visibility.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../db/cursor-helpers.js"
+import { isPubliclyVisibleStatus, ownerStatusTransition } from "./report-visibility.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
 import { escapeLike } from "./admin/like.js"
 import type {
   BBox,
   CreateReportTxArgs,
   CreateReportTxResult,
+  OwnerToggleStatus,
   ReportMapPoint,
   ReportMediaView,
   ReportRecord,
@@ -314,11 +320,11 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       cursor: string | null,
       limit: number,
     ): Promise<{ records: ReportRecord[]; nextCursor: string | null }> {
-      const anchor = parseTimeCursor(cursor)
+      const anchor = parseKeysetCursor(cursor)
       const cursorFilter: SqlFragment =
-        anchor !== null ? sql`AND (created_at, id) < (${anchor.at}, ${anchor.id}::uuid)` : sql``
-      const rows = await sql<ReportRowSelect[]>`
-        SELECT ${reportColumns(sql)}
+        anchor !== null ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, anchor)}` : sql``
+      const rows = await sql<(ReportRowSelect & { cursor_at: string | null })[]>`
+        SELECT ${reportColumns(sql)}, ${keysetInstant(sql, sql`created_at`)} AS cursor_at
         FROM reports
         WHERE reporter_user_id = ${userId}
           AND deleted_at IS NULL
@@ -326,7 +332,10 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         ORDER BY created_at DESC, id DESC
         LIMIT ${limit + 1}
       `
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       return { records: items.map(toRecord), nextCursor }
     },
 
@@ -364,9 +373,11 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       if (args.q !== null && args.q.length < REPORT_SEARCH_MIN_QUERY_LENGTH) {
         return { points: [], nextCursor: null }
       }
-      const anchor = parseTimeCursor(args.cursor)
+      const anchor = parseKeysetCursor(args.cursor)
       const cursorFilter: SqlFragment =
-        anchor !== null ? sql`AND (r.created_at, r.id) < (${anchor.at}, ${anchor.id}::uuid)` : sql``
+        anchor !== null
+          ? sql`AND ${keysetPredicate(sql, sql`r.created_at`, sql`r.id`, anchor)}`
+          : sql``
       const categoryFilter: SqlFragment =
         args.categories !== null && args.categories.length > 0
           ? sql`AND r.category IN ${sql(args.categories)}`
@@ -387,8 +398,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         sql`ORDER BY r.created_at DESC, r.id DESC`,
         args.limit + 1,
       )
-      const { items, nextCursor } = paginate(rows, args.limit, (r) => ({
-        at: r.created_at,
+      const { items, nextCursor } = paginateKeyset(rows, args.limit, (r) => ({
+        atText: r.cursor_at,
         id: r.id,
       }))
       return { points: items.map(toMapPoint), nextCursor }
@@ -397,8 +408,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
     async resolveByOwner(
       reportId: string,
       userId: string,
-      input: { status: ReportStatus; note: string },
-    ): Promise<"updated" | "not_found" | "forbidden" | "invalid_state"> {
+      input: { status: OwnerToggleStatus; note: string },
+    ): Promise<"updated" | "unchanged" | "not_found" | "forbidden" | "invalid_state"> {
       return sql.begin(async (tx) => {
         const rows = await tx<
           {
@@ -417,7 +428,8 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
         const row = rows[0]
         if (!row || row.deleted_at !== null) return "not_found"
         if (row.reporter_user_id !== userId) return notOwnerOutcome(row)
-        if (!isPubliclyVisibleStatus(row.status)) return "invalid_state"
+        const transition = ownerStatusTransition(row.status, input.status)
+        if (transition !== "apply") return transition
 
         await tx`UPDATE reports SET status = ${input.status} WHERE id = ${reportId}`
         await tx`

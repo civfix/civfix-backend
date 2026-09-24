@@ -29,6 +29,7 @@ import type {
   HostRegistrationRepository,
 } from "./registration-repository.types.js"
 import { CHECKIN_COARSEN_DAYS } from "./registration-retention.js"
+import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
 
 export const INSIGHTS_LIVE_CACHE_TTL_SEC = 15
 
@@ -115,7 +116,7 @@ function clockOf(clock: EventClockRecord): EventInsightsClock {
     endsAt: clock.endsAt?.toISOString() ?? null,
     completedAt: clock.completedAt?.toISOString() ?? null,
     registrationClosesAt: clock.registrationClosesAt?.toISOString() ?? null,
-    timezone: clock.timezone ?? "UTC",
+    timezone: clock.timezone ?? DEFAULT_EVENT_TIME_ZONE,
   }
 }
 
@@ -167,7 +168,7 @@ export function makeInsightsService(deps: InsightsServiceDeps): InsightsService 
     const [counters, trend, bySource, broadcasts, hours, topVolunteers, returning] =
       await Promise.all([
         deps.registrations.checkinCounters(cleanupId),
-        deps.analytics.seatTrend(cleanupId, clock.timezone ?? "UTC"),
+        deps.analytics.seatTrend(cleanupId, clock.timezone ?? DEFAULT_EVENT_TIME_ZONE),
         deps.analytics.registrationsBySource(cleanupId),
         deps.analytics.broadcastsForEvent(cleanupId, MAX_INSIGHTS_BROADCASTS),
         deps.analytics.eventHoursTotals(cleanupId),

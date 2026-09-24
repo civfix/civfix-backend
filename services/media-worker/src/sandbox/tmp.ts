@@ -23,6 +23,17 @@ export class ScratchOutputError extends Error {
   }
 }
 
+// Raised when the worker itself cannot build or hand over the scratch dir (full tmpfs, EMFILE, a wrong
+// sandbox gid). The upload never reached a decoder, so the job must retry instead of rejecting the bytes.
+export class ScratchSetupError extends Error {
+  constructor(message: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause)
+    super(`${message}: ${detail}`, { cause })
+    this.name = "ScratchSetupError"
+    Object.setPrototypeOf(this, ScratchSetupError.prototype)
+  }
+}
+
 export interface Scratch {
   dir: string
   inputPath: string
@@ -32,27 +43,27 @@ export interface Scratch {
 }
 
 export async function makeScratch(bytes?: Uint8Array, ext = "bin"): Promise<Scratch> {
-  const dir = await mkdtemp(join(tmpdir(), SCRATCH_PREFIX))
+  let dir: string
+  try {
+    dir = await mkdtemp(join(tmpdir(), SCRATCH_PREFIX))
+  } catch (err) {
+    throw new ScratchSetupError("could not create the sandbox scratch dir", err)
+  }
   const safeExt = /^[a-z0-9]{1,8}$/i.test(ext) ? ext : "bin"
   const inputPath = join(dir, `input.${safeExt}`)
-  const identity = sandboxIdentity()
-  if (identity !== null) {
-    try {
+  try {
+    const identity = sandboxIdentity()
+    if (identity !== null) {
       await chown(dir, process.getuid?.() ?? -1, identity.gid)
       await chmod(dir, 0o2770)
-    } catch (err) {
-      await rm(dir, { recursive: true, force: true }).catch(() => {})
-      throw err
     }
-  }
-  if (bytes !== undefined) {
-    try {
+    if (bytes !== undefined) {
       await writeFile(inputPath, bytes)
       if (identity !== null) await chmod(inputPath, 0o660)
-    } catch (err) {
-      await rm(dir, { recursive: true, force: true }).catch(() => {})
-      throw err
     }
+  } catch (err) {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+    throw new ScratchSetupError("could not prepare the sandbox scratch dir", err)
   }
   let cleaned = false
   return {
@@ -63,11 +74,16 @@ export async function makeScratch(bytes?: Uint8Array, ext = "bin"): Promise<Scra
       return join(dir, safe)
     },
     async seal(): Promise<void> {
-      await chmod(dir, 0o700)
+      try {
+        await chmod(dir, 0o700)
+      } catch (err) {
+        throw new ScratchSetupError("could not seal the sandbox scratch dir", err)
+      }
     },
     async cleanup(): Promise<void> {
       if (cleaned) return
       cleaned = true
+      // A dir left behind is reaped by sweepStaleScratchDirs; cleanup must never mask the job's own outcome.
       await rm(dir, { recursive: true, force: true }).catch(() => {})
     },
   }
@@ -128,6 +144,7 @@ export async function sweepStaleScratchDirs(maxAgeMs = 60 * 60 * 1000): Promise<
         removed++
       }
     } catch (ignored) {
+      // A running job's cleanup can remove the dir between readdir and stat; the next sweep retries the rest.
       void ignored
     }
   }

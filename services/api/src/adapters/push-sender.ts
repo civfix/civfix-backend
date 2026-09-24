@@ -46,6 +46,8 @@ export function hashForLog(value: string): string {
 
 const ACTIVE_TOKEN_SCAN_CAP_PER_USER = 20
 
+// Only for callers that construct the sender without a logger; the API container always injects
+// its pino logger so redaction and request context apply.
 const consoleLogger: PushLogger = {
   warn: (obj, msg) => console.warn(msg ?? "", obj),
   error: (obj, msg) => console.error(msg ?? "", obj),

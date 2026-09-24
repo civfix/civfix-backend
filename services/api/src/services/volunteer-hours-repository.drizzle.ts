@@ -6,7 +6,7 @@ import type {
   VolunteerHoursSource,
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../db/client.js"
-import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
+import { keysetInstant, keysetPredicate, pageWith, paginateKeyset } from "../db/cursor-helpers.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
@@ -499,14 +499,15 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       const sources = args.sources ?? ITEMISED_SOURCES
       const keyset =
         args.cursor !== null
-          ? sql`AND (vh.created_at, vh.id) < (${args.cursor.at}, ${args.cursor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`vh.created_at`, sql`vh.id`, args.cursor)}`
           : sql``
-      const rows = await sql<LedgerRow[]>`
+      const rows = await sql<(LedgerRow & { cursor_at: string })[]>`
         SELECT
           vh.id,
           vh.source,
           vh.hours::float8 AS hours,
           vh.created_at,
+          ${keysetInstant(sql, sql`vh.created_at`)} AS cursor_at,
           c.scheduled_at,
           vh.cleanup_id,
           c.title AS cleanup_title,
@@ -528,9 +529,10 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         ORDER BY vh.created_at DESC, vh.id DESC
         LIMIT ${args.limit + 1}
       `
-      const { items, nextCursor } = pageWith(rows, args.limit, (last) =>
-        encodeTimeCursor({ at: last.created_at, id: last.id }),
-      )
+      const { items, nextCursor } = paginateKeyset(rows, args.limit, (last) => ({
+        atText: last.cursor_at,
+        id: last.id,
+      }))
       return { items: items.map(toEntryView), nextCursor }
     },
 

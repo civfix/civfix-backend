@@ -50,7 +50,7 @@ export function loadCommsEnv(source: NodeJS.ProcessEnv, errors: string[]): Comms
   }
 
   function bounded(key: string, fallback: number, min: number, max: number): number {
-    const raw = parseIntOr(source[key], fallback)
+    const raw = parseIntOr(source[key], fallback, { key, errors })
     if (raw < min || raw > max) {
       errors.push(`${key}: must be an integer between ${min} and ${max}`)
       return fallback
@@ -148,7 +148,7 @@ export function loadCommsEnv(source: NodeJS.ProcessEnv, errors: string[]): Comms
 }
 
 function clampDedupeSeconds(raw: string | undefined, errors: string[]): number {
-  const value = parseIntOr(raw, 0)
+  const value = parseIntOr(raw, 0, { key: "PAGE_VIEW_DEDUPE_SEC", errors })
   if (value < 0 || value > 3600) {
     errors.push("PAGE_VIEW_DEDUPE_SEC: must be an integer between 0 (off) and 3600")
     return 0

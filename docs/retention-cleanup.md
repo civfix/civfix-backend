@@ -1,7 +1,7 @@
 # Retention cleanup jobs (civfix-backend)
 
 **Audience:** internal (engineering + ops). Not served publicly.
-**Last updated:** 2026-09-02 (audit-fix pass: inbound_emails TTL + doc-drift corrections).
+**Last updated:** 2026-09-23 (host export reaper: abandoned runs, failed-run objects, row retention waits for the object).
 
 The written retention schedule and its scheduled cleanup jobs. It started with
 the TTL-able auth artifacts that previously accumulated forever (no existing path
@@ -400,10 +400,28 @@ NEVER throws out of the sweep: a failed lane is logged and the next lane still r
 |---|---|---|
 | `broadcast_deliveries` rows | **180 d** from `created_at` | `host.retention.sweep` → `broadcast_deliveries` |
 | `broadcasts` subject + body + CTA | scrubbed **180 d** after `finished_at`; the counts and the row are kept indefinitely as the audit record that a message was sent | `host.retention.sweep` → `broadcast_content` |
-| `host_exports` rows | **90 d** from `requested_at` | `host.retention.sweep` → `host_exports` |
-| host export OBJECTS | **24 h** (`HOST_EXPORT_TTL_HOURS`); the object is deleted BEFORE its row is marked `expired`, and a failed delete leaves the row for the next pass (the row itself goes with the `host_exports` lane) | `host.export.reap` |
+| `host_exports` rows | **90 d** from `requested_at`, and only once the row no longer names an object (`r2_key IS NULL`) | `host.retention.sweep` → `host_exports` |
+| host export OBJECTS | **24 h** (`HOST_EXPORT_TTL_HOURS`) for a ready export; a failed run's object at the next reaper pass; objects are deleted BEFORE their rows | `host.export.reap` |
 | `event_metrics_daily` | **never** — aggregates with no identifier of any kind, and the only long-run record a host has | — |
 | `broadcast_unsubscribes`, `email_suppressions` | **indefinite, deliberately** — a suppression list that expires re-enables mailing someone who said stop (same reasoning as `sms_opt_outs`) | — |
+
+`host.export.reap` (`HOST_EXPORT_REAP_CRON`, default hourly at :40; up to 200 rows per
+lane per pass) runs two lanes in `services/api/src/services/host/export-service.ts`:
+
+- **Expired.** A `ready` row whose `expires_at` has passed has its object deleted, then
+  becomes `expired` with `r2_key = NULL`.
+- **Orphaned.** A `failed` row that still names an object, a `running` row whose
+  `started_at` is more than 1 hour old, and a `queued` row whose `requested_at` is more
+  than 1 hour old (`EXPORT_ABANDON_AFTER_MS`). Any object is deleted first; the row then
+  becomes `failed` with `r2_key = NULL`, keeps an existing `error_code` or else takes
+  `not_started` (was queued) or `build_failed` (was running), and gets `completed_at` if
+  it had none. The update applies only while the row's status and run token are unchanged,
+  so a run that claimed the row in between is not overwritten.
+
+When an object delete fails, the row is left as it is and the next pass retries it. A
+failed run also deletes its own object straight away; the reaper finishes that cleanup
+when it could not. `host.retention.sweep` deletes `host_exports` rows past 90 days only
+when `r2_key IS NULL`, so it never drops the last pointer to an object still in storage.
 
 ### Donation links, retired payments tables, and legal
 

@@ -80,17 +80,18 @@ export function canonicalizeHomeTurfEmail(email: string): string {
   return `${local}@${domain}`
 }
 
-export async function enforceHomeTurfRecipientCap(
+// The cap protects the address in the form from being mail-bombed with confirmations. It runs after the
+// staff notification went out, so exceeding it drops only the confirmation: failing the request would tell
+// the coach their sign-up failed when staff already have it.
+export async function claimHomeTurfConfirmation(
   email: string,
   counters: CounterStore,
-): Promise<void> {
+): Promise<boolean> {
   const canonical = canonicalizeHomeTurfEmail(email)
   const digest = createHash("sha256").update(canonical).digest("hex")
   const key = HOME_TURF_EMAIL_COUNTER_PREFIX + digest
   const count = await counters.incr(key, HOME_TURF_EMAIL_WINDOW_SECONDS)
-  if (count > HOME_TURF_EMAIL_LIMIT_PER_DAY) {
-    throw AppError.rateLimited("Too many submissions from this network. Try again later.")
-  }
+  return count <= HOME_TURF_EMAIL_LIMIT_PER_DAY
 }
 
 export async function registerHomeTurfRoutes(
@@ -164,7 +165,12 @@ export async function registerHomeTurfRoutes(
       const notification = buildNotificationEmail(form, from, notifyTo)
       await container.mailer.sendOutbound(notification)
 
-      await enforceHomeTurfRecipientCap(form.email, store)
+      if (!(await claimHomeTurfConfirmation(form.email, store))) {
+        request.log.info(
+          "home-turf form: recipient confirmation cap reached; staff notified, confirmation skipped",
+        )
+        return reply.status(200).send({ ok: true })
+      }
 
       try {
         await container.mailer.sendOutbound(buildConfirmationEmail(form, from, notifyTo))

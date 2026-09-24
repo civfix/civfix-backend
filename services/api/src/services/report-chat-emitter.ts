@@ -66,13 +66,6 @@ export function makeContainerReportChatEmitter(
   })
 
   const conversationMutes = makeConversationMutesRepository(sql)
-  const isMuted = async (userId: string, roomId: string): Promise<boolean> => {
-    try {
-      return await conversationMutes.isMuted(userId, "report", roomId)
-    } catch {
-      return false
-    }
-  }
 
   /**
    * Batch mute shape: one query for the room's whole member set instead of one per recipient.
@@ -93,8 +86,8 @@ export function makeContainerReportChatEmitter(
 
   const notify = makeReportChatNotifier({
     notificationService,
-    reportChatRepo: { listMemberIds: (reportId) => reportChatRepo.listMemberIds(reportId) },
-    isMuted,
+    reportChatRepo,
+    isMuted: (userId, roomId) => conversationMutes.isMuted(userId, "report", roomId),
     ...(mutedUserIdsFor ? { mutedUserIdsFor } : {}),
     // presence intentionally omitted — not reachable from the admin/citizen service context (see header).
     roomKeyFor,
@@ -110,6 +103,7 @@ export function makeContainerReportChatEmitter(
     // requires the repo at construction time, and it would buy nothing: see above, a null actor
     // short-circuits the gate before either shape is consulted.
     isBlockedEitherWay: (a, b) => container.getBlocksRepo().isBlockedEitherWay(a, b),
+    logger,
   })
 
   return makeReportChatSystemEmitter({

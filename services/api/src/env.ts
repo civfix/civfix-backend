@@ -14,6 +14,8 @@ import {
   parseDrainMs,
   parseIntOr,
   parsePositiveIntOr,
+  parseStrictBool,
+  STRICT_BOOL_ACCEPTED_FORMS,
   parseTrustProxy,
 } from "./env/parsers.js"
 
@@ -49,6 +51,13 @@ const TILES_BOUNDS_DEFAULT: [number, number, number, number] = [-125, 24, -66, 5
 const HOME_REGION_LAT_DEFAULT = 34.0522
 const HOME_REGION_LNG_DEFAULT = -118.2437
 const HOME_REGION_RADIUS_KM_DEFAULT = 40
+
+const APNS_CREDENTIAL_KEYS = [
+  "APNS_KEY_ID",
+  "APNS_TEAM_ID",
+  "APNS_PRIVATE_KEY",
+  "APNS_BUNDLE_ID",
+] as const
 
 const NodeEnvSchema = z.enum(["development", "test", "production"]).default("development")
 const PortSchema = z.coerce.number().int().positive().max(65535)
@@ -182,6 +191,31 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
       return DEFAULT_FEED_RANKING
     }
     return parsed.data
+  }
+
+  function positiveInt(key: string, fallback: number): number {
+    return parsePositiveIntOr(source[key], fallback, { key, errors })
+  }
+
+  function readApnsProduction(): boolean | undefined {
+    const raw = (source.APNS_PRODUCTION ?? "").trim()
+    if (raw.length === 0) {
+      const apnsConfigured = APNS_CREDENTIAL_KEYS.every(
+        (key) => (source[key] ?? "").trim().length > 0,
+      )
+      if (isProd && apnsConfigured) {
+        errors.push(
+          "APNS_PRODUCTION: required [BOOT] once APNs credentials are set (true for App Store and " +
+            "TestFlight builds; a gateway mismatch makes APNs reject every token as BadDeviceToken)",
+        )
+      }
+      return undefined
+    }
+    const value = parseStrictBool(raw)
+    if (value === undefined) {
+      errors.push(`APNS_PRODUCTION: must be one of ${STRICT_BOOL_ACCEPTED_FORMS}`)
+    }
+    return value
   }
 
   function reqCron(key: string, fallback: string): string {
@@ -322,9 +356,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const OCI_EMAIL_SMTP_PORT = reqPort("OCI_EMAIL_SMTP_PORT", 587)
   const OCI_EMAIL_SMTP_USER = reqStr("OCI_EMAIL_SMTP_USER", { gatedOff: fakeFlags.USE_FAKE_MAILER })
   const OCI_EMAIL_SMTP_PASS = reqStr("OCI_EMAIL_SMTP_PASS", { gatedOff: fakeFlags.USE_FAKE_MAILER })
-  const OCI_EMAIL_SMTP_TIMEOUT_MS = parsePositiveIntOr(source.OCI_EMAIL_SMTP_TIMEOUT_MS, 15_000)
-  const OUTBOUND_SEND_MIN_THROUGHPUT_BPS = parsePositiveIntOr(
-    source.OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
+  const OCI_EMAIL_SMTP_TIMEOUT_MS = positiveInt("OCI_EMAIL_SMTP_TIMEOUT_MS", 15_000)
+  const OUTBOUND_SEND_MIN_THROUGHPUT_BPS = positiveInt(
+    "OUTBOUND_SEND_MIN_THROUGHPUT_BPS",
     256 * 1024,
   )
   for (const problem of assertOutboundSendPolicy({
@@ -335,7 +369,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   }
 
   const SMS_GUEST_ENABLED = parseBool(source.SMS_GUEST_ENABLED, false)
-  const SMS_DAILY_CAP = parsePositiveIntOr(source.SMS_DAILY_CAP, 50)
+  const SMS_DAILY_CAP = positiveInt("SMS_DAILY_CAP", 50)
   const smsCredentialsUnused = fakeFlags.USE_FAKE_SMS || !SMS_GUEST_ENABLED
   const TWILIO_ACCOUNT_SID = reqStr("TWILIO_ACCOUNT_SID", { gatedOff: smsCredentialsUnused })
   const TWILIO_AUTH_TOKEN = reqStr("TWILIO_AUTH_TOKEN", { gatedOff: smsCredentialsUnused })
@@ -373,6 +407,21 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     }
   }
 
+  const SHUTDOWN_DRAIN_MS = parseDrainMs(source.SHUTDOWN_DRAIN_MS)
+  const TILES_MIN_ZOOM = parseIntOr(source.TILES_MIN_ZOOM, TILES_MIN_ZOOM_DEFAULT, {
+    key: "TILES_MIN_ZOOM",
+    errors,
+  })
+  const TILES_MAX_ZOOM = parseIntOr(source.TILES_MAX_ZOOM, TILES_MAX_ZOOM_DEFAULT, {
+    key: "TILES_MAX_ZOOM",
+    errors,
+  })
+  const CENSUS_GEOCODER_TIMEOUT_MS = positiveInt("CENSUS_GEOCODER_TIMEOUT_MS", 2500)
+  const VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS = positiveInt("VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS", 60)
+  const OUTREACH_THROTTLE_DAYS = positiveInt("OUTREACH_THROTTLE_DAYS", 7)
+
+  const APNS_PRODUCTION = readApnsProduction()
+
   const comms = loadCommsEnv(source, errors)
   const registration = loadRegistrationEnv(source, errors)
 
@@ -393,7 +442,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     SESSION_SIGNING_KEY,
     ANON_TOKEN_SIGNING_KEY,
     TRUST_PROXY,
-    SHUTDOWN_DRAIN_MS: parseDrainMs(source.SHUTDOWN_DRAIN_MS),
+    SHUTDOWN_DRAIN_MS,
 
     R2_ACCOUNT_ID,
     R2_ACCESS_KEY_ID,
@@ -403,8 +452,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     ...(usesLocalStorage && LOCAL_STORAGE_SIGNING_KEY.length > 0
       ? { LOCAL_STORAGE_SIGNING_KEY }
       : {}),
-    TILES_MIN_ZOOM: parseIntOr(source.TILES_MIN_ZOOM, TILES_MIN_ZOOM_DEFAULT),
-    TILES_MAX_ZOOM: parseIntOr(source.TILES_MAX_ZOOM, TILES_MAX_ZOOM_DEFAULT),
+    TILES_MIN_ZOOM,
+    TILES_MAX_ZOOM,
     TILES_BOUNDS: parseBounds(source.TILES_BOUNDS, TILES_BOUNDS_DEFAULT),
 
     HOME_REGION_LAT,
@@ -416,7 +465,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     CENSUS_GEOCODER_URL:
       (source.CENSUS_GEOCODER_URL ?? "").trim() ||
       "https://geocoding.geo.census.gov/geocoder/geographies/coordinates",
-    CENSUS_GEOCODER_TIMEOUT_MS: parsePositiveIntOr(source.CENSUS_GEOCODER_TIMEOUT_MS, 2500),
+    CENSUS_GEOCODER_TIMEOUT_MS,
 
     OCI_EMAIL_SMTP_HOST,
     OCI_EMAIL_SMTP_PORT,
@@ -424,10 +473,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     OCI_EMAIL_SMTP_PASS,
     OCI_EMAIL_SMTP_TIMEOUT_MS,
     OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
-    VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS: parsePositiveIntOr(
-      source.VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS,
-      60,
-    ),
+    VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS,
     MAIL_FROM_NOREPLY: (source.MAIL_FROM_NOREPLY ?? "").trim() || "no-reply@civfix.org",
     MAIL_FROM_OUTREACH: (source.MAIL_FROM_OUTREACH ?? "").trim() || "outreach@civfix.org",
     HOME_TURF_MAIL_FROM: (source.HOME_TURF_MAIL_FROM ?? "").trim() || "donotreply@civfix.org",
@@ -435,7 +481,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 
     ADMIN_EMAILS: parseCsvLower(source.ADMIN_EMAILS),
     MAIL_REPLY_DOMAIN: (source.MAIL_REPLY_DOMAIN ?? "").trim() || "civfix.org",
-    OUTREACH_THROTTLE_DAYS: parsePositiveIntOr(source.OUTREACH_THROTTLE_DAYS, 7),
+    OUTREACH_THROTTLE_DAYS,
     OUTREACH_DIGEST_CRON,
     OUTREACH_DIGEST_ENABLED,
     REPORT_AUTOFORWARD_ENABLED,
@@ -492,9 +538,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
       "GLITCHTIP_DSN",
       "GLITCHTIP_DATABASE_URL",
     ]),
-    ...(source.APNS_PRODUCTION !== undefined && source.APNS_PRODUCTION !== ""
-      ? { APNS_PRODUCTION: parseBool(source.APNS_PRODUCTION, false) }
-      : {}),
+    ...(APNS_PRODUCTION !== undefined ? { APNS_PRODUCTION } : {}),
 
     ...fakeFlags,
 

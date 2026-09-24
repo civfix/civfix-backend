@@ -7,7 +7,10 @@ import { parse } from "../_validate.js"
 import { perIdentity } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
 import { makeEventMediaPresigner } from "../../services/host/event-media.js"
-import { makeDrizzleHostPortfolioRepository } from "../../services/host/host-portfolio-repository.drizzle.js"
+import {
+  hostedRegistrationTotals,
+  makeDrizzleHostPortfolioRepository,
+} from "../../services/host/host-portfolio-repository.drizzle.js"
 import {
   HOSTED_EVENTS_DEFAULT_LIMIT,
   makeHostPortfolioService,
@@ -19,6 +22,7 @@ import { hostedEventCounts } from "../../services/host/portfolio-counts.js"
 export interface HostPortfolioOverrides {
   repo: HostPortfolioServiceDeps["repo"]
   counts?: HostPortfolioServiceDeps["counts"]
+  totals?: HostPortfolioServiceDeps["totals"]
   presignEventMedia?: HostPortfolioServiceDeps["presignEventMedia"]
   now?: HostPortfolioServiceDeps["now"]
 }
@@ -50,6 +54,8 @@ export async function registerHostPortfolioRoutes(
       return makeHostPortfolioService({
         repo: overrides.repo,
         counts: overrides.counts ?? (() => Promise.resolve(new Map())),
+        totals:
+          overrides.totals ?? (() => Promise.resolve({ totalRegistrations: 0, totalCheckedIn: 0 })),
         ...(overrides.presignEventMedia !== undefined
           ? { presignEventMedia: overrides.presignEventMedia }
           : {}),
@@ -60,6 +66,7 @@ export async function registerHostPortfolioRoutes(
     return makeHostPortfolioService({
       repo: makeDrizzleHostPortfolioRepository(sql),
       counts: (cleanupIds) => hostedEventCounts(sql, cleanupIds),
+      totals: (args) => hostedRegistrationTotals(sql, args),
       presignEventMedia: makeEventMediaPresigner(container.storage),
     })
   }

@@ -182,7 +182,16 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     onLateSuccess?: (() => Promise<void>) | undefined
   }): Promise<string> {
     const rfcMessageId = `<out-${args.messageId}@${domainOf(env.MAIL_FROM_OUTREACH)}>`
-    const priorIds = await repo.priorOutboundMessageIds(args.threadId).catch(() => [] as string[])
+    // Threading headers are a courtesy to the city's mail client; losing them must not block the send.
+    const priorIds = await repo
+      .priorOutboundMessageIds(args.threadId)
+      .catch((err: unknown): string[] => {
+        logger.warn(
+          { err, threadId: args.threadId },
+          "outbound mail: prior Message-IDs unreadable; sending without In-Reply-To/References",
+        )
+        return []
+      })
     const inReplyTo = priorIds.length > 0 ? priorIds[priorIds.length - 1] : undefined
     const references =
       priorIds.length > 10 ? [priorIds[0] as string, ...priorIds.slice(-9)] : priorIds
@@ -291,6 +300,8 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       void send.then(
         async (late: SentMail) => {
           try {
+            // The caller already awaits failureWrite and sees its error; here it only orders the
+            // late 'sent' after the 'failed' row.
             await failureWrite.catch(() => {})
             await recordSent(late, { late: true })
             if (args.onLateSuccess !== undefined) await args.onLateSuccess()

@@ -559,11 +559,12 @@ describe("ranked feed: the cold-start leniency pages to exhaustion, it does not 
 
   function service(): { svc: PostService; presence: ReturnType<typeof makeFeedPresence> } {
     const cache = new InMemoryCacheClient(() => Date.now())
-    const presence = makeFeedPresence({ cache, config: DEFAULT_FEED_RANKING })
+    const presence = makeFeedPresence({ cache, config: NO_JITTER })
     const svc = makePostService({
       repo: repoOver({ feedCandidates: () => Promise.resolve(rows) }),
       sql: throwingSql,
       feedPresence: presence,
+      feedRanking: NO_JITTER,
       now: () => NOW,
     })
     return { svc, presence }
@@ -614,8 +615,9 @@ describe("ranked feed: the cold-start leniency pages to exhaustion, it does not 
       sql: throwingSql,
       feedPresence: makeFeedPresence({
         cache: new InMemoryCacheClient(() => Date.now()),
-        config: DEFAULT_FEED_RANKING,
+        config: NO_JITTER,
       }),
+      feedRanking: NO_JITTER,
       now: () => NOW,
     })
     const second = await expired.homeFeed(VIEWER, {
@@ -624,7 +626,7 @@ describe("ranked feed: the cold-start leniency pages to exhaustion, it does not 
       cursor: first.nextCursor!,
     })
 
-    expect(second.items.length).toBeGreaterThan(0)
+    expect(second.items).toHaveLength(20)
   })
 })
 

@@ -95,7 +95,7 @@ export interface MediaRepository {
   insert(row: NewMediaAsset): Promise<void>
   findByUploadId(uploadId: string): Promise<MediaAssetView | null>
   findById(id: string): Promise<MediaAssetView | null>
-  markFinalized(uploadId: string): Promise<MediaAssetView | null>
+  markFinalized(uploadId: string, uploadEtag: string | null): Promise<MediaAssetView | null>
 }
 
 export interface MediaIntakeDeps {
@@ -233,6 +233,12 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         throw AppError.notFound("Unknown upload")
       }
 
+      // Once finalized, the worker may already have deleted the raw upload and overwritten byte_size with
+      // the processed size, so a client retry must be answered before either is checked again.
+      if (asset.status !== "validating" || asset.finalizedAt != null) {
+        return { mediaId: asset.id, status: "validating" }
+      }
+
       const head = await deps.storage.head(asset.r2Key)
       if (!head) {
         throw AppError.mediaRejected("Uploaded object not found in storage")
@@ -244,11 +250,8 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
         throw AppError.mediaRejected("Uploaded object size does not match the declared byteSize")
       }
 
-      if (asset.status !== "validating") {
-        return { mediaId: asset.id, status: "validating" }
-      }
-
-      const claimed = await deps.repo.markFinalized(input.uploadId)
+      const uploadEtag = readEtag(head)
+      const claimed = await deps.repo.markFinalized(input.uploadId, uploadEtag)
       if (claimed === null) {
         return { mediaId: asset.id, status: "validating" }
       }
@@ -262,7 +265,7 @@ export function makeMediaIntakeService(deps: MediaIntakeDeps): MediaIntakeServic
             uploadId: input.uploadId,
             r2Key: asset.r2Key,
             kind: asset.kind,
-            uploadEtag: readEtag(head),
+            uploadEtag,
           } satisfies MediaChecksJob,
           { singletonKey: input.uploadId },
         )

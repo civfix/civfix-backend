@@ -141,7 +141,7 @@ export interface AdminReportRepository {
   ): Promise<void>
   setReportVerdict(
     id: string,
-    input: { verdict: "approved" | "rejected"; actorId: string | null },
+    input: { verdict: "approved" | "rejected"; actorId: string | null; note: string },
   ): Promise<boolean>
   withRouteLock<T>(id: string, fn: () => Promise<T>): Promise<T>
 }

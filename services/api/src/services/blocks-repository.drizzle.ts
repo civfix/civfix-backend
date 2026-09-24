@@ -1,7 +1,12 @@
 import type { Sql } from "../db/client.js"
 import { avatarGradient } from "@civfix/shared"
 import type { PersonDTO } from "@civfix/shared"
-import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
+import {
+  keysetInstant,
+  keysetPredicate,
+  paginateKeyset,
+  parseKeysetCursor,
+} from "../db/cursor-helpers.js"
 import { officialPersonFlag } from "../auth/official-account.js"
 
 export const LIST_BLOCKS_DEFAULT_LIMIT = 50
@@ -81,10 +86,10 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
 
     async listBlocked(blockerId: string, args?: ListBlockedArgs): Promise<ListBlockedPage> {
       const limit = args?.limit ?? LIST_BLOCKS_DEFAULT_LIMIT
-      const cursor = parseTimeCursor(args?.cursor ?? null)
+      const cursor = parseKeysetCursor(args?.cursor ?? null)
       const cursorFilter =
         cursor !== null
-          ? sql`AND (b.created_at, b.blocked_id) < (${cursor.at}, ${cursor.id}::uuid)`
+          ? sql`AND ${keysetPredicate(sql, sql`b.created_at`, sql`b.blocked_id`, cursor)}`
           : sql``
       const rows = await sql<
         {
@@ -93,10 +98,11 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
           handle: string | null
           bio: string | null
           avatar_url: string | null
-          created_at: Date
+          cursor_at: string
         }[]
       >`
-        SELECT u.id, u.display_name, u.handle, u.bio, u.avatar_url, b.created_at
+        SELECT u.id, u.display_name, u.handle, u.bio, u.avatar_url,
+               ${keysetInstant(sql, sql`b.created_at`)} AS cursor_at
         FROM user_blocks b
         JOIN users u ON u.id = b.blocked_id
         WHERE b.blocker_id = ${blockerId} AND u.deleted_at IS NULL
@@ -104,7 +110,10 @@ export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {
         ORDER BY b.created_at DESC, b.blocked_id DESC
         LIMIT ${limit + 1}
       `
-      const { items, nextCursor } = paginate(rows, limit, (r) => ({ at: r.created_at, id: r.id }))
+      const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       return {
         blocked: items.map((r) => ({
           id: r.id,

@@ -47,9 +47,9 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
       segment: { kind: "all_registered" },
       channels: AUTOMATED_CHANNELS,
       status: "sending",
+      startedAt: now(),
       replyTo: event.replyToVerified ? event.replyTo : null,
     })
-    await deps.repo.transition(record.id, ["sending"], "sending", { startedAt: now() })
     await deps.enqueuePlan(record.id)
     return record.id
   }
@@ -79,6 +79,27 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
       )
       return false
     }
+  }
+
+  /**
+   * A retry lands here when an earlier attempt inserted the row but failed to enqueue its plan.
+   * Re-enqueueing cannot double-send: plan() only acts on a 'sending' row and deliveries are unique
+   * per recipient and channel. Without it the notice would wait for the stale-sending sweep.
+   */
+  async function replanUnplannedCancellation(cleanupId: string): Promise<void> {
+    const existing = await deps.repo.findEventCancellation(cleanupId)
+    if (existing !== null && existing.status === "sending" && existing.plannedAt === null) {
+      deps.logger?.warn(
+        { evt: "broadcast.event_cancelled.replanned", cleanupId, broadcastId: existing.id },
+        "event_cancelled lane found its broadcast unplanned; enqueueing the plan again",
+      )
+      await deps.enqueuePlan(existing.id)
+      return
+    }
+    deps.logger?.info(
+      { evt: "broadcast.event_cancelled.deduped", cleanupId },
+      "event_cancelled lane skipped: this event already has a cancellation broadcast",
+    )
   }
 
   return {
@@ -117,16 +138,13 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
         segment: { kind: "all_registered" },
         channels: AUTOMATED_CHANNELS,
         status: "sending",
+        startedAt: now(),
         replyTo: event.replyToVerified ? event.replyTo : null,
       })
       if (record === null) {
-        deps.logger?.info(
-          { evt: "broadcast.event_cancelled.deduped", cleanupId },
-          "event_cancelled lane skipped: this event already has a cancellation broadcast",
-        )
+        await replanUnplannedCancellation(cleanupId)
         return null
       }
-      await deps.repo.transition(record.id, ["sending"], "sending", { startedAt: now() })
       await deps.enqueuePlan(record.id)
       return record.id
     },
@@ -153,6 +171,7 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
           segment: { kind: "all_registered" },
           channels: AUTOMATED_CHANNELS,
           status: "sending",
+          startedAt: at,
           replyTo: event.replyToVerified ? event.replyTo : null,
         })
         if (record === null) continue

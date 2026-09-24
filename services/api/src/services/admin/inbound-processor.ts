@@ -58,6 +58,10 @@ export const INBOUND_OBJECT_MAX_BYTES = 30 * 1024 * 1024
 
 export const INBOUND_PARSE_TIMEOUT_MS = 20_000
 
+// At the 5-minute sweep cadence this parks a DSN after roughly half an hour of failing bookkeeping, long
+// enough to ride out a transient fault and short enough that poison DSNs cannot fill the sweep batch.
+export const INBOUND_BOUNCE_MAX_ATTEMPTS = 6
+
 const CONTENT_DIGEST_HEX_CHARS = 32
 
 function contentDigest(bytes: Uint8Array): string {
@@ -141,15 +145,22 @@ export async function processInboundObject(
   if (bounce.isBounce) {
     const bounceVerdict = readMailAuthVerdict(mail)
     const result = await routeInbox(storage, inboundRepo, bytes, mail, messageId, bounceVerdict)
-    if (result.outcome === "inbox") {
+    if (result.outcome !== "inbox" && result.outcome !== "replay") return result
+    // A replay re-runs the bookkeeping too: the object is only still pending when an earlier run
+    // stored the DSN but failed part-way through handleBounce.
+    try {
       await handleBounce(container, mailRepo, bounce, {
         fromAddr: mail.from?.address ?? null,
         authVerdict: bounceVerdict,
-      }).catch((err: unknown) => {
-        logger.warn({ key, err: errorText(err) }, "inbound: bounce bookkeeping failed")
+      })
+    } catch (err) {
+      return deferOrParkBounce(storage, inboundRepo, logger, key, bytes, result, {
+        originalMessageId: bounce.originalMessageId,
+        err: errorText(err),
       })
     }
-    if (result.outcome === "inbox" || result.outcome === "replay") await storage.delete(key)
+    await inboundRepo.clearBounceFailures(key)
+    await storage.delete(key)
     return result
   }
 
@@ -195,6 +206,8 @@ async function correlateThread(
   try {
     token = inboundMail.extractThreadToken(mail)
   } catch {
+    // The token is parsed out of sender-controlled recipient addresses; a malformed one means only
+    // that this mail carries no usable token, so correlation falls through to References.
     token = null
   }
 
@@ -266,6 +279,8 @@ async function routeThreaded(
     }
   }
 
+  // A failed re-read only defers the side effects: the sweep re-drives every message whose effects
+  // were never applied.
   const message =
     existing ?? (insert === null ? null : insert.inserted ? insert.message : insert.stored)
   if (message !== null && message.threadId === thread.id) {
@@ -469,6 +484,27 @@ async function streamAttachments(
 
 function recordSkipped(oversize: string[], filename: string): void {
   if (oversize.length < INBOUND_ATTACHMENT_MAX_COUNT) oversize.push(filename)
+}
+
+async function deferOrParkBounce(
+  storage: Storage,
+  inboundRepo: InboundRepository,
+  logger: InboundLogger,
+  key: string,
+  bytes: Uint8Array,
+  result: ProcessResult,
+  context: { originalMessageId: string | null; err: string },
+): Promise<ProcessResult> {
+  logger.warn({ key, ...context }, "inbound: bounce bookkeeping failed")
+  const attempts = await inboundRepo.recordBounceFailure(key)
+  if (attempts < INBOUND_BOUNCE_MAX_ATTEMPTS) return result
+  logger.error(
+    { key, attempts, originalMessageId: context.originalMessageId },
+    "inbound: bounce bookkeeping kept failing; parked under inbound/failed/",
+  )
+  await moveToFailed(storage, key, bytes)
+  await inboundRepo.clearBounceFailures(key)
+  return { outcome: "failed", reason: "bounce-bookkeeping" }
 }
 
 async function moveToFailed(storage: Storage, key: string, bytes: Uint8Array): Promise<void> {

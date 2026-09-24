@@ -8,7 +8,7 @@
  *   - getDetail/getTask/listNotes read the seeded task + its contacts + notes;
  *   - addNote appends a note (the Drizzle impl persists it as an audit_log discovery.note_added row;
  *     here it is appended to the task's note list with the same observable result);
- *   - flagTask marks the task in_progress (+ would open an abuse_flag in the Drizzle impl);
+ *   - flagTask marks an open task in_progress (+ would open an abuse_flag in the Drizzle impl);
  *   - saveDraft upserts the per-category + default contacts WITHOUT routing.
  * Seed/inspect helpers (seedTask, the public tasks/contacts/notes maps) let tests arrange + assert
  * state directly. The waiting-report aggregates (perCategory/total/oldest/newest/sample pins) are seeded
@@ -217,7 +217,7 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
   ): Promise<boolean> {
     const seeded = this.tasks.get(id)
     if (!seeded) return false
-    seeded.task.status = "in_progress"
+    if (seeded.task.status !== "done") seeded.task.status = "in_progress"
     return true
   }
 

@@ -6,6 +6,7 @@ import { abuseFlags } from "../db/schema/moderation.js"
 import { moderationItems } from "../db/schema/moderation_items.js"
 import { reports } from "../db/schema/reports.js"
 import { jurisdictions } from "../db/schema/jurisdictions.js"
+import { users } from "../db/schema/users.js"
 import type { Db, Queryable, Sql } from "../db/client.js"
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 
@@ -13,6 +14,8 @@ export { normalizeEtag, readEtag } from "./media-etag.js"
 export type { StorageHeadWithEtag } from "./media-etag.js"
 
 export type WorkerAbuseReason = "nsfw" | "phash_dup" | "gps"
+
+const ANONYMOUS_REPORTER = "Anonymous"
 
 export interface MediaWorkerAsset {
   id: string
@@ -58,6 +61,7 @@ export interface StuckMediaRow {
   thumbKey: string | null
   kind: MediaKind
   checkCount: number
+  uploadEtag: string | null
 }
 
 export interface LeakedObjectRow {
@@ -262,6 +266,7 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
             thumbKey: mediaAssets.thumbKey,
             kind: mediaAssets.kind,
             checkCount: mediaAssets.stuckCheckCount,
+            uploadEtag: mediaAssets.uploadEtag,
           })
       })
     },
@@ -302,34 +307,42 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
       kind?: "image" | "duplicate"
       note?: string | null
     }): Promise<void> {
-      const existing = await db
-        .select({ id: moderationItems.id })
-        .from(moderationItems)
-        .where(
-          and(
-            eq(moderationItems.subjectType, "report"),
-            eq(moderationItems.subjectId, input.reportId),
-            eq(moderationItems.status, "open"),
-          ),
-        )
-        .limit(1)
-      if (existing[0]) return
+      // A held source folding into an open item means the owner's takedown is no longer its only
+      // origin, so removing it must strike the author again.
+      const foldIntoOpenItem = async (): Promise<boolean> => {
+        const folded = await db
+          .update(moderationItems)
+          .set({ meta: sql`${moderationItems.meta} - 'ownerTakedown'` })
+          .where(
+            and(
+              eq(moderationItems.subjectType, "report"),
+              eq(moderationItems.subjectId, input.reportId),
+              eq(moderationItems.status, "open"),
+            ),
+          )
+          .returning({ id: moderationItems.id })
+        return folded.length > 0
+      }
+      if (await foldIntoOpenItem()) return
 
       const ctx = await db
         .select({
           category: reports.category,
           description: reports.description,
           place: jurisdictions.name,
+          reporterName: users.displayName,
+          reporterUserId: users.id,
         })
         .from(reports)
         .leftJoin(jurisdictions, eq(jurisdictions.geoid, reports.jurisdictionGeoid))
+        .leftJoin(users, eq(users.id, reports.reporterUserId))
         .where(eq(reports.id, input.reportId))
         .limit(1)
       const row = ctx[0]
       if (!row) return
 
       const kind = input.kind ?? "image"
-      await db
+      const inserted = await db
         .insert(moderationItems)
         .values({
           kind,
@@ -342,12 +355,19 @@ export function makeDrizzleMediaWorkerRepo(db: Db, tag: Sql): MediaWorkerRepo {
           priority: "high",
           autoAction: "Hidden pending review",
           status: "open",
-          meta: { reporter: "Anonymous", desc: row.description ?? "", note: input.note ?? null },
+          meta: {
+            reporter: row.reporterName ?? ANONYMOUS_REPORTER,
+            reporterUserId: row.reporterUserId ?? null,
+            desc: row.description ?? "",
+            note: input.note ?? null,
+          },
         })
         .onConflictDoNothing({
           target: [moderationItems.subjectType, moderationItems.subjectId],
           where: sql`status = 'open'`,
         })
+        .returning({ id: moderationItems.id })
+      if (inserted.length === 0) await foldIntoOpenItem()
     },
 
     async recordLeakedObjects(input: {

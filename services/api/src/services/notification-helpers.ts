@@ -51,6 +51,8 @@ function minutesInZone(now: Date, tz: string): number | null {
     if (!Number.isInteger(h) || !Number.isInteger(m)) return null
     return h * 60 + m
   } catch {
+    // An unknown zone cannot place "now" in the user's day; failing open delivers the push rather
+    // than silencing the user around the clock.
     return null
   }
 }

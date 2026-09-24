@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto"
 import {
   MAIL_STATS_WINDOW_DAYS,
+  BOUNCE_DISCOVERY_PENDING_META_KEY,
+  type BounceEventKey,
+  type BounceEventState,
   type CreateThreadInput,
   type InsertMessageInput,
   type ListThreadsInput,
@@ -24,7 +27,10 @@ import {
 } from "./mail-repository.js"
 import { deriveWho, mintThreadToken, toMessageDTO, toThreadListItem } from "./mail-mappers.js"
 import { buildMailStats } from "./mail-stats.js"
-import { ROUTE_DEADLINE_INFLIGHT_SECONDS } from "./outbound-send-policy.js"
+import {
+  ROUTE_CLAIM_STALE_SECONDS,
+  ROUTE_DEADLINE_INFLIGHT_SECONDS,
+} from "./outbound-send-policy.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import type { MailDelivery, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
 
@@ -397,7 +403,8 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   hasSendInFlight(threadId: string): Promise<boolean> {
-    const inflightBefore = new Date(Date.now() - ROUTE_DEADLINE_INFLIGHT_SECONDS * 1000)
+    const inflightBefore = this.now.getTime() - ROUTE_DEADLINE_INFLIGHT_SECONDS * 1000
+    const staleBefore = this.now.getTime() - ROUTE_CLAIM_STALE_SECONDS * 1000
     let latest: MailMessageRecord | null = null
     for (const m of this.messages) {
       if (m.threadId !== threadId || m.direction !== "out") continue
@@ -406,14 +413,44 @@ export class InMemoryMailRepository implements MailRepository {
     if (latest === null) return Promise.resolve(false)
     const own = this.events.filter((e) => e.messageId === latest.id)
     if (own.some((e) => e.type === "sent")) return Promise.resolve(false)
+    const failed = own.filter((e) => e.type === "failed")
+    if (failed.length === 0) return Promise.resolve(latest.createdAt.getTime() > staleBefore)
     return Promise.resolve(
-      own.some(
+      failed.some(
         (e) =>
-          e.type === "failed" &&
           (e.meta as { reason?: unknown } | null)?.reason === "deadline" &&
-          e.createdAt.getTime() > inflightBefore.getTime(),
+          e.createdAt.getTime() > inflightBefore,
       ),
     )
+  }
+
+  private bounceEvents(input: BounceEventKey): StoredMailEvent[] {
+    const recipient = input.failedRecipient.toLowerCase()
+    return this.events.filter((e) => {
+      if (e.threadId !== input.threadId || e.type !== "bounced") return false
+      const meta = e.meta as { originalMessageId?: unknown; failedRecipient?: unknown } | null
+      return (
+        meta?.originalMessageId === input.originalMessageId &&
+        typeof meta.failedRecipient === "string" &&
+        meta.failedRecipient.toLowerCase() === recipient
+      )
+    })
+  }
+
+  bounceEventState(input: BounceEventKey): Promise<BounceEventState> {
+    const events = this.bounceEvents(input)
+    if (events.length === 0) return Promise.resolve("none")
+    const complete = events.some((e) => e.meta?.[BOUNCE_DISCOVERY_PENDING_META_KEY] === undefined)
+    return Promise.resolve(complete ? "complete" : "discovery_pending")
+  }
+
+  markBounceDiscoveryEnqueued(input: BounceEventKey): Promise<void> {
+    for (const event of this.bounceEvents(input)) {
+      if (event.meta === null) continue
+      const { [BOUNCE_DISCOVERY_PENDING_META_KEY]: _pending, ...rest } = event.meta
+      event.meta = rest
+    }
+    return Promise.resolve()
   }
 
   claimMessageEffects(id: string, input: ClaimEffectsInput): Promise<number | null> {

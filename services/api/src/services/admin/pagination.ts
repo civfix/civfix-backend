@@ -7,9 +7,15 @@
  * contract; these are the server-side encode/decode + limit clamp around them.
  */
 
-import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
+import { encodeTimeCursor, parseKeysetCursor } from "../../db/cursor-helpers.js"
 
-export { paginate } from "../../db/cursor-helpers.js"
+export {
+  encodeKeysetCursor,
+  keysetInstant,
+  keysetPredicate,
+  paginate,
+  paginateKeyset,
+} from "../../db/cursor-helpers.js"
 
 /** Default page size when the request omits `limit`. */
 export const ADMIN_DEFAULT_LIMIT = 25
@@ -22,8 +28,9 @@ export interface CursorAnchor {
   id: string
 }
 
-export interface DecodedCursorAnchor extends CursorAnchor {
-  instant: string
+/** A decoded anchor that also keeps the cursor's instant as text, which is what keysetPredicate binds. */
+export interface KeysetAnchor extends CursorAnchor {
+  atText: string
 }
 
 /** Encode a keyset anchor into the opaque "<iso>|<id>" cursor string. */
@@ -42,10 +49,10 @@ export function encodeCursor(anchor: { createdAt: Date | string; id: string }): 
 export function decodeCursor(
   cursor: string | null | undefined,
   requireUuidId = false,
-): DecodedCursorAnchor | null {
-  const parsed = parseTimeCursor(cursor, { requireUuid: requireUuidId })
+): KeysetAnchor | null {
+  const parsed = parseKeysetCursor(cursor, { requireUuid: requireUuidId })
   if (parsed === null) return null
-  return { createdAt: parsed.at, id: parsed.id, instant: parsed.instant }
+  return { createdAt: parsed.at, id: parsed.id, atText: parsed.atText }
 }
 
 /**
@@ -87,7 +94,7 @@ export function decodeOffsetCursor(cursor: string | null | undefined): number {
 /**
  * Page a PRE-SORTED in-memory list by the shared "<iso>|<id>" cursor: find the anchor row by id, then take
  * a one-extra-row probe. `anchorOf` returns the {createdAt,id} the cursor encodes — encoding the row's REAL
- * sort value (not a placeholder) so the opaque cursor string matches the Drizzle impl for the same page.
+ * sort value (not a placeholder) so the opaque cursor has the same shape as the Drizzle impl for the same page.
  * The id alone drives the slice position; the cursor's createdAt is informational here.
  *
  * THE one implementation for every in-memory admin repo (six hand-rolled copies of

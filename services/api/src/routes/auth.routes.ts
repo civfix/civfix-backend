@@ -211,6 +211,7 @@ export async function registerAuthRoutes(
     "googleCallback",
     { config: { rateLimit: OAUTH_RATE_LIMIT } },
     async (request, reply) => {
+      if (redirectOnProviderError(request, reply, webOrigins)) return
       const query = parse(OAuthCallbackQuerySchema, request.query)
       const stash = readOAuthStash(request)
       if (!stash || stash.state !== query.state || stash.codeVerifier === undefined) {
@@ -269,6 +270,7 @@ export async function registerAuthRoutes(
       "appleCallback",
       { config: { rateLimit: OAUTH_RATE_LIMIT } },
       async (request, reply) => {
+        if (redirectOnProviderError(request, reply, webOrigins)) return
         const body = parse(AppleCallbackBodySchema, request.body)
         const stash = readOAuthStash(request)
         if (!stash || stash.state !== body.state) {
@@ -490,16 +492,18 @@ async function webCsrfToken(
   const sessionToken = sessionCookieValue(request)
   if (sessionToken === null) return null
 
+  let csrfMaxAge = services.sessions.ttl
   const expiresAtMs = request.sessionExpiresAtMs
   if (expiresAtMs !== undefined) {
     const remainingSeconds = Math.ceil((expiresAtMs - Date.now()) / 1000)
     if (remainingSeconds > 0) {
       setSessionCookie(reply, sessionToken, remainingSeconds)
+      csrfMaxAge = remainingSeconds
     }
   }
 
   const token = await csrf.tokenForSession(sessionToken)
-  setCsrfCookie(reply, token, services.sessions.ttl)
+  setCsrfCookie(reply, token, csrfMaxAge)
   return token
 }
 
@@ -529,6 +533,40 @@ function readOAuthStash(request: FastifyRequest): OAuthStash | null {
   }
 }
 
+// A provider-side cancel or denial arrives as a top-level navigation with `error` and no `code`;
+// answering it with a JSON validation error strands the user on an API page. The stash (and its
+// allowlisted target) is only honored and cleared when the state proves it is this browser's
+// own sign-in, so a forged cancel link cannot abort someone else's in-flight handshake.
+function redirectOnProviderError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  webOrigins: readonly string[],
+): boolean {
+  const input = request.method === "POST" ? request.body : request.query
+  const failure = providerErrorOf(input)
+  if (failure === null) return false
+  const stash = readOAuthStash(request)
+  const own = stash !== null && failure.state !== undefined && stash.state === failure.state
+  if (own) reply.clearCookie(OAUTH_STATE_COOKIE, { path: "/" })
+  request.log.info({ providerError: failure.error }, "web OAuth sign-in ended at the provider")
+  reply.redirect(resolvePostLoginRedirect(own ? stash.redirect : undefined, webOrigins))
+  return true
+}
+
+const MAX_PROVIDER_ERROR_LENGTH = 128
+
+function providerErrorOf(input: unknown): { error: string; state?: string } | null {
+  if (typeof input !== "object" || input === null) return null
+  const fields = input as Record<string, unknown>
+  if (fields.code !== undefined) return null
+  const { error, state } = fields
+  if (typeof error !== "string" || error.length === 0) return null
+  return {
+    error: error.slice(0, MAX_PROVIDER_ERROR_LENGTH),
+    ...(typeof state === "string" && state.length > 0 ? { state } : {}),
+  }
+}
+
 function appleFullNameFromUserField(user: string | undefined): string | undefined {
   if (!user) return undefined
   try {
@@ -545,18 +583,23 @@ export function resolvePostLoginRedirect(
   redirect: string | undefined,
   webOrigins: readonly string[],
 ): string {
-  if (redirect !== undefined && isAllowedPostLoginRedirect(redirect, webOrigins)) {
-    return redirect
-  }
-  return webOrigins[0] ?? "/"
+  const accepted = redirect === undefined ? null : acceptedPostLoginRedirect(redirect, webOrigins)
+  return accepted ?? webOrigins[0] ?? "/"
 }
 
 const MAX_POST_LOGIN_REDIRECT_LENGTH = 2048
 
 function isAllowedPostLoginRedirect(redirect: string, webOrigins: readonly string[]): boolean {
-  if (redirect.length > MAX_POST_LOGIN_REDIRECT_LENGTH) return false
+  return acceptedPostLoginRedirect(redirect, webOrigins) !== null
+}
+
+function acceptedPostLoginRedirect(redirect: string, webOrigins: readonly string[]): string | null {
+  if (redirect.length > MAX_POST_LOGIN_REDIRECT_LENGTH) return null
   const value = redirect.trim()
-  if (value === "") return false
+  return value !== "" && isAllowedRedirectValue(value, webOrigins) ? value : null
+}
+
+function isAllowedRedirectValue(value: string, webOrigins: readonly string[]): boolean {
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(value)) return false
   if (value.startsWith("/")) {

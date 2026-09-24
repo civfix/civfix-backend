@@ -24,6 +24,7 @@ import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { eventEndedError, eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
 import { sha256Hex } from "../../auth/crypto.js"
 import type { CounterStore } from "../../abuse/counter-store.js"
+import type { AdminAuditAction } from "../admin/audit.js"
 import { validateAnswers } from "./question-validation.js"
 import {
   REGISTRATION_ROSTER_DEFAULT_LIMIT,
@@ -81,7 +82,7 @@ export interface RegistrationNotifier {
 export interface RegistrationAudit {
   (input: {
     actorId: string | null
-    action: string
+    action: AdminAuditAction
     target: string
     meta?: Record<string, unknown>
   }): Promise<void>
@@ -547,6 +548,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
       })
       switch (outcome.kind) {
         case "transferred":
+          await enqueueWaitlistPromotion(deps.jobs, [outcome.previousTicketTypeId], deps.logger)
           await eventChanged(input.id)
           await deps.audit?.({
             actorId,
@@ -604,6 +606,7 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
         idempotencyKey: walkupIdempotencyKey(actorId, name, input.partySize, at),
         idempotencyOwner: `user:${actorId}`,
         now: at,
+        checkIn: input.checkInNow ? { actorId, method: "walkup" } : null,
       })
 
       if (outcome.kind === "not_found") throw AppError.notFound("Cleanup not found")
@@ -612,18 +615,6 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
       }
       const registration = outcome.registration
       if (registration === null) return { outcome: "already_registered", registration: null }
-
-      if (input.checkInNow) {
-        for (const seat of registration.seats) {
-          await deps.repo.checkInSeat({
-            cleanupId: input.id,
-            seatId: seat.id,
-            actorId,
-            method: "walkup",
-            now: at,
-          })
-        }
-      }
 
       await deps.audit?.({
         actorId,

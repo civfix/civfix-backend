@@ -1,4 +1,5 @@
 import type {
+  AppError,
   CleanupMemberRole,
   CleanupStatus,
   CleanupType,
@@ -232,6 +233,25 @@ export interface UpdateCleanupPatch extends EventHostWrite {
   jurisdictionGeoid?: string | null
 }
 
+export interface CleanupEdits {
+  actorUserId: string
+  /** The full desired link set, or null to leave the links as they are. */
+  links: string[] | null
+  /** The full desired slot board, or null to leave the slots as they are. */
+  slots: DesiredSlot[] | null
+  /**
+   * Thrown when the locked row shows the event has ended, because the service's own ended check ran
+   * on a read that a concurrent reschedule or the clock may have overtaken. Null when this edit is
+   * still allowed after the end.
+   */
+  refusalOnceEnded: AppError | null
+}
+
+export type CleanupEditOutcome =
+  | { kind: "updated"; slotDiff: SlotReconcileResult | null }
+  | { kind: "not_found" }
+  | { kind: "cancelled" }
+
 export type JoinCleanupOutcome = "joined" | "not_found" | "banned" | "closed" | "ended"
 
 export type LeaveCleanupOutcome = "left" | "not_found" | "closed"
@@ -285,6 +305,12 @@ export interface SignupSeat {
 export interface CleanupRepository {
   createCleanupTx(args: CreateCleanupTxArgs): Promise<CreateCleanupOutcome>
   updateCleanup(id: string, patch: UpdateCleanupPatch, actorUserId: string): Promise<boolean>
+  /** The scalar patch, the link reconcile and the slot reconcile, committed together or not at all. */
+  updateCleanupWithEdits(
+    id: string,
+    patch: UpdateCleanupPatch,
+    edits: CleanupEdits,
+  ): Promise<CleanupEditOutcome>
   linkReports(cleanupId: string, reportIds: string[], actorId: string | null): Promise<string[]>
   unlinkReport(cleanupId: string, reportId: string, actorId: string | null): Promise<boolean>
   reconcileLinkedReports(
