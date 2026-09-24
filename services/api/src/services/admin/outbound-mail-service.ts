@@ -1,5 +1,5 @@
 import { AppError, ErrorCode } from "@civfix/shared"
-import type { Mailer, OutboundAttachment, SentMail } from "@civfix/shared/interfaces"
+import type { Mailer, SentMail } from "@civfix/shared/interfaces"
 import type { DbHandle } from "../../db/client.js"
 import type { Env } from "../../env/types.js"
 import {
@@ -10,10 +10,9 @@ import {
   type MailRepository,
   type MailThreadRecord,
 } from "./mail-repository.drizzle.js"
-import type { MailAttachment, MailStatus } from "@civfix/shared"
+import type { MailStatus } from "@civfix/shared"
 import { domainOf } from "../../adapters/mail-text.js"
 import {
-  base64Bytes,
   outboundSendDeadlineMs,
   phaseBudgetFor,
   OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
@@ -23,10 +22,6 @@ import {
 export interface OutboundMailEnv {
   MAIL_FROM_OUTREACH: string
   MAIL_REPLY_DOMAIN: string
-}
-
-export interface PacketAttachment extends OutboundAttachment {
-  key?: string
 }
 
 export interface OutboundMailLogger {
@@ -62,7 +57,6 @@ export interface AppendOutboundInput {
   toAddr: string
   subject?: string
   html?: string
-  attachments?: PacketAttachment[]
   kind?: MailMessageKind
   audit?: OutboundAudit
   eventMeta?: Record<string, unknown>
@@ -76,7 +70,6 @@ export interface SendReportInput {
   subject: string
   text: string
   html?: string
-  attachments?: PacketAttachment[]
   kind?: MailMessageKind
   audit?: MailAuditInput
 }
@@ -147,27 +140,10 @@ export function isOutboundSendDeadlineError(err: unknown): boolean {
   return (err as { outboundSendDeadline?: unknown }).outboundSendDeadline === true
 }
 
-export function attachmentMetadata(
-  attachments: readonly PacketAttachment[] | undefined,
-): MailAttachment[] {
-  const stored: MailAttachment[] = []
-  for (const att of attachments ?? []) {
-    if (att.key === undefined || att.key === "") continue
-    stored.push({ key: att.key, filename: att.filename, size: att.content.byteLength })
-  }
-  return stored
-}
-
-export function outboundPayloadBytes(input: {
-  body: string
-  html?: string | undefined
-  attachments?: readonly OutboundAttachment[] | undefined
-}): number {
+export function outboundPayloadBytes(input: { body: string; html?: string | undefined }): number {
   let bytes = Buffer.byteLength(input.body, "utf8")
   if (input.html !== undefined) bytes += Buffer.byteLength(input.html, "utf8")
-  let attachmentBytes = 0
-  for (const att of input.attachments ?? []) attachmentBytes += att.content.byteLength
-  return bytes + base64Bytes(attachmentBytes)
+  return bytes
 }
 
 function raceDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
@@ -202,7 +178,6 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     subject: string
     body: string
     html?: string
-    attachments?: PacketAttachment[]
     eventMeta?: Record<string, unknown>
     onLateSuccess?: (() => Promise<void>) | undefined
   }): Promise<string> {
@@ -211,11 +186,7 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
     const inReplyTo = priorIds.length > 0 ? priorIds[priorIds.length - 1] : undefined
     const references =
       priorIds.length > 10 ? [priorIds[0] as string, ...priorIds.slice(-9)] : priorIds
-    const bytes = outboundPayloadBytes({
-      body: args.body,
-      html: args.html,
-      attachments: args.attachments,
-    })
+    const bytes = outboundPayloadBytes({ body: args.body, html: args.html })
     const deadlineMs =
       deps.sendDeadlineMs ??
       outboundSendDeadlineMs({
@@ -233,7 +204,6 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       messageId: rfcMessageId,
       ...(inReplyTo !== undefined ? { inReplyTo } : {}),
       ...(references.length > 0 ? { references } : {}),
-      ...(args.attachments !== undefined ? { attachments: args.attachments } : {}),
     })
 
     async function recordFailed(err: unknown, extra: Record<string, unknown>): Promise<void> {
@@ -397,7 +367,6 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       thread.subject = input.subject
     }
     const fromHeader = fromHeaderForThread(thread)
-    const attachments = attachmentMetadata(input.attachments)
     const message = await insertOut({
       threadId: thread.id,
       direction: "out",
@@ -407,7 +376,6 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       body: input.text,
       kind: input.kind ?? "packet",
       ...(input.html !== undefined ? { html: input.html } : {}),
-      ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.audit
         ? {
             audit: {
@@ -429,7 +397,6 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
           subject: input.subject,
           body: input.text,
           ...(input.html !== undefined ? { html: input.html } : {}),
-          ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
           eventMeta: {
             reportId: input.reportId,
             ...(input.geoid != null ? { geoid: input.geoid } : {}),
@@ -565,7 +532,6 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
       }
       const subject = input.subject ?? replySubject(thread.subject)
       const fromHeader = fromHeaderForThread(thread)
-      const attachments = attachmentMetadata(input.attachments)
       const message = await insertOut({
         threadId: thread.id,
         direction: "out",
@@ -575,7 +541,6 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         body: input.body,
         kind: input.kind ?? "reply",
         ...(input.html !== undefined ? { html: input.html } : {}),
-        ...(attachments.length > 0 ? { attachments } : {}),
         ...(input.audit ? { audit: { ...input.audit, target: `mail:${thread.id}` } } : {}),
       })
       await deliverAndRecord({
@@ -586,7 +551,6 @@ export function makeOutboundMailService(deps: OutboundMailServiceDeps): Outbound
         subject,
         body: input.body,
         ...(input.html !== undefined ? { html: input.html } : {}),
-        ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
         ...(input.eventMeta !== undefined ? { eventMeta: input.eventMeta } : {}),
       })
       return freshThread(thread)

@@ -142,7 +142,6 @@ export interface OutboundMessageSnapshot {
   subject: string | null
   body: string
   html: string | null
-  attachments: MailAttachment[]
 }
 
 export interface RecordEventInput {

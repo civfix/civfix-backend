@@ -106,7 +106,6 @@ export async function registerAdminReportsRoutes(
         presignPacketMedia: makePacketMediaPresigner(container.storage),
         loadLinkedEventsForReports: (reportIds) =>
           cleanupRepo.loadLinkedEventsForReports(reportIds),
-        loadMediaBytes: (k) => container.storage.getObject(k),
         reportChatEmitter: makeContainerReportChatEmitter(container, app.log),
         forwardTemplates: makeDrizzleForwardTemplateRepository(sql),
         notifications: makeRouteNotificationService(container, app.log),

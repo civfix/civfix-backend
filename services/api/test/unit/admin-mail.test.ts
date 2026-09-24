@@ -15,24 +15,18 @@ interface Harness {
   repo: InMemoryMailRepository
   mailer: FakeMailer
   svc: MailService
-  objects: Map<string, Uint8Array>
 }
 
 function harness(): Harness {
   const repo = new InMemoryMailRepository()
   const mailer = new FakeMailer()
-  const objects = new Map<string, Uint8Array>()
   const outboundMail = makeOutboundMailService({
     repo,
     mailer,
     env: { MAIL_FROM_OUTREACH: FROM_OUTREACH, MAIL_REPLY_DOMAIN: "civfix.org" },
   })
-  const svc = makeMailService({
-    repo,
-    outboundMail,
-    loadAttachmentBytes: (key) => Promise.resolve(objects.get(key) ?? null),
-  })
-  return { repo, mailer, svc, objects }
+  const svc = makeMailService({ repo, outboundMail })
+  return { repo, mailer, svc }
 }
 
 describe("mail-service recipient-resolution helpers", () => {
@@ -372,10 +366,9 @@ describe("mail-service: resend", () => {
     expect(mailer.sent.at(-1)?.to).toBe("mayor@city.gov")
   })
 
-  it("replays the untruncated body, the html part and the stored attachments", async () => {
+  it("replays the untruncated body and the html part, never a stored attachment", async () => {
     const h = harness()
     const body = "x".repeat(100_000)
-    h.objects.set("media/r2/photo.jpg", new Uint8Array([0xff, 0xd8, 0xff, 0x01]))
     const t = await h.repo.createThread({ subject: "Pothole", org: "City of LA" })
     await h.repo.insertMessage({
       threadId: t.id,
@@ -398,12 +391,11 @@ describe("mail-service: resend", () => {
     expect(sent?.text).toBe(body)
     expect(sent?.html).toBe("<p>packet</p>")
     expect(sent?.subject).toBe("civfix report: Pothole")
-    expect(sent?.attachments?.map((a) => a.filename)).toEqual(["photo.jpg"])
-    expect(sent?.attachments?.[0]?.contentType).toBe("image/jpeg")
+    expect(sent?.attachments).toBeUndefined()
     const replayed = h.repo.messagesOf(t.id).at(-1)
     expect(replayed?.kind).toBe("resend")
     expect(replayed?.html).toBe("<p>packet</p>")
-    expect(replayed?.attachments).toEqual([{ key: "media/r2/photo.jpg", filename: "photo.jpg", size: 4 }])
+    expect(replayed?.attachments).toEqual([])
   })
 
   it("404s an unknown thread and 422s a thread with no outbound message to resend", async () => {

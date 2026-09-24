@@ -99,7 +99,6 @@ function makeAutoForwardService(
     outboundMail,
     presignMedia: makePrivateMediaPresigner(container.storage),
     presignPacketMedia: makePacketMediaPresigner(container.storage),
-    loadMediaBytes: (k) => container.storage.getObject(k),
     reportChatEmitter: makeContainerReportChatEmitter(container, logger),
     forwardTemplates: makeDrizzleForwardTemplateRepository(sql),
   })

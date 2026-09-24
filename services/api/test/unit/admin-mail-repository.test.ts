@@ -488,7 +488,6 @@ describe("InMemoryMailRepository: outbound snapshot + failure recording", () => 
       subject: "civfix report: Pothole",
       body: "second",
       html: "<p>second</p>",
-      attachments: [{ key: "media/r2/a.jpg", filename: "a.jpg", size: 4 }],
     })
   })
 

@@ -596,7 +596,6 @@ export class InMemoryMailRepository implements MailRepository {
       subject: m.subject,
       body: m.body ?? "",
       html: m.html,
-      attachments: m.attachments,
     })
   }
 

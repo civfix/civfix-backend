@@ -1,6 +1,6 @@
-import { MAX_PACKET_TOTAL_BYTES } from "./mail-format.js"
-
 export const OUTBOUND_SEND_PHASE_BUDGET_MS = 45_000
+
+export const OUTBOUND_PAYLOAD_BUDGET_BYTES = 8 * 1024 * 1024
 
 export const OUTBOUND_SEND_MIN_THROUGHPUT_BPS = 256 * 1024
 
@@ -41,7 +41,7 @@ export function maxOutboundSendDeadlineMs(input: {
   minThroughputBytesPerSec: number
 }): number {
   return outboundSendDeadlineMs({
-    bytes: base64Bytes(MAX_PACKET_TOTAL_BYTES),
+    bytes: base64Bytes(OUTBOUND_PAYLOAD_BUDGET_BYTES),
     phaseBudgetMs: phaseBudgetFor(input.smtpTimeoutMs),
     minThroughputBytesPerSec: input.minThroughputBytesPerSec,
   })

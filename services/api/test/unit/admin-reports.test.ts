@@ -18,7 +18,6 @@ import {
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
 import { InMemoryForwardTemplateRepository } from "../../src/services/admin/forward-template-repository.memory.js"
 import { RecordingNotifier } from "../helpers/notifications.js"
-import { MAX_PACKET_TOTAL_BYTES } from "../../src/services/admin/mail-format.js"
 import {
   makeOutboundMailService,
   OutboundSendDeadlineError,
@@ -1457,10 +1456,8 @@ describe("F009 routeToJurisdiction concurrent double-send guard", () => {
   })
 })
 
-describe("F108 report-packet attachments are bounded in AGGREGATE, not just per file", () => {
-  const FOUR_MB = 4 * 1024 * 1024
-
-  function harnessWithMedia(count: number, bytesEach: number) {
+describe("report packets carry media as links, never as attachments", () => {
+  function harnessWithMedia() {
     const repo = new InMemoryAdminReportRepository()
     repo.now = NOW
     const mailRepo = new InMemoryMailRepository()
@@ -1470,16 +1467,11 @@ describe("F108 report-packet attachments are bounded in AGGREGATE, not just per 
       mailer,
       env: { MAIL_FROM_OUTREACH: "outreach@civfix.org", MAIL_REPLY_DOMAIN: "civfix.org" },
     })
-    const loaded: string[] = []
     const svc = makeAdminReportService({
       repo,
       outboundMail,
       now: () => NOW,
       presignMedia: async (r2Key) => ({ url: `https://media.test/${r2Key}` }),
-      loadMediaBytes: (r2Key) => {
-        loaded.push(r2Key)
-        return Promise.resolve(new Uint8Array(bytesEach))
-      },
     })
     repo.seedReport({
       id: "rep-1",
@@ -1493,48 +1485,30 @@ describe("F108 report-packet attachments are bounded in AGGREGATE, not just per 
         contact: "311@lacity.gov",
         routed: false,
       },
-      media: Array.from({ length: count }, (_, i) => ({
-        id: `m-${i}`,
-        kind: "image" as const,
-        r2Key: `media/photo-${i}.jpg`,
-        thumbKey: null,
-        contentType: "image/jpeg",
-      })),
+      media: [
+        { id: "m-0", kind: "image" as const, r2Key: "media/photo-0.jpg", thumbKey: null },
+        { id: "m-1", kind: "image" as const, r2Key: "media/photo-1.jpg", thumbKey: null },
+        { id: "m-2", kind: "video" as const, r2Key: "media/clip-0.mp4", thumbKey: null },
+      ],
     })
-    return { repo, mailer, svc, loaded }
+    return { mailRepo, mailer, svc }
   }
 
-  it("stops attaching once the running total would exceed MAX_PACKET_TOTAL_BYTES", async () => {
-    const h = harnessWithMedia(4, FOUR_MB)
-    await h.svc.routeToJurisdiction("rep-1", {
-      note: null,
-      actorId: "op-1",
-    })
+  it("sends no attachments and stores none on the outbound row", async () => {
+    const h = harnessWithMedia()
+    const { threadId } = await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
+    expect(h.mailer.sent.at(-1)?.outbound?.attachments).toBeUndefined()
+    expect(h.mailRepo.messagesOf(threadId).map((m) => m.attachments)).toEqual([[]])
+  })
+
+  it("links every photo and video in the text and html parts", async () => {
+    const h = harnessWithMedia()
+    await h.svc.routeToJurisdiction("rep-1", { note: null, actorId: "op-1" })
     const sent = h.mailer.sent.at(-1)?.outbound
-    expect(sent?.attachments).toHaveLength(2)
-    const total = (sent?.attachments ?? []).reduce((n, a) => n + a.content.byteLength, 0)
-    expect(total).toBeLessThanOrEqual(MAX_PACKET_TOTAL_BYTES)
-  })
-
-  it("still lists every skipped photo as a presigned mediaLink so nothing is lost from the packet", async () => {
-    const h = harnessWithMedia(4, FOUR_MB)
-    await h.svc.routeToJurisdiction("rep-1", {
-      note: null,
-      actorId: "op-1",
-    })
-    const body = h.mailer.sent.at(-1)?.outbound?.text ?? ""
-    for (let i = 0; i < 4; i++) {
-      expect(body).toContain(`https://media.test/media/photo-${i}.jpg`)
+    for (const key of ["media/photo-0.jpg", "media/photo-1.jpg", "media/clip-0.mp4"]) {
+      expect(sent?.text).toContain(`https://media.test/${key}`)
+      expect(sent?.html).toContain(`https://media.test/${key}`)
     }
-  })
-
-  it("attaches every photo when the aggregate stays under the cap", async () => {
-    const h = harnessWithMedia(4, 512 * 1024)
-    await h.svc.routeToJurisdiction("rep-1", {
-      note: null,
-      actorId: "op-1",
-    })
-    expect(h.mailer.sent.at(-1)?.outbound?.attachments).toHaveLength(4)
   })
 })
 

@@ -42,7 +42,6 @@ import {
   type ThreadInit,
 } from "./mail-repository.js"
 import type {
-  MailAttachment,
   MailDirection,
   MailStatsResponse,
   MailStatus,
@@ -792,10 +791,9 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
           subject: string | null
           body: string | null
           html: string | null
-          attachments: MailAttachment[] | null
         }[]
       >`
-        SELECT id, to_addr, subject, body, html, attachments
+        SELECT id, to_addr, subject, body, html
         FROM mail_messages
         WHERE id = ${messageId} AND direction = 'out'
         LIMIT 1
@@ -808,7 +806,6 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
         subject: row.subject,
         body: row.body ?? "",
         html: row.html,
-        attachments: row.attachments ?? [],
       }
     },
 
