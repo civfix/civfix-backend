@@ -178,8 +178,8 @@ describe("buildServiceHoursPdf characterization: one-page document", () => {
     const a = await render({ model, fingerprint: FINGERPRINT })
     const b = await render({ model, fingerprint: FINGERPRINT })
     expect(Buffer.from(a.bytes).equals(Buffer.from(b.bytes))).toBe(true)
-    expect(sha256(a.bytes)).toBe("346215f9f7d53bfe81752146d887fbeb61b882fd107c4e6adc6132fd67c681a6")
-    expect(a.bytes.length).toBe(26599)
+    expect(sha256(a.bytes)).toBe("160586236c7684dd699de33fee01b20b04a225fbca981df57131143467030064")
+    expect(a.bytes.length).toBe(26538)
     expect(pageCount(a.bytes)).toBe(1)
     expect(objectCount(a.bytes)).toBe(43)
   })
@@ -240,7 +240,7 @@ describe("buildServiceHoursPdf characterization: one-page document", () => {
         "2026 @54,547.892",
         "certificate.issuer.line @54,583.892",
         "certificate.issuer.generated({"timestamp":"2026-07-27T18:22:04Z"}) @54,595.892",
-        "certificate.verify.prompt @306,509.892",
+        "certificate.verify.prompt({"url":"civfix.org/service-record"}) @306,509.892",
         "CFX-A1B2-C3D4-E5F6 @306,539.892",
         "certificate.verify.fingerprint @306,555.892",
         "0123456789abcdef @306,564.892",
@@ -292,15 +292,18 @@ describe("buildServiceHoursPdf characterization: one-page document", () => {
     expect(sha256(implicit)).toBe(sha256(explicit))
   })
 
-  it("encodes verifyBaseUrl only in the QR code: the footer URL stays hardcoded (pinned as-is)", async () => {
+  it("names verifyBaseUrl in the QR code, the verify prompt and the footer", async () => {
     const model = enModel(MIXED_ROWS)
     const standard = await render({ model })
     const custom = await render({ model, verifyBaseUrl: "https://staging.example/verify" })
     expect(sha256(custom.bytes)).not.toBe(sha256(standard.bytes))
-    expect(texts(custom.events)).toEqual(texts(standard.events))
-    expect(texts(custom.events)).toContain("civfix.org/service-record @206,746")
+    expect(texts(custom.events)).toContain(
+      'certificate.verify.prompt({"url":"staging.example/verify"}) @306,509.892',
+    )
+    expect(texts(custom.events)).toContain("staging.example/verify @206,746")
+    expect(texts(custom.events)).not.toContain("civfix.org/service-record @206,746")
     expect(sha256(custom.bytes)).toBe(
-      "1857513bd037dd3ad7fc247091da4d3fb4146dc7d436d9c97320f7df979fa184",
+      "7dc351464bfb976ef7e757cc1220df082ff0ba6bfb86fa2b01d91136f2a0d3e8",
     )
   })
 })
@@ -309,8 +312,8 @@ describe("buildServiceHoursPdf characterization: empty ledger, no handle, no fin
   it("pins the bytes and the drawing sequence", async () => {
     const model = enModel([], { ...HOLDER, handle: null })
     const { bytes, events } = await render({ model })
-    expect(sha256(bytes)).toBe("63fa1ac929957b166d2e4c37a415b249d985b3f9079061046e3a9b1ae5f478e2")
-    expect(bytes.length).toBe(24775)
+    expect(sha256(bytes)).toBe("a603687720f39225727b1f0cc81566f1ae346ec28b83847cb4fe2d78c4abc364")
+    expect(bytes.length).toBe(24724)
     expect(pageCount(bytes)).toBe(1)
     expect(texts(events)).toMatchInlineSnapshot(`
       [
@@ -326,7 +329,7 @@ describe("buildServiceHoursPdf characterization: empty ledger, no handle, no fin
         "Jane Doe @70,154",
         "CERTIFICATE.HOLDER.PERIOD @366,140",
         "registerFont HankenGrotesk-Regular.ttf",
-        "<U+2014> @366,151",
+        "– @366,151",
         "CERTIFICATE.HOLDER.ISSUED @366,174",
         "Jul 27, 2026 @366,185",
         "CERTIFICATE.SUMMARY.TOTAL_HOURS @68,242",
@@ -349,7 +352,7 @@ describe("buildServiceHoursPdf characterization: empty ledger, no handle, no fin
         "2026 @54,474.379",
         "certificate.issuer.line @54,510.379",
         "certificate.issuer.generated({"timestamp":"2026-07-27T18:22:04Z"}) @54,522.379",
-        "certificate.verify.prompt @306,436.379",
+        "certificate.verify.prompt({"url":"civfix.org/service-record"}) @306,436.379",
         "CFX-A1B2-C3D4-E5F6 @306,466.379",
         "switchToPage 0",
         "CFX-A1B2-C3D4-E5F6 · Jul 27, 2026 @54,746",
@@ -365,8 +368,8 @@ describe("buildServiceHoursPdf characterization: page-break branches", () => {
   // At 20.3785pt per single-line row, 18 rows fill page 1 (344 + 18 x 20.3785 = 710.8 of a 730 floor).
   it("17 rows: totals fit on page 1, the issuer block is forced onto page 2 with no column band", async () => {
     const { bytes, events } = await render({ model: enModel(ledger(17)), fingerprint: FINGERPRINT })
-    expect(sha256(bytes)).toBe("722ace803b2da7da08089ff1c7ff952593777d97cae663991471a4fba7317e7c")
-    expect(bytes.length).toBe(27593)
+    expect(sha256(bytes)).toBe("c0e907a64dbe3a39597a04ce204bb9041c86b8d5519367b140711d2d220d564f")
+    expect(bytes.length).toBe(27534)
     expect(pageCount(bytes)).toBe(2)
     expect(events.length).toBe(138)
     const fromTotals = texts(events).slice(
@@ -385,7 +388,7 @@ describe("buildServiceHoursPdf characterization: page-break branches", () => {
         "2026 @54,176.379",
         "certificate.issuer.line @54,212.379",
         "certificate.issuer.generated({"timestamp":"2026-07-27T18:22:04Z"}) @54,224.379",
-        "certificate.verify.prompt @306,138.379",
+        "certificate.verify.prompt({"url":"civfix.org/service-record"}) @306,138.379",
         "CFX-A1B2-C3D4-E5F6 @306,168.379",
         "certificate.verify.fingerprint @306,184.379",
         "0123456789abcdef @306,193.379",
@@ -404,8 +407,8 @@ describe("buildServiceHoursPdf characterization: page-break branches", () => {
 
   it("18 rows: the totals row itself is forced onto page 2 with no column band", async () => {
     const { bytes, events } = await render({ model: enModel(ledger(18)), fingerprint: FINGERPRINT })
-    expect(sha256(bytes)).toBe("49c650a2b8c6ec30b0b85c9bd77dd6d40dfe36c2f156d074152fe5e4a8ef6ae9")
-    expect(bytes.length).toBe(27665)
+    expect(sha256(bytes)).toBe("1752718a25e7b2656a381fbaae257cb4672dbfeed4175ccb2eb5a41a351a66de")
+    expect(bytes.length).toBe(27597)
     expect(pageCount(bytes)).toBe(2)
     expect(events.length).toBe(143)
     const all = texts(events)
@@ -425,7 +428,7 @@ describe("buildServiceHoursPdf characterization: page-break branches", () => {
         "2026 @54,230.378",
         "certificate.issuer.line @54,266.379",
         "certificate.issuer.generated({"timestamp":"2026-07-27T18:22:04Z"}) @54,278.379",
-        "certificate.verify.prompt @306,192.378",
+        "certificate.verify.prompt({"url":"civfix.org/service-record"}) @306,192.378",
         "CFX-A1B2-C3D4-E5F6 @306,222.378",
         "certificate.verify.fingerprint @306,238.378",
         "0123456789abcdef @306,247.378",
@@ -444,8 +447,8 @@ describe("buildServiceHoursPdf characterization: page-break branches", () => {
 
   it("19 rows: the table continues onto page 2 under a redrawn column band", async () => {
     const { bytes, events } = await render({ model: enModel(ledger(19)), fingerprint: FINGERPRINT })
-    expect(sha256(bytes)).toBe("5390906d365c434bf538db385a3f6e7f9764653cabb73837478fb9c984de9bce")
-    expect(bytes.length).toBe(28006)
+    expect(sha256(bytes)).toBe("8a87b4bdca8659de2bf0f458b0bae30e99af6bb9629d31e446e8b742fe69ae50")
+    expect(bytes.length).toBe(27946)
     expect(pageCount(bytes)).toBe(2)
     expect(events.length).toBe(153)
     const all = texts(events)
@@ -474,7 +477,7 @@ describe("buildServiceHoursPdf characterization: page-break branches", () => {
         "2026 @54,250.757",
         "certificate.issuer.line @54,286.757",
         "certificate.issuer.generated({"timestamp":"2026-07-27T18:22:04Z"}) @54,298.757",
-        "certificate.verify.prompt @306,212.757",
+        "certificate.verify.prompt({"url":"civfix.org/service-record"}) @306,212.757",
         "CFX-A1B2-C3D4-E5F6 @306,242.757",
         "certificate.verify.fingerprint @306,258.757",
         "0123456789abcdef @306,267.757",
@@ -493,8 +496,8 @@ describe("buildServiceHoursPdf characterization: page-break branches", () => {
 
   it("40 rows: three pages, footers stamped last in page order", async () => {
     const { bytes, events } = await render({ model: enModel(ledger(40)) })
-    expect(sha256(bytes)).toBe("250921c249066b959460af0c680130e74282df78d628f627fcf86130e229b087")
-    expect(bytes.length).toBe(29306)
+    expect(sha256(bytes)).toBe("8a6d2e46ddebbce21e5ce0ca0a664b2e31d3c67abd77b6c866a8b024f08e58f5")
+    expect(bytes.length).toBe(29280)
     expect(pageCount(bytes)).toBe(3)
     expect(objectCount(bytes)).toBe(49)
     const pageOps = events.filter((e) => e[0] === "addPage" || e[0] === "switchToPage")
@@ -555,7 +558,7 @@ describe("buildServiceHoursPdf characterization: truncation banner", () => {
     })
     expect(model.truncated).toBe(true)
     const { bytes, events } = await render({ model, fingerprint: FINGERPRINT })
-    expect(sha256(bytes)).toBe("1057a486a1997894d45aa09d385d696dd16487459f084b97f05d5c7fe2c2eef6")
+    expect(sha256(bytes)).toBe("e4d76ad09f30f16f21a4102676c82af5f3c948648dd8b723121f872df6dfbd8e")
     expect(pageCount(bytes)).toBe(1)
     const fromTotals = texts(events).slice(
       texts(events).findIndex((s) => s.startsWith("CERTIFICATE.TABLE.TOTAL ")),
@@ -586,8 +589,8 @@ describe("buildServiceHoursPdf characterization: Hangul transcript", () => {
     const a = await render({ model, fingerprint: FINGERPRINT })
     const b = await render({ model, fingerprint: FINGERPRINT })
     expect(Buffer.from(a.bytes).equals(Buffer.from(b.bytes))).toBe(true)
-    expect(sha256(a.bytes)).toBe("177a50ffdabd4f2c8832cbe1ac9824d6a186923f0bfef8f0a211f755c4e94649")
-    expect(a.bytes.length).toBe(54143)
+    expect(sha256(a.bytes)).toBe("f1c9107a6dc4f4ad08b8ab24ce58de4ba6e6db93bb669af05fc43f3c72b66690")
+    expect(a.bytes.length).toBe(54163)
     expect(pageCount(a.bytes)).toBe(1)
     expect(a.events.filter((e) => e[0] === "registerFont")).toMatchInlineSnapshot(`
       [

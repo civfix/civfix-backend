@@ -64,7 +64,7 @@ function injectArgs(
 
 function isRouteMissing(res: LightMyRequestResponse, ep: EndpointDef): boolean {
   if (res.statusCode !== 404) return false
-  const body = res.json() as { message?: string }
+  const body = res.json<{ message?: string }>()
   return typeof body.message === "string" && body.message.startsWith(`Route ${ep.method} `)
 }
 

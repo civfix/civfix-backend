@@ -6,8 +6,6 @@ import { FAKE_SEAM_FLAGS, loadEnv } from "../../src/env.js"
 // error message and their ORDER must survive the refactor byte for byte. Expected messages spell the
 // em dash the loader emits by code point so this file stays ASCII.
 
-const DASH = String.fromCharCode(0x2014)
-
 function validProdEnv(): NodeJS.ProcessEnv {
   return {
     NODE_ENV: "production",
@@ -77,6 +75,7 @@ const ENVIRONMENT_INDEPENDENT_DEFAULTS = {
   CF_ACCESS_SERVICE_TOKENS: [],
   CF_TURNSTILE_HOSTNAMES: [],
   OAUTH_REQUIRE_NONCE: false,
+  WS_ALLOW_QUERY_TOKEN: false,
   REVIEWER_OTP_BYPASS: false,
   REVIEWER_OTP_BYPASS_ACK: false,
   USE_REAL_NSFW: false,
@@ -164,7 +163,7 @@ function aggregated(nodeEnv: string, problems: string[]): string {
 }
 
 const GEOCODER_NEEDS_DB =
-  `DATABASE_URL: required whenever USE_FAKE_GEOCODER is false ${DASH} the real geocoder resolves its ` +
+  `DATABASE_URL: required whenever USE_FAKE_GEOCODER is false: the real geocoder resolves its ` +
   `"City, ST" label from the jurisdictions PostGIS table, so there is nothing to query without a database`
 const KEYS_EQUAL =
   "SESSION_SIGNING_KEY / ANON_TOKEN_SIGNING_KEY: must be DIFFERENT values in production " +
@@ -264,7 +263,7 @@ describe("loadEnv characterization: aggregated errors (text and order)", () => {
         "OCI_EMAIL_SMTP_USER: required [BOOT] variable is missing",
         "OCI_EMAIL_SMTP_PASS: required [BOOT] variable is missing",
         // Known-questionable: the comms section reports a missing PUBLIC_API_URL a second time.
-        `PUBLIC_API_URL: required [BOOT] for host communications ${DASH} the RFC 8058 List-Unsubscribe ` +
+        `PUBLIC_API_URL: required [BOOT] for host communications: the RFC 8058 List-Unsubscribe ` +
           "header in every broadcast email is an API-origin URL, and a wrong origin makes one-click " +
           "unsubscribe fail for every recipient",
         "UNSUBSCRIBE_SIGNING_KEY: required [BOOT] variable is missing",
@@ -276,8 +275,8 @@ describe("loadEnv characterization: aggregated errors (text and order)", () => {
   it("refuses USE_FAKE_* flags in production, one line each, in FAKE_SEAM_FLAGS order", () => {
     expect(loadError({ ...validProdEnv(), USE_FAKE_GEOCODER: "1", USE_FAKE_MAILER: "true" })).toBe(
       aggregated("production", [
-        `USE_FAKE_MAILER: must not be true in production ${DASH} every outbound email is silently dropped`,
-        `USE_FAKE_GEOCODER: must not be true in production ${DASH} every report is labeled ` +
+        `USE_FAKE_MAILER: must not be true in production; every outbound email is silently dropped`,
+        `USE_FAKE_GEOCODER: must not be true in production; every report is labeled ` +
           '"Los Angeles, CA" and that label is persisted as civic record',
       ]),
     )
@@ -350,7 +349,7 @@ describe("loadEnv characterization: aggregated errors (text and order)", () => {
       }),
     ).toBe(
       aggregated("production", [
-        `USE_FAKE_JOBS: must not be true in production ${DASH} background jobs run in-process and die ` +
+        `USE_FAKE_JOBS: must not be true in production; background jobs run in-process and die ` +
           "with the request: media stays 'validating', data exports and report autoforwards never complete",
         BAD_PORT("PORT"),
         "DATABASE_URL: required [BOOT] variable is missing",

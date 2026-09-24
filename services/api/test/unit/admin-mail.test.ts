@@ -458,7 +458,12 @@ describe("mail-service: reply", () => {
   it("keeps a thread in review after a reply while it holds a withheld city reply", async () => {
     const { repo, svc } = harness()
     const t = repo.seedThread({ reportId: "report-1", status: "needs_action" })
-    repo.seedMessage({ threadId: t.id, direction: "out", toAddr: "publicworks@lacity.gov" })
+    await seedDeliveredOut(repo, {
+      threadId: t.id,
+      fromAddr: FROM_OUTREACH,
+      toAddr: "publicworks@lacity.gov",
+      body: "hi",
+    })
     repo.seedMessage({ threadId: t.id, direction: "in", unaffiliated: true })
 
     expect((await svc.reply(t.id, { body: "From your city address?" }, "op-1")).status).toBe(

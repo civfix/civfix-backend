@@ -42,6 +42,6 @@ describe.each(Object.entries(repos))("%s keyset", (_name, make) => {
     const next = db.statements.at(-1)!
     expect(next.values).toContain(INSTANT)
     expect(next.values).not.toContainEqual(TS)
-    expect(next.sql).toContain("?::text::timestamptz")
+    expect(next.sql).toMatch(/\) < \(\?::timestamptz, \?::uuid\)/)
   })
 })

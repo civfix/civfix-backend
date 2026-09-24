@@ -103,8 +103,7 @@ beforeEach(() => {
     },
   )
   vi.spyOn(globalThis.crypto, "randomUUID").mockImplementation(
-    () =>
-      `00000000-0000-4000-8000-${String(++ids.n).padStart(12, "0")}` as `${string}-${string}-${string}-${string}-${string}`,
+    () => `00000000-0000-4000-8000-${String(++ids.n).padStart(12, "0")}`,
   )
 })
 

@@ -109,7 +109,7 @@ describe("makeExpoDispatcher", () => {
   it("resends per token when Expo rejects a batch mixing projects, so one stale token cannot block the rest", async () => {
     const bodies: string[][] = []
     const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
-      const to = (JSON.parse(String(init.body)) as Array<{ to: string }>).map((m) => m.to)
+      const to = (JSON.parse(init.body as string) as Array<{ to: string }>).map((m) => m.to)
       bodies.push(to)
       if (to.length > 1)
         return new Response(
