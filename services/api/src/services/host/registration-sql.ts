@@ -312,7 +312,7 @@ export interface AnswerRowSelect {
   question_id: string
   prompt: string
   value_text: string | null
-  value_json: unknown | null
+  value_json: unknown
   scrubbed_at: Date | null
 }
 

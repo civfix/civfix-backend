@@ -26,6 +26,7 @@ import {
 } from "../../src/services/report-city-forward.js"
 
 const { captured, sent } = vi.hoisted(() => ({
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
   captured: {} as { onReportMessage?: OnReportMessage },
   sent: [] as { threadId: string; input: AppendOutboundInput }[],
 }))
@@ -113,15 +114,15 @@ function reportChatStub(): ReportChatRepository {
   }
   return {
     isMember: () => Promise.resolve(true),
-    roleOf: notImpl("roleOf") as never,
+    roleOf: notImpl("roleOf"),
     advanceReadWatermark: () => Promise.resolve(),
-    markRead: notImpl("markRead") as never,
-    join: notImpl("join") as never,
-    leave: notImpl("leave") as never,
-    insertSystemMessage: notImpl("insertSystemMessage") as never,
+    markRead: notImpl("markRead"),
+    join: notImpl("join"),
+    leave: notImpl("leave"),
+    insertSystemMessage: notImpl("insertSystemMessage"),
     listMemberIds: () => Promise.resolve([]),
-    countMembers: notImpl("countMembers") as never,
-    listMembers: notImpl("listMembers") as never,
+    countMembers: notImpl("countMembers"),
+    listMembers: notImpl("listMembers"),
   }
 }
 

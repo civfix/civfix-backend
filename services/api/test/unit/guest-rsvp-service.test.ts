@@ -127,7 +127,7 @@ function emailRequest(over: Partial<GuestRsvpRequestRequest> = {}): GuestRsvpReq
     email: "ada@example.org",
     turnstileToken: "ok",
     ...over,
-  } as GuestRsvpRequestRequest
+  }
 }
 
 function smsRequest(over: Partial<GuestRsvpRequestRequest> = {}): GuestRsvpRequestRequest {
@@ -138,7 +138,7 @@ function smsRequest(over: Partial<GuestRsvpRequestRequest> = {}): GuestRsvpReque
     phone: "+15552223333",
     turnstileToken: "ok",
     ...over,
-  } as GuestRsvpRequestRequest
+  }
 }
 
 function emailVerify(over: Partial<GuestRsvpVerifyRequest> = {}): GuestRsvpVerifyRequest {
@@ -148,7 +148,7 @@ function emailVerify(over: Partial<GuestRsvpVerifyRequest> = {}): GuestRsvpVerif
     email: "ada@example.org",
     code: CODE,
     ...over,
-  } as GuestRsvpVerifyRequest
+  }
 }
 
 const ctx = { ip: IP }
@@ -497,7 +497,7 @@ describe("guest rsvp: verifying a code", () => {
     const harness = build({
       registrations: {
         register: (input, subject) => {
-          calls.push({ idempotencyKey: input.idempotencyKey as string, subject })
+          calls.push({ idempotencyKey: input.idempotencyKey, subject })
           return Promise.resolve({
             outcome: "registered" as const,
             registration: null,
@@ -652,7 +652,7 @@ describe("guest rsvp: verifying a code", () => {
           channel: "sms",
           phone: "+15559998888",
           code: REVIEWER_CODE,
-        } as GuestRsvpVerifyRequest,
+        },
         ctx,
       ),
     ).rejects.toMatchObject({ code: "UNAUTHORIZED" })
@@ -737,7 +737,7 @@ describe("guest rsvp: cancelling", () => {
             consent: null,
             slotId: null,
             source: "self",
-            idempotencyKey: input.idempotencyKey as string,
+            idempotencyKey: input.idempotencyKey,
             waitlistId: null,
             now: new Date(),
           })
@@ -837,9 +837,9 @@ describe("guest rsvp: cancelling", () => {
       },
     })
 
-    await expect(
-      h.service.requestCode(emailRequest({ consent } as never), ctx),
-    ).rejects.toMatchObject({ code: "VALIDATION" })
+    await expect(h.service.requestCode(emailRequest({ consent }), ctx)).rejects.toMatchObject({
+      code: "VALIDATION",
+    })
     expect(h.repo.otps).toHaveLength(0)
   })
 
@@ -863,9 +863,9 @@ describe("guest rsvp: cancelling", () => {
 
     await h.service.requestCode(emailRequest(), ctx)
     valid = false
-    await expect(
-      h.service.verifyCode(emailVerify({ consent } as never), ctx),
-    ).rejects.toMatchObject({ code: "VALIDATION" })
+    await expect(h.service.verifyCode(emailVerify({ consent }), ctx)).rejects.toMatchObject({
+      code: "VALIDATION",
+    })
     expect(h.repo.otps[0]?.consumedAt ?? null).toBeNull()
     expect(h.repo.guests).toHaveLength(0)
   })
@@ -1108,7 +1108,7 @@ describe("guest rsvp: SMS title truncation", () => {
     })
     await h.service.requestCode(smsRequest(), ctx)
     await h.service.verifyCode(
-      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE },
       ctx,
     )
 
@@ -1124,7 +1124,7 @@ describe("guest rsvp: SMS title truncation", () => {
     const h = build({ smsGuestEnabled: true })
     await h.service.requestCode(smsRequest(), ctx)
     await h.service.verifyCode(
-      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE },
       ctx,
     )
 
@@ -1223,7 +1223,7 @@ describe("guest rsvp: one global SMS budget covers every outbound text", () => {
 
     await h.service.requestCode(smsRequest(), ctx)
     await h.service.verifyCode(
-      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE },
       ctx,
     )
 
@@ -1236,7 +1236,7 @@ describe("guest rsvp: one global SMS budget covers every outbound text", () => {
 
     await h.service.requestCode(smsRequest(), ctx)
     const result = await h.service.verifyCode(
-      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE },
       ctx,
     )
 
@@ -1301,7 +1301,7 @@ describe("guest rsvp: the SMS half of the cancel/update notice", () => {
     const h = build({ smsGuestEnabled: true })
     await h.service.requestCode(smsRequest(), ctx)
     await h.service.verifyCode(
-      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE } as GuestRsvpVerifyRequest,
+      { id: EVENT_ID, channel: "sms", phone: "+15552223333", code: CODE },
       ctx,
     )
     h.mailer.sent.length = 0

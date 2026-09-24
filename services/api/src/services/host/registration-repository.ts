@@ -122,14 +122,14 @@ export interface DesiredQuestion {
 export interface AnswerWrite {
   questionId: string
   valueText: string | null
-  valueJson: unknown | null
+  valueJson: unknown
 }
 
 export interface AnswerRecord {
   questionId: string
   prompt: string
   valueText: string | null
-  valueJson: unknown | null
+  valueJson: unknown
   scrubbedAt: Date | null
 }
 

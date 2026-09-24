@@ -160,7 +160,7 @@ export function makeCommsRuntime(container: Container, logger?: CommsLogger): Co
   const pipeline = makeBroadcastPipeline({
     repo,
     service: broadcasts,
-    notifications: makeRouteNotificationService(container, logger as FastifyBaseLogger | undefined),
+    notifications: makeRouteNotificationService(container, logger),
     mailer: container.mailer,
     cache: container.getCache(),
     config,

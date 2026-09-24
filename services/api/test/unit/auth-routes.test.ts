@@ -766,10 +766,10 @@ describe("auth routes: first-run registration (handle availability + PUT /me/pro
       headers: { "x-client": "mobile" },
       payload: { email, code },
     })
-    return res.json() as {
+    return res.json<{
       token: string
       user: { profileComplete: boolean; handle: string | null }
-    }
+    }>()
   }
 
   it("a fresh account is profileComplete:false with a generated placeholder handle (the gate trigger)", async () => {

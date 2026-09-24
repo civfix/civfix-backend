@@ -6,11 +6,11 @@ import {
 } from "../../src/adapters/reverse-geocode.mapbox.js"
 
 function okFetch(props: unknown): typeof fetch {
-  return (async () =>
+  return async () =>
     ({
       ok: true,
       json: async () => ({ features: [{ properties: props }] }),
-    }) as unknown as Response) as unknown as typeof fetch
+    }) as unknown as Response
 }
 
 describe("formatMapboxReverse", () => {
@@ -66,27 +66,27 @@ describe("makeMapboxReverseGeocode", () => {
   it("returns null on non-ok HTTP", async () => {
     const geocode = makeMapboxReverseGeocode({
       token: "pk.test",
-      fetchImpl: (async () => ({ ok: false }) as unknown as Response) as unknown as typeof fetch,
+      fetchImpl: async () => ({ ok: false }) as unknown as Response,
     })
     expect(await geocode(39.8, -89.6)).toBeNull()
   })
   it("returns null when fetch throws", async () => {
     const geocode = makeMapboxReverseGeocode({
       token: "pk.test",
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         throw new Error("net")
-      }) as unknown as typeof fetch,
+      },
     })
     expect(await geocode(39.8, -89.6)).toBeNull()
   })
   it("returns null for empty features", async () => {
     const geocode = makeMapboxReverseGeocode({
       token: "pk.test",
-      fetchImpl: (async () =>
+      fetchImpl: async () =>
         ({
           ok: true,
           json: async () => ({ features: [] }),
-        }) as unknown as Response) as unknown as typeof fetch,
+        }) as unknown as Response,
     })
     expect(await geocode(39.8, -89.6)).toBeNull()
   })
@@ -94,10 +94,10 @@ describe("makeMapboxReverseGeocode", () => {
     let called = false
     const geocode = makeMapboxReverseGeocode({
       token: "pk.test",
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         called = true
         return { ok: true, json: async () => ({}) } as unknown as Response
-      }) as unknown as typeof fetch,
+      },
     })
     expect(await geocode(Number.NaN, -89.6)).toBeNull()
     expect(called).toBe(false)

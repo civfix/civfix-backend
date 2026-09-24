@@ -30,6 +30,7 @@ import type { Container } from "../../src/di.js"
  */
 const stub = vi.hoisted(() => ({
   /** The InMemoryNotificationRepository instance, installed per test (see beforeEach). */
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- the assertion is the field's declared type: vi.hoisted infers the record from this literal
   notifRepo: undefined as unknown,
   reportMembers: [] as string[],
   groupMembers: [] as string[],
@@ -158,7 +159,7 @@ function pollMessage(
         { idx: 1, text: "Sun", count: 0, mine: false },
       ],
     },
-  } as ChatMessageDTO
+  }
 }
 
 /**

@@ -52,7 +52,7 @@ describe("renderMessage", () => {
   it("names an event-team role in the reader's own language, never as the raw enum", () => {
     for (const locale of ["en", "es", "de", "ko"] as const) {
       for (const role of ["cohost", "coordinator", "staff"] as const) {
-        const label = renderMessage(locale, `role.${role}` as MessageKey)
+        const label = renderMessage(locale, `role.${role}`)
         expect(label).not.toBe(`role.${role}`)
         const body = renderMessage(locale, "notification.event_team_invite.body", {
           title: "Beach cleanup",

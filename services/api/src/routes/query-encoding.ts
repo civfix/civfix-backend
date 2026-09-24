@@ -57,7 +57,7 @@ const BBoxQueryParam = jsonParam(BBoxSchema).refine((b) => b.west < b.east && b.
  * scan up to that cap, and jittered bounds defeat caching. The globe is 64,800 deg^2; this admits a
  * continental view (a real, if rare, client state) and rejects only the pathological world scan.
  */
-export const MAX_MAP_BBOX_AREA_DEG2 = 40_000
+const MAX_MAP_BBOX_AREA_DEG2 = 40_000
 
 /**
  * Every anonymous, bbox-driven map read must use this shape; it lives next to the ordering refine so the

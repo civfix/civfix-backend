@@ -2,7 +2,6 @@ import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { describe, expect, it, vi } from "vitest"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import type { Sql } from "../../src/db/client.js"
 import { audiencePages } from "../../src/services/host/broadcast-audience.js"
 import { makeDrizzleBroadcastAudienceRepository } from "../../src/services/host/broadcast-audience-repository.drizzle.js"
 import {
@@ -394,7 +393,7 @@ describe("broadcast preview audience count", () => {
 describe("broadcast audience count SQL", () => {
   it("counts each side with one statement that wraps the page statement, capped and from the start", async () => {
     const rec = makeSqlRecorder()
-    const repo = makeDrizzleBroadcastAudienceRepository(rec.sql as unknown as Sql)
+    const repo = makeDrizzleBroadcastAudienceRepository(rec.sql)
     await repo.audiencePage({
       cleanupId: EVENT,
       segment: { kind: "all_registered" },
@@ -425,7 +424,7 @@ describe("broadcast audience count SQL", () => {
 
   it("runs no member statement for guests_only and no guest statement for slots", async () => {
     const rec = makeSqlRecorder()
-    const repo = makeDrizzleBroadcastAudienceRepository(rec.sql as unknown as Sql)
+    const repo = makeDrizzleBroadcastAudienceRepository(rec.sql)
     rec.enqueue([{ n: 2 }])
     const guestsOnly = await repo.audienceCount({
       cleanupId: EVENT,

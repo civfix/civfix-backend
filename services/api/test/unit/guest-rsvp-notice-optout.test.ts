@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest"
-import type { GuestRsvpRequestRequest, GuestRsvpVerifyRequest } from "@civfix/shared"
 import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/shared/fakes"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
@@ -45,13 +44,10 @@ describe("guest sms notice: a failed opt-out write is not silent", () => {
         channel: "sms",
         phone: PHONE,
         turnstileToken: "ok",
-      } as GuestRsvpRequestRequest,
+      },
       ctx,
     )
-    await service.verifyCode(
-      { id: EVENT_ID, channel: "sms", phone: PHONE, code: CODE } as GuestRsvpVerifyRequest,
-      ctx,
-    )
+    await service.verifyCode({ id: EVENT_ID, channel: "sms", phone: PHONE, code: CODE }, ctx)
     const guestId = repo.guests[0]?.id
     const writeFailed = new Error("db down")
     sms.send = () => Promise.reject(smsFailure("opted_out", "recipient opted out"))

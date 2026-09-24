@@ -334,7 +334,7 @@ describe("registerChatGateway (subscribe-on-handshake / unsubscribe-on-close wir
   it("an OPEN handshake subscribes the user; the close event disposes the subscription", async () => {
     const handler = captureGatewayHandler(baseOpts(channel))
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     // The handler's body is an async IIFE (handshake + subscribe are awaited); let it settle.
     await flush()
 
@@ -357,7 +357,7 @@ describe("registerChatGateway (subscribe-on-handshake / unsubscribe-on-close wir
 
     const handler = captureGatewayHandler(baseOpts(racingChannel))
     const socket = new MockSocket()
-    handler(socket as unknown as WebSocket, authedRequest(ALICE))
+    handler(socket, authedRequest(ALICE))
     await flush()
 
     // The subscribe is still pending, and the socket closes before the handshake installs its "close"

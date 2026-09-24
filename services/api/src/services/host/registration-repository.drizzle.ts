@@ -14,7 +14,6 @@ import type {
 
 export { REGISTER_IDEMPOTENCY_SCOPE } from "./registration-repository-register.drizzle.js"
 export { applyBanIn } from "./registration-repository-roster.drizzle.js"
-export { cancelWaitlistEntriesIn } from "./registration-repository-waitlist.drizzle.js"
 
 export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistrationRepository {
   return {

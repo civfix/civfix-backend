@@ -1,3 +1,3 @@
-import { config } from "@civfix/config/eslint"
+import { config, typed } from "@civfix/config/eslint"
 
-export default config()
+export default config(typed({ projectService: true, tsconfigRootDir: import.meta.dirname }))

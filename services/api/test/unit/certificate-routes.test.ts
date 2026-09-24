@@ -224,10 +224,10 @@ describe("POST /me/volunteer-hours/certificates", () => {
 
     const res = await issue(h.app, me)
     expect(res.statusCode).toBe(200)
-    const body = res.json() as {
+    const body = res.json<{
       certificate: { code: string; url: string | null; status: string; totalHours: number }
       reused?: boolean
-    }
+    }>()
     expect(body.certificate.code).toMatch(CERTIFICATE_CODE_RE)
     expect(body.certificate.status).toBe("valid")
     expect(body.certificate.totalHours).toBe(4.5)
@@ -342,7 +342,7 @@ describe("GET /me/volunteer-hours/certificates", () => {
       headers: bearer(me),
     })
     expect(res.statusCode).toBe(200)
-    const list = res.json() as { certificates: { code: string; url: string | null }[] }
+    const list = res.json<{ certificates: { code: string; url: string | null }[] }>()
     expect(list.certificates).toHaveLength(1)
     expect(list.certificates[0]!.url).toBeNull()
     expect(h.storage.presigns).toHaveLength(presignsAfterIssue)
@@ -545,7 +545,7 @@ describe("GET /service-hours/verify/:code (public)", () => {
 
     const res = await verifyCode(h, code)
     expect(res.statusCode).toBe(200)
-    const body = res.json() as Record<string, unknown>
+    const body = res.json<Record<string, unknown>>()
     expect(body.status).toBe("valid")
     expect(body.holderName).toBe("Jane Doe")
     expect(body.totalHours).toBe(12.5)
@@ -568,7 +568,7 @@ describe("GET /service-hours/verify/:code (public)", () => {
 
     const res = await verifyCode(h, code)
     expect(res.statusCode).toBe(200)
-    const body = res.json() as Record<string, unknown>
+    const body = res.json<Record<string, unknown>>()
     expect(body.status).toBe("revoked")
     expect(body.revokedReason).toBe("holder")
     // The person holding the paper learns WHY it is not good.
@@ -582,7 +582,7 @@ describe("GET /service-hours/verify/:code (public)", () => {
 
     const res = await verifyCode(h, code)
     expect(res.statusCode).toBe(200)
-    const body = res.json() as Record<string, unknown>
+    const body = res.json<Record<string, unknown>>()
     expect(body.status).toBe("revoked")
     expect(body.revokedReason).toBe("account_closed")
     expect(Object.keys(body)).not.toContain("holderName")

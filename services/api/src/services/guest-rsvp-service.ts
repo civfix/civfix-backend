@@ -552,7 +552,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     )
   }
 
-  async function mapDeliveryError(err: unknown, phone: string | null): Promise<AppError | unknown> {
+  async function mapDeliveryError(err: unknown, phone: string | null): Promise<unknown> {
     const kind = smsFailureKind(err)
     if (kind === "opted_out") {
       if (phone !== null) {

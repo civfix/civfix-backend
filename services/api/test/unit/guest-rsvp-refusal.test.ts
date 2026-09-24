@@ -66,14 +66,14 @@ const request: GuestRsvpRequestRequest = {
   channel: "email",
   email: "ada@example.org",
   turnstileToken: "ok",
-} as GuestRsvpRequestRequest
+}
 
 const verify: GuestRsvpVerifyRequest = {
   id: EVENT_ID,
   channel: "email",
   email: "ada@example.org",
   code: CODE,
-} as GuestRsvpVerifyRequest
+}
 
 function confirmations(mailer: FakeMailer): number {
   return mailer.sent.filter((m) => m.template === "guest_confirmed").length
@@ -169,7 +169,7 @@ describe("guest rsvp: the stored channel is the one the code was delivered on", 
         channel: "sms",
         phone: "ada@example.org",
         code: CODE,
-      } as GuestRsvpVerifyRequest,
+      },
       ctx,
     )
 

@@ -33,7 +33,7 @@ const TILES_BOUNDS_DEFAULT: [number, number, number, number] = [-125, 24, -66, 5
 const NODE_ENVS = ["development", "test", "production"] as const
 const NodeEnvSchema = z.enum(NODE_ENVS).default("development")
 
-const OPTIONAL_STRING_KEYS: ReadonlyArray<keyof Env & string> = [
+const OPTIONAL_STRING_KEYS: ReadonlyArray<keyof Env> = [
   "R2_INBOUND_BUCKET",
   "R2_PUBLIC_BASE",
   "TILES_RASTER_URL",
@@ -227,10 +227,7 @@ function checkReviewerBypass(
   }
 }
 
-function optionalStrings(
-  source: NodeJS.ProcessEnv,
-  keys: ReadonlyArray<keyof Env & string>,
-): Partial<Env> {
+function optionalStrings(source: NodeJS.ProcessEnv, keys: ReadonlyArray<keyof Env>): Partial<Env> {
   const out: Record<string, string> = {}
   for (const key of keys) {
     const raw = source[key]
@@ -238,7 +235,7 @@ function optionalStrings(
       out[key] = raw.trim()
     }
   }
-  return out as Partial<Env>
+  return out
 }
 
 let cached: Env | undefined
@@ -248,7 +245,7 @@ function loadedEnv(): Env {
   return cached
 }
 
-export const env: Env = new Proxy({} as Env, {
+const env: Env = new Proxy({} as Env, {
   get(_target, prop: string) {
     if (prop === "toJSON") return () => "[civfix env: redacted]"
     return loadedEnv()[prop as keyof Env]

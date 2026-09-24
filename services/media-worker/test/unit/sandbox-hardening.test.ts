@@ -138,19 +138,15 @@ describe("H7: the decoder child inherits nothing", () => {
 
 describe("H7: MEDIA_SANDBOX_UID/GID are required in production", () => {
   it("throws when production leaves them unset", () => {
-    expect(() => loadSandboxIdentity({ NODE_ENV: "production" } as NodeJS.ProcessEnv)).toThrow(
-      /MEDIA_SANDBOX_UID/,
-    )
+    expect(() => loadSandboxIdentity({ NODE_ENV: "production" })).toThrow(/MEDIA_SANDBOX_UID/)
   })
 
   it("throws when only one of the pair is set, in any environment", () => {
-    expect(() => loadSandboxIdentity({ MEDIA_SANDBOX_UID: "1001" } as NodeJS.ProcessEnv)).toThrow(
-      /must be set together/,
-    )
+    expect(() => loadSandboxIdentity({ MEDIA_SANDBOX_UID: "1001" })).toThrow(/must be set together/)
   })
 
   it("returns null outside production when neither is set", () => {
-    expect(loadSandboxIdentity({ NODE_ENV: "development" } as NodeJS.ProcessEnv)).toBeNull()
+    expect(loadSandboxIdentity({ NODE_ENV: "development" })).toBeNull()
   })
 
   it("refuses a production boot with no sandbox identity", async () => {
@@ -159,14 +155,12 @@ describe("H7: MEDIA_SANDBOX_UID/GID are required in production", () => {
         NODE_ENV: "production",
         FFMPEG_PATH: "/usr/local/bin/ffmpeg",
         FFPROBE_PATH: "/usr/local/bin/ffprobe",
-      } as NodeJS.ProcessEnv),
+      }),
     ).rejects.toThrow()
   })
 
   it("is a no-op outside production", async () => {
-    await expect(
-      assertSandboxPreflight({ NODE_ENV: "development" } as NodeJS.ProcessEnv),
-    ).resolves.toBeUndefined()
+    await expect(assertSandboxPreflight({ NODE_ENV: "development" })).resolves.toBeUndefined()
   })
 })
 
@@ -292,21 +286,21 @@ describe("B3'': a decoder that could not be STARTED is infra, not a verdict on t
 
 describe("the image-lane entry is resolved from the running dist, not from a bundle-relative path", () => {
   it("honours MEDIA_IMAGE_LANE_ENTRY", () => {
-    expect(
-      loadImageLaneEntry({ MEDIA_IMAGE_LANE_ENTRY: "/opt/x/image-lane.js" } as NodeJS.ProcessEnv),
-    ).toBe("/opt/x/image-lane.js")
+    expect(loadImageLaneEntry({ MEDIA_IMAGE_LANE_ENTRY: "/opt/x/image-lane.js" })).toBe(
+      "/opt/x/image-lane.js",
+    )
   })
 
   it("defaults to image-lane.js beside the running entry file", () => {
-    expect(loadImageLaneEntry({} as NodeJS.ProcessEnv)).toMatch(/image-lane\.js$/)
+    expect(loadImageLaneEntry({})).toMatch(/image-lane\.js$/)
   })
 })
 
 describe("H8: the production binaries come from the image, never from npm", () => {
   it("refuses to resolve ffmpeg/ffprobe in production without the env paths", async () => {
-    await expect(
-      resolveMediaToolPaths({ NODE_ENV: "production" } as NodeJS.ProcessEnv),
-    ).rejects.toThrow(/FFMPEG_PATH|FFPROBE_PATH/)
+    await expect(resolveMediaToolPaths({ NODE_ENV: "production" })).rejects.toThrow(
+      /FFMPEG_PATH|FFPROBE_PATH/,
+    )
   })
 
   it("refuses a configured path that is not executable", async () => {
@@ -315,7 +309,7 @@ describe("H8: the production binaries come from the image, never from npm", () =
         NODE_ENV: "production",
         FFMPEG_PATH: "/nonexistent/ffmpeg",
         FFPROBE_PATH: "/nonexistent/ffprobe",
-      } as NodeJS.ProcessEnv),
+      }),
     ).rejects.toThrow(/not an executable file/)
   })
 
@@ -324,12 +318,12 @@ describe("H8: the production binaries come from the image, never from npm", () =
       NODE_ENV: "production",
       FFMPEG_PATH: "/bin/sh",
       FFPROBE_PATH: "/bin/sh",
-    } as NodeJS.ProcessEnv)
+    })
     expect(paths).toEqual({ ffmpeg: "/bin/sh", ffprobe: "/bin/sh" })
   })
 
   it("falls back to the vendored npm binaries outside production", async () => {
-    const paths = await resolveMediaToolPaths({ NODE_ENV: "test" } as NodeJS.ProcessEnv)
+    const paths = await resolveMediaToolPaths({ NODE_ENV: "test" })
     expect(paths.ffprobe).toMatch(/ffprobe/)
     expect(paths.ffmpeg).toMatch(/ffmpeg/)
   })

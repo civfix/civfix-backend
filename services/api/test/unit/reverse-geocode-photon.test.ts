@@ -43,11 +43,11 @@ describe("formatPhotonReverse", () => {
 })
 
 function okFetch(props: unknown): typeof fetch {
-  return (async () =>
+  return async () =>
     ({
       ok: true,
       json: async () => ({ features: [{ properties: props }] }),
-    }) as unknown as Response) as unknown as typeof fetch
+    }) as unknown as Response
 }
 
 describe("makePhotonReverseGeocode", () => {

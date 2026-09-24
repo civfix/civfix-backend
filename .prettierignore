@@ -4,3 +4,5 @@ coverage
 .turbo
 drizzle
 pnpm-lock.yaml
+# Prose and tables are hand-laid-out and not machine-formatted; the formatting pass covered code only.
+*.md

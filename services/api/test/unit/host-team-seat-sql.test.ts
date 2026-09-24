@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest"
-import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleHostTeamRepository } from "../../src/services/host/host-team-repository.drizzle.js"
 import { makeSqlRecorder, type SqlRecorder } from "../helpers/sql-recorder.js"
 
@@ -33,7 +32,7 @@ function acceptFlow(
 }
 
 async function accept(rec: SqlRecorder) {
-  return makeDrizzleHostTeamRepository(rec.sql as unknown as Sql).acceptInviteByIdTx({
+  return makeDrizzleHostTeamRepository(rec.sql).acceptInviteByIdTx({
     inviteId: INVITE,
     userId: USER,
     now: NOW,

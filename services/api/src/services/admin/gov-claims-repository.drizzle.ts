@@ -157,7 +157,7 @@ export function makeDrizzleGovClaimsRepository(sql: Sql): GovClaimsRepository {
           UPDATE gov_claims
           SET checks = COALESCE(checks, '{}'::jsonb) || jsonb_build_object(
             ${input.check}::text,
-            ${tx.json(checkValue as Parameters<typeof tx.json>[0])}
+            ${tx.json(checkValue)}
           )
           WHERE id = ${id} AND status = 'pending'
           RETURNING ${cols}

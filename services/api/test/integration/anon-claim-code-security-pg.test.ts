@@ -85,7 +85,7 @@ describe.skipIf(!pg)("anonymous claim code at rest (integration)", () => {
   it("a replay hands back a fresh code that claims the report, and retires the first one", async () => {
     const key = randomUUID()
     const first = await anon.submitAnonReport(req(key), { ip: "203.0.113.41", cfGeo: {} })
-    const replay = await anon.submitAnonReport(req(key, first.issuedAnonToken!), {
+    const replay = await anon.submitAnonReport(req(key, first.issuedAnonToken), {
       ip: "203.0.113.41",
       cfGeo: {},
     })
@@ -111,7 +111,7 @@ describe.skipIf(!pg)("anonymous claim code at rest (integration)", () => {
     await claim.claimReport(first.response.claimCode, u!.id)
 
     await expect(
-      anon.submitAnonReport(req(key, first.issuedAnonToken!), { ip: "203.0.113.42", cfGeo: {} }),
+      anon.submitAnonReport(req(key, first.issuedAnonToken), { ip: "203.0.113.42", cfGeo: {} }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
   })
 })

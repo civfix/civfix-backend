@@ -40,14 +40,14 @@ function fakeReportChat(markRead: ReportChatRepository["markRead"]): ReportChatR
   return {
     isMember: () => Promise.resolve(true),
     roleOf: () => Promise.resolve("member" as const),
-    join: notImpl("join") as never,
-    leave: notImpl("leave") as never,
-    advanceReadWatermark: notImpl("advanceReadWatermark") as never,
+    join: notImpl("join"),
+    leave: notImpl("leave"),
+    advanceReadWatermark: notImpl("advanceReadWatermark"),
     markRead,
-    insertSystemMessage: notImpl("insertSystemMessage") as never,
-    listMemberIds: notImpl("listMemberIds") as never,
-    countMembers: notImpl("countMembers") as never,
-    listMembers: notImpl("listMembers") as never,
+    insertSystemMessage: notImpl("insertSystemMessage"),
+    listMemberIds: notImpl("listMemberIds"),
+    countMembers: notImpl("countMembers"),
+    listMembers: notImpl("listMembers"),
   }
 }
 

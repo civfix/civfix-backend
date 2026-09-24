@@ -375,7 +375,7 @@ function hostSetFragments(sql: Queryable, patch: EventHostWrite): SqlFragment[] 
   if (patch.visibility !== undefined) sets.push(sql`visibility = ${patch.visibility}`)
   if (patch.coverMediaId !== undefined) sets.push(sql`cover_media_id = ${patch.coverMediaId}`)
   if (patch.galleryMediaIds !== undefined) {
-    sets.push(sql`gallery_media_ids = ${patch.galleryMediaIds as unknown as string[]}`)
+    sets.push(sql`gallery_media_ids = ${patch.galleryMediaIds}`)
   }
   if (patch.donationUrl !== undefined) sets.push(sql`donation_url = ${patch.donationUrl}`)
   if (patch.pageSlug !== undefined) sets.push(sql`page_slug = ${patch.pageSlug}`)
@@ -389,7 +389,7 @@ function hostSetFragments(sql: Queryable, patch: EventHostWrite): SqlFragment[] 
     sets.push(sql`organization_id = ${patch.organizationId}`)
   }
   if (patch.reminderOffsetsMin !== undefined) {
-    sets.push(sql`reminder_offsets_min = ${patch.reminderOffsetsMin as unknown as number[] | null}`)
+    sets.push(sql`reminder_offsets_min = ${patch.reminderOffsetsMin}`)
   }
   if (patch.hostReplyTo !== undefined) {
     sets.push(sql`host_reply_to = ${patch.hostReplyTo}, host_reply_to_verified_at = NULL`)
@@ -412,7 +412,7 @@ function cleanupSetList(sql: Queryable, patch: UpdateCleanupPatch): SqlFragment 
     sets.push(sql`address_source = ${patch.addressSource}`)
   }
   if (patch.bring !== undefined) {
-    sets.push(sql`bring = ${patch.bring as unknown as string[] | null}`)
+    sets.push(sql`bring = ${patch.bring}`)
   }
   if (patch.jurisdictionGeoid !== undefined) {
     sets.push(sql`jurisdiction_geoid = ${patch.jurisdictionGeoid}`)
@@ -529,7 +529,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
               ST_SetSRID(ST_MakePoint(${args.lng}, ${args.lat}), 4326),
               ${args.scheduledAt},
               ${args.status},
-              ${args.bring as unknown as string[] | null},
+              ${args.bring},
               ${args.address},
               ${args.addressSource},
               ${args.jurisdictionGeoid},
@@ -538,13 +538,13 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
               ${args.host.timezone ?? null},
               ${args.host.visibility ?? "public"},
               ${args.host.coverMediaId ?? null},
-              ${(args.host.galleryMediaIds ?? []) as unknown as string[]},
+              ${args.host.galleryMediaIds ?? []},
               ${args.host.donationUrl ?? null},
               ${args.host.pageSlug ?? null},
               ${args.host.registrationOpensAt ?? null},
               ${args.host.registrationClosesAt ?? null},
               ${args.host.organizationId ?? null},
-              ${(args.host.reminderOffsetsMin ?? null) as unknown as number[] | null},
+              ${args.host.reminderOffsetsMin ?? null},
               ${args.host.hostReplyTo ?? null}
             )
           `
@@ -1517,7 +1517,7 @@ export async function ensureSignupRegistrationIn(
   return registrationId
 }
 
-export async function cancelSignupRegistrationIn(
+async function cancelSignupRegistrationIn(
   tx: Queryable,
   args: { cleanupId: string; userId: string; actorId: string | null; now: Date },
 ): Promise<boolean> {

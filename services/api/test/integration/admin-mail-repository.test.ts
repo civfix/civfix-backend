@@ -98,7 +98,7 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
     const dto = await repo.getThread(t.id)
     const [small, huge] = dto!.messages
     expect(small!.truncated).toBeUndefined()
-    expect(huge!.body!.length).toBe(MAIL_BODY_DETAIL_CHARS)
+    expect(huge!.body.length).toBe(MAIL_BODY_DETAIL_CHARS)
     expect(huge!.truncated).toBe(true)
 
     expect(await repo.getLastOutboundRecipient(t.id)).toBe("clerk@city.gov")

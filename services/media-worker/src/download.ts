@@ -24,6 +24,7 @@ export class DownloadTooLargeError extends Error {
 
 export class StorageUnavailableError extends Error {
   constructor(r2Key: string, cause?: unknown) {
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- best-effort detail for a non-Error cause in an error message
     const detail = cause instanceof Error ? cause.message : cause !== undefined ? String(cause) : ""
     super(`storage unavailable for ${r2Key}${detail ? `: ${detail}` : ""}`)
     this.name = "StorageUnavailableError"
@@ -160,5 +161,5 @@ async function proxyAwareFetch(url: string, signal: AbortSignal): Promise<Respon
   if (loadHttpsProxy() === null) return fetch(url, { signal })
   const { fetch: undiciFetch, EnvHttpProxyAgent } = await import("undici")
   proxyDispatcher ??= new EnvHttpProxyAgent()
-  return (await undiciFetch(url, { signal, dispatcher: proxyDispatcher })) as unknown as Response
+  return await undiciFetch(url, { signal, dispatcher: proxyDispatcher })
 }

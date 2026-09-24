@@ -20,7 +20,7 @@ const BOB = "22222222-2222-2222-2222-222222222222"
 
 // ioredis-mock is structurally an ioredis client; cast through unknown at this adapter-test boundary.
 function makeMockRedis(): RedisClient {
-  return new RedisMock() as unknown as RedisClient
+  return new RedisMock()
 }
 
 const created: Array<{ close: () => Promise<void>; redis: RedisClient }> = []
@@ -63,13 +63,13 @@ describe("RedisChatPubSub over ioredis-mock", () => {
     // the root for each worker's pub/sub to emulate two nodes on one Redis.
     const root = makeMockRedis()
 
-    const redis1 = root.duplicate() as unknown as RedisClient
+    const redis1 = root.duplicate()
     const pubsub1 = new RedisChatPubSub(redis1)
     const repo1 = new InMemoryChatRepository()
     repo1.registerSender({ id: ALICE, displayName: "Alice" })
     const worker1 = new WsChatService({ repo: repo1, pubsub: pubsub1 })
 
-    const redis2 = root.duplicate() as unknown as RedisClient
+    const redis2 = root.duplicate()
     const pubsub2 = new RedisChatPubSub(redis2)
     const repo2 = new InMemoryChatRepository()
     const worker2 = new WsChatService({ repo: repo2, pubsub: pubsub2 })

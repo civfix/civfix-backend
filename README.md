@@ -34,9 +34,9 @@ civfix-backend/
     media-worker/               pg-boss media worker (@civfix/media-worker)
   infra/
     email-worker/               Cloudflare Email Worker for inbound mail (standalone, own wrangler toolchain)
-  scripts/                      the CI no-frontend guard + the manual dynamic-SQL check (pnpm check:sql)
+  scripts/                      the CI no-frontend guard + the dynamic-SQL check (pnpm check:sql, a CI gate)
   docs/                         engineering notes (retention, erasure, migrations, operator runbook, ...)
-  .github/workflows/            ci.yml (PR checks), build-images.yml, deploy-staging.yml, deploy.yml
+  .github/workflows/            ci.yml (PR checks: lint, format, typecheck, static checks, build, test), build-images.yml, deploy-staging.yml, deploy.yml
   tsconfig.base.json            strict base TS config
   turbo.json                    turborepo task graph
   pnpm-workspace.yaml
@@ -92,9 +92,22 @@ pnpm build        # tsup build of api + media-worker
 pnpm typecheck    # tsc --noEmit in both services
 pnpm lint         # eslint in both services
 pnpm test         # vitest in both services: unit + the Docker-gated integration suites
+pnpm format:check # prettier --check (Markdown is excluded, see .prettierignore)
+pnpm check:sql    # dynamic-SQL guard: unsafe/raw allowlist, Drizzle $client, parameter IS NULL tests
+pnpm knip         # unused files, exports and dependencies (knip.jsonc)
+pnpm dup:check    # copy-paste duplication over the service sources (.jscpd.json threshold)
 pnpm dev          # run both services in watch mode (persistent)
 pnpm clean        # remove build artifacts
 pnpm check:sql    # dynamic-SQL guard (manual; not run by CI)
+```
+
+CI runs every command above except `dev` and `clean`. The Cloudflare email worker in
+`infra/email-worker` is not a workspace package and keeps its own lockfile, so it installs and tests
+in isolation:
+
+```
+pnpm --dir infra/email-worker install --frozen-lockfile --ignore-workspace
+pnpm --dir infra/email-worker test
 ```
 
 ## Running the API in dev (offline, no credentials)

@@ -552,7 +552,7 @@ export interface DirectoryFacetAggregate {
 // upsertJurisdictionContacts so every in-process writer of routing contacts can drop it after commit.
 let directoryFacetCache: { at: number; value: DirectoryFacetAggregate } | null = null
 
-export function readDirectoryFacetCache(): DirectoryFacetAggregate | null {
+function readDirectoryFacetCache(): DirectoryFacetAggregate | null {
   if (directoryFacetCache === null) return null
   if (Date.now() - directoryFacetCache.at > DIRECTORY_FACET_TTL_MS) {
     directoryFacetCache = null
@@ -561,7 +561,7 @@ export function readDirectoryFacetCache(): DirectoryFacetAggregate | null {
   return directoryFacetCache.value
 }
 
-export function writeDirectoryFacetCache(value: DirectoryFacetAggregate): void {
+function writeDirectoryFacetCache(value: DirectoryFacetAggregate): void {
   directoryFacetCache = { at: Date.now(), value }
 }
 

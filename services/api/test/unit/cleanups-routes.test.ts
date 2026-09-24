@@ -1252,7 +1252,7 @@ describe("GET /cleanups/:id/ics", () => {
 
     const res = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { ics: string; filename: string }
+    const body = res.json<{ ics: string; filename: string }>()
     expect(body.filename).toBe(`civfix-event-${id}.ics`)
     expect(body.ics.startsWith("BEGIN:VCALENDAR")).toBe(true)
     expect(body.ics).toContain("BEGIN:VEVENT")
@@ -1268,7 +1268,7 @@ describe("GET /cleanups/:id/ics", () => {
     const res = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
 
     expect(res.statusCode).toBe(200)
-    expect((res.json() as { ics: string }).ics).not.toContain("https://civfix.org/events/")
+    expect(res.json<{ ics: string }>().ics).not.toContain("https://civfix.org/events/")
   })
 
   it("marks a cancelled event CANCELLED so a calendar client withdraws it", async () => {
@@ -1283,7 +1283,7 @@ describe("GET /cleanups/:id/ics", () => {
 
     const res = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
     expect(res.statusCode).toBe(200)
-    expect((res.json() as { ics: string }).ics).toContain("STATUS:CANCELLED")
+    expect(res.json<{ ics: string }>().ics).toContain("STATUS:CANCELLED")
   })
 
   it("404s an event that does not exist rather than emitting an empty calendar", async () => {
@@ -1341,7 +1341,7 @@ describe("GET /cleanups/:id/ics", () => {
         headers: auth(h.token),
       })
       expect(res.statusCode).toBe(200)
-      const ics = (res.json() as { ics: string }).ics
+      const ics = res.json<{ ics: string }>().ics
       expect(ics).toContain(`DTSTART:${stamp(slotStart)}`)
       expect(ics).toContain(`DTEND:${stamp(slotEnd)}`)
       expect(ics).toContain("SUMMARY:Sweep (Morning sweep)")
@@ -1353,7 +1353,7 @@ describe("GET /cleanups/:id/ics", () => {
 
       const res = await h.app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
       expect(res.statusCode).toBe(200)
-      const ics = (res.json() as { ics: string }).ics
+      const ics = res.json<{ ics: string }>().ics
       expect(ics).toContain(`DTSTART:${stamp(FUTURE)}`)
       expect(ics).toContain(`DTEND:${stamp(eventEnd)}`)
       expect(ics).toContain("SUMMARY:Sweep")
@@ -1388,7 +1388,7 @@ describe("GET /cleanups/:id/ics", () => {
         url: `/v1/cleanups/${id}/ics`,
         headers: auth(h.token),
       })
-      const ics = (res.json() as { ics: string }).ics
+      const ics = res.json<{ ics: string }>().ics
       expect(ics).toContain(`DTSTART:${stamp(FUTURE)}`)
       expect(ics).toContain("SUMMARY:Sweep")
       expect(ics).not.toContain("Grill")

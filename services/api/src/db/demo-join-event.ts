@@ -257,6 +257,7 @@ async function main(): Promise<void> {
       const outcome = await sql
         .begin(async (tx) => {
           const joined = await joinDemoUsers(tx, { eventRef, count, hashFor })
+          // eslint-disable-next-line @typescript-eslint/only-throw-error -- a unique sentinel, matched by identity in the catch below, that makes sql.begin roll the rehearsal back
           if (!commit) throw ROLLBACK
           return joined
         })

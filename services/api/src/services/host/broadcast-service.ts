@@ -121,7 +121,7 @@ export function emailHashOf(email: string): string {
   return sha256HexSync(email.trim().toLowerCase())
 }
 
-export function utcDayKey(at: Date): string {
+function utcDayKey(at: Date): string {
   return at.toISOString().slice(0, ISO_DAY_LENGTH)
 }
 
@@ -423,7 +423,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
         ctaLabel: body.ctaLabel ?? null,
         ctaUrl: body.ctaUrl ?? null,
         segment: body.segment,
-        channels: body.channels as BroadcastChannel[],
+        channels: body.channels,
         status: "draft",
         chunkSize: config.chunkSize,
       })
@@ -447,7 +447,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
         ...("ctaLabel" in body ? { ctaLabel: body.ctaLabel ?? null } : {}),
         ...("ctaUrl" in body ? { ctaUrl: body.ctaUrl ?? null } : {}),
         ...(body.segment !== undefined ? { segment: body.segment } : {}),
-        ...(body.channels !== undefined ? { channels: body.channels as BroadcastChannel[] } : {}),
+        ...(body.channels !== undefined ? { channels: body.channels } : {}),
       }
       let updated: BroadcastRecord | null = current.status === "draft" ? current : null
       if (Object.keys(patch).length > 0) {

@@ -19,7 +19,7 @@ import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 export interface SeededDiscoveryTask {
   task: DiscoveryTaskRecord
   contacts: DiscoveryContactRecord[]
-  placeGeojson: unknown | null
+  placeGeojson: unknown
   samplePins: DiscoverySamplePinRecord[]
   center: [number, number] | null
   zoom: number | null
@@ -53,7 +53,7 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
     contactCategories?: ReportCategory[]
     hasDefaultContact?: boolean
     contacts?: DiscoveryContactRecord[]
-    placeGeojson?: unknown | null
+    placeGeojson?: unknown
     samplePins?: DiscoverySamplePinRecord[]
     center?: [number, number] | null
     zoom?: number | null

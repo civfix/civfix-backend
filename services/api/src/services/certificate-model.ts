@@ -2,7 +2,7 @@ import { MAX_CERTIFICATE_ENTRIES } from "@civfix/shared"
 import type { VolunteerHoursSource } from "@civfix/shared"
 import { resolveLocale } from "../i18n/locales.js"
 import { sha256HexSync } from "../lib/hash.js"
-import { renderMessage, type MessageKey } from "../i18n/renderMessage.js"
+import { renderMessage } from "../i18n/renderMessage.js"
 
 export const CERTIFICATE_TIME_ZONE = "America/Los_Angeles"
 
@@ -47,7 +47,7 @@ export type CertificateTranslator = (
 
 export function certificateTranslator(locale: unknown): CertificateTranslator {
   const resolved = resolveLocale(locale)
-  return (key, vars) => renderMessage(resolved, key as unknown as MessageKey, vars)
+  return (key, vars) => renderMessage(resolved, key, vars)
 }
 
 export interface TranscriptLedgerRow {

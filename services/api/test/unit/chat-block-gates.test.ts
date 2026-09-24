@@ -56,7 +56,7 @@ describe("M11: the report-room fan-out skips blocked pairs", () => {
     const notify = makeReportChatNotifier({
       notificationService: {
         createNotificationsReportingFailures: spy.createNotificationsReportingFailures,
-      } as never,
+      },
       reportChatRepo: { listMemberIds: () => Promise.resolve([ACTOR, BLOCKED, NEUTRAL]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k, id) => `report:${id}`,
@@ -138,7 +138,7 @@ describe("M11 batch seam: blockedIdsFor replaces the per-candidate gate, with th
     const notify = makeReportChatNotifier({
       notificationService: {
         createNotificationsReportingFailures: spy.createNotificationsReportingFailures,
-      } as never,
+      },
       reportChatRepo: { listMemberIds: () => Promise.resolve([ACTOR, BLOCKED, NEUTRAL]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k, id) => `report:${id}`,
@@ -175,7 +175,7 @@ describe("M11: the group-room fan-out skips blocked pairs", () => {
     const notify = makeGroupChatNotifier({
       notificationService: {
         createNotificationsReportingFailures: spy.createNotificationsReportingFailures,
-      } as never,
+      },
       groupRepo: { listMemberIds: () => Promise.resolve([ACTOR, BLOCKED, NEUTRAL]) },
       isMuted: () => Promise.resolve(false),
       roomKeyFor: (_k, id) => `group:${id}`,
@@ -197,9 +197,7 @@ describe("L10: the dm lane's pin power respects blocks", () => {
   })
 
   it("a blocked participant holds NO powers in the thread", async () => {
-    const resolve = makeChatPowersResolver(
-      deps({ isDmBlocked: () => Promise.resolve(true) }) as never,
-    )
+    const resolve = makeChatPowersResolver(deps({ isDmBlocked: () => Promise.resolve(true) }))
     expect(await resolve({ roomKind: "dm", roomId: ROOM, userId: ACTOR })).toEqual({
       canPin: false,
       canDeleteOthers: false,
@@ -208,9 +206,7 @@ describe("L10: the dm lane's pin power respects blocks", () => {
   })
 
   it("an unblocked participant keeps canPin (and never canDeleteOthers)", async () => {
-    const resolve = makeChatPowersResolver(
-      deps({ isDmBlocked: () => Promise.resolve(false) }) as never,
-    )
+    const resolve = makeChatPowersResolver(deps({ isDmBlocked: () => Promise.resolve(false) }))
     expect(await resolve({ roomKind: "dm", roomId: ROOM, userId: ACTOR })).toEqual({
       canPin: true,
       canDeleteOthers: false,
@@ -221,7 +217,7 @@ describe("L10: the dm lane's pin power respects blocks", () => {
   it("a non-participant is refused before the block lookup is even consulted", async () => {
     const isDmBlocked = vi.fn(() => Promise.resolve(false))
     const resolve = makeChatPowersResolver(
-      deps({ isDmParticipant: () => Promise.resolve(false), isDmBlocked }) as never,
+      deps({ isDmParticipant: () => Promise.resolve(false), isDmBlocked }),
     )
     expect(await resolve({ roomKind: "dm", roomId: ROOM, userId: ACTOR })).toMatchObject({
       canPin: false,

@@ -8,7 +8,6 @@ import { randomUUID } from "node:crypto"
 import postgres from "postgres"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
-import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleModerationRepository } from "../../src/services/admin/moderation-repository.drizzle.js"
 import type { ModerationRepository } from "../../src/services/admin/moderation-repository.js"
 
@@ -208,7 +207,7 @@ describe.skipIf(!pg)("F160: batched destination refs match the per-item lookup",
       debug: (_conn: number, query: string) => {
         statements.push(query)
       },
-    }) as Sql
+    })
     try {
       const spied = makeDrizzleModerationRepository(spy)
       const { records } = await spied.listOpen({ q: null, filter: "all", cursor: null, limit: 25 })
@@ -281,7 +280,7 @@ describe.skipIf(!pg)("F160: batched destination refs match the per-item lookup",
       debug: (_conn: number, query: string) => {
         statements.push(query)
       },
-    }) as Sql
+    })
     try {
       const spied = makeDrizzleModerationRepository(spy)
       const { records } = await spied.listOpen({ q: null, filter: "all", cursor: null, limit: 25 })

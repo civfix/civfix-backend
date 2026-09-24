@@ -119,7 +119,7 @@ async function makeHarness(): Promise<Harness> {
   const setCookies = web.headers["set-cookie"]
   const cookieList = Array.isArray(setCookies) ? setCookies : [String(setCookies ?? "")]
   const cookie = cookieList.map((c) => c.split(";")[0]).join("; ")
-  const csrf = (web.json() as { csrfToken?: string }).csrfToken ?? ""
+  const csrf = web.json<{ csrfToken?: string }>().csrfToken ?? ""
 
   async function signIn(otherEmail: string): Promise<string> {
     await app.inject({
@@ -134,7 +134,7 @@ async function makeHarness(): Promise<Harness> {
       headers: { "x-client": "mobile" },
       payload: { email: otherEmail, code: otherCode },
     })
-    const body = res.json() as { token: string; user: { id: string } }
+    const body = res.json<{ token: string; user: { id: string } }>()
     // The org repo's user table is separate from the auth stores: mirror the account so the invite's
     // email-match rule can see it.
     orgs.seedUser({ id: body.user.id, displayName: otherEmail, email: otherEmail })
@@ -395,7 +395,7 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       headers: auth(h.token),
       payload: { name: "Ballona Creek Trust", slug: "ballona-creek-trust" },
     })
-    return (created.json() as { id: string }).id
+    return created.json<{ id: string }>().id
   }
 
   it("emails an invite to an address with no account, lists it, and revokes it", async () => {
@@ -408,11 +408,11 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       payload: { identifierKind: "email", identifier: "newcomer@example.org", role: "member" },
     })
     expect(invited.statusCode).toBe(200)
-    const body = invited.json() as {
+    const body = invited.json<{
       member: null
       invited: boolean
       invite: { id: string; status: string }
-    }
+    }>()
     expect(body.member).toBeNull()
     expect(body.invited).toBe(true)
     expect(body.invite).toMatchObject({
@@ -431,7 +431,7 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       headers: auth(h.token),
     })
     expect(listed.statusCode).toBe(200)
-    expect((listed.json() as { items: { id: string }[] }).items.map((i) => i.id)).toEqual([
+    expect(listed.json<{ items: { id: string }[] }>().items.map((i) => i.id)).toEqual([
       body.invite.id,
     ])
 
@@ -477,8 +477,8 @@ describe("organization invites + suspension routes (0.41.0)", () => {
     })
     expect(known.statusCode).toBe(200)
     expect(unknown.statusCode).toBe(200)
-    const a = known.json() as { invite: Record<string, unknown> }
-    const b = unknown.json() as { invite: Record<string, unknown> }
+    const a = known.json<{ invite: Record<string, unknown> }>()
+    const b = unknown.json<{ invite: Record<string, unknown> }>()
     expect(Object.keys(a).sort()).toEqual(Object.keys(b).sort())
     expect(Object.keys(a.invite).sort()).toEqual(Object.keys(b.invite).sort())
     expect(a.invite).toMatchObject({ user: null, status: "pending" })
@@ -494,7 +494,7 @@ describe("organization invites + suspension routes (0.41.0)", () => {
         payload: { identifierKind: "email", identifier, role: "member" },
       })
       expect(again.statusCode, identifier).toBe(200)
-      expect((again.json() as { invite: { status: string } }).invite.status).toBe("pending")
+      expect(again.json<{ invite: { status: string } }>().invite.status).toBe("pending")
     }
   })
 
@@ -507,14 +507,14 @@ describe("organization invites + suspension routes (0.41.0)", () => {
       headers: auth(h.token),
       payload: { name: "Second Org", slug: "second-org" },
     })
-    const second = (other.json() as { id: string }).id
+    const second = other.json<{ id: string }>().id
     const invited = await h.app.inject({
       method: "POST",
       url: `/v1/orgs/${first}/members`,
       headers: auth(h.token),
       payload: { identifierKind: "email", identifier: "newcomer@example.org", role: "member" },
     })
-    const inviteId = (invited.json() as { invite: { id: string } }).invite.id
+    const inviteId = invited.json<{ invite: { id: string } }>().invite.id
     const mismatched = await h.app.inject({
       method: "DELETE",
       url: `/v1/orgs/${second}/invites/${inviteId}`,

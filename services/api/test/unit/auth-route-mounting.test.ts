@@ -33,7 +33,7 @@ describe("auth/admin route mounting is gated on the auth bundle", () => {
       // The exact failing request: route-missing, not a domain 404.
       const admin = await app.inject({ method: "GET", url: "/v1/admin/auth/session" })
       expect(admin.statusCode).toBe(404)
-      const adminBody = admin.json() as { code?: string; message?: string }
+      const adminBody = admin.json<{ code?: string; message?: string }>()
       expect(adminBody.code).toBe("NOT_FOUND")
       expect(adminBody.message?.startsWith(routeMissingPrefix("GET"))).toBe(true)
 
@@ -42,7 +42,7 @@ describe("auth/admin route mounting is gated on the auth bundle", () => {
       const citizen = await app.inject({ method: "GET", url: "/v1/auth/session" })
       expect(citizen.statusCode).toBe(404)
       expect(
-        (citizen.json() as { message?: string }).message?.startsWith(routeMissingPrefix("GET")),
+        citizen.json<{ message?: string }>().message?.startsWith(routeMissingPrefix("GET")),
       ).toBe(true)
 
       const health = await app.inject({ method: "GET", url: "/healthz" })

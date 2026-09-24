@@ -160,7 +160,7 @@ describe("host registration routes", () => {
     for (const name of names) {
       const ep = endpoints[name]
       expect(
-        app.hasRoute({ method: ep.method as "GET", url: versionedPath(ep) }),
+        app.hasRoute({ method: ep.method, url: versionedPath(ep) }),
         `${name} is not registered at ${ep.method} ${versionedPath(ep)}`,
       ).toBe(true)
     }

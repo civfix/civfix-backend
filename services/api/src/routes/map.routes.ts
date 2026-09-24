@@ -22,16 +22,11 @@ import {
   makeCachedAddressResolver,
   makeRouteJurisdictionService,
 } from "../services/route-geo-helpers.js"
-import {
-  makeDrizzleCleanupMapRepository,
-  MAP_CLEANUPS_LIMIT,
-} from "../services/cleanup-map-repository.drizzle.js"
+import { makeDrizzleCleanupMapRepository } from "../services/cleanup-map-repository.drizzle.js"
 import { insertAuditRow } from "../services/admin/audit-repository.drizzle.js"
 import { CappedBBoxQueryParam } from "./query-encoding.js"
 import { parse, trimTextFields } from "./_validate.js"
 import { route } from "../versioning/route.js"
-
-export { MAP_CLEANUPS_LIMIT }
 
 const CARTO_VOYAGER_RASTER_URL =
   "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"

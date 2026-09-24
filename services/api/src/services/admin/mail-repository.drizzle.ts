@@ -241,7 +241,7 @@ function bounceEventMatch(sql: Queryable, input: BounceEventKey): SqlFragment {
   `
 }
 
-export function latestOutboundAttempt(sql: Queryable, threadRef: SqlFragment): SqlFragment {
+function latestOutboundAttempt(sql: Queryable, threadRef: SqlFragment): SqlFragment {
   return sql`
     SELECT m.id, m.created_at
     FROM mail_messages m
@@ -251,7 +251,7 @@ export function latestOutboundAttempt(sql: Queryable, threadRef: SqlFragment): S
   `
 }
 
-export function attemptEventExists(
+function attemptEventExists(
   sql: Queryable,
   threadRef: SqlFragment,
   type: "sent" | "failed",
@@ -479,7 +479,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
             ${input.body ?? null},
             ${input.html ?? null},
             ${input.kind ?? null},
-            ${tx.json(attachments as Parameters<typeof tx.json>[0])},
+            ${tx.json(attachments)},
             ${input.messageId ?? null},
             ${input.inReplyTo ?? null},
             ${input.unaffiliated ?? false},

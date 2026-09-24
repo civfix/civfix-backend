@@ -11,6 +11,7 @@ declare module "fastify" {
 }
 
 export const REQUEST_TIMEOUT_MS = 15_000
+/** @alias */
 export const SHUTDOWN_CLOSE_WAIT_MS = REQUEST_TIMEOUT_MS
 export const SHUTDOWN_TEARDOWN_WATCHDOG_MS = 15_000
 const SHUTDOWN_IDLE_SWEEP_MS = 250

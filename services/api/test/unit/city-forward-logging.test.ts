@@ -76,7 +76,7 @@ describe("city forward failures are logged, not swallowed", () => {
     const audit: ReportForwardAuditRepository = {
       recordMention: () => Promise.reject(new Error("audit down")),
       markForwarded: () => Promise.resolve(),
-    } as unknown as ReportForwardAuditRepository
+    }
     const res = await forwardReportCityMention(mail({}), ctx, "@sf please fix", CREATED, {
       logger,
       audit,

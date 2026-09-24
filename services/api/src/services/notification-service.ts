@@ -39,8 +39,6 @@ export {
   isFeedVisibleType,
   isWithinQuietHours,
   parseTimeOfDayMinutes,
-  pushGateAllows,
-  toNotificationDTO,
   toPrefsDTO,
   typeAllowedByPrefs,
 } from "./notification-helpers.js"

@@ -11,7 +11,7 @@ const WINDOW_SECONDS = 60
 const ELAPSED_WINDOW_MS = 3_000
 
 function freshRedis(): RedisClient {
-  return new RedisMock() as unknown as RedisClient
+  return new RedisMock()
 }
 
 const stores: Array<[string, () => { store: CounterStore; redis?: RedisClient }]> = [

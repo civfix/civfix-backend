@@ -1,4 +1,4 @@
-import type { BroadcastKind, DeliveryFailureKind } from "@civfix/shared"
+import type { BroadcastKind } from "@civfix/shared"
 import type { BroadcastVarValues } from "@civfix/shared/host"
 import type { Mailer } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
@@ -308,7 +308,7 @@ export function makeBroadcastEmailSender(deps: BroadcastEmailSenderDeps) {
     chunk.outcomes.push({
       id: claim.id,
       status: "failed",
-      failureKind: failure.kind as DeliveryFailureKind,
+      failureKind: failure.kind,
     })
   }
 

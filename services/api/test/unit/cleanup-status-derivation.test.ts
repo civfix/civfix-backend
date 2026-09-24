@@ -96,6 +96,7 @@ describe("buildWhenFilter", () => {
 
 describe("deriveCleanupStatus (the TS twin the memory repositories use)", () => {
   const window = (startOffsetH: number, endOffsetH: number, cancelled = false) => ({
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- keeps the literal union; the object property would otherwise widen to string
     status: (cancelled ? "cancelled" : "upcoming") as "cancelled" | "upcoming",
     scheduledAt: new Date(NOW + startOffsetH * HOUR).toISOString(),
     endsAt: new Date(NOW + endOffsetH * HOUR).toISOString(),

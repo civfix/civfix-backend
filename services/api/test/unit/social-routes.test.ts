@@ -400,7 +400,7 @@ describe("GET /users/follow-suggestions", () => {
       headers: auth(token),
     })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { results: Array<{ id: string; isFollowing: boolean }> }
+    const body = res.json<{ results: Array<{ id: string; isFollowing: boolean }> }>()
     const ids = body.results.map((p) => p.id)
     expect(ids[0]).toBe(ORGANIZER)
     expect(ids).toContain(OTHER)
@@ -413,7 +413,7 @@ describe("GET /users/follow-suggestions", () => {
       url: "/v1/users/follow-suggestions",
       headers: auth(token),
     })
-    const ids2 = (res2.json() as { results: Array<{ id: string }> }).results.map((p) => p.id)
+    const ids2 = res2.json<{ results: Array<{ id: string }> }>().results.map((p) => p.id)
     expect(ids2).not.toContain(ORGANIZER)
   })
 

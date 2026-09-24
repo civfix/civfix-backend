@@ -276,7 +276,7 @@ describe("POST /v1/auth/google with an unverified email", () => {
     })
 
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { user: { id: string; email: string | null }; token: string }
+    const body = res.json<{ user: { id: string; email: string | null }; token: string }>()
     expect(body.user.id).not.toBe(victim.userId)
     expect(body.user.email ?? null).toBeNull()
     const session = await harness.app.inject({

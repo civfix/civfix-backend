@@ -75,9 +75,7 @@ export function overridableService<K extends keyof FastifyInstance, S>(
 ): () => S {
   return () => {
     const overrides = app[key]
-    return overrides === undefined
-      ? fromContainer()
-      : fromOverrides(overrides as NonNullable<FastifyInstance[K]>)
+    return overrides === undefined ? fromContainer() : fromOverrides(overrides)
   }
 }
 

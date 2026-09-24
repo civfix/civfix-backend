@@ -8,9 +8,9 @@ import type { VolunteerHoursEntryView } from "../../src/services/volunteer-hours
 const qrPayloads = vi.hoisted(() => [] as string[])
 
 vi.mock("qrcode-generator", async (importOriginal) => {
-  const actual = (await importOriginal()) as {
+  const actual = await importOriginal<{
     default: (t: number, e: string) => { addData(d: string): void }
-  }
+  }>()
   return {
     default: (typeNumber: number, level: string) => {
       const qr = actual.default(typeNumber, level)

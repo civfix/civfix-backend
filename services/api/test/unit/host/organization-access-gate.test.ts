@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { randomUUID } from "node:crypto"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import type { Sql } from "../../../src/db/client.js"
 import { makeDrizzleOrganizationRepository } from "../../../src/services/host/organization-repository.drizzle.js"
 import {
   makeOrganizationService,
@@ -38,9 +37,7 @@ beforeEach(() => {
 
 async function seededOrg(): Promise<string> {
   const dto = await service.createOrganization(
-    { name: "Ballona Creek Trust", slug: "ballona-creek-trust" } as Parameters<
-      OrganizationService["createOrganization"]
-    >[0],
+    { name: "Ballona Creek Trust", slug: "ballona-creek-trust" },
     OWNER,
   )
   for (const [handle, role] of [
@@ -182,9 +179,10 @@ describe("findOrganizationAccess SQL", () => {
         my_role: "admin",
       },
     ])
-    const record = await makeDrizzleOrganizationRepository(
-      rec.sql as unknown as Sql,
-    ).findOrganizationAccess("org-1", ADMIN)
+    const record = await makeDrizzleOrganizationRepository(rec.sql).findOrganizationAccess(
+      "org-1",
+      ADMIN,
+    )
 
     expect(record).toEqual({
       id: "org-1",
@@ -208,7 +206,7 @@ describe("findOrganizationAccess SQL", () => {
 
   it("returns null when no row comes back", async () => {
     const rec = makeSqlRecorder()
-    const repository = makeDrizzleOrganizationRepository(rec.sql as unknown as Sql)
+    const repository = makeDrizzleOrganizationRepository(rec.sql)
     expect(await repository.findOrganizationAccess("org-1", ADMIN)).toBeNull()
   })
 })

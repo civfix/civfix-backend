@@ -122,7 +122,7 @@ describe("image-lane child protocol", () => {
         written.push(String(chunk))
         return true
       }) as typeof process.stdout.write)
-      const errSpy = vi.spyOn(process.stderr, "write").mockImplementation((() => true) as never)
+      const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
       const okCode = await laneMain.main([
         "node",

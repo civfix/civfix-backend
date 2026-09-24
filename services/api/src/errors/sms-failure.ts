@@ -1,6 +1,6 @@
 import { AppError, ErrorCode } from "@civfix/shared"
 
-export const SMS_FAILURE_FIELD = "smsDelivery"
+const SMS_FAILURE_FIELD = "smsDelivery"
 
 const SMS_FAILURE_KINDS = ["opted_out", "invalid_number", "permanent", "temporary"] as const
 

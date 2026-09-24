@@ -320,9 +320,11 @@ function stringifyHeader(value: unknown): string {
     try {
       return JSON.stringify(value)
     } catch {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- last resort for a header object JSON cannot encode; mailparser documents no shape for it
       return String(value)
     }
   }
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string -- only primitives reach here; objects returned above
   return String(value)
 }
 

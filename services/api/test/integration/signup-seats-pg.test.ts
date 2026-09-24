@@ -203,7 +203,7 @@ describe.skipIf(!pg)("signup seats (integration)", () => {
 
     expect(await seatRows(cleanupId, volunteer)).toEqual([
       {
-        seat_id: expect.any(String) as unknown as string,
+        seat_id: expect.any(String),
         seat_status: "cancelled",
         registration_status: "cancelled",
       },

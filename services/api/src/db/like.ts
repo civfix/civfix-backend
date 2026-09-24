@@ -8,7 +8,7 @@
  * backslash, but stating it keeps the query independent of that default.
  */
 
-export function escapeLike(term: string): string {
+function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (ch) => `\\${ch}`)
 }
 

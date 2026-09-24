@@ -43,7 +43,7 @@ function harness(opts: { useFakeChat?: boolean; usesRealRedis?: boolean } = {}):
     get redisOpened() {
       return state.redisOpened
     },
-  } as Harness
+  }
 }
 
 describe("makeContainerRoomFanoutDeps", () => {
@@ -189,10 +189,13 @@ describe("makeWindowClaim", () => {
     const { claim, counters } = claimHarness()
     vi.spyOn(counters, "incr").mockRejectedValue(new Error("redis down"))
     const warn = vi.fn()
-    const claimWithLog = makeWindowClaim({ getCounterStore: () => counters }, {
-      warn,
-      error: vi.fn(),
-    } as never)
+    const claimWithLog = makeWindowClaim(
+      { getCounterStore: () => counters },
+      {
+        warn,
+        error: vi.fn(),
+      },
+    )
 
     expect(await claim("report", "r1", 15_000)).toBe(true)
     expect(await claimWithLog("report", "r1", 15_000)).toBe(true)

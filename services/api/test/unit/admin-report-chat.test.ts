@@ -36,7 +36,7 @@ function messageDTO(overrides: Partial<ChatMessageDTO> = {}): ChatMessageDTO {
     reactions: [],
     mentions: [],
     ...overrides,
-  } as ChatMessageDTO
+  }
 }
 
 interface SendHarness {

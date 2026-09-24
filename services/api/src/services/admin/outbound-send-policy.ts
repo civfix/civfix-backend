@@ -76,6 +76,7 @@ export const ROUTE_DEADLINE_INFLIGHT_SECONDS = Math.max(
   }),
 )
 
+/** @alias */
 export const ROUTE_CLAIM_STALE_SECONDS = ROUTE_DEADLINE_INFLIGHT_SECONDS
 
 export function assertOutboundSendPolicy(input: {

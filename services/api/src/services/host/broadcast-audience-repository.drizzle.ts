@@ -26,19 +26,13 @@ interface CountRow {
   n: number
 }
 
-export async function listMemberAudiencePage(
-  sql: Queryable,
-  query: AudienceQuery,
-): Promise<string[]> {
+async function listMemberAudiencePage(sql: Queryable, query: AudienceQuery): Promise<string[]> {
   const page = memberQuery(sql, query)
   const rows = page === null ? [] : await page
   return rows.map((row) => row.id)
 }
 
-export async function listGuestAudiencePage(
-  sql: Queryable,
-  query: AudienceQuery,
-): Promise<string[]> {
+async function listGuestAudiencePage(sql: Queryable, query: AudienceQuery): Promise<string[]> {
   const page = guestQuery(sql, query)
   const rows = page === null ? [] : await page
   return rows.map((row) => row.id)

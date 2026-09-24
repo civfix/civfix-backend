@@ -7,7 +7,7 @@ const CHAR_CODE_ZERO = 48
 const LUHN_MODULUS = 10
 const LUHN_MAX_DIGIT = 9
 
-export function isLuhnValid(candidate: string): boolean {
+function isLuhnValid(candidate: string): boolean {
   const digits = candidate.replace(NON_DIGIT_RE, "")
   if (digits.length < PAN_MIN_DIGITS || digits.length > PAN_MAX_DIGITS) return false
   let sum = 0

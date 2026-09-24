@@ -50,10 +50,7 @@ beforeEach(() => {
 })
 
 async function orgWithAdmin(slug = "ballona-creek-trust"): Promise<string> {
-  const dto = await service.createOrganization(
-    { name: `Org ${slug}`, slug } as Parameters<OrganizationService["createOrganization"]>[0],
-    OWNER,
-  )
+  const dto = await service.createOrganization({ name: `Org ${slug}`, slug }, OWNER)
   await service.inviteMember(dto.id, OWNER, {
     identifierKind: "handle",
     identifier: "adam",

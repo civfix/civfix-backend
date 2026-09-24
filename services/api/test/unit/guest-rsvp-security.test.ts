@@ -51,11 +51,11 @@ function emailRequest(id: string): GuestRsvpRequestRequest {
     channel: "email",
     email: "ada@example.org",
     turnstileToken: "ok",
-  } as GuestRsvpRequestRequest
+  }
 }
 
 function emailVerify(id: string): GuestRsvpVerifyRequest {
-  return { id, channel: "email", email: "ada@example.org", code: CODE } as GuestRsvpVerifyRequest
+  return { id, channel: "email", email: "ada@example.org", code: CODE }
 }
 
 async function rejectionOf(promise: Promise<unknown>): Promise<{ code: string; message: string }> {

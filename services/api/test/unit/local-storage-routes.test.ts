@@ -124,10 +124,10 @@ describe("presign -> PUT -> GET round trip", () => {
       },
     })
     expect(created.statusCode).toBe(200)
-    const { putUrl, headers } = created.json() as {
+    const { putUrl, headers } = created.json<{
       putUrl: string
       headers: Record<string, string>
-    }
+    }>()
     expect(putUrl.startsWith(`${PUBLIC_API_URL}/_local-storage/media/uploads/`)).toBe(true)
 
     const uploaded = await app.inject({

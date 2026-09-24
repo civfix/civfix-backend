@@ -116,7 +116,7 @@ function repoOver(over: Partial<PostRepository>): PostRepository {
     listUserPosts: () => Promise.resolve({ items: [], nextCursor: null }),
     listSaves: () => Promise.resolve({ items: [], nextCursor: null }),
     ...over,
-  } as PostRepository
+  }
 }
 
 function recordingChannel(): {

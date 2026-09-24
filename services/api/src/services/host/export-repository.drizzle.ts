@@ -68,7 +68,7 @@ export function makeDrizzleHostExportRepository(sql: Sql): HostExportRepository 
         const record = toRecord(rows[0]!)
         if (audit !== undefined) await insertAuditRow(tx, audit(record.id))
         return record
-      }) as Promise<HostExportRecord>
+      })
     },
 
     async findById(exportId) {

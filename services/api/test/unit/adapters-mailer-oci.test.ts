@@ -44,7 +44,7 @@ function outbound(overrides: Partial<OutboundEmail> = {}): OutboundEmail {
     subject: "Case ABC123",
     text: "A pothole was reported.",
     ...overrides,
-  } as OutboundEmail
+  }
 }
 
 beforeEach(() => {

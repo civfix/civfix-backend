@@ -25,7 +25,7 @@ export type { IngestRow } from "./ingest-jurisdictions-core.js"
 
 async function main(): Promise<void> {
   const file = process.argv[2]
-  const defaultLayer = (process.argv[3] ?? DEFAULT_LAYER) as IngestRow["layer"]
+  const defaultLayer: string = process.argv[3] ?? DEFAULT_LAYER
   const geoidPrefix = (process.argv[4] ?? "").trim()
   if (!file) {
     console.error(

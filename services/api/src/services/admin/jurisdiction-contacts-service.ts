@@ -4,12 +4,7 @@
 import { AppError } from "@civfix/shared"
 import type { JurisdictionListQuery } from "@civfix/shared"
 import { toDirectoryDTO, hasAnyContact } from "./jurisdiction-directory-projection.js"
-import type {
-  DirectoryFilter,
-  DirectorySort,
-  PatchContactsInput,
-  SaveContactsInput,
-} from "./jurisdiction-contacts-repository.js"
+import type { PatchContactsInput, SaveContactsInput } from "./jurisdiction-contacts-repository.js"
 import { isReservedHandle } from "../../auth/reserved-handles.js"
 import { clampLimit } from "./pagination.js"
 import { isThrottled } from "./outreach-service.js"
@@ -67,9 +62,9 @@ export function makeJurisdictionContactsService(
       // The shared Zod enums enforced at the wire boundary are structurally the ListDirectoryArgs unions.
       const { records, nextCursor, total, facets } = await deps.repo.listDirectory({
         q: query.q && query.q.trim() !== "" ? query.q.trim() : null,
-        filter: (query.filter ?? "all") as DirectoryFilter,
+        filter: query.filter ?? "all",
         layer: query.layer ?? null,
-        sort: (query.sort ?? "population") as DirectorySort,
+        sort: query.sort ?? "population",
         cursor: query.cursor ?? null,
         limit: clampLimit(query.limit),
       })

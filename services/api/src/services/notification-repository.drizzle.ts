@@ -330,7 +330,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           RETURNING id, user_id, type, title, body, link, read_at, created_at
         `
         return { record: toRecord(rows[0]!), deduped: false }
-      }) as Promise<{ record: NotificationRecord; deduped: boolean }>
+      })
     },
 
     refreshUnreadNotification(args: CoalescedNotificationArgs): Promise<NotificationRecord | null> {
@@ -356,7 +356,7 @@ export function makeDrizzleNotificationRepository(sql: Sql): NotificationReposit
           RETURNING id, user_id, type, title, body, link, read_at, created_at
         `
         return { record: toRecord(rows[0]!), coalesced: false }
-      }) as Promise<{ record: NotificationRecord; coalesced: boolean }>
+      })
     },
 
     async deleteAllNotificationsForUser(userId: string): Promise<void> {

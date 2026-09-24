@@ -43,7 +43,7 @@ import { chatMentionDeps, type ChatMentionSeam } from "./chat-gateway-wiring.js"
 import { broadcastMessageUpdate, roomKeyFor } from "../ws/gateway.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
 import { makeChatPollRepository } from "../services/chat-poll-repository.drizzle.js"
-import { makeChatPollService, type PollRoomKind } from "../services/chat-poll-service.js"
+import { makeChatPollService } from "../services/chat-poll-service.js"
 import { makeContainerPollNotifier } from "../services/chat-poll-notifier.js"
 
 export const EditMessageBodySchema = trimTextFields(EditMessageRequestSchema, "body")
@@ -386,7 +386,7 @@ export async function registerMessagesRoutes(
       const userId = requireAuth(request)
       const body = parse(CreatePollBodySchema, request.body)
       const created = await getPollService().createPoll({
-        roomKind: body.roomKind as PollRoomKind,
+        roomKind: body.roomKind,
         roomId: body.roomId,
         question: body.question,
         options: body.options,

@@ -74,7 +74,7 @@ export function makeDrizzleMediaViewAuthorizer(
   }
 }
 
-export async function authorizeChatBound(
+async function authorizeChatBound(
   repo: MediaAuthorizationRepository,
   messageId: string,
   viewerId: string | null,
@@ -124,7 +124,7 @@ async function authorizeGroupRoom(
   return group.isMember || group.visibility === "public" ? ALLOW_PRIVATE : DENY
 }
 
-export async function authorizeEventBound(
+async function authorizeEventBound(
   repo: MediaAuthorizationRepository,
   asset: MediaAssetView,
   viewerId: string | null,
@@ -136,7 +136,7 @@ export async function authorizeEventBound(
   return event.isMember ? ALLOW_PRIVATE : DENY
 }
 
-export async function authorizeOrgLogoBound(
+async function authorizeOrgLogoBound(
   repo: MediaAuthorizationRepository,
   asset: MediaAssetView,
   now: Date,

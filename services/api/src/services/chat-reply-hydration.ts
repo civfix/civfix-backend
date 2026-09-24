@@ -74,7 +74,7 @@ export async function assertReplyTarget(
 }
 
 /** Keyed by TARGET id. */
-export async function loadReplyTargets(
+async function loadReplyTargets(
   sql: Queryable,
   table: ReplyTable,
   replyToIds: ReadonlyArray<string | null | undefined>,

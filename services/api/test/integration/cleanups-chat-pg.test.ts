@@ -260,7 +260,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     const authServices = makeAuthServices({
       stores,
       cache,
-      mailer: container.mailer as never,
+      mailer: container.mailer,
       oauthConfig: {},
       verifier: new StubJwksVerifier(),
       now: () => Date.now(),
@@ -331,7 +331,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     const authServices = makeAuthServices({
       stores,
       cache,
-      mailer: container.mailer as never,
+      mailer: container.mailer,
       oauthConfig: {},
       verifier: new StubJwksVerifier(),
       now: () => Date.now(),

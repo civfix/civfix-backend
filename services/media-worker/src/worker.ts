@@ -217,7 +217,7 @@ function requireRepo<K extends keyof WorkerSeams>(
     console.warn(`${jobName}: no DB configured (offline mode); skipping`)
     return undefined
   }
-  return value as NonNullable<WorkerSeams[K]>
+  return value
 }
 
 function makeOrphanSweepHandler(seams: WorkerSeams): JobHandler {

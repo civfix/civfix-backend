@@ -51,7 +51,7 @@ export function hasHostStanding(standing: HostStanding): boolean {
   return standing.eventRole !== null || standing.orgRole !== null
 }
 
-export function notFoundCleanup(): AppError {
+function notFoundCleanup(): AppError {
   return AppError.notFound("Cleanup not found")
 }
 

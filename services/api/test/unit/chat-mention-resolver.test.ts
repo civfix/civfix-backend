@@ -55,7 +55,7 @@ function resolverOver(
     listReportChatMemberIds:
       kind === "report" ? rosterLookup(roster, REPORT_CHAT_MEMBER_SCAN_CAP, seen) : none,
     listGroupMemberIds: kind === "group" ? rosterLookup(roster, GROUP_MEMBER_SCAN_CAP, seen) : none,
-  } as ChatMentionResolverDeps
+  }
 }
 
 describe("mention scope checks membership of the mentioned users, not a capped roster", () => {

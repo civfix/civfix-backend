@@ -20,7 +20,7 @@ function feature(geoid: string, name: string): Record<string, unknown> {
   return { GEOID: geoid, NAME: name }
 }
 
-function fakeResponse(opts: { ok: boolean; json: () => unknown | Promise<unknown> }): Response {
+function fakeResponse(opts: { ok: boolean; json: () => unknown }): Response {
   return {
     ok: opts.ok,
     json: async () => opts.json(),
@@ -94,13 +94,14 @@ describe("parseCensusGeographies (pure)", () => {
 describe("CensusJurisdictionLookup.lookup (injected fake fetch)", () => {
   it("returns the parsed result on a 200 + valid body, and hits the injected base URL with the right query", async () => {
     let calledUrl = ""
-    const fetchImpl = (async (input: Parameters<typeof fetch>[0]) => {
+    const fetchImpl = async (input: Parameters<typeof fetch>[0]) => {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- the adapter under test calls fetch with a string URL
       calledUrl = String(input)
       return fakeResponse({
         ok: true,
         json: () => body({ "Incorporated Places": [feature("0644000", "Los Angeles")] }),
       })
-    }) as unknown as typeof fetch
+    }
 
     const lookup = new CensusJurisdictionLookup({ baseUrl: BASE_URL, timeoutMs: 50, fetchImpl })
     const result = await lookup.lookup(34.05, -118.25)
@@ -142,7 +143,7 @@ describe("CensusJurisdictionLookup.lookup (injected fake fetch)", () => {
   })
 
   it("THROWS unavailable when the request is aborted/times out", async () => {
-    const fetchImpl = ((_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+    const fetchImpl = (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
       new Promise<Response>((_resolve, reject) => {
         const signal = init?.signal
         if (signal) {
@@ -150,7 +151,7 @@ describe("CensusJurisdictionLookup.lookup (injected fake fetch)", () => {
             reject(new DOMException("The operation was aborted.", "AbortError"))
           })
         }
-      })) as unknown as typeof fetch
+      })
     const lookup = new CensusJurisdictionLookup({ baseUrl: BASE_URL, timeoutMs: 1, fetchImpl })
     await expect(lookup.lookup(1, 2)).rejects.toBeInstanceOf(JurisdictionLookupUnavailableError)
   })

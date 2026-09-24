@@ -9,10 +9,7 @@ import {
   InMemoryDmRepository,
 } from "../../src/services/dm-repository.memory.js"
 import { deleteMessageWithPowers } from "../../src/routes/chat-route-helpers.js"
-import {
-  makeChatEditService,
-  type ChatEditServiceDeps,
-} from "../../src/services/chat-edit-service.js"
+import { makeChatEditService } from "../../src/services/chat-edit-service.js"
 import {
   makeChatPollService,
   type ChatPollServiceDeps,
@@ -224,7 +221,7 @@ describe("F043 edits fan out without the editor's viewer fields", () => {
       MESSAGE,
     )
     const edits = makeChatEditService({
-      chat: repo as unknown as ChatEditServiceDeps["chat"],
+      chat: repo,
       isCleanupMember: () => Promise.resolve(true),
       broadcastEvent: (roomKey, frame) => {
         events.push({ roomKey, frame })

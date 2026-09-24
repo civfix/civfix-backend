@@ -45,7 +45,6 @@
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",
     "rimraf": "^6.0.1",
-    "testcontainers": "^11.14.0",
     "tsup": "^8.3.5",
     "tsx": "^4.23.13",
     "typescript": "^5.6.3",

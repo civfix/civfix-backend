@@ -279,7 +279,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
               ${args.idempotency.key},
               ${args.idempotency.scope},
               ${args.idempotency.userOrAnon},
-              ${sql.json(dto as Parameters<typeof sql.json>[0])}
+              ${sql.json(dto)}
             )
           `
           return dto

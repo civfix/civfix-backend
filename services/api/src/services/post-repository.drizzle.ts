@@ -378,7 +378,7 @@ function viewerBlockClause(sql: Queryable, viewerId: string): SqlFragment {
     )`
 }
 
-export function feedCandidatesStatement(sql: Queryable, args: FeedCandidateArgs): SqlFragment {
+function feedCandidatesStatement(sql: Queryable, args: FeedCandidateArgs): SqlFragment {
   const viewerId = args.viewerId
   const filterClause = feedFilterClause(sql, args.filter)
   const eligible = (): SqlFragment => sql`

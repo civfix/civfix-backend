@@ -295,7 +295,7 @@ describe("createReport auto-forward enqueue gate (D9)", () => {
 })
 
 describe("report.autoforward handler (D9): runAutoForwardWith", () => {
-  function handlerHarness(opts: { sendError?: unknown } = {}) {
+  function handlerHarness({ sendError }: { sendError?: Error } = {}) {
     const repo = new InMemoryAdminReportRepository()
     repo.now = NOW
     const mailer = new FakeMailer()
@@ -306,14 +306,14 @@ describe("report.autoforward handler (D9): runAutoForwardWith", () => {
       env: { MAIL_FROM_OUTREACH: "outreach@civfix.org", MAIL_REPLY_DOMAIN: "civfix.org" },
     })
     const outboundMail: OutboundMailService =
-      opts.sendError !== undefined
+      sendError !== undefined
         ? {
             ...realOutbound,
             async prepareReportToJurisdiction(input) {
               const prepared = await realOutbound.prepareReportToJurisdiction(input)
-              return { thread: prepared.thread, deliver: () => Promise.reject(opts.sendError) }
+              return { thread: prepared.thread, deliver: () => Promise.reject(sendError) }
             },
-            sendReportToJurisdiction: () => Promise.reject(opts.sendError),
+            sendReportToJurisdiction: () => Promise.reject(sendError),
           }
         : realOutbound
     const svc = makeAdminReportService({ repo, outboundMail, now: () => NOW })

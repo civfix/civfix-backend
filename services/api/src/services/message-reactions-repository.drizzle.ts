@@ -1,5 +1,5 @@
 import type { Queryable, Sql } from "../db/client.js"
-import type { ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
+import type { ReactionSummaryDTO } from "@civfix/shared"
 import type { MessageReactionRepository } from "./message-reactions-repository.js"
 
 // `table` is a module-constant union literal, never user input, interpolated as a postgres.js identifier.
@@ -58,7 +58,7 @@ export async function loadReactionsFor(
   `
   for (const r of rows) {
     const dto: ReactionSummaryDTO = {
-      emoji: r.emoji as ReactionEmoji,
+      emoji: r.emoji,
       count: r.count,
       mine: viewerUserId !== null && r.mine,
     }

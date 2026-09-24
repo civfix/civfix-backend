@@ -124,7 +124,7 @@ describe("H6: presence.leave only reports userGone when it actually removed the 
 })
 
 describe("H6: RedisChatPresence.leave reads the ZREM's own reply slot", () => {
-  const makeRedis = (): RedisClient => new RedisMock() as unknown as RedisClient
+  const makeRedis = (): RedisClient => new RedisMock()
 
   it("reports userGone:false for a connection that was never in the sorted set", async () => {
     const redis = makeRedis()

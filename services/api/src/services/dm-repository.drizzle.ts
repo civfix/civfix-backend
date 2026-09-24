@@ -260,7 +260,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
         : await run(sql)
       const messageId = rows[0]!.id
       const attachments = wantsMedia
-        ? ((await loadChatAttachments(sql, [messageId], presign!, input.senderId)).get(messageId) ??
+        ? ((await loadChatAttachments(sql, [messageId], presign, input.senderId)).get(messageId) ??
           [])
         : []
       return toMessageDTO(rows[0]!, {

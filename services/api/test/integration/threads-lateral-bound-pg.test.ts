@@ -44,7 +44,7 @@ describe.skipIf(!pg)("threads inbox last-message LATERAL (integration)", () => {
       debug: (_conn: number, query: string, params: unknown[]) => {
         if (query.includes("report_chat_members")) captured = { query, params }
       },
-    }) as unknown as Sql
+    })
   })
 
   afterAll(async () => {

@@ -1248,7 +1248,7 @@ describe("admin org management (0.41.0)", () => {
       ownerUserId: OWNER,
       reason: "onboarded at the partner summit",
       ...over,
-    } as Parameters<OrganizationService["adminCreateOrganization"]>[1])
+    })
   }
 
   it("creates an org for an owner, already verified when a kind is given, with audit rows", async () => {

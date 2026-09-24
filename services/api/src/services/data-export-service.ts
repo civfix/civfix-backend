@@ -170,8 +170,10 @@ const DATA_EXPORT_FIT_ORDER = [
 
 type UnfittedSection = Exclude<SectionName, (typeof DATA_EXPORT_FIT_ORDER)[number]>
 
-// A section missing from the fit order would silently drop out of every export.
-const _everySectionIsFitted: UnfittedSection extends never ? true : never = true
+// A section missing from the fit order would silently drop out of every export; a gap makes this
+// binding's type `never`, so the assignment stops compiling.
+const EXHAUSTIVE_FIT_ORDER: UnfittedSection extends never ? typeof DATA_EXPORT_FIT_ORDER : never =
+  DATA_EXPORT_FIT_ORDER
 
 interface SectionPart {
   kind: "section"
@@ -373,7 +375,7 @@ function fitBody(loaded: ReadonlyMap<BodyKey, readonly object[]>): FittedBody {
   }
 
   const sections = new Map<SectionName, unknown[]>()
-  for (const name of DATA_EXPORT_FIT_ORDER) {
+  for (const name of EXHAUSTIVE_FIT_ORDER) {
     const { rowCap, redact, present } = DATA_EXPORT_BODY[name]
     const rows = loaded.get(name) ?? []
     const kept = fit(name, redact ? rows.map(redact) : rows, rowCap)

@@ -272,6 +272,7 @@ export class PgBossWorkerJobs implements WorkerJobs {
       "PgBossWorkerJobs.fail is unsupported on the worker (throw to fail a job instead)",
       {
         jobId,
+        // eslint-disable-next-line @typescript-eslint/no-base-to-string -- best-effort rendering of an arbitrary failure value for a warning log
         err: err === undefined ? undefined : String(err),
       },
     )

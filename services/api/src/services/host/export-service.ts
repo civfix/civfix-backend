@@ -256,7 +256,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
           organizationId: args.organizationId,
           requestedBy: args.requestedBy,
           kind: args.kind,
-          filters: (args.filters ?? {}) as Record<string, unknown>,
+          filters: args.filters ?? {},
         },
         args.audit,
       )

@@ -237,6 +237,7 @@ describe("hard-bounce suppression write failure", () => {
     const bounces: Mailer = {
       sendOtp: () => Promise.resolve(),
       sendTransactional: () => Promise.resolve(),
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the classifier under test must handle nodemailer's SMTP-shaped rejection as given
       sendOutbound: () => Promise.reject({ responseCode: 550, response: "550 no such user" }),
     }
     const logger = logSpy()

@@ -19,7 +19,7 @@ import { isOfficialAccount } from "../auth/official-account.js"
 import { clampPageLimit } from "../lib/page-limit.js"
 import { NO_AFFILIATIONS, withAffiliation, type AffiliationLoader } from "./affiliation.js"
 
-export const GROUP_MEMBERS_DEFAULT_LIMIT = 25
+const GROUP_MEMBERS_DEFAULT_LIMIT = 25
 const GROUP_MEMBERS_MAX_LIMIT = 50
 
 const INVITE_BLOCK_SCAN_MEMBERS = 200

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest"
-import type { Queryable } from "../../src/db/client.js"
 import { upsertJurisdictionContacts } from "../../src/services/admin/jurisdiction-contacts-repository.drizzle.js"
 import { makeSqlRecorder, type SqlRecorder } from "../helpers/sql-recorder.js"
 
@@ -12,7 +11,7 @@ async function save(
   contacts: Parameters<typeof upsertJurisdictionContacts>[2],
 ): Promise<SqlRecorder> {
   const rec = makeSqlRecorder()
-  await upsertJurisdictionContacts(rec.sql as unknown as Queryable, GEOID, contacts, [], null)
+  await upsertJurisdictionContacts(rec.sql, GEOID, contacts, [], null)
   return rec
 }
 

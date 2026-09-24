@@ -370,7 +370,7 @@ describe("POST /admin/inbox/:id/status", () => {
     })
     expect(badStatus.statusCode).toBe(422)
     expect(
-      (badStatus.json() as { code: string; fields?: Record<string, string> }).fields,
+      badStatus.json<{ code: string; fields?: Record<string, string> }>().fields,
     ).toHaveProperty("status")
 
     expect(harness.repo.rows.find((r) => r.id === id)?.status).toBe("unread")

@@ -13,7 +13,7 @@ import {
 } from "./threads-service.js"
 import type { ThreadAggregate, ThreadsRepository } from "./threads-repository.js"
 
-function reportThreadTitle(category: ReportCategory | string, addr: string | null): string {
+function reportThreadTitle(category: string, addr: string | null): string {
   const label = REPORT_CATEGORY_LABELS[category as ReportCategory] ?? category
   const short = (addr ?? "").split(",")[0]?.trim() ?? ""
   return short !== "" ? `${label} - ${short}` : label

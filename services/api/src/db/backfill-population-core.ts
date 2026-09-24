@@ -72,6 +72,7 @@ export function parseAcs(rows: unknown[][]): { geoid: string; population: number
     if (!Array.isArray(row)) continue
     const pop = Number(row[varIdx])
     if (!Number.isFinite(pop) || pop < 0) continue
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- ACS API cells are JSON scalars, read the same way as the header row
     const geoid = geoCols.map((i) => String(row[i] ?? "")).join("")
     if (geoid) out.push({ geoid, population: Math.round(pop) })
   }

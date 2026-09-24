@@ -132,7 +132,7 @@ async function openLiveSocket(membership: StalledMembership): Promise<MockSocket
     webOrigins: [],
   })
   const socket = new MockSocket()
-  handler(socket as unknown as WebSocket, authedRequest())
+  handler(socket, authedRequest())
   await flush()
   return socket
 }

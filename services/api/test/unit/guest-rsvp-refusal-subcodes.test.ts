@@ -95,7 +95,7 @@ function request(extra: Partial<GuestRsvpRequestRequest> = {}): GuestRsvpRequest
     email: "ada@example.org",
     turnstileToken: "ok",
     ...extra,
-  } as GuestRsvpRequestRequest
+  }
 }
 
 function verify(extra: Partial<GuestRsvpVerifyRequest> = {}): GuestRsvpVerifyRequest {
@@ -105,7 +105,7 @@ function verify(extra: Partial<GuestRsvpVerifyRequest> = {}): GuestRsvpVerifyReq
     email: "ada@example.org",
     code: CODE,
     ...extra,
-  } as GuestRsvpVerifyRequest
+  }
 }
 
 function codesSent(mailer: FakeMailer): number {

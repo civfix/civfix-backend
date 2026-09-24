@@ -55,6 +55,7 @@ describe("TwilioSmsSender", () => {
     expect(headers.authorization).toBe(`Basic ${expected}`)
     expect(headers["content-type"]).toBe("application/x-www-form-urlencoded")
 
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- the adapter posts a string form body
     const form = new URLSearchParams(String(call?.init.body))
     expect(form.get("To")).toBe("+15552223333")
     expect(form.get("From")).toBe("+15550001111")

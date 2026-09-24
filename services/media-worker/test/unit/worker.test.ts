@@ -304,9 +304,9 @@ describe("F25: post-success hold-release hook is gated on anon+held report state
 
 describe("makeSeams production storage guard", () => {
   it("THROWS when USE_FAKE_STORAGE is on in production (would silently lose media, issue #39)", async () => {
-    await expect(
-      makeSeams({ NODE_ENV: "production", USE_FAKE_STORAGE: "1" } as NodeJS.ProcessEnv),
-    ).rejects.toThrow(/USE_FAKE_STORAGE must be 0 in production/)
+    await expect(makeSeams({ NODE_ENV: "production", USE_FAKE_STORAGE: "1" })).rejects.toThrow(
+      /USE_FAKE_STORAGE must be 0 in production/,
+    )
   })
 
   it("fires on fake storage even when USE_FAKE_ABUSE_NSFW is off (abuse seam is not what is guarded)", async () => {
@@ -315,7 +315,7 @@ describe("makeSeams production storage guard", () => {
         NODE_ENV: "production",
         USE_FAKE_STORAGE: "1",
         USE_FAKE_ABUSE_NSFW: "0",
-      } as NodeJS.ProcessEnv),
+      }),
     ).rejects.toThrow(/USE_FAKE_STORAGE/)
   })
 })

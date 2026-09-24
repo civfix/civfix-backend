@@ -65,7 +65,7 @@ export function makeFcmDispatcher(
           existing ??
           admin.initializeApp(
             {
-              credential: admin.cert(serviceAccount as never),
+              credential: admin.cert(serviceAccount),
               ...(fcm.projectId !== undefined ? { projectId: fcm.projectId } : {}),
             },
             FCM_APP_NAME,

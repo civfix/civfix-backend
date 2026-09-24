@@ -41,7 +41,7 @@ function recordingDb(respond: Responder = () => ({})): { db: Db; statements: Rec
       }
     },
   }
-  return { db: drizzle(client as never, { schema }) as unknown as Db, statements }
+  return { db: drizzle(client as never, { schema }), statements }
 }
 
 function erasedUserRow(): unknown[] {

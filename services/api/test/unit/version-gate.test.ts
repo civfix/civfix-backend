@@ -77,7 +77,7 @@ describe("version gate: dormant policy (v1=current, MIN=v1, nothing deprecated/s
     // route exists so it is not a route-missing 404 either.
     expect(res.statusCode).toBe(200)
     expect(res.json()).toMatchObject({ pong: true })
-    const body = res.json() as { code?: string }
+    const body = res.json<{ code?: string }>()
     expect(body.code).not.toBe("UNSUPPORTED_API_VERSION")
     expect(body.code).not.toBe("API_VERSION_SUNSET")
   })
@@ -85,7 +85,7 @@ describe("version gate: dormant policy (v1=current, MIN=v1, nothing deprecated/s
   it("rejects an UNKNOWN version /v2/<x> with 400 UNSUPPORTED_API_VERSION (before route matching)", async () => {
     const res = await app.inject({ method: "GET", url: "/v2/something" })
     expect(res.statusCode).toBe(400)
-    const body = res.json() as { code?: string; requestId?: string }
+    const body = res.json<{ code?: string; requestId?: string }>()
     expect(body.code).toBe("UNSUPPORTED_API_VERSION")
     // It is the gate, not the not-found handler: a 400, not a route-missing 404.
     expect(typeof body.requestId).toBe("string")
@@ -94,13 +94,13 @@ describe("version gate: dormant policy (v1=current, MIN=v1, nothing deprecated/s
   it("rejects a far-future UNKNOWN version /v99/x with 400 UNSUPPORTED_API_VERSION", async () => {
     const res = await app.inject({ method: "GET", url: "/v99/x" })
     expect(res.statusCode).toBe(400)
-    expect((res.json() as { code?: string }).code).toBe("UNSUPPORTED_API_VERSION")
+    expect(res.json<{ code?: string }>().code).toBe("UNSUPPORTED_API_VERSION")
   })
 
   it("rejects a BELOW-MIN version /v0/x with 400 UNSUPPORTED_API_VERSION", async () => {
     const res = await app.inject({ method: "GET", url: "/v0/x" })
     expect(res.statusCode).toBe(400)
-    expect((res.json() as { code?: string }).code).toBe("UNSUPPORTED_API_VERSION")
+    expect(res.json<{ code?: string }>().code).toBe("UNSUPPORTED_API_VERSION")
   })
 
   it("bypasses the gate for the unversioned system path /healthz (200, not gate-rejected)", async () => {
@@ -131,7 +131,7 @@ describe("version gate: dormant policy (v1=current, MIN=v1, nothing deprecated/s
   it("ignores a query string when reading the version segment: /v2/x?foo=1 still rejects", async () => {
     const res = await app.inject({ method: "GET", url: "/v2/x?foo=1" })
     expect(res.statusCode).toBe(400)
-    expect((res.json() as { code?: string }).code).toBe("UNSUPPORTED_API_VERSION")
+    expect(res.json<{ code?: string }>().code).toBe("UNSUPPORTED_API_VERSION")
   })
 })
 
