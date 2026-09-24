@@ -255,6 +255,27 @@ describe("InMemoryMailRepository: withheld replies", () => {
     expect(await repo.hasWithheldReply(thread.id)).toBe(false)
   })
 
+  it("settles a thread to replied unless it is still in review with a withheld reply", async () => {
+    const repo = new InMemoryMailRepository()
+    const thread = repo.seedThread({ reportId: "r1", status: "needs_action" })
+    repo.seedMessage({ threadId: thread.id, direction: "in", unaffiliated: true })
+    const status = async () => (await repo.getThreadRecord(thread.id))?.status
+    const flag = {
+      actorId: null,
+      action: "mail.reply_published_without_text",
+      target: `mail:${thread.id}`,
+    } as const
+
+    await repo.settleThreadStatus({ threadId: thread.id })
+    expect(await status()).toBe("needs_action")
+    await repo.setThreadStatus(thread.id, "replied")
+    await repo.settleThreadStatus({ threadId: thread.id })
+    expect(await status()).toBe("replied")
+    await repo.settleThreadStatus({ threadId: thread.id, flag })
+    expect(await status()).toBe("needs_action")
+    expect(repo.audits.map((a) => a.action)).toEqual([flag.action])
+  })
+
   it("withholds nothing on a thread with no report or event", async () => {
     const repo = new InMemoryMailRepository()
     const thread = repo.seedThread()

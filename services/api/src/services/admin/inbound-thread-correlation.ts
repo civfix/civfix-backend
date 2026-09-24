@@ -36,6 +36,7 @@ export const EFFECTS_LEASE_MS = 10 * 60 * 1000
 export const EFFECTS_STAGE_TIMELINE = 1
 export const EFFECTS_STAGE_CHAT = 2
 export const EFFECTS_STAGE_NOTIFIED = 3
+export const EFFECTS_STAGE_SETTLED = 4
 
 export const JURISDICTION_REPLY_NOTIFICATION_BODY =
   "The city responded. See their reply in the report chat."
@@ -300,16 +301,24 @@ export async function onJurisdictionReply(
     await mailRepo.setMessageEffectsStage(messageId, EFFECTS_STAGE_NOTIFIED)
   }
 
-  if (chatBody === null && (message.body ?? "").trim() !== "") {
-    await mailRepo.setThreadStatus(thread.id, "needs_action", {
-      actorId: null,
-      action: "mail.reply_published_without_text",
-      target: `mail:${thread.id}`,
-      meta: { messageId, reportId },
+  if (stage < EFFECTS_STAGE_SETTLED) {
+    const emptied = chatBody === null && (message.body ?? "").trim() !== ""
+    await mailRepo.settleRepliedThread({
+      threadId: thread.id,
+      messageId,
+      stage: EFFECTS_STAGE_SETTLED,
+      ...(emptied
+        ? {
+            flag: {
+              actorId: null,
+              action: "mail.reply_published_without_text",
+              target: `mail:${thread.id}`,
+              meta: { messageId, reportId },
+            },
+          }
+        : {}),
     })
-    return
   }
-  await mailRepo.setThreadStatus(thread.id, "replied")
 }
 
 export async function onEventReply(
@@ -335,7 +344,13 @@ export async function onEventReply(
     })
     await mailRepo.setMessageEffectsStage(message.id, EFFECTS_STAGE_TIMELINE)
   }
-  await mailRepo.setThreadStatus(thread.id, "replied")
+  if (stage < EFFECTS_STAGE_SETTLED) {
+    await mailRepo.settleRepliedThread({
+      threadId: thread.id,
+      messageId: message.id,
+      stage: EFFECTS_STAGE_SETTLED,
+    })
+  }
 }
 
 export function replyPreview(body: string): string {

@@ -334,6 +334,70 @@ describe.skipIf(!pg)("admin mail repository (integration: real schema)", () => {
     await h.sql`DELETE FROM reports WHERE id = ${report!.id}`
   })
 
+  it("settles a replied thread from its withheld replies, once per message", async () => {
+    const [report] = await h.sql<{ id: string }[]>`
+      INSERT INTO reports (idempotency_key, geom, geom_source, category, status, h3_cell, jurisdiction_geoid)
+      VALUES (gen_random_uuid(), ST_SetSRID(ST_MakePoint(-118.25, 34.05), 4326), 'gps', 'graffiti',
+              'published', '8a2a1072b59ffff', ${GEOID})
+      RETURNING id
+    `
+    const t = await repo.findOrCreateReportThread(report!.id, { subject: "Settle" })
+    const inbound = (messageId: string, unaffiliated: boolean) =>
+      repo.insertMessage({
+        threadId: t.id,
+        direction: "in",
+        messageId,
+        unaffiliated,
+        ...(unaffiliated ? { threadStatus: "needs_action" as const } : {}),
+      })
+    const withheld = await inbound("<settle-w@vendor.example>", true)
+    const verified = await inbound("<settle-v@lacity.gov>", false)
+    const flag = {
+      actorId: null,
+      action: "mail.reply_published_without_text",
+      target: `mail:${t.id}`,
+    } as const
+    const settle = (messageId: string, withFlag = false) =>
+      repo.settleRepliedThread({
+        threadId: t.id,
+        messageId,
+        stage: 4,
+        ...(withFlag ? { flag } : {}),
+      })
+    const status = async () => (await repo.getThreadRecord(t.id))?.status
+    const flags = async () => {
+      const rows = await h.sql`SELECT 1 FROM audit_log WHERE action = ${flag.action}`
+      return rows.length
+    }
+
+    await settle(verified!.id)
+    expect(await status()).toBe("needs_action")
+
+    await repo.setThreadStatus(t.id, "sent")
+    await settle(verified!.id)
+    expect(await status()).toBe("sent")
+
+    await repo.approveWithheldReply(withheld!.id, { ...flag, action: "mail.reply_published" })
+    await settle(withheld!.id, true)
+    await settle(withheld!.id, true)
+    expect([await status(), await flags()]).toEqual(["needs_action", 1])
+
+    const later = await inbound("<settle-later@lacity.gov>", false)
+    await settle(later!.id)
+    expect(await status()).toBe("replied")
+    expect((await repo.findMessageByMessageId("<settle-later@lacity.gov>"))?.effectsStage).toBe(4)
+
+    await inbound("<settle-dismissed@vendor.example>", true)
+    await repo.settleThreadStatus({ threadId: t.id })
+    expect(await status()).toBe("needs_action")
+    await repo.setThreadStatus(t.id, "replied")
+    const after = await inbound("<settle-after@lacity.gov>", false)
+    await settle(after!.id)
+    expect([await status(), await repo.hasWithheldReply(t.id)]).toEqual(["replied", true])
+
+    await h.sql`DELETE FROM reports WHERE id = ${report!.id}`
+  })
+
   it("B4: an EXPIRED claim is reclaimable and keeps the stage it reached", async () => {
     const t = await repo.createThread({ subject: "Lease" })
     const msg = await repo.insertMessage({

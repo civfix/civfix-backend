@@ -16,6 +16,8 @@ import {
 import type { Container } from "../../src/di.js"
 import { makeFakeSql, type FakeSqlControl, type SqlHandler } from "../helpers/fake-sql.js"
 import {
+  applyInboundEffects,
+  inboundEffectDeps,
   parseMessageIdList,
   cityReplyChatBody,
   stripQuotedHistory,
@@ -718,6 +720,72 @@ describe("processInboundObject: unaffiliated thread joiners (H5)", () => {
       },
     ])
   })
+
+  it("records the stripped-reply audit once when a re-drive finishes the effects", async () => {
+    const reportId = "report-emptied-redrive"
+    const c = ctx()
+    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const markApplied = c.mailRepo.markMessageEffectsApplied.bind(c.mailRepo)
+    c.mailRepo.markMessageEffectsApplied = () => Promise.reject(new Error("db blip"))
+    const key = `${INBOUND_PENDING_PREFIX}emptied-redrive.eml`
+    const body = `Please write to report-${TOKEN}@civfix.org instead.`
+    await put(c, key, rfc822({ from: "clerk@lacity.gov", to: `reply+${TOKEN}@civfix.org`, body }))
+    expect((await processInboundObject(c.container, key, c.deps)).outcome).toBe("threaded")
+
+    c.mailRepo.markMessageEffectsApplied = markApplied
+    const stored = c.mailRepo.messagesOf(thread.id).find((m) => m.direction === "in")!
+    expect(stored.effectsAppliedAt).toBeNull()
+    await applyInboundEffects(c.container, inboundEffectDeps(c.deps), c.mailRepo, thread, stored)
+
+    expect(stored.effectsAppliedAt).not.toBeNull()
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("needs_action")
+    expect(c.mailRepo.audits.map((a) => a.action)).toEqual(["mail.reply_published_without_text"])
+    expect(c.chatEvents).toHaveLength(1)
+  })
+
+  it("keeps the thread in review while it holds a withheld reply when a verified reply lands", async () => {
+    const reportId = "report-withheld-then-verified"
+    const c = ctx()
+    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const to = `reply+${TOKEN}@civfix.org`
+    const withheld = `${INBOUND_PENDING_PREFIX}w.eml`
+    const verified = `${INBOUND_PENDING_PREFIX}v.eml`
+    await put(c, withheld, rfc822({ from: "sales@vendor.example", to }))
+    await put(c, verified, rfc822({ from: "clerk@lacity.gov", to, body: "On it." }))
+
+    await processInboundObject(c.container, withheld, c.deps)
+    await processInboundObject(c.container, verified, c.deps)
+
+    const city = c.mailRepo.messagesOf(thread.id).find((m) => m.fromAddr === "clerk@lacity.gov")
+    expect(city?.effectsAppliedAt).not.toBeNull()
+    expect(c.adminReportRepo.reports.get(reportId)?.record.status).toBe("in_progress")
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("needs_action")
+  })
+
+  it("settles to replied when a verified reply lands after the withheld one was marked replied", async () => {
+    const reportId = "report-withheld-dismissed"
+    const c = ctx()
+    c.adminReportRepo.seedReport({ id: reportId, status: "published", reporter: null })
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, reportId, status: "sent" })
+    seedContact(c, thread.id, "publicworks@lacity.gov")
+    const to = `reply+${TOKEN}@civfix.org`
+    const withheld = `${INBOUND_PENDING_PREFIX}dw.eml`
+    const verified = `${INBOUND_PENDING_PREFIX}dv.eml`
+    await put(c, withheld, rfc822({ from: "sales@vendor.example", to }))
+    await put(c, verified, rfc822({ from: "clerk@lacity.gov", to, body: "On it." }))
+
+    await processInboundObject(c.container, withheld, c.deps)
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("needs_action")
+    await c.mailRepo.setThreadStatus(thread.id, "replied")
+    await processInboundObject(c.container, verified, c.deps)
+
+    expect(await c.mailRepo.hasWithheldReply(thread.id)).toBe(true)
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("replied")
+  })
 })
 
 describe("processInboundObject: failures surface instead of being swallowed", () => {
@@ -757,6 +825,24 @@ describe("processInboundObject: failures surface instead of being swallowed", ()
 })
 
 describe("processInboundObject: EVENT reply -> cleanup_timeline (D13/D19)", () => {
+  it("keeps an event thread in review while it holds a withheld reply when a verified reply lands", async () => {
+    const c = ctx()
+    const cleanupId = "cleanup-evt-w"
+    const thread = c.mailRepo.seedThread({ threadToken: TOKEN, cleanupId, status: "sent" })
+    seedContact(c, thread.id, "events@lacity.gov")
+    const to = `reply+${TOKEN}@civfix.org`
+    const withheld = `${INBOUND_PENDING_PREFIX}ew.eml`
+    const verified = `${INBOUND_PENDING_PREFIX}ev.eml`
+    await put(c, withheld, rfc822({ from: "sales@vendor.example", to }))
+    await put(c, verified, rfc822({ from: "events@lacity.gov", to, body: "Yes." }))
+
+    await processInboundObject(c.container, withheld, c.deps)
+    await processInboundObject(c.container, verified, c.deps)
+
+    expect(c.cleanupRepo.timeline.filter((t) => t.kind === "city_reply")).toHaveLength(1)
+    expect((await c.mailRepo.getThreadRecord(thread.id))?.status).toBe("needs_action")
+  })
+
   it("writes a 'city_reply' cleanup_timeline row (actor null, full body) for a reply from the event's jurisdiction contact", async () => {
     const cleanupId = "cleanup-evt-1"
     const c = ctx()

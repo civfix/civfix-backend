@@ -190,6 +190,8 @@ export interface MailRepository {
   setMessageEffectsStage(id: string, stage: number): Promise<void>
   markMessageEffectsApplied(id: string): Promise<void>
   releaseMessageEffects(id: string): Promise<void>
+  settleRepliedThread(input: SettleRepliedThreadInput): Promise<void>
+  settleThreadStatus(input: SettleThreadStatusInput): Promise<void>
   findMessagesPendingEffects(input: PendingEffectsQuery): Promise<PendingEffects[]>
   hasWithheldReply(threadId: string): Promise<boolean>
   findInboundMessage(threadId: string, messageId: string): Promise<MailMessageRecord | null>
@@ -198,6 +200,16 @@ export interface MailRepository {
 
 export interface ClaimEffectsInput {
   leaseBefore: Date
+}
+
+export interface SettleThreadStatusInput {
+  threadId: string
+  flag?: MailAuditInput
+}
+
+export interface SettleRepliedThreadInput extends SettleThreadStatusInput {
+  messageId: string
+  stage: number
 }
 
 export interface PendingEffectsQuery {

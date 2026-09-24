@@ -19,6 +19,8 @@ import {
   type PendingEffectsQuery,
   type RecordEventInput,
   type RecordSendFailureInput,
+  type SettleRepliedThreadInput,
+  type SettleThreadStatusInput,
   type ThreadInit,
 } from "./mail-repository.js"
 import {
@@ -451,6 +453,24 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve()
   }
 
+  settleRepliedThread(input: SettleRepliedThreadInput): Promise<void> {
+    const message = this.messages.find((m) => m.id === input.messageId)
+    if (!message || message.effectsStage >= input.stage) return Promise.resolve()
+    message.effectsStage = input.stage
+    return this.settleThreadStatus(input)
+  }
+
+  settleThreadStatus(input: SettleThreadStatusInput): Promise<void> {
+    const thread = this.threads.get(input.threadId)
+    if (!thread) return Promise.resolve()
+    const needsAction =
+      input.flag !== undefined ||
+      (thread.status === "needs_action" && this.holdsWithheldReply(thread.id))
+    thread.status = needsAction ? "needs_action" : "replied"
+    this.recordAudit(input.flag)
+    return Promise.resolve()
+  }
+
   findMessagesPendingEffects(input: PendingEffectsQuery): Promise<PendingEffects[]> {
     const out: PendingEffects[] = []
     for (const m of [...this.messages].sort((a, b) => cmpCreated(a, b))) {
@@ -471,18 +491,18 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   hasWithheldReply(threadId: string): Promise<boolean> {
+    return Promise.resolve(this.holdsWithheldReply(threadId))
+  }
+
+  private holdsWithheldReply(threadId: string): boolean {
     const thread = this.threads.get(threadId)
-    if (!thread || (thread.reportId === null && thread.cleanupId === null)) {
-      return Promise.resolve(false)
-    }
-    return Promise.resolve(
-      this.messages.some(
-        (m) =>
-          m.threadId === threadId &&
-          m.direction === "in" &&
-          m.unaffiliated &&
-          m.effectsAppliedAt === null,
-      ),
+    if (!thread || (thread.reportId === null && thread.cleanupId === null)) return false
+    return this.messages.some(
+      (m) =>
+        m.threadId === threadId &&
+        m.direction === "in" &&
+        m.unaffiliated &&
+        m.effectsAppliedAt === null,
     )
   }
 
