@@ -7,7 +7,7 @@ import {
   type CleanupServiceDeps,
   type UpdateCleanupPatchRequest,
 } from "../../src/services/cleanup-service.js"
-import { CLEANUP_GUEST_UPDATE_FANOUT_JOB } from "../../src/services/guest-rsvp-service.js"
+import { CLEANUP_GUEST_UPDATE_FANOUT_JOB } from "../../src/lib/queue-names.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { TEST_TICKET_SIGNER } from "../helpers/ticket-signer.js"

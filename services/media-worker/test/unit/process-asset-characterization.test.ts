@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FakeAbuseChecks, FakeStorage } from "@civfix/shared/fakes"
 import type { StorageHead } from "@civfix/shared/interfaces"
-import type { MediaResultPatch } from "@civfix/api/media-repo"
+import type { MediaResultPatch } from "@civfix/api/media-worker-repository"
 import exifr from "exifr"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
@@ -12,7 +12,7 @@ import {
   type MediaChecksDeps,
   type MediaChecksPayload,
 } from "../../src/jobs/media-checks.js"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 import * as fx from "../fixtures/make.js"
 
 // Pins processAsset (reached through runMediaChecksJob) before it is split into helpers: every
@@ -75,7 +75,7 @@ class RecordingStorage extends FakeStorage {
 interface Harness {
   deps: MediaChecksDeps
   storage: RecordingStorage
-  repo: InMemoryWorkerRepo
+  repo: InMemoryMediaWorkerRepository
   abuse: FakeAbuseChecks
   patches: MediaResultPatch[]
   logs: { line: string; extra: Record<string, unknown> }[]
@@ -84,7 +84,7 @@ interface Harness {
 
 function makeHarness(over?: Partial<MediaChecksDeps>): Harness {
   const storage = new RecordingStorage()
-  const repo = new InMemoryWorkerRepo()
+  const repo = new InMemoryMediaWorkerRepository()
   const abuse = new FakeAbuseChecks()
   const patches: MediaResultPatch[] = []
   const logs: Harness["logs"] = []

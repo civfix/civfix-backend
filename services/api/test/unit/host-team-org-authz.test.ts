@@ -4,12 +4,12 @@ import type { EventVisibility, OrganizationMemberRole } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import type { Queryable } from "../../src/db/client.js"
 import { requireCapability } from "../../src/services/host/authz.js"
-import { InMemoryHostTeamRepository } from "../../src/services/host/host-team-repository.memory.js"
+import { InMemoryHostTeamRepository } from "../helpers/host/host-team-repository.memory.js"
 import {
   makeHostTeamService,
   type HostTeamService,
 } from "../../src/services/host/host-team-service.js"
-import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
+import { InMemoryOrganizationRepository } from "../helpers/host/organization-repository.memory.js"
 import {
   makeOrganizationService,
   type OrganizationService,
@@ -222,6 +222,7 @@ describe("organization authorization (BE-TEST-034)", () => {
       counters: new InMemoryCounterStore(() => clock.getTime()),
       now: () => clock,
       newId: () => randomUUID(),
+      webOrigin: "https://civfix.test",
     })
   })
 

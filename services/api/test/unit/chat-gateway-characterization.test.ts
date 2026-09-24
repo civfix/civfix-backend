@@ -26,9 +26,9 @@ import {
   type SendReservation,
 } from "../../src/ws/send-resilience.js"
 import { wsUpgradeRateLimitKey } from "../../src/plugins/rate-limit.js"
-import type { ChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
-import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
-import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
+import type { ChatGroupRepository } from "../../src/services/chat-group-repository.js"
+import type { ReportChatRepository } from "../../src/services/report-chat-repository.js"
+import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.js"
 import type { NotificationService } from "../../src/services/notification-service.js"
 import {
   InMemoryBlocksRepository,
@@ -798,7 +798,7 @@ describe("wireChatGateway characterization", () => {
 
   function wiredDeps(opts: RegisterGatewayOptions): GatewayDeps {
     return {
-      chat: opts.chat as GatewayDeps["chat"],
+      chat: opts.chat,
       isMember: opts.isMember,
       presence: opts.presence,
       dm: opts.dm,
@@ -807,7 +807,7 @@ describe("wireChatGateway characterization", () => {
     }
   }
 
-  it("fake chat + minimal overrides: which seams are wired and which are left undefined", () => {
+  it("fake chat + minimal overrides: which seams are wired and which are left undefined", async () => {
     const container = fakeContainer()
     const app = appWith({})
     const wiring = wireChatGateway(app, container)
@@ -846,13 +846,13 @@ describe("wireChatGateway characterization", () => {
     expect(wiring.readState).toBeInstanceOf(InMemoryChatReadState)
     expect(wiring.isMember).toBe(cleanupMember)
     expect(wiring.dmRepo).toBe(dmRepo)
-    expect(wiring.blocksRepo).toBe(blocks)
+    expect(await wiring.isBlockedEitherWay(ALICE, BOB)).toBe(false)
+    await blocks.block(BOB, ALICE)
+    expect(await wiring.isBlockedEitherWay(ALICE, BOB)).toBe(true)
     expect(Object.keys(wiring).sort()).toEqual([
-      "blocksRepo",
       "dmPeerOf",
       "dmRepo",
       "getChatRepo",
-      "getReportChatRepo",
       "isBlockedEitherWay",
       "isMember",
       "listDmThreadsFor",

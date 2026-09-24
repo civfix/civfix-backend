@@ -4,11 +4,11 @@ import { FakeJobs } from "@civfix/shared/fakes"
 import type { Container } from "../../src/di.js"
 import type { DataExportService } from "../../src/services/data-export-service.js"
 import {
-  DATA_EXPORT_JOB,
   registerDataExportJobs,
   runDataExport,
   type DataExportJobLogger,
 } from "../../src/services/data-export-jobs.js"
+import { DATA_EXPORT_JOB } from "../../src/lib/queue-names.js"
 
 // BE-TEST-049. The job's retry contract: a transient infra failure must rethrow so pg-boss retries it,
 // while a permanent delivery failure must complete the job, or pg-boss would re-send the whole export
@@ -17,7 +17,7 @@ import {
 const USER_ID = "11111111-1111-1111-1111-111111111111"
 
 function serviceThat(exportData: DataExportService["exportData"]): DataExportService {
-  return { exportData: vi.fn(exportData) }
+  return { exportData: vi.fn(exportData), recordUndeliverable: vi.fn(async () => {}) }
 }
 
 function recordingLogger(): DataExportJobLogger & {
@@ -123,7 +123,9 @@ describe("registerDataExportJobs (BE-TEST-049)", () => {
   } {
     const jobs = new FakeJobs()
     const exportData = vi.fn(async () => ({ ok: true as const, email: "jane@example.com" }))
-    const makeService = vi.fn((): DataExportService => ({ exportData }))
+    const makeService = vi.fn(
+      (): DataExportService => ({ exportData, recordUndeliverable: vi.fn(async () => {}) }),
+    )
     const container = { jobs } as unknown as Container
     return { jobs, makeService, exportData, container }
   }

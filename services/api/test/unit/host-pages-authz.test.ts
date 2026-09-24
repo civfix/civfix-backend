@@ -9,12 +9,12 @@ import type {
 import { endpoints, versionedPath } from "@civfix/shared/client"
 import { can } from "@civfix/shared/host"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import type { Queryable } from "../../src/db/client.js"
 import { loadEnv } from "../../src/env.js"
 import { requireCapability, resolveVisibleStanding } from "../../src/services/host/authz.js"
-import { hostStandingOf } from "../../src/services/host/host-standing.js"
-import { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
+import { hostStandingOf } from "../../src/services/host/host-standing-repository.drizzle.js"
+import { InMemoryHostRegistrationRepository } from "../helpers/host/registration-repository.memory.js"
 import type { HostGuards } from "../../src/services/host/registration-wiring.js"
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
 import { bearer, makeAuthHarness, type AuthHarness, type SignedIn } from "../helpers/auth.js"
@@ -131,7 +131,7 @@ async function makeHarness(): Promise<Harness> {
 
   const counters = new InMemoryCounterStore(() => Date.now())
   const container = {
-    ...buildContainer(loadEnv({ NODE_ENV: "test" })),
+    ...makeContainer(loadEnv({ NODE_ENV: "test" })),
     getDb: () => ({ sql }),
   } as unknown as Container
   const auth = await makeAuthHarness({

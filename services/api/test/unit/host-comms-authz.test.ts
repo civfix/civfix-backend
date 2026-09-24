@@ -4,16 +4,16 @@ import type { CleanupMemberRole, EventVisibility, OrganizationMemberRole } from 
 import { endpoints, versionedPath } from "@civfix/shared/client"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import type { HostAnalyticsOverrides } from "../../src/routes/host/analytics.routes.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import {
   makeBroadcastService,
   type BroadcastConfig,
 } from "../../src/services/host/broadcast-service.js"
 import type { CommsRuntime } from "../../src/services/host/comms-wiring.js"
-import type { HostExportRecord } from "../../src/services/host/export-repository.drizzle.js"
+import type { HostExportRecord } from "../../src/services/host/export-repository.js"
 import type { HostExportService } from "../../src/services/host/export-service.js"
 import { bearer, makeAuthHarness, type AuthHarness, type SignedIn } from "../helpers/auth.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"
@@ -216,7 +216,7 @@ async function makeHarness(): Promise<Harness> {
   const exports = new Map<string, HostExportRecord>()
 
   const container = {
-    ...buildContainer(loadEnv({ NODE_ENV: "test" })),
+    ...makeContainer(loadEnv({ NODE_ENV: "test" })),
     getDb: () => ({ sql }),
   } as unknown as Container
   const auth = await makeAuthHarness({
@@ -296,7 +296,7 @@ describe("host broadcasts are scoped to the event in the path (BE-TEST-037)", ()
     expect(after?.subject).toBe("Original subject")
   })
 
-  it("answers 409 (pinned; not 404) when the organizer of A deletes B's broadcast through A's path", async () => {
+  it("404s the organizer of A deleting B's broadcast through A's path, leaving it in place", async () => {
     const h = await makeHarness()
     const organizer = await signInAs(h, "organizer@example.com", "organizer")
     const ofB = await seedBroadcast(h, EVENT_B)
@@ -305,11 +305,8 @@ describe("host broadcasts are scoped to the event in the path (BE-TEST-037)", ()
       url: pathFor("deleteEventBroadcast", { id: EVENT_A, broadcastId: ofB.id }),
       headers: bearer(organizer.token),
     })
-    expect(res.statusCode).toBe(409)
-    expect(res.json()).toMatchObject({
-      code: "CONFLICT",
-      message: "That message can no longer be deleted.",
-    })
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toMatchObject({ code: "NOT_FOUND", message: "Message not found" })
     expect(await h.broadcasts.findById(ofB.id)).not.toBeNull()
   })
 

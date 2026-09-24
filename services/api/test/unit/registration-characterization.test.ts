@@ -5,11 +5,11 @@ import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
 import type { DbHandle } from "../../src/db/client.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { insightsGenerationKey } from "../../src/services/host/host-analytics-cache.js"
-import { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
-import type { RegistrationSubject } from "../../src/services/host/registration-repository.types.js"
+import { InMemoryHostRegistrationRepository } from "../helpers/host/registration-repository.memory.js"
+import type { RegistrationSubject } from "../../src/services/host/registration-repository.js"
 import {
   makeRegistrationService,
   type RegistrationService,
@@ -33,9 +33,6 @@ const STARTS_AT = new Date("2026-01-08T12:00:00.000Z")
 const ENDS_AT = new Date("2026-01-08T15:00:00.000Z")
 
 const tokens = makeTicketTokenSigner("registration-characterization-secret-long-enough")
-
-// The consent messages carry a U+2014 dash; spelled as an escape so this file stays ASCII.
-const DASH = "\u2014"
 
 const ME: RegistrationSubject = { kind: "user", userId: USER }
 
@@ -71,6 +68,7 @@ function build(
       return store.incr(key, ttl)
     },
     incrBy: (key, by, ttl) => store.incrBy(key, by, ttl),
+    decrBy: (key, by) => store.decrBy(key, by),
   }
   const service = makeRegistrationService({
     repo,
@@ -393,10 +391,14 @@ describe("registration characterization: register outcomes", () => {
     expectNoSideEffects(h)
   })
 
-  it("banned: a banned member is refused before the idempotency replay", async () => {
+  it("banned: a retry of a committed registration replays, a fresh attempt by a banned member is refused", async () => {
     await h.service.register(request(), ME)
     h.repo.bans.add(`${EVENT}:${USER}`)
-    expect(await h.service.register(request(), ME)).toEqual({ outcome: "banned", ...REFUSED })
+    expect((await h.service.register(request(), ME)).outcome).toBe("replayed")
+    expect(await h.service.register(request({ idempotencyKey: "idem-key-0002" }), ME)).toEqual({
+      outcome: "banned",
+      ...REFUSED,
+    })
   })
 
   it("banned applies to members only; a guest subject is never ban-checked", async () => {
@@ -557,7 +559,7 @@ describe("registration characterization: register outcomes", () => {
     ).rejects.toMatchObject({
       code: "VALIDATION",
       message: "Validation failed",
-      fields: { "consent.termsVersion": `out of date ${DASH} re-accept the terms` },
+      fields: { "consent.termsVersion": "out of date, so re-accept the terms" },
     })
     await expect(
       h.service.register(
@@ -572,7 +574,7 @@ describe("registration characterization: register outcomes", () => {
       ),
     ).rejects.toMatchObject({
       code: "VALIDATION",
-      fields: { "consent.disclosureVersion": `out of date ${DASH} re-accept the privacy notice` },
+      fields: { "consent.disclosureVersion": "out of date, so re-accept the privacy notice" },
     })
   })
 
@@ -618,6 +620,7 @@ describe("registration characterization: register outcomes", () => {
       counters: {
         incr: () => Promise.reject(new Error("redis is down")),
         incrBy: () => Promise.reject(new Error("redis is down")),
+        decrBy: () => Promise.reject(new Error("redis is down")),
       },
     })
     await expect(h.service.register(request(), ME)).rejects.toMatchObject({
@@ -635,7 +638,7 @@ describe("registration characterization: makeContainerRegistrationServices wirin
   let container: Container
 
   beforeEach(() => {
-    container = buildContainer(loadEnv({ NODE_ENV: "test" }))
+    container = makeContainer(loadEnv({ NODE_ENV: "test" }))
   })
 
   function seededRepo(): InMemoryHostRegistrationRepository {
@@ -703,6 +706,7 @@ describe("registration characterization: makeContainerRegistrationServices wirin
         return store.incr(key, ttl)
       },
       incrBy: (key, by, ttl) => store.incrBy(key, by, ttl),
+      decrBy: (key, by) => store.decrBy(key, by),
     })
     const services = makeContainerRegistrationServices(container, {
       repo: seededRepo(),
@@ -820,7 +824,7 @@ describe("registration characterization: makeHostGuards", () => {
   let container: Container
 
   beforeEach(() => {
-    container = buildContainer(loadEnv({ NODE_ENV: "test" }))
+    container = makeContainer(loadEnv({ NODE_ENV: "test" }))
   })
 
   it("a guards override is returned as is", () => {

@@ -15,7 +15,7 @@ import {
   FakeStorage,
   FakeUserChannel,
 } from "@civfix/shared/fakes"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { R2Storage } from "../../src/adapters/storage.r2.js"
 import { LocalDiskStorage } from "../../src/adapters/storage.local.js"
@@ -40,7 +40,7 @@ import {
 
 // Characterization net for the di.ts split: which implementation each seam resolves to, the Container
 // surface, and the invariant that building a container never touches the network (tests and boot both
-// rely on buildContainer being socket-free; DB and Redis are lazy, memoized getters).
+// rely on makeContainer being socket-free; DB and Redis are lazy, memoized getters).
 
 // Unreachable on purpose: postgres.js and ioredis (lazyConnect) only dial on first query, so these are
 // never contacted; the socket spy below turns any dial into a counted, refused call.
@@ -81,7 +81,7 @@ function validProdEnv(): NodeJS.ProcessEnv {
 }
 
 function allFakeContainer(): Container {
-  return buildContainer(loadEnv({ NODE_ENV: "test" }))
+  return makeContainer(loadEnv({ NODE_ENV: "test" }))
 }
 
 let connectSpy: MockInstance
@@ -96,7 +96,7 @@ afterEach(() => {
   connectSpy.mockRestore()
 })
 
-describe("buildContainer characterization: no sockets", () => {
+describe("makeContainer characterization: no sockets", () => {
   it("builds an all-fake container without dialing anything and leaves db/redis unconstructed", () => {
     const c = allFakeContainer()
     expect(connectSpy).not.toHaveBeenCalled()
@@ -121,7 +121,7 @@ describe("buildContainer characterization: no sockets", () => {
   })
 
   it("builds a fully real production container without dialing anything", () => {
-    const c = buildContainer(loadEnv(validProdEnv()))
+    const c = makeContainer(loadEnv(validProdEnv()))
     void c.userChannel
     void c.pushSender
     expect(connectSpy).not.toHaveBeenCalled()
@@ -136,7 +136,7 @@ describe("buildContainer characterization: no sockets", () => {
   })
 })
 
-describe("buildContainer characterization: Container surface", () => {
+describe("makeContainer characterization: Container surface", () => {
   it("exposes exactly these keys, in this order", () => {
     expect(Object.keys(allFakeContainer())).toEqual([
       "env",
@@ -146,15 +146,15 @@ describe("buildContainer characterization: Container surface", () => {
       "developmentOnlyLocalObjectStores",
       "mailer",
       "smsSender",
-      "inboundMail",
       "geocoder",
       "streetReverseGeocode",
       "jurisdictionLookup",
+      "inboundMail",
+      "routingProvider",
+      "abuseChecks",
       "chatService",
       "userChannel",
       "pushSender",
-      "routingProvider",
-      "abuseChecks",
       "jobs",
       "dbHandle",
       "redis",
@@ -188,7 +188,7 @@ describe("buildContainer characterization: Container surface", () => {
 
   it("passes the env through by identity", () => {
     const env = loadEnv({ NODE_ENV: "test" })
-    expect(buildContainer(env).env).toBe(env)
+    expect(makeContainer(env).env).toBe(env)
   })
 
   it("reuses the media storage for inbound mail when storage is fake", () => {
@@ -199,7 +199,7 @@ describe("buildContainer characterization: Container surface", () => {
   })
 })
 
-describe("buildContainer characterization: seam selection", () => {
+describe("makeContainer characterization: seam selection", () => {
   it("picks every fake (plus NODE_ENV-driven fakes) in an all-fake test env", () => {
     const c = allFakeContainer()
     expect(c.storage).toBeInstanceOf(FakeStorage)
@@ -219,7 +219,7 @@ describe("buildContainer characterization: seam selection", () => {
   })
 
   it("picks every real adapter in a valid production env", () => {
-    const c = buildContainer(loadEnv(validProdEnv()))
+    const c = makeContainer(loadEnv(validProdEnv()))
     expect(c.storage).toBeInstanceOf(R2Storage)
     expect(c.inboundStorage).toBeInstanceOf(R2Storage)
     expect(c.inboundStorage).not.toBe(c.storage)
@@ -249,7 +249,7 @@ describe("buildContainer characterization: seam selection", () => {
   ] as const)(
     "%s=0 alone swaps only that seam to its real adapter, without dialing",
     (flag, seam, RealClass) => {
-      const c = buildContainer(
+      const c = makeContainer(
         loadEnv({
           NODE_ENV: "test",
           [flag]: "0",
@@ -259,7 +259,7 @@ describe("buildContainer characterization: seam selection", () => {
         }),
       )
       expect(seam(c)).toBeInstanceOf(RealClass)
-      const baseline = buildContainer(
+      const baseline = makeContainer(
         loadEnv({ NODE_ENV: "test", DATABASE_URL: LAZY_DATABASE_URL, REDIS_URL: LAZY_REDIS_URL }),
       )
       expect(seam(baseline)).not.toBeInstanceOf(RealClass)
@@ -268,7 +268,7 @@ describe("buildContainer characterization: seam selection", () => {
   )
 
   it("keys inbound mail, routing and jurisdiction lookup off NODE_ENV, not a USE_FAKE_* flag", () => {
-    const allRealOutsideProd = buildContainer(
+    const allRealOutsideProd = makeContainer(
       loadEnv({
         NODE_ENV: "test",
         USE_FAKE_STORAGE: "0",
@@ -291,11 +291,11 @@ describe("buildContainer characterization: seam selection", () => {
     expect(connectSpy).not.toHaveBeenCalled()
   })
 
-  it("pins (known-questionable) real storage with no R2_BUCKET outside production: loadEnv accepts it, buildContainer throws an error that blames R2_PUBLIC_BASE", () => {
+  it("pins (known-questionable) real storage with no R2_BUCKET outside production: loadEnv accepts it, makeContainer throws an error that blames R2_PUBLIC_BASE", () => {
     const env = loadEnv({ NODE_ENV: "test", USE_FAKE_STORAGE: "0" })
     expect(env.R2_BUCKET).toBe("")
     expect(env.R2_PUBLIC_BASE).toBeUndefined()
-    expect(() => buildContainer(env)).toThrow(
+    expect(() => makeContainer(env)).toThrow(
       "R2_INBOUND_BUCKET is required when R2_PUBLIC_BASE is set: refusing to write raw inbound email " +
         "into the public media bucket. Set a dedicated, non-public inbound bucket.",
     )
@@ -304,7 +304,7 @@ describe("buildContainer characterization: seam selection", () => {
   it("LOCAL_STORAGE_DIR selects local-disk media and inbound stores over both R2 and the fake", () => {
     const root = join(tmpdir(), "civfix-di-characterization")
     for (const useFakeStorage of ["1", "0"]) {
-      const c = buildContainer(
+      const c = makeContainer(
         loadEnv({
           NODE_ENV: "test",
           USE_FAKE_STORAGE: useFakeStorage,
@@ -320,14 +320,14 @@ describe("buildContainer characterization: seam selection", () => {
   })
 
   it("picks Drizzle blocks/DM repos whenever a database is configured", () => {
-    const c = buildContainer(loadEnv({ NODE_ENV: "test", DATABASE_URL: LAZY_DATABASE_URL }))
+    const c = makeContainer(loadEnv({ NODE_ENV: "test", DATABASE_URL: LAZY_DATABASE_URL }))
     expect(c.getBlocksRepo()).not.toBeInstanceOf(InMemoryBlocksRepository)
     expect(c.getDmRepo()).not.toBeInstanceOf(InMemoryDmRepository)
     expect(connectSpy).not.toHaveBeenCalled()
   })
 })
 
-describe("buildContainer characterization: memoized getters", () => {
+describe("makeContainer characterization: memoized getters", () => {
   it("returns the same instance twice from every socket-free getter", () => {
     const c = allFakeContainer()
     expect(c.userChannel).toBe(c.userChannel)
@@ -340,7 +340,7 @@ describe("buildContainer characterization: memoized getters", () => {
   })
 
   it("memoizes the lazy db/redis handles and everything built on them, without dialing", () => {
-    const c = buildContainer(
+    const c = makeContainer(
       loadEnv({ NODE_ENV: "test", DATABASE_URL: LAZY_DATABASE_URL, REDIS_URL: LAZY_REDIS_URL }),
     )
     expect(c.dbHandle).toBeUndefined()
@@ -361,7 +361,7 @@ describe("buildContainer characterization: memoized getters", () => {
   })
 
   it("pins (known-questionable) getNotificationService rebuilding once when a logger first arrives", () => {
-    const c = buildContainer(loadEnv({ NODE_ENV: "test", DATABASE_URL: LAZY_DATABASE_URL }))
+    const c = makeContainer(loadEnv({ NODE_ENV: "test", DATABASE_URL: LAZY_DATABASE_URL }))
     const bare = c.getNotificationService()
     expect(c.getNotificationService()).toBe(bare)
     const logger = { warn: vi.fn(), error: vi.fn() }
