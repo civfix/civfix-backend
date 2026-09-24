@@ -106,6 +106,7 @@ export interface CleanupPersonView {
   bio: string | null
   avatarUrl: string | null
   donationUrl?: string | null
+  identityHidden?: boolean
 }
 
 export interface AttendeeView extends CleanupPersonView {

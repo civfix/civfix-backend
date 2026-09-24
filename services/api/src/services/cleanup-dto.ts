@@ -45,7 +45,7 @@ export function toAttendeePersonDTO(view: CleanupPersonView, isFollowing: boolea
     ...(view.donationUrl !== undefined && view.donationUrl !== null
       ? { donationUrl: view.donationUrl }
       : {}),
-    ...officialPersonFlag(view.id),
+    ...(view.identityHidden === true ? {} : officialPersonFlag(view.id)),
   }
 }
 

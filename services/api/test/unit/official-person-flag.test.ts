@@ -18,6 +18,7 @@ import { makeDrizzlePostRepository } from "../../src/services/post-repository.dr
 import { makeDrizzleAnnouncementIdentityRepository } from "../../src/services/host/announcement-repository.drizzle.js"
 import { makeSocialService, toPersonDTO } from "../../src/services/social-service.js"
 import { toAttendeeDTO, toOrganizerPerson } from "../../src/services/cleanup-dto.js"
+import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { toRegistrantPerson } from "../../src/services/host/registration-dto.js"
 import { InMemoryChatReadState, makeThreadsService } from "../../src/services/threads-service.js"
 import { makeDmService } from "../../src/services/dm-service.js"
@@ -106,6 +107,15 @@ function rosterUsers(userId: string, over: { deleted?: boolean; blocked?: boolea
     toReportParticipantDTO({ ...row, joined_at: AT.toISOString() }).user,
     toMemberView(row).user,
   ]
+}
+
+async function attendeeRosterUser(userId: string, blocked: boolean) {
+  const row = { ...identity, id: userId, role: "member", is_following: false }
+  const rows = [{ ...row, blocked_pair: blocked, slot_id: null, slot_title: null }]
+  const repo = makeDrizzleCleanupRepository(fakeSql([{ match: /FROM cleanup_members m/, rows }]))
+  const args = { cleanupId: EVENT, viewerId: VIEWER, onlyFollowed: false, limit: 1 }
+  const [view] = await repo.listAttendees(args)
+  return toAttendeeDTO(view!, false)
 }
 
 const counts = { like_count: 0, repost_count: 0, reply_count: 0, save_count: 0 }
@@ -242,9 +252,10 @@ describe.each(PEOPLE)("PersonDTO projections of %s", (_label, id, official) => {
     expectFlag((await blocked.getProfile(id, { userId: VIEWER })).profile, official)
   })
 
-  it("event attendees, organizers and registrants", () => {
+  it("event attendees, organizers and registrants", async () => {
     const view = { ...person, id }
     expectFlag(toAttendeeDTO({ ...view, isFollowing: false, role: "member" }, false), official)
+    expectFlag(await attendeeRosterUser(id, false), official)
     expectFlag(toOrganizerPerson(view), official)
     expectFlag(registrant(id), official)
   })
@@ -298,9 +309,12 @@ describe("the official flag never survives a tombstone or a hidden identity", ()
     }
   })
 
-  it("drops it from a deleted or blocked-pair roster row", () => {
+  it("drops it from a deleted or blocked-pair roster row", async () => {
     for (const over of [{ deleted: true }, { blocked: true }]) {
       for (const user of rosterUsers(OFFICIAL, over)) expectFlag(user, false)
     }
+    const hidden = await attendeeRosterUser(OFFICIAL, true)
+    expect(hidden).toMatchObject({ name: "Community member", handle: null })
+    expectFlag(hidden, false)
   })
 })

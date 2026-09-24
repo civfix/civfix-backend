@@ -1251,6 +1251,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             r.slot_id !== null && r.slot_title !== null
               ? { id: r.slot_id, title: r.slot_title }
               : null,
+          ...(hidden !== null ? { identityHidden: true } : {}),
         }
       })
     },
