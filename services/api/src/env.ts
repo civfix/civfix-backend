@@ -348,6 +348,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const INBOUND_SWEEP_CRON = reqCron("INBOUND_SWEEP_CRON", "*/5 * * * *")
 
   const OAUTH_REQUIRE_NONCE = parseBool(source.OAUTH_REQUIRE_NONCE, false)
+  const WS_ALLOW_QUERY_TOKEN = parseBool(source.WS_ALLOW_QUERY_TOKEN, false)
   const REVIEWER_OTP_BYPASS = parseBool(source.REVIEWER_OTP_BYPASS, false)
   const REVIEWER_OTP_BYPASS_ACK = parseBool(source.REVIEWER_OTP_BYPASS_ACK, false)
   const REVIEWER_OTP_CODE = (source.REVIEWER_OTP_CODE ?? "").trim()
@@ -452,6 +453,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     CF_TURNSTILE_HOSTNAMES: parseCsvLower(source.CF_TURNSTILE_HOSTNAMES),
 
     OAUTH_REQUIRE_NONCE,
+    WS_ALLOW_QUERY_TOKEN,
     REVIEWER_OTP_BYPASS,
     REVIEWER_OTP_BYPASS_ACK,
     ...(REVIEWER_OTP_CODE.length > 0 ? { REVIEWER_OTP_CODE } : {}),

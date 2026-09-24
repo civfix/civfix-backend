@@ -50,9 +50,13 @@ import { makeDrizzleDiscussionRepository } from "../../src/services/discussion-r
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeChatPowersResolver } from "../../src/services/chat-room-roles.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
-import { globalRoleOf } from "../../src/routes/chat-powers-wiring.js"
+import { chatAuthorityRoleOf } from "../../src/routes/chat-powers-wiring.js"
 
 const pg = await withPg()
+
+// Operator chat powers only count while the account's email is on ADMIN_EMAILS, as in production.
+const PIN_OPERATOR_EMAIL = "pin-operator@civfix.test"
+const DELETE_OPERATOR_EMAIL = "delete-operator@civfix.test"
 
 describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
   let h: PgHarness
@@ -63,7 +67,10 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
   beforeAll(async () => {
     h = pg as PgHarness
 
-    const env = loadEnv({ NODE_ENV: "test" })
+    const env = loadEnv({
+      NODE_ENV: "test",
+      ADMIN_EMAILS: [PIN_OPERATOR_EMAIL, DELETE_OPERATOR_EMAIL].join(","),
+    })
     authServices = buildAuthServices({
       stores: makeInMemoryStores(),
       cache: new InMemoryCacheClient(() => Date.now()),
@@ -88,7 +95,7 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
         isDmParticipant: (threadId, userId) => dm.isParticipant(threadId, userId),
         cleanupRoleOf: (cleanupId, userId) => cleanups.roleOf(cleanupId, userId),
         reportChatRoleOf: (reportId, userId) => reportChat.roleOf(reportId, userId),
-        globalRoleOf: (userId) => globalRoleOf(h.sql, userId),
+        globalRoleOf: (userId) => chatAuthorityRoleOf(h.sql, env, userId),
         // P4 group lane, wired to the real repo for parity (this file exercises no group rooms).
         groupRoleOf: (groupId, userId) => makeChatGroupRepository(h.sql).roleOf(groupId, userId),
       }),
@@ -268,7 +275,7 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
     it("a global OPERATOR pins in a report room WITHOUT a membership row", async () => {
       const posterId = await newUser("Pin Poster")
       const operatorId = await newUser("Pin Operator")
-      await h.sql`UPDATE users SET role = 'operator' WHERE id = ${operatorId}`
+      await h.sql`UPDATE users SET role = 'operator', email = ${PIN_OPERATOR_EMAIL} WHERE id = ${operatorId}`
       const reportId = await newReport()
       await makeReportChatRepository(h.sql).join(reportId, posterId)
       const msg = await chat().insertMessage(
@@ -566,7 +573,7 @@ describe.skipIf(!pg)("chat pins + moderator delete (integration)", () => {
     it("an OPERATOR deletes a report message without a membership row (200)", async () => {
       const posterId = await newUser("Del Poster")
       const operatorId = await newUser("Del Operator")
-      await h.sql`UPDATE users SET role = 'operator' WHERE id = ${operatorId}`
+      await h.sql`UPDATE users SET role = 'operator', email = ${DELETE_OPERATOR_EMAIL} WHERE id = ${operatorId}`
       const reportId = await newReport()
       await makeReportChatRepository(h.sql).join(reportId, posterId)
       const msg = await chat().insertMessage(

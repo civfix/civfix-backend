@@ -22,6 +22,8 @@ import {
 
 const MESSAGE = "11111111-1111-4111-8111-111111111111"
 const OTHER_MESSAGE = "22222222-2222-4222-8222-222222222222"
+const SENDER = "33333333-3333-4333-8333-333333333333"
+const UPLOAD = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 
 const PRESIGN = (r2Key: string, thumbKey: string | null) =>
   Promise.resolve({
@@ -53,6 +55,7 @@ describe("loadServableAttachmentsFor", () => {
       "chat_message_id",
       [MESSAGE],
       PRESIGN,
+      SENDER,
     )
 
     const statement = fake.statements.at(-1)!
@@ -68,6 +71,7 @@ describe("loadServableAttachmentsFor", () => {
       "chat_message_id",
       [MESSAGE],
       PRESIGN,
+      SENDER,
     )
 
     const statement = fake.statements.at(-1)!
@@ -85,6 +89,7 @@ describe("loadServableAttachmentsFor", () => {
       "chat_message_id",
       [MESSAGE],
       PRESIGN,
+      SENDER,
     )
 
     const predicate = /AND (\(media_assets\.status = 'validating'[^\n]*?IS NOT NULL\)\))/.exec(
@@ -114,6 +119,7 @@ describe("loadServableAttachmentsFor", () => {
       "chat_message_id",
       [MESSAGE],
       PRESIGN,
+      SENDER,
     )
 
     expect(fake.statements.at(-1)!.sql).toMatch(
@@ -129,6 +135,7 @@ describe("loadServableAttachmentsFor", () => {
       "chat_message_id",
       [MESSAGE],
       PRESIGN,
+      SENDER,
     )
 
     expect(byMessage.get(MESSAGE)).toEqual([
@@ -164,6 +171,7 @@ describe("loadServableAttachmentsFor", () => {
       "chat_message_id",
       [MESSAGE, OTHER_MESSAGE],
       PRESIGN,
+      SENDER,
     )
 
     expect(byMessage.get(MESSAGE)).toHaveLength(1)
@@ -178,6 +186,7 @@ describe("loadServableAttachmentsFor", () => {
       "chat_message_id",
       [],
       PRESIGN,
+      SENDER,
     )
 
     expect(byMessage.size).toBe(0)
@@ -187,13 +196,14 @@ describe("loadServableAttachmentsFor", () => {
 
 describe("makeAttachmentRepo().attach", () => {
   it("still claims a finalized validating asset — the read now matches what the claim accepts", async () => {
-    const fake = makeFakeSql([{ match: /UPDATE media_assets/, rows: [] }])
+    const fake = makeFakeSql([{ match: /UPDATE media_assets/, rows: [{ upload_id: UPLOAD }] }])
 
     await makeAttachmentRepo("chat_message_id").attach(
       fake.sql as unknown as Queryable,
       MESSAGE,
-      ["cccccccc-cccc-4ccc-8ccc-cccccccccccc"],
+      [UPLOAD],
       new Date("2026-09-16T00:00:00.000Z"),
+      SENDER,
     )
 
     const statement = fake.statements.at(-1)!
@@ -210,6 +220,7 @@ describe("makeAttachmentRepo().attach", () => {
       MESSAGE,
       [],
       new Date(),
+      SENDER,
     )
 
     expect(fake.statements).toHaveLength(0)

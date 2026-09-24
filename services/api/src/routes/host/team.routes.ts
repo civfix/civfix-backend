@@ -34,6 +34,7 @@ import type { HostTeamRepository } from "../../services/host/host-team-repositor
 import { makeEventMediaPresigner } from "../../services/host/event-media.js"
 import { makeRouteNotificationService } from "../../services/route-notifier.js"
 import { makeRouteCleanupReader } from "../../services/route-cleanup-reader.js"
+import { webBaseUrlOf } from "../../lib/base-url.js"
 
 export interface HostTeamOverrides {
   repo: HostTeamRepository
@@ -94,6 +95,7 @@ export async function registerHostTeamRoutes(
         ...(overrides.now !== undefined ? { now: overrides.now } : {}),
         ...(overrides.newId !== undefined ? { newId: overrides.newId } : {}),
         ...(overrides.newToken !== undefined ? { newToken: overrides.newToken } : {}),
+        webOrigin: webBaseUrlOf(container.env),
         logger: app.log,
       })
     }
@@ -114,9 +116,7 @@ export async function registerHostTeamRoutes(
         `
         return rows[0]?.title ?? null
       },
-      ...(container.env.WEB_ORIGINS[0] !== undefined
-        ? { webOrigin: container.env.WEB_ORIGINS[0] }
-        : {}),
+      webOrigin: webBaseUrlOf(container.env),
       logger: app.log,
     })
   }

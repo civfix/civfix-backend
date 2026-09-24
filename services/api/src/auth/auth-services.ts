@@ -2,7 +2,13 @@ import type { Container } from "../di.js"
 import type { OAuthProvider, UserDTO } from "@civfix/shared"
 import { RedisCacheClient, type CacheClient } from "./cache.js"
 import { SessionService, type SessionLogger } from "./session-service.js"
-import { OtpService, REVIEWER_OTP_EMAIL, type OtpLogger, type ReviewerOtpConfig } from "./otp.js"
+import {
+  OtpService,
+  REVIEWER_OTP_EMAIL,
+  type OtpAuditSink,
+  type OtpLogger,
+  type ReviewerOtpConfig,
+} from "./otp.js"
 import { OAuthService, type OAuthConfig } from "./oauth.js"
 import type { JwksVerifier } from "./jwks.js"
 import {
@@ -14,6 +20,8 @@ import {
 import { PgAuthStores } from "./pg-stores.js"
 import { REVIEWER_OTP_CODE_MIN_LENGTH } from "../env.js"
 import { resolveLocale } from "../i18n/locales.js"
+import { writeAudit } from "../services/admin/audit.js"
+import { dataExportSupportEmail } from "../services/data-export-jobs.js"
 
 export interface AuthServices {
   sessions: SessionService
@@ -41,6 +49,8 @@ export interface BuildAuthServicesOptions {
   now?: () => number
   logger?: OtpLogger & SessionLogger
   reviewer?: ReviewerOtpConfig
+  supportEmail?: string
+  audit?: OtpAuditSink
 }
 
 export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices {
@@ -55,11 +65,14 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
   const otp = new OtpService({
     store: opts.stores.otps,
     users: opts.stores.users,
+    identities: opts.stores.oauth,
     cache: opts.cache,
     mailer: opts.mailer,
     ...(now ? { now } : {}),
     ...(opts.logger ? { logger: opts.logger } : {}),
     ...(opts.reviewer ? { reviewer: opts.reviewer } : {}),
+    ...(opts.supportEmail !== undefined ? { supportEmail: opts.supportEmail } : {}),
+    ...(opts.audit ? { audit: opts.audit } : {}),
   })
   const oauth = new OAuthService({
     config: opts.oauthConfig,
@@ -94,6 +107,10 @@ export function buildAuthServicesFromContainer(
     cache,
     mailer: container.mailer,
     oauthConfig: oauthConfigFromEnv(container.env),
+    supportEmail: dataExportSupportEmail(container.env),
+    audit: async (input) => {
+      await writeAudit(container.getDb().sql, input)
+    },
     ...(opts.logger ? { logger: opts.logger } : {}),
     ...(reviewerConfig !== null ? { reviewer: reviewerConfig } : {}),
   })

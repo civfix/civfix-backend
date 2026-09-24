@@ -34,7 +34,8 @@ export type ReferenceCodeTable = "reports" | "cleanups"
 /**
  * Re-resolve every NULL `<table>.jurisdiction_geoid` from the row's own `geom`, in keyset-cursor batches
  * over the id. Returns `resolved` (rows that got a non-NULL geoid) and `stayedNull` (points outside all
- * loaded coverage, left NULL on purpose).
+ * loaded coverage, left NULL on purpose). `ids` narrows the pass to those rows, for a caller that must not
+ * touch rows it did not null itself.
  *
  * The candidate polygon is picked with the SHARED ordering constant the write-time resolver uses
  * (JURISDICTION_RESOLVE_ORDER_BY via `sql.unsafe` — a trusted, code-defined string, never user input), so a
@@ -46,9 +47,9 @@ export type ReferenceCodeTable = "reports" | "cleanups"
  * stay NULL -> absent from RETURNING. The IN(...) / IS NULL guards keep the statement idempotent.
  */
 export async function resolveGeomJurisdictions(
-  sql: Sql,
+  sql: Queryable,
   table: JurisdictionGeomTable,
-  opts: { batchSize: number; label: string },
+  opts: { batchSize: number; label: string; ids?: readonly string[] },
 ): Promise<{ resolved: number; stayedNull: number }> {
   let resolved = 0
   let stayedNull = 0
@@ -59,11 +60,14 @@ export async function resolveGeomJurisdictions(
     // Strict lower bound for this page, lifted into an explicitly-typed fragment (the codebase convention;
     // the `: SqlFragment` annotation breaks the `sql` self-reference that would otherwise infer `any`).
     const cursorFilter: SqlFragment = cursor === null ? sql`` : sql`AND id > ${cursor}`
+    const idFilter: SqlFragment =
+      opts.ids === undefined ? sql`` : sql`AND id = ANY(${opts.ids as string[]}::uuid[])`
     const batch = await sql<{ id: string }[]>`
       SELECT id
       FROM ${sql(table)}
       WHERE jurisdiction_geoid IS NULL
         ${cursorFilter}
+        ${idFilter}
       ORDER BY id
       LIMIT ${opts.batchSize}
     `

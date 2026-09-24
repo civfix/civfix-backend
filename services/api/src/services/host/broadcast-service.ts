@@ -21,6 +21,7 @@ import type { CounterStore } from "../../abuse/counter-store.js"
 import { encodeTimeCursor, parseTimeCursor } from "../../db/cursor-helpers.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 import type { BroadcastRecord, EventBroadcastContext } from "./broadcast-types.js"
+import { CRITICAL_BROADCAST_KINDS } from "./broadcast-types.js"
 import {
   assertBroadcastLinkPolicy,
   broadcastLinkWarnings,
@@ -266,6 +267,21 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
   }
 
   /**
+   * A critical automated notice (the event was cancelled or changed) is the platform telling attendees,
+   * not a host message: anyone holding `broadcast`, a coordinator included, must not be able to stop,
+   * rewrite or delete it.
+   */
+  async function requireHostControllable(
+    cleanupId: string,
+    broadcastId: string,
+    refusal: string,
+  ): Promise<BroadcastRecord> {
+    const record = await requireDraft(cleanupId, broadcastId)
+    if (CRITICAL_BROADCAST_KINDS.has(record.kind)) throw AppError.conflict(refusal)
+    return record
+  }
+
+  /**
    * The org-suspension gate (DECISIONS §32): an event linked to an operator-suspended organization
    * cannot compose, send or schedule host broadcasts. Same code + wording as the org service's own
    * self-service gate; the per-host messaging suspension in guardHost is a different lever.
@@ -356,7 +372,11 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
 
     async update(cleanupId, actorId, body) {
       await guardHost(actorId)
-      const current = await requireDraft(cleanupId, body.broadcastId)
+      const current = await requireHostControllable(
+        cleanupId,
+        body.broadcastId,
+        "Automatic messages can't be edited.",
+      )
       const subject = body.subject ?? current.subject ?? ""
       const bodyMd = body.bodyMd ?? current.bodyMd ?? ""
       const ctaUrl = "ctaUrl" in body ? (body.ctaUrl ?? null) : current.ctaUrl
@@ -377,6 +397,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
     },
 
     async remove(cleanupId, broadcastId) {
+      await requireHostControllable(cleanupId, broadcastId, "Automatic messages can't be deleted.")
       const deleted = await repo.deleteDraft(cleanupId, broadcastId)
       if (!deleted) throw AppError.conflict("That message can no longer be deleted.")
       return { ok: true }
@@ -500,7 +521,11 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
     },
 
     async cancel(cleanupId, broadcastId) {
-      await requireDraft(cleanupId, broadcastId)
+      await requireHostControllable(
+        cleanupId,
+        broadcastId,
+        "Automatic messages can't be cancelled.",
+      )
       const moved = await repo.transition(
         broadcastId,
         ["draft", "scheduled", "sending"],
@@ -559,17 +584,13 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
         now().getTime(),
       )
       if (capability !== null) {
-        try {
-          await repo.recordUnsubscribe({
-            scope: "event",
-            cleanupId: capability.cleanupId,
-            subjectKind: capability.subjectKind,
-            subjectId: capability.subjectId,
-            reason: "one_click",
-          })
-        } catch (err) {
-          deps.logger?.error({ err }, "broadcast: one-click unsubscribe write failed")
-        }
+        await repo.recordUnsubscribe({
+          scope: "event",
+          cleanupId: capability.cleanupId,
+          subjectKind: capability.subjectKind,
+          subjectId: capability.subjectId,
+          reason: "one_click",
+        })
       }
       return { ok: true }
     },

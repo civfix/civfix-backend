@@ -15,7 +15,6 @@ import { perIdentity } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
 import { parse } from "../_validate.js"
 import { requireCapability } from "../../services/host/authz.js"
-import { writeAudit } from "../../services/admin/audit.js"
 import { HOST_EXPORT_JOB } from "../../services/host/broadcast-queues.js"
 import { makeCommsRuntime } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
@@ -74,18 +73,18 @@ export async function registerHostExportRoutes(
         requestedBy: userId,
         kind: body.kind,
         filters: body.filters,
+        audit: (exportId) => ({
+          action: "event.roster_exported",
+          actorId: userId,
+          target: `cleanup:${body.id}`,
+          meta: { exportId, kind: body.kind },
+        }),
       })
       await container.jobs.enqueue(
         HOST_EXPORT_JOB,
         { exportId: payload.id },
         { singletonKey: `export:${payload.id}`, retryLimit: 2 },
       )
-      await writeAudit(container.getDb().sql, {
-        action: "event.roster_exported",
-        actorId: userId,
-        target: `cleanup:${body.id}`,
-        meta: { exportId: payload.id, kind: body.kind },
-      })
       reply.status(200).send(payload)
     },
   )

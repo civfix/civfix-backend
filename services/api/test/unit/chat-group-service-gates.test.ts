@@ -73,7 +73,6 @@ function fakeRepo(opts: FakeOpts = {}): FakeRepo {
     isBanned: (_g: string, userId: string) => Promise.resolve(bannedSet.has(userId)),
     bannedSet,
     listMembers: () => Promise.resolve({ members: [], nextCursor: null }),
-    findMediaIdByUploadId: () => Promise.resolve(null),
   } as unknown as FakeRepo
 }
 

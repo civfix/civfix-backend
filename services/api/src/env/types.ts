@@ -110,6 +110,7 @@ export interface Env extends CommsEnv, RegistrationEnv {
   GLITCHTIP_DATABASE_URL?: string
 
   OAUTH_REQUIRE_NONCE: boolean
+  WS_ALLOW_QUERY_TOKEN: boolean
   REVIEWER_OTP_BYPASS: boolean
   REVIEWER_OTP_BYPASS_ACK: boolean
   REVIEWER_OTP_CODE?: string

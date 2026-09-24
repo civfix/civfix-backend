@@ -11,9 +11,9 @@ import type postgres from "postgres"
 import type { Queryable, Sql } from "../../db/client.js"
 import { encodeTimeCursor, isUuid, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
 import { likeContains } from "../admin/like.js"
-import { servedKeyExpr } from "../media-served-key.js"
-import { MEDIA_CLAIM_WINDOW_SEC } from "./event-media.js"
-import { mediaBoundElsewhere } from "../media-bindings.js"
+import { publicServedKeyExpr } from "../media-served-key.js"
+import { mediaBoundElsewhere, uploadedByClaimant } from "../media-bindings.js"
+import { userUploader } from "../media-uploader.js"
 import { writeHostAudit } from "./host-audit.js"
 import type {
   AcceptOrganizationInviteOutcome,
@@ -54,6 +54,13 @@ import type {
   UpdateOrganizationAudit,
   UpdateOrganizationOutcome,
   UpdateOrganizationPatch,
+  InviterRevocationReason,
+  InviterStanding,
+} from "./organization-repository.types.js"
+import {
+  canManageOrgMembers,
+  inviterRevocationReason,
+  roleChangeWithdrawsInvites,
 } from "./organization-repository.types.js"
 
 const PG_UNIQUE_VIOLATION = "23505"
@@ -224,7 +231,7 @@ function organizationColumns(sql: Queryable, viewerId: string | null) {
     o.website_url,
     o.donation_url,
     o.logo_media_id,
-    ${servedKeyExpr(sql, "am")} AS logo_key,
+    ${publicServedKeyExpr(sql, "am")} AS logo_key,
     o.social_links,
     o.verified_status,
     o.verified_kind,
@@ -278,6 +285,7 @@ async function claimOrgLogoInTx(
   tx: Queryable,
   organizationId: string,
   logoMediaId: string | null,
+  claimantUserId: string,
 ): Promise<void> {
   if (logoMediaId === null) return
   const claimed = await tx<{ id: string }[]>`
@@ -303,7 +311,7 @@ async function claimOrgLogoInTx(
           SELECT 1 FROM organizations cur
           WHERE cur.id = ${organizationId} AND cur.logo_media_id = media_assets.id
         )
-        OR media_assets.created_at > now() - make_interval(secs => ${MEDIA_CLAIM_WINDOW_SEC})
+        OR (${uploadedByClaimant(tx, [userUploader(claimantUserId)])})
       )
     RETURNING id
   `
@@ -323,6 +331,7 @@ export function documentMediaIdsOf(documents: { mediaId?: string }[] | null | un
 async function claimVerificationDocumentsInTx(
   tx: Queryable,
   mediaIds: readonly string[],
+  claimantUserId: string,
 ): Promise<void> {
   if (mediaIds.length === 0) return
   const claimed = await tx<{ id: string }[]>`
@@ -331,7 +340,7 @@ async function claimVerificationDocumentsInTx(
     WHERE id = ANY(${[...mediaIds]}::uuid[])
       AND report_id IS NULL AND post_id IS NULL AND chat_message_id IS NULL
       AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
-      AND created_at > now() - make_interval(secs => ${MEDIA_CLAIM_WINDOW_SEC})
+      AND ${uploadedByClaimant(tx, [userUploader(claimantUserId)])}
       AND NOT (${mediaBoundElsewhere(tx, null)})
     RETURNING id
   `
@@ -417,7 +426,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             INSERT INTO organization_members (organization_id, user_id, role, joined_at)
             VALUES (${args.organizationId}, ${ownerUserId}, 'owner', ${args.now})
           `
-          await claimOrgLogoInTx(tx, args.organizationId, args.logoMediaId)
+          await claimOrgLogoInTx(tx, args.organizationId, args.logoMediaId, args.createdBy)
           if (args.operatorReason !== undefined) {
             await writeHostAudit(tx, {
               actorId: args.createdBy,
@@ -508,6 +517,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       id: string,
       patch: UpdateOrganizationPatch,
       now: Date,
+      actorId: string,
       audit?: UpdateOrganizationAudit,
     ): Promise<UpdateOrganizationOutcome> {
       const sets: postgres.Fragment[] = [sql`updated_at = ${now}`]
@@ -531,7 +541,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             RETURNING id
           `
           if (updated.length === 0) return "not_found"
-          await claimOrgLogoInTx(tx, id, patch.logoMediaId ?? null)
+          await claimOrgLogoInTx(tx, id, patch.logoMediaId ?? null, actorId)
           if (audit !== undefined) {
             await writeHostAudit(tx, {
               actorId: audit.actorId,
@@ -708,7 +718,8 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       actorId: string
       now: Date
     }): Promise<AddOrganizationMemberOutcome> {
-      return sql.begin(async (tx) => {
+      return sql.begin(async (tx): Promise<AddOrganizationMemberOutcome> => {
+        if (!(await lockOrgForActorIn(tx, args.organizationId, args.actorId))) return "forbidden"
         const inserted = await tx<{ user_id: string }[]>`
           INSERT INTO organization_members (organization_id, user_id, role, joined_at)
           VALUES (${args.organizationId}, ${args.userId}, ${args.role}, ${args.now})
@@ -760,6 +771,14 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           target: `organization:${args.organizationId}`,
           meta: { targetUserId: args.userId, from: existing.role, to: args.role },
         })
+        if (roleChangeWithdrawsInvites(existing.role, args.role)) {
+          await revokeInvitesByInviterInTx(tx, {
+            organizationId: args.organizationId,
+            inviterId: args.userId,
+            actorId: args.actorId,
+            reason: "inviter_demoted",
+          })
+        }
         return "updated"
       })
     },
@@ -815,6 +834,12 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             role: removed[0]?.role ?? null,
             ...(args.reason !== undefined ? { reason: args.reason } : {}),
           },
+        })
+        await revokeInvitesByInviterInTx(tx, {
+          organizationId: args.organizationId,
+          inviterId: args.userId,
+          actorId: args.actorId,
+          reason: "inviter_removed",
         })
         return "removed"
       })
@@ -873,7 +898,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
                 )
                 RETURNING status, kind, submitted_at, reviewed_at, rejection_reason
               `
-        await claimVerificationDocumentsInTx(tx, fresh)
+        await claimVerificationDocumentsInTx(tx, fresh, args.submittedBy)
         const dropped = carried.filter((mediaId) => !effective.includes(mediaId))
         if (dropped.length > 0) {
           await tx`
@@ -1202,6 +1227,14 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             reason: args.reason,
           },
         })
+        if (roleChangeWithdrawsInvites(existing.role, args.role)) {
+          await revokeInvitesByInviterInTx(tx, {
+            organizationId: args.organizationId,
+            inviterId: args.userId,
+            actorId: args.actorId,
+            reason: "inviter_demoted",
+          })
+        }
         if (args.role === "owner") {
           await writeHostAudit(tx, {
             actorId: args.actorId,
@@ -1226,6 +1259,9 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
       args: CreateOrganizationInviteArgs,
     ): Promise<CreateOrganizationInviteOutcome> {
       return sql.begin(async (tx): Promise<CreateOrganizationInviteOutcome> => {
+        if (!(await lockOrgForActorIn(tx, args.organizationId, args.invitedBy))) {
+          return { kind: "forbidden" }
+        }
         await expireInvitesInTx(tx, args.organizationId, args.now)
         const inserted = await tx<{ id: string }[]>`
           INSERT INTO organization_invites (
@@ -1358,7 +1394,7 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
           o.id AS organization_id,
           o.slug AS organization_slug,
           o.name AS organization_name,
-          ${servedKeyExpr(sql, "am")} AS organization_logo_key,
+          ${publicServedKeyExpr(sql, "am")} AS organization_logo_key,
           o.verified_status AS organization_verified_status,
           o.verified_kind AS organization_verified_kind
         FROM organization_invites i
@@ -1499,9 +1535,10 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
             role: OrganizationInviteRole
             status: OrganizationInviteStatus
             expires_at: Date
+            invited_by: string | null
           }[]
         >`
-          SELECT id, email, user_id, role, status, expires_at FROM organization_invites
+          SELECT id, email, user_id, role, status, expires_at, invited_by FROM organization_invites
           WHERE id = ${hit.id}
           LIMIT 1 FOR UPDATE
         `
@@ -1533,6 +1570,23 @@ export function makeDrizzleOrganizationRepository(sql: Sql): OrganizationReposit
         if (invite.expires_at.getTime() <= args.now.getTime()) {
           await tx`UPDATE organization_invites SET status = 'expired' WHERE id = ${invite.id}`
           return { kind: "expired" }
+        }
+        const revocation = inviterRevocationReason(
+          await inviterStandingIn(tx, orgRow.id, invite.invited_by),
+        )
+        if (revocation !== null) {
+          await tx`
+            UPDATE organization_invites
+            SET status = 'revoked', revoked_at = ${args.now}
+            WHERE id = ${invite.id}
+          `
+          await writeHostAudit(tx, {
+            actorId: args.userId,
+            action: "org.invite_revoked",
+            target: `organization:${orgRow.id}`,
+            meta: { inviteId: invite.id, reason: revocation },
+          })
+          return { kind: "invalid" }
         }
         if (orgRow.suspended) return { kind: "suspended" }
         const inserted = await tx<{ user_id: string }[]>`
@@ -1723,6 +1777,71 @@ function toAdminVerificationRecord(row: AdminVerificationRowSelect): AdminOrgVer
             joined: row.reviewed_by_joined ?? new Date(0),
           },
   }
+}
+
+/** The caller already holds the organizations row lock, so this keeps the documented lock order. */
+async function revokeInvitesByInviterInTx(
+  tx: Queryable,
+  args: {
+    organizationId: string
+    inviterId: string
+    actorId: string
+    reason: InviterRevocationReason
+  },
+): Promise<void> {
+  await tx`
+    WITH revoked AS (
+      UPDATE organization_invites
+      SET status = 'revoked', revoked_at = now()
+      WHERE organization_id = ${args.organizationId}
+        AND invited_by = ${args.inviterId}
+        AND status = 'pending'
+      RETURNING id
+    )
+    INSERT INTO audit_log (actor_id, action, target, meta)
+    SELECT ${args.actorId}::uuid, 'org.invite_revoked', ${`organization:${args.organizationId}`},
+           jsonb_build_object('inviteId', id, 'reason', ${args.reason}::text)
+    FROM revoked
+  `
+}
+
+/**
+ * Every role change and removal takes the organizations row lock first, so re-reading the actor's
+ * role under it sees the latest committed seat. FOR SHARE also holds off an account erasure, which
+ * deletes seats without the organization lock.
+ */
+async function lockOrgForActorIn(
+  tx: Queryable,
+  organizationId: string,
+  actorId: string,
+): Promise<boolean> {
+  await tx`
+    SELECT id FROM organizations WHERE id = ${organizationId} LIMIT 1 FOR UPDATE
+  `
+  const rows = await tx<{ role: OrganizationMemberRole }[]>`
+    SELECT role FROM organization_members
+    WHERE organization_id = ${organizationId} AND user_id = ${actorId}
+    LIMIT 1
+    FOR SHARE
+  `
+  return canManageOrgMembers(rows[0]?.role ?? null)
+}
+
+async function inviterStandingIn(
+  tx: Queryable,
+  organizationId: string,
+  inviterId: string | null,
+): Promise<InviterStanding | null> {
+  if (inviterId === null) return null
+  const rows = await tx<{ role: OrganizationMemberRole | null; deleted: boolean }[]>`
+    SELECT m.role, (u.deleted_at IS NOT NULL) AS deleted
+    FROM users u
+    LEFT JOIN organization_members m ON m.organization_id = ${organizationId} AND m.user_id = u.id
+    WHERE u.id = ${inviterId}
+    LIMIT 1
+  `
+  const row = rows[0]
+  return row === undefined ? null : { role: row.role, deleted: row.deleted }
 }
 
 async function expireInvitesInTx(tag: Queryable, organizationId: string, now: Date): Promise<void> {

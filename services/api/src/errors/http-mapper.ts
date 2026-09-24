@@ -7,6 +7,9 @@
  *   Fastify validation  -> 422 VALIDATION with field details
  *   anything else        -> mapped client code (<500) or 500 INTERNAL (message hidden in production)
  *
+ * A 5xx AppError's message is hidden in production too, unless the error was marked with exposeMessage()
+ * or the route is on the operator plane, whose console needs the diagnostic.
+ *
  * Every unknown (non-AppError, or AppError with httpStatus >= 500) error is forwarded to
  * GlitchTip/Sentry via captureError. There are NO silent catches: the handler always logs and responds.
  */
@@ -14,7 +17,15 @@
 import { AppError, ErrorCode } from "@civfix/shared"
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify"
 import { isProd } from "../env.js"
+import { loggedRequestUrl } from "../lib/request-url.js"
+import { isMessageExposed } from "./exposed-message.js"
 import { captureError } from "./glitchtip.js"
+
+const INTERNAL_ERROR_MESSAGE = "Internal error"
+
+// Operator routes sit behind Cloudflare Access and the operator guard, and the console shows server-side
+// diagnostics (an SMTP rejection, a misconfigured provider) that the operator is there to fix.
+const OPERATOR_ROUTE_PREFIX = "/v1/admin/"
 
 interface ErrorBody {
   code: ErrorCode
@@ -61,13 +72,17 @@ export function makeErrorHandler() {
       error.requestId = requestId
       const body: ErrorBody = {
         code: error.code,
-        message: error.message,
+        message: serverMessageHidden(error, request) ? INTERNAL_ERROR_MESSAGE : error.message,
         requestId,
         ...(error.fields ? { fields: error.fields } : {}),
       }
       if (error.httpStatus >= 500) {
         request.log.error({ err: error, requestId }, "AppError (server)")
-        captureError(error, { requestId, url: request.url.split("?")[0], method: request.method })
+        captureError(error, {
+          requestId,
+          url: loggedRequestUrl(request.url),
+          method: request.method,
+        })
       } else {
         request.log.info({ code: error.code, requestId }, "AppError (client)")
       }
@@ -123,20 +138,27 @@ export function makeErrorHandler() {
     }
 
     request.log.error({ err: error, requestId }, "unhandled error")
-    captureError(error, { requestId, url: request.url.split("?")[0], method: request.method })
+    captureError(error, { requestId, url: loggedRequestUrl(request.url), method: request.method })
     const body: ErrorBody = {
       code: ErrorCode.INTERNAL,
-      message: isProd() ? "Internal error" : (error.message ?? "Internal error"),
+      message: isProd() ? INTERNAL_ERROR_MESSAGE : (error.message ?? INTERNAL_ERROR_MESSAGE),
       requestId,
     }
     reply.status(500).send(body)
   }
 }
 
+function serverMessageHidden(error: AppError, request: FastifyRequest): boolean {
+  if (error.httpStatus < 500 || !isProd()) return false
+  if (isMessageExposed(error)) return false
+  const routePattern = request.routeOptions.url ?? ""
+  return !routePattern.startsWith(OPERATOR_ROUTE_PREFIX)
+}
+
 export function makeNotFoundHandler() {
   return function notFoundHandler(request: FastifyRequest, reply: FastifyReply): void {
     request.log.info(
-      { method: request.method, url: request.url, requestId: request.id },
+      { method: request.method, url: loggedRequestUrl(request.url), requestId: request.id },
       "route not found",
     )
     const body: ErrorBody = {

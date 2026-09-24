@@ -20,7 +20,7 @@ import {
   stampReferenceCodes,
   type ReferenceCodeRow,
 } from "./backfill-keyset.js"
-import type { Sql } from "./client.js"
+import type { Queryable, Sql } from "./client.js"
 import { allocateReportReferenceCode, allocateEventReferenceCode } from "./reference-code.js"
 
 const BATCH_SIZE = 500
@@ -54,11 +54,13 @@ export async function backfillReportReferenceCodes(
  * (only touches NULL rows). Returns how many got a non-NULL geoid. Geometry flows ONLY through the raw tag.
  */
 export async function backfillCleanupJurisdictions(
-  sql: Sql,
+  sql: Queryable,
+  opts: { ids?: readonly string[] } = {},
 ): Promise<{ resolved: number; stayedNull: number }> {
   return resolveGeomJurisdictions(sql, "cleanups", {
     batchSize: BATCH_SIZE,
     label: `${LABEL}: cleanup-jurisdiction`,
+    ...opts,
   })
 }
 

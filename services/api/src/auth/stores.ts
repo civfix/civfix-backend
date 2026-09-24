@@ -133,6 +133,13 @@ export interface UserRecord {
   deletedAt: Date | null
 }
 
+/**
+ * "return-existing" answers an email conflict with the account that already holds the address, which is
+ * only safe for a caller that has proved control of that inbox (email code, operator allowlist). A caller
+ * holding no such proof must pass "reject" so a conflict can never hand it someone else's account.
+ */
+export type EmailConflictPolicy = "return-existing" | "reject"
+
 export interface CreateUserInput {
   displayName: string
   role?: Role
@@ -140,6 +147,14 @@ export interface CreateUserInput {
   avatarUrl?: string | null
   handle?: string
   profileComplete?: boolean
+  onEmailConflict?: EmailConflictPolicy
+}
+
+export class EmailTakenError extends Error {
+  constructor() {
+    super("email address already belongs to another account")
+    this.name = "EmailTakenError"
+  }
 }
 
 export interface UpdateProfileInput {
@@ -174,10 +189,13 @@ export interface UpdateSettingsInput {
 export const PRIMARY_ORGANIZATION_NOT_A_MEMBER =
   "Pick an organization you belong to, or clear the selection."
 
+export type ErasureCascade = (userId: string) => Promise<unknown>
+
 export class InMemoryUserStore implements UserStore {
   private readonly byId = new Map<string, UserRecord>()
   private readonly statuses = new Map<string, AccountStatus>()
   private readonly memberships = new Map<string, Set<string>>()
+  private readonly erasureCascades: ErasureCascade[] = []
   private readonly now: () => Date
 
   constructor(opts: { now?: () => Date } = {}) {
@@ -212,6 +230,7 @@ export class InMemoryUserStore implements UserStore {
       const normalized = email.toLowerCase()
       for (const existing of this.byId.values()) {
         if (existing.email !== null && existing.email.toLowerCase() === normalized) {
+          if (input.onEmailConflict === "reject") return Promise.reject(new EmailTakenError())
           return Promise.resolve({ ...existing })
         }
       }
@@ -323,9 +342,16 @@ export class InMemoryUserStore implements UserStore {
     this.memberships.set(userId, set)
   }
 
-  softDeleteAndAnonymize(id: string): Promise<UserRecord> {
+  // The Postgres erasure transaction also deletes the user's sessions, push tokens and notifications.
+  // Here those rows live in other in-memory stores, so each one registers how to drop them.
+  cascadeErasureTo(cascade: ErasureCascade): void {
+    this.erasureCascades.push(cascade)
+  }
+
+  async softDeleteAndAnonymize(id: string): Promise<UserRecord> {
     const row = this.byId.get(id)
     if (!row) throw new Error("InMemoryUserStore.softDeleteAndAnonymize: user not found")
+    for (const cascade of this.erasureCascades) await cascade(id)
     const next: UserRecord = {
       ...row,
       deletedAt: row.deletedAt ?? new Date(),
@@ -338,7 +364,7 @@ export class InMemoryUserStore implements UserStore {
       primaryOrganizationId: null,
     }
     this.byId.set(id, next)
-    return Promise.resolve({ ...next })
+    return { ...next }
   }
 
   seed(_email: string | null, row: UserRecord): void {
@@ -357,6 +383,7 @@ export interface OAuthIdentityStore {
   findByProvider(provider: string, providerUserId: string): Promise<OAuthIdentityRecord | null>
   linkIdentity(userId: string, provider: string, providerUserId: string): Promise<void>
   deleteAllForUser(userId: string): Promise<void>
+  hasIdentityForUser(userId: string): Promise<boolean>
 }
 
 export class InMemoryOAuthIdentityStore implements OAuthIdentityStore {
@@ -382,6 +409,13 @@ export class InMemoryOAuthIdentityStore implements OAuthIdentityStore {
       if (row.userId === userId) this.identities.delete(k)
     }
     return Promise.resolve()
+  }
+
+  hasIdentityForUser(userId: string): Promise<boolean> {
+    for (const row of this.identities.values()) {
+      if (row.userId === userId) return Promise.resolve(true)
+    }
+    return Promise.resolve(false)
   }
 }
 
@@ -479,9 +513,12 @@ export function makeInMemoryStores(): AuthStores & {
   oauth: InMemoryOAuthIdentityStore
   otps: InMemoryOtpStore
 } {
+  const users = new InMemoryUserStore()
+  const sessions = new InMemorySessionStore()
+  users.cascadeErasureTo((userId) => sessions.deleteAllForUser(userId))
   return {
-    users: new InMemoryUserStore(),
-    sessions: new InMemorySessionStore(),
+    users,
+    sessions,
     oauth: new InMemoryOAuthIdentityStore(),
     otps: new InMemoryOtpStore(),
   }

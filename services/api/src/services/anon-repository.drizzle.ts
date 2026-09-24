@@ -31,15 +31,21 @@
  *   3. Attach each media_asset by setting report_id, but only when unattached or already ours (never
  *      steal a foreign asset; unknown ids no-op) - identical safety to the authed path.
  *   4. INSERT the initial timeline rows: 'submitted' then 'held'.
- *   5. INSERT the AnonReportResponse snapshot into idempotency_keys.response_snapshot, owner-scoped
- *      by user_or_anon = the anon token id (0078/0079).
- *   All five happen atomically. A UNIQUE(idempotency_key) (or unique-index) race rolls the tx back; we
- *   then read and return the winner's stored snapshot as a "replayed" result - but only when the
- *   winner is the SAME anon session (F028), so a key squatted by a stranger never replays their
- *   snapshot (and with it their claim code) to somebody else.
+ *   5. INSERT the response snapshot WITHOUT its claim code into idempotency_keys.response_snapshot,
+ *      owner-scoped by user_or_anon = the anon token id (0078/0079).
+ *   All five happen atomically. A UNIQUE(idempotency_key) (or unique-index) race rolls the tx back and
+ *   answers the retryable 409: the winner's claim code is not at rest to hand back, and rotating it here
+ *   would kill the code the winner's response is carrying at that moment.
+ *
+ * REPLAY: the snapshot holds only { reportId, status }, so a replay mints a fresh claim code and rotates
+ * that report's claim_code_hash onto it (the code the first response carried stops working). That keeps
+ * the plaintext out of idempotency_keys and its backups while the replayed response still carries a
+ * working code, and keeps exactly one live code per report. A replay is only ever a request that
+ * arrived after the winner committed, which is a client that lost the first response.
  */
 
 import type { Sql } from "../db/client.js"
+import { generateToken, sha256Hex } from "../auth/crypto.js"
 import type {
   AnonReportRepository,
   AnonReportStatusRow,
@@ -53,6 +59,7 @@ import type { ClaimRepository, PendingAnonReport } from "./claim-service.js"
 import { AppError } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
 import { insertModerationItem } from "./admin/moderation-repository.drizzle.js"
+import { claimableAsReportMedia, lockUploadsForClaim } from "./media-bindings.js"
 
 /** Postgres unique-violation SQLSTATE; surfaced on the idempotency-key race. */
 const PG_UNIQUE_VIOLATION = "23505"
@@ -105,14 +112,27 @@ function anonTokenStore(sql: Sql): AnonTokenStore {
   }
 }
 
-export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository {
+type StoredAnonSnapshot = Omit<AnonReportResponse, "claimCode">
+
+const REPLAY_UNCLAIMABLE_MESSAGE = "This report was already submitted and can no longer be claimed."
+
+export interface DrizzleAnonReportRepositoryOptions {
+  newClaimCode?: () => string
+}
+
+export function makeDrizzleAnonReportRepository(
+  sql: Sql,
+  opts: DrizzleAnonReportRepositoryOptions = {},
+): AnonReportRepository {
   const tokens = anonTokenStore(sql)
-  async function readSnapshot(
+  const newClaimCode = opts.newClaimCode ?? (() => generateToken())
+
+  async function replaySnapshot(
     key: string,
     scope: string,
     userOrAnon: string | null,
   ): Promise<AnonReportResponse | null> {
-    const rows = await sql<{ response_snapshot: AnonReportResponse }[]>`
+    const rows = await sql<{ response_snapshot: StoredAnonSnapshot }[]>`
       SELECT response_snapshot
       FROM idempotency_keys
       WHERE key = ${key}
@@ -120,7 +140,23 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
         AND user_or_anon IS NOT DISTINCT FROM ${userOrAnon}
       LIMIT 1
     `
-    return rows[0]?.response_snapshot ?? null
+    const stored = rows[0]?.response_snapshot
+    if (!stored) return null
+    const claimCode = newClaimCode()
+    const rotated = await sql<{ id: string }[]>`
+      UPDATE reports
+      SET claim_code_hash = ${await sha256Hex(claimCode)}, claim_code = ${null}
+      WHERE id = ${stored.reportId}
+        AND anon_session_id = ${userOrAnon}
+        AND reporter_user_id IS NULL
+        AND deleted_at IS NULL
+        AND claim_code_hash IS NOT NULL
+      RETURNING id
+    `
+    // A claimed (or removed) report has no live code to hand back, and the contract has no response
+    // without one; answering a code that can never claim would be worse than saying so.
+    if (rotated.length === 0) throw AppError.conflict(REPLAY_UNCLAIMABLE_MESSAGE)
+    return { reportId: stored.reportId, status: stored.status, claimCode }
   }
 
   return {
@@ -131,7 +167,7 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
       scope: string,
       userOrAnon: string | null,
     ): Promise<AnonReportResponse | null> {
-      return readSnapshot(key, scope, userOrAnon)
+      return replaySnapshot(key, scope, userOrAnon)
     },
 
     async createAnonReportTx(args: CreateAnonReportTxArgs): Promise<CreateAnonReportTxResult> {
@@ -203,17 +239,18 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
           // a per-id loop, so attaching N photos doesn't lengthen the held-create tx by N statements while
           // it holds the report + token row locks. Skipped when there are no ids, since `IN ()` is invalid
           // SQL. Semantics are unchanged: each row's report_id is set only when unattached or already ours,
-          // foreign assets stay untouched, and unknown ids no-op.
+          // foreign assets stay untouched, and unknown ids no-op. An asset bound to a post, a chat/DM
+          // message or any other owner is never re-bindable to a report, or the holder of an uploadId
+          // could cross-publish private media into a public report gallery.
           if (args.mediaUploadIds.length > 0) {
+            await lockUploadsForClaim(tx, args.mediaUploadIds)
             const claimed = await tx<{ upload_id: string }[]>`
               UPDATE media_assets
               SET report_id = ${args.reportId}
               WHERE upload_id IN ${tx(args.mediaUploadIds)}
                 AND (report_id IS NULL OR report_id = ${args.reportId})
-                -- L18: see the same guard on the authenticated create path. An asset already bound to a post
-                -- or a chat/DM message is never re-bindable to a report, so an uploadId cannot be used to
-                -- cross-publish private media into a public report gallery.
                 AND post_id IS NULL AND chat_message_id IS NULL
+                AND ${claimableAsReportMedia(tx, args.mediaUploaders)}
                 AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
               RETURNING upload_id
             `
@@ -257,14 +294,19 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
             desc: args.description ?? "",
           })
 
-          // 5) Persist the AnonReportResponse snapshot under the idempotency key (same tx).
+          // 5) Persist the snapshot under the idempotency key (same tx), without the plaintext claim
+          // code: a replay mints a fresh one instead.
+          const storedSnapshot: StoredAnonSnapshot = {
+            reportId: args.responseSnapshot.reportId,
+            status: args.responseSnapshot.status,
+          }
           await tx`
             INSERT INTO idempotency_keys (key, scope, user_or_anon, response_snapshot)
             VALUES (
               ${args.idempotencyKey},
               ${ANON_REPORT_CREATE_SCOPE},
               ${args.anonSessionId},
-              ${sql.json(args.responseSnapshot as Parameters<typeof sql.json>[0])}
+              ${sql.json(storedSnapshot as Parameters<typeof sql.json>[0])}
             )
           `
           return args.responseSnapshot
@@ -272,18 +314,11 @@ export function makeDrizzleAnonReportRepository(sql: Sql): AnonReportRepository 
         return { kind: "created", snapshot }
       } catch (err) {
         if (isUniqueViolation(err)) {
-          const stored = await readSnapshot(
-            args.idempotencyKey,
-            ANON_REPORT_CREATE_SCOPE,
-            args.anonSessionId,
-          )
-          if (stored) return { kind: "replayed", snapshot: stored }
-          // Nothing of OURS to replay: either the winner of the idempotency race has taken the key but
-          // not yet committed its snapshot, or the key belongs to a DIFFERENT anon session (reports'
-          // idempotency_key is globally unique, so a squatted key collides here). Both answer the
-          // retryable 409 the authenticated path answers (report-repository.createReportTx) instead of
-          // leaking the raw postgres error as a 500 - and, critically, instead of handing a stranger's
-          // snapshot + claim code to this caller (F028).
+          // The winner of the key race is still in flight to its client with the only live claim code,
+          // so this request must not rotate it, and the plaintext is not at rest to replay. A retry of
+          // the same key reaches findIdempotentSnapshot, which rotates for a client that lost that
+          // response. A key held by a different anon session lands here too (reports.idempotency_key is
+          // globally unique) and gets the same answer, never that session's report.
           throw AppError.conflict("Report submit is still settling; retry")
         }
         // A cap-reached AppError (or any other) propagates unchanged: the tx already rolled back, so no

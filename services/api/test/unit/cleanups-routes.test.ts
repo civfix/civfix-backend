@@ -1261,6 +1261,16 @@ describe("GET /cleanups/:id/ics", () => {
     expect(body.ics.trimEnd().endsWith("END:VCALENDAR")).toBe(true)
   })
 
+  it("never links a production page when no web origin is configured", async () => {
+    const { app, token } = await makeHarness()
+    const id = await createCleanup(app, token)
+
+    const res = await app.inject({ method: "GET", url: `/v1/cleanups/${id}/ics` })
+
+    expect(res.statusCode).toBe(200)
+    expect((res.json() as { ics: string }).ics).not.toContain("https://civfix.org/events/")
+  })
+
   it("marks a cancelled event CANCELLED so a calendar client withdraws it", async () => {
     const { app, token } = await makeHarness()
     const id = await createCleanup(app, token)

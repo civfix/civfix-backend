@@ -23,10 +23,15 @@ describe("csv cells", () => {
 
   it("prefixes formula-injection cells", () => {
     expect(csvCell('=HYPERLINK("https://evil.example")')).toContain("'=")
-    expect(csvCell("+1")).toBe("'+1")
-    expect(csvCell("-1")).toBe("'-1")
-    expect(csvCell("@x")).toBe("'@x")
-    expect(csvCell("\tx")).toBe("'\tx")
+    expect(csvCell("+1")).toBe(`"'+1"`)
+    expect(csvCell("-1")).toBe(`"'-1"`)
+    expect(csvCell("@x")).toBe(`"'@x"`)
+    expect(csvCell("\tx")).toBe(`"'\tx"`)
+  })
+
+  it("prefixes a string minus sign but leaves a negative number numeric", () => {
+    expect(csvCell("-1")).toBe(`"'-1"`)
+    expect(csvCell(-1)).toBe(`"-1"`)
   })
 
   it("renders empty for null and undefined", () => {
@@ -35,8 +40,8 @@ describe("csv cells", () => {
   })
 
   it("writes rows and provenance lines", () => {
-    expect(csvRow(["a", "b"])).toBe("a,b\n")
-    expect(csvProvenanceRow("note")).toBe("# note\n")
+    expect(csvRow(["a", "b"])).toBe('"a","b"\n')
+    expect(csvProvenanceRow("note")).toBe('"# note"\n')
   })
 })
 
@@ -168,8 +173,8 @@ describe("host export build", () => {
     const text = put.body.toString("utf8")
     expect(text).toContain("# member email is never included")
     expect(text).toContain("# k=5 note")
-    expect(text).toContain("a,b\n")
-    expect(text).toContain("1,Alex\n")
+    expect(text).toContain('"a","b"\n')
+    expect(text).toContain('"1","Alex"\n')
     expect(h.current().rowCount).toBe(2)
     expect(h.current().truncated).toBe(false)
   })
@@ -198,6 +203,12 @@ describe("host export build", () => {
     const h = harness([["1", '=HYPERLINK("https://evil.example","x")']])
     await h.service.run(EXPORT_ID)
     expect(h.puts[0]!.body.toString("utf8")).toContain("'=HYPERLINK")
+  })
+
+  it("escapes a formula hidden behind an in-value separator", async () => {
+    const h = harness([["1", "Alex;=cmd|' /C calc'!A0"]])
+    await h.service.run(EXPORT_ID)
+    expect(h.puts[0]!.body.toString("utf8")).toContain("\"Alex;'=cmd|' /C calc'!A0\"")
   })
 
   it("is idempotent: a second run does not re-claim", async () => {

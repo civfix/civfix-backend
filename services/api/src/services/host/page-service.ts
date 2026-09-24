@@ -40,7 +40,7 @@ export interface PageServiceDeps {
 
 export interface PageService {
   get(query: GetEventPageRequest): Promise<EventPageDTO>
-  save(input: SaveEventPageRequest): Promise<EventPageDTO>
+  save(input: SaveEventPageRequest, actorId: string): Promise<EventPageDTO>
   publish(input: PublishEventPageRequest, actorId: string): Promise<EventPageDTO>
   checkSlug(query: CheckEventPageSlugRequest): Promise<CheckEventPageSlugResponse>
   getPublicEventPage(
@@ -316,7 +316,7 @@ export function makePageService(deps: PageServiceDeps): PageService {
       return pageDTO(record)
     },
 
-    async save(input): Promise<EventPageDTO> {
+    async save(input, actorId): Promise<EventPageDTO> {
       validatePageBlocks(input.blocks, deps.mediaUrlPrefixes ?? [])
       if (input.slug != null && RESERVED_SLUGS.has(input.slug)) {
         throw AppError.validation({ slug: "that address is reserved" })
@@ -325,6 +325,7 @@ export function makePageService(deps: PageServiceDeps): PageService {
       const blocks = stripResolvedMediaUrls(input.blocks)
       const outcome = await deps.repo.savePage({
         cleanupId: input.id,
+        actorUserId: actorId,
         slug: input.slug,
         themeAccent: input.theme?.accent,
         blocks,

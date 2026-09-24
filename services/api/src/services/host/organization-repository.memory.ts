@@ -44,6 +44,13 @@ import type {
   UpdateOrganizationAudit,
   UpdateOrganizationOutcome,
   UpdateOrganizationPatch,
+  InviterRevocationReason,
+  InviterStanding,
+} from "./organization-repository.types.js"
+import {
+  canManageOrgMembers,
+  inviterRevocationReason,
+  roleChangeWithdrawsInvites,
 } from "./organization-repository.types.js"
 
 interface StoredOrganization {
@@ -306,6 +313,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     id: string,
     patch: UpdateOrganizationPatch,
     now: Date,
+    _actorId: string,
     audit?: UpdateOrganizationAudit,
   ): Promise<UpdateOrganizationOutcome> {
     const org = this.organizations.get(id)
@@ -440,6 +448,9 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     actorId: string
     now: Date
   }): Promise<AddOrganizationMemberOutcome> {
+    if (!this.managesMembers(args.organizationId, args.actorId)) {
+      return Promise.resolve("forbidden")
+    }
     const existing = this.members.find(
       (m) => m.organizationId === args.organizationId && m.userId === args.userId,
     )
@@ -456,6 +467,26 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       target: `organization:${args.organizationId}`,
     })
     return Promise.resolve("added")
+  }
+
+  private managesMembers(organizationId: string, userId: string): boolean {
+    const seat = this.members.find(
+      (m) => m.organizationId === organizationId && m.userId === userId,
+    )
+    return canManageOrgMembers(seat?.role ?? null)
+  }
+
+  private inviterStanding(
+    organizationId: string,
+    inviterId: string | null,
+  ): InviterStanding | null {
+    if (inviterId === null) return null
+    const inviter = this.users.get(inviterId)
+    if (inviter === undefined) return null
+    const seat = this.members.find(
+      (m) => m.organizationId === organizationId && m.userId === inviterId,
+    )
+    return { role: seat?.role ?? null, deleted: inviter.deletedAt !== null }
   }
 
   private countAdminSeats(organizationId: string): number {
@@ -479,12 +510,21 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       if (this.countAdminSeats(args.organizationId) <= 1) return Promise.resolve("last_admin")
     }
     if (member.role !== args.role) {
+      const from = member.role
       member.role = args.role
       this.audits.push({
         actorId: args.actorId,
         action: "org.member_role_changed",
         target: `organization:${args.organizationId}`,
       })
+      if (roleChangeWithdrawsInvites(from, args.role)) {
+        this.revokeInvitesByInviter(
+          args.organizationId,
+          args.userId,
+          args.actorId,
+          "inviter_demoted",
+        )
+      }
     }
     return Promise.resolve("updated")
   }
@@ -516,6 +556,7 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
         ...(args.reason !== undefined ? { reason: args.reason } : {}),
       },
     })
+    this.revokeInvitesByInviter(args.organizationId, args.userId, args.actorId, "inviter_removed")
     return Promise.resolve("removed")
   }
 
@@ -817,6 +858,9 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       target: `organization:${args.organizationId}`,
       meta: { targetUserId: args.userId, from, to: args.role, reason: args.reason },
     })
+    if (roleChangeWithdrawsInvites(from, args.role)) {
+      this.revokeInvitesByInviter(args.organizationId, args.userId, args.actorId, "inviter_demoted")
+    }
     if (args.role === "owner") {
       this.audits.push({
         actorId: args.actorId,
@@ -826,6 +870,31 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
       })
     }
     return Promise.resolve("updated")
+  }
+
+  private revokeInvitesByInviter(
+    organizationId: string,
+    inviterId: string,
+    actorId: string,
+    reason: InviterRevocationReason,
+  ): void {
+    for (const invite of this.invites) {
+      if (
+        invite.organizationId !== organizationId ||
+        invite.invitedBy !== inviterId ||
+        invite.status !== "pending"
+      ) {
+        continue
+      }
+      invite.status = "revoked"
+      invite.revokedAt = new Date()
+      this.audits.push({
+        actorId,
+        action: "org.invite_revoked",
+        target: `organization:${organizationId}`,
+        meta: { inviteId: invite.id, reason },
+      })
+    }
   }
 
   private expireInvites(organizationId: string, now: Date): void {
@@ -878,6 +947,9 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
   }
 
   createInviteTx(args: CreateOrganizationInviteArgs): Promise<CreateOrganizationInviteOutcome> {
+    if (!this.managesMembers(args.organizationId, args.invitedBy)) {
+      return Promise.resolve({ kind: "forbidden" })
+    }
     this.expireInvites(args.organizationId, args.now)
     const email = args.email.toLowerCase()
     const open = this.invites.find(
@@ -1054,6 +1126,18 @@ export class InMemoryOrganizationRepository implements OrganizationRepository {
     const addressed = this.inviteAddressesUser(invite, args.userId)
     if (byToken ? invite.email !== null && !addressed : !addressed) {
       return Promise.resolve({ kind: "wrong_recipient" })
+    }
+    const revocation = inviterRevocationReason(this.inviterStanding(org.id, invite.invitedBy))
+    if (revocation !== null) {
+      invite.status = "revoked"
+      invite.revokedAt = args.now
+      this.audits.push({
+        actorId: args.userId,
+        action: "org.invite_revoked",
+        target: `organization:${org.id}`,
+        meta: { inviteId: invite.id, reason: revocation },
+      })
+      return Promise.resolve({ kind: "invalid" })
     }
     if (org.suspendedAt !== null) return Promise.resolve({ kind: "suspended" })
     const existing = this.members.find(

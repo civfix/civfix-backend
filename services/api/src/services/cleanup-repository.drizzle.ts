@@ -18,10 +18,11 @@ import { allocateEventReferenceCode } from "../db/reference-code.js"
 import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
 import { hostStandingOf, hostStandingsOf, orgStandingOf } from "./host/host-standing.js"
 import { NO_HOST_STANDING } from "@civfix/shared/host"
-import { servableMediaFilter, servedKeyExpr } from "./media-served-key.js"
-import { MEDIA_CLAIM_WINDOW_SEC } from "./host/event-media.js"
-import { mediaBoundElsewhere, mediaBoundToCleanup } from "./media-bindings.js"
+import { publicServedKeyExpr } from "./media-served-key.js"
+import { mediaBoundElsewhere, mediaBoundToCleanup, uploadedByClaimant } from "./media-bindings.js"
+import { userUploader } from "./media-uploader.js"
 import { isUniqueViolationOn } from "./host/registration-sql.js"
+import { applyBanIn } from "./host/registration-repository.drizzle.js"
 import { deterministicUuid } from "./deterministic-uuid.js"
 import type {
   AttendeeView,
@@ -116,6 +117,7 @@ async function claimEventMediaInTx(
   tx: Queryable,
   cleanupId: string,
   host: EventHostWrite,
+  claimantUserId: string,
 ): Promise<void> {
   const cover = host.coverMediaId ?? null
   const gallery = host.galleryMediaIds ?? []
@@ -131,7 +133,7 @@ async function claimEventMediaInTx(
       AND NOT (${mediaBoundElsewhere(tx, cleanupId)})
       AND (
         (${mediaBoundToCleanup(tx, cleanupId)})
-        OR media_assets.created_at > now() - make_interval(secs => ${MEDIA_CLAIM_WINDOW_SEC})
+        OR (${uploadedByClaimant(tx, [userUploader(claimantUserId)])})
       )
     RETURNING id
   `
@@ -393,7 +395,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           `
           await linkReportsInTx(tx, args.cleanupId, args.linkedReportIds, args.organizerUserId)
           await insertSlotsInTx(tx, args.cleanupId, args.slots)
-          await claimEventMediaInTx(tx, args.cleanupId, args.host)
+          await claimEventMediaInTx(tx, args.cleanupId, args.host, args.organizerUserId)
           if (args.copyFrom !== undefined) {
             await copyEventExtrasInTx(tx, args.cleanupId, args.copyFrom)
           }
@@ -437,7 +439,11 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       }
     },
 
-    async updateCleanup(id: string, patch: UpdateCleanupPatch): Promise<boolean> {
+    async updateCleanup(
+      id: string,
+      patch: UpdateCleanupPatch,
+      actorUserId: string,
+    ): Promise<boolean> {
       const sets: postgres.Fragment[] = hostSetFragments(sql, patch)
       if (patch.title !== undefined) sets.push(sql`title = ${patch.title}`)
       if (patch.description !== undefined) sets.push(sql`description = ${patch.description}`)
@@ -468,7 +474,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           UPDATE cleanups SET ${setList} WHERE id = ${id} RETURNING id
         `
         if (updated.length === 0) return false
-        await claimEventMediaInTx(tx, id, patch)
+        await claimEventMediaInTx(tx, id, patch, actorUserId)
         return true
       })
     },
@@ -730,12 +736,12 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
 
     async galleryKeysFor(cleanupId: string): Promise<string[]> {
       const rows = await sql<{ served_key: string | null }[]>`
-        SELECT ${servedKeyExpr(sql, "ma")} AS served_key
+        SELECT ${publicServedKeyExpr(sql, "ma")} AS served_key
         FROM cleanups c
         JOIN LATERAL unnest(c.gallery_media_ids) WITH ORDINALITY AS g(media_id, ord) ON true
         JOIN media_assets ma ON ma.id = g.media_id
         WHERE c.id = ${cleanupId}
-          AND ${servableMediaFilter(sql, "ma")}
+          AND ${publicServedKeyExpr(sql, "ma")} IS NOT NULL
         ORDER BY g.ord
       `
       return rows.flatMap((r) => (r.served_key === null ? [] : [r.served_key]))
@@ -755,7 +761,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         }[]
       >`
         SELECT o.id, o.slug, o.name,
-               ${servedKeyExpr(sql, "am")} AS logo_key,
+               ${publicServedKeyExpr(sql, "am")} AS logo_key,
                o.donation_url,
                o.verified_status, o.verified_kind,
                (o.suspended_at IS NOT NULL) AS suspended
@@ -796,7 +802,7 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         }[]
       >`
         SELECT o.id, o.slug, o.name,
-               ${servedKeyExpr(sql, "am")} AS logo_key,
+               ${publicServedKeyExpr(sql, "am")} AS logo_key,
                o.donation_url,
                o.verified_status, o.verified_kind,
                (o.suspended_at IS NOT NULL) AS suspended,
@@ -996,27 +1002,15 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
         const cleanup = locked[0]
         if (cleanup === undefined) return { kind: "not_found" }
         if (cleanup.status === "cancelled") return { kind: "closed" }
+        let releasedWaitlistTicketTypeIds: string[] = []
         const deleted = await tx<{ user_id: string }[]>`
           DELETE FROM cleanup_members
           WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND role <> 'organizer'
           RETURNING user_id
         `
         if (deleted.length > 0) {
-          await cancelSignupRegistrationIn(tx, {
-            cleanupId,
-            userId,
-            actorId,
-            now: cleanup.now,
-          })
-          await tx`
-            INSERT INTO cleanup_bans (cleanup_id, user_id, banned_by_user_id)
-            VALUES (${cleanupId}, ${userId}, ${actorId})
-            ON CONFLICT (cleanup_id, user_id) DO NOTHING
-          `
-          await tx`
-            DELETE FROM cleanup_slot_claims
-            WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
-          `
+          const ban = await applyBanIn(tx, { cleanupId, userId, actorId, now: cleanup.now })
+          releasedWaitlistTicketTypeIds = ban.releasedTicketTypeIds
         }
         const counted = await tx<{ count: number }[]>`
           SELECT
@@ -1027,7 +1021,9 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
             ) AS count
         `
         const going = counted[0]?.count ?? 0
-        return deleted.length > 0 ? { kind: "removed", going } : { kind: "not_member", going }
+        return deleted.length > 0
+          ? { kind: "removed", going, releasedWaitlistTicketTypeIds }
+          : { kind: "not_member", going }
       })
     },
 

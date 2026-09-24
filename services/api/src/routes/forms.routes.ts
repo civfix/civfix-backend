@@ -11,6 +11,7 @@ import { heading, kvTable, paragraph } from "../adapters/email-blocks.js"
 import { renderEmailBody } from "../adapters/email-layout.js"
 import { sanitizeHeaderValue } from "../adapters/mail-text.js"
 import { parse } from "./_validate.js"
+import { exposeMessage } from "../errors/exposed-message.js"
 
 export const HOME_TURF_RATE_LIMIT = perHost({ max: 5, timeWindow: "1 minute" })
 
@@ -107,7 +108,9 @@ export async function registerHomeTurfRoutes(
     const store = counters()
     if (store === null) {
       app.log.error("home-turf form: no counter store (REDIS_URL unset) — refusing to send")
-      throw AppError.internal("This form is temporarily unavailable. Please try again later.")
+      throw exposeMessage(
+        AppError.internal("This form is temporarily unavailable. Please try again later."),
+      )
     }
     return store
   }

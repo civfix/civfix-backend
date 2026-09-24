@@ -237,7 +237,7 @@ export type JoinCleanupOutcome = "joined" | "not_found" | "banned" | "closed" | 
 export type LeaveCleanupOutcome = "left" | "not_found" | "closed"
 
 export type RemoveMemberOutcome =
-  | { kind: "removed"; going: number }
+  | { kind: "removed"; going: number; releasedWaitlistTicketTypeIds: string[] }
   | { kind: "not_member"; going: number }
   | { kind: "closed" }
   | { kind: "not_found" }
@@ -284,7 +284,7 @@ export interface SignupSeat {
 
 export interface CleanupRepository {
   createCleanupTx(args: CreateCleanupTxArgs): Promise<CreateCleanupOutcome>
-  updateCleanup(id: string, patch: UpdateCleanupPatch): Promise<boolean>
+  updateCleanup(id: string, patch: UpdateCleanupPatch, actorUserId: string): Promise<boolean>
   linkReports(cleanupId: string, reportIds: string[], actorId: string | null): Promise<string[]>
   unlinkReport(cleanupId: string, reportId: string, actorId: string | null): Promise<boolean>
   reconcileLinkedReports(

@@ -12,7 +12,10 @@ import {
   type BoundaryJob,
 } from "../src/db/boundaries/manifest.js"
 import { ingestGeoJsonFile, ingestGeoJsonSeqFile } from "../src/db/ingest-jurisdictions-core.js"
-import { backfillReports } from "../src/db/backfill-jurisdictions-core.js"
+import {
+  backfillReports,
+  pruneNonAuthoritativeJurisdictions,
+} from "../src/db/backfill-jurisdictions-core.js"
 import { backfillPopulation } from "../src/db/backfill-population-core.js"
 
 const PREFIX = "refresh-boundaries"
@@ -24,6 +27,7 @@ const PG_CONTAINER = process.env.BOUNDARIES_PG_CONTAINER ?? "compose-postgres-1"
 const PG_USER = process.env.BOUNDARIES_PG_USER ?? "civfix"
 const PG_DB = process.env.BOUNDARIES_PG_DB ?? "civfix"
 const LOCAL_PORT = Number(process.env.BOUNDARIES_LOCAL_PORT ?? "15433")
+const PRUNE_CONFIRMED = process.argv.slice(2).includes("--yes")
 
 function isFederal(job: BoundaryJob): boolean {
   return job.layer === "federal"
@@ -211,32 +215,23 @@ async function countLoadedLayers(
   return { rowCounts, federalLoaded: (rowCounts.federal ?? 0) > 0 }
 }
 
-async function pruneNonAuthoritative(sql: Sql): Promise<number> {
-  return await sql.begin(async (tx) => {
-    const stale = await tx<{ geoid: string }[]>`
-      SELECT geoid FROM jurisdictions
-      WHERE (layer = 'federal' AND geoid NOT LIKE 'PADUS-%')
-         OR (layer = 'tribal'  AND geoid NOT LIKE 'AIANNH-%')
-    `
-    if (stale.length === 0) return 0
-    const ids = stale.map((s) => s.geoid)
-    await tx`UPDATE reports         SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`UPDATE cleanups        SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`UPDATE volunteer_hours SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`UPDATE gov_claims      SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`UPDATE mail_threads    SET jurisdiction_geoid = NULL WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`DELETE FROM user_jurisdiction_hours     WHERE jurisdiction_geoid IN ${tx(ids)}`
-    await tx`DELETE FROM jurisdiction_contacts       WHERE geoid IN ${tx(ids)}`
-    await tx`DELETE FROM outreach_state              WHERE geoid IN ${tx(ids)}`
-    await tx`DELETE FROM jurisdiction_discovery_tasks WHERE geoid IN ${tx(ids)}`
-    await tx`DELETE FROM jurisdictions               WHERE geoid IN ${tx(ids)}`
-    return stale.length
-  })
-}
-
 async function prune(sql: Sql): Promise<void> {
-  const pruned = await pruneNonAuthoritative(sql)
-  if (pruned > 0) log(`pruned ${pruned} non-authoritative (dev-seed) federal/tribal row(s)`)
+  const result = await pruneNonAuthoritativeJurisdictions(sql, { apply: PRUNE_CONFIRMED })
+  if (result.staleGeoids.length === 0) return
+  log(
+    `${result.staleGeoids.length} non-authoritative (dev-seed) federal/tribal jurisdiction(s); ` +
+      `rows pointing at them: ${JSON.stringify(result.affected)}`,
+  )
+  if (!result.applied) {
+    throw new Error("re-run with --yes to prune the rows counted above (nothing was changed)")
+  }
+  log(`pruned; re-resolved in the same transaction: ${JSON.stringify(result.reresolved)}`)
+  if (result.affected.gov_claims > 0 || result.affected.mail_threads > 0) {
+    warn(
+      `left without a jurisdiction (no geometry to re-derive from): ` +
+        `${result.affected.gov_claims} gov_claims, ${result.affected.mail_threads} mail_threads`,
+    )
+  }
 }
 
 async function stampVintage(

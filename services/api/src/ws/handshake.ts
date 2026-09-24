@@ -29,9 +29,10 @@ function wsHasSessionCookie(request: FastifyRequest): boolean {
   return sessionCookieValue(request) !== null
 }
 
-function queryTokenAllowed(): boolean {
-  const raw = process.env.WS_ALLOW_QUERY_TOKEN
-  return raw === "1" || raw === "true"
+// Break-glass only: a session bearer in a URL lands in proxy and access logs. Off unless the loaded env
+// turns it on, including for a request that carries no app container.
+function queryTokenAllowed(request: FastifyRequest): boolean {
+  return request.server?.container?.env.WS_ALLOW_QUERY_TOKEN === true
 }
 
 export async function resolveWsUser(
@@ -69,7 +70,7 @@ export async function resolveWsUser(
   }
 
   const queryToken =
-    queryTokenAllowed() && typeof query?.token === "string" && query.token.length > 0
+    typeof query?.token === "string" && query.token.length > 0 && queryTokenAllowed(request)
       ? query.token
       : null
   const presented = queryToken ?? cookieOrBearer

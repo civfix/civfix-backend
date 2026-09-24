@@ -6,7 +6,7 @@ import type {
 } from "@civfix/shared"
 import type { Sql } from "../../db/client.js"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../db/cursor-helpers.js"
-import { servedKeyExpr } from "../media-served-key.js"
+import { publicServedKeyExpr } from "../media-served-key.js"
 import { cleanupStatusExpr } from "../cleanup-sql.js"
 
 export interface HostedEventRecord {
@@ -139,7 +139,7 @@ export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepos
           c.timezone,
           ${cleanupStatusExpr(sql)} AS status,
           c.visibility,
-          ${servedKeyExpr(sql, "ma")} AS cover_key,
+          ${publicServedKeyExpr(sql, "ma")} AS cover_key,
           c.capacity,
           c.page_slug,
           (

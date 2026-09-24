@@ -3,7 +3,7 @@ import { REVIEWER_OTP_EMAIL } from "../auth/otp.js"
 import { writeAudit } from "./admin/audit.js"
 import { requireCapability } from "./host/authz.js"
 import { makeContainerRegistrationServices } from "./host/registration-wiring.js"
-import { guestManageLinkBase } from "./guest-notify.js"
+import { webBaseUrlOf } from "../lib/base-url.js"
 import { makeDrizzleGuestRsvpRepository } from "./guest-rsvp-repository.drizzle.js"
 import {
   makeGuestRsvpService,
@@ -86,7 +86,7 @@ export function makeContainerGuestRsvpService(
     counters: overrides?.counters ?? container.getCounterStore(),
     smsGuestEnabled: container.env.SMS_GUEST_ENABLED,
     smsDailyCap: container.env.SMS_DAILY_CAP,
-    manageLinkBase: guestManageLinkBase(container.env.WEB_ORIGINS),
+    manageLinkBase: webBaseUrlOf(container.env),
     ...(reviewer !== undefined ? { reviewer } : {}),
     ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
     ...(logger !== undefined ? { logger } : {}),

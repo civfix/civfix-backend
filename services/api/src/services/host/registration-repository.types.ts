@@ -271,6 +271,11 @@ export type CancelRegistrationOutcome =
   | { kind: "already_cancelled" }
   | { kind: "not_found" }
 
+/** A ban also withdraws the user's waitlist places; these types had offered seats released. */
+export type RemoveRegistrationOutcome = CancelRegistrationOutcome & {
+  releasedWaitlistTicketTypeIds: string[]
+}
+
 export type TransferRegistrationOutcome =
   | { kind: "transferred"; registration: RegistrationRecord }
   | { kind: "full" }
@@ -304,6 +309,7 @@ export type JoinWaitlistOutcome =
   | { kind: "access_code_invalid" }
   | { kind: "waitlist_disabled" }
   | { kind: "ticket_type_not_found" }
+  | { kind: "banned" }
   | { kind: "closed" }
   | { kind: "ended" }
   | { kind: "not_found" }
@@ -369,6 +375,7 @@ export interface PageRecord {
 
 export interface SavePageArgs {
   cleanupId: string
+  actorUserId: string
   slug: string | null | undefined
   themeAccent: ThemeAccent | undefined
   blocks: EventPageBlock[]
@@ -455,7 +462,7 @@ export interface HostRegistrationRepository {
     actorId: string
     ban: boolean
     now: Date
-  }): Promise<CancelRegistrationOutcome>
+  }): Promise<RemoveRegistrationOutcome>
   transferRegistration(args: {
     cleanupId: string
     registrationId: string

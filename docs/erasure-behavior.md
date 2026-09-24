@@ -20,7 +20,15 @@ response can be answered truthfully. It is the source of record for the
 `[auth][csrf]`) performs a **soft delete**:
 
 0. An **email-OTP gate**: the caller must re-prove control of the account email
-   before any destructive work runs.
+   before any destructive work runs. Then **the session ban marker is set**
+   (`SessionService.markBanned`), before anything is erased. A cached session
+   projection is checked against that marker and the session epoch, never against the `sessions` table, so deleting the rows alone would
+   leave a cached bearer (and a websocket re-auth) working, and sliding its
+   expiry forward, up to the 90-day absolute session cap. If the marker cannot be written the request fails with 503 and
+   nothing is erased; if the erasure transaction below then fails, the marker is
+   cleared again so the still-live account keeps working (a failure to clear it
+   is logged: the account stays locked out until the marker expires or an
+   operator restores its status).
 1. `UserStore.softDeleteAndAnonymize(userId)` — see
    `services/api/src/auth/pg-stores.ts`. **One transaction**, so a partial erasure
    is not a reachable state:
@@ -34,8 +42,9 @@ response can be answered truthfully. It is the source of record for the
    - **Unlists** the user's `public` reports (→ `hidden`).
    - **Transfers, then cancels** the events they organize — the host-transfer
      ladder below. Only what nobody could take over is cancelled.
-   - **Releases the organizations they owned** and scrubs their pending team
-     invitations — see below.
+   - **Releases the organizations they owned**, scrubs their pending team
+     invitations and revokes the pending organization invitations they sent or
+     received (see below).
    - **Scrubs their own attendee free text** (event answers, attendee names,
      host notes) and cancels their live waitlist entries, releasing any seats
      those entries held.
@@ -44,35 +53,40 @@ response can be answered truthfully. It is the source of record for the
      the rows written while it did are retained. See the ⚖️ DECISION below.
    - **Revokes and scrubs their issued service-hours certificates** — see the
      dedicated section below.
+   - **Deletes** every durable session row, every device push token and every
+     notification row of the user, so no session outlives the tombstone and no
+     device can be reached after the erasure commits.
    - Keeps every content foreign key intact (the rows survive; the author
      de-links).
    - AFTER the commit, best-effort deletes each revoked certificate's R2 object.
      Failures are logged, never thrown: a completed erasure must not surface to
      the client as "deletion failed".
-2. `SessionService.banUser(userId)` (`services/api/src/auth/session-service.ts`): deletes
-   every durable session row, drops the write-through cache entries, and sets the
-   ban/veto marker so any warm session that slipped a revoke is rejected on its
-   next request.
-3. Clears the session + CSRF cookies on the response.
-4. Four independent best-effort cleanups (`allSettled`, each logged on failure):
-   unlink the OAuth identities, hard-delete the device push tokens, delete the
-   user's notifications (F088 below), and write the audit-log row
-   (`account.deleted`, actor = the user).
+2. Clears the session + CSRF cookies on the response.
+3. Three independent best-effort steps after the commit (`allSettled`, each logged
+   on failure, none of them able to fail a deletion that already happened):
+   `SessionService.banUser(userId)` refreshes the ban marker, bumps the session
+   epoch and drops any write-through cache entries it can still find; unlink the
+   OAuth identities; and write the audit-log row (`account.deleted`, actor = the
+   user). Revocation does not depend on this step: by the time it runs every
+   session row is gone and the marker set in step 0 already rejects every
+   cached projection.
 
 ## What is scrubbed vs. kept
 
 | Data | After `DELETE /me` |
 |---|---|
-| Live sessions / login | **Revoked** — all sessions deleted, ban marker set, cookies cleared. |
+| Live sessions / login | **Revoked**: the ban marker is set before the erasure (the deletion is refused if it cannot be), every session row is deleted inside the erasure transaction; afterwards (best-effort) the epoch is bumped and the cached sessions evicted; cookies cleared. |
 | DM reachability | **Off** — `allow_direct_messages = false`. |
 | `display_name`, `handle`, `email`, `bio`, `avatar_url`, `avatar_media_id`, `social_links`, `donation_url`, `primary_organization_id` | **Scrubbed** on the `users` row — nulled, or replaced with the `Deleted User` label / a generated placeholder handle. |
-| OAuth identity links | **Deleted** (best-effort, step 4) — otherwise a provider sign-in walks back into the tombstone once the ban marker's TTL lapses. |
-| Device push tokens | **Deleted** (best-effort, step 4). |
+| OAuth identity links | **Deleted** (best-effort, step 3); otherwise a provider sign-in walks back into the tombstone once the ban marker's TTL lapses. |
+| Device push tokens | **Deleted** inside the erasure transaction. |
+| Notifications | **Deleted** inside the erasure transaction (they can hold verbatim chat/DM previews and are not civic record). |
 | Reports the user filed | **Kept** as rows; the user's `public` ones are flipped to `hidden` (see public rendering below). |
 | Report chat, event/group chat, DMs the user wrote | **Kept** (soft-deleted only where the user deleted them individually). |
 | Cleanups organized / joined | **Kept**; an `upcoming`/`active` event they organize is TRANSFERRED where anyone can take it over, and cancelled only when nobody can (ladder below). |
 | Organizations they belonged to | Membership rows **deleted**, and `users.primary_organization_id` (the affiliation badge pin, 0.43.0) is nulled in the same transaction. An organization they OWNED promotes its earliest live admin; one left with nobody is **soft-deleted** and its events lose their `organization_id`. The events keep their own `donation_url` — since the platform stopped processing donations that link belongs to the host, not to the organization's verification. |
 | Event team invitations they sent or received | Pending ones **revoked**, the invitee address **scrubbed**. |
+| Organization invitations they sent or received | Pending ones **revoked** (`org.invite_revoked` audit row per invite, `meta.reason = 'account_deleted'`), so an admin's invite cannot seat anyone after the admin is gone. An invite addressed only by email to the departing user's former address is not matched and expires on its own TTL. |
 | Posts published under an organization (`posts.organization_id`, 0.43.0) | **Kept**, exactly like every other post: the FK names the organization, not the person, and the author de-links the same way. Nothing about the org link identifies the departing account. |
 | `event_consents` | **Kept, untouched by every lane.** It carries no contact detail of its own (the subject is a foreign key) and it is the artifact THAT consent existed; the account row it points at is tombstoned rather than deleted. |
 | `cleanup_registrations`, `cleanup_registration_seats`, check-ins | **Kept** — they are the roster record of someone else's event. Only the departing person's own free text (`cleanup_answers` values, `attendee_name`, `host_note`) is scrubbed in the same transaction. |
@@ -81,6 +95,7 @@ response can be answered truthfully. It is the source of record for the
 | `donations` | **Kept.** `user_id` NULLed and `profile_unlinked_at` stamped immediately. On a CHARGED donation `donor_email` / `donor_name` survive until `charged_at + 7 years`; on one that never charged they are NULLed at once. ⚖️ DECISION below. |
 | `org_payouts` | **Kept, with the FK intact.** The row records that an organization moved its own money, not anything about the person who pressed the button; `requested_by` declares `ON DELETE SET NULL`, but civfix erasure is a SOFT delete, so that action never fires and the actor stays the tombstoned account. There is no contact detail in the table to scrub. |
 | `cleanup_slot_claims` (which signup slot they took, P9) | **Kept**. The row is `(cleanup_id, user_id, slot_id, claimed_at)` — roster data with no free-text PII, held exactly like the `cleanup_members` row it accompanies, and with no `ON DELETE CASCADE` to `users` by design (`drizzle/0063_cleanup_slots.sql`). The attendee/roster read joins `users` with `deleted_at IS NULL`, so a tombstoned claimant disappears from the visible roster; the row still counts toward the slot's `claimed` total. |
+| `media_assets.uploader` (who created an upload, 0181) | **Kept**, like `reports.reporter_user_id`: it names the tombstoned account, never an email or IP. Nulling it would make the departed user's unbound uploads claimable by anyone inside the claim window. |
 | `service_hours_certificates` (issued PDF transcripts, P5) | **Revoked + scrubbed**, rows kept, **R2 objects deleted**. See the next section. |
 
 ### The host-transfer ladder
@@ -297,11 +312,12 @@ instead of telling them to use an add-email flow that does not exist.
 
 ### F088 (delete half) — notifications purged on account deletion
 
-The `DELETE /me` post-revocation cleanup fan-out gained a
-`DELETE FROM notifications WHERE user_id = $1` step (alongside oauth-unlink,
-push-token purge, and the audit row). Notification rows are private to the deleted
-user (they can hold verbatim chat/DM previews) and are not civic record, so they
-are erased. Add this table to the "scrubbed on deletion" list. (The time-based
+Account deletion erases the user's notification rows
+(`DELETE FROM notifications WHERE user_id = $1`), now inside the erasure
+transaction together with the session and push-token deletes, so a failure rolls
+the whole erasure back instead of leaving them behind. Notification rows are
+private to the deleted user (they can hold verbatim chat/DM previews) and are not
+civic record, so they are erased. (The time-based
 retention sweep for notifications is the media-worker half of F088.)
 
 ### F139 — DSAR export completeness + truncation remedy

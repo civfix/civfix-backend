@@ -38,7 +38,35 @@ const CleanupsQuerySchema = z.object({
   when: z.enum(["upcoming", "past"]).optional(),
 })
 
-const GeoidParamsSchema = z.object({ geoid: z.string().min(1) }).strict()
+const GEOID_MAX_LENGTH = 64
+
+const GeoidParamsSchema = z.object({ geoid: z.string().min(1).max(GEOID_MAX_LENGTH) }).strict()
+
+const CONTACT_EMAIL_MAX_LENGTH = 254
+
+const CONTACT_FORM_URL_MAX_LENGTH = 2048
+
+const SUGGEST_CONTACT_BODY_LIMIT = 16384
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value)
+    return protocol === "https:" || protocol === "http:"
+  } catch {
+    return false
+  }
+}
+
+// Anyone can write these fields into audit_log and the operator discovery notes, and the shared
+// contract leaves email and formUrl unbounded, so the backend caps them after the contract parse.
+const SuggestContactBoundsSchema = z.object({
+  email: z.string().max(CONTACT_EMAIL_MAX_LENGTH, "That email address is too long.").optional(),
+  formUrl: z
+    .string()
+    .max(CONTACT_FORM_URL_MAX_LENGTH, "That link is too long.")
+    .refine(isHttpUrl, "Use a link that starts with http:// or https://.")
+    .optional(),
+})
 
 export const SuggestPlacesBodySchema = trimTextFields(SuggestPlacesRequestSchema, "q")
 
@@ -179,13 +207,14 @@ export async function registerMapRoutes(app: FastifyInstance, container: Contain
   route(
     app,
     "suggestJurisdictionContact",
-    { config: { rateLimit: SUGGEST_CONTACT_RATE_LIMIT } },
+    { bodyLimit: SUGGEST_CONTACT_BODY_LIMIT, config: { rateLimit: SUGGEST_CONTACT_RATE_LIMIT } },
     async (request, reply) => {
       const { geoid } = parse(GeoidParamsSchema, request.params)
       const body = parse(SuggestContactRequestSchema, {
         ...(request.body as Record<string, unknown> | undefined),
         geoid,
       })
+      parse(SuggestContactBoundsSchema, { email: body.email, formUrl: body.formUrl })
 
       if (!(await jurisdictionService().exists(geoid))) {
         throw AppError.notFound("Jurisdiction not found")

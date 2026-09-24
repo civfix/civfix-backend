@@ -10,13 +10,16 @@ import {
 import { LIVE_TAIL_MS } from "@civfix/shared/host"
 import {
   ARRIVAL_BUCKET_MINUTES,
+  type AppliedBan,
   buildCheckinResult,
   emptyCheckinResult,
+  guestSelfRegistrationOnPrivateEvent,
   waitlistEntryAsRegistration,
 } from "./registration-repository.drizzle.js"
 import type {
   AnswerRecord,
   CancelRegistrationOutcome,
+  RemoveRegistrationOutcome,
   CheckinCountersRecord,
   CheckinResultRecord,
   ClaimWaitlistOutcome,
@@ -505,11 +508,12 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
   async registerTx(args: RegisterTxArgs): Promise<RegisterTxOutcome> {
     const event = this.events.get(args.cleanupId)
     if (event === undefined) return { kind: "not_found" }
+    if (guestSelfRegistrationOnPrivateEvent(args, event.visibility)) return { kind: "not_found" }
     if (event.status === "cancelled") return { kind: "closed" }
     if (!withinWindow(args.now, event.registrationOpensAt, event.registrationClosesAt)) {
       return { kind: "registration_closed" }
     }
-    if (args.subject.kind === "user" && this.bans.has(`${args.cleanupId}:${args.subject.userId}`)) {
+    if (args.subject.kind === "user" && this.isBanned(args.cleanupId, args.subject.userId)) {
       return { kind: "banned" }
     }
 
@@ -544,6 +548,9 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     } else if (types.length === 1) {
       type = types[0] ?? null
     } else if (types.length > 1) {
+      return { kind: "ticket_type_not_found" }
+    }
+    if (type !== null && type.visibility === "hidden" && args.source === "self") {
       return { kind: "ticket_type_not_found" }
     }
 
@@ -791,15 +798,71 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     actorId: string
     ban: boolean
     now: Date
-  }): Promise<CancelRegistrationOutcome> {
-    const outcome = await this.cancelRegistration(args)
-    if (outcome.kind === "not_found") return outcome
-    const targetUserId =
-      outcome.kind === "cancelled"
-        ? outcome.registration.userId
-        : (this.registrations.get(args.registrationId)?.userId ?? null)
-    if (args.ban && targetUserId !== null) this.bans.add(`${args.cleanupId}:${targetUserId}`)
-    return outcome
+  }): Promise<RemoveRegistrationOutcome> {
+    const record = this.registrations.get(args.registrationId)
+    if (record === undefined || record.cleanupId !== args.cleanupId) {
+      return { kind: "not_found", releasedWaitlistTicketTypeIds: [] }
+    }
+    if (!args.ban || record.userId === null) {
+      const outcome = await this.cancelRegistration(args)
+      return { ...outcome, releasedWaitlistTicketTypeIds: [] }
+    }
+    const ban = this.applyBan({
+      cleanupId: args.cleanupId,
+      userId: record.userId,
+      actorId: args.actorId,
+      now: args.now,
+    })
+    const removed = ban.cancelledRegistrations.find((r) => r.id === record.id)
+    if (removed === undefined) {
+      const outcome = await this.cancelRegistration(args)
+      return { ...outcome, releasedWaitlistTicketTypeIds: ban.releasedTicketTypeIds }
+    }
+    return {
+      kind: "cancelled",
+      registration: this.toRecord(record),
+      ticketTypeId: removed.ticketTypeId,
+      releasedWaitlistTicketTypeIds: ban.releasedTicketTypeIds,
+    }
+  }
+
+  applyBan(args: { cleanupId: string; userId: string; actorId: string; now: Date }): AppliedBan {
+    this.bans.add(`${args.cleanupId}:${args.userId}`)
+    this.members.delete(`${args.cleanupId}:${args.userId}`)
+    const waitlist = this.cancelWaitlistEntries({
+      cleanupId: args.cleanupId,
+      ticketTypeId: null,
+      subject: { kind: "user", userId: args.userId },
+    })
+    const cancelled: AppliedBan["cancelledRegistrations"] = []
+    for (const record of this.registrations.values()) {
+      if (
+        record.cleanupId !== args.cleanupId ||
+        record.userId !== args.userId ||
+        record.status !== "registered"
+      ) {
+        continue
+      }
+      record.status = "cancelled"
+      record.cancelledAt = args.now
+      for (const seat of record.seats) seat.status = "cancelled"
+      const type =
+        record.ticketTypeId === null ? undefined : this.ticketTypes.get(record.ticketTypeId)
+      if (type !== undefined) {
+        type.reservedSeats = Math.max(type.reservedSeats - record.partySize, 0)
+        this.recomputeSold(type.id)
+      }
+      cancelled.push({ id: record.id, ticketTypeId: record.ticketTypeId })
+    }
+    const registrationTypes = cancelled
+      .map((r) => r.ticketTypeId)
+      .filter((id): id is string => id !== null)
+    return {
+      cancelledRegistrations: cancelled,
+      releasedTicketTypeIds: [
+        ...new Set([...waitlist.releasedTicketTypeIds, ...registrationTypes]),
+      ],
+    }
   }
 
   async transferRegistration(args: {
@@ -839,12 +902,21 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     return { kind: "transferred", registration: this.toRecord(record) }
   }
 
+  private isBanned(cleanupId: string, userId: string): boolean {
+    return this.bans.has(`${cleanupId}:${userId}`)
+  }
+
+  private entryBanned(entry: WaitlistRecord): boolean {
+    return entry.userId !== null && this.isBanned(entry.cleanupId, entry.userId)
+  }
+
   private positionOf(entry: WaitlistRecord): number | null {
     if (entry.status !== "waiting") return null
     const ahead = [...this.waitlist.values()].filter(
       (w) =>
         w.ticketTypeId === entry.ticketTypeId &&
         w.status === "waiting" &&
+        !this.entryBanned(w) &&
         (w.createdAt.getTime() < entry.createdAt.getTime() ||
           (w.createdAt.getTime() === entry.createdAt.getTime() && w.id < entry.id)),
     ).length
@@ -867,8 +939,11 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     if (event === undefined) return { kind: "not_found" }
     if (event.status === "cancelled") return { kind: "closed" }
     if (hasEventEnded(eventWindowOf(event), args.now.getTime())) return { kind: "ended" }
+    if (args.subject.kind === "user" && this.isBanned(args.cleanupId, args.subject.userId)) {
+      return { kind: "banned" }
+    }
     const type = this.ticketTypes.get(args.ticketTypeId)
-    if (type === undefined || type.cleanupId !== args.cleanupId) {
+    if (type === undefined || type.cleanupId !== args.cleanupId || type.visibility === "hidden") {
       return { kind: "ticket_type_not_found" }
     }
     if (!type.waitlistEnabled) return { kind: "waitlist_disabled" }
@@ -918,6 +993,14 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     subject: RegistrationSubject
     now: Date
   }): Promise<{ left: number; releasedTicketTypeIds: string[] }> {
+    return this.cancelWaitlistEntries(args)
+  }
+
+  private cancelWaitlistEntries(args: {
+    cleanupId: string
+    ticketTypeId: string | null
+    subject: RegistrationSubject
+  }): { left: number; releasedTicketTypeIds: string[] } {
     let left = 0
     const released: string[] = []
     for (const entry of this.waitlist.values()) {
@@ -945,7 +1028,11 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     cursor: string | null
     limit: number
   }): Promise<{ rows: WaitlistRecord[]; nextCursor: string | null }> {
-    let rows = [...this.waitlist.values()].filter((w) => w.cleanupId === args.cleanupId)
+    let rows = [...this.waitlist.values()].filter(
+      (w) =>
+        w.cleanupId === args.cleanupId &&
+        !((w.status === "waiting" || w.status === "offered") && this.entryBanned(w)),
+    )
     if (args.ticketTypeId !== null) rows = rows.filter((w) => w.ticketTypeId === args.ticketTypeId)
     rows = rows.filter((w) =>
       args.status === null
@@ -985,6 +1072,7 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
   }): Promise<WaitlistOffer | null> {
     const candidates = [...this.waitlist.values()]
       .filter((w) => w.ticketTypeId === args.ticketTypeId && w.status === "waiting")
+      .filter((w) => w.userId === null || !this.isBanned(w.cleanupId, w.userId))
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
     const candidate = candidates[0]
     if (candidate === undefined) return null
@@ -1017,6 +1105,9 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
     const candidate = this.waitlist.get(args.waitlistId)
     if (candidate === undefined || candidate.cleanupId !== args.cleanupId) return null
     if (candidate.status !== "waiting") return null
+    if (candidate.userId !== null && this.isBanned(candidate.cleanupId, candidate.userId)) {
+      return null
+    }
     const type = this.ticketTypes.get(candidate.ticketTypeId)
     if (type === undefined) return null
     if (type.capacity !== null && type.reservedSeats + candidate.partySize > type.capacity) {
@@ -1235,7 +1326,10 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
       checkedIn: seats.filter((s) => s.status === "active" && s.checkedInAt !== null).length,
       waitlisted: [...this.waitlist.values()]
         .filter(
-          (w) => w.cleanupId === cleanupId && (w.status === "waiting" || w.status === "offered"),
+          (w) =>
+            w.cleanupId === cleanupId &&
+            (w.status === "waiting" || w.status === "offered") &&
+            !this.entryBanned(w),
         )
         .reduce((sum, w) => sum + w.partySize, 0),
       noShow: seats.filter((s) => s.status === "active" && s.noShowAt !== null).length,
@@ -1257,7 +1351,10 @@ export class InMemoryHostRegistrationRepository implements HostRegistrationRepos
           .filter((s) => s.checkedInAt !== null).length,
         waitlisted: [...this.waitlist.values()]
           .filter(
-            (w) => w.ticketTypeId === type.id && (w.status === "waiting" || w.status === "offered"),
+            (w) =>
+              w.ticketTypeId === type.id &&
+              (w.status === "waiting" || w.status === "offered") &&
+              !this.entryBanned(w),
           )
           .reduce((sum, w) => sum + w.partySize, 0),
         capacity: type.capacity,

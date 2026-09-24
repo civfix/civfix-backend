@@ -89,7 +89,7 @@ export interface HostTeamServiceDeps {
   presignEventMedia?: EventMediaPresigner
   affiliations?: AffiliationLoader
   eventTitleOf?: (cleanupId: string) => Promise<string | null>
-  webOrigin?: string
+  webOrigin: string
   logger?: { warn(obj: unknown, msg?: string): void }
   now?: () => Date
   newId?: () => string
@@ -227,8 +227,7 @@ export function makeHostTeamService(deps: HostTeamServiceDeps): HostTeamService 
     token: string,
   ): Promise<void> {
     if (deps.mailer === undefined) return
-    const base = deps.webOrigin ?? "https://civfix.org"
-    const link = `${base}/cleanups/${cleanupId}#teamInvite=${encodeURIComponent(token)}`
+    const link = `${deps.webOrigin}/cleanups/${cleanupId}#teamInvite=${encodeURIComponent(token)}`
     try {
       await deps.mailer.sendTransactional(
         email,

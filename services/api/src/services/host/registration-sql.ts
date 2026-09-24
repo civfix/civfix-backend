@@ -422,6 +422,14 @@ export function waitlistColumns(tag: Queryable) {
   `
 }
 
+/** Backstop for a waiting row whose user was banned by a path that did not cancel it. */
+export function waitlistEntryNotBanned(tag: Queryable, alias: "w" | "w2" = "w") {
+  return tag`NOT EXISTS (
+    SELECT 1 FROM cleanup_bans b
+     WHERE b.cleanup_id = ${tag(alias)}.cleanup_id AND b.user_id = ${tag(alias)}.user_id
+  )`
+}
+
 export function waitlistJoins(tag: Queryable) {
   return tag`
     LEFT JOIN cleanup_ticket_types tt ON tt.id = w.ticket_type_id
@@ -433,6 +441,7 @@ export function waitlistJoins(tag: Queryable) {
        WHERE w2.ticket_type_id = w.ticket_type_id
          AND w2.status = 'waiting'
          AND (w2.created_at, w2.id) < (w.created_at, w.id)
+         AND ${waitlistEntryNotBanned(tag, "w2")}
     ) pos ON w.status = 'waiting'
   `
 }

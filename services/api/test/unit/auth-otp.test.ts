@@ -3,7 +3,11 @@ import { FakeMailer } from "@civfix/shared/fakes"
 import type { Mailer } from "@civfix/shared/interfaces"
 import { AppError, ErrorCode } from "@civfix/shared"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
-import { InMemoryOtpStore, InMemoryUserStore } from "../../src/auth/stores.js"
+import {
+  InMemoryOAuthIdentityStore,
+  InMemoryOtpStore,
+  InMemoryUserStore,
+} from "../../src/auth/stores.js"
 import {
   OtpService,
   OTP_TTL_SECONDS,
@@ -57,7 +61,14 @@ function makeOtp(startMs = 1_700_000_000_000) {
   const users = new InMemoryUserStore()
   const cache = new InMemoryCacheClient(now)
   const mailer = new FakeMailer()
-  const service = new OtpService({ store, users, cache, mailer, now })
+  const service = new OtpService({
+    store,
+    users,
+    identities: new InMemoryOAuthIdentityStore(),
+    cache,
+    mailer,
+    now,
+  })
   return {
     service,
     store,
@@ -75,7 +86,15 @@ function makeReviewerOtp(startMs = 1_700_000_000_000) {
   const users = new InMemoryUserStore()
   const cache = new InMemoryCacheClient(now)
   const mailer = new FakeMailer()
-  const service = new OtpService({ store, users, cache, mailer, now, reviewer: REVIEWER })
+  const service = new OtpService({
+    store,
+    users,
+    identities: new InMemoryOAuthIdentityStore(),
+    cache,
+    mailer,
+    now,
+    reviewer: REVIEWER,
+  })
   return { service, store, users, cache, mailer, advance: (ms: number) => (clockRef.value += ms) }
 }
 
@@ -147,7 +166,14 @@ describe("OtpService.issueOtp", () => {
     const users = new InMemoryUserStore()
     const cache = new InMemoryCacheClient(now)
     const mailer = new FlakyMailer(1)
-    const service = new OtpService({ store, users, cache, mailer, now })
+    const service = new OtpService({
+      store,
+      users,
+      identities: new InMemoryOAuthIdentityStore(),
+      cache,
+      mailer,
+      now,
+    })
 
     await expect(service.issueOtp(EMAIL, IP)).rejects.toThrow()
     expect(await cache.get(`otp:rl:email:${EMAIL.toLowerCase()}`)).toBeNull()

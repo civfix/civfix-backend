@@ -90,6 +90,8 @@ import { InMemoryChatReadState, type ChatReadState } from "../services/threads-s
 import { makeMarkRoomRead, type MarkRoomRead } from "../services/room-read-service.js"
 import type { ChatGatewayOverrides } from "./chat.routes.js"
 
+const WS_UPGRADE_ROUTE = "/ws"
+
 const WS_UPGRADE_RATE_LIMIT = { max: 60, timeWindow: "1 minute" } as const
 
 const REPORT_SEND_LIMIT = { capacity: 30, refillPerSec: 0.5 } as const
@@ -233,7 +235,9 @@ export function applyWsUpgradeRateLimit(app: FastifyInstance): void {
     keyGenerator: wsUpgradeRateLimitKey,
   })
   app.addHook("onRequest", async (request, reply) => {
-    if ((request.url ?? "").split("?")[0] !== "/ws") return
+    // The router matches on the percent-decoded path, so only the matched pattern catches every
+    // spelling of /ws that reaches the upgrade handler.
+    if (request.routeOptions.url !== WS_UPGRADE_ROUTE) return
     const result = await limiter(request)
     if (!result.isAllowed && result.isExceeded) {
       applyRateLimitHeaders(reply, result)

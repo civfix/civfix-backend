@@ -24,14 +24,13 @@ import { perIdentity } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
 import { parse } from "../_validate.js"
 import { requireCapability, resolveVisibleStanding } from "../../services/host/authz.js"
-import { writeAudit } from "../../services/admin/audit.js"
 import {
   BroadcastCapError,
   capError,
   emailHashOf,
   type BroadcastService,
 } from "../../services/host/broadcast-service.js"
-import { makeCommsRuntime } from "../../services/host/comms-wiring.js"
+import { auditBestEffort, makeCommsRuntime } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
 
 export const BROADCAST_WRITE_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
@@ -176,9 +175,16 @@ export async function registerHostBroadcastRoutes(
       const payload = await withCaps(() =>
         service().testSend(params.id, userId, params.broadcastId),
       )
-      await audit(container, "event.broadcast_test_sent", userId, params.broadcastId, {
-        cleanupId: params.id,
-      })
+      await auditBestEffort(
+        container.getDb().sql,
+        {
+          action: "event.broadcast_test_sent",
+          actorId: userId,
+          target: `broadcast:${params.broadcastId}`,
+          meta: { cleanupId: params.id },
+        },
+        request.log,
+      )
       reply.status(200).send(payload)
     },
   )
@@ -192,15 +198,24 @@ export async function registerHostBroadcastRoutes(
       const params = parse(SendEventBroadcastRequestSchema, mergeParams(request))
       await requireCapability(container.getDb().sql, params.id, userId, "broadcast")
       const payload = await withCaps(() => service().send(params.id, userId, params.broadcastId))
-      await audit(container, "event.broadcast_sent", userId, params.broadcastId, {
-        cleanupId: params.id,
-        segment: payload.segment?.kind ?? null,
-        channels: payload.channels,
-        subjectHash:
-          payload.subject === null || payload.subject === undefined
-            ? null
-            : emailHashOf(payload.subject),
-      })
+      await auditBestEffort(
+        container.getDb().sql,
+        {
+          action: "event.broadcast_sent",
+          actorId: userId,
+          target: `broadcast:${params.broadcastId}`,
+          meta: {
+            cleanupId: params.id,
+            segment: payload.segment?.kind ?? null,
+            channels: payload.channels,
+            subjectHash:
+              payload.subject === null || payload.subject === undefined
+                ? null
+                : emailHashOf(payload.subject),
+          },
+        },
+        request.log,
+      )
       reply.status(200).send(payload)
     },
   )
@@ -264,23 +279,4 @@ export async function registerHostBroadcastRoutes(
       reply.status(200).send(payload)
     },
   )
-}
-
-async function audit(
-  container: Container,
-  action: string,
-  actorId: string,
-  broadcastId: string,
-  meta: Record<string, unknown>,
-): Promise<void> {
-  try {
-    await writeAudit(container.getDb().sql, {
-      action,
-      actorId,
-      target: `broadcast:${broadcastId}`,
-      meta,
-    })
-  } catch {
-    return
-  }
 }

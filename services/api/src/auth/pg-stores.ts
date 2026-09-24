@@ -4,8 +4,10 @@ import type { Db } from "../db/client.js"
 import {
   cleanups,
   emailOtps,
+  notifications,
   oauthIdentities,
   posts,
+  pushTokens,
   reports,
   serviceHoursCertificates,
   sessions,
@@ -21,10 +23,16 @@ import {
 } from "@civfix/shared"
 import type { Jobs } from "@civfix/shared/interfaces"
 import { decideHandleWrite, handleChanged } from "./handle-policy.js"
-import { resolveAvatarMediaOrThrow } from "../services/avatar-media.js"
+import {
+  avatarClaimQuery,
+  avatarMediaRefOrThrow,
+  type AvatarMediaRow,
+} from "../services/avatar-media.js"
+import { userUploader } from "../services/media-uploader.js"
 import { enqueueWaitlistPromotion } from "../services/host/waitlist-promotion.js"
 import type { NotificationService } from "../services/notification-service.js"
 import {
+  EmailTakenError,
   generatePlaceholderHandle,
   generateTombstoneHandle,
   type AccountStatus,
@@ -81,7 +89,7 @@ export class PgSessionStore implements SessionStore {
         ip: sessions.ip,
       })
       .from(sessions)
-      .innerJoin(users, eq(users.id, sessions.userId))
+      .innerJoin(users, and(eq(users.id, sessions.userId), isNull(users.deletedAt)))
       .leftJoin(userModeration, eq(userModeration.userId, sessions.userId))
       .where(eq(sessions.id, hash))
       .limit(1)
@@ -193,6 +201,9 @@ export class PgUserStore implements UserStore {
     const row = inserted[0]
     if (row) return toUserRecord(row)
 
+    if (normalizedEmail !== null && input.onEmailConflict === "reject") {
+      throw new EmailTakenError()
+    }
     if (normalizedEmail !== null) {
       const existing = await this.findByEmail(normalizedEmail)
       if (existing) return existing
@@ -232,15 +243,6 @@ export class PgUserStore implements UserStore {
     if (input.donationUrl !== undefined) {
       set.donationUrl = input.donationUrl === "" ? null : input.donationUrl
     }
-    if (input.avatarUploadId !== undefined) {
-      const media = await resolveAvatarMediaOrThrow(this.db.$client, input.avatarUploadId, {
-        userId: id,
-      })
-      set.avatarMediaId = media.id
-      if (input.presignAvatar && media.servedKey !== null) {
-        set.avatarUrl = await input.presignAvatar(media.servedKey)
-      }
-    }
     if (input.socialLinks !== undefined) {
       const links = input.socialLinks
       const clean: SocialLinks = {}
@@ -252,13 +254,27 @@ export class PgUserStore implements UserStore {
       }
       set.socialLinks = Object.keys(clean).length > 0 ? clean : null
     }
+    const avatarUploadId = input.avatarUploadId
     let updated: (typeof users.$inferSelect)[]
     try {
-      updated = await this.db
-        .update(users)
-        .set(set)
-        .where(and(eq(users.id, id), isNull(users.deletedAt)))
-        .returning()
+      updated = await this.db.transaction(async (tx) => {
+        if (avatarUploadId !== undefined) {
+          const media = avatarMediaRefOrThrow(
+            await tx.execute<AvatarMediaRow>(
+              avatarClaimQuery(sql, avatarUploadId, { uploader: userUploader(id), userId: id }),
+            ),
+          )
+          set.avatarMediaId = media.id
+          if (input.presignAvatar && media.servedKey !== null) {
+            set.avatarUrl = await input.presignAvatar(media.servedKey)
+          }
+        }
+        return tx
+          .update(users)
+          .set(set)
+          .where(and(eq(users.id, id), isNull(users.deletedAt)))
+          .returning()
+      })
     } catch (err) {
       if (isUniqueViolation(err)) throw AppError.conflict("That username is taken.")
       throw err
@@ -453,6 +469,20 @@ export class PgUserStore implements UserStore {
       `)
     }
     await tx.execute(sql`DELETE FROM organization_members WHERE user_id = ${id}`)
+    // A pending invite must not outlive the admin who sent it (accept re-checks the inviter too, but a
+    // revoked row keeps it out of every inbox); one addressed to the closed account can never be accepted.
+    await tx.execute(sql`
+      WITH revoked AS (
+        UPDATE organization_invites
+        SET status = 'revoked', revoked_at = now()
+        WHERE status = 'pending' AND (invited_by = ${id} OR user_id = ${id})
+        RETURNING id, organization_id
+      )
+      INSERT INTO audit_log (actor_id, action, target, meta)
+      SELECT ${id}::uuid, 'org.invite_revoked', 'organization:' || organization_id,
+             jsonb_build_object('inviteId', id, 'reason', 'account_deleted')
+      FROM revoked
+    `)
     if (ownedOrgIds.length > 0) {
       const orphaned = await tx.execute<{ id: string }>(sql`
         UPDATE organizations SET deleted_at = now(), updated_at = now()
@@ -479,22 +509,8 @@ export class PgUserStore implements UserStore {
   }
 
   private async scrubAttendeeContributions(tx: DbTransaction, id: string): Promise<string[]> {
-    await tx.execute(sql`
-      UPDATE cleanup_registrations SET host_note = NULL
-       WHERE user_id = ${id} AND host_note IS NOT NULL
-    `)
-    await tx.execute(sql`
-      UPDATE cleanup_registration_seats s
-         SET attendee_name = NULL
-        FROM cleanup_registrations r
-       WHERE s.registration_id = r.id AND r.user_id = ${id} AND s.attendee_name IS NOT NULL
-    `)
-    await tx.execute(sql`
-      UPDATE cleanup_answers a
-         SET value_text = NULL, value_json = NULL, scrubbed_at = now()
-        FROM cleanup_registrations r
-       WHERE a.registration_id = r.id AND r.user_id = ${id} AND a.scrubbed_at IS NULL
-    `)
+    // Waitlist and ticket-type rows before registrations, the order applyBanIn and the waitlist sweep
+    // take, so an erasure racing a ban on one of the user's events cannot deadlock with it.
     const released = await tx.execute<{ id: string }>(sql`
       WITH cancelled_waitlist AS (
         UPDATE cleanup_waitlist SET status = 'cancelled'
@@ -512,6 +528,22 @@ export class PgUserStore implements UserStore {
         FROM releases r
        WHERE t.id = r.ticket_type_id
       RETURNING t.id
+    `)
+    await tx.execute(sql`
+      UPDATE cleanup_registrations SET host_note = NULL
+       WHERE user_id = ${id} AND host_note IS NOT NULL
+    `)
+    await tx.execute(sql`
+      UPDATE cleanup_registration_seats s
+         SET attendee_name = NULL
+        FROM cleanup_registrations r
+       WHERE s.registration_id = r.id AND r.user_id = ${id} AND s.attendee_name IS NOT NULL
+    `)
+    await tx.execute(sql`
+      UPDATE cleanup_answers a
+         SET value_text = NULL, value_json = NULL, scrubbed_at = now()
+        FROM cleanup_registrations r
+       WHERE a.registration_id = r.id AND r.user_id = ${id} AND a.scrubbed_at IS NULL
     `)
     await tx.execute(sql`
       UPDATE donations
@@ -548,6 +580,11 @@ export class PgUserStore implements UserStore {
         .returning()
       const r = updated[0]
       if (!r) throw new Error("PgUserStore.softDeleteAndAnonymize: user not found")
+      // Revocation commits with the tombstone: if these ran after commit, a failure between the two would
+      // leave a deleted account whose tokens still authenticate and whose devices still get pushes.
+      await tx.delete(sessions).where(eq(sessions.userId, id))
+      await tx.delete(pushTokens).where(eq(pushTokens.userId, id))
+      await tx.delete(notifications).where(eq(notifications.userId, id))
       await tx
         .update(reports)
         .set({ visibility: "hidden" })
@@ -704,6 +741,15 @@ export class PgOAuthIdentityStore implements OAuthIdentityStore {
 
   async deleteAllForUser(userId: string): Promise<void> {
     await this.db.delete(oauthIdentities).where(eq(oauthIdentities.userId, userId))
+  }
+
+  async hasIdentityForUser(userId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ id: oauthIdentities.id })
+      .from(oauthIdentities)
+      .where(eq(oauthIdentities.userId, userId))
+      .limit(1)
+    return rows.length > 0
   }
 }
 

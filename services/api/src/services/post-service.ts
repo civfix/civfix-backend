@@ -97,7 +97,11 @@ export interface PostServiceDeps {
 }
 
 export interface PostService {
-  createPost(input: PostComposeInput, authorId: string): Promise<PostDTO>
+  createPost(
+    input: PostComposeInput,
+    authorId: string,
+    guestAnonSessionId?: string,
+  ): Promise<PostDTO>
   getPost(id: string, viewerId: string): Promise<PostDTO>
   deletePost(id: string, viewerId: string): Promise<{ ok: true }>
   listReplies(postId: string, viewerId: string, pagination: PaginationQuery): Promise<RepliesPage>
@@ -389,7 +393,11 @@ export function makePostService(deps: PostServiceDeps): PostService {
   }
 
   return {
-    async createPost(input: PostComposeInput, authorId: string): Promise<PostDTO> {
+    async createPost(
+      input: PostComposeInput,
+      authorId: string,
+      guestAnonSessionId?: string,
+    ): Promise<PostDTO> {
       assertNoSlur(input.body ?? null, "body")
 
       if (input.kind === "repost") {
@@ -440,6 +448,7 @@ export function makePostService(deps: PostServiceDeps): PostService {
 
       const postId = await deps.repo.createPost({
         authorId,
+        guestAnonSessionId,
         kind,
         body: input.body ?? null,
         replyToId: input.replyToId ?? null,
@@ -488,8 +497,13 @@ export function makePostService(deps: PostServiceDeps): PostService {
     async deletePost(id: string, viewerId: string): Promise<{ ok: true }> {
       const brief = await deps.repo.getPostBrief(id)
       if (!brief || brief.deletedAt !== null) throw AppError.notFound("Post not found")
-      if (brief.authorId !== viewerId)
+      if (brief.authorId !== viewerId) {
+        // A post the caller cannot read must answer like a missing one, or 403 confirms it exists.
+        if (!isVisible(brief) || (await isBlocked(viewerId, brief.authorId))) {
+          throw AppError.notFound("Post not found")
+        }
         throw AppError.forbidden("You can only delete your own post.")
+      }
       await deps.repo.softDeletePost(id)
       return { ok: true }
     },

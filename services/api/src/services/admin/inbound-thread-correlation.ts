@@ -19,8 +19,10 @@ import {
   DEFAULT_REPLY_DOMAIN,
   domainOf,
   domainsAligned,
+  organizationalDomain,
   replyAddressToken,
 } from "../../adapters/inbound-mail.cf.js"
+import { CONSUMER_MAIL_DOMAINS } from "./inbound-bounce.js"
 
 export { JURISDICTION_REPLY_NOTE }
 
@@ -203,12 +205,19 @@ export async function isJurisdictionSender(
   threadId: string,
   mail: ParsedMail,
 ): Promise<boolean> {
-  const fromDomain = domainOf(mail.from?.address ?? null)
-  if (fromDomain === null) return false
+  const fromAddress = mail.from?.address ?? null
+  const fromDomain = domainOf(fromAddress)
+  if (fromAddress === null || fromDomain === null) return false
   const recipients = await mailRepo.outboundRecipients(threadId)
+  const sender = normalizedMailbox(fromAddress)
   for (const recipient of recipients) {
     const contactDomain = domainOf(recipient)
-    if (contactDomain !== null && domainsAligned(fromDomain, contactDomain)) return true
+    if (contactDomain === null) continue
+    if (isConsumerMailDomain(contactDomain)) {
+      if (normalizedMailbox(recipient) === sender) return true
+    } else if (domainsAligned(fromDomain, contactDomain)) {
+      return true
+    }
   }
   return false
 }
@@ -216,6 +225,18 @@ export async function isJurisdictionSender(
 export interface ApplyEffectsOptions {
   now?: () => Date
   publishedBy?: MailAuditInput
+}
+
+const BRACKETED_MAILBOX_RE = /<([^<>]*)>/
+
+// Provider aliasing (Gmail dots, +tags, googlemail.com) is deliberately not folded: every folding
+// rule widens the set of mailboxes that count as the contact.
+function normalizedMailbox(address: string): string {
+  return (BRACKETED_MAILBOX_RE.exec(address)?.[1] ?? address).trim().toLowerCase()
+}
+
+function isConsumerMailDomain(domain: string): boolean {
+  return CONSUMER_MAIL_DOMAINS.has(organizationalDomain(domain) ?? domain)
 }
 
 export async function applyInboundEffects(

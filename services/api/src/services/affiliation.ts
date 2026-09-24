@@ -1,6 +1,7 @@
 import type { OrganizationRefDTO, PersonDTO } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
 import { blockedPairExpr } from "./hidden-identity.js"
+import { publicServedKeyExpr } from "./media-served-key.js"
 import { PRESIGN_CONCURRENCY, mapWithLimit } from "./media-presign.js"
 import { presentIds } from "./present-ids.js"
 
@@ -42,7 +43,7 @@ export async function loadPrimaryAffiliations(
       o.name,
       o.verified_status,
       o.verified_kind,
-      am.r2_key AS logo_key
+      ${publicServedKeyExpr(sql, "am")} AS logo_key
     FROM organization_members m
     JOIN organizations o ON o.id = m.organization_id
     JOIN users u ON u.id = m.user_id

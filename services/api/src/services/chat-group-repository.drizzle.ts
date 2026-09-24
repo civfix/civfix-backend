@@ -7,9 +7,10 @@ import { publicAuthorIdentity } from "./public-author.js"
 import { officialPersonFlag } from "../auth/official-account.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { resolveAvatarMediaOrThrow } from "./avatar-media.js"
+import { userUploader } from "./media-uploader.js"
 import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
 import { isUuid } from "../db/cursor-helpers.js"
-import { servedKeyExpr } from "./media-served-key.js"
+import { publicServedKeyExpr } from "./media-served-key.js"
 
 export type GroupMemberRole = (typeof GROUP_MEMBER_ROLE_VALUES)[number]
 
@@ -51,7 +52,7 @@ export interface CreateChatGroupInput {
   kind: ChatGroupKind
   name: string
   description: string | null
-  avatarMediaId: string | null
+  avatarUploadId: string | null
   ownerId: string
   visibility: ChatGroupVisibility
 }
@@ -59,14 +60,14 @@ export interface CreateChatGroupInput {
 export interface UpdateChatGroupPatch {
   name?: string
   description?: string | null
-  avatarMediaId?: string
+  avatarUploadId?: string
   visibility?: ChatGroupVisibility
 }
 
 export interface ChatGroupRepository {
   create(input: CreateChatGroupInput, memberIds: string[]): Promise<string>
   findById(id: string): Promise<ChatGroupView | null>
-  update(id: string, patch: UpdateChatGroupPatch): Promise<void>
+  update(id: string, patch: UpdateChatGroupPatch, actorId: string): Promise<void>
   roleOf(groupId: string, userId: string): Promise<GroupMemberRole | null>
   accessOf(groupId: string, userId: string): Promise<GroupRoomAccess | null>
   addMembers(groupId: string, userIds: string[]): Promise<void>
@@ -85,7 +86,6 @@ export interface ChatGroupRepository {
     cursor: string | null,
     limit: number,
   ): Promise<{ members: GroupMemberView[]; nextCursor: string | null }>
-  findMediaIdByUploadId(uploadId: string, groupId?: string): Promise<string>
   invitableIdsOf(actorId: string, candidateIds: string[]): Promise<string[]>
   blockedPairsAmong(userIds: string[]): Promise<Set<string>>
   listMemberIds(groupId: string, limit?: number): Promise<string[]>
@@ -207,9 +207,17 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
   return {
     async create(input: CreateChatGroupInput, memberIds: string[]): Promise<string> {
       return sql.begin(async (tx) => {
+        const avatarMediaId =
+          input.avatarUploadId === null
+            ? null
+            : (
+                await resolveAvatarMediaOrThrow(tx, input.avatarUploadId, {
+                  uploader: userUploader(input.ownerId),
+                })
+              ).id
         const [g] = await tx<{ id: string }[]>`
           INSERT INTO chat_groups (kind, name, description, avatar_media_id, owner_id, visibility)
-          VALUES (${input.kind}, ${input.name}, ${input.description}, ${input.avatarMediaId},
+          VALUES (${input.kind}, ${input.name}, ${input.description}, ${avatarMediaId},
                   ${input.ownerId}, ${input.visibility})
           RETURNING id
         `
@@ -242,7 +250,7 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
           a.id AS avatar_id,
           a.kind AS avatar_kind,
           a.codec AS avatar_codec,
-          ${servedKeyExpr(sql, "a")} AS avatar_r2_key,
+          ${publicServedKeyExpr(sql, "a")} AS avatar_r2_key,
           a.thumb_key AS avatar_thumb_key,
           a.status AS avatar_status,
           a.width AS avatar_width,
@@ -256,15 +264,25 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
       return row ? toGroupView(row) : null
     },
 
-    async update(id: string, patch: UpdateChatGroupPatch): Promise<void> {
+    async update(id: string, patch: UpdateChatGroupPatch, actorId: string): Promise<void> {
       const set: Record<string, unknown> = {}
       if (patch.name !== undefined) set["name"] = patch.name
       if (patch.description !== undefined) set["description"] = patch.description
-      if (patch.avatarMediaId !== undefined) set["avatar_media_id"] = patch.avatarMediaId
       if (patch.visibility !== undefined) set["visibility"] = patch.visibility
-      const cols = Object.keys(set)
-      if (cols.length === 0) return
-      await sql`UPDATE chat_groups SET ${sql(set, ...cols)} WHERE id = ${id}`
+      const avatarUploadId = patch.avatarUploadId
+      if (Object.keys(set).length === 0 && avatarUploadId === undefined) return
+      // The claim's FOR UPDATE must still hold the media row when avatar_media_id is written, or a
+      // report, post or chat claim can bind the same upload between the check and the write.
+      await sql.begin(async (tx) => {
+        if (avatarUploadId !== undefined) {
+          const media = await resolveAvatarMediaOrThrow(tx, avatarUploadId, {
+            uploader: userUploader(actorId),
+            groupId: id,
+          })
+          set["avatar_media_id"] = media.id
+        }
+        await tx`UPDATE chat_groups SET ${tx(set, ...Object.keys(set))} WHERE id = ${id}`
+      })
     },
 
     async roleOf(groupId: string, userId: string): Promise<GroupMemberRole | null> {
@@ -400,11 +418,6 @@ export function makeChatGroupRepository(sql: Sql, presign?: PresignMedia): ChatG
         members: page.map(toMemberView),
         nextCursor: hasMore && last ? last.user_id : null,
       }
-    },
-
-    async findMediaIdByUploadId(uploadId: string, groupId?: string): Promise<string> {
-      const media = await resolveAvatarMediaOrThrow(sql, uploadId, { groupId })
-      return media.id
     },
 
     async invitableIdsOf(actorId: string, candidateIds: string[]): Promise<string[]> {

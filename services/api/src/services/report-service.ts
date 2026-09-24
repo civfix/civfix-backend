@@ -43,6 +43,7 @@ import {
   type ReportDiscussionMeta,
   type ReportMediaView,
   type ReportOwner,
+  type SignedInReportOwner,
   type ReportRecord,
   type ReportSearchInput,
   type ReportService,
@@ -206,7 +207,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
   }
 
   const service: ReportService = {
-    async createReport(input: CreateReportRequest, owner: { userId: string }): Promise<ReportDTO> {
+    async createReport(input: CreateReportRequest, owner: SignedInReportOwner): Promise<ReportDTO> {
       if (input.honeypot !== undefined && input.honeypot.trim() !== "") {
         throw AppError.validation({ honeypot: "invalid" })
       }
@@ -243,6 +244,7 @@ export function makeReportService(deps: ReportServiceDeps): ReportService {
       const result = await deps.repo.createReportTx({
         reportId,
         reporterUserId: owner.userId,
+        guestAnonSessionId: owner.guestAnonSessionId,
         idempotencyKey: input.idempotencyKey,
         lat: input.lat,
         lng: input.lng,

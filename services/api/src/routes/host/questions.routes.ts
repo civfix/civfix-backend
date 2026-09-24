@@ -32,9 +32,13 @@ export function registerHostQuestionRoutes(
     async (request, reply) => {
       const { id } = parse(CleanupIdParamsSchema, request.params)
       const auth = await resolveAuthContext(request)
-      await ctx.guards().requireVisible(id, auth.userId ?? null)
+      const userId = auth.userId ?? null
+      await ctx.guards().requireVisible(id, userId)
       const query = parse(ListEventQuestionsRequestSchema, queryWith(request, { id }))
-      const payload: ListEventQuestionsResponse = await ctx.services().questions.list(query)
+      const canManage = await ctx.guards().canManage(id, userId, "manage_tickets")
+      const payload: ListEventQuestionsResponse = await ctx
+        .services()
+        .questions.list(query, { canManage })
       reply.status(200).send(payload)
     },
   )

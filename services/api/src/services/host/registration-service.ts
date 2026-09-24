@@ -520,8 +520,13 @@ export function makeRegistrationService(deps: RegistrationServiceDeps): Registra
         now: now(),
       })
       if (outcome.kind === "not_found") throw AppError.notFound("Registration not found")
-      if (outcome.kind === "cancelled") {
-        await enqueueWaitlistPromotion(deps.jobs, [outcome.ticketTypeId], deps.logger)
+      const cancelledTicketTypeId = outcome.kind === "cancelled" ? outcome.ticketTypeId : null
+      await enqueueWaitlistPromotion(
+        deps.jobs,
+        [cancelledTicketTypeId, ...outcome.releasedWaitlistTicketTypeIds],
+        deps.logger,
+      )
+      if (outcome.kind === "cancelled" || outcome.releasedWaitlistTicketTypeIds.length > 0) {
         await eventChanged(input.id)
       }
       await deps.audit?.({

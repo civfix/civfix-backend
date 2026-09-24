@@ -394,7 +394,12 @@ describe("admin org verification decision", () => {
 describe("admin host list", () => {
   it("returns a suspended host even with no broadcast activity in the window", async () => {
     const h = await harness()
-    await h.broadcasts.setHostMessagingSuspended(HOST, true)
+    h.broadcasts.seedHost(HOST)
+    await h.broadcasts.setHostMessagingSuspended(HOST, true, {
+      action: "host.messaging_suspended",
+      actorId: OPERATOR,
+      target: `user:${HOST}`,
+    })
 
     const res = await h.app.inject({ method: "GET", url: "/v1/admin/hosts" })
     expect(res.statusCode).toBe(200)
@@ -415,7 +420,12 @@ describe("admin host list", () => {
 
   it("filters to the suspended set when asked", async () => {
     const h = await harness()
-    await h.broadcasts.setHostMessagingSuspended(HOST, true)
+    h.broadcasts.seedHost(HOST)
+    await h.broadcasts.setHostMessagingSuspended(HOST, true, {
+      action: "host.messaging_suspended",
+      actorId: OPERATOR,
+      target: `user:${HOST}`,
+    })
 
     const suspended = await h.app.inject({ method: "GET", url: "/v1/admin/hosts?suspended=true" })
     expect((suspended.json() as { items: unknown[] }).items).toHaveLength(1)

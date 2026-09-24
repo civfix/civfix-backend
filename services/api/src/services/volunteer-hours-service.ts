@@ -10,6 +10,7 @@ import type {
   CleanupStatus,
   EventHoursEntry,
   EventHoursResponse,
+  EventVisibility,
   LeaderboardEntryDTO,
   LeaderboardQuery,
   LeaderboardResponse,
@@ -29,6 +30,7 @@ import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
 import { MIN_EVENT_DURATION_MS, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
 import type { AffiliationLoader } from "./affiliation.js"
+import { hasHostStanding, isEventPubliclyVisible } from "./host/authz.js"
 import type { TopVolunteerRow } from "./host/analytics-repository.drizzle.js"
 import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import type { NotificationService } from "./notification-service.js"
@@ -229,6 +231,7 @@ export interface VolunteerHoursRepository {
 export interface CleanupHoursView {
   organizerUserId: string
   status: CleanupStatus
+  visibility: EventVisibility
   jurisdictionGeoid: string | null
   title: string
   scheduledAt: Date
@@ -412,6 +415,21 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
     return { eventRole: await deps.cleanups.roleOf(cleanupId, userId), orgRole: null }
   }
 
+  // Matches the event read's visibility rule: a private event the viewer has no standing on must
+  // answer exactly like an unknown id, or these endpoints become an existence oracle.
+  async function loadVisibleCleanup(
+    cleanupId: string,
+    viewerId: string,
+  ): Promise<{ cleanup: CleanupHoursView; standing: HostStanding }> {
+    const cleanup = await deps.cleanups.load(cleanupId)
+    if (cleanup === null) throw AppError.notFound("Event not found")
+    const standing = await standingFor(cleanupId, viewerId)
+    if (!hasHostStanding(standing) && !isEventPubliclyVisible(cleanup.visibility)) {
+      throw AppError.notFound("Event not found")
+    }
+    return { cleanup, standing }
+  }
+
   async function notifyHoursLogged(
     cleanup: { id: string; title: string },
     changed: LogEventHoursResult["changed"],
@@ -535,11 +553,8 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
     },
 
     async getEventHours(cleanupId: string, viewerId: string): Promise<EventHoursResponse> {
-      const cleanup = await deps.cleanups.load(cleanupId)
-      if (cleanup === null) throw AppError.notFound("Event not found")
-
-      const standing = await standingFor(cleanupId, viewerId)
-      if (standing.eventRole === null && standing.orgRole === null) {
+      const { standing } = await loadVisibleCleanup(cleanupId, viewerId)
+      if (!hasHostStanding(standing)) {
         return { scope: "self", entries: [] }
       }
 
@@ -565,10 +580,10 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       actorId: string
       entries: EventHoursEntry[]
     }): Promise<LogEventHoursResponse> {
-      const cleanup = await deps.cleanups.load(input.cleanupId)
-      if (cleanup === null) throw AppError.notFound("Event not found")
-
-      const actorStanding = await standingFor(input.cleanupId, input.actorId)
+      const { cleanup, standing: actorStanding } = await loadVisibleCleanup(
+        input.cleanupId,
+        input.actorId,
+      )
       if (!can(actorStanding, "manage_event")) {
         throw AppError.forbidden("Only the event hosts can log volunteer hours.")
       }

@@ -18,7 +18,7 @@ import type {
   DeliveryRowInput,
   EventBroadcastContext,
 } from "./broadcast-types.js"
-import { CRITICAL_BROADCAST_KINDS } from "./broadcast-types.js"
+import { CRITICAL_BROADCAST_KINDS, HOST_COMPOSED_BROADCAST_KINDS } from "./broadcast-types.js"
 import {
   eventManageUrl,
   eventPath,
@@ -40,6 +40,7 @@ import {
 export const CHUNK_STALE_MS = 10 * 60 * 1000
 export const SENDING_STALE_MS = 5 * 60 * 1000
 export const MAX_DELIVERY_ATTEMPTS = 3
+const ORG_SUSPENDED_REASON = "org_suspended"
 export const AUTH_ABORT_BACKOFF_SEC = [60, 300, 900] as const
 export const CRITICAL_KINDS = CRITICAL_BROADCAST_KINDS
 export const AUTOMATED_KINDS = new Set([
@@ -140,7 +141,7 @@ export class TokenBucket {
 }
 
 export interface PlanOutcome {
-  kind: "planned" | "skipped" | "killed" | "too_many" | "over_budget" | "empty"
+  kind: "planned" | "skipped" | "killed" | "org_suspended" | "too_many" | "over_budget" | "empty"
   recipients?: number
   chunks?: number
 }
@@ -204,12 +205,55 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
     )
   }
 
+  /**
+   * DECISIONS §32: an operator-suspended organization's events send no host-composed message, and a
+   * release or a queued plan is a send just as much as the compose-time call was. Critical automated
+   * notices (a cancellation, a changed time) stay deliverable: attendees must still hear about them.
+   */
+  async function organizationSuspendedFor(record: BroadcastRecord): Promise<boolean> {
+    if (!HOST_COMPOSED_BROADCAST_KINDS.has(record.kind)) return false
+    const event = await repo.eventContext(record.cleanupId)
+    return event?.organizationSuspended === true
+  }
+
+  async function failForSuspendedOrganization(
+    record: BroadcastRecord,
+    from: "scheduled" | "sending",
+    at: Date,
+  ): Promise<boolean> {
+    const moved = await repo.transition(record.id, [from], "failed", { finishedAt: at })
+    if (moved === null) return false
+    const suppressed = await repo.suppressRemaining(record.id, "kill_switch")
+    await repo.refreshCounts(record.id)
+    await insights.bumpInsightsGeneration(record.cleanupId)
+    await deps.audit("event.broadcast_killed", record.createdBy, `broadcast:${record.id}`, {
+      cleanupId: record.cleanupId,
+      kind: record.kind,
+      reason: ORG_SUSPENDED_REASON,
+      suppressed,
+    })
+    deps.logger?.warn(
+      {
+        evt: "broadcast.failed",
+        broadcastId: record.id,
+        cleanupId: record.cleanupId,
+        reason: ORG_SUSPENDED_REASON,
+      },
+      "broadcast refused: the event's organization is suspended",
+    )
+    return true
+  }
+
   async function plan(broadcastId: string): Promise<PlanOutcome> {
     const record = await repo.findById(broadcastId)
     if (record === null || record.status !== "sending") return { kind: "skipped" }
     if (await killed(record)) {
       await killBroadcast(record, "kill_switch")
       return { kind: "killed" }
+    }
+    if (await organizationSuspendedFor(record)) {
+      const failed = await failForSuspendedOrganization(record, "sending", now())
+      return { kind: failed ? "org_suspended" : "skipped" }
     }
 
     const segment = record.segment ?? { kind: "all_registered" as const }
@@ -327,6 +371,12 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
     }
     const event = await repo.eventContext(record.cleanupId)
     if (event === null) return
+    // An operator can suspend the organization after plan() passed; every chunk rechecks so the
+    // suspension stops what is still pending rather than only the next broadcast.
+    if (HOST_COMPOSED_BROADCAST_KINDS.has(record.kind) && event.organizationSuspended) {
+      await failForSuspendedOrganization(record, "sending", now())
+      return
+    }
 
     const claims = await repo.claimChunk({
       broadcastId,
@@ -760,6 +810,12 @@ export function makeBroadcastPipeline(deps: BroadcastPipelineDeps) {
   }
 
   async function releaseScheduled(id: string, at: Date): Promise<boolean> {
+    const due = await repo.findById(id)
+    if (due === null || due.status !== "scheduled") return false
+    if (await organizationSuspendedFor(due)) {
+      await failForSuspendedOrganization(due, "scheduled", at)
+      return false
+    }
     const moved = await repo.transition(id, ["scheduled"], "sending", { startedAt: at })
     if (moved === null) return false
     if (moved.createdBy !== null && moved.kind === "host_broadcast") {

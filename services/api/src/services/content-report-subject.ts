@@ -8,6 +8,8 @@ import {
 } from "./media-authorization.js"
 import { makeDrizzleMediaRepository } from "./media-repository.drizzle.js"
 import { isPubliclyVisibleStatus } from "./report-visibility.js"
+import { hasHostStanding, isEventPubliclyVisible } from "./host/authz.js"
+import { hostStandingOf } from "./host/host-standing.js"
 
 export interface ContentSubjectGate {
   assertReportable(
@@ -49,10 +51,11 @@ export function makeDrizzleContentSubjectGate(sql: Sql, db: Db): ContentSubjectG
         return (await mediaAuthorizer.authorize(asset, { userId: reporterUserId })).allowed
       }
       case "event": {
-        const rows = await sql<{ ok: number }[]>`
-          SELECT 1 AS ok FROM cleanups WHERE id = ${subjectId} LIMIT 1
-        `
-        return rows.length > 0
+        // Same rule as the event detail read, so a private event's id is no existence oracle. A
+        // cancelled event stays reportable, or a host could cancel to escape a report.
+        const event = await hostStandingOf(sql, subjectId, reporterUserId)
+        if (event === null) return false
+        return hasHostStanding(event.standing) || isEventPubliclyVisible(event.visibility)
       }
       case "profile": {
         const rows = await sql<{ ok: number }[]>`

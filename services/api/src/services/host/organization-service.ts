@@ -113,7 +113,7 @@ export interface OrganizationServiceDeps {
   affiliations?: AffiliationLoader
   mailer?: OrganizationMailer
   notifier?: OrganizationNotifier
-  webOrigin?: string
+  webOrigin: string
   logger?: {
     error: (obj: unknown, msg?: string) => void
     warn?: (obj: unknown, msg?: string) => void
@@ -341,14 +341,13 @@ function toInviteDTO(record: OrganizationInviteRecord): OrganizationInviteDTO {
 /**
  * The org-scoped write gate for an operator-suspended org (DECISIONS §32): members keep reading, the
  * admin plane keeps working, but self-service settings, team changes, verification applications and
- * invite acceptance are refused until an operator lifts the flag.
+ * invite acceptance are refused until an operator lifts the flag. The operator's reason is internal
+ * (the admin console records it for the audit log), so members only ever see the generic sentence.
  */
 function assertNotSuspended(record: OrganizationBaseRecord): void {
   if (record.suspendedAt === null) return
   throw AppError.forbidden(
-    record.suspendedReason === null || record.suspendedReason.length === 0
-      ? "This organization has been suspended, so it can't be changed right now."
-      : `This organization has been suspended (${record.suspendedReason}), so it can't be changed right now.`,
+    "This organization has been suspended, so it can't be changed right now.",
   )
 }
 
@@ -398,7 +397,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
   const now = deps.now ?? (() => new Date())
   const newId = deps.newId ?? (() => randomUUID())
   const newToken = deps.newToken ?? (() => generateToken(ORG_INVITE_TOKEN_BYTES))
-  const webBase = () => (deps.webOrigin ?? "https://civfix.org").replace(/\/+$/, "")
+  const webBase = () => deps.webOrigin.replace(/\/+$/, "")
 
   async function logoUrlOf(record: OrganizationBaseRecord): Promise<string | null> {
     if (record.logoKey === null || deps.presignLogo === undefined) return null
@@ -643,7 +642,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
       return
     }
     if (owner === null) return
-    const base = (deps.webOrigin ?? "https://civfix.org").replace(/\/+$/, "")
+    const base = webBase()
     const orgPath = `/orgs/${org.slug}`
     const verifyPath = `/manage/orgs/${org.id}/verification`
     const kindLabel = verificationKindLabel(org.verifiedKind ?? null)
@@ -754,6 +753,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
           ...(patch.socialLinks !== undefined ? { socialLinks: patch.socialLinks } : {}),
         },
         now(),
+        actorId,
       )
       if (updated === "not_found") notFoundOrganization()
       if (updated === "slug_taken")
@@ -842,6 +842,9 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
           expiresAt: new Date(at.getTime() + ORG_INVITE_TTL_MS),
           now: at,
         })
+        if (outcome.kind === "forbidden") {
+          throw AppError.forbidden(hostForbiddenCopy("manage_org_members"))
+        }
         if (outcome.kind === "created") {
           await sendInviteEmail(outcome.invite.email ?? email, org, actorId, input.role, token)
           if (userId !== null) await notifyInvitedUser(userId, org, input.role)
@@ -861,6 +864,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         actorId,
         now: now(),
       })
+      if (outcome === "forbidden") throw AppError.forbidden(hostForbiddenCopy("manage_org_members"))
       if (outcome === "added") await notifyAddedMember(userId, org, input.role)
       const member = await deps.repo.findMember(id, userId)
       return {
@@ -1147,7 +1151,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
         changed.push("socialLinks")
       }
       if (changed.length === 0) return adminOrgDTO(id)
-      const outcome = await deps.repo.updateOrganizationTx(id, patch, now(), {
+      const outcome = await deps.repo.updateOrganizationTx(id, patch, now(), operatorId, {
         actorId: operatorId,
         reason: input.reason,
         changed,

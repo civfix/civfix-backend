@@ -13,6 +13,7 @@ import type {
 } from "./broadcast-repository.js"
 import { DEFAULT_PREFS } from "../notification-helpers.js"
 import type { NotificationPrefsRecord } from "../notification-service.js"
+import type { WriteAuditInput } from "../admin/audit.js"
 import type {
   AdminBroadcastRow,
   AdminHostListParams,
@@ -89,6 +90,7 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
   private readonly events = new Map<string, EventBroadcastContext>()
   private readonly hosts = new Map<string, HostMessagingState>()
   private dueReminders: DueReminder[] = []
+  readonly audits: WriteAuditInput[] = []
 
   seedEvent(
     context: Omit<EventBroadcastContext, "organizationSuspended"> & {
@@ -672,13 +674,17 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     return Promise.resolve(this.hosts.get(userId) ?? null)
   }
 
-  setHostMessagingSuspended(userId: string, suspended: boolean): Promise<boolean> {
-    const existing = this.hosts.get(userId) ?? {
-      suspended: false,
-      emailVerified: true,
-      accountCreatedAt: new Date(0),
-    }
+  setHostMessagingSuspended(
+    userId: string,
+    suspended: boolean,
+    audit: WriteAuditInput,
+  ): Promise<boolean> {
+    // A seeded host stands in for a users row: the Postgres upsert selects from users, so an
+    // unknown id changes nothing and writes no audit row.
+    const existing = this.hosts.get(userId)
+    if (existing === undefined) return Promise.resolve(false)
     this.hosts.set(userId, { ...existing, suspended })
+    this.audits.push(audit)
     return Promise.resolve(true)
   }
 

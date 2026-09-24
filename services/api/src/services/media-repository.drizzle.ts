@@ -22,6 +22,7 @@ function toView(row: typeof mediaAssets.$inferSelect): MediaAssetView {
     postId: row.postId,
     finalizedAt: row.finalizedAt,
     createdAt: row.createdAt,
+    uploader: row.uploader,
   }
 }
 
@@ -35,6 +36,7 @@ export function makeDrizzleMediaRepository(db: Db): MediaRepository {
         r2Key: row.r2Key,
         status: row.status,
         byteSize: row.byteSize,
+        uploader: row.uploader,
       })
     },
 

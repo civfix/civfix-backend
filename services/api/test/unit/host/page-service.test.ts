@@ -51,7 +51,7 @@ describe("event page service", () => {
   })
 
   it("saves blocks and a slug, then publishes", async () => {
-    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] })
+    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] }, HOST)
     const published = await h.service.publish({ id: EVENT, published: true }, HOST)
     expect(published.status).toBe("published")
     expect(published.slug).toBe("beach-sweep")
@@ -61,7 +61,7 @@ describe("event page service", () => {
     await expect(h.service.publish({ id: EVENT, published: true }, HOST)).rejects.toBeInstanceOf(
       AppError,
     )
-    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [] })
+    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [] }, HOST)
     await expect(h.service.publish({ id: EVENT, published: true }, HOST)).rejects.toMatchObject({
       fields: { blocks: "add at least one block before publishing" },
     })
@@ -69,13 +69,15 @@ describe("event page service", () => {
 
   it("refuses a reserved slug and a slug another event already holds", async () => {
     const reserved = [...RESERVED_SLUGS][0] as string
-    await expect(h.service.save({ id: EVENT, slug: reserved, blocks: [] })).rejects.toMatchObject({
+    await expect(
+      h.service.save({ id: EVENT, slug: reserved, blocks: [] }, HOST),
+    ).rejects.toMatchObject({
       fields: { slug: "that address is reserved" },
     })
 
     h.repo.seedEvent({ cleanupId: OTHER_EVENT, pageSlug: "taken-slug" })
     await expect(
-      h.service.save({ id: EVENT, slug: "taken-slug", blocks: [] }),
+      h.service.save({ id: EVENT, slug: "taken-slug", blocks: [] }, HOST),
     ).rejects.toMatchObject({ fields: { slug: "that address is already taken" } })
   })
 
@@ -149,12 +151,20 @@ describe("event page service", () => {
 
   it("resolves block mediaIds to presigned urls and never stores the resolved url", async () => {
     h.repo.mediaKeys.set(MEDIA, "covers/hero.jpg")
-    const saved = await h.service.save({
-      id: EVENT,
-      blocks: [
-        { id: "b1", kind: "hero", mediaId: MEDIA, imageUrl: "https://media.civfix.org/stale.jpg" },
-      ],
-    })
+    const saved = await h.service.save(
+      {
+        id: EVENT,
+        blocks: [
+          {
+            id: "b1",
+            kind: "hero",
+            mediaId: MEDIA,
+            imageUrl: "https://media.civfix.org/stale.jpg",
+          },
+        ],
+      },
+      HOST,
+    )
     const hero = saved.blocks[0] as { imageUrl?: string }
     expect(hero.imageUrl).toBe("memory://covers/hero.jpg")
     const stored = h.repo.pages.get(EVENT)?.blocks[0] as { imageUrl?: string }
@@ -163,26 +173,32 @@ describe("event page service", () => {
 
   it("resolves a fresh upload used as a sponsor logo", async () => {
     h.repo.mediaKeys.set(MEDIA, "pages/sponsor.png")
-    const saved = await h.service.save({
-      id: EVENT,
-      blocks: [
-        {
-          id: "b1",
-          kind: "sponsors",
-          entries: [{ name: "Acme", logoMediaId: MEDIA, url: "https://acme.example" }],
-        },
-      ],
-    })
+    const saved = await h.service.save(
+      {
+        id: EVENT,
+        blocks: [
+          {
+            id: "b1",
+            kind: "sponsors",
+            entries: [{ name: "Acme", logoMediaId: MEDIA, url: "https://acme.example" }],
+          },
+        ],
+      },
+      HOST,
+    )
     const sponsors = saved.blocks[0] as { entries: { logoUrl?: string }[] }
     expect(sponsors.entries[0]?.logoUrl).toBe("memory://pages/sponsor.png")
   })
 
   it("does not resolve media bound to another event's page", async () => {
     h.repo.mediaKeys.set(MEDIA, "pages/private-cover.jpg")
-    await h.service.save({
-      id: OTHER_EVENT,
-      blocks: [{ id: "b1", kind: "hero", mediaId: MEDIA }],
-    })
+    await h.service.save(
+      {
+        id: OTHER_EVENT,
+        blocks: [{ id: "b1", kind: "hero", mediaId: MEDIA }],
+      },
+      HOST,
+    )
     const keys = await h.repo.mediaKeysFor(EVENT, [MEDIA])
     expect(keys.size).toBe(0)
     const theirs = await h.repo.mediaKeysFor(OTHER_EVENT, [MEDIA])
@@ -193,31 +209,37 @@ describe("event page service", () => {
     const NEXT_COVER = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
     h.repo.mediaKeys.set(MEDIA, "covers/first.jpg")
     h.repo.mediaKeys.set(NEXT_COVER, "covers/second.jpg")
-    await h.service.save({
-      id: EVENT,
-      coverMediaId: MEDIA,
-      blocks: [{ id: "b1", kind: "hero", mediaId: MEDIA }],
-    })
-    await h.service.save({
-      id: EVENT,
-      coverMediaId: NEXT_COVER,
-      blocks: [{ id: "b1", kind: "hero", mediaId: MEDIA }],
-    })
+    await h.service.save(
+      {
+        id: EVENT,
+        coverMediaId: MEDIA,
+        blocks: [{ id: "b1", kind: "hero", mediaId: MEDIA }],
+      },
+      HOST,
+    )
+    await h.service.save(
+      {
+        id: EVENT,
+        coverMediaId: NEXT_COVER,
+        blocks: [{ id: "b1", kind: "hero", mediaId: MEDIA }],
+      },
+      HOST,
+    )
     const keys = await h.repo.mediaKeysFor(EVENT, [MEDIA])
     expect(keys.get(MEDIA)).toBe("covers/first.jpg")
   })
 
   it("drops the binding when a block stops referencing the image", async () => {
     h.repo.mediaKeys.set(MEDIA, "pages/hero.jpg")
-    await h.service.save({ id: EVENT, blocks: [{ id: "b1", kind: "hero", mediaId: MEDIA }] })
-    await h.service.save({ id: EVENT, blocks: [ABOUT] })
+    await h.service.save({ id: EVENT, blocks: [{ id: "b1", kind: "hero", mediaId: MEDIA }] }, HOST)
+    await h.service.save({ id: EVENT, blocks: [ABOUT] }, HOST)
     const keys = await h.repo.mediaKeysFor(EVENT, [MEDIA])
     expect(keys.size).toBe(0)
   })
 
   it("refuses a block mediaId that is not ready platform media", async () => {
     await expect(
-      h.service.save({ id: EVENT, blocks: [{ id: "b1", kind: "hero", mediaId: MEDIA }] }),
+      h.service.save({ id: EVENT, blocks: [{ id: "b1", kind: "hero", mediaId: MEDIA }] }, HOST),
     ).rejects.toBeInstanceOf(AppError)
   })
 
@@ -247,7 +269,7 @@ describe("event page service", () => {
   })
 
   it("404s a public page that is not published, for everyone but the team", async () => {
-    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] })
+    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] }, HOST)
     await expect(
       h.service.getPublicEventPage({ slug: "beach-sweep" }, STRANGER),
     ).rejects.toBeInstanceOf(AppError)
@@ -262,7 +284,7 @@ describe("event page service", () => {
       presignCover: (key) => Promise.resolve({ url: `memory://${key}` }),
       now: () => NOW,
     })
-    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] })
+    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] }, HOST)
 
     await expect(
       memberService.getPublicEventPage({ slug: "beach-sweep" }, STRANGER),
@@ -285,7 +307,7 @@ describe("event page service", () => {
       now: () => NOW,
     })
     h.repo.seedEvent({ cleanupId: EVENT, visibility: "private" })
-    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] })
+    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] }, HOST)
     await h.service.publish({ id: EVENT, published: true }, HOST)
 
     await expect(
@@ -295,7 +317,7 @@ describe("event page service", () => {
 
   it("404s a private event's page for a stranger even when published", async () => {
     h.repo.seedEvent({ cleanupId: EVENT, visibility: "private" })
-    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] })
+    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] }, HOST)
     await h.service.publish({ id: EVENT, published: true }, HOST)
 
     await expect(
@@ -308,7 +330,7 @@ describe("event page service", () => {
 
   it("serves an unlisted event's page with noindex", async () => {
     h.repo.seedEvent({ cleanupId: EVENT, visibility: "unlisted" })
-    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] })
+    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] }, HOST)
     await h.service.publish({ id: EVENT, published: true }, HOST)
 
     const page = await h.service.getPublicEventPage({ slug: "beach-sweep" }, null)
@@ -320,7 +342,7 @@ describe("event page service", () => {
   it("serves the public consent versions and hides hidden ticket types", async () => {
     h.repo.seedTicketType({ cleanupId: EVENT, name: "Public" })
     h.repo.seedTicketType({ cleanupId: EVENT, name: "Hidden", visibility: "hidden" })
-    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] })
+    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] }, HOST)
     await h.service.publish({ id: EVENT, published: true }, HOST)
 
     const page = await h.service.getPublicEventPage({ slug: "beach-sweep" }, null)
@@ -333,7 +355,7 @@ describe("event page service", () => {
   })
 
   it("caps publishes per host per day", async () => {
-    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] })
+    await h.service.save({ id: EVENT, slug: "beach-sweep", blocks: [ABOUT] }, HOST)
     for (let i = 0; i < 20; i++) {
       await h.service.publish({ id: EVENT, published: i % 2 === 0 }, HOST)
     }

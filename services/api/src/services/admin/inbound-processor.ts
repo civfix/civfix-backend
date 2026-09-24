@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto"
 import type { Container } from "../../di.js"
 import type { InboundMail, ParsedMail, Storage } from "@civfix/shared/interfaces"
 import type { MailAttachment } from "@civfix/shared"
 import {
   makeDrizzleMailRepository,
+  type MailMessageRecord,
   type MailRepository,
   type MailThreadRecord,
 } from "./mail-repository.drizzle.js"
@@ -55,6 +57,12 @@ export const INBOUND_ATTACHMENT_TOTAL_MAX_BYTES = 30 * 1024 * 1024
 export const INBOUND_OBJECT_MAX_BYTES = 30 * 1024 * 1024
 
 export const INBOUND_PARSE_TIMEOUT_MS = 20_000
+
+const CONTENT_DIGEST_HEX_CHARS = 32
+
+function contentDigest(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex").slice(0, CONTENT_DIGEST_HEX_CHARS)
+}
 
 async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -132,7 +140,7 @@ export async function processInboundObject(
   const bounce = detectBounce(mail)
   if (bounce.isBounce) {
     const bounceVerdict = readMailAuthVerdict(mail)
-    const result = await routeInbox(storage, inboundRepo, key, mail, messageId, bounceVerdict)
+    const result = await routeInbox(storage, inboundRepo, bytes, mail, messageId, bounceVerdict)
     if (result.outcome === "inbox") {
       await handleBounce(container, mailRepo, bounce, {
         fromAddr: mail.from?.address ?? null,
@@ -157,12 +165,13 @@ export async function processInboundObject(
 
   const result =
     resolvedThread === null
-      ? await routeInbox(storage, inboundRepo, key, mail, messageId, authVerdict)
+      ? await routeInbox(storage, inboundRepo, bytes, mail, messageId, authVerdict)
       : await routeThreaded(
           container,
           injected,
           storage,
           mailRepo,
+          bytes,
           mail,
           messageId,
           resolvedThread,
@@ -202,6 +211,7 @@ async function routeThreaded(
   injected: InboundEffectDeps,
   storage: Storage,
   mailRepo: MailRepository,
+  raw: Uint8Array,
   mail: ParsedMail,
   messageId: string,
   thread: MailThreadRecord,
@@ -211,12 +221,91 @@ async function routeThreaded(
   const unaffiliated =
     authVerdict !== "pass" || !(await isJurisdictionSender(mailRepo, thread.id, mail))
   const withheld = unaffiliated && (thread.reportId !== null || thread.cleanupId !== null)
+  // Message-ID is globally unique, so a stored row means this mail can only be a replay. Skipping
+  // the upload keeps a sender who reuses someone else's Message-ID from writing any object. A failed
+  // lookup throws so the pending object stays for the sweep instead of being treated as new mail.
+  const existing = await mailRepo.findMessageByMessageId(messageId)
+  const insert =
+    existing === null
+      ? await insertThreadedMessage(
+          storage,
+          mailRepo,
+          raw,
+          mail,
+          messageId,
+          thread,
+          unaffiliated,
+          authVerdict,
+          withheld,
+        )
+      : null
+  if (insert?.inserted === true) {
+    await mailRepo.recordEvent({
+      threadId: thread.id,
+      messageId: insert.message.id,
+      type: "delivered",
+      meta: {
+        direction: "in",
+        from: mail.from?.address ?? null,
+        messageId,
+        authVerdict,
+        ...(unaffiliated ? { unaffiliated: true } : {}),
+        ...(insert.oversize.length > 0 ? { oversizeAttachments: insert.oversize } : {}),
+      },
+    })
+    if (withheld) {
+      logger.warn(
+        {
+          threadId: thread.id,
+          messageId: insert.message.id,
+          fromDomain: domainOf(mail.from?.address ?? null),
+          authVerdict,
+        },
+        "inbound: reply withheld from public effects pending operator review",
+      )
+    }
+  }
+
+  const message =
+    existing ?? (insert === null ? null : insert.inserted ? insert.message : insert.stored)
+  if (message !== null && message.threadId === thread.id) {
+    await applyInboundEffects(container, injected, mailRepo, thread, message).catch(
+      (err: unknown) => {
+        logger.warn(
+          { err: errorText(err), threadId: thread.id, messageId: message.id },
+          "inbound: side effects failed (claim released; the sweep re-drives it)",
+        )
+      },
+    )
+  }
+  if (insert?.inserted !== true) return { outcome: "replay" }
+  return { outcome: "threaded", id: insert.message.id }
+}
+
+type ThreadedInsert =
+  | { inserted: true; message: MailMessageRecord; oversize: string[] }
+  | { inserted: false; stored: MailMessageRecord | null }
+
+async function insertThreadedMessage(
+  storage: Storage,
+  mailRepo: MailRepository,
+  raw: Uint8Array,
+  mail: ParsedMail,
+  messageId: string,
+  thread: MailThreadRecord,
+  unaffiliated: boolean,
+  authVerdict: MailAuthVerdict,
+  withheld: boolean,
+): Promise<ThreadedInsert> {
+  // One folder per raw message, as in routeInbox: a lost insert race discards the objects its row
+  // does not hold, and a folder shared with another message of the thread would lose that message's
+  // attachment.
   const { attachments, oversize } = await streamAttachments(
     storage,
-    `inbound-mail/${thread.id}`,
+    `inbound-mail/${thread.id}/${contentDigest(raw)}`,
     mail,
   )
-  const inserted = await mailRepo.insertMessage({
+  const message = await mailRepo.insertMessage({
     threadId: thread.id,
     direction: "in",
     fromAddr: mail.from?.address ?? null,
@@ -230,46 +319,10 @@ async function routeThreaded(
     authVerdict,
     ...(withheld ? { threadStatus: "needs_action" as const } : {}),
   })
-  if (inserted !== null) {
-    await mailRepo.recordEvent({
-      threadId: thread.id,
-      messageId: inserted.id,
-      type: "delivered",
-      meta: {
-        direction: "in",
-        from: mail.from?.address ?? null,
-        messageId,
-        authVerdict,
-        ...(unaffiliated ? { unaffiliated: true } : {}),
-        ...(oversize.length > 0 ? { oversizeAttachments: oversize } : {}),
-      },
-    })
-    if (withheld) {
-      logger.warn(
-        {
-          threadId: thread.id,
-          messageId: inserted.id,
-          fromDomain: domainOf(mail.from?.address ?? null),
-          authVerdict,
-        },
-        "inbound: reply withheld from public effects pending operator review",
-      )
-    }
-  }
-
-  const message = inserted ?? (await mailRepo.findMessageByMessageId(messageId).catch(() => null))
-  if (message !== null && message.threadId === thread.id) {
-    await applyInboundEffects(container, injected, mailRepo, thread, message).catch(
-      (err: unknown) => {
-        logger.warn(
-          { err: errorText(err), threadId: thread.id, messageId: message.id },
-          "inbound: side effects failed (claim released; the sweep re-drives it)",
-        )
-      },
-    )
-  }
-  if (inserted === null) return { outcome: "replay" }
-  return { outcome: "threaded", id: inserted.id }
+  if (message !== null) return { inserted: true, message, oversize }
+  const stored = await mailRepo.findMessageByMessageId(messageId)
+  await discardUnreferenced(storage, attachments, stored?.attachments ?? [])
+  return { inserted: false, stored }
 }
 
 function plainTextBody(mail: ParsedMail): string | null {
@@ -287,15 +340,18 @@ function errorText(err: unknown): string {
 async function routeInbox(
   storage: Storage,
   inboundRepo: InboundRepository,
-  key: string,
+  raw: Uint8Array,
   mail: ParsedMail,
   messageId: string,
   authVerdict: MailAuthVerdict,
 ): Promise<ProcessResult> {
-  const folder = key.startsWith(INBOUND_PENDING_PREFIX)
-    ? key.slice(INBOUND_PENDING_PREFIX.length).replace(/\.eml$/i, "")
-    : sanitizeFilename(messageId)
-  const { attachments } = await streamAttachments(storage, `inbound-emails/${folder}`, mail)
+  // One folder per raw message, never shared between rows: the retention reaper deletes a row's
+  // attachment objects, so a folder another row also pointed at would lose that row's evidence.
+  const { attachments } = await streamAttachments(
+    storage,
+    `inbound-emails/${contentDigest(raw)}`,
+    mail,
+  )
   const recipient = mail.to[0]?.address ?? null
   const toAddr =
     mail.to
@@ -314,7 +370,21 @@ async function routeInbox(
     headers: buildStoredHeaders(mail.headers, authVerdict),
     attachments,
   })
+  if (!inserted) {
+    const kept = (await inboundRepo.get(id))?.attachments ?? []
+    await discardUnreferenced(storage, attachments, kept)
+  }
   return { outcome: inserted ? "inbox" : "replay", id }
+}
+
+async function discardUnreferenced(
+  storage: Storage,
+  written: readonly MailAttachment[],
+  kept: readonly MailAttachment[],
+): Promise<void> {
+  const keptKeys = new Set(kept.map((att) => att.key))
+  const orphans = new Set(written.map((att) => att.key).filter((key) => !keptKeys.has(key)))
+  for (const key of orphans) await storage.delete(key)
 }
 
 export const INBOUND_BODY_TEXT_MAX_CHARS = 256 * 1024
@@ -389,7 +459,7 @@ async function streamAttachments(
       recordSkipped(oversize, filename)
       continue
     }
-    const objKey = `${keyPrefix}/${index}-${sanitizeFilename(filename)}`
+    const objKey = `${keyPrefix}/${contentDigest(bytes)}/${sanitizeFilename(filename)}`
     await storage.put(objKey, bytes, { contentType: "application/octet-stream" })
     attachments.push({ key: objKey, filename, size: bytes.byteLength })
     totalBytes += bytes.byteLength

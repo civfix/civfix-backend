@@ -101,6 +101,7 @@ export async function registerVolunteerHoursRoutes(
         return {
           organizerUserId: record.organizerUserId,
           status: record.status,
+          visibility: record.visibility,
           jurisdictionGeoid: record.jurisdictionGeoid,
           title: record.title,
           scheduledAt: record.scheduledAt,

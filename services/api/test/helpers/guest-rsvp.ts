@@ -72,6 +72,7 @@ export class InMemoryGuestRsvpRepository implements GuestRsvpRepository, GuestCo
       id: event.id,
       title: event.title ?? "Beach cleanup",
       status: event.status ?? "upcoming",
+      visibility: event.visibility ?? "public",
       scheduledAt: event.scheduledAt ?? new Date(this.clock() + 86_400_000),
       endsAt: event.endsAt ?? null,
       address: event.address ?? "123 Ocean Ave",

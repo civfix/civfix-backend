@@ -33,6 +33,17 @@ export const WS_HANDSHAKE_FRAME_BUFFER = 32
 
 export const WS_HANDSHAKE_BUFFER_BYTES = 64 * 1024
 
+// Counts the frame in flight. A full token-bucket burst, or a reconnect re-joining every room, has to
+// fit behind one slow handler without closing the socket (a close makes the client reconnect and
+// replay the same burst); the bucket still rejects the excess as each frame is dequeued.
+export const WS_MAX_QUEUED_FRAMES = Math.max(WS_FRAME_LIMIT.capacity, WS_MAX_JOINED_ROOMS)
+
+export const WS_MAX_QUEUED_BYTES = 256 * 1024
+
+export const WS_FRAME_RATE_LIMITED_MESSAGE = "You're sending frames too fast. Please slow down."
+
+export const WS_FRAME_BACKLOG_REASON = "too many queued frames"
+
 export type IsMemberFn = (cleanupId: string, userId: string) => Promise<boolean>
 
 export type MarkReadFn = (cleanupId: string, userId: string, upToId: string) => Promise<void>

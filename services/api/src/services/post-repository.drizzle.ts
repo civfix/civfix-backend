@@ -15,7 +15,9 @@ import type { POST_KIND_VALUES, REPORT_VISIBILITY_VALUES } from "../db/schema/ty
 import { paginate, parseTimeCursor } from "../db/cursor-helpers.js"
 import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
-import { servedKeyExpr } from "./media-served-key.js"
+import { claimableAsAttachment, lockUploadsForClaim } from "./media-bindings.js"
+import { uploadersOf } from "./media-uploader.js"
+import { publicServedKeyExpr } from "./media-served-key.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { publicAuthorIdentity } from "./public-author.js"
 import { officialPersonFlag } from "../auth/official-account.js"
@@ -55,6 +57,7 @@ function organizationRefOf(
 
 export interface CreatePostArgs {
   authorId: string
+  guestAnonSessionId?: string | undefined
   kind: PostKind
   body: string | null
   replyToId: string | null
@@ -511,7 +514,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
       }[]
     >`
       SELECT o.id, o.slug, o.name, o.verified_status, o.verified_kind,
-             ${servedKeyExpr(sql, "am")} AS logo_key
+             ${publicServedKeyExpr(sql, "am")} AS logo_key
       FROM organizations o
       LEFT JOIN media_assets am ON am.id = o.logo_media_id
       WHERE o.id = ANY(${wanted}::uuid[]) AND o.deleted_at IS NULL
@@ -547,7 +550,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         u.bio,
         u.follower_count AS followers,
         u.following_count AS following,
-        ${servedKeyExpr(sql, "am")} AS avatar_r2_key,
+        ${publicServedKeyExpr(sql, "am")} AS avatar_r2_key,
         u.avatar_url,
         u.deleted_at,
         EXISTS (
@@ -1076,11 +1079,16 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         const postId = inserted[0]!.id
 
         if (args.mediaUploadIds.length > 0) {
+          await lockUploadsForClaim(tx, args.mediaUploadIds)
           const claimed = await tx<{ upload_id: string }[]>`
             UPDATE media_assets
             SET post_id = ${postId}, purpose = 'post'
             WHERE upload_id IN ${tx(args.mediaUploadIds)}
               AND post_id IS NULL AND chat_message_id IS NULL AND report_id IS NULL
+              AND ${claimableAsAttachment(
+                tx,
+                uploadersOf({ userId: args.authorId, guestAnonSessionId: args.guestAnonSessionId }),
+              )}
               AND (status = 'ready' OR (status = 'validating' AND finalized_at IS NOT NULL))
             RETURNING upload_id
           `
