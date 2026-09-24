@@ -42,7 +42,7 @@ export function eventStatusNote(status: EventStatus): string {
   }
 }
 
-// The in-memory twin of flaggedEventExpr (admin-event-sql.ts); the two must agree.
+// The in-memory twin of flaggedEventExpr (admin-event-repository.drizzle.ts); the two must agree.
 export function flaggedFromTimeline(kinds: readonly string[]): boolean {
   let flagged = false
   for (const kind of kinds) {

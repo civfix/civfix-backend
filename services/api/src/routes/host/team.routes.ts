@@ -103,8 +103,9 @@ export async function registerHostTeamRoutes(
       })
     }
     const sql = container.getDb().sql
+    const repo = makeDrizzleHostTeamRepository(sql)
     return makeHostTeamService({
-      repo: makeDrizzleHostTeamRepository(sql),
+      repo,
       standing: makeSqlTeamStanding(sql),
       loadEvent: makeRouteCleanupReader(container, app.log),
       counters: container.getCounterStore(),
@@ -112,12 +113,7 @@ export async function registerHostTeamRoutes(
       notifier: makeRouteNotificationService(container, app.log),
       presignEventMedia: makeEventMediaPresigner(container.storage),
       affiliations: container.getAffiliationLoader(),
-      eventTitleOf: async (cleanupId: string) => {
-        const rows = await sql<{ title: string }[]>`
-          SELECT title FROM cleanups WHERE id = ${cleanupId} LIMIT 1
-        `
-        return rows[0]?.title ?? null
-      },
+      eventTitleOf: (cleanupId: string) => repo.eventTitleOf(cleanupId),
       webOrigin: webBaseUrlOf(container.env),
       logger: app.log,
     })

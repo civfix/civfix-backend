@@ -1,5 +1,5 @@
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
-import type { AbuseChecks, NearDuplicateResult, Storage } from "@civfix/shared/interfaces"
+import type { AbuseChecks, Storage } from "@civfix/shared/interfaces"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
 import { makeDb, type DbHandle } from "@civfix/api/db"
 import { makeDrizzleMediaWorkerRepo, type MediaWorkerRepo } from "@civfix/api/media-repo"
@@ -78,9 +78,7 @@ export async function buildSeams(
 
   const { dbHandle, repo, anonHoldRepo } = buildDbSeams(source)
 
-  const findPhashDuplicate: FindPhashDuplicateFn | undefined = dbHandle
-    ? makePhashDuplicateLookup(dbHandle)
-    : undefined
+  const findPhashDuplicate: FindPhashDuplicateFn | undefined = repo?.findPhashDuplicate
 
   const abuseChecks: AbuseChecks = fakeAbuse
     ? new FakeAbuseChecks()
@@ -202,27 +200,4 @@ async function buildRealAbuseChecks(
     ...(findPhashDuplicate ? { findPhashDuplicate } : {}),
     log,
   })
-}
-
-function makePhashDuplicateLookup(dbHandle: DbHandle): FindPhashDuplicateFn {
-  return async (
-    hash: string,
-    opts?: { excludeAssetId?: string; excludeReportId?: string },
-  ): Promise<NearDuplicateResult> => {
-    const excludeId = opts?.excludeAssetId ?? null
-    const excludeReportId = opts?.excludeReportId ?? null
-    const rows = await dbHandle.sql<{ report_id: string | null }[]>`
-      SELECT report_id
-      FROM media_assets
-      WHERE phash = ${hash}
-        AND report_id IS NOT NULL
-        ${excludeId !== null ? dbHandle.sql`AND id <> ${excludeId}` : dbHandle.sql``}
-        ${excludeReportId !== null ? dbHandle.sql`AND report_id IS DISTINCT FROM ${excludeReportId}` : dbHandle.sql``}
-      ORDER BY created_at ASC
-      LIMIT 1
-    `
-    const ofReportId = rows[0]?.report_id ?? null
-    if (ofReportId !== null) return { dup: true, ofReportId }
-    return { dup: false }
-  }
 }

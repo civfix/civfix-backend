@@ -24,7 +24,7 @@ const RAW_UPLOAD_KEY_IN_SQL = /[\w}]\.r2_key\b/
 
 const RAW_UPLOAD_KEY_READERS: Record<string, string> = {
   "services/media-served-key.ts": "defines the uploader, moderation and public key expressions",
-  "services/avatar-media.ts":
+  "services/media-claim-repository.drizzle.ts":
     "the avatar claim answers only the claimant, and binds the served copy",
   "services/media-worker-repo.ts": "the media worker reads the original to re-encode it",
   "services/certificate-repository.drizzle.ts":

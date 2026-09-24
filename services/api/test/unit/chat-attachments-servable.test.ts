@@ -18,7 +18,7 @@ import type { Queryable } from "../../src/db/client.js"
 import {
   loadServableAttachmentsFor,
   makeAttachmentRepo,
-} from "../../src/services/message-attachments.drizzle.js"
+} from "../../src/services/message-attachments-repository.drizzle.js"
 
 const MESSAGE = "11111111-1111-4111-8111-111111111111"
 const OTHER_MESSAGE = "22222222-2222-4222-8222-222222222222"

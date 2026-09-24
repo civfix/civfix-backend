@@ -16,7 +16,11 @@ import {
 } from "../db/cursor-helpers.js"
 import { allocateEventReferenceCode } from "../db/reference-code.js"
 import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
-import { hostStandingOf, hostStandingsOf, orgStandingOf } from "./host/host-standing.js"
+import {
+  hostStandingOf,
+  hostStandingsOf,
+  orgStandingOf,
+} from "./host/host-standing-repository.drizzle.js"
 import { NO_HOST_STANDING } from "@civfix/shared/host"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup, uploadedByClaimant } from "./media-bindings.js"
@@ -85,8 +89,7 @@ import type {
 } from "@civfix/shared"
 import type { HostStanding } from "@civfix/shared/host"
 import { touchUserActivity } from "../db/sql/user-activity.js"
-
-const PG_UNIQUE_VIOLATION = "23505"
+import { PG_UNIQUE_VIOLATION } from "../db/pg-errors.js"
 
 export const LINKED_EVENTS_PER_REPORT_CAP = 20
 export const MAX_EVENTS_PER_REPORT = 50

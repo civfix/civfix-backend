@@ -5,7 +5,7 @@ import {
   loadServableAttachmentsFor,
   makeAttachmentRepo,
   type MessageMediaColumn,
-} from "./message-attachments.drizzle.js"
+} from "./message-attachments-repository.drizzle.js"
 
 const CHAT_MESSAGE_COLUMN: MessageMediaColumn = "chat_message_id"
 

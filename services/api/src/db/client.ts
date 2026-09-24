@@ -5,6 +5,7 @@ import * as schema from "./schema/index.js"
 export type Sql = ReturnType<typeof postgres>
 export type TransactionSql = postgres.TransactionSql
 export type Queryable = Sql | TransactionSql
+export type SqlFragment = postgres.Fragment
 export type Db = ReturnType<typeof drizzle<typeof schema>>
 
 export interface DbHandle {
@@ -97,4 +98,8 @@ export function makeDb(
   }
 
   return { db, sql, close }
+}
+
+export async function pingDb(handle: DbHandle): Promise<void> {
+  await handle.sql`select 1`
 }

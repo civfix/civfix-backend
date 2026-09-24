@@ -5,10 +5,10 @@ import type { ReportDTO } from "@civfix/shared"
 import type { Queryable, Sql } from "../../src/db/client.js"
 import { makeDrizzleAnonReportRepository } from "../../src/services/anon-repository.drizzle.js"
 import type { CreateAnonReportTxArgs } from "../../src/services/anon-service.js"
-import { avatarClaimQuery } from "../../src/services/avatar-media.js"
 import { attachChatMedia } from "../../src/services/chat-attachments.drizzle.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "../../src/services/host/event-media.js"
 import { claimableAsReportMedia } from "../../src/services/media-bindings.js"
+import { avatarClaimQuery } from "../../src/services/media-claim-repository.drizzle.js"
 import {
   makeMediaIntakeService,
   type NewMediaAsset,

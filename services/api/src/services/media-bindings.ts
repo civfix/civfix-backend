@@ -1,6 +1,8 @@
 import type { Queryable } from "../db/client.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./host/event-media.js"
 
+export { lockUploadsForClaimIn as lockUploadsForClaim } from "./media-claim-repository.drizzle.js"
+
 export const MEDIA_BINDING_RELATIONS = [
   "users.avatar_media_id",
   "chat_groups.avatar_media_id",
@@ -50,19 +52,6 @@ export function claimableAsAttachment(tag: Queryable, uploaders: readonly string
 export function uploadedByClaimant(tag: Queryable, uploaders: readonly string[]) {
   return tag`media_assets.created_at > now() - make_interval(secs => ${MEDIA_CLAIM_WINDOW_SEC})
     AND (media_assets.uploader IN ${tag([...uploaders])} OR media_assets.uploader IS NULL)`
-}
-
-// A claim's bound-elsewhere test reads users and chat_groups under its statement snapshot, and waiting on
-// a row lock does not refresh that snapshot. Taking the lock in an earlier statement means the claim
-// runs after any avatar bind holding it has committed, and sees that bind. Ordered by id so two claims
-// over overlapping uploads lock in the same order.
-export async function lockUploadsForClaim(tx: Queryable, uploadIds: readonly string[]) {
-  await tx`
-    SELECT id FROM media_assets
-    WHERE upload_id IN ${tx([...uploadIds])}
-    ORDER BY id
-    FOR UPDATE
-  `
 }
 
 export function eventsBindingMedia(tag: Queryable, mediaId: string) {

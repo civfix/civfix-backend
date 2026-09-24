@@ -6,7 +6,7 @@ import { seedCleanup } from "../helpers/cleanups.js"
 import { seedMediaAsset } from "../helpers/media-pg.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
-import { recordChatMentions } from "../../src/services/chat-mentions.drizzle.js"
+import { recordChatMentions } from "../../src/services/chat-mentions-repository.drizzle.js"
 import { makeReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
 import type { PresignMedia } from "../../src/services/media-presign.js"
 

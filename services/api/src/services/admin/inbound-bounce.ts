@@ -1,8 +1,8 @@
 import type { Container } from "../../di.js"
-import type { Sql } from "../../db/client.js"
 import type { ParsedMail } from "@civfix/shared/interfaces"
-import type { MailRepository } from "./mail-repository.drizzle.js"
+import { threadSentTo, type MailRepository } from "./mail-repository.drizzle.js"
 import { BOUNCE_DISCOVERY_PENDING_META_KEY } from "./mail-repository.js"
+import { geoidForContact, markBouncedContact } from "./jurisdiction-contacts-repository.drizzle.js"
 import {
   JURISDICTION_DISCOVERY_JOB,
   type JurisdictionDiscoveryJob,
@@ -224,34 +224,6 @@ export async function handleBounce(
     await container.jobs.enqueue(JURISDICTION_DISCOVERY_JOB, data, { singletonKey: geoid })
   }
   await mailRepo.markBounceDiscoveryEnqueued(marker)
-}
-
-export async function threadSentTo(sql: Sql, threadId: string, email: string): Promise<boolean> {
-  const rows = await sql<{ ok: boolean }[]>`
-    SELECT EXISTS (
-      SELECT 1 FROM mail_messages
-      WHERE thread_id = ${threadId}
-        AND direction = 'out'
-        AND to_addr IS NOT NULL
-        AND lower(to_addr) = lower(${email})
-    ) AS ok
-  `
-  return rows[0]?.ok ?? false
-}
-
-export async function markBouncedContact(sql: Sql, email: string, geoid: string): Promise<void> {
-  await sql`
-    UPDATE jurisdiction_contacts
-    SET bounced_at = now()
-    WHERE lower(email) = lower(${email}) AND geoid = ${geoid}
-  `
-}
-
-export async function geoidForContact(sql: Sql, email: string): Promise<string | null> {
-  const rows = await sql<{ geoid: string }[]>`
-    SELECT geoid FROM jurisdiction_contacts WHERE lower(email) = lower(${email}) LIMIT 1
-  `
-  return rows[0]?.geoid ?? null
 }
 
 function extractEmail(value: string | null): string | null {

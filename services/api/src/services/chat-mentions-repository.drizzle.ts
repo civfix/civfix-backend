@@ -5,7 +5,7 @@
 
 import type { Queryable, Sql } from "../db/client.js"
 import type { UserMentionDTO } from "@civfix/shared"
-import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
+import { loadMentionsFor, makeMentionRepo } from "./message-mentions-repository.drizzle.js"
 
 const CHAT_MENTIONS = "chat_message_mentions" as const
 

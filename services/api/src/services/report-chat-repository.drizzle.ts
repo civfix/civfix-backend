@@ -5,8 +5,9 @@ import {
   type ReportChatParticipantDTO,
 } from "@civfix/shared"
 import type { PresignMedia } from "./media-presign.js"
-import { monotonicReadWatermarkUpdate } from "./chat-read-state.drizzle.js"
-import { blockedPairExpr } from "./hidden-identity.js"
+import type { ReportChatMeta } from "./report-service.types.js"
+import { monotonicReadWatermarkUpdate } from "./read-watermark-repository.drizzle.js"
+import { blockedPairExpr } from "./blocks-sql.js"
 import { toRoomMemberPerson, type RoomMemberIdentityRow } from "./room-member-person.js"
 
 type ChatSystemPayload = NonNullable<NonNullable<ChatMessageDTO["system"]>>
@@ -76,10 +77,15 @@ export interface ReportChatRepository {
   listMembers(reportId: string, viewerId: string): Promise<ReportChatParticipantDTO[]>
 }
 
+export interface ReportChatMetaQueries {
+  loadChatMeta(reportId: string, viewerUserId: string | null): Promise<ReportChatMeta>
+  isReportVerified(userId: string): Promise<boolean>
+}
+
 export function makeReportChatRepository(
   sql: Sql,
   _presignMedia?: PresignMedia,
-): ReportChatRepository {
+): ReportChatRepository & ReportChatMetaQueries {
   return {
     async isMember(reportId: string, userId: string): Promise<boolean> {
       const rows = await sql<{ exists: boolean }[]>`
@@ -206,6 +212,50 @@ export function makeReportChatRepository(
         LIMIT ${REPORT_CHAT_ROSTER_CAP}
       `
       return rows.map(toReportParticipantDTO)
+    },
+
+    async loadChatMeta(reportId: string, viewerUserId: string | null): Promise<ReportChatMeta> {
+      const rows = await sql<
+        { joined: boolean; member_count: number; message_count: number; unread: number }[]
+      >`
+        SELECT
+          EXISTS (
+            SELECT 1 FROM report_chat_members m
+            WHERE m.report_id = ${reportId} AND m.user_id = ${viewerUserId}
+          ) AS joined,
+          (
+            SELECT count(*)::int FROM report_chat_members m WHERE m.report_id = ${reportId}
+          ) AS member_count,
+          (
+            SELECT count(*)::int
+            FROM chat_messages cm
+            WHERE cm.report_id = ${reportId} AND cm.deleted_at IS NULL
+          ) AS message_count,
+          COALESCE((
+            SELECT count(*)::int
+            FROM report_chat_members mem
+            JOIN chat_messages cm ON cm.report_id = mem.report_id
+            WHERE mem.report_id = ${reportId}
+              AND mem.user_id = ${viewerUserId}
+              AND cm.deleted_at IS NULL
+              AND cm.sender_id IS DISTINCT FROM ${viewerUserId}
+              AND cm.created_at > GREATEST(mem.joined_at, COALESCE(mem.last_read_at, to_timestamp(0)))
+          ), 0) AS unread
+      `
+      const row = rows[0]
+      return {
+        joined: row?.joined ?? false,
+        memberCount: row?.member_count ?? 0,
+        messageCount: row?.message_count ?? 0,
+        unread: row?.unread ?? 0,
+      }
+    },
+
+    async isReportVerified(userId: string): Promise<boolean> {
+      const rows = await sql<{ report_verified: boolean }[]>`
+        SELECT report_verified FROM user_moderation WHERE user_id = ${userId} LIMIT 1
+      `
+      return rows[0]?.report_verified ?? false
     },
   }
 }

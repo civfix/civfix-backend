@@ -24,7 +24,7 @@ auth + csrf, rate-limited per identity at 20/min). The handler:
 1. Checks the caller can see the subject (`assertReportable`,
    `services/content-report-subject.ts`); a report the caller cannot read is a
    404. With no `DATABASE_URL` the gate allows everything.
-2. **Detects ownership server-side** (`reportOwnedBy`, `services/report-sql.ts`):
+2. **Detects ownership server-side** (`isReportOwnedBy`, `services/report-repository.drizzle.ts`):
    the report is not deleted and its `reporter_user_id` equals the caller.
 3. Files a `user_report` moderation item into the existing admin queue
    (`moderation_items`, the same queue operators already read) with
@@ -63,7 +63,7 @@ resolving after the takedown for anyone who already holds it.
 
 ## Offline / no-DB behavior
 
-`reportOwnedBy` is DB-gated: with no `DATABASE_URL` (all-fakes boot) it returns
+The owner check is DB-gated: with no `DATABASE_URL` (all-fakes boot) the route returns
 `false`, so the route degrades to the ordinary user-report path (the request is
 still filed, just not flagged as an owner takedown). A query error is not caught:
 it propagates and the request fails with 500 (not filed), so a transient DB error

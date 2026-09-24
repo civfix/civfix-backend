@@ -25,6 +25,7 @@
 import type { Sql, TransactionSql } from "../db/client.js"
 import { generateToken, sha256Hex } from "../auth/crypto.js"
 import type {
+  AnonAbuseReason,
   AnonReportRepository,
   AnonReportStatusRow,
   CreateAnonReportTxArgs,
@@ -42,8 +43,7 @@ import { AppError } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
 import { insertModerationItem } from "./admin/moderation-repository.drizzle.js"
 import { claimableAsReportMedia, lockUploadsForClaim } from "./media-bindings.js"
-
-const PG_UNIQUE_VIOLATION = "23505"
+import { isUniqueViolation } from "../db/pg-errors.js"
 
 const HELD_REVIEW_NOTE = "Awaiting automated review"
 
@@ -58,14 +58,6 @@ const MEDIA_UNAVAILABLE_MESSAGE = "One or more media uploads are unavailable."
 const KEY_RACE_MESSAGE = "Report submit is still settling; retry"
 
 const REPLAY_UNCLAIMABLE_MESSAGE = "This report was already submitted and can no longer be claimed."
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
-  )
-}
 
 interface AnonTokenRowSelect {
   id: string
@@ -111,10 +103,18 @@ export interface DrizzleAnonReportRepositoryOptions {
   newClaimCode?: () => string
 }
 
+export interface DrizzleAnonReportRepository extends AnonReportRepository {
+  raiseAbuseFlag(
+    subjectType: "report" | "anon_token",
+    subjectId: string,
+    reason: AnonAbuseReason,
+  ): Promise<void>
+}
+
 export function makeDrizzleAnonReportRepository(
   sql: Sql,
   opts: DrizzleAnonReportRepositoryOptions = {},
-): AnonReportRepository {
+): DrizzleAnonReportRepository {
   const tokens = anonTokenStore(sql)
   const newClaimCode = opts.newClaimCode ?? (() => generateToken())
 
@@ -230,6 +230,18 @@ export function makeDrizzleAnonReportRepository(
         publishedAt: row.published_at,
         claimCodeHash: row.claim_code_hash,
       }
+    },
+
+    async raiseAbuseFlag(subjectType, subjectId, reason): Promise<void> {
+      await sql`
+        INSERT INTO abuse_flags (subject_type, subject_id, reason, source)
+        SELECT ${subjectType}, ${subjectId}, ${reason}, 'api'
+        WHERE NOT EXISTS (
+          SELECT 1 FROM abuse_flags
+          WHERE subject_type = ${subjectType} AND subject_id = ${subjectId}
+            AND reason = ${reason} AND source = 'api' AND resolved_at IS NULL
+        )
+      `
     },
   }
 }

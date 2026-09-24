@@ -6,7 +6,11 @@ import {
 } from "@civfix/shared"
 import { can, hostCapabilities, type HostStanding } from "@civfix/shared/host"
 import type { Queryable } from "../../db/client.js"
-import { hostStandingOf, orgStandingOf, type HostStandingResolution } from "./host-standing.js"
+import {
+  hostStandingOf,
+  orgStandingOf,
+  type HostStandingResolution,
+} from "./host-standing-repository.drizzle.js"
 
 const FORBIDDEN_COPY: Record<HostCapability, string> = {
   view_event_private: "Only the event team can view this.",

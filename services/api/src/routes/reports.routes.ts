@@ -26,7 +26,6 @@ import { makeMediaPresigner, makePrivateMediaPresigner } from "../services/media
 import { perIdentity } from "../plugins/rate-limit.js"
 import {
   makeReportService,
-  type ReportChatMeta,
   type ReportDiscussionMeta,
   type ReportOwner,
   type ReportRepository,
@@ -308,7 +307,8 @@ function makeContainerReportService(
     repo,
     loadLinkedEventsForReports: (reportIds) => cleanupRepo.loadLinkedEventsForReports(reportIds),
     loadDiscussionMeta: makeDiscussionMetaLoader(container, sql),
-    loadReportChatMeta: (reportId, viewerUserId) => loadReportChatMeta(sql, reportId, viewerUserId),
+    loadReportChatMeta: (reportId, viewerUserId) =>
+      reportChatRepo.loadChatMeta(reportId, viewerUserId),
     resolveJurisdictionGeoid: makeGeoidResolver(container),
     resolveJurisdictionCode: (geoid) => resolveJurisdictionCode(sql, geoid),
     resolveAddress: makeCachedAddressResolver(container),
@@ -316,7 +316,7 @@ function makeContainerReportService(
     presignPrivateMedia: makePrivateMediaPresigner(container.storage),
     jobs: container.jobs,
     autoForwardEnabled: container.env.REPORT_AUTOFORWARD_ENABLED,
-    isReportVerified: (userId) => isReportVerified(sql, userId),
+    isReportVerified: (userId) => reportChatRepo.isReportVerified(userId),
     joinReportChatAsOwner: (reportId, userId) => reportChatRepo.join(reportId, userId, "owner"),
     reportChatEmitter: makeContainerReportChatEmitter(container, log),
     logger: log,
@@ -352,54 +352,6 @@ function makeDiscussionMetaLoader(
         jurisdiction.contactEmail !== "",
     }
   }
-}
-
-async function loadReportChatMeta(
-  sql: Sql,
-  reportId: string,
-  viewerUserId: string | null,
-): Promise<ReportChatMeta> {
-  const rows = await sql<
-    { joined: boolean; member_count: number; message_count: number; unread: number }[]
-  >`
-          SELECT
-            EXISTS (
-              SELECT 1 FROM report_chat_members m
-              WHERE m.report_id = ${reportId} AND m.user_id = ${viewerUserId}
-            ) AS joined,
-            (
-              SELECT count(*)::int FROM report_chat_members m WHERE m.report_id = ${reportId}
-            ) AS member_count,
-            (
-              SELECT count(*)::int
-              FROM chat_messages cm
-              WHERE cm.report_id = ${reportId} AND cm.deleted_at IS NULL
-            ) AS message_count,
-            COALESCE((
-              SELECT count(*)::int
-              FROM report_chat_members mem
-              JOIN chat_messages cm ON cm.report_id = mem.report_id
-              WHERE mem.report_id = ${reportId}
-                AND mem.user_id = ${viewerUserId}
-                AND cm.deleted_at IS NULL
-                AND cm.sender_id IS DISTINCT FROM ${viewerUserId}
-                AND cm.created_at > GREATEST(mem.joined_at, COALESCE(mem.last_read_at, to_timestamp(0)))
-            ), 0) AS unread
-        `
-  const row = rows[0]
-  return {
-    joined: row?.joined ?? false,
-    memberCount: row?.member_count ?? 0,
-    messageCount: row?.message_count ?? 0,
-    unread: row?.unread ?? 0,
-  }
-}
-
-async function isReportVerified(sql: Sql, userId: string): Promise<boolean> {
-  const rows = await sql<{ report_verified: boolean }[]>`
-    SELECT report_verified FROM user_moderation WHERE user_id = ${userId} LIMIT 1
-  `
-  return rows[0]?.report_verified ?? false
 }
 
 function ownerOf(request: FastifyRequest): ReportOwner {

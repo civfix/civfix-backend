@@ -1,7 +1,4 @@
-import type postgres from "postgres"
-import type { Sql } from "./client.js"
-
-type SqlFragment = postgres.Fragment
+import type { Sql, SqlFragment } from "./client.js"
 
 const USER_ACTIVITY_BACKFILL_BATCH = 500
 

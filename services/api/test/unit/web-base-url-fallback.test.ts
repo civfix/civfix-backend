@@ -7,7 +7,7 @@ import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { buildContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { buildServer } from "../../src/server.js"
-import type { HostStandingResolution } from "../../src/services/host/host-standing.js"
+import type { HostStandingResolution } from "../../src/services/host/host-standing-repository.drizzle.js"
 import { InMemoryHostTeamRepository } from "../../src/services/host/host-team-repository.memory.js"
 import {
   makeHostTeamService,

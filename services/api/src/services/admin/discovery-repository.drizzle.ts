@@ -1,16 +1,15 @@
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { decodeCursor, clampLimit, paginate } from "./pagination.js"
 import { writeAudit } from "./audit.js"
-import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { andAll, ilikeAnyOf, legacyContactEmailUsable } from "./sql-fragments.js"
 import {
   ADMIN_CATEGORIES,
-  categoryCountsFragment,
-  categoryCountsProjection,
   parseCategoryCounts,
   parseCount,
   type CategoryCountRow,
 } from "./category-counts.js"
+import { categoryCountsFragment, categoryCountsProjection } from "./category-counts-sql.js"
 import {
   type DiscoveryContactRecord,
   type DiscoveryContactSuggestionRecord,
@@ -21,6 +20,10 @@ import {
   type DiscoveryTaskRecord,
   type ListDiscoveryArgs,
 } from "./discovery-service.js"
+import {
+  invalidateDirectoryFacetCache,
+  upsertJurisdictionContacts,
+} from "./jurisdiction-contacts-repository.drizzle.js"
 
 const SAMPLE_PIN_CAP = 50
 
@@ -434,85 +437,25 @@ async function loadGeometry(
   return { placeGeojson, center, zoom }
 }
 
-const DIRECTORY_FACET_TTL_MS = 30_000
-
-export interface DirectoryFacetAggregate {
-  total: number
-  facets: { routed: number; unrouted: number }
-}
-
-// The directory's default-view facet counts are cached per process. The cache lives beside
-// upsertJurisdictionContacts so every in-process writer of routing contacts can drop it after commit.
-let directoryFacetCache: { at: number; value: DirectoryFacetAggregate } | null = null
-
-export function readDirectoryFacetCache(): DirectoryFacetAggregate | null {
-  if (directoryFacetCache === null) return null
-  if (Date.now() - directoryFacetCache.at > DIRECTORY_FACET_TTL_MS) {
-    directoryFacetCache = null
-    return null
-  }
-  return directoryFacetCache.value
-}
-
-export function writeDirectoryFacetCache(value: DirectoryFacetAggregate): void {
-  directoryFacetCache = { at: Date.now(), value }
-}
-
-export function invalidateDirectoryFacetCache(): void {
-  directoryFacetCache = null
-}
-
-export async function upsertJurisdictionContacts(
-  tx: Queryable,
-  geoid: string,
-  contacts: Partial<Record<ReportCategory, string | null>>,
-  defaultEmails: string[],
-  formUrl: string | null,
-): Promise<void> {
-  for (const [category, rawEmail] of Object.entries(contacts) as [
-    ReportCategory,
-    string | null,
-  ][]) {
-    const email = rawEmail && rawEmail.trim() !== "" ? rawEmail.trim() : null
-    if (email === null) {
-      await tx`
-        DELETE FROM jurisdiction_contacts WHERE geoid = ${geoid} AND category = ${category}
-      `
-      continue
-    }
-    await tx`
-      INSERT INTO jurisdiction_contacts (geoid, category, email, updated_at, bounced_at)
-      VALUES (${geoid}, ${category}, ${email}, now(), NULL)
-      ON CONFLICT (geoid, category) WHERE category IS NOT NULL
-      DO UPDATE SET email = EXCLUDED.email, updated_at = now(), bounced_at = NULL
-    `
-  }
-
-  const defaultEmail = defaultEmails.find((e) => e.trim() !== "")?.trim() ?? null
-  const form = formUrl && formUrl.trim() !== "" ? formUrl.trim() : null
-  const setEmail = defaultEmail !== null
-  const setForm = form !== null
-  if (setEmail || setForm) {
-    await tx`
-      INSERT INTO jurisdiction_contacts (geoid, category, email, form_url, updated_at, bounced_at)
-      VALUES (${geoid}, NULL, ${defaultEmail}, ${form}, now(), NULL)
-      ON CONFLICT (geoid) WHERE category IS NULL
-      DO UPDATE SET
-        email = CASE WHEN ${setEmail} THEN EXCLUDED.email ELSE jurisdiction_contacts.email END,
-        form_url = CASE WHEN ${setForm} THEN EXCLUDED.form_url ELSE jurisdiction_contacts.form_url END,
-        updated_at = now(),
-        bounced_at = CASE WHEN ${setEmail} THEN NULL ELSE jurisdiction_contacts.bounced_at END
-    `
-  }
-
-  if (defaultEmails.length > 0 || form !== null) {
-    const emails = defaultEmails.filter((e) => e.trim() !== "")
-    await tx`
-      UPDATE jurisdictions
-      SET
-        contact_emails = CASE WHEN ${emails.length} > 0 THEN ${emails} ELSE contact_emails END,
-        report_form_url = COALESCE(${form}, report_form_url)
-      WHERE geoid = ${geoid}
-    `
-  }
+export async function hasUsableRoutingContact(sql: Sql, geoid: string): Promise<boolean> {
+  const contactRows = await sql<{ has_contact: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1 FROM jurisdiction_contacts jc
+      WHERE jc.geoid = ${geoid} AND jc.email IS NOT NULL AND jc.email <> ''
+        AND jc.bounced_at IS NULL
+    ) OR EXISTS (
+      SELECT 1 FROM jurisdictions j
+      WHERE j.geoid = ${geoid}
+        AND EXISTS (
+          SELECT 1 FROM unnest(j.contact_emails) AS e
+          WHERE e <> ''
+            AND ${legacyContactEmailUsable(sql, {
+              email: sql`e`,
+              geoid: sql`j.geoid`,
+              contactUpdatedAt: sql`j.contact_updated_at`,
+            })}
+        )
+    ) AS has_contact
+  `
+  return contactRows[0]?.has_contact === true
 }

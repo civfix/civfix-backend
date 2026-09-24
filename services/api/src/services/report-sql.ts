@@ -1,5 +1,4 @@
-import type postgres from "postgres"
-import type { Queryable } from "../db/client.js"
+import type { Queryable, SqlFragment } from "../db/client.js"
 import { keysetInstant } from "../db/cursor-helpers.js"
 import type {
   AddressPrecision,
@@ -15,21 +14,6 @@ import type {
   ReportRecord,
   ReportTimelineView,
 } from "./report-service.types.js"
-
-type SqlFragment = postgres.Fragment
-
-export async function reportOwnedBy(
-  sql: Queryable,
-  reportId: string,
-  userId: string,
-): Promise<boolean> {
-  const rows = await sql<{ reporter_user_id: string | null }[]>`
-    SELECT reporter_user_id FROM reports
-    WHERE id = ${reportId} AND deleted_at IS NULL
-    LIMIT 1
-  `
-  return rows[0]?.reporter_user_id === userId
-}
 
 export interface ReportRowSelect {
   id: string

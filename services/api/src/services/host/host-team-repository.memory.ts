@@ -504,4 +504,17 @@ export class InMemoryHostTeamRepository implements HostTeamRepository {
     for (const invite of due) invite.status = "expired"
     return Promise.resolve(due.length)
   }
+
+  listTeamUserIds(cleanupId: string, limit: number): Promise<string[]> {
+    const ids = this.members
+      .filter((m) => m.cleanupId === cleanupId && m.role !== "member")
+      .sort((a, b) => a.joinedAt.getTime() - b.joinedAt.getTime())
+      .slice(0, limit)
+      .map((m) => m.userId)
+    return Promise.resolve(ids)
+  }
+
+  eventTitleOf(cleanupId: string): Promise<string | null> {
+    return Promise.resolve(this.events.get(cleanupId)?.title ?? null)
+  }
 }

@@ -1,5 +1,5 @@
 import type { FastifyBaseLogger } from "fastify"
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import {
   decodeCursor,
   clampLimit,
@@ -14,9 +14,9 @@ import {
   firstUsableLegacyContactExpr,
   ilikeAnyOf,
   usableContactRowExpr,
-  type SqlFragment,
 } from "./sql-fragments.js"
-import { personSelect, toPersonRecord } from "./admin-person.js"
+import { personSelect } from "./admin-person-sql.js"
+import { toPersonRecord } from "./admin-person.js"
 import { STATUS_BUCKETS, toTimelineKind } from "./admin-report-status.js"
 import {
   REPORT_VERIFIED_THRESHOLD,
@@ -41,7 +41,7 @@ import {
   ROUTE_CLAIM_STALE_SECONDS,
   ROUTE_DEADLINE_INFLIGHT_SECONDS,
 } from "./outbound-send-policy.js"
-import { sendFailedExpr, sendInFlightExpr } from "./outbound-send-sql.js"
+import { sendFailedExpr, sendInFlightExpr } from "./mail-repository.drizzle.js"
 
 export { ROUTE_CLAIM_STALE_SECONDS, ROUTE_DEADLINE_INFLIGHT_SECONDS }
 

@@ -1,4 +1,4 @@
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
 import { assertTargetIsNotOperatorRole } from "../../auth/operator-target.js"
 import {
@@ -9,7 +9,7 @@ import {
   paginateKeyset,
   type KeysetAnchor,
 } from "./pagination.js"
-import { andAll, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { andAll, ilikeAnyOf } from "./sql-fragments.js"
 import type {
   AdminUserOrganizationRecord,
   AdminUserRecord,

@@ -482,9 +482,10 @@ export class InMemoryAdminEventRepository implements AdminEventRepository {
 }
 
 /**
- * Mirrors searchEventsFragment (admin-event-sql.ts) column for column, including the exact-uuid id match:
- * a substring match here would pass offline and return nothing in production. `place` and `address` are
- * both checked because SQL reads one column into both while the fake lets a test seed them separately.
+ * Mirrors searchEventsFragment (admin-event-repository.drizzle.ts) column for column, including the
+ * exact-uuid id match: a substring match here would pass offline and return nothing in production. `place`
+ * and `address` are both checked because SQL reads one column into both while the fake lets a test seed
+ * them separately.
  */
 function matchesQuery(record: AdminEventRecord, q: string): boolean {
   const needle = q.toLowerCase()

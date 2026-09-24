@@ -264,3 +264,115 @@ export function makeDrizzleHostExportRepository(sql: Sql): HostExportRepository 
     },
   }
 }
+
+export interface HostExportRosterRow {
+  registration_id: string
+  attendee_name: string | null
+  attendee_kind: string
+  ticket_type: string | null
+  seats: number
+  slot: string | null
+  status: string
+  registered_at: Date
+  checked_in_at: Date | null
+  checkin_method: string | null
+  guest_email: string | null
+  guest_phone: string | null
+}
+
+export interface HostExportCheckinRow {
+  id: string
+  attendee_name: string | null
+  attendee_kind: string
+  ticket_type: string | null
+  checked_in_at: Date | null
+  checkin_method: string | null
+  no_show_at: Date | null
+}
+
+export interface HostExportAnswerRow {
+  id: string
+  registration_id: string
+  attendee_kind: string
+  prompt: string
+  value_text: string | null
+  value_json: unknown
+  scrubbed_at: Date | null
+  created_at: Date
+}
+
+export interface HostExportRowsRepository {
+  rosterPage(cleanupId: string | null, after: string, limit: number): Promise<HostExportRosterRow[]>
+  checkinPage(
+    cleanupId: string | null,
+    after: string,
+    limit: number,
+  ): Promise<HostExportCheckinRow[]>
+  answerPage(cleanupId: string | null, after: string, limit: number): Promise<HostExportAnswerRow[]>
+}
+
+export function makeDrizzleHostExportRowsRepository(sql: Sql): HostExportRowsRepository {
+  return {
+    async rosterPage(cleanupId, after, limit) {
+      return sql<HostExportRosterRow[]>`
+        SELECT r.id AS registration_id,
+               COALESCE(NULLIF(min(s.attendee_name), ''), g.name, u.display_name) AS attendee_name,
+               CASE WHEN r.user_id IS NOT NULL THEN 'member' ELSE 'guest' END AS attendee_kind,
+               t.name AS ticket_type,
+               count(s.id)::int AS seats,
+               (SELECT string_agg(sl.title, '; ' ORDER BY sl.title)
+                  FROM cleanup_slot_claims sc
+                  JOIN cleanup_slots sl ON sl.id = sc.slot_id
+                 WHERE sc.cleanup_id = r.cleanup_id AND sc.user_id = r.user_id) AS slot,
+               r.status,
+               r.registered_at,
+               min(s.checked_in_at) AS checked_in_at,
+               min(s.checkin_method) AS checkin_method,
+               g.email AS guest_email,
+               g.phone AS guest_phone
+          FROM cleanup_registrations r
+          LEFT JOIN cleanup_registration_seats s ON s.registration_id = r.id
+          LEFT JOIN cleanup_ticket_types t ON t.id = r.ticket_type_id
+          LEFT JOIN cleanup_guests g ON g.id = r.guest_id
+          LEFT JOIN users u ON u.id = r.user_id
+         WHERE r.cleanup_id = ${cleanupId}
+           AND (${after} = '' OR r.id > ${after}::uuid)
+         GROUP BY r.id, r.cleanup_id, r.user_id, r.status, r.registered_at,
+                  g.name, u.display_name, t.name, g.email, g.phone
+         ORDER BY r.id
+         LIMIT ${limit}`
+    },
+
+    async checkinPage(cleanupId, after, limit) {
+      return sql<HostExportCheckinRow[]>`
+        SELECT s.id,
+               COALESCE(NULLIF(s.attendee_name, ''), g.name, u.display_name) AS attendee_name,
+               CASE WHEN r.user_id IS NOT NULL THEN 'member' ELSE 'guest' END AS attendee_kind,
+               t.name AS ticket_type,
+               s.checked_in_at, s.checkin_method, s.no_show_at
+          FROM cleanup_registration_seats s
+          JOIN cleanup_registrations r ON r.id = s.registration_id
+          LEFT JOIN cleanup_ticket_types t ON t.id = r.ticket_type_id
+          LEFT JOIN cleanup_guests g ON g.id = r.guest_id
+          LEFT JOIN users u ON u.id = r.user_id
+         WHERE s.cleanup_id = ${cleanupId}
+           AND (${after} = '' OR s.id > ${after}::uuid)
+         ORDER BY s.id
+         LIMIT ${limit}`
+    },
+
+    async answerPage(cleanupId, after, limit) {
+      return sql<HostExportAnswerRow[]>`
+        SELECT a.id, a.registration_id,
+               CASE WHEN r.user_id IS NOT NULL THEN 'member' ELSE 'guest' END AS attendee_kind,
+               q.prompt, a.value_text, a.value_json, a.scrubbed_at, a.created_at
+          FROM cleanup_answers a
+          JOIN cleanup_registrations r ON r.id = a.registration_id
+          JOIN cleanup_questions q ON q.id = a.question_id
+         WHERE a.cleanup_id = ${cleanupId}
+           AND (${after} = '' OR a.id > ${after}::uuid)
+         ORDER BY a.id
+         LIMIT ${limit}`
+    },
+  }
+}

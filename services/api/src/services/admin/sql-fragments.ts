@@ -1,8 +1,5 @@
-import type postgres from "postgres"
-import type { Queryable } from "../../db/client.js"
+import type { Queryable, SqlFragment } from "../../db/client.js"
 import { likeContains } from "./like.js"
-
-export type SqlFragment = postgres.Fragment
 
 export function ilikeAnyOf(
   sql: Queryable,

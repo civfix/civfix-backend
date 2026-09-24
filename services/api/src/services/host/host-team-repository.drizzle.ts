@@ -710,5 +710,23 @@ export function makeDrizzleHostTeamRepository(sql: Sql): HostTeamRepository {
       `
       return rows.length
     },
+
+    async listTeamUserIds(cleanupId: string, limit: number): Promise<string[]> {
+      const rows = await sql<{ user_id: string }[]>`
+        SELECT user_id FROM cleanup_members
+         WHERE cleanup_id = ${cleanupId}
+           AND role IN ('organizer', 'cohost', 'coordinator', 'staff')
+         ORDER BY joined_at
+         LIMIT ${limit}
+      `
+      return rows.map((r) => r.user_id)
+    },
+
+    async eventTitleOf(cleanupId: string): Promise<string | null> {
+      const rows = await sql<{ title: string }[]>`
+        SELECT title FROM cleanups WHERE id = ${cleanupId} LIMIT 1
+      `
+      return rows[0]?.title ?? null
+    },
   }
 }

@@ -15,13 +15,10 @@
  */
 
 import { randomUUID } from "node:crypto"
-import type postgres from "postgres"
-import type { Sql } from "./client.js"
+import type { Sql, SqlFragment } from "./client.js"
 import { EXIT_USAGE, runDbCli, runIfMain } from "./cli.js"
 import { loadEnv } from "../env.js"
 import { makeTicketTokenSigner } from "../services/host/ticket-token.js"
-
-type SqlFragment = postgres.Fragment
 
 const SIGNUP_SEAT_BACKFILL_BATCH = 500
 

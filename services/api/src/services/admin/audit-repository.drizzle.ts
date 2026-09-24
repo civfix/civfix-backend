@@ -1,4 +1,4 @@
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import {
   clampLimit,
   decodeCursor,
@@ -8,8 +8,8 @@ import {
 } from "./pagination.js"
 import { isUuid } from "../../db/cursor-helpers.js"
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
+import type { WriteAuditInput } from "./audit.js"
 import { likeContains } from "./like.js"
-import type { SqlFragment } from "./sql-fragments.js"
 
 interface AuditRowSelect {
   id: string
@@ -80,4 +80,18 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
       return { records: items.map(toRecord), nextCursor }
     },
   }
+}
+
+export async function insertAuditRow(db: Queryable, input: WriteAuditInput): Promise<string> {
+  const actorId = input.actorId ?? null
+  const target = input.target ?? null
+  const meta = input.meta == null ? null : db.json(input.meta as Parameters<typeof db.json>[0])
+  const rows = await db<{ id: string }[]>`
+    INSERT INTO audit_log (actor_id, action, target, meta)
+    VALUES (${actorId}, ${input.action}, ${target}, ${meta})
+    RETURNING id
+  `
+  const id = rows[0]?.id
+  if (id === undefined) throw new Error("writeAudit: insert returned no row")
+  return id
 }

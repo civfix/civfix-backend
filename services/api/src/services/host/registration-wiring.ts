@@ -8,7 +8,7 @@ import { makeDrizzleGuestRsvpRepository } from "../guest-rsvp-repository.drizzle
 import { writeAudit } from "../admin/audit.js"
 import type { HostCapability } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
-import { hostStandingOf } from "./host-standing.js"
+import { makeDrizzleHostStandingRepository } from "./host-standing-repository.drizzle.js"
 import {
   makeInsightsGeneration,
   NOOP_INSIGHTS_INVALIDATOR,
@@ -19,7 +19,7 @@ import { makeCheckinService, type CheckinService } from "./checkin-service.js"
 import { makePageService, type PageService } from "./page-service.js"
 import { makeQuestionService, type QuestionService } from "./question-service.js"
 import { makeDrizzleHostRegistrationRepository } from "./registration-repository.drizzle.js"
-import { hostTeamUserIds } from "./registration-sql.js"
+import { makeDrizzleHostTeamRepository } from "./host-team-repository.drizzle.js"
 import {
   HOST_TEAM_SIGNAL_CAP,
   makeRegistrationService,
@@ -121,20 +121,6 @@ interface ResolvedRegistrationDeps {
   insightsInvalidator: InsightsInvalidator
 }
 
-function guestByManageTokenIn(sql: Sql): GuestTicketLookup {
-  return async (hash: string) => {
-    const rows = await sql<{ id: string; cleanup_id: string; cancelled_at: Date | null }[]>`
-      SELECT id, cleanup_id, cancelled_at FROM cleanup_guests
-       WHERE manage_token_hash = ${hash}
-       LIMIT 1
-    `
-    const row = rows[0]
-    return row === undefined
-      ? null
-      : { id: row.id, cleanupId: row.cleanup_id, cancelledAt: row.cancelled_at }
-  }
-}
-
 // A repo override means an offline test harness: nothing that would open the database is built then.
 function resolveRegistrationDeps(
   container: Container,
@@ -145,19 +131,24 @@ function resolveRegistrationDeps(
   const repo = overrides?.repo ?? makeDrizzleHostRegistrationRepository(sql as Sql)
   const tokens = overrides?.tokens ?? container.getTicketTokenSigner()
   const audit = overrides?.audit ?? (sql === undefined ? undefined : auditWriter(sql, logger))
+  const team = sql === undefined ? undefined : makeDrizzleHostTeamRepository(sql)
+  const guestRepo = sql === undefined ? undefined : makeDrizzleGuestRsvpRepository(sql)
   const teamUserIds =
     overrides?.teamUserIds ??
-    (sql === undefined
+    (team === undefined
       ? undefined
-      : (cleanupId: string) => hostTeamUserIds(sql, cleanupId, HOST_TEAM_SIGNAL_CAP))
-  const guestByManageToken =
-    overrides?.guestByManageToken ?? (sql === undefined ? undefined : guestByManageTokenIn(sql))
+      : (cleanupId: string) => team.listTeamUserIds(cleanupId, HOST_TEAM_SIGNAL_CAP))
+  const guestByManageToken: GuestTicketLookup | undefined =
+    overrides?.guestByManageToken ??
+    (guestRepo === undefined
+      ? undefined
+      : (hash: string) => guestRepo.findGuestByManageTokenHash(hash))
   const notifier = lazyNotifier(container, logger)
   const guests =
-    sql === undefined
+    guestRepo === undefined
       ? undefined
       : makeGuestPromotionNotifier({
-          repo: makeDrizzleGuestRsvpRepository(sql),
+          repo: guestRepo,
           mailer: container.mailer,
           linkBase: webBaseUrlOf(container.env),
         })
@@ -261,13 +252,14 @@ export function makeContainerPageService(
   const presign = makeMediaPresigner(container.storage)
   const presignCover = overrides?.presignCover ?? (async (r2Key: string) => presign(r2Key, null))
   const counters = overrides?.counters ?? container.getCounterStore()
+  const standings = sql === undefined ? undefined : makeDrizzleHostStandingRepository(sql)
   const standingOf =
     overrides?.standingOf ??
-    (sql === undefined
+    (standings === undefined
       ? undefined
       : async (cleanupId: string, userId: string | null) => {
           if (userId === null) return null
-          const resolution = await hostStandingOf(sql, cleanupId, userId)
+          const resolution = await standings.standingOf(cleanupId, userId)
           return resolution === null ? null : resolution.standing
         })
   const mediaUrlPrefixes = platformMediaUrlPrefixes(container)
@@ -301,13 +293,14 @@ export function makeHostGuards(
   if (overrides?.guards !== undefined) return overrides.guards
   if (overrides?.repo !== undefined) return OPEN_HOST_GUARDS
   const sql = container.getDb().sql
+  const standings = makeDrizzleHostStandingRepository(sql)
   return {
     async requireCapability(cleanupId, userId, capability): Promise<HostStanding> {
       return (await requireCapability(sql, cleanupId, userId, capability)).standing
     },
     async canManage(cleanupId, userId, capability): Promise<boolean> {
       if (userId === null) return false
-      const resolution = await hostStandingOf(sql, cleanupId, userId)
+      const resolution = await standings.standingOf(cleanupId, userId)
       if (resolution === null) return false
       return can(resolution.standing, capability)
     },

@@ -19,7 +19,7 @@ import {
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeCleanupService } from "../../src/services/cleanup-service.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
-import { makeDrizzleChatReadState } from "../../src/services/chat-read-state.drizzle.js"
+import { makeDrizzleChatReadState } from "../../src/services/read-watermark-repository.drizzle.js"
 
 type MarkRead = (cleanupId: string, userId: string, upToId: string) => Promise<void>
 

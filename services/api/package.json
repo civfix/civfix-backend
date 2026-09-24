@@ -12,6 +12,7 @@
     "./db": "./src/db/worker-db.ts",
     "./media-repo": "./src/services/media-worker-repo.ts",
     "./inbound-retention-repo": "./src/services/admin/inbound-retention-repository.drizzle.ts",
+    "./retention-repo": "./src/services/retention-repository.drizzle.ts",
     "./geocode-cache": "./src/services/geocode-cache.ts",
     "./anon-hold-release": "./src/services/anon-hold-release.ts",
     "./anon-hold-repo": "./src/services/anon-hold-release-repo.drizzle.ts",

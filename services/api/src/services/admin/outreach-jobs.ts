@@ -1,5 +1,5 @@
 import type { Container } from "../../di.js"
-import { writeAudit } from "./audit.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { OUTREACH_DIGEST_JOB } from "./jurisdiction-contacts-types.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
 import {
@@ -68,7 +68,7 @@ async function auditSent(container: Container, results: OutreachRunResult[]): Pr
   const sql = container.getDb().sql
   for (const result of results) {
     if (!result.sent) continue
-    await writeAudit(sql, {
+    await insertAuditRow(sql, {
       actorId: null,
       action: "outreach.digest_sent",
       target: `jurisdiction:${result.geoid}`,

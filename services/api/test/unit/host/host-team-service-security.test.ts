@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import type { HostCapability } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import type { HostStandingResolution } from "../../../src/services/host/host-standing.js"
+import type { HostStandingResolution } from "../../../src/services/host/host-standing-repository.drizzle.js"
 import { InMemoryHostTeamRepository } from "../../../src/services/host/host-team-repository.memory.js"
 import { makeDrizzleHostTeamRepository } from "../../../src/services/host/host-team-repository.drizzle.js"
 import {

@@ -4,13 +4,8 @@ import {
   type OutreachDigest,
   type OutreachRepository,
 } from "./outreach-service.js"
-import {
-  categoryCountsFragment,
-  categoryCountsProjection,
-  parseCategoryCounts,
-  parseCount,
-  type CategoryCountRow,
-} from "./category-counts.js"
+import { parseCategoryCounts, parseCount, type CategoryCountRow } from "./category-counts.js"
+import { categoryCountsFragment, categoryCountsProjection } from "./category-counts-sql.js"
 import { legacyContactEmailUsable } from "./sql-fragments.js"
 
 interface DigestRow extends CategoryCountRow {

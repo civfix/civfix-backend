@@ -8,13 +8,10 @@
  * Guard-free (no runIfMain) so bundled entries can import it; see ingest-jurisdictions-core.ts.
  */
 
-import type postgres from "postgres"
-import type { Queryable, Sql } from "./client.js"
+import type { Queryable, Sql, SqlFragment } from "./client.js"
 import { TIME_CURSOR_SQL_FORMAT } from "./cursor-helpers.js"
 import { UNKNOWN_JURCODE } from "./reference-code.js"
 import { JURISDICTION_RESOLVE_ORDER_BY } from "./sql/jurisdiction.js"
-
-type SqlFragment = postgres.Fragment
 
 export type JurisdictionGeomTable = "reports" | "cleanups"
 

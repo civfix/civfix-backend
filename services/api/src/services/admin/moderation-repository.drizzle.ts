@@ -1,5 +1,5 @@
 import type { ReportCategory } from "@civfix/shared"
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { writeAudit } from "./audit.js"
 import {
   clampLimit,
@@ -9,7 +9,7 @@ import {
   paginateKeyset,
 } from "./pagination.js"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
-import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { ilikeAnyOf } from "./sql-fragments.js"
 import { tombstonePostInTx } from "../post-repository.drizzle.js"
 import {
   assertTargetIsNotOfficialAccount,

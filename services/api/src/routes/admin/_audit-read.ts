@@ -21,11 +21,8 @@
 
 import type { FastifyRequest } from "fastify"
 import type { Container } from "../../di.js"
-import {
-  writeAudit,
-  type AdminAuditAction,
-  type WriteAuditInput,
-} from "../../services/admin/audit.js"
+import type { AdminAuditAction, WriteAuditInput } from "../../services/admin/audit.js"
+import { insertAuditRow } from "../../services/admin/audit-repository.drizzle.js"
 
 export interface ReadAuditInput {
   action: AdminAuditAction
@@ -70,7 +67,7 @@ export async function auditRead(
     // optional-chained because a bare request stub (the helper's own unit test) has none.
     const sink = request.server?.adminReadAuditOverrides?.sink
     if (sink) await sink(row)
-    else await writeAudit(container.getDb().sql, row)
+    else await insertAuditRow(container.getDb().sql, row)
   } catch (err) {
     request.log.warn({ err, action: input.action, target: input.target }, "admin read audit failed")
   }

@@ -9,31 +9,18 @@
  */
 
 import { AppError, ErrorCode } from "@civfix/shared"
-import type { ChatMessageKind, ReplyToDTO } from "@civfix/shared"
+import type { ReplyToDTO } from "@civfix/shared"
 import type { Queryable } from "../db/client.js"
 import { isUuid } from "../db/cursor-helpers.js"
-
-/** Trusted internal identifiers, rendered via sql(...) as idents. */
-export type ReplyTable = "chat_messages" | "dm_messages"
-
-/** Column names are trusted internal identifiers. */
-export interface ReplyRoomScope {
-  column: "cleanup_id" | "report_id" | "group_id" | "thread_id"
-  id: string
-}
+import {
+  findReplyTarget,
+  loadReplyTargetRows,
+  type ReplyRoomScope,
+  type ReplyTable,
+  type ReplyTargetRow,
+} from "./reply-targets-repository.drizzle.js"
 
 export const REPLY_EXCERPT_MAX = 120
-
-interface ReplyTargetRow {
-  id: string
-  room_ref?: string | null
-  body: string | null
-  kind: ChatMessageKind
-  deleted_at: Date | null
-  sender_id: string | null
-  sender_display_name: string | null
-  sender_deleted_at: Date | null
-}
 
 export const replyWrongRoom = (): AppError =>
   new AppError(ErrorCode.VALIDATION, "The message you're replying to isn't in this conversation.", {
@@ -80,22 +67,7 @@ export async function assertReplyTarget(
   replyToId: string,
 ): Promise<ReplyToDTO> {
   if (!isUuid(replyToId)) throw replyWrongRoom()
-  const rows = await sql<ReplyTargetRow[]>`
-    SELECT
-      m.id,
-      m.${sql(scope.column)} AS room_ref,
-      m.body,
-      m.kind,
-      m.deleted_at,
-      m.sender_id,
-      u.display_name AS sender_display_name,
-      u.deleted_at AS sender_deleted_at
-    FROM ${sql(table)} m
-    LEFT JOIN users u ON u.id = m.sender_id
-    WHERE m.id = ${replyToId}
-    LIMIT 1
-  `
-  const row = rows[0]
+  const row = await findReplyTarget(sql, table, scope, replyToId)
   if (!row || row.room_ref !== scope.id) throw replyWrongRoom()
   if (row.deleted_at !== null) throw replyDeletedTarget()
   return toReplyToDTO(row)
@@ -109,19 +81,7 @@ export async function loadReplyTargets(
 ): Promise<Map<string, ReplyToDTO>> {
   const distinct = [...new Set(replyToIds.filter((v): v is string => v != null))]
   if (distinct.length === 0) return new Map()
-  const rows = await sql<ReplyTargetRow[]>`
-    SELECT
-      m.id,
-      m.body,
-      m.kind,
-      m.deleted_at,
-      m.sender_id,
-      u.display_name AS sender_display_name,
-      u.deleted_at AS sender_deleted_at
-    FROM ${sql(table)} m
-    LEFT JOIN users u ON u.id = m.sender_id
-    WHERE m.id = ANY(${distinct}::uuid[])
-  `
+  const rows = await loadReplyTargetRows(sql, table, distinct)
   return new Map(rows.map((r) => [r.id, toReplyToDTO(r)]))
 }
 

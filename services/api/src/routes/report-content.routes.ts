@@ -11,7 +11,7 @@ import {
   type ModerationService,
 } from "../services/admin/moderation-service.js"
 import { makeDrizzleModerationRepository } from "../services/admin/moderation-repository.drizzle.js"
-import { reportOwnedBy } from "../services/report-sql.js"
+import { isReportOwnedBy } from "../services/report-repository.drizzle.js"
 import {
   makeAllowAllContentSubjectGate,
   makeDrizzleContentSubjectGate,
@@ -120,5 +120,5 @@ async function isOwnerTakedownReport(
   userId: string,
 ): Promise<boolean> {
   if (!container.env.DATABASE_URL) return false
-  return reportOwnedBy(container.getDb().sql, reportId, userId)
+  return isReportOwnedBy(container.getDb().sql, reportId, userId)
 }

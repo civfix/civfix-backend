@@ -18,8 +18,8 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 import {
   geoidForContact,
   markBouncedContact,
-  threadSentTo,
-} from "../../src/services/admin/inbound-bounce.js"
+} from "../../src/services/admin/jurisdiction-contacts-repository.drizzle.js"
+import { threadSentTo } from "../../src/services/admin/mail-repository.drizzle.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()

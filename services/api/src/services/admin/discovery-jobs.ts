@@ -7,8 +7,10 @@ import {
   JURISDICTION_DISCOVERY_JOB,
   type JurisdictionDiscoveryJob,
 } from "../../services/jurisdiction-service.js"
-import { makeDrizzleDiscoveryRepository } from "./discovery-repository.drizzle.js"
-import { legacyContactEmailUsable } from "./sql-fragments.js"
+import {
+  hasUsableRoutingContact,
+  makeDrizzleDiscoveryRepository,
+} from "./discovery-repository.drizzle.js"
 
 export async function registerDiscoveryJobs(container: Container): Promise<void> {
   await container.jobs.work(JURISDICTION_DISCOVERY_JOB, async (job) => {
@@ -20,26 +22,7 @@ export async function registerDiscoveryJobs(container: Container): Promise<void>
 
     // A contact may have been saved between the enqueue and this run. Only a contact that has not bounced
     // counts: the bounce handler enqueues this job for the geoid whose contact it just marked.
-    const contactRows = await sql<{ has_contact: boolean }[]>`
-      SELECT EXISTS (
-        SELECT 1 FROM jurisdiction_contacts jc
-        WHERE jc.geoid = ${geoid} AND jc.email IS NOT NULL AND jc.email <> ''
-          AND jc.bounced_at IS NULL
-      ) OR EXISTS (
-        SELECT 1 FROM jurisdictions j
-        WHERE j.geoid = ${geoid}
-          AND EXISTS (
-            SELECT 1 FROM unnest(j.contact_emails) AS e
-            WHERE e <> ''
-              AND ${legacyContactEmailUsable(sql, {
-                email: sql`e`,
-                geoid: sql`j.geoid`,
-                contactUpdatedAt: sql`j.contact_updated_at`,
-              })}
-          )
-      ) AS has_contact
-    `
-    if (contactRows[0]?.has_contact === true) return
+    if (await hasUsableRoutingContact(sql, geoid)) return
 
     const repo = makeDrizzleDiscoveryRepository(sql)
     await repo.materializeDiscoveryTask({

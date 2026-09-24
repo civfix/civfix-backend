@@ -1,6 +1,7 @@
 import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
 import type { Queryable } from "../../db/client.js"
 import { CRITICAL_BROADCAST_KINDS, HOST_COMPOSED_BROADCAST_KINDS } from "./broadcast-types.js"
+import type { AudiencePageQuery } from "./broadcast-repository.js"
 
 // Sorts before every real id, so a first page starts at the beginning of the keyset.
 const FIRST_UUID = "00000000-0000-0000-0000-000000000000"
@@ -31,6 +32,36 @@ export async function listGuestAudiencePage(
 ): Promise<string[]> {
   const rows = await guestQuery(sql, query)
   return rows.map((row) => row.id)
+}
+
+export interface BroadcastAudienceRepository {
+  audiencePage(query: AudiencePageQuery): Promise<{ members: string[]; guests: string[] }>
+}
+
+export function makeDrizzleBroadcastAudienceRepository(
+  sql: Queryable,
+): BroadcastAudienceRepository {
+  return {
+    async audiencePage(query: AudiencePageQuery): Promise<{ members: string[]; guests: string[] }> {
+      const [members, guests] = await Promise.all([
+        listMemberAudiencePage(sql, {
+          cleanupId: query.cleanupId,
+          segment: query.segment,
+          kind: query.kind,
+          after: query.afterMember,
+          limit: query.limit,
+        }),
+        listGuestAudiencePage(sql, {
+          cleanupId: query.cleanupId,
+          segment: query.segment,
+          kind: query.kind,
+          after: query.afterGuest,
+          limit: query.limit,
+        }),
+      ])
+      return { members, guests }
+    },
+  }
 }
 
 function memberSuppressionTail(sql: Queryable, cleanupId: string, kind: BroadcastKind) {

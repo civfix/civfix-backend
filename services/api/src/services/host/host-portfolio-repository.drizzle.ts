@@ -155,6 +155,23 @@ export async function hostedRegistrationTotals(
   }
 }
 
+export async function eventHoursByCleanup(
+  sql: Queryable,
+  cleanupIds: readonly string[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  if (cleanupIds.length === 0) return out
+  const rows = await sql<{ cleanup_id: string; hours: number }[]>`
+    SELECT vh.cleanup_id, COALESCE(sum(vh.hours), 0)::float8 AS hours
+      FROM volunteer_hours vh
+     WHERE vh.cleanup_id = ANY(${[...cleanupIds]}::uuid[])
+       AND vh.source = 'event'
+       AND vh.voided_at IS NULL
+     GROUP BY vh.cleanup_id`
+  for (const row of rows) out.set(row.cleanup_id, Number(row.hours))
+  return out
+}
+
 export function makeDrizzleHostPortfolioRepository(sql: Sql): HostPortfolioRepository {
   return {
     async listHostedEvents(

@@ -32,6 +32,7 @@
 
 import { isLocatedPrecision, type AddressPrecision } from "@civfix/shared"
 import type { Queryable } from "../db/client.js"
+import { makeDrizzleGeocodeCacheRepository } from "./geocode-cache-repository.drizzle.js"
 
 export const GEOCODE_CACHE_TTL_MS = 180 * 24 * 60 * 60 * 1000
 export const GEOCODE_CACHE_NEGATIVE_TTL_MS = 15 * 60 * 1000
@@ -46,14 +47,6 @@ export interface GeocodeCacheEntry {
 export interface GeocodeCache {
   read(pointKey: string): Promise<GeocodeCacheEntry | null>
   write(pointKey: string, entry: GeocodeCacheEntry): Promise<void>
-}
-
-interface GeocodeCacheRowSelect {
-  address: string | null
-  address_precision: AddressPrecision | null
-  city_state_label: string | null
-  provider: string | null
-  resolved_at: Date
 }
 
 /**
@@ -89,14 +82,7 @@ export function makeGeocodeCache(opts: GeocodeCacheOptions): GeocodeCache {
   return {
     async read(pointKey: string): Promise<GeocodeCacheEntry | null> {
       try {
-        const sql = opts.getSql()
-        const rows = await sql<GeocodeCacheRowSelect[]>`
-          SELECT address, address_precision, city_state_label, provider, resolved_at
-          FROM geocode_cache
-          WHERE point_key = ${pointKey}
-          LIMIT 1
-        `
-        const row = rows[0]
+        const row = await makeDrizzleGeocodeCacheRepository(opts.getSql()).findByPointKey(pointKey)
         if (row === undefined) return null
         const fresh = isFreshEntry(
           { address: row.address, precision: row.address_precision, resolvedAt: row.resolved_at },
@@ -116,25 +102,7 @@ export function makeGeocodeCache(opts: GeocodeCacheOptions): GeocodeCache {
 
     async write(pointKey: string, entry: GeocodeCacheEntry): Promise<void> {
       try {
-        const sql = opts.getSql()
-        await sql`
-          INSERT INTO geocode_cache (
-            point_key, address, address_precision, city_state_label, provider, resolved_at
-          ) VALUES (
-            ${pointKey},
-            ${entry.address},
-            ${entry.precision},
-            ${entry.cityStateLabel},
-            ${entry.provider},
-            ${now()}
-          )
-          ON CONFLICT (point_key) DO UPDATE SET
-            address = EXCLUDED.address,
-            address_precision = EXCLUDED.address_precision,
-            city_state_label = EXCLUDED.city_state_label,
-            provider = EXCLUDED.provider,
-            resolved_at = EXCLUDED.resolved_at
-        `
+        await makeDrizzleGeocodeCacheRepository(opts.getSql()).upsert(pointKey, entry, now)
       } catch {
         return
       }

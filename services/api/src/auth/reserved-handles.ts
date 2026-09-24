@@ -9,6 +9,7 @@
 
 import type { Sql } from "../db/client.js"
 import { TOMBSTONE_HANDLE_RE } from "./stores.js"
+import { makeDrizzleJurisdictionRepository } from "../services/jurisdiction-repository.drizzle.js"
 
 const RESERVED_HANDLES: readonly string[] = [
   "admin",
@@ -45,16 +46,6 @@ export function isReservedHandle(handle: string): boolean {
   return RESERVED_SET.has(h) || TOMBSTONE_HANDLE_RE.test(h)
 }
 
-/**
- * The lower() comparison matches the partial-unique index jurisdictions_handle_lower_key
- * (0017_report_discussion.sql).
- */
-export async function handleCollidesWithJurisdiction(sql: Sql, handle: string): Promise<boolean> {
-  const rows = await sql<{ one: number }[]>`
-    SELECT 1 AS one
-    FROM jurisdictions
-    WHERE handle IS NOT NULL AND lower(handle) = lower(${handle})
-    LIMIT 1
-  `
-  return rows.length > 0
+export function handleCollidesWithJurisdiction(sql: Sql, handle: string): Promise<boolean> {
+  return makeDrizzleJurisdictionRepository(sql).handleExists(handle)
 }

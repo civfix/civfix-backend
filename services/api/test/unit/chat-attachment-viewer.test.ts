@@ -4,7 +4,7 @@ import type { ChatMessageDTO, MediaDTO } from "@civfix/shared"
 import type { Queryable } from "../../src/db/client.js"
 import { neutralizeChatViewerFields } from "../../src/services/chat-viewer-fields.js"
 import { userUploader } from "../../src/services/media-uploader.js"
-import { loadServableAttachmentsFor } from "../../src/services/message-attachments.drizzle.js"
+import { loadServableAttachmentsFor } from "../../src/services/message-attachments-repository.drizzle.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 
 const MESSAGE = "11111111-1111-4111-8111-111111111111"

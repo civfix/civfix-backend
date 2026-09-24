@@ -11,16 +11,12 @@
  * every row is visited at most once.
  */
 
-import type postgres from "postgres"
-import type { Sql } from "./client.js"
+import type { Sql, SqlFragment } from "./client.js"
 import { runDbCli, runIfMain } from "./cli.js"
 import { jurisdictionHandle } from "../services/discussion-mentions.js"
-
-type SqlFragment = postgres.Fragment
+import { isUniqueViolation } from "./pg-errors.js"
 
 const BATCH_SIZE = 1000
-
-const PG_UNIQUE_VIOLATION = "23505"
 
 const GEOID_TAIL_LENGTH = 4
 
@@ -96,14 +92,6 @@ async function assignHandle(
       claimed.add(handle.toLowerCase())
     }
   }
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
-  )
 }
 
 /**

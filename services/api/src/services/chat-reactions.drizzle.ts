@@ -3,7 +3,7 @@
 
 import type { Queryable, Sql } from "../db/client.js"
 import type { ReactionEmoji, ReactionSummaryDTO } from "@civfix/shared"
-import { loadReactionsFor, makeReactionRepo } from "./message-reactions.drizzle.js"
+import { loadReactionsFor, makeReactionRepo } from "./message-reactions-repository.drizzle.js"
 
 const CHAT_REACTIONS = "chat_message_reactions" as const
 
