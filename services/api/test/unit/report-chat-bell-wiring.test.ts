@@ -3,7 +3,7 @@ import { FakePushSender } from "@civfix/shared/fakes"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../src/di.js"
 import type { GatewayReportChat } from "../../src/ws/gateway.js"
-import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
+import type { ReportChatRepository } from "../../src/services/report-chat-repository.js"
 import {
   makeNotificationService,
   type NotificationService,

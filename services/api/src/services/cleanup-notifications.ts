@@ -1,17 +1,15 @@
 import type { Jobs } from "@civfix/shared/interfaces"
 import type { MessageKey } from "../i18n/messages/en.js"
 import type { NotificationService } from "./notification-service.js"
-import { mapWithLimit } from "./media-presign.js"
-import type { CleanupRepository, SlotReconcileResult } from "./cleanup-repository.types.js"
-import { CLEANUP_GUEST_UPDATE_FANOUT_JOB, type GuestUpdateFanoutJob } from "./guest-rsvp-service.js"
-
-const MS_PER_HOUR = 60 * 60 * 1000
+import { mapWithLimit } from "../lib/concurrency.js"
+import { MS_PER_HOUR } from "../lib/time.js"
+import type { CleanupRepository, SlotReconcileResult } from "./cleanup-repository.js"
+import type { GuestUpdateFanoutJob } from "./guest-rsvp-service.js"
+import { CLEANUP_CANCEL_FANOUT_JOB, CLEANUP_GUEST_UPDATE_FANOUT_JOB } from "../lib/queue-names.js"
 
 export const CANCEL_FANOUT_MEMBER_CAP = 2000
 
 const CANCEL_FANOUT_CONCURRENCY = 8
-
-export const CLEANUP_CANCEL_FANOUT_JOB = "cleanup.cancel.fanout"
 
 const CANCEL_FANOUT_DEDUPE_WINDOW_MS = MS_PER_HOUR
 

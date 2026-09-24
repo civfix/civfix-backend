@@ -8,11 +8,11 @@ import {
   registerHostExportBuilder,
   resetHostExportBuildersForTests,
 } from "../../src/services/host/export-builders.js"
-import {
-  makeDrizzleHostExportRepository,
-  type HostExportRecord,
-  type HostExportRepository,
-} from "../../src/services/host/export-repository.drizzle.js"
+import { makeDrizzleHostExportRepository } from "../../src/services/host/export-repository.drizzle.js"
+import type {
+  HostExportRecord,
+  HostExportRepository,
+} from "../../src/services/host/export-repository.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 

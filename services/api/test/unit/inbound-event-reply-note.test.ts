@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { onEventReply } from "../../src/services/admin/inbound-thread-correlation.js"
 import { MESSAGE_BODY_MAX } from "@civfix/shared"
 import type { CleanupRepository } from "../../src/services/cleanup-service.js"

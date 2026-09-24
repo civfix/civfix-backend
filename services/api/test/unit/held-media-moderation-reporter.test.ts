@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { drizzle } from "drizzle-orm/postgres-js"
 import type { Db, Sql } from "../../src/db/client.js"
-import { makeDrizzleMediaWorkerRepo } from "../../src/services/media-worker-repo.js"
+import { makeDrizzleMediaWorkerRepository } from "../../src/services/media-worker-repository.drizzle.js"
 
 const REPORT_ID = "22222222-2222-2222-2222-222222222222"
 const REPORTER_ID = "33333333-3333-3333-3333-333333333333"
@@ -35,7 +35,7 @@ function insertedMeta(calls: Call[]): Record<string, unknown> {
 describe("held-media moderation item names its reporter", () => {
   it("shows a signed-in reporter's display name and links their account", async () => {
     const { db, calls } = stubDb(["trash", "Pile of bags", "Los Angeles", "Dana R", REPORTER_ID])
-    const repo = makeDrizzleMediaWorkerRepo(db, {} as Sql)
+    const repo = makeDrizzleMediaWorkerRepository(db, {} as Sql)
 
     await repo.enqueueHeldModerationItem!({
       reportId: REPORT_ID,
@@ -47,7 +47,7 @@ describe("held-media moderation item names its reporter", () => {
 
   it("keeps 'Anonymous' for a report with no reporter account", async () => {
     const { db, calls } = stubDb(["trash", null, null, null, null])
-    const repo = makeDrizzleMediaWorkerRepo(db, {} as Sql)
+    const repo = makeDrizzleMediaWorkerRepository(db, {} as Sql)
 
     await repo.enqueueHeldModerationItem!({
       reportId: REPORT_ID,
@@ -70,7 +70,7 @@ describe("held media folding into an open moderation item", () => {
       },
     }
     const db = drizzle(client as never) as unknown as Db
-    const repo = makeDrizzleMediaWorkerRepo(db, {} as Sql)
+    const repo = makeDrizzleMediaWorkerRepository(db, {} as Sql)
 
     await repo.enqueueHeldModerationItem!({
       reportId: REPORT_ID,

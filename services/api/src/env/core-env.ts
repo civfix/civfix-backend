@@ -7,6 +7,7 @@ import {
   OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
 } from "../services/admin/outbound-send-policy.js"
 import { CENSUS_DEFAULT_TIMEOUT_MS } from "../adapters/jurisdiction-lookup.census.js"
+import { OCI_MAILER_DEFAULT_TIMEOUT_MS } from "../adapters/mailer-defaults.js"
 import { DEFAULT_API_PORT } from "../lib/base-url.js"
 import {
   parseBool,
@@ -25,9 +26,6 @@ const DEV_ANON_TOKEN_SIGNING_KEY = "dev-insecure-anon-token-signing-key-do-not-u
 const SIGNING_KEY_MIN_LENGTH = 32
 
 const SMTP_PORT_DEFAULT = 587
-// Mirrors OCI_MAILER_DEFAULT_TIMEOUT_MS in adapters/mailer.oci.ts, which cannot be imported here: that
-// module pulls the native argon2 binding in through auth/otp.
-const SMTP_TIMEOUT_MS_DEFAULT = 15_000
 const SMS_DAILY_CAP_DEFAULT = 50
 const VOLUNTEER_HOURS_WEEKLY_FLAG_HOURS_DEFAULT = 60
 const OUTREACH_THROTTLE_DAYS_DEFAULT = 7
@@ -331,7 +329,7 @@ export function loadMailEnv(
   const OCI_EMAIL_SMTP_PASS = r.requiredString("OCI_EMAIL_SMTP_PASS", gated)
   const OCI_EMAIL_SMTP_TIMEOUT_MS = r.positiveInt(
     "OCI_EMAIL_SMTP_TIMEOUT_MS",
-    SMTP_TIMEOUT_MS_DEFAULT,
+    OCI_MAILER_DEFAULT_TIMEOUT_MS,
   )
   const minThroughput = r.positiveInt(
     "OUTBOUND_SEND_MIN_THROUGHPUT_BPS",

@@ -14,14 +14,13 @@ import { parseUserMentions } from "./discussion-mentions.js"
 import { broadcastMessageUpdate } from "../ws/frame-handler.js"
 import { neutralizeChatViewerFields } from "./chat-viewer-fields.js"
 import type { GatewayChatMentions } from "../ws/types.js"
-import type { ChatMessageMeta, ChatRepository } from "./chat-repository.drizzle.js"
-import type { DmRepository } from "./dm-repository.drizzle.js"
+import type { ChatMessageMeta, ChatRepository } from "./chat-repository.js"
+import type { DmRepository } from "./dm-repository.js"
+import { MS_PER_HOUR } from "../lib/time.js"
 
 const CHAT_EDIT_FORBIDDEN = "You can't edit this message."
 
 const MESSAGE_DELETED = "This message was deleted."
-
-const MS_PER_HOUR = 3_600_000
 
 const EDIT_WINDOW_MS = EDIT_WINDOW_HOURS * MS_PER_HOUR
 

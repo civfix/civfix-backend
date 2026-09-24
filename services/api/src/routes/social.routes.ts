@@ -20,16 +20,17 @@ import {
   makeSocialService,
   PERSON_NOT_FOUND_MESSAGE,
   type SocialNotifier,
-  type SocialRepository,
   type SocialService,
   type SocialServiceDeps,
   type SocialViewer,
 } from "../services/social-service.js"
+import type { SocialRepository } from "../services/social-repository.js"
 import { makeDrizzleSocialRepository } from "../services/social-repository.drizzle.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { perIdentity } from "../plugins/rate-limit.js"
 import { route } from "../versioning/route.js"
+import { isUuid } from "../db/cursor-helpers.js"
 import { parse } from "./_validate.js"
 
 export const FOLLOW_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
@@ -52,8 +53,6 @@ const PersonIdParamsSchema = z.object({ id: IdSchema }).strict()
 const PERSON_REF_MAX = 40
 
 const PersonRefParamsSchema = z.object({ id: z.string().min(1).max(PERSON_REF_MAX) }).strict()
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const FOLLOW_SUGGESTIONS_DEFAULT_LIMIT = 10
 
@@ -110,7 +109,7 @@ export async function registerSocialRoutes(
   }
 
   async function resolvePersonId(ref: string): Promise<string> {
-    if (UUID_RE.test(ref)) {
+    if (isUuid(ref)) {
       const person = await repo().findPersonById(ref)
       if (person === null) throw AppError.notFound(PERSON_NOT_FOUND_MESSAGE)
       return ref
@@ -171,7 +170,7 @@ export async function registerSocialRoutes(
   route(app, "getProfile", async (request, reply) => {
     const { id } = parse(PersonRefParamsSchema, request.params)
     const svc = service()
-    const payload: GetProfileResponse = UUID_RE.test(id)
+    const payload: GetProfileResponse = isUuid(id)
       ? await svc.getProfile(id, viewerOf(request))
       : await svc.getProfileByHandle(id, viewerOf(request))
     reply.status(200).send(payload)

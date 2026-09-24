@@ -3,8 +3,8 @@ import { makeHostPortfolioService } from "../../../src/services/host/host-portfo
 import {
   hostedRegistrationTotals,
   makeDrizzleHostPortfolioRepository,
-  type HostedEventRecord,
 } from "../../../src/services/host/host-portfolio-repository.drizzle.js"
+import type { HostedEventRecord } from "../../../src/services/host/host-portfolio-repository.js"
 import { makeFakeSql } from "../../helpers/fake-sql.js"
 import type { Sql } from "../../../src/db/client.js"
 

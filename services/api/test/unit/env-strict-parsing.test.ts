@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { loadEnv } from "../../src/env.js"
-import { buildContainer } from "../../src/di.js"
+import { makeContainer } from "../../src/di.js"
 
 function validProdEnv(): NodeJS.ProcessEnv {
   return {
@@ -71,7 +71,7 @@ describe("loadEnv: APNS_PRODUCTION", () => {
 
 describe("push config: APNs gateway default", () => {
   it("targets the production gateway when APNS_PRODUCTION is unset", () => {
-    const container = buildContainer(
+    const container = makeContainer(
       loadEnv({
         NODE_ENV: "test",
         USE_FAKE_PUSH: "0",

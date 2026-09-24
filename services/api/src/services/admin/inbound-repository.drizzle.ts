@@ -1,13 +1,13 @@
 import type { Sql } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
 import {
-  clampLimit,
-  decodeCursor,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-} from "./pagination.js"
-import { likeContains } from "./like.js"
-import { writeAudit } from "./audit.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
+import { likeContains } from "../../db/like.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { HTML_PREVIEW_SOURCE_CHARS, PREVIEW_SOURCE_CHARS, toPreview } from "./mail-preview.js"
 import { normalizeAuthVerdict } from "./mail-mappers.js"
 import type {
@@ -18,29 +18,7 @@ import type {
   InboxListResponse,
   MailAttachment,
 } from "@civfix/shared"
-
-export interface InboundEmailInsert {
-  messageId: string
-  fromAddr: string | null
-  toAddr: string | null
-  recipient: string | null
-  subject: string | null
-  bodyText: string | null
-  bodyHtml: string | null
-  headers: Record<string, string>
-  attachments: MailAttachment[]
-  receivedAt?: Date
-}
-
-export interface InboundRepository {
-  insertIdempotent(input: InboundEmailInsert): Promise<{ id: string; inserted: boolean }>
-  list(query: InboxListQuery): Promise<InboxListResponse>
-  get(id: string): Promise<InboundEmailDTO | null>
-  setStatus(id: string, status: InboundEmailStatus, actorId: string | null): Promise<boolean>
-  /** Counts one more failed bounce-bookkeeping run for a pending object; returns the new total. */
-  recordBounceFailure(objectKey: string): Promise<number>
-  clearBounceFailures(objectKey: string): Promise<void>
-}
+import type { InboundEmailInsert, InboundRepository } from "./inbound-repository.js"
 
 export function localPartOf(recipient: string | null): string {
   if (!recipient) return ""
@@ -141,7 +119,7 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
 
     async list(query: InboxListQuery): Promise<InboxListResponse> {
       const limit = clampLimit(query.limit)
-      const anchor = decodeCursor(query.cursor, true)
+      const anchor = parseKeysetCursor(query.cursor)
       const cursorFilter =
         anchor !== null
           ? sql`AND ${keysetPredicate(sql, sql`received_at`, sql`id`, anchor)}`
@@ -214,7 +192,7 @@ export function makeDrizzleInboundRepository(sql: Sql): InboundRepository {
               archived_at = CASE WHEN ${status === "archived"} THEN COALESCE(archived_at, now()) ELSE NULL END
           WHERE id = ${id}
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId,
           action: "inbox.status_changed",
           target: `inbound_email:${id}`,

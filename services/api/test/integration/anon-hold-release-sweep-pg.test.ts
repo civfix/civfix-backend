@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import { makeDrizzleAnonHoldReleaseRepo } from "../../src/services/anon-hold-release-repo.drizzle.js"
+import { makeDrizzleAnonHoldReleaseRepository } from "../../src/services/anon-hold-release-repository.drizzle.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()
@@ -38,7 +38,7 @@ describe.skipIf(!pg)("anon hold-release candidates (integration)", () => {
     const stuckB = await seedHeld(170, "stuckB")
     const fresh = await seedHeld(5, "fresh")
 
-    const repo = makeDrizzleAnonHoldReleaseRepo(h.sql)
+    const repo = makeDrizzleAnonHoldReleaseRepository(h.sql)
 
     const first = await repo.findHeldAnonReportIds(2)
     expect([...first].sort()).toEqual([stuckA, stuckB].sort())

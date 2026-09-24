@@ -1,4 +1,4 @@
-import type { VolunteerHoursAnomalyKind } from "./volunteer-hours-service.js"
+import type { VolunteerHoursAnomalyKind } from "./volunteer-hours-repository.js"
 
 const HOURS_ANOMALY_FLAG = "Volunteer hours anomaly"
 

@@ -12,12 +12,9 @@ import {
   hasEventEnded,
 } from "@civfix/shared/host"
 import type { EventWindowLike } from "@civfix/shared/host"
+import { MS_PER_DAY, MS_PER_MINUTE } from "../lib/time.js"
 
 export { DEFAULT_EVENT_DURATION_MS, deriveCleanupStatus, eventEndsAtMs, hasEventEnded }
-
-const MS_PER_MINUTE = 60 * 1000
-
-const MS_PER_DAY = 24 * 60 * MS_PER_MINUTE
 
 export const SCHEDULE_MAX_BACKDATE_MS = MS_PER_DAY
 

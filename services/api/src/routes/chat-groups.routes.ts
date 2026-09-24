@@ -27,19 +27,14 @@ import {
   deleteMessageWithPowers,
 } from "./chat-route-helpers.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
-import {
-  makeChatGroupRepository,
-  type ChatGroupRepository,
-} from "../services/chat-group-repository.drizzle.js"
+import { makeChatGroupRepository } from "../services/chat-group-repository.drizzle.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.js"
+import type { ChatRepository } from "../services/chat-repository.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.js"
 import { makeChatGroupService, type ChatGroupService } from "../services/chat-group-service.js"
-import {
-  makeDrizzleChatRepository,
-  type ChatRepository,
-} from "../services/chat-repository.drizzle.js"
-import {
-  makeConversationMutesRepository,
-  type ConversationMutesRepository,
-} from "../services/conversation-mutes-repository.drizzle.js"
+import { nudgeThreads } from "../services/threads-nudge.js"
+import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
+import { makeConversationMutesRepository } from "../services/conversation-mutes-repository.drizzle.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
 
 export const CreateChatGroupBodySchema = trimTextFields(
@@ -102,16 +97,6 @@ export async function registerChatGroupRoutes(
       ? overrides.conversationMutes
       : (mutesRepo ??= makeConversationMutesRepository(container.getDb().sql))
 
-  /**
-   * A room the user just joined or was added to otherwise only surfaces on the client's next manual
-   * refresh. Carries no room id, so it is safe to fire at anyone whose membership may have changed.
-   */
-  const nudgeThreads = (userId: string): void => {
-    void Promise.resolve(container.userChannel?.publishToUser(userId, { topic: "threads" })).catch(
-      () => {},
-    )
-  }
-
   const svc = (): ChatGroupService => {
     const mutes = getMutes()
     return makeChatGroupService({
@@ -161,7 +146,7 @@ export async function registerChatGroupRoutes(
       const userId = requireAuth(request)
       const { id } = parse(GetChatGroupRequestSchema, request.params)
       const dto = await svc().joinGroup(userId, id)
-      nudgeThreads(userId)
+      nudgeThreads(container.userChannel, userId)
       reply.status(200).send(dto)
     },
   )
@@ -185,7 +170,7 @@ export async function registerChatGroupRoutes(
       // `added`, not the returned page, decides who is nudged: an invitee the block filter dropped must
       // learn nothing, and in a group at or over GROUP_MEMBERS_DEFAULT_LIMIT members a fresh member sorts
       // past page one, so a page-derived set skips exactly the big rooms.
-      for (const memberId of added) nudgeThreads(memberId)
+      for (const memberId of added) nudgeThreads(container.userChannel, memberId)
       reply.status(200).send(page)
     },
   )

@@ -7,13 +7,12 @@
 
 import { afterEach, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
 import { parseKeysetCursor } from "../../src/db/cursor-helpers.js"
-import { decodeCursor } from "../../src/services/admin/pagination.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
 import { makeDrizzleNotificationRepository } from "../../src/services/notification-repository.drizzle.js"
 import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
@@ -37,7 +36,7 @@ describe("parseKeysetCursor refuses instants Postgres would not accept", () => {
   it.each(FORGED_INSTANTS)("%s gives the first page", (_label, instant) => {
     expect(parseKeysetCursor(`${instant}|${ID}`)).toBeNull()
     expect(parseKeysetCursor(instant)).toBeNull()
-    expect(decodeCursor(`${instant}|${ID}`, true)).toBeNull()
+    expect(parseKeysetCursor(`${instant}|${ID}`, { requireUuid: true })).toBeNull()
   })
 })
 
@@ -173,10 +172,10 @@ describe("GET /v1/reports/search with a forged cursor", () => {
     ])
     const env = loadEnv({ NODE_ENV: "test" })
     const container = {
-      ...buildContainer(env),
+      ...makeContainer(env),
       getDb: () => ({ sql: db.sql }),
     } as unknown as Container
-    app = await buildServer({ env, container })
+    app = await makeServer({ env, container })
 
     const res = await app.inject({
       method: "GET",

@@ -19,12 +19,12 @@ import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { endpoints, versionedPath } from "@civfix/shared/client"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import type { CleanupServiceOverrides } from "../../src/routes/cleanups.routes.js"
@@ -43,7 +43,7 @@ async function makeHarness(): Promise<Harness> {
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -54,8 +54,8 @@ async function makeHarness(): Promise<Harness> {
 
   const repo = new InMemoryCleanupRepository()
   const cleanupOverrides: CleanupServiceOverrides = { repo }
-  const container = buildContainer(env)
-  const app = await buildServer({ env, container, authServices, cleanupOverrides })
+  const container = makeContainer(env)
+  const app = await makeServer({ env, container, authServices, cleanupOverrides })
 
   const email = "host@example.com"
   await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })

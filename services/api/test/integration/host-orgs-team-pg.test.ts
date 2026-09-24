@@ -12,9 +12,9 @@ import {
   hostStandingOf,
   orgStandingOf,
 } from "../../src/services/host/host-standing-repository.drizzle.js"
-import type { CleanupRepository } from "../../src/services/cleanup-repository.types.js"
-import type { OrganizationRepository } from "../../src/services/host/organization-repository.types.js"
-import type { HostTeamRepository } from "../../src/services/host/host-team-repository.types.js"
+import type { CleanupRepository } from "../../src/services/cleanup-repository.js"
+import type { OrganizationRepository } from "../../src/services/host/organization-repository.js"
+import type { HostTeamRepository } from "../../src/services/host/host-team-repository.js"
 
 const pg = await withPg()
 const FUTURE = new Date(Date.now() + 7 * 86_400_000)

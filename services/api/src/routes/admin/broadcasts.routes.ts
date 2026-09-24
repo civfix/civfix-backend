@@ -7,15 +7,16 @@ import {
   type AdminHostListResponse,
   type SetHostMessagingSuspendedResponse,
 } from "@civfix/shared"
-import { createHash } from "node:crypto"
-import type { FastifyInstance, FastifyRequest } from "fastify"
+import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"
 import { route } from "../../versioning/route.js"
-import { parse } from "../_validate.js"
+import { parse, paramsOverBody } from "../_validate.js"
 import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import { makeDrizzleBroadcastRepository } from "../../services/host/broadcast-repository.drizzle.js"
 import type { BroadcastRepository } from "../../services/host/broadcast-repository.js"
+import { sha256HexSync } from "../../lib/hash.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
 export interface AdminBroadcastOverrides {
   repo: BroadcastRepository
@@ -33,19 +34,11 @@ const ADMIN_HOST_DEFAULT_LIMIT = 50
 
 const ADMIN_HOST_DEFAULT_WINDOW_DAYS = 30
 
-const DAY_MS = 24 * 60 * 60 * 1000
-
 // Enough of the digest to tell subjects apart in the console without echoing the subject text itself.
 const SUBJECT_HASH_HEX_LENGTH = 16
 
 function hashSubject(subject: string): string {
-  return createHash("sha256").update(subject).digest("hex").slice(0, SUBJECT_HASH_HEX_LENGTH)
-}
-
-function mergeParams(request: FastifyRequest): Record<string, unknown> {
-  const params = (request.params ?? {}) as Record<string, unknown>
-  const body = (request.body ?? {}) as Record<string, unknown>
-  return { ...body, ...params }
+  return sha256HexSync(subject).slice(0, SUBJECT_HASH_HEX_LENGTH)
 }
 
 export async function registerAdminBroadcastRoutes(
@@ -109,7 +102,7 @@ export async function registerAdminBroadcastRoutes(
     const rows = await broadcastRepo().listAdminHosts({
       ...(query.q !== undefined ? { q: query.q } : {}),
       ...(query.suspended !== undefined ? { suspended: query.suspended } : {}),
-      windowStart: new Date(Date.now() - windowDays * DAY_MS),
+      windowStart: new Date(Date.now() - windowDays * MS_PER_DAY),
       cursor: parseKeysetCursor(query.cursor, { direction: "desc" }),
       limit: limit + 1,
     })
@@ -153,7 +146,7 @@ export async function registerAdminBroadcastRoutes(
     { preHandler: csrfProtect },
     async (request, reply) => {
       const operatorId = requireAuth(request)
-      const body = parse(SetHostMessagingSuspendedRequestSchema, mergeParams(request))
+      const body = parse(SetHostMessagingSuspendedRequestSchema, paramsOverBody(request))
       const found = await broadcastRepo().setHostMessagingSuspended(body.id, body.suspended, {
         action: body.suspended ? "host.messaging_suspended" : "host.messaging_restored",
         actorId: operatorId,

@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest"
 import type { Queryable, Sql } from "../../src/db/client.js"
-import { attachChatMedia } from "../../src/services/chat-attachments.drizzle.js"
+import { attachChatMedia } from "../../src/services/chat-attachments-repository.drizzle.js"
 import { mediaBoundElsewhere } from "../../src/services/media-bindings.js"
-import {
-  makeDrizzlePostRepository,
-  type CreatePostArgs,
-} from "../../src/services/post-repository.drizzle.js"
+import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
+import type { CreatePostArgs } from "../../src/services/post-repository.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 
 const AUTHOR = "11111111-1111-4111-8111-111111111111"

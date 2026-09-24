@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import { makeReportForwardAudit } from "../../src/services/report-forward-audit.drizzle.js"
+import { makeDrizzleReportForwardAuditRepository } from "../../src/services/report-forward-audit-repository.drizzle.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
 
 const pg = await withPg()
@@ -27,7 +27,7 @@ describe.skipIf(!pg)("report_message_forwards audit writes (integration)", () =>
   }
 
   it("recordMention inserts a mentioned-but-not-forwarded row (forwarded_at NULL)", async () => {
-    const audit = makeReportForwardAudit(h.sql)
+    const audit = makeDrizzleReportForwardAuditRepository(h.sql)
     const msg = randomUUID()
 
     await audit.recordMention(msg, GEO)
@@ -35,7 +35,7 @@ describe.skipIf(!pg)("report_message_forwards audit writes (integration)", () =>
   })
 
   it("recordMention is idempotent and does not clobber an already-forwarded row", async () => {
-    const audit = makeReportForwardAudit(h.sql)
+    const audit = makeDrizzleReportForwardAuditRepository(h.sql)
     const msg = randomUUID()
 
     await audit.recordMention(msg, GEO)
@@ -54,7 +54,7 @@ describe.skipIf(!pg)("report_message_forwards audit writes (integration)", () =>
   })
 
   it("markForwarded stamps forwarded_at and keeps the earliest time on a re-run", async () => {
-    const audit = makeReportForwardAudit(h.sql)
+    const audit = makeDrizzleReportForwardAuditRepository(h.sql)
     const msg = randomUUID()
 
     await audit.recordMention(msg, GEO)
@@ -112,7 +112,7 @@ describe.skipIf(!pg)(
 
     it("reportHistory reports forwardedToCity:true + a forwarded cityMention once a matching forward is stamped", async () => {
       const chat = makeDrizzleChatRepository(h.sql)
-      const audit = makeReportForwardAudit(h.sql)
+      const audit = makeDrizzleReportForwardAuditRepository(h.sql)
       const geoid = await seedJurisdiction()
       const reportId = await newReport(geoid)
       const userId = await newUser()
@@ -147,7 +147,7 @@ describe.skipIf(!pg)(
 
     it("a mentioned-but-not-forwarded audit row (forwarded_at NULL) keeps forwardedToCity false", async () => {
       const chat = makeDrizzleChatRepository(h.sql)
-      const audit = makeReportForwardAudit(h.sql)
+      const audit = makeDrizzleReportForwardAuditRepository(h.sql)
       const geoid = await seedJurisdiction()
       const reportId = await newReport(geoid)
       const userId = await newUser()

@@ -15,7 +15,7 @@ import type { Container } from "../../di.js"
 import { requireAuth } from "../../auth/context.js"
 import { perIdentity } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
-import { parse } from "../_validate.js"
+import { parse, paramsOverQuery } from "../_validate.js"
 import {
   hostForbiddenCopy,
   requireCapability,
@@ -45,12 +45,6 @@ declare module "fastify" {
   interface FastifyInstance {
     hostAnalyticsOverrides?: HostAnalyticsOverrides
   }
-}
-
-function mergeQuery(request: FastifyRequest): Record<string, unknown> {
-  const params = (request.params ?? {}) as Record<string, unknown>
-  const query = (request.query ?? {}) as Record<string, unknown>
-  return { ...query, ...params }
 }
 
 function viewerScopeOf(standing: HostStanding): string {
@@ -93,7 +87,7 @@ export async function registerHostAnalyticsRoutes(
     const { query, viewerScope } = await authorizeEventView(
       request,
       EventAnalyticsRequestSchema,
-      mergeQuery(request),
+      paramsOverQuery(request),
     )
     return { cleanupId: query.id, range: query.range ?? DEFAULT_EVENT_RANGE, viewerScope }
   }
@@ -117,7 +111,7 @@ export async function registerHostAnalyticsRoutes(
       const { userId, query, resolution, viewerScope } = await authorizeEventView(
         request,
         GetEventAnalyticsRequestSchema,
-        mergeQuery(request),
+        paramsOverQuery(request),
       )
       reply.status(200).send(
         await eventAnalytics().analytics(query.id, query.scope ?? DEFAULT_EVENT_ANALYTICS_SCOPE, {

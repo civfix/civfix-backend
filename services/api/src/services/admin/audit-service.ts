@@ -1,28 +1,6 @@
 import type { AuditListQuery, AuditListResponse, AuditLogEntryDTO } from "@civfix/shared"
 import { clampLimit } from "./pagination.js"
-
-export interface ListAuditArgs {
-  actor: string | null
-  action: string | null
-  target: string | null
-  cursor: string | null
-  limit: number
-}
-
-export interface AuditRecord {
-  id: string
-  actorId: string | null
-  /** Null for a system action or an unknown actor. */
-  actorName: string | null
-  action: string
-  target: string | null
-  meta: Record<string, unknown> | null
-  createdAt: Date
-}
-
-export interface AuditRepository {
-  list(args: ListAuditArgs): Promise<{ records: AuditRecord[]; nextCursor: string | null }>
-}
+import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-repository.js"
 
 // `created_at` is `DEFAULT now()` but nullable in the DDL: a hand-inserted NULL row would otherwise throw
 // on `.toISOString()` and 500 the whole list.

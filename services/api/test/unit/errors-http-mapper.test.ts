@@ -1,5 +1,5 @@
 /**
- * The canonical error handler, driven through a real Fastify instance exactly as buildServer wires it:
+ * The canonical error handler, driven through a real Fastify instance exactly as makeServer wires it:
  *
  *   - ZodError is matched STRUCTURALLY (name + issues, NOT instanceof), so one thrown across the
  *     dual-zod-realm boundary does not render as a 500;

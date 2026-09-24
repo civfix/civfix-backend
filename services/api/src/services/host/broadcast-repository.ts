@@ -5,7 +5,7 @@ import type {
   DeliveryStatus,
 } from "@civfix/shared"
 import type { KeysetCursor } from "../../db/cursor-helpers.js"
-import type { NotificationPrefsRecord } from "../notification-service.js"
+import type { NotificationPrefsRecord } from "../notification-repository.js"
 import type { WriteAuditInput } from "../admin/audit.js"
 import type {
   AdminBroadcastRow,

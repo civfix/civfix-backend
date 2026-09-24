@@ -15,9 +15,9 @@ import {
 import type {
   AnalyticsRepository,
   EventClockRecord,
-} from "../../../src/services/host/analytics-repository.drizzle.js"
-import type { EventAnalyticsRepository } from "../../../src/services/host/event-analytics-repository.drizzle.js"
-import type { MetricsRepository } from "../../../src/services/host/metrics-repository.drizzle.js"
+} from "../../../src/services/host/analytics-repository.js"
+import type { EventAnalyticsRepository } from "../../../src/services/host/event-analytics-repository.js"
+import type { MetricsRepository } from "../../../src/services/host/metrics-repository.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const HOST = "00000000-0000-0000-0000-0000000000aa"

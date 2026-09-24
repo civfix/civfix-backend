@@ -18,7 +18,7 @@ import {
   type MediaChecksDeps,
   type DownloadFn,
 } from "../../src/jobs/media-checks.js"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 import * as fx from "../fixtures/make.js"
 
 const limits: WorkerLimits = loadLimits({})
@@ -26,12 +26,12 @@ const limits: WorkerLimits = loadLimits({})
 function makeDeps(over?: Partial<MediaChecksDeps>): {
   deps: MediaChecksDeps
   storage: FakeStorage
-  repo: InMemoryWorkerRepo
+  repo: InMemoryMediaWorkerRepository
   abuse: FakeAbuseChecks
   reports: unknown[]
 } {
   const storage = new FakeStorage()
-  const repo = new InMemoryWorkerRepo()
+  const repo = new InMemoryMediaWorkerRepository()
   const abuse = new FakeAbuseChecks()
   const reports: unknown[] = []
   const deps: MediaChecksDeps = {
@@ -49,7 +49,7 @@ function makeDeps(over?: Partial<MediaChecksDeps>): {
 
 async function seedAsset(
   storage: FakeStorage,
-  repo: InMemoryWorkerRepo,
+  repo: InMemoryMediaWorkerRepository,
   kind: "image" | "video",
   bytes: Uint8Array,
 ): Promise<{ id: string; uploadId: string; r2Key: string }> {
@@ -747,9 +747,13 @@ describe("media.checks terminal-status CAS (F087d)", () => {
 })
 
 describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", () => {
-  function realDeps(): { deps: MediaChecksDeps; storage: FakeStorage; repo: InMemoryWorkerRepo } {
+  function realDeps(): {
+    deps: MediaChecksDeps
+    storage: FakeStorage
+    repo: InMemoryMediaWorkerRepository
+  } {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const abuse = new RealAbuseChecks({
       perceptualHash: (bytes: Uint8Array) => perceptualHash(bytes, limits),
       log: () => {},
@@ -840,7 +844,7 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
 
   it("a real NSFW POSITIVE (model returns high) -> HELD + abuse_flag nsfw", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const abuse = new RealAbuseChecks({
       useRealNsfw: true,
       nsfwModel: () => Promise.resolve(0.99),
@@ -871,7 +875,7 @@ describe("media.checks with the REAL AbuseChecks (default-flag PUBLISH path)", (
 
   it("#43: a near-duplicate (injected lookup reports dup) is ALLOWED (ready, no phash_dup flag)", async () => {
     const storage = new FakeStorage()
-    const repo = new InMemoryWorkerRepo()
+    const repo = new InMemoryMediaWorkerRepository()
     const abuse = new RealAbuseChecks({
       perceptualHash: (bytes: Uint8Array) => perceptualHash(bytes, limits),
       findPhashDuplicate: () => Promise.resolve({ dup: true, ofReportId: "prior-report" }),

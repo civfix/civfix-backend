@@ -10,7 +10,7 @@ import { GEOCODE_CACHE_TTL_MS } from "@civfix/api/geocode-cache"
 import type {
   InboundRetentionRepository,
   ReapedInboundEmail,
-} from "@civfix/api/inbound-retention-repo"
+} from "@civfix/api/inbound-retention-repository"
 import type { Sql } from "@civfix/api/db"
 
 function makeSqlSpy(results: Array<unknown[] | Error>): {

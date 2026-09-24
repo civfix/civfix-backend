@@ -1,4 +1,5 @@
 import type { AddressPrecision } from "@civfix/shared"
+import { raceTimeout } from "../lib/timeout.js"
 
 export type PointResolver<T> = (lat: number, lng: number) => Promise<T | null>
 
@@ -56,20 +57,12 @@ export function chainReverse<T>(
  * A throwing provider counts as "no answer" (the seam fails open). The catch sits on the attempt itself so
  * it also covers a rejection that lands AFTER the deadline won the race.
  */
-async function withDeadline<T>(
+function withDeadline<T>(
   provider: PointResolver<T>,
   lat: number,
   lng: number,
   timeoutMs: number,
 ): Promise<T | null> {
   const attempt = (async () => provider(lat, lng))().catch(() => null)
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const budget = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), timeoutMs)
-  })
-  try {
-    return await Promise.race([attempt, budget])
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-  }
+  return raceTimeout(attempt, timeoutMs, () => null)
 }

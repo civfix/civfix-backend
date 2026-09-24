@@ -1,24 +1,17 @@
 import { AppError } from "@civfix/shared"
 import type { Queryable } from "../db/client.js"
 import type { MediaDTO, MediaKind, MediaStatus } from "@civfix/shared"
-import { claimableAsAttachment, lockUploadsForClaim } from "./media-bindings.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
+import { claimableAsAttachment } from "./media-bindings.js"
+import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { uploaderServableFilter, uploaderServedKeyExpr } from "./media-served-key.js"
 import { userUploader } from "./media-uploader.js"
+import type { MessageAttachmentRepository } from "./message-attachments-repository.js"
 
 export type MessageMediaColumn = "chat_message_id"
 
 const CLAIM_GUARD_COLUMNS: readonly string[] = ["report_id", "post_id"]
-
-export interface MessageAttachmentRepo {
-  attach(
-    tx: Queryable,
-    messageId: string,
-    uploadIds: string[],
-    messageCreatedAt: Date,
-    senderId: string,
-  ): Promise<void>
-}
 
 interface MediaRow {
   id: string
@@ -32,7 +25,9 @@ interface MediaRow {
   height: number | null
 }
 
-export function makeAttachmentRepo(column: MessageMediaColumn): MessageAttachmentRepo {
+export function makeMessageAttachmentRepository(
+  column: MessageMediaColumn,
+): MessageAttachmentRepository {
   return {
     async attach(tx, messageId, uploadIds, messageCreatedAt, senderId) {
       if (uploadIds.length === 0) return
@@ -40,7 +35,7 @@ export function makeAttachmentRepo(column: MessageMediaColumn): MessageAttachmen
         (acc, c) => tx`${acc} AND ${tx(c)} IS NULL`,
         tx``,
       )
-      await lockUploadsForClaim(tx, uploadIds)
+      await lockUploadsForClaimIn(tx, uploadIds)
       const claimed = await tx<{ upload_id: string }[]>`
         UPDATE media_assets
         SET ${tx(column)} = ${messageId}, chat_message_created_at = ${messageCreatedAt}

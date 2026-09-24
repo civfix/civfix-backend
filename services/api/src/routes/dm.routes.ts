@@ -21,15 +21,13 @@ import { makeDmService, type DmService, type DmUserLookup } from "../services/dm
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
 import { makeChatEditService } from "../services/chat-edit-service.js"
 import { makeDmPeerOf } from "../services/dm-peer.js"
-import type { DmRepository } from "../services/dm-repository.drizzle.js"
-import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
+import type { DmRepository } from "../services/dm-repository.js"
+import type { BlocksRepository } from "../services/blocks-repository.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.js"
+import { makeConversationMutesRepository } from "../services/conversation-mutes-repository.drizzle.js"
 import {
-  makeConversationMutesRepository,
-  type ConversationMutesRepository,
-} from "../services/conversation-mutes-repository.drizzle.js"
-import {
-  CHAT_HISTORY_DEFAULT_LIMIT,
   chatHistoryPayload,
+  clampChatHistoryLimit,
   DELETE_MESSAGE_FORBIDDEN,
   MESSAGE_ALREADY_DELETED,
 } from "./chat-route-helpers.js"
@@ -124,7 +122,7 @@ export async function registerDmRoutes(app: FastifyInstance, container: Containe
     const q = parse(DmHistoryQuerySchema, request.query)
     await authorizePeer(id, userId, "You can't view this conversation.")
 
-    const limit = q.limit ?? CHAT_HISTORY_DEFAULT_LIMIT
+    const limit = clampChatHistoryLimit(q.limit)
     const payload: ChatHistoryResponse = await chatHistoryPayload(
       {
         history: (before, pageLimit, around) =>

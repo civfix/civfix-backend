@@ -1,5 +1,5 @@
 import { Apple, Google, generateCodeVerifier, generateState } from "arctic"
-import { AppError } from "@civfix/shared"
+import { AppError, collapseWhitespace } from "@civfix/shared"
 import { containsSlur } from "../abuse/slur-filter.js"
 import {
   EmailTakenError,
@@ -306,7 +306,7 @@ function providerFallbackName(provider: string): string {
 
 function sanitizeDisplayName(raw: string | null | undefined): string | null {
   if (raw === null || raw === undefined) return null
-  const collapsed = raw.replace(/\s+/g, " ").trim()
+  const collapsed = collapseWhitespace(raw)
   const name = truncateCodePoints(collapsed, MAX_PROVIDER_DISPLAY_NAME_LENGTH).trimEnd()
   if (name === "" || containsSlur(name)) return null
   return name

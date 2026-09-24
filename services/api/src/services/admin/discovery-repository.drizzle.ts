@@ -1,7 +1,8 @@
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
-import { decodeCursor, clampLimit, paginate } from "./pagination.js"
-import { writeAudit } from "./audit.js"
+import { clampLimit } from "./pagination.js"
+import { paginate, parseKeysetCursor } from "../../db/cursor-helpers.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { andAll, ilikeAnyOf, legacyContactEmailUsable } from "./sql-fragments.js"
 import {
   ADMIN_CATEGORIES,
@@ -10,16 +11,16 @@ import {
   type CategoryCountRow,
 } from "./category-counts.js"
 import { categoryCountsFragment, categoryCountsProjection } from "./category-counts-sql.js"
-import {
-  type DiscoveryContactRecord,
-  type DiscoveryContactSuggestionRecord,
-  type DiscoveryDetailRecord,
-  type DiscoveryNoteRecord,
-  type DiscoveryRepository,
-  type DiscoverySamplePinRecord,
-  type DiscoveryTaskRecord,
-  type ListDiscoveryArgs,
-} from "./discovery-service.js"
+import type {
+  DiscoveryContactRecord,
+  DiscoveryContactSuggestionRecord,
+  DiscoveryDetailRecord,
+  DiscoveryNoteRecord,
+  DiscoveryRepository,
+  DiscoverySamplePinRecord,
+  DiscoveryTaskRecord,
+  ListDiscoveryArgs,
+} from "./discovery-repository.js"
 import {
   invalidateDirectoryFacetCache,
   upsertJurisdictionContacts,
@@ -161,7 +162,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       args: ListDiscoveryArgs,
     ): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor, true)
+      const anchor = parseKeysetCursor(args.cursor)
       const sortValue = sortValueExpr(sql, args.sort)
 
       const conds: SqlFragment[] = []
@@ -175,7 +176,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       }
       if (anchor !== null) {
         conds.push(
-          sql`AND (${sortValue}, t.id) < (${anchor.createdAt.getTime()}::bigint, ${anchor.id}::uuid)`,
+          sql`AND (${sortValue}, t.id) < (${anchor.at.getTime()}::bigint, ${anchor.id}::uuid)`,
         )
       }
 
@@ -185,7 +186,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
         sql`ORDER BY ${sortValue} DESC, t.id DESC LIMIT ${limit + 1}`,
       )
       const { items, nextCursor } = paginate(rows.map(toTaskRecord), limit, (r) => ({
-        createdAt: new Date(args.sort === "reports" ? r.total : (r.population ?? 0)),
+        at: new Date(args.sort === "reports" ? r.total : (r.population ?? 0)),
         id: r.id,
       }))
       return { records: items, nextCursor }
@@ -273,7 +274,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
       id: string,
       input: { text: string; actorId: string | null; who: string },
     ): Promise<DiscoveryNoteRecord> {
-      const auditId = await writeAudit(sql, {
+      const auditId = await insertAuditRow(sql, {
         actorId: input.actorId,
         action: "discovery.note_added",
         target: `discovery:${id}`,
@@ -314,7 +315,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
           UPDATE jurisdiction_discovery_tasks SET status = 'in_progress'
           WHERE id = ${id} AND status <> 'done'
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "discovery.flagged",
           target: `discovery:${id}`,
@@ -348,7 +349,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
           input.defaultEmails,
           input.formUrl,
         )
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "discovery.draft_saved",
           target: `discovery:${id}`,

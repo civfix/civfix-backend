@@ -3,7 +3,7 @@ import { ANNOUNCEMENT_BROADCAST_KIND } from "@civfix/shared"
 import { makeFakeSql } from "../../helpers/fake-sql.js"
 import type { Sql } from "../../../src/db/client.js"
 import { makeDrizzleBroadcastRepository } from "../../../src/services/host/broadcast-repository.drizzle.js"
-import { InMemoryBroadcastRepository } from "../../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../../helpers/host/broadcast-repository.memory.js"
 import {
   KIND_NOTIFICATION_TYPE,
   announcementPath,

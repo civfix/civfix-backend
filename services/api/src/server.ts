@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify"
 import { loadEnv, type Env } from "./env.js"
-import { assertRedisReachable, buildContainer, type Container } from "./di.js"
+import { assertRedisReachable, makeContainer, type Container } from "./di.js"
 import { makeErrorHandler, makeNotFoundHandler } from "./errors/http-mapper.js"
 import { initErrorReporting } from "./errors/glitchtip.js"
 import { LOG_REDACTION_CENSOR, redactLogObject } from "./errors/log-redaction.js"
@@ -13,8 +13,8 @@ import { registerRateLimit } from "./plugins/rate-limit.js"
 import { registerVersionGate } from "./versioning/version-gate.js"
 import { registerAuthContext } from "./auth/context.js"
 import { registerAccountStatusGuard } from "./auth/account-status.js"
-import { buildAuthServicesFromContainer, type AuthServices } from "./auth/auth-services.js"
-import type { MediaRepository } from "./services/media-intake-service.js"
+import { makeAuthServicesFromContainer, type AuthServices } from "./auth/auth-services.js"
+import type { MediaRepository } from "./services/media-repository.js"
 import type { ReportServiceOverrides } from "./routes/reports.routes.js"
 import type { AnonServiceOverride } from "./routes/anon.routes.js"
 import type { HomeTurfOverrides } from "./routes/forms.routes.js"
@@ -45,7 +45,8 @@ import type { AdminBroadcastOverrides } from "./routes/admin/broadcasts.routes.j
 import type { ContentSubjectGate } from "./services/content-report-subject.js"
 import { registerRoutes } from "./routes/index.js"
 import { registerOutreachJobs } from "./services/admin/outreach-jobs.js"
-import { registerInboundJobs, INBOUND_SWEEP_JOB } from "./services/admin/inbound-jobs.js"
+import { registerInboundJobs } from "./services/admin/inbound-jobs.js"
+import { INBOUND_SWEEP_JOB } from "./lib/queue-names.js"
 import { registerDiscoveryJobs } from "./services/admin/discovery-jobs.js"
 import { registerAutoForwardJobs } from "./services/admin/autoforward-jobs.js"
 import { registerDataExportJobs } from "./services/data-export-jobs.js"
@@ -68,7 +69,7 @@ declare module "fastify" {
   }
 }
 
-export interface BuildServerOptions {
+export interface MakeServerOptions {
   env?: Env
   container?: Container
   authServices?: AuthServices
@@ -129,7 +130,7 @@ const OVERRIDE_KEYS = [
   "conversationRoutesOverrides",
   "moderationOverrides",
   "contentSubjectGate",
-] as const satisfies readonly (keyof BuildServerOptions)[]
+] as const satisfies readonly (keyof MakeServerOptions)[]
 
 // Header and error-envelope paths only. Sensitive keys inside logged objects are censored at any depth by
 // redactLogObject; wildcard paths here only ever reached one nesting level.
@@ -174,9 +175,9 @@ export function loggerOptions(env: Env): LoggerOptions {
   }
 }
 
-export async function buildServer(opts: BuildServerOptions = {}): Promise<FastifyInstance> {
+export async function makeServer(opts: MakeServerOptions = {}): Promise<FastifyInstance> {
   const env = opts.env ?? opts.container?.env ?? loadEnv()
-  const container = opts.container ?? buildContainer(env)
+  const container = opts.container ?? makeContainer(env)
 
   const app = Fastify({
     genReqId,
@@ -240,14 +241,14 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
 }
 
 function resolveAuthServices(
-  opts: BuildServerOptions,
+  opts: MakeServerOptions,
   env: Env,
   container: Container,
   logger: FastifyInstance["log"],
 ): AuthServices | undefined {
   if (opts.authServices) return opts.authServices
   if (env.DATABASE_URL && env.REDIS_URL) {
-    return buildAuthServicesFromContainer(container, { logger })
+    return makeAuthServicesFromContainer(container, { logger })
   }
   return undefined
 }
@@ -278,7 +279,7 @@ export async function start(env: Env = loadEnv()): Promise<FastifyInstance> {
     release: SERVICE_VERSION,
   })
 
-  const app = await buildServer({ env })
+  const app = await makeServer({ env })
   await startBackgroundJobs(app, env)
 
   const shutdown = makeShutdown(app, {

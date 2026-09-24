@@ -1,14 +1,7 @@
 import type { CleanupMemberRole, EventVisibility, OrganizationMemberRole } from "@civfix/shared"
 import { NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import type { Queryable } from "../../db/client.js"
-
-export interface HostStandingResolution {
-  cleanupId: string
-  standing: HostStanding
-  organizerUserId: string
-  organizationId: string | null
-  visibility: EventVisibility
-}
+import type { HostStandingRepository, HostStandingResolution } from "./host-standing-repository.js"
 
 interface StandingRow {
   cleanup_id: string
@@ -93,15 +86,6 @@ export async function orgStandingOf(
      WHERE om.organization_id = ${organizationId} AND om.user_id = ${userId}
      LIMIT 1`
   return rows[0]?.role ?? null
-}
-
-export interface HostStandingRepository {
-  standingOf(cleanupId: string, userId: string | null): Promise<HostStandingResolution | null>
-  standingsOf(
-    cleanupIds: readonly string[],
-    userId: string,
-  ): Promise<Map<string, HostStandingResolution>>
-  orgRoleOf(organizationId: string, userId: string): Promise<OrganizationMemberRole | null>
 }
 
 export function makeDrizzleHostStandingRepository(sql: Queryable): HostStandingRepository {

@@ -22,11 +22,11 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleGovClaimsRepository } from "../../src/services/admin/gov-claims-repository.drizzle.js"
 import {
   makeGovClaimsService,
-  type GovClaimsRepository,
   type GovClaimsService,
   type ProvisionedUser,
   type UserProvisioner,
 } from "../../src/services/admin/gov-claims-service.js"
+import type { GovClaimsRepository } from "../../src/services/admin/gov-claims-repository.js"
 import { PgAuthStores } from "../../src/auth/pg-stores.js"
 import type { UserStore } from "../../src/auth/stores.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"

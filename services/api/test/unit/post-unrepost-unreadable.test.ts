@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { RepostResponseSchema, type PostDTO } from "@civfix/shared"
 import type { Sql } from "../../src/db/client.js"
 import { makePostService } from "../../src/services/post-service.js"
-import type { PostBrief, PostRepository } from "../../src/services/post-repository.drizzle.js"
+import type { PostBrief, PostRepository } from "../../src/services/post-repository.js"
 
 const REPOSTER = "11111111-1111-1111-1111-111111111111"
 const AUTHOR = "22222222-2222-2222-2222-222222222222"

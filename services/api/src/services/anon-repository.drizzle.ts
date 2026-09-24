@@ -1,6 +1,6 @@
 /**
  * Postgres implementations of the anonymous-reporting seams: AnonReportRepository (held create, status,
- * the anon_tokens store), AnonHoldReleaseRepo (the worker's release gate) and ClaimRepository
+ * the anon_tokens store), AnonHoldReleaseRepository (the worker's release gate) and ClaimRepository
  * (claim-by-code linking and the nudge lookup).
  *
  * Raw postgres-js rather than the Drizzle query builder, because every report row carries PostGIS geometry
@@ -25,12 +25,12 @@
 import type { Sql, TransactionSql } from "../db/client.js"
 import { generateToken, sha256Hex } from "../auth/crypto.js"
 import type {
-  AnonAbuseReason,
-  AnonReportRepository,
   AnonReportStatusRow,
+  ClaimRepository,
   CreateAnonReportTxArgs,
   CreateAnonReportTxResult,
-} from "./anon-service.js"
+  PendingAnonReport,
+} from "./anon-repository.js"
 import { ANON_REPORT_CREATE_SCOPE } from "./anon-service.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
 import {
@@ -38,12 +38,13 @@ import {
   type AnonTokenRecord,
   type AnonTokenStore,
 } from "../abuse/anon-token.js"
-import type { ClaimRepository, PendingAnonReport } from "./claim-service.js"
 import { AppError } from "@civfix/shared"
 import type { AnonReportResponse, ReportStatus } from "@civfix/shared"
 import { insertModerationItem } from "./admin/moderation-repository.drizzle.js"
-import { claimableAsReportMedia, lockUploadsForClaim } from "./media-bindings.js"
+import { claimableAsReportMedia } from "./media-bindings.js"
+import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
 import { isUniqueViolation } from "../db/pg-errors.js"
+import type { DrizzleAnonReportRepository } from "./anon-repository.js"
 
 const HELD_REVIEW_NOTE = "Awaiting automated review"
 
@@ -101,14 +102,6 @@ type StoredAnonSnapshot = Omit<AnonReportResponse, "claimCode">
 
 export interface DrizzleAnonReportRepositoryOptions {
   newClaimCode?: () => string
-}
-
-export interface DrizzleAnonReportRepository extends AnonReportRepository {
-  raiseAbuseFlag(
-    subjectType: "report" | "anon_token",
-    subjectId: string,
-    reason: AnonAbuseReason,
-  ): Promise<void>
 }
 
 export function makeDrizzleAnonReportRepository(
@@ -307,7 +300,7 @@ async function insertHeldReport(
 // token row locks; skipped with no ids because `IN ()` is invalid SQL.
 async function attachReportMedia(tx: TransactionSql, args: CreateAnonReportTxArgs): Promise<void> {
   if (args.mediaUploadIds.length === 0) return
-  await lockUploadsForClaim(tx, args.mediaUploadIds)
+  await lockUploadsForClaimIn(tx, args.mediaUploadIds)
   const claimed = await tx<{ upload_id: string }[]>`
               UPDATE media_assets
               SET report_id = ${args.reportId}

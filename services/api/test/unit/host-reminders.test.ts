@@ -3,7 +3,7 @@ import { makeFakeSql } from "../helpers/fake-sql.js"
 import { makeDrizzleBroadcastRepository } from "../../src/services/host/broadcast-repository.drizzle.js"
 import type { Sql } from "../../src/db/client.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import {
   DEFAULT_REMINDER_OFFSETS_MIN,
   makeBroadcastLanes,

@@ -1,9 +1,8 @@
 import type { Storage } from "@civfix/shared/interfaces"
-import type { MediaWorkerRepo } from "@civfix/api/media-repo"
+import type { MediaWorkerRepository } from "@civfix/api/media-worker-repository"
 import { R2_PUT_TTL_SEC } from "@civfix/api/adapters/storage"
+import { MEDIA_UPLOAD_REAP_JOB } from "@civfix/api/queue-names"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
-
-export const MEDIA_UPLOAD_REAP_JOB = "media.upload.reap"
 
 const UPLOAD_REAP_SLACK_SEC = 5 * 60
 
@@ -18,7 +17,7 @@ export interface UploadReapPayload {
 }
 
 export interface UploadReapDeps extends JobObsDeps {
-  repo: MediaWorkerRepo
+  repo: MediaWorkerRepository
   storage: Storage
 }
 
@@ -99,7 +98,7 @@ export async function runUploadReapJob(
     return "deleted"
   } catch (err) {
     await deps.repo
-      .recordLeakedObjects?.({
+      .recordLeakedObjects({
         mediaId: payload.mediaId,
         keys: [r2Key],
         error: "delayed upload reap delete failed",

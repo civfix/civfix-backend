@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto"
+import type { CreateNotificationInput } from "../../src/services/notification-service.js"
 import type {
-  CreateNotificationInput,
   NewNotificationArgs,
   NotificationPrefsPatch,
   NotificationPrefsRecord,
   NotificationRecord,
   NotificationRepository,
   PushTokenUpsertOutcome,
-} from "../../src/services/notification-service.js"
+} from "../../src/services/notification-repository.js"
 import { DEFAULT_PREFS, isFeedVisibleType } from "../../src/services/notification-service.js"
 import { MAX_ACTIVE_PUSH_TOKENS_PER_USER } from "../../src/services/notification-repository.drizzle.js"
 import { paginate, parseTimeCursor } from "../../src/db/cursor-helpers.js"

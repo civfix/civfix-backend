@@ -4,13 +4,14 @@ import type { Container } from "../../di.js"
 import type { Queryable } from "../../db/client.js"
 import { domainOf } from "../../adapters/mail-text.js"
 import { apiBaseUrlOf, webBaseUrlOf } from "../../lib/base-url.js"
-import { writeAudit, type WriteAuditInput } from "../admin/audit.js"
+import type { WriteAuditInput } from "../admin/audit.js"
+import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
 import { makeRouteNotificationService } from "../route-notifier.js"
 import { makeDrizzleAnalyticsRepository } from "./analytics-repository.drizzle.js"
 import { makeAnalyticsService, type AnalyticsService } from "./analytics-service.js"
 import { makeDrizzleEventAnalyticsRepository } from "./event-analytics-repository.drizzle.js"
 import { makeEventAnalyticsService, type EventAnalyticsService } from "./event-analytics-service.js"
-import { makeDrizzleAnnouncementIdentityRepository } from "./announcement-repository.drizzle.js"
+import { makeDrizzleAnnouncementIdentityRepository } from "./announcement-identity-repository.drizzle.js"
 import { makeAnnouncementService, type AnnouncementService } from "./announcement-service.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../media-intake-service.js"
 import { makeInsightsService, type InsightsService } from "./insights-service.js"
@@ -25,11 +26,9 @@ import {
 } from "./broadcast-service.js"
 import { makeBroadcastPipeline, type BroadcastPipeline } from "./broadcast-pipeline.js"
 import { makeBroadcastLanes, type BroadcastLanes } from "./broadcast-lanes.js"
-import { BROADCAST_CHUNK_JOB, BROADCAST_PLAN_JOB } from "./broadcast-queues.js"
-import {
-  makeDrizzleMetricsRepository,
-  type MetricsRepository,
-} from "./metrics-repository.drizzle.js"
+import { BROADCAST_CHUNK_JOB, BROADCAST_PLAN_JOB } from "../../lib/queue-names.js"
+import { makeDrizzleMetricsRepository } from "./metrics-repository.drizzle.js"
+import type { MetricsRepository } from "./metrics-repository.js"
 import { makeMetricsService, type MetricsService } from "./metrics-service.js"
 import { makeDrizzleHostExportRepository } from "./export-repository.drizzle.js"
 import {
@@ -72,7 +71,7 @@ export async function auditBestEffort(
   logger: Pick<CommsLogger, "warn"> | undefined,
 ): Promise<void> {
   try {
-    await writeAudit(sql, entry)
+    await insertAuditRow(sql, entry)
   } catch (err) {
     logger?.warn(
       { err, action: entry.action, target: entry.target ?? null },

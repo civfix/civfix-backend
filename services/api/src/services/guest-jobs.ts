@@ -3,11 +3,8 @@ import type { Container } from "../di.js"
 import { makeContainerGuestRsvpService } from "./guest-rsvp-wiring.js"
 import { makeCommsRuntime } from "./host/comms-wiring.js"
 import type { EventUpdateVerdict } from "./host/broadcast-lanes.js"
-import {
-  CLEANUP_GUEST_UPDATE_FANOUT_JOB,
-  GUEST_RETENTION_SWEEP_JOB,
-  type GuestUpdateFanoutJob,
-} from "./guest-rsvp-service.js"
+import type { GuestUpdateFanoutJob } from "./guest-rsvp-service.js"
+import { CLEANUP_GUEST_UPDATE_FANOUT_JOB, GUEST_RETENTION_SWEEP_JOB } from "../lib/queue-names.js"
 
 const GUEST_UPDATE_SINGLETON_PREFIX = "guest-update:"
 

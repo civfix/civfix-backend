@@ -21,7 +21,7 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedOfficialAccount } from "../helpers/official-account.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 import { makeDrizzleAdminEventRepository } from "../../src/services/admin/admin-event-repository.drizzle.js"
-import type { AdminEventRepository } from "../../src/services/admin/admin-event-service.js"
+import type { AdminEventRepository } from "../../src/services/admin/admin-event-repository.js"
 
 const pg = await withPg()
 

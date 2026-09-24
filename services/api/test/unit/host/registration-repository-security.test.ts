@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { RegisterForEventRequest } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import { makeDrizzleHostRegistrationRepository } from "../../../src/services/host/registration-repository.drizzle.js"
 import type {
   QuestionRecord,
   RegisterTxArgs,
   SeatDraft,
-} from "../../../src/services/host/registration-repository.types.js"
+} from "../../../src/services/host/registration-repository.js"
 import {
   makeRegistrationService,
   type RegistrationService,

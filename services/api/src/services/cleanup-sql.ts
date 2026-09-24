@@ -5,7 +5,7 @@ import type {
   CleanupPersonView,
   CleanupRecord,
   NearPoint,
-} from "./cleanup-repository.types.js"
+} from "./cleanup-repository.js"
 import type {
   CleanupMemberRole,
   CleanupStatus,

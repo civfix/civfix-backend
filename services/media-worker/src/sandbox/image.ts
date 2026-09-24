@@ -24,8 +24,8 @@
 
 import sharp, { type Sharp } from "sharp"
 import exifr from "exifr"
+import { settleWithin } from "@civfix/api/timeout"
 import type { WorkerLimits } from "../config.js"
-import { settleWithin } from "../timeout.js"
 
 sharp.cache(false)
 sharp.concurrency(1)

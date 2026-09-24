@@ -4,15 +4,14 @@ import { FakeJobs, FakeStorage } from "@civfix/shared/fakes"
 import type { ReportDTO } from "@civfix/shared"
 import type { Queryable, Sql } from "../../src/db/client.js"
 import { makeDrizzleAnonReportRepository } from "../../src/services/anon-repository.drizzle.js"
-import type { CreateAnonReportTxArgs } from "../../src/services/anon-service.js"
-import { attachChatMedia } from "../../src/services/chat-attachments.drizzle.js"
+import type { CreateAnonReportTxArgs } from "../../src/services/anon-repository.js"
+import type { NewMediaAsset } from "../../src/services/media-repository.js"
+import type { CreateReportTxArgs } from "../../src/services/report-repository.js"
+import { attachChatMedia } from "../../src/services/chat-attachments-repository.drizzle.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "../../src/services/host/event-media.js"
 import { claimableAsReportMedia } from "../../src/services/media-bindings.js"
 import { avatarClaimQuery } from "../../src/services/media-claim-repository.drizzle.js"
-import {
-  makeMediaIntakeService,
-  type NewMediaAsset,
-} from "../../src/services/media-intake-service.js"
+import { makeMediaIntakeService } from "../../src/services/media-intake-service.js"
 import {
   UNSESSIONED_UPLOADER,
   anonUploader,
@@ -20,7 +19,6 @@ import {
 } from "../../src/services/media-uploader.js"
 import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
-import type { CreateReportTxArgs } from "../../src/services/report-service.types.js"
 import { makeFakeSql, type FakeSqlControl, type RecordedStatement } from "../helpers/fake-sql.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
 

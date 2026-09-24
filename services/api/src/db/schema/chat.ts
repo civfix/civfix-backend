@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm"
 import { index, jsonb, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core"
-import { chatGroups } from "./chat-groups.js"
+import { chatGroups } from "./chat_groups.js"
 import { cleanups } from "./cleanups.js"
 import { reports } from "./reports.js"
 import { users } from "./users.js"

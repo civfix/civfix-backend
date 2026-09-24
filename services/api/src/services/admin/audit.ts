@@ -1,6 +1,3 @@
-import type { Queryable } from "../../db/client.js"
-import { insertAuditRow } from "./audit-repository.drizzle.js"
-
 export type AdminAuditAction =
   | "operator.login"
   | "operator.logout"
@@ -133,8 +130,4 @@ export interface WriteAuditInput {
   action: AdminAuditAction
   target?: string | null
   meta?: Record<string, unknown> | null
-}
-
-export function writeAudit(db: Queryable, input: WriteAuditInput): Promise<string> {
-  return insertAuditRow(db, input)
 }

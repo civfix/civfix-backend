@@ -1,20 +1,32 @@
 import type PgBoss from "pg-boss"
 import type { Jobs, EnqueueOptions, JobHandler } from "@civfix/shared/interfaces"
-import { REGISTRATION_QUEUE_NAMES } from "../services/host/registration-queues.js"
-import { COMMS_QUEUE_NAMES } from "../services/host/broadcast-queues.js"
 import type { JobHandlerArgWithAttempt } from "../services/job-attempt.js"
-import { MEDIA_CHECKS_JOB } from "../services/media-intake-service.js"
-import { JURISDICTION_DISCOVERY_JOB } from "../services/jurisdiction-service.js"
-import { OUTREACH_DIGEST_JOB } from "../services/admin/jurisdiction-contacts-types.js"
-import { INBOUND_SWEEP_JOB } from "../services/admin/inbound-jobs.js"
-import { REPORT_AUTOFORWARD_JOB } from "../services/report-service.types.js"
-import { DATA_EXPORT_JOB } from "../services/data-export-jobs.js"
-import { CLEANUP_CANCEL_FANOUT_JOB } from "../services/cleanup-notifications.js"
 import {
+  ANON_HOLD_RELEASE_JOB,
+  BROADCAST_CHUNK_JOB,
+  BROADCAST_PLAN_JOB,
+  BROADCAST_SCHEDULE_SWEEP_JOB,
+  CHAT_ROOM_FANOUT_JOB,
+  CHECKIN_NOSHOW_SWEEP_JOB,
+  CLEANUP_CANCEL_FANOUT_JOB,
   CLEANUP_GUEST_UPDATE_FANOUT_JOB,
+  DATA_EXPORT_JOB,
+  EVENT_METRICS_ROLLUP_JOB,
+  EVENT_REMINDERS_SWEEP_JOB,
   GUEST_RETENTION_SWEEP_JOB,
-} from "../services/guest-rsvp-service.js"
-import { CHAT_ROOM_FANOUT_JOB } from "../services/chat-fanout-jobs.js"
+  HOST_EXPORT_JOB,
+  HOST_EXPORT_REAP_JOB,
+  HOST_RETENTION_SWEEP_JOB,
+  INBOUND_SWEEP_JOB,
+  JURISDICTION_DISCOVERY_JOB,
+  MEDIA_CHECKS_JOB,
+  OUTREACH_DIGEST_JOB,
+  REPORT_AUTOFORWARD_JOB,
+  SHARED_QUEUE_POLICY,
+  WAITLIST_EXPIRE_SWEEP_JOB,
+  WAITLIST_PROMOTE_JOB,
+} from "../lib/queue-names.js"
+import { SECONDS_PER_MINUTE } from "../lib/time.js"
 
 export interface PgBossJobsLogger {
   error(obj: unknown, msg?: string): void
@@ -32,13 +44,6 @@ export interface PgBossJobsConfig {
   logger?: PgBossJobsLogger
 }
 
-// Enqueued by the claim route and worked by the media worker, which owns the exported constant.
-const ANON_HOLD_RELEASE_JOB = "anon.hold.release"
-
-// The media worker creates media.checks and anon.hold.release with this same policy. pg-boss keeps the
-// last createQueue/updateQueue policy, so a mismatch silently breaks singletonKey dedup on those queues.
-const SHARED_QUEUE_POLICY = "short"
-
 export const API_QUEUE_NAMES = [
   MEDIA_CHECKS_JOB,
   JURISDICTION_DISCOVERY_JOB,
@@ -51,15 +56,23 @@ export const API_QUEUE_NAMES = [
   CLEANUP_GUEST_UPDATE_FANOUT_JOB,
   GUEST_RETENTION_SWEEP_JOB,
   CHAT_ROOM_FANOUT_JOB,
-  ...REGISTRATION_QUEUE_NAMES,
-  ...COMMS_QUEUE_NAMES,
+  WAITLIST_PROMOTE_JOB,
+  WAITLIST_EXPIRE_SWEEP_JOB,
+  CHECKIN_NOSHOW_SWEEP_JOB,
+  BROADCAST_PLAN_JOB,
+  BROADCAST_CHUNK_JOB,
+  BROADCAST_SCHEDULE_SWEEP_JOB,
+  EVENT_REMINDERS_SWEEP_JOB,
+  EVENT_METRICS_ROLLUP_JOB,
+  HOST_EXPORT_JOB,
+  HOST_EXPORT_REAP_JOB,
+  HOST_RETENTION_SWEEP_JOB,
 ] as const
 
 type ApiQueueName = (typeof API_QUEUE_NAMES)[number]
 
 type QueueRetryPolicy = Required<Pick<PgBoss.Queue, "retryLimit" | "retryDelay" | "retryBackoff">>
 
-const SECONDS_PER_MINUTE = 60
 const DATA_EXPORT_RETRY_LIMIT = 10
 
 // A data export that fails on a mail credential or approved-sender fault has to wait for an operator to

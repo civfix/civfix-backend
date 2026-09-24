@@ -2,11 +2,13 @@ import { relativeAgo, avatarGradient } from "@civfix/shared"
 import type { MessageThreadDTO, PersonDTO, RoomKind } from "@civfix/shared"
 import {
   encodeTimeCursor,
+  isBeforeTimeCursor,
   pageWith,
   parseTimeCursor,
   type TimeCursor,
 } from "../db/cursor-helpers.js"
 import { officialPersonFlag } from "../auth/official-account.js"
+import type { ThreadAggregate, ThreadsRepository } from "./threads-repository.js"
 
 export interface ChatReadState {
   markRead(cleanupId: string, userId: string, at: Date): Promise<void>
@@ -27,28 +29,6 @@ export class InMemoryChatReadState implements ChatReadState {
     const ms = this.marks.get(`${userId}:${cleanupId}`)
     return Promise.resolve(ms !== undefined ? new Date(ms) : null)
   }
-}
-
-export interface ThreadAggregate {
-  cleanupId: string
-  title: string
-  joinedAt: Date
-  members: number
-  unread?: number
-  last: {
-    body: string | null
-    createdAt: Date
-    senderId: string
-  } | null
-}
-
-export interface ThreadsRepository {
-  listThreadsFor(
-    userId: string,
-    limit: number,
-    cursor?: TimeCursor | null,
-  ): Promise<ThreadAggregate[]>
-  countUnread(cleanupId: string, userId: string, after: Date): Promise<number>
 }
 
 export interface DmThreadAggregateView {
@@ -220,12 +200,6 @@ function dmThreadTitle(peer: DmThreadAggregateView["peer"]): string {
   return peer.handle !== null ? `@${peer.handle}` : peer.displayName
 }
 
-function beforeCursor(cursor: TimeCursor | null, activity: number, id: string): boolean {
-  if (cursor === null) return true
-  const at = cursor.at.getTime()
-  return activity < at || (activity === at && id < cursor.id)
-}
-
 export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
   const now = deps.now ?? (() => new Date())
 
@@ -358,7 +332,7 @@ export function makeThreadsService(deps: ThreadsServiceDeps): ThreadsService {
     )
 
     const merged = [...cleanupEntries, ...dmEntries, ...reportEntries, ...groupEntries]
-      .filter((e) => beforeCursor(cursor, e.activity, e.dto.id))
+      .filter((e) => isBeforeTimeCursor(e.activity, e.dto.id, cursor))
       .sort(
         (a, b) =>
           b.activity - a.activity || (a.dto.id < b.dto.id ? 1 : a.dto.id > b.dto.id ? -1 : 0),

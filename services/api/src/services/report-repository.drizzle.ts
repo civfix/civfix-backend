@@ -16,7 +16,8 @@ import {
 } from "../db/cursor-helpers.js"
 import { isPubliclyVisibleStatus, ownerStatusTransition } from "./report-visibility.js"
 import { allocateReportReferenceCode } from "../db/reference-code.js"
-import { escapeLike } from "./admin/like.js"
+import { likeContains } from "../db/like.js"
+import type { ReportVisibilityTimelineKind } from "./report-types.js"
 import type {
   BBox,
   CreateReportTxArgs,
@@ -27,8 +28,7 @@ import type {
   ReportRecord,
   ReportRepository,
   ReportTimelineView,
-  ReportVisibilityTimelineKind,
-} from "./report-service.types.js"
+} from "./report-repository.js"
 import { servedKeyExpr, servableMediaFilter } from "./media-served-key.js"
 import { claimableAsReportMedia } from "./media-bindings.js"
 import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
@@ -421,7 +421,7 @@ export function makeDrizzleReportRepository(sql: Sql): ReportRepository {
       const textFilter: SqlFragment =
         args.q !== null
           ? (() => {
-              const needle = `%${escapeLike(args.q)}%`
+              const needle = likeContains(args.q)
               return sql`AND (r.title ILIKE ${needle} ESCAPE '\\' OR r.addr ILIKE ${needle} ESCAPE '\\')`
             })()
           : sql``

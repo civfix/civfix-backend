@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { makeThreadsService, InMemoryChatReadState } from "../../src/services/threads-service.js"
 import { makeMemoryConversationHidesRepository } from "../../src/services/conversation-hides-repository.memory.js"
-import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.drizzle.js"
+import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import { InMemoryDmRepository } from "../../src/services/dm-repository.memory.js"
 

@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto"
-import { AppError, ErrorCode, MAX_BRING_ITEMS, MAX_LINKED_REPORTS } from "@civfix/shared"
+import {
+  AppError,
+  ErrorCode,
+  MAX_BRING_ITEMS,
+  MAX_LINKED_REPORTS,
+  collapseWhitespace,
+} from "@civfix/shared"
 import { can, hostCapabilities, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
+import { isUuid } from "../db/cursor-helpers.js"
 import { UNKNOWN_JURCODE } from "../db/reference-code.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { InMemoryCounterStore, type CounterStore } from "../abuse/counter-store.js"
@@ -27,7 +34,9 @@ import type { NotificationService } from "./notification-service.js"
 import { EVENT_HOURS_MEMBER_CAP } from "./volunteer-hours-service.js"
 import type { OutboundMailService } from "./admin/outbound-mail-service.js"
 import { buildEventPacket } from "./admin/mail-format.js"
-import { PRESIGN_CONCURRENCY, mapWithLimit } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { SECONDS_PER_DAY, SECONDS_PER_HOUR } from "../lib/time.js"
+import { PRESIGN_CONCURRENCY } from "./media-presign.js"
 import { attachAffiliations, type AffiliationLoader } from "./affiliation.js"
 import {
   CLEANUPS_DEFAULT_LIMIT,
@@ -51,7 +60,7 @@ import type {
   SignupSeat,
   SlotReconcileResult,
   UpdateCleanupPatch,
-} from "./cleanup-repository.types.js"
+} from "./cleanup-repository.js"
 import {
   assertMayGrantRole,
   hasHostStanding,
@@ -83,8 +92,8 @@ import { eventAddressPatch, resolveEventAddress } from "./cleanup-address.js"
 import { assertKnownSlotIds, assertTimedSlotsFitWindow, toDesiredSlots } from "./cleanup-slots.js"
 import { makeCleanupNotifications, type CleanupCancelFanoutJob } from "./cleanup-notifications.js"
 
-export * from "./cleanup-repository.types.js"
-export { CANCEL_FANOUT_MEMBER_CAP, CLEANUP_CANCEL_FANOUT_JOB } from "./cleanup-notifications.js"
+export * from "./cleanup-repository.js"
+export { CANCEL_FANOUT_MEMBER_CAP } from "./cleanup-notifications.js"
 export {
   CLEANUPS_DEFAULT_LIMIT,
   ATTENDEES_DEFAULT_LIMIT,
@@ -116,10 +125,6 @@ type HostEventPatch = Pick<
   | "hostReplyTo"
 > & { scheduledAt?: string }
 
-const SECONDS_PER_HOUR = 60 * 60
-
-const SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR
-
 // `joined` means an RSVP (a cleanup_members row, which the organizer always has). Org standing
 // grants host powers and visibility, not attendance: clients key Join/Leave off this flag.
 function isAttending(standing: HostStanding): boolean {
@@ -143,12 +148,6 @@ function isHostRefusal(err: unknown): boolean {
 
 function futureOrNull(at: Date | null, now: Date): string | null {
   return at !== null && at.getTime() > now.getTime() ? at.toISOString() : null
-}
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-function isUuid(value: string): boolean {
-  return UUID_RE.test(value)
 }
 
 const EVENT_CLOSED_MESSAGE = "This event is closed."
@@ -1502,7 +1501,7 @@ function guestVisibleChange(
 }
 
 function resourceRequestNote(message: string): string {
-  const collapsed = message.replace(/\s+/g, " ").trim()
+  const collapsed = collapseWhitespace(message)
   const preview =
     collapsed.length > RESOURCE_NOTE_PREVIEW_CHARS
       ? `${collapsed.slice(0, RESOURCE_NOTE_PREVIEW_CHARS)}…`

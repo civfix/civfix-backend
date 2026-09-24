@@ -2,7 +2,7 @@ import type {
   MediaAssetView,
   MediaRepository,
   NewMediaAsset,
-} from "../../src/services/media-intake-service.js"
+} from "../../src/services/media-repository.js"
 
 type StoredMedia = MediaAssetView & { uploadEtag: string | null }
 

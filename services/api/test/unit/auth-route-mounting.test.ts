@@ -8,17 +8,17 @@
  * The deploy fix forces NODE_ENV=production; these tests lock the invariant it relies on: the auth and
  * admin routes mount IFF an auth bundle is present, and the DATABASE_URL/REDIS_URL pair drives that.
  *
- * Infra-free: the "present" case asserts only that buildServer DECORATED the bundle, before any
+ * Infra-free: the "present" case asserts only that makeServer DECORATED the bundle, before any
  * ready()/inject(), so the lazily-connecting DB/Redis handles never open a socket.
  */
 
 import { describe, it, expect } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 
 /** The not-found handler's message prefix; a domain 404 (AppError) never starts with this. */
@@ -26,7 +26,7 @@ const routeMissingPrefix = (method: string): string => `Route ${method} `
 
 describe("auth/admin route mounting is gated on the auth bundle", () => {
   it("does NOT mount /auth/* or /admin/* with no DATABASE_URL/REDIS_URL (reproduces the reported 404)", async () => {
-    const app = await buildServer({ env: loadEnv({ NODE_ENV: "test" }) })
+    const app = await makeServer({ env: loadEnv({ NODE_ENV: "test" }) })
     try {
       expect(app.hasDecorator("authServices")).toBe(false)
 
@@ -55,7 +55,7 @@ describe("auth/admin route mounting is gated on the auth bundle", () => {
   it("builds the auth bundle when DATABASE_URL + REDIS_URL are present (the gate opens)", async () => {
     // ioredis is lazyConnect and postgres connects on first query, so without ready()/inject() the bogus
     // URLs below are never dialed.
-    const app = await buildServer({
+    const app = await makeServer({
       env: loadEnv({
         NODE_ENV: "test",
         DATABASE_URL: "postgres://civfix:civfix@127.0.0.1:5432/civfix",
@@ -72,7 +72,7 @@ describe("auth/admin route mounting is gated on the auth bundle", () => {
   it("serves GET /admin/auth/session (200, unauthenticated) when an auth bundle is present", async () => {
     // The anonymous path answers without any DB/Redis call; it is what the SPA bootstrap reads before
     // falling back to the Access exchange.
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores: makeInMemoryStores(),
       cache: new InMemoryCacheClient(() => Date.now()),
       mailer: new FakeMailer(),
@@ -80,7 +80,7 @@ describe("auth/admin route mounting is gated on the auth bundle", () => {
       verifier: new StubJwksVerifier(),
       now: () => Date.now(),
     })
-    const app = await buildServer({ env: loadEnv({ NODE_ENV: "test" }), authServices })
+    const app = await makeServer({ env: loadEnv({ NODE_ENV: "test" }), authServices })
     try {
       const res = await app.inject({ method: "GET", url: "/v1/admin/auth/session" })
       expect(res.statusCode).toBe(200)

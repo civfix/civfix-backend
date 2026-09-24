@@ -1,3 +1,5 @@
+import { MS_PER_SECOND } from "../lib/time.js"
+
 export interface RateLimiter {
   tryConsume(key: string): boolean
 }
@@ -17,8 +19,6 @@ interface Bucket {
 const EVICT_PREFER_FULL_WINDOW = 32
 
 const DEFAULT_MAX_KEYS = 50_000
-
-const MS_PER_SECOND = 1000
 
 function refilledTokens(bucket: Bucket, at: number, opts: TokenBucketOptions): number {
   return Math.min(

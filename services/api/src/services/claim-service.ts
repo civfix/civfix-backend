@@ -1,17 +1,9 @@
 import { AppError } from "@civfix/shared"
 import type { ClaimNudgeResponse, ClaimReportResponse, ReportDTO } from "@civfix/shared"
-import { resolveAnonToken, type AnonTokenDeps, type AnonTokenStore } from "../abuse/anon-token.js"
+import { resolveAnonToken, type AnonTokenDeps } from "../abuse/anon-token.js"
 import type { ReportOwner } from "./report-service.js"
 import { generateToken, sha256Hex } from "../auth/crypto.js"
-
-export interface PendingAnonReport {
-  reportId: string
-}
-
-export interface ClaimRepository extends AnonTokenStore {
-  rotatePendingClaimCode(tokenId: string, claimCodeHash: string): Promise<PendingAnonReport | null>
-  claimByCode(claimCodeHash: string, userId: string): Promise<{ reportId: string } | null>
-}
+import type { ClaimRepository } from "./anon-repository.js"
 
 export interface ClaimServiceDeps {
   repo: ClaimRepository

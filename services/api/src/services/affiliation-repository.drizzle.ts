@@ -1,21 +1,7 @@
-import type { OrganizationRefDTO } from "@civfix/shared"
 import type { Sql } from "../db/client.js"
-import { blockedPairExpr } from "./hidden-identity.js"
+import { blockedPairExpr } from "./blocks-sql.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
-
-export interface AffiliationRow {
-  user_id: string
-  id: string
-  slug: string
-  name: string
-  verified_status: string
-  verified_kind: OrganizationRefDTO["verifiedKind"]
-  logo_key: string | null
-}
-
-export interface AffiliationRepository {
-  primaryAffiliationRows(ids: string[], viewerId: string | null): Promise<AffiliationRow[]>
-}
+import type { AffiliationRepository, AffiliationRow } from "./affiliation-repository.js"
 
 export function makeDrizzleAffiliationRepository(sql: Sql): AffiliationRepository {
   return {

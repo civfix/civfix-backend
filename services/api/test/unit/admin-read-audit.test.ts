@@ -34,7 +34,7 @@ describe("L4: auditRead", () => {
 
     const insert = fake.statements.find((s) => /INSERT INTO audit_log/i.test(s.sql))
     expect(insert).toBeDefined()
-    // actor_id, action, target, meta: the writeAudit column order.
+    // actor_id, action, target, meta: the insertAuditRow column order.
     expect(insert?.values.slice(0, 3)).toEqual(["op-1", "user.messages_viewed", "user:u-1"])
     expect(insert?.values[3]).toMatchObject({ returned: 20 })
     expect(warnings).toHaveLength(0)

@@ -1,29 +1,29 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeJobs, FakeMailer, FakeStorage } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { WriteAuditInput } from "../../src/services/admin/audit.js"
-import { InMemoryHomeRepository } from "../../src/services/admin/home-repository.memory.js"
-import { InMemoryAnalyticsRepository } from "../../src/services/admin/analytics-repository.memory.js"
-import { InMemoryActivityRepository } from "../../src/services/admin/activity-repository.memory.js"
-import { InMemoryAuditRepository } from "../../src/services/admin/audit-repository.memory.js"
-import { InMemoryDiscoveryRepository } from "../../src/services/admin/discovery-repository.memory.js"
-import { InMemoryJurisdictionContactsRepository } from "../../src/services/admin/jurisdiction-contacts-repository.memory.js"
-import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
-import { InMemoryAdminEventRepository } from "../../src/services/admin/admin-event-repository.memory.js"
-import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
+import { InMemoryHomeRepository } from "../helpers/admin/home-repository.memory.js"
+import { InMemoryAnalyticsRepository } from "../helpers/admin/analytics-repository.memory.js"
+import { InMemoryActivityRepository } from "../helpers/admin/activity-repository.memory.js"
+import { InMemoryAuditRepository } from "../helpers/admin/audit-repository.memory.js"
+import { InMemoryDiscoveryRepository } from "../helpers/admin/discovery-repository.memory.js"
+import { InMemoryJurisdictionContactsRepository } from "../helpers/admin/jurisdiction-contacts-repository.memory.js"
+import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
+import { InMemoryAdminEventRepository } from "../helpers/admin/admin-event-repository.memory.js"
+import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
 import {
   InMemoryGovClaimsRepository,
   InMemoryUserProvisioner,
-} from "../../src/services/admin/gov-claims-repository.memory.js"
-import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
+} from "../helpers/admin/gov-claims-repository.memory.js"
+import { InMemoryModerationRepository } from "../helpers/admin/moderation-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
+import { InMemoryInboundRepository } from "../helpers/admin/inbound-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 
 const OPERATOR = "ops@civfix.org"
@@ -192,7 +192,7 @@ function makeFakes(): Fakes {
 async function makeHarness(): Promise<Harness> {
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores,
     cache,
     mailer: new FakeMailer(),
@@ -201,7 +201,7 @@ async function makeHarness(): Promise<Harness> {
     now: () => Date.now(),
   })
   const env = loadEnv({ NODE_ENV: "test", ADMIN_EMAILS: OPERATOR })
-  const app = await buildServer({ env, authServices: services })
+  const app = await makeServer({ env, authServices: services })
   const fakes = makeFakes()
   const mailer = new FakeMailer()
   const outboundMail = makeOutboundMailService({

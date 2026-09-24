@@ -1,7 +1,8 @@
 import type { Sql } from "../db/client.js"
 import { avatarGradient } from "@civfix/shared"
 import type { UserSearchResultDTO } from "@civfix/shared"
-import { escapeLike } from "./admin/like.js"
+import { likeContains, likePrefix } from "../db/like.js"
+import type { UserSearchRepository } from "./user-search-repository.js"
 
 interface UserSearchRow {
   id: string
@@ -20,11 +21,6 @@ function toSearchResult(r: UserSearchRow): UserSearchResultDTO {
   }
 }
 
-export interface UserSearchRepository {
-  searchByHandlePrefix(q: string, viewerId: string, limit: number): Promise<UserSearchResultDTO[]>
-  searchMentionable(q: string, viewerId: string, limit: number): Promise<UserSearchResultDTO[]>
-}
-
 export function makeDrizzleUserSearchRepository(sql: Sql): UserSearchRepository {
   return {
     // Locked product rule: DM search never surfaces the viewer, deleted or handle-less users, accounts with
@@ -35,7 +31,7 @@ export function makeDrizzleUserSearchRepository(sql: Sql): UserSearchRepository 
       viewerId: string,
       limit: number,
     ): Promise<UserSearchResultDTO[]> {
-      const prefix = escapeLike(q) + "%"
+      const prefix = likePrefix(q)
       const rows = await sql<UserSearchRow[]>`
         SELECT u.id, u.handle, u.display_name, u.avatar_url
         FROM users u
@@ -65,7 +61,7 @@ export function makeDrizzleUserSearchRepository(sql: Sql): UserSearchRepository 
       viewerId: string,
       limit: number,
     ): Promise<UserSearchResultDTO[]> {
-      const term = "%" + escapeLike(q) + "%"
+      const term = likeContains(q)
       const rows = await sql<UserSearchRow[]>`
         SELECT u.id, u.handle, u.display_name, u.avatar_url
         FROM users u

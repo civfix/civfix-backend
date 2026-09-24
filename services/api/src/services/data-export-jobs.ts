@@ -4,8 +4,7 @@ import type { Env } from "../env.js"
 import type { Container } from "../di.js"
 import { makeDataExportService, type DataExportService } from "./data-export-service.js"
 import { isFinalJobAttempt } from "./job-attempt.js"
-
-export const DATA_EXPORT_JOB = "data.export"
+import { DATA_EXPORT_JOB } from "../lib/queue-names.js"
 
 const SUPPORT_MAILBOX_LOCAL_PART = "support"
 

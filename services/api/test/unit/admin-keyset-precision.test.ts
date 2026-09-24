@@ -11,7 +11,7 @@ import { makeDrizzleAdminUserRepository } from "../../src/services/admin/admin-u
 import { makeDrizzleAdminEventRepository } from "../../src/services/admin/admin-event-repository.drizzle.js"
 import { makeDrizzleModerationRepository } from "../../src/services/admin/moderation-repository.drizzle.js"
 import { makeDrizzleActivityRepository } from "../../src/services/admin/activity-repository.drizzle.js"
-import { decodeCursor } from "../../src/services/admin/pagination.js"
+import { parseKeysetCursor } from "../../src/db/cursor-helpers.js"
 
 const AT = new Date("2026-09-01T10:00:00.123Z")
 const AT_TEXT = "2026-09-01T10:00:00.123456Z"
@@ -39,18 +39,20 @@ function expectExactAnchor(ctl: FakeSqlControl, match: RegExp): void {
   expect(stmt.sql).toContain("::timestamptz")
 }
 
-describe("decodeCursor keeps the cursor instant as text", () => {
+describe("parseKeysetCursor keeps the cursor instant as text", () => {
   it("returns the microsecond text alongside the Date", () => {
-    const anchor = decodeCursor(CURSOR, true)
+    const anchor = parseKeysetCursor(CURSOR, { requireUuid: true })
     expect(anchor?.atText).toBe(AT_TEXT)
     expect(anchor?.id).toBe(ID_A)
   })
 
   it("keeps a legacy millisecond cursor and a timestamp-only cursor parseable", () => {
-    expect(decodeCursor(`2026-09-01T10:00:00.123Z|${ID_A}`, true)?.atText).toBe(
+    expect(
+      parseKeysetCursor(`2026-09-01T10:00:00.123Z|${ID_A}`, { requireUuid: true })?.atText,
+    ).toBe("2026-09-01T10:00:00.123Z")
+    expect(parseKeysetCursor("2026-09-01T10:00:00.123Z", { requireUuid: true })?.atText).toBe(
       "2026-09-01T10:00:00.123Z",
     )
-    expect(decodeCursor("2026-09-01T10:00:00.123Z", true)?.atText).toBe("2026-09-01T10:00:00.123Z")
   })
 })
 

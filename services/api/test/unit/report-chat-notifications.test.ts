@@ -14,14 +14,14 @@ import {
   InMemoryNotificationRepository,
   flushNotificationDispatch,
 } from "../helpers/notifications.js"
-import type { NotificationPrefsRecord } from "../../src/services/notification-service.js"
+import type { NotificationPrefsRecord } from "../../src/services/notification-repository.js"
 import {
   makeNotificationService,
   PUSH_FANOUT_BATCH_SIZE,
   type NotificationService,
 } from "../../src/services/notification-service.js"
 import type { PushSender } from "@civfix/shared/interfaces"
-import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
+import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.js"
 import type { ConversationMuteRoomKind } from "../../src/db/schema/conversation_mutes.js"
 
 class InMemoryConversationMutes implements ConversationMutesRepository {

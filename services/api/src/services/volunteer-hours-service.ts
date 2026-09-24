@@ -18,7 +18,6 @@ import type {
   MyVolunteerHoursDTO,
   MyVolunteerHoursEntriesQuery,
   MyVolunteerHoursEntriesResponse,
-  OrganizationRefDTO,
   OrgHoursDTO,
   PublicVolunteerHoursQuery,
   PublicVolunteerHoursResponse,
@@ -26,14 +25,26 @@ import type {
   VolunteerHoursSource,
 } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
-import { parseKeysetCursor, type KeysetCursor } from "../db/cursor-helpers.js"
+import { parseKeysetCursor } from "../db/cursor-helpers.js"
 import { MIN_EVENT_DURATION_MS, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { clampPageLimit } from "../lib/page-limit.js"
+import { MS_PER_HOUR, MS_PER_MINUTE } from "../lib/time.js"
+import { PRESIGN_CONCURRENCY } from "./media-presign.js"
 import type { AffiliationLoader } from "./affiliation.js"
 import { hasHostStanding, isEventPubliclyVisible } from "./host/authz.js"
-import type { TopVolunteerRow } from "./host/analytics-repository.drizzle.js"
+import type { TopVolunteerRow } from "./host/analytics-repository.js"
 import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import type { NotificationService } from "./notification-service.js"
+import type {
+  EventHoursLedgerEntry,
+  LogEventHoursResult,
+  OrgHoursView,
+  VolunteerHoursAnomaly,
+  VolunteerHoursAnomalyKind,
+  VolunteerHoursEntryView,
+  VolunteerHoursRepository,
+} from "./volunteer-hours-repository.js"
 
 const LEADERBOARD_DEFAULT_LIMIT = 20
 export const LEADERBOARD_MAX_LIMIT = 50
@@ -49,10 +60,6 @@ export const MAX_ORG_CHIPS_FETCH = 20
 
 const HOURS_NOTIFY_CONCURRENCY = 8
 
-const MS_PER_MINUTE = 60_000
-
-const MS_PER_HOUR = 60 * MS_PER_MINUTE
-
 const HOURS_ROUNDING_FACTOR = 100
 
 const EVENT_WINDOW_GRACE_MS = MS_PER_HOUR
@@ -62,15 +69,6 @@ export const DAILY_HOURS_CAP = 24
 export const WEEKLY_HOURS_FLAG_DEFAULT = 60
 
 export const RECIPROCAL_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000
-
-export type VolunteerHoursAnomalyKind = "weekly_hours" | "reciprocal_credit"
-
-export interface VolunteerHoursAnomaly {
-  kind: VolunteerHoursAnomalyKind
-  userId: string
-  counterpartUserId: string | null
-  hours: number | null
-}
 
 export interface HoursModerationSink {
   flag(input: {
@@ -100,104 +98,7 @@ function eventDurationMs(cleanup: EventHoursWindow): number {
   return end.getTime() - cleanup.scheduledAt.getTime()
 }
 
-export interface LogEventHoursArgs {
-  actorId: string
-  cleanupId: string
-  geoid: string | null
-  entries: EventHoursEntry[]
-  dailyCapHours?: number
-  weeklyFlagHours?: number
-}
-
-export interface LogEventHoursResult {
-  credited: number
-  changed: { userId: string; hours: number; previousHours: number | null }[]
-  anomalies: VolunteerHoursAnomaly[]
-}
-
-export interface VolunteerHoursEntryView {
-  id: string
-  source: VolunteerHoursSource
-  hours: number
-  createdAt: Date
-  occurredAt: Date
-  cleanupId: string | null
-  cleanupTitle: string | null
-  cleanupReferenceCode: string | null
-  reportId: string | null
-  jurisdictionGeoid: string | null
-  jurisdictionName: string | null
-  creditedBy: {
-    id: string
-    name: string
-    handle: string | null
-    organization: OrganizationRefDTO | null
-  } | null
-}
-
-export interface EventHoursLedgerEntry {
-  userId: string
-  hours: number
-  loggedAt: Date
-}
-
-export interface EventHoursLedger {
-  entries: EventHoursLedgerEntry[]
-  anyLogged: boolean
-}
-
-export interface HoursVisibility {
-  aggregate: boolean
-  items: boolean
-}
-
-export interface LeaderboardPage {
-  jurisdictionName: string | null
-  entries: LeaderboardEntryDTO[]
-  nextOffset: number | null
-  participantCount: number | null
-  viewerRank: number | null
-  viewerHours: number | null
-}
-
 export const ITEMISED_SOURCES: readonly VolunteerHoursSource[] = ["event", "manual"]
-
-export interface ListEntriesArgs {
-  userId: string
-  cursor: KeysetCursor | null
-  limit: number
-  sources?: VolunteerHoursSource[]
-}
-
-export interface EntriesForCertificateArgs {
-  userId: string
-  geoid: string | null
-  from: Date | null
-  to: Date | null
-  limit: number
-}
-
-export interface CertificateEntriesPage {
-  items: VolunteerHoursEntryView[]
-  totalHours: number
-  entryCount: number
-}
-
-export interface OrgHoursView {
-  organizationId: string
-  slug: string
-  name: string
-  logoKey: string | null
-  verified: boolean
-  verifiedKind: OrganizationRefDTO["verifiedKind"]
-  hours: number
-}
-
-export interface MyVolunteerHoursTotals {
-  totalHours: number
-  byJurisdiction: MyVolunteerHoursDTO["byJurisdiction"]
-  byOrganization: OrgHoursView[]
-}
 
 export type OrgLogoPresigner = (key: string) => Promise<string>
 
@@ -211,25 +112,6 @@ export function leaderboardEntryOf(row: TopVolunteerRow, rank: number): Leaderbo
     ...(row.avatarUrl !== null ? { avatarUrl: row.avatarUrl } : {}),
     hours: round2(row.hours),
   }
-}
-
-export interface VolunteerHoursRepository {
-  logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult>
-  totalsFor(userId: string): Promise<MyVolunteerHoursTotals>
-  totalHoursFor(userId: string): Promise<number>
-  leaderboard(
-    geoid: string,
-    limit: number,
-    offset: number,
-    viewerId: string | null,
-    withExtras: boolean,
-  ): Promise<LeaderboardPage>
-  listEntries(
-    args: ListEntriesArgs,
-  ): Promise<{ items: VolunteerHoursEntryView[]; nextCursor: string | null }>
-  listEventHours(cleanupId: string, viewerId: string | null): Promise<EventHoursLedger>
-  hoursVisibilityFor(userId: string): Promise<HoursVisibility>
-  entriesForCertificate(args: EntriesForCertificateArgs): Promise<CertificateEntriesPage>
 }
 
 export interface CleanupHoursView {
@@ -287,11 +169,6 @@ export interface VolunteerHoursService {
   ): Promise<LeaderboardResponse>
 }
 
-function clampLimit(limit: number | undefined): number {
-  if (limit === undefined) return LEADERBOARD_DEFAULT_LIMIT
-  return Math.min(Math.max(1, Math.floor(limit)), LEADERBOARD_MAX_LIMIT)
-}
-
 function clampOffset(offset: number | undefined): number {
   if (offset === undefined) return 0
   return Math.min(Math.max(0, Math.floor(offset)), LEADERBOARD_MAX_OFFSET)
@@ -301,11 +178,6 @@ function clampOffset(offset: number | undefined): number {
 // loop on that page forever.
 function reachableNextOffset(next: number | null): number | null {
   return next !== null && next <= LEADERBOARD_MAX_OFFSET ? next : null
-}
-
-function clampEntriesLimit(limit: number | undefined): number {
-  if (limit === undefined) return HOURS_ENTRIES_DEFAULT_LIMIT
-  return Math.min(Math.max(1, Math.floor(limit)), HOURS_ENTRIES_MAX_LIMIT)
 }
 
 function neutralPublicHours(): PublicVolunteerHoursResponse {
@@ -577,7 +449,11 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       userId: string,
       query: MyVolunteerHoursEntriesQuery,
     ): Promise<MyVolunteerHoursEntriesResponse> {
-      const limit = clampEntriesLimit(query.limit)
+      const limit = clampPageLimit(
+        query.limit,
+        HOURS_ENTRIES_DEFAULT_LIMIT,
+        HOURS_ENTRIES_MAX_LIMIT,
+      )
       const [page, totalHours] = await Promise.all([
         deps.repo.listEntries({ userId, cursor: parseKeysetCursor(query.cursor), limit }),
         deps.repo.totalHoursFor(userId),
@@ -609,7 +485,11 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         return neutralPublicHours()
       }
 
-      const limit = clampEntriesLimit(query.limit)
+      const limit = clampPageLimit(
+        query.limit,
+        HOURS_ENTRIES_DEFAULT_LIMIT,
+        HOURS_ENTRIES_MAX_LIMIT,
+      )
       const [totals, page] = await Promise.all([
         deps.repo.totalsFor(userId),
         visibility.items
@@ -692,7 +572,7 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       query: LeaderboardQuery,
       viewerId: string | null = null,
     ): Promise<LeaderboardResponse> {
-      const limit = clampLimit(query.limit)
+      const limit = clampPageLimit(query.limit, LEADERBOARD_DEFAULT_LIMIT, LEADERBOARD_MAX_LIMIT)
       const offset = clampOffset(query.offset)
       const withExtras = query.limit === undefined || limit >= LEADERBOARD_EXTRAS_MIN_LIMIT
       const page = await deps.repo.leaderboard(geoid, limit, offset, viewerId, withExtras)

@@ -18,6 +18,7 @@ import {
   OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
   OUTBOUND_SEND_PHASE_BUDGET_MS,
 } from "./outbound-send-policy.js"
+import { passThroughRejection, settleWithin } from "../../lib/timeout.js"
 
 export interface OutboundMailEnv {
   MAIL_FROM_OUTREACH: string
@@ -151,13 +152,10 @@ export function outboundPayloadBytes(input: { body: string; html?: string | unde
 }
 
 function raceDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new OutboundSendDeadlineError(ms)), ms)
+  return settleWithin(work, ms, {
+    timeoutError: () => new OutboundSendDeadlineError(ms),
+    normalizeError: passThroughRejection,
   })
-  return Promise.race([work, deadline]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer)
-  }) as Promise<T>
 }
 
 interface DeliveryArgs {

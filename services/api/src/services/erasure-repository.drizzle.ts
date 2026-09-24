@@ -1,22 +1,6 @@
 import { inArray, sql } from "drizzle-orm"
 import { DELETED_USER_LABEL } from "@civfix/shared"
-import type { Db } from "../db/client.js"
-
-export type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0]
-
-export interface TransferredEvent extends Record<string, unknown> {
-  cleanup_id: string
-  new_organizer: string
-  title: string
-}
-
-export interface ErasureRepository {
-  transferHostedEvents(tx: DbTransaction, userId: string): Promise<TransferredEvent[]>
-  releaseOrganizations(tx: DbTransaction, userId: string): Promise<void>
-  scrubAttendeeContributions(tx: DbTransaction, userId: string): Promise<string[]>
-  scrubModerationSnapshots(tx: DbTransaction, userId: string): Promise<void>
-  purgeVerificationDocuments(tx: DbTransaction, userId: string): Promise<string[]>
-}
+import type { DbTransaction, ErasureRepository, TransferredEvent } from "./erasure-repository.js"
 
 // Takes no handle: every step runs on the erasure transaction its caller passes in, never on the pool.
 export function makeDrizzleErasureRepository(): ErasureRepository {

@@ -1,14 +1,14 @@
-import type { Sql } from "../../db/client.js"
+import type { Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
 import {
-  clampLimit,
-  decodeCursor,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-} from "./pagination.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { HTML_PREVIEW_SOURCE_CHARS, PREVIEW_SOURCE_CHARS, toPreview } from "./mail-preview.js"
 import { normalizeAuthVerdict, replyPublication } from "./mail-mappers.js"
-import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { ilikeAnyOf } from "./sql-fragments.js"
 import {
   INBOUND_AUTH_VERDICT_HEADER,
   toListItem,
@@ -103,7 +103,7 @@ export function makeDrizzleInboxFeedRepository(sql: Sql): InboxFeedRepository {
   return {
     async list(query: InboxFeedQuery): Promise<InboxFeedResponse> {
       const limit = clampLimit(query.limit)
-      const anchor = decodeCursor(query.cursor, true)
+      const anchor = parseKeysetCursor(query.cursor)
       const filter = query.filter ?? "all"
       const q = query.q?.trim() ?? ""
       const search = (columns: SqlFragment[]): SqlFragment =>

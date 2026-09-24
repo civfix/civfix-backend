@@ -18,7 +18,7 @@ import { describe, it, expect, afterEach, vi } from "vitest"
 import http from "node:http"
 import type { AddressInfo } from "node:net"
 import type { FastifyInstance } from "fastify"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import {
   makeShutdown,
@@ -83,7 +83,7 @@ describe("shutdown drain", () => {
 
   it("flips /healthz to 503 + the drain header, keeps serving for the drain window, then closes", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const gate = deferred()
     app.get("/__drain-probe", async () => {
       await gate.promise
@@ -136,7 +136,7 @@ describe("shutdown drain", () => {
 
   it("clamps a drain window above the loader ceiling instead of trusting it", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     let closes = 0
     app.addHook("onClose", async () => {
       closes += 1
@@ -161,7 +161,7 @@ describe("shutdown drain", () => {
 
   it("closes immediately when the drain window is 0, and is idempotent across repeated signals", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     let closes = 0
     app.addHook("onClose", async () => {
       closes += 1
@@ -184,7 +184,7 @@ describe("shutdown drain", () => {
   })
 
   it("a second signal DURING the drain neither closes early nor exits twice", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     let closes = 0
     app.addHook("onClose", async () => {
       closes += 1
@@ -212,7 +212,7 @@ describe("shutdown drain", () => {
   })
 
   it("a fresh server instance is not draining (the flag is per-instance, not module-global)", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({ method: "GET", url: "/healthz" })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toMatchObject({ ok: true })
@@ -221,7 +221,7 @@ describe("shutdown drain", () => {
   })
 
   it("exits 1 when the container teardown outlives its watchdog instead of hanging", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     await app.ready()
 
     const exits: number[] = []
@@ -239,7 +239,7 @@ describe("shutdown drain", () => {
   })
 
   it("exits 1 when the container teardown rejects", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     await app.ready()
 
     const exits: number[] = []
@@ -256,7 +256,7 @@ describe("shutdown drain", () => {
   })
 
   it("proceeds to teardown when the server close cannot settle, instead of waiting on it forever", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     await app.ready()
     const realClose = app.close.bind(app)
     ;(app as unknown as { close: () => Promise<void> }).close = () =>
@@ -313,7 +313,7 @@ describe("shutdown drain over a real socket", () => {
   }
 
   it("an in-flight request completes across app.close() instead of dying with a socket error", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const entered = deferred()
     app.get("/__slow", async () => {
       entered.resolve()
@@ -345,7 +345,7 @@ describe("shutdown drain over a real socket", () => {
   })
 
   it("a parked keep-alive connection does not stretch the close", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const port = await listen()
     agent = new http.Agent({ keepAlive: true })
 

@@ -1,6 +1,5 @@
 import type { Sql } from "../db/client.js"
 import { avatarGradient } from "@civfix/shared"
-import type { PersonDTO } from "@civfix/shared"
 import {
   keysetInstant,
   keysetPredicate,
@@ -8,31 +7,21 @@ import {
   parseKeysetCursor,
 } from "../db/cursor-helpers.js"
 import { officialPersonFlag } from "../auth/official-account.js"
+import type {
+  BlockState,
+  BlocksRepository,
+  ListBlockedArgs,
+  ListBlockedPage,
+} from "./blocks-repository.js"
 
 export const LIST_BLOCKS_DEFAULT_LIMIT = 50
 
-export interface ListBlockedArgs {
-  cursor?: string | null
-  limit?: number
-}
-
-export interface ListBlockedPage {
-  blocked: PersonDTO[]
-  nextCursor: string | null
-}
-
-export interface BlockState {
-  blockedByViewer: boolean
-  blockedByTarget: boolean
-}
-
-export interface BlocksRepository {
-  block(blockerId: string, blockedId: string): Promise<void>
-  unblock(blockerId: string, blockedId: string): Promise<void>
-  isBlockedEitherWay(a: string, b: string): Promise<boolean>
-  blockState(viewerId: string, targetId: string): Promise<BlockState>
-  blockedIdsAmong?(actorId: string, candidateIds: string[]): Promise<Set<string>>
-  listBlocked(blockerId: string, args?: ListBlockedArgs): Promise<ListBlockedPage>
+export function bindBlockedIdsAmong(
+  repo: BlocksRepository,
+): ((actorId: string, candidateIds: string[]) => Promise<Set<string>>) | undefined {
+  const batch = repo.blockedIdsAmong
+  if (!batch) return undefined
+  return (actorId, candidateIds) => batch.call(repo, actorId, candidateIds)
 }
 
 export function makeDrizzleBlocksRepository(sql: Sql): BlocksRepository {

@@ -1,5 +1,6 @@
 import type { Storage } from "@civfix/shared/interfaces"
-import { MEDIA_CHECKS_JOB, type MediaWorkerRepo } from "@civfix/api/media-repo"
+import type { MediaWorkerRepository } from "@civfix/api/media-worker-repository"
+import { MEDIA_CHECKS_JOB } from "@civfix/api/queue-names"
 import type { JobLogFn, JobReportFn } from "./obs.js"
 import { servedKey, thumbnailKey } from "./media-keys.js"
 
@@ -11,7 +12,7 @@ export interface RejectedAsset {
 }
 
 export interface RejectCleanupDeps {
-  repo: Pick<MediaWorkerRepo, "r2KeyReferencedByOthers" | "recordLeakedObjects">
+  repo: Pick<MediaWorkerRepository, "r2KeyReferencedByOthers" | "recordLeakedObjects">
   storage: Pick<Storage, "delete">
 }
 
@@ -57,7 +58,7 @@ export async function deleteSupersededUpload(
   }
 
   await deps.repo
-    .recordLeakedObjects?.({
+    .recordLeakedObjects({
       mediaId: asset.id,
       keys: [asset.r2Key],
       error: "superseded-upload delete failed",
@@ -109,7 +110,7 @@ export async function deleteRejectedObjects(
   if (leaked.length === 0) return
 
   await deps.repo
-    .recordLeakedObjects?.({
+    .recordLeakedObjects({
       mediaId: asset.id,
       keys: leaked,
       error: "rejected-media delete failed",

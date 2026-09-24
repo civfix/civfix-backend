@@ -1,7 +1,7 @@
 import { AppError, ErrorCode } from "@civfix/shared"
 import type { ChatMessageDTO } from "@civfix/shared"
-import type { ChatRepository } from "./chat-repository.drizzle.js"
-import type { ChatPollRepository, PollRoomColumn } from "./chat-poll-repository.drizzle.js"
+import type { ChatRepository } from "./chat-repository.js"
+import type { ChatPollRepository, PollRoomColumn } from "./chat-poll-repository.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { neutralizeChatViewerFields } from "./chat-viewer-fields.js"
 

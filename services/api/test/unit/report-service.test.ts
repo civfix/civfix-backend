@@ -10,9 +10,9 @@ import {
   reportH3Cell,
   CLUSTER_ZOOM_THRESHOLD,
   REPORT_H3_RESOLUTION,
-  type ReportMapPoint,
   type ReportService,
 } from "../../src/services/report-service.js"
+import type { ReportMapPoint } from "../../src/services/report-repository.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 
 const VALID_UUID = "11111111-1111-1111-1111-111111111111"

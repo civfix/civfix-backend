@@ -5,8 +5,8 @@ import { Readable } from "node:stream"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { MAX_VIDEO_BYTES } from "@civfix/shared"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { LocalDiskStorage } from "../../src/adapters/storage.local.js"
 import { InMemoryMediaRepository } from "../helpers/media.js"
@@ -35,8 +35,8 @@ function envSource(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 
 async function makeHarness(): Promise<Harness> {
   const env = loadEnv(envSource())
-  const container = buildContainer(env)
-  const app = await buildServer({ env, container, mediaRepo: new InMemoryMediaRepository() })
+  const container = makeContainer(env)
+  const app = await makeServer({ env, container, mediaRepo: new InMemoryMediaRepository() })
   const harness: Harness = {
     app,
     storage: container.storage as LocalDiskStorage,
@@ -92,8 +92,8 @@ describe("local-disk storage driver selection", () => {
 
   it("does not mount the local-storage routes when the driver is off", async () => {
     const env = loadEnv({ NODE_ENV: "test" })
-    const container = buildContainer(env)
-    const app = await buildServer({ env, container, mediaRepo: new InMemoryMediaRepository() })
+    const container = makeContainer(env)
+    const app = await makeServer({ env, container, mediaRepo: new InMemoryMediaRepository() })
     current = {
       app,
       storage: container.storage as LocalDiskStorage,

@@ -24,9 +24,9 @@ import {
 } from "./_route-utils.js"
 import {
   makeJurisdictionContactsService,
-  type JurisdictionContactsRepository,
   type OutreachEnqueuer,
 } from "../../services/admin/jurisdiction-contacts-service.js"
+import type { JurisdictionContactsRepository } from "../../services/admin/jurisdiction-contacts-repository.js"
 import { makeDrizzleJurisdictionContactsRepository } from "../../services/admin/jurisdiction-contacts-repository.drizzle.js"
 
 /** Test-only: an in-memory repo and a fake jobs enqueuer so the whole HTTP flow runs offline. */

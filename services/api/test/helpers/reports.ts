@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import type { ReportVisibilityTimelineKind } from "../../src/services/report-service.js"
 import type {
   BBox,
   CreateReportTxArgs,
@@ -9,8 +10,7 @@ import type {
   ReportRecord,
   ReportRepository,
   ReportTimelineView,
-  ReportVisibilityTimelineKind,
-} from "../../src/services/report-service.js"
+} from "../../src/services/report-repository.js"
 import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
 import {
   isPubliclyVisibleStatus,

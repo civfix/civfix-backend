@@ -5,9 +5,9 @@ import { FakeGeocoder, FakeJobs } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { clientQuery } from "../helpers/query.js"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
-import { buildContainer } from "../../src/di.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { makeJurisdictionService } from "../../src/services/jurisdiction-service.js"
 import {
@@ -33,8 +33,8 @@ describe.skipIf(!pg)("map routes (integration)", () => {
     h = pg as PgHarness
     // Every other seam defaults to its fake outside production.
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
-    const container = buildContainer(env)
-    app = await buildServer({ env, container })
+    const container = makeContainer(env)
+    app = await makeServer({ env, container })
   })
 
   afterAll(async () => {

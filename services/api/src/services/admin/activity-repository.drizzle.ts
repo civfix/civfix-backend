@@ -21,16 +21,16 @@
  */
 
 import type { Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
 import {
-  clampLimit,
-  decodeCursor,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-  type KeysetAnchor,
-} from "./pagination.js"
+  parseKeysetCursor,
+  type KeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { AUDIT_READ_ACTIONS } from "./audit.js"
-import { likePrefix } from "./like.js"
+import { likePrefix } from "../../db/like.js"
 import { anyOf, ilikeAnyOf } from "./sql-fragments.js"
 import {
   AUDIT_ACTION_RULES,
@@ -38,12 +38,14 @@ import {
   MAIL_BOUNCE_EVENT_TYPES,
   auditRulesForKind,
   sourcesForKind,
-  type ActivityRepository,
   type AuditActionRule,
-  type ActivitySource,
-  type ActivitySourceRecord,
-  type ListActivityArgs,
 } from "./activity-service.js"
+import type {
+  ActivityRepository,
+  ActivitySource,
+  ActivitySourceRecord,
+  ListActivityArgs,
+} from "./activity-repository.js"
 
 interface ActivityRowSelect {
   source: ActivitySource
@@ -73,7 +75,7 @@ function toRecord(r: ActivityRowSelect): ActivitySourceRecord {
 }
 
 interface PageSpec {
-  anchor: KeysetAnchor | null
+  anchor: KeysetCursor | null
   desc: boolean
   limit: number
 }
@@ -218,7 +220,7 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
       // requireUuid is false: the keyset compares `id::text`, never `${id}::uuid`, so a non-uuid id in a
       // hand-made cursor cannot raise a 22P02; it simply anchors past every real row.
       const page: PageSpec = {
-        anchor: decodeCursor(args.cursor),
+        anchor: parseKeysetCursor(args.cursor, { requireUuid: false }),
         desc: args.sort === "newest",
         limit,
       }

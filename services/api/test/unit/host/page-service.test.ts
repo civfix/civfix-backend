@@ -3,7 +3,7 @@ import { AppError, currentVersion } from "@civfix/shared"
 import { parseMarkdownSubset } from "@civfix/shared/markdown"
 import type { EventPageBlock } from "@civfix/shared"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {
   makePageService,
   validatePageBlocks,

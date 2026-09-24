@@ -9,7 +9,7 @@ import {
 } from "../../src/services/social-repository.drizzle.js"
 import { backfillUserActivity } from "../../src/db/backfill-user-activity-core.js"
 import { touchUserActivity } from "../../src/db/sql/user-activity.js"
-import type { SocialRepository } from "../../src/services/social-service.js"
+import type { SocialRepository } from "../../src/services/social-repository.js"
 
 const pg = await withPg()
 

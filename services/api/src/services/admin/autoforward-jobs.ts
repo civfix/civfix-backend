@@ -1,6 +1,7 @@
 import { AppError, ErrorCode } from "@civfix/shared"
 import type { Container } from "../../di.js"
-import { REPORT_AUTOFORWARD_JOB, type ReportAutoForwardJob } from "../report-service.types.js"
+import type { ReportAutoForwardJob } from "../report-types.js"
+import { REPORT_AUTOFORWARD_JOB } from "../../lib/queue-names.js"
 import {
   isAlreadyRoutedConflict,
   makeAdminReportService,

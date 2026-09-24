@@ -10,7 +10,7 @@
 import type { ChatMessageDTO, NotificationType, RoomKind } from "@civfix/shared"
 import type { NotificationService } from "./notification-service.js"
 import { CONVERSATION_BELL } from "./conversation-bell.js"
-import { messageAuthorName, textPreview } from "../routes/chat-notify-copy.js"
+import { messageAuthorName, textPreview } from "./chat-notify-copy.js"
 import type { MessageKey } from "../i18n/renderMessage.js"
 import type { GatewayChatMentions, OnChatReply, OnDmDelivered } from "../ws/types.js"
 

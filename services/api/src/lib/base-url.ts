@@ -3,6 +3,10 @@ export const DEFAULT_API_PORT = 8080
 
 const TRAILING_SLASHES_RE = /\/+$/
 
+export function stripTrailingSlashes(value: string): string {
+  return value.replace(TRAILING_SLASHES_RE, "")
+}
+
 export interface BaseUrlEnv {
   NODE_ENV?: string
   PORT?: number
@@ -21,7 +25,7 @@ function baseUrlOr(
   env: BaseUrlEnv,
   port: number,
 ): string {
-  const trimmed = (configured ?? "").trim().replace(TRAILING_SLASHES_RE, "")
+  const trimmed = stripTrailingSlashes((configured ?? "").trim())
   if (trimmed.length > 0) return trimmed
   if (env.NODE_ENV === "production") throw new Error(`${variable} is required in production`)
   return `http://localhost:${port}`

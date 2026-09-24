@@ -1,6 +1,6 @@
 import type { BroadcastKind } from "@civfix/shared"
 import { describe, expect, it } from "vitest"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const TYPE_A = "00000000-0000-0000-0000-00000000aaaa"

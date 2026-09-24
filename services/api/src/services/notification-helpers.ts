@@ -1,5 +1,6 @@
 import type { NotificationDTO, NotificationPrefsDTO, NotificationType } from "@civfix/shared"
-import type { NotificationPrefsRecord, NotificationRecord } from "./notification-service.js"
+import type { NotificationPrefsRecord, NotificationRecord } from "./notification-repository.js"
+import { MINUTES_PER_HOUR } from "../lib/time.js"
 
 export const DEFAULT_PREFS: NotificationPrefsRecord = {
   push: true,
@@ -26,7 +27,6 @@ export function isFeedVisibleType(type: NotificationType): boolean {
 }
 
 const TIME_OF_DAY_RE = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/
-const MINUTES_PER_HOUR = 60
 const MAX_HOUR = 23
 const MAX_MINUTE = 59
 

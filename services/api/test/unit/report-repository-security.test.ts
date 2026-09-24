@@ -5,7 +5,7 @@ import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 import type { Queryable, Sql } from "../../src/db/client.js"
 import { mediaBoundElsewhere } from "../../src/services/media-bindings.js"
 import { makeDrizzleReportRepository } from "../../src/services/report-repository.drizzle.js"
-import type { CreateReportTxArgs } from "../../src/services/report-service.types.js"
+import type { CreateReportTxArgs } from "../../src/services/report-repository.js"
 
 const UNAVAILABLE = "One or more media uploads are unavailable."
 

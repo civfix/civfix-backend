@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
+import { InMemoryModerationRepository } from "../helpers/admin/moderation-repository.memory.js"
 import {
   makeModerationService,
   type ModerationService,

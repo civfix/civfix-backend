@@ -9,8 +9,8 @@ import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeDrizzleHostRegistrationRepository } from "../../src/services/host/registration-repository.drizzle.js"
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
-import type { CleanupRepository, SignupSeat } from "../../src/services/cleanup-repository.types.js"
-import type { HostRegistrationRepository } from "../../src/services/host/registration-repository.types.js"
+import type { CleanupRepository, SignupSeat } from "../../src/services/cleanup-repository.js"
+import type { HostRegistrationRepository } from "../../src/services/host/registration-repository.js"
 
 const pg = await withPg()
 

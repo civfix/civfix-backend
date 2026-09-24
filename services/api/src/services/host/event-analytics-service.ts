@@ -8,7 +8,6 @@ import {
   MAX_EVENT_ANALYTICS_ARRIVAL_BUCKETS,
   MAX_EVENT_ANALYTICS_PANEL_ROWS,
   MAX_EVENT_ANALYTICS_SERIES_POINTS,
-  type BreakdownRow,
   type EventAnalyticsPhase,
   type EventAnalyticsScope,
   type GetEventAnalyticsResponse,
@@ -32,12 +31,9 @@ import type {
   EventHoursTotals,
   EventKpiRow,
   SourceSeats,
-} from "./analytics-repository.drizzle.js"
-import type {
-  EventAnalyticsFacts,
-  EventAnalyticsRepository,
-} from "./event-analytics-repository.drizzle.js"
-import type { MetricRow, MetricsRepository } from "./metrics-repository.drizzle.js"
+} from "./analytics-repository.js"
+import type { EventAnalyticsFacts, EventAnalyticsRepository } from "./event-analytics-repository.js"
+import type { MetricRow, MetricsRepository } from "./metrics-repository.js"
 import {
   hostAnalyticsCacheKey,
   perViewerScope,
@@ -48,7 +44,6 @@ import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
 import { ARRIVAL_SAMPLE_LIMIT } from "./analytics-service.js"
 import { METRIC_DONATION_CLICKS, METRIC_PAGE_VIEWS } from "./event-metric-names.js"
 import {
-  DAY_MS,
   clockPhase,
   closureAllowsTotal,
   emptyRate,
@@ -56,9 +51,11 @@ import {
   seriesOf,
   shiftDayKey,
   toFunnelSteps,
+  toPanel,
   toRate,
   toSeries,
 } from "./host-analytics-shaping.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
 const EVENT_ANALYTICS_LIFECYCLE_DAYS = MAX_EVENT_ANALYTICS_SERIES_POINTS
 const EVENT_ANALYTICS_ARCHIVE_DAYS = 30
@@ -89,18 +86,8 @@ export interface EventAnalyticsService {
   ): Promise<GetEventAnalyticsResponse>
 }
 
-function toPanel(panel: DerivedPanel<DerivedBreakdownRow>): Panel {
-  return {
-    panelSuppressed: panel.panelSuppressed,
-    rows: panel.rows.slice(0, MAX_EVENT_ANALYTICS_PANEL_ROWS).map(
-      (row): BreakdownRow => ({
-        key: row.key,
-        label: row.key,
-        value: row.value,
-        suppressed: row.suppressed,
-      }),
-    ),
-  }
+function eventPanel(panel: DerivedPanel<DerivedBreakdownRow>): Panel {
+  return toPanel(panel, MAX_EVENT_ANALYTICS_PANEL_ROWS)
 }
 
 function tailSum(points: readonly { value: number | null }[], days: number): number | null {
@@ -118,7 +105,7 @@ function cardSlotPanel(
   registeredPublishable: boolean,
   full: boolean,
 ): Panel {
-  const panel = toPanel(breakdown(rows, { totalPublishable: registeredPublishable }))
+  const panel = eventPanel(breakdown(rows, { totalPublishable: registeredPublishable }))
   if (full) return panel
   return { ...panel, rows: panel.rows.slice(0, EVENT_ANALYTICS_CARD_SLOT_ROWS) }
 }
@@ -128,7 +115,7 @@ export function analyticsPhaseOf(clock: EventClockRecord, at: Date): EventAnalyt
   if (phase === "live") return "day_of"
   if (phase !== "ended") return "upcoming"
   const endedAt = clock.completedAt ?? clock.endsAt ?? clock.scheduledAt
-  return at.getTime() - endedAt.getTime() > EVENT_ANALYTICS_ARCHIVE_DAYS * DAY_MS
+  return at.getTime() - endedAt.getTime() > EVENT_ANALYTICS_ARCHIVE_DAYS * MS_PER_DAY
     ? "archived"
     : "completed"
 }
@@ -269,7 +256,7 @@ function shapeResponse(
       bySlot: cardSlotPanel(inputs.registrationsBySlot, registeredPublishable, full),
       ...(full
         ? {
-            bySource: toPanel(
+            bySource: eventPanel(
               breakdown(
                 inputs.bySource.map((row) => ({ key: row.source, count: row.seats })),
                 { totalPublishable: registeredPublishable },
@@ -284,12 +271,12 @@ function shapeResponse(
     },
     eventDay: {
       arrivals: full ? arrivals : arrivals.slice(-EVENT_ANALYTICS_CARD_SERIES_POINTS),
-      ...(full ? { bySlot: toPanel(breakdown(inputs.checkinsBySlot)) } : {}),
+      ...(full ? { bySlot: eventPanel(breakdown(inputs.checkinsBySlot)) } : {}),
     },
     impact: full
       ? {
-          hoursBuckets: toPanel(breakdown(inputs.hoursBuckets)),
-          reportStatuses: toPanel(breakdown(inputs.reportStatuses)),
+          hoursBuckets: eventPanel(breakdown(inputs.hoursBuckets)),
+          reportStatuses: eventPanel(breakdown(inputs.reportStatuses)),
         }
       : {},
     comparison: inputs.comparison,

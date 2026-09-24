@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleGuestRsvpRepository } from "../../src/services/guest-rsvp-repository.drizzle.js"
-import type { GuestRsvpRepository } from "../../src/services/guest-rsvp-service.js"
+import type { GuestRsvpRepository } from "../../src/services/guest-rsvp-repository.js"
 
 const pg = await withPg()
 

@@ -15,7 +15,7 @@ import type {
   GuestRsvpRepository,
   InsertGuestOtpArgs,
   UpsertGuestArgs,
-} from "./guest-rsvp-service.js"
+} from "./guest-rsvp-repository.js"
 
 interface GuestRowSelect {
   id: string

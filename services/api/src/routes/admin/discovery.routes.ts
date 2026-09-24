@@ -23,10 +23,8 @@ import {
   sendOk,
   spreadNow,
 } from "./_route-utils.js"
-import {
-  makeDiscoveryService,
-  type DiscoveryRepository,
-} from "../../services/admin/discovery-service.js"
+import { makeDiscoveryService } from "../../services/admin/discovery-service.js"
+import type { DiscoveryRepository } from "../../services/admin/discovery-repository.js"
 import { makeDrizzleDiscoveryRepository } from "../../services/admin/discovery-repository.drizzle.js"
 
 const FALLBACK_OPERATOR_LABEL = "operator"
@@ -76,7 +74,7 @@ export async function registerAdminDiscoveryRoutes(
     const actorId = requireOperator(request)
     const { id, body } = parseBodyWithId(AddNoteRequestSchema, request)
     const who = await operatorLabel(app, actorId)
-    // The note IS its audit_log row, so there is no separate writeAudit here.
+    // The note IS its audit_log row, so there is no separate insertAuditRow here.
     await service().addNote(id, { text: body.text, actorId, who })
     sendOk(reply)
   })

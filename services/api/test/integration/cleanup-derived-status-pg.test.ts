@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
-import type { CleanupRepository } from "../../src/services/cleanup-repository.types.js"
+import type { CleanupRepository } from "../../src/services/cleanup-repository.js"
 
 const pg = await withPg()
 

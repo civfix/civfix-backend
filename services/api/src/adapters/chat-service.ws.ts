@@ -8,7 +8,7 @@ import type { ChatMessageDTO, WsServerMessage } from "@civfix/shared"
 import { randomUUID } from "node:crypto"
 import { chatChannel, type ChatPubSub } from "./chat-pubsub.js"
 import { RefCountedSubscriptions } from "./ref-counted-subscriptions.js"
-import type { ChatRepository } from "../services/chat-repository.drizzle.js"
+import type { ChatRepository } from "../services/chat-repository.js"
 
 export interface WsChatServiceDeps {
   repo: ChatRepository

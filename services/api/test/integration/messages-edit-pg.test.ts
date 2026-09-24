@@ -5,12 +5,12 @@ import type { FastifyInstance } from "fastify"
 import type { WsServerMessage } from "@civfix/shared"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import {
   InMemoryChatRepository,
@@ -342,7 +342,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
     const env = loadEnv({ NODE_ENV: "test" })
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores,
       cache,
       mailer: new FakeMailer(),
@@ -357,7 +357,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
       chatRepo: new InMemoryChatRepository(),
       blocksRepo: makeDrizzleBlocksRepository(h.sql),
     }
-    const app: FastifyInstance = await buildServer({ env, authServices, chatOverrides: overrides })
+    const app: FastifyInstance = await makeServer({ env, authServices, chatOverrides: overrides })
 
     try {
       const aliceId = await newUser("DM Edit Alice")
@@ -404,7 +404,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
 
     beforeAll(async () => {
       const env = loadEnv({ NODE_ENV: "test" })
-      authServices = buildAuthServices({
+      authServices = makeAuthServices({
         stores: makeInMemoryStores(),
         cache: new InMemoryCacheClient(() => Date.now()),
         mailer: new FakeMailer(),
@@ -421,8 +421,8 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
         blocksRepo: makeDrizzleBlocksRepository(h.sql),
         reportChat: makeReportChatRepository(h.sql),
       }
-      container = buildContainer(env)
-      app = await buildServer({ env, container, authServices, chatOverrides: overrides })
+      container = makeContainer(env)
+      app = await makeServer({ env, container, authServices, chatOverrides: overrides })
     })
 
     afterAll(async () => {
@@ -574,7 +574,7 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
 
     beforeAll(async () => {
       const env = loadEnv({ NODE_ENV: "test" })
-      authServices = buildAuthServices({
+      authServices = makeAuthServices({
         stores: makeInMemoryStores(),
         cache: new InMemoryCacheClient(() => Date.now()),
         mailer: new FakeMailer(),
@@ -605,9 +605,9 @@ describe.skipIf(!pg)("chat message edit (integration)", () => {
           groupRoleOf: (groupId, userId) => groups.roleOf(groupId, userId),
         }),
       }
-      app = await buildServer({
+      app = await makeServer({
         env,
-        container: buildContainer(env),
+        container: makeContainer(env),
         authServices,
         chatOverrides: overrides,
         discussionOverrides: { repo: makeDrizzleDiscussionRepository(h.sql) },

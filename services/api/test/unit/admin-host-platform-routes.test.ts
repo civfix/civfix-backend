@@ -8,11 +8,11 @@ import { registerAdminMediaRoutes } from "../../src/routes/admin/media.routes.js
 import { registerAdminLegalRoutes } from "../../src/routes/admin/legal.routes.js"
 import { registerAdminBroadcastRoutes } from "../../src/routes/admin/broadcasts.routes.js"
 import { registerAdminOrgRoutes } from "../../src/routes/admin/orgs.routes.js"
-import type { AdminEventPageRow } from "../../src/services/host/admin-pages-repository.drizzle.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
-import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
-import { InMemoryAdminEventRepository } from "../../src/services/admin/admin-event-repository.memory.js"
-import type { MediaAssetView, MediaRepository } from "../../src/services/media-intake-service.js"
+import type { AdminEventPageRow } from "../../src/services/host/admin-pages-repository.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
+import { InMemoryOrganizationRepository } from "../helpers/host/organization-repository.memory.js"
+import { InMemoryAdminEventRepository } from "../helpers/admin/admin-event-repository.memory.js"
+import type { MediaAssetView, MediaRepository } from "../../src/services/media-repository.js"
 
 const OPERATOR = "11111111-1111-1111-1111-111111111111"
 const CLEANUP = "22222222-2222-2222-2222-222222222222"
@@ -325,7 +325,7 @@ describe("admin legal versions", () => {
 
 describe("admin org verification decision", () => {
   // The operator audit is written inside the repository transaction, not by the route like sibling admin
-  // mutations, so the route's missing writeAudit call is a deliberate no-double-write, not a gap.
+  // mutations, so the route's missing insertAuditRow call is a deliberate no-double-write, not a gap.
   it("approves, audits the operator + decision, and notifies the owner", async () => {
     const h = await harness()
     const id = await seedPendingOrg(h.orgs)

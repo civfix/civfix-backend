@@ -4,7 +4,7 @@ import { DELETED_USER_LABEL } from "@civfix/shared"
 import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { makeDrizzleDmRepository } from "../../src/services/dm-repository.drizzle.js"
 import { makeDrizzleBlocksRepository } from "../../src/services/blocks-repository.drizzle.js"
-import { searchByHandlePrefix } from "../../src/services/social-repository.drizzle.js"
+import { makeDrizzleUserSearchRepository } from "../../src/services/user-search-repository.drizzle.js"
 
 const pg = await withPg()
 
@@ -164,7 +164,11 @@ describe.skipIf(!pg)("direct messages (integration)", () => {
     const blocked = await newUser("Blocked", { handle: `zz${tag}_blocked` })
     await makeDrizzleBlocksRepository(h.sql).block(blocked, viewer)
 
-    const results = await searchByHandlePrefix(h.sql, `zz${tag}_`, viewer, 20)
+    const results = await makeDrizzleUserSearchRepository(h.sql).searchByHandlePrefix(
+      `zz${tag}_`,
+      viewer,
+      20,
+    )
     const ids = new Set(results.map((r) => r.id))
     expect(ids.has(match)).toBe(true)
     expect(ids.has(dmOff)).toBe(false)

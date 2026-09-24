@@ -1,5 +1,5 @@
 import type { Queryable, SqlFragment } from "../../db/client.js"
-import { likeContains } from "./like.js"
+import { likeContains } from "../../db/like.js"
 
 export function ilikeAnyOf(
   sql: Queryable,

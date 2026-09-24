@@ -4,7 +4,7 @@ import {
   FORWARD_TEMPLATE_SAMPLE_VALUES,
   templateUsesToken,
 } from "@civfix/shared"
-import { InMemoryForwardTemplateRepository } from "../../src/services/admin/forward-template-repository.memory.js"
+import { InMemoryForwardTemplateRepository } from "../helpers/admin/forward-template-repository.memory.js"
 import {
   makeForwardTemplateService,
   type ForwardTemplateService,

@@ -1,10 +1,13 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto"
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto"
 import { createReadStream, type Dirent } from "node:fs"
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import type { Readable } from "node:stream"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { AppError, ErrorCode } from "@civfix/shared"
 import type { StorageHeadWithEtag } from "../services/media-etag.js"
+import { stripTrailingSlashes } from "../lib/base-url.js"
+import { sha256HexSync } from "../lib/hash.js"
+import { MS_PER_SECOND } from "../lib/time.js"
 import type {
   PresignPutOptions,
   PresignPutResult,
@@ -30,9 +33,7 @@ const DEFAULT_CONTENT_TYPE = "application/octet-stream"
 const DEFAULT_LIST_LIMIT = 1000
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"])
 const LOOPBACK_IPV4_PATTERN = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
-const TRAILING_SLASHES_RE = /\/+$/
 const STAGED_FILE_RANDOM_BYTES = 16
-const MS_PER_SECOND = 1000
 
 export type SignatureVerdict = "valid" | "expired" | "invalid"
 
@@ -344,7 +345,7 @@ function assertUsableRoot(config: LocalDiskStorageConfig): string {
 }
 
 function contentEtag(body: Uint8Array | Buffer): string {
-  return createHash("sha256").update(body).digest("hex")
+  return sha256HexSync(body)
 }
 
 function assertSafeKey(key: string): void {
@@ -382,7 +383,7 @@ function normalizeBaseUrl(publicApiUrl: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`PUBLIC_API_URL must be http(s): ${trimmed}`)
   }
-  return trimmed.replace(TRAILING_SLASHES_RE, "")
+  return stripTrailingSlashes(trimmed)
 }
 
 function isLoopbackUrl(baseUrl: string): boolean {

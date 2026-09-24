@@ -2,14 +2,14 @@ import { describe, it, expect, afterEach } from "vitest"
 import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { FakeAbuseChecks, FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { signAnonToken } from "../../src/abuse/anon-token.js"
 import { makeFakeSql, type FakeSqlControl } from "../helpers/fake-sql.js"
 import { makeAnonService } from "../../src/services/anon-service.js"
@@ -48,7 +48,7 @@ async function makeHarness(): Promise<Harness> {
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
   const verifier = new StubJwksVerifier()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -107,7 +107,7 @@ async function makeHarness(): Promise<Harness> {
     presignMedia: (r2Key) => Promise.resolve({ url: `memory://${r2Key}` }),
   }
 
-  const app = await buildServer({
+  const app = await makeServer({
     env,
     authServices,
     reportOverrides,
@@ -517,10 +517,10 @@ describe("F131: the PRODUCTION anon service raises abuse flags and logs", () => 
     const env = loadEnv({ NODE_ENV: "test" })
     const db = makeFakeSql()
     const container = {
-      ...buildContainer(env),
+      ...makeContainer(env),
       getDb: () => ({ sql: db.sql }),
     } as unknown as Container
-    const app = await buildServer({ env, container })
+    const app = await makeServer({ env, container })
     const logs: { line: string; extra: Record<string, unknown> }[] = []
     app.log.info = ((extra: Record<string, unknown>, line: string) => {
       logs.push({ line, extra })

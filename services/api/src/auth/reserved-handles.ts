@@ -3,13 +3,11 @@
  * availability check (GET /me/handle-available), and both report `reserved` (distinct from `taken` and
  * `invalid`):
  *   1) RESERVED_HANDLES, system and role names a citizen must not impersonate;
- *   2) every existing jurisdictions.handle, checked live, because jurisdiction handles are @mentionable in
- *      report discussions.
+ *   2) every existing jurisdictions.handle, checked live (the jurisdiction repository's handleExists, called
+ *      from the auth routes), because jurisdiction handles are @mentionable in report discussions.
  */
 
-import type { Sql } from "../db/client.js"
 import { TOMBSTONE_HANDLE_RE } from "./stores.js"
-import { makeDrizzleJurisdictionRepository } from "../services/jurisdiction-repository.drizzle.js"
 
 const RESERVED_HANDLES: readonly string[] = [
   "admin",
@@ -44,8 +42,4 @@ const RESERVED_SET = new Set(RESERVED_HANDLES.map((h) => h.toLowerCase()))
 export function isReservedHandle(handle: string): boolean {
   const h = handle.trim().toLowerCase()
   return RESERVED_SET.has(h) || TOMBSTONE_HANDLE_RE.test(h)
-}
-
-export function handleCollidesWithJurisdiction(sql: Sql, handle: string): Promise<boolean> {
-  return makeDrizzleJurisdictionRepository(sql).handleExists(handle)
 }

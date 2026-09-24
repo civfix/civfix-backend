@@ -6,10 +6,11 @@ import type {
   BroadcastStatus,
   DeliveryStatus,
 } from "@civfix/shared"
-import type { Queryable, Sql } from "../../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
 import { keysetInstant, keysetPredicate } from "../../db/cursor-helpers.js"
-import { writeAudit, type WriteAuditInput } from "../admin/audit.js"
-import { likeContains } from "../admin/like.js"
+import type { WriteAuditInput } from "../admin/audit.js"
+import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
+import { likeContains } from "../../db/like.js"
 import { makeDrizzleBroadcastAudienceRepository } from "./broadcast-audience-repository.drizzle.js"
 import type {
   AdminBroadcastListQuery,
@@ -22,7 +23,7 @@ import type {
   DeliveryListRow,
   KeysetRow,
 } from "./broadcast-repository.js"
-import type { NotificationPrefsRecord } from "../notification-service.js"
+import type { NotificationPrefsRecord } from "../notification-repository.js"
 import type {
   AdminBroadcastRow,
   AdminHostListParams,
@@ -116,7 +117,7 @@ function broadcastColumns(tag: Queryable) {
                suppressed_count, content_scrubbed_at, created_at, updated_at`
 }
 
-function joinSet(sql: Sql, fragments: Array<ReturnType<Sql>>): ReturnType<Sql> {
+function joinSet(sql: Sql, fragments: SqlFragment[]): SqlFragment {
   const [first, ...rest] = fragments
   if (first === undefined) throw new Error("broadcast UPDATE needs at least one column to set")
   return rest.reduce((acc, frag) => sql`${acc}, ${frag}`, first)
@@ -431,7 +432,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       broadcastId: string,
       patch: BroadcastDraftPatch,
     ): Promise<BroadcastRecord | null> {
-      const sets: Array<ReturnType<Sql>> = []
+      const sets: SqlFragment[] = []
       if (patch.subject !== undefined) sets.push(sql`subject = ${patch.subject}`)
       if (patch.bodyMd !== undefined) sets.push(sql`body_md = ${patch.bodyMd}`)
       if ("ctaLabel" in patch) sets.push(sql`cta_label = ${patch.ctaLabel ?? null}`)
@@ -462,7 +463,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       to: BroadcastStatus,
       fields = {},
     ): Promise<BroadcastRecord | null> {
-      const sets: Array<ReturnType<Sql>> = [sql`status = ${to}`]
+      const sets: SqlFragment[] = [sql`status = ${to}`]
       if ("scheduledAt" in fields) sets.push(sql`scheduled_at = ${fields.scheduledAt ?? null}`)
       if ("startedAt" in fields) sets.push(sql`started_at = ${fields.startedAt ?? null}`)
       if ("finishedAt" in fields) sets.push(sql`finished_at = ${fields.finishedAt ?? null}`)
@@ -896,7 +897,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
             SET host_messaging_suspended = ${suspended}, updated_at = now()
           RETURNING user_id`
         if (rows.length === 0) return false
-        await writeAudit(tx, audit)
+        await insertAuditRow(tx, audit)
         return true
       }) as Promise<boolean>
     },

@@ -18,12 +18,12 @@ import { randomUUID } from "node:crypto"
 import type { FastifyInstance } from "fastify"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { signupSeat } from "../helpers/cleanups.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
 import { makeDrizzleChatRepository } from "../../src/services/chat-repository.drizzle.js"
@@ -254,10 +254,10 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
   it("GET /cleanups/:id/messages is membership-gated against real Postgres (200 member, 403 non-member)", async () => {
     // Real DB-backed cleanup routes (no cleanupOverrides) + an in-memory auth bundle for sessions.
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
-    const container = buildContainer(env)
+    const container = makeContainer(env)
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores,
       cache,
       mailer: container.mailer as never,
@@ -265,7 +265,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       verifier: new StubJwksVerifier(),
       now: () => Date.now(),
     })
-    const app: FastifyInstance = await buildServer({ env, container, authServices })
+    const app: FastifyInstance = await makeServer({ env, container, authServices })
 
     try {
       // Create a cleanup owned by an organizer who is also a real session user.
@@ -325,10 +325,10 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
     // Full server against the real DB (same wiring as the membership-gated route test above) so the
     // POST /cleanups/:id/messages/:messageId/reactions path, shared-schema parse included, runs for real.
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
-    const container = buildContainer(env)
+    const container = makeContainer(env)
     const stores = makeInMemoryStores()
     const cache = new InMemoryCacheClient(() => Date.now())
-    const authServices = buildAuthServices({
+    const authServices = makeAuthServices({
       stores,
       cache,
       mailer: container.mailer as never,
@@ -336,7 +336,7 @@ describe.skipIf(!pg)("cleanups + chat (integration)", () => {
       verifier: new StubJwksVerifier(),
       now: () => Date.now(),
     })
-    const app: FastifyInstance = await buildServer({ env, container, authServices })
+    const app: FastifyInstance = await makeServer({ env, container, authServices })
 
     try {
       const organizerId = await newUser("Org Reaction")

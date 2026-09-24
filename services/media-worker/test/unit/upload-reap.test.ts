@@ -7,11 +7,11 @@ import {
   runUploadReapJob,
   uploadReapDelaySec,
 } from "../../src/jobs/upload-reap.js"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 
 function env() {
   const storage = new FakeStorage()
-  const repo = new InMemoryWorkerRepo()
+  const repo = new InMemoryMediaWorkerRepository()
   return {
     storage,
     repo,
@@ -21,7 +21,7 @@ function env() {
 
 async function seedPublished(
   storage: FakeStorage,
-  repo: InMemoryWorkerRepo,
+  repo: InMemoryMediaWorkerRepository,
   over: { status?: "ready" | "held" | "rejected" | "validating"; servedKey?: string | null } = {},
 ) {
   const id = "m1"

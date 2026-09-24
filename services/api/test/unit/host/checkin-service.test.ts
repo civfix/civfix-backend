@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { AppError } from "@civfix/shared"
 import { sha256Hex } from "../../../src/auth/crypto.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {
   makeCheckinService,
   type CheckinService,
 } from "../../../src/services/host/checkin-service.js"
 import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
-import type { SeatDraft } from "../../../src/services/host/registration-repository.types.js"
+import type { SeatDraft } from "../../../src/services/host/registration-repository.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const OTHER_EVENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"

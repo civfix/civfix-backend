@@ -7,13 +7,14 @@ import {
 } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import { neutralizeChatViewerFields } from "../chat-viewer-fields.js"
-import { chatHistoryPayload, type ChatHistorySource } from "../../routes/chat-route-helpers.js"
+import {
+  chatHistoryPayload,
+  clampChatHistoryLimit,
+  type ChatHistorySource,
+} from "../../routes/chat-route-helpers.js"
 import { sendReportChatMessage, type ReportChatSendDeps } from "../report-chat-send.js"
-import type { AdminReportChatRepository } from "./admin-report-chat-repository.drizzle.js"
+import type { AdminReportChatRepository } from "./admin-report-chat-repository.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
-
-const ADMIN_REPORT_CHAT_HISTORY_DEFAULT = 30
-const ADMIN_REPORT_CHAT_HISTORY_MAX = 50
 
 /** Called only after the operator's change committed; never throws. */
 export type MessageUpdateAnnouncer = (messageId: string) => Promise<void>
@@ -77,10 +78,7 @@ export function makeAdminReportChatService(
   return {
     async history(reportId, query, viewerUserId): Promise<ChatHistoryResponse> {
       await assertReportExists(reportId)
-      const limit = Math.min(
-        Math.max(query.limit ?? ADMIN_REPORT_CHAT_HISTORY_DEFAULT, 1),
-        ADMIN_REPORT_CHAT_HISTORY_MAX,
-      )
+      const limit = clampChatHistoryLimit(query.limit)
       return chatHistoryPayload(deps.historySource(reportId, viewerUserId), query, limit)
     },
 

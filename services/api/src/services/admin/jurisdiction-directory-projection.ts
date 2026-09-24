@@ -1,13 +1,12 @@
 import { REPORT_CATEGORY_LABELS } from "@civfix/shared"
 import type { JurisdictionDirectoryDTO, ReportCategory } from "@civfix/shared"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
-import {
-  UNMAPPED_GEOID,
-  UNMAPPED_NAME,
-  type JurisdictionDirectoryRecord,
-  type ListDirectoryArgs,
-  type SaveContactsInput,
-} from "./jurisdiction-contacts-types.js"
+import { UNMAPPED_GEOID, UNMAPPED_NAME } from "./jurisdiction-contacts-types.js"
+import type {
+  JurisdictionDirectoryRecord,
+  ListDirectoryArgs,
+  SaveContactsInput,
+} from "./jurisdiction-contacts-repository.js"
 
 export function coverageLabel(record: JurisdictionDirectoryRecord): string {
   const covered = new Set(

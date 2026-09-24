@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import { loadLimits, type WorkerLimits } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 import * as fx from "../fixtures/make.js"
 
 const stub = vi.hoisted(() => ({ grabFrameError: null as Error | null }))
@@ -27,11 +27,11 @@ const limits: WorkerLimits = loadLimits({})
 function makeEnv(over?: Partial<MediaChecksDeps>): {
   deps: MediaChecksDeps
   storage: FakeStorage
-  repo: InMemoryWorkerRepo
+  repo: InMemoryMediaWorkerRepository
   reports: unknown[]
 } {
   const storage = new FakeStorage()
-  const repo = new InMemoryWorkerRepo()
+  const repo = new InMemoryMediaWorkerRepository()
   const reports: unknown[] = []
   const deps: MediaChecksDeps = {
     repo,
@@ -48,7 +48,7 @@ function makeEnv(over?: Partial<MediaChecksDeps>): {
 
 async function seedVideo(
   storage: FakeStorage,
-  repo: InMemoryWorkerRepo,
+  repo: InMemoryMediaWorkerRepository,
   bytes: Uint8Array,
   over: { reportId?: string } = {},
 ): Promise<{ id: string; uploadId: string; r2Key: string }> {

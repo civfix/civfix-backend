@@ -51,8 +51,8 @@ import {
   type MediaByteQuota,
   type MediaIntakeService,
   type MediaOwner,
-  type MediaRepository,
 } from "../services/media-intake-service.js"
+import type { MediaRepository } from "../services/media-repository.js"
 import { makeDrizzleMediaRepository } from "../services/media-repository.drizzle.js"
 import {
   makeDrizzleMediaViewAuthorizer,

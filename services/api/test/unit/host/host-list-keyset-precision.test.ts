@@ -10,7 +10,7 @@ import type { Sql } from "../../../src/db/client.js"
 import { makeDrizzleHostTeamRepository } from "../../../src/services/host/host-team-repository.drizzle.js"
 import { makeDrizzleOrganizationRepository } from "../../../src/services/host/organization-repository.drizzle.js"
 import { makeDrizzleHostRegistrationRepository } from "../../../src/services/host/registration-repository.drizzle.js"
-import type { RosterQuery } from "../../../src/services/host/registration-repository.types.js"
+import type { RosterQuery } from "../../../src/services/host/registration-repository.js"
 
 const AT = new Date("2026-09-01T10:00:00.123Z")
 const AT_TEXT = "2026-09-01T10:00:00.123456Z"

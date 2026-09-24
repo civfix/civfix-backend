@@ -4,16 +4,16 @@ import type { HostCapability } from "@civfix/shared"
 import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/shared/fakes"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
-import { buildContainer } from "../../src/di.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
-import { buildServer } from "../../src/server.js"
-import type { HostStandingResolution } from "../../src/services/host/host-standing-repository.drizzle.js"
-import { InMemoryHostTeamRepository } from "../../src/services/host/host-team-repository.memory.js"
+import { makeServer } from "../../src/server.js"
+import type { HostStandingResolution } from "../../src/services/host/host-standing-repository.js"
+import { InMemoryHostTeamRepository } from "../helpers/host/host-team-repository.memory.js"
 import {
   makeHostTeamService,
   type HostTeamServiceDeps,
 } from "../../src/services/host/host-team-service.js"
-import { InMemoryOrganizationRepository } from "../../src/services/host/organization-repository.memory.js"
+import { InMemoryOrganizationRepository } from "../helpers/host/organization-repository.memory.js"
 import {
   makeOrganizationService,
   type OrganizationServiceDeps,
@@ -101,9 +101,9 @@ describe("links mailed from a runtime with no web origin configured", () => {
     const mailer = new FakeMailer()
     const repo = new InMemoryGuestRsvpRepository()
     repo.seedEvent({ id: EVENT, title: "Beach cleanup" })
-    const app = await buildServer({
+    const app = await makeServer({
       env,
-      container: buildContainer(env),
+      container: makeContainer(env),
       guestRsvpOverrides: {
         repo,
         requireGuestContact: () => Promise.resolve(),

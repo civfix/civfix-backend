@@ -1,13 +1,13 @@
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
 import {
-  clampLimit,
-  decodeCursor,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-} from "./pagination.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { PREVIEW_SOURCE_CHARS } from "./mail-preview.js"
-import { writeAudit } from "./audit.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { ilikeAnyOf } from "./sql-fragments.js"
 import {
   mintThreadToken,
@@ -114,7 +114,7 @@ async function settleThreadStatusIn(tx: Queryable, input: SettleThreadStatusInpu
     RETURNING id
   `
   if (settled.length === 0 || input.flag === undefined) return
-  await writeAudit(tx, {
+  await insertAuditRow(tx, {
     actorId: input.flag.actorId,
     action: input.flag.action,
     target: input.flag.target,
@@ -224,7 +224,7 @@ function latestPreviewMessage(
 
 async function writeMailAudit(tx: Queryable, audit: MailAuditInput | undefined): Promise<void> {
   if (!audit) return
-  await writeAudit(tx, {
+  await insertAuditRow(tx, {
     actorId: audit.actorId,
     action: audit.action,
     target: audit.target,
@@ -511,7 +511,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
 
     async listThreads(input: ListThreadsInput): Promise<ListThreadsResult> {
       const limit = clampLimit(input.limit)
-      const anchor = decodeCursor(input.cursor, true)
+      const anchor = parseKeysetCursor(input.cursor)
       const activityAt = sql`COALESCE(t.last_message_at, t.created_at)`
       const cursorFilter =
         anchor !== null ? sql`AND ${keysetPredicate(sql, activityAt, sql`t.id`, anchor)}` : sql``
@@ -674,7 +674,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
         `
         const row = rows[0]
         if (!row) return null
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: audit.actorId,
           action: audit.action,
           target: audit.target,
@@ -749,7 +749,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
           LIMIT 1
         `
         if (audited.length > 0) return
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: publishedBy.actorId,
           action: publishedBy.action,
           target: publishedBy.target,

@@ -6,7 +6,7 @@ import type {
   HomeSummaryResponse,
   ReportStatus,
 } from "@civfix/shared"
-import type { AnalyticsRepository } from "./analytics-types.js"
+import type { AnalyticsRepository } from "./analytics-repository.js"
 import { buildCoverage, buildPinsByWeek, round1 } from "./analytics-shaping.js"
 import { PINS_BY_WEEK_WEEKS } from "./analytics-types.js"
 import type {
@@ -17,9 +17,10 @@ import type {
   MailSectionCounts,
   ReportsSectionCounts,
   UsersSectionCounts,
-} from "./home-types.js"
+} from "./home-repository.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
 
-export * from "./home-types.js"
+export * from "./home-repository.js"
 
 const ZERO_DISCOVERY: DiscoverySectionCounts = { queue: 0, reportsWaiting: 0, overSla: 0 }
 const ZERO_REPORTS: ReportsSectionCounts = { flagged: 0, inProgress: 0, completed: 0 }
@@ -92,16 +93,7 @@ async function runBounded<T extends SectionTasks>(
   limit: number,
   tasks: T,
 ): Promise<SectionResults<T>> {
-  const results = new Array<unknown>(tasks.length)
-  let cursor = 0
-  const worker = async (): Promise<void> => {
-    for (let index = cursor++; index < tasks.length; index = cursor++) {
-      results[index] = await tasks[index]!()
-    }
-  }
-  const lanes = Math.max(1, Math.min(limit, tasks.length))
-  await Promise.all(Array.from({ length: lanes }, worker))
-  return results as SectionResults<T>
+  return (await mapWithLimit(tasks, limit, (task) => task())) as SectionResults<T>
 }
 
 export interface HomeServiceDeps {

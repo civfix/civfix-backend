@@ -10,7 +10,7 @@ import {
 } from "@civfix/shared"
 import type { ChatConnection, UserChannel } from "@civfix/shared/interfaces"
 import { resolveAndRecordChatMentions } from "../services/chat-mention-resolver.js"
-import { mapWithLimit } from "../services/media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
 import { containsSlur } from "../abuse/slur-filter.js"
 import { SUSPENDED_MESSAGE, socketWriteVerdict } from "../auth/account-status.js"

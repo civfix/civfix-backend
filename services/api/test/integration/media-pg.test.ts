@@ -2,10 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { publishMediaAsReady } from "../helpers/media-pg.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
-import { MEDIA_CHECKS_JOB } from "../../src/services/media-intake-service.js"
+import { MEDIA_CHECKS_JOB } from "../../src/lib/queue-names.js"
 import type { FakeStorage, FakeJobs } from "@civfix/shared/fakes"
 
 const pg = await withPg()
@@ -22,8 +22,8 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     h = pg as PgHarness
     // No injected repo, so the routes use the Drizzle-backed MediaRepository.
     const env = loadEnv({ NODE_ENV: "test", DATABASE_URL: h.uri })
-    const container = buildContainer(env)
-    app = await buildServer({ env, container })
+    const container = makeContainer(env)
+    app = await makeServer({ env, container })
     storage = container.storage as unknown as FakeStorage
     jobs = container.jobs as unknown as FakeJobs
   })
@@ -52,7 +52,7 @@ describe.skipIf(!pg)("media routes (integration)", () => {
     // Intake keys the object by the server-minted uploadId (uploads/YYYY/MM/<uploadId>), NOT the
     // client-claimed sha256: trusting the client's hash as the physical path would let a caller
     // collide/overwrite another object. The worker later promotes verified bytes to the content-
-    // addressed uploads/YYYY/MM/<sha256> key for dedup (see media-worker-repo).
+    // addressed uploads/YYYY/MM/<sha256> key for dedup (see media-worker-repository.drizzle.ts).
     expect(rows[0]!.r2_key).toMatch(new RegExp(`^uploads/\\d{4}/\\d{2}/${uploadId}$`))
     expect(Number(rows[0]!.byte_size)).toBe(1024)
   })

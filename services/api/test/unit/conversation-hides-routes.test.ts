@@ -1,15 +1,15 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { ConversationRoutesOverrides } from "../../src/routes/conversations.routes.js"
-import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.drizzle.js"
-import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.drizzle.js"
+import type { ConversationMutesRepository } from "../../src/services/conversation-mutes-repository.js"
+import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.js"
 
 const ROOM_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
@@ -42,7 +42,7 @@ async function makeHarness(participates?: Participates): Promise<Harness> {
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -58,7 +58,7 @@ async function makeHarness(participates?: Participates): Promise<Harness> {
     participates: participates ?? (() => Promise.resolve(true)),
   }
 
-  const app = await buildServer({ env, authServices, conversationRoutesOverrides })
+  const app = await makeServer({ env, authServices, conversationRoutesOverrides })
 
   const email = "hider@example.com"
   await app.inject({ method: "POST", url: "/v1/auth/otp/request", payload: { email } })

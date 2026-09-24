@@ -32,15 +32,17 @@ import { resolveMentionTargets } from "../services/mention-targets-repository.dr
 import { makeChatMentionResolver } from "../services/chat-mention-resolver.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import {
-  makeReportChatRepository,
-  type ReportChatRepository,
-} from "../services/report-chat-repository.drizzle.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.js"
+import type { ChatRepository } from "../services/chat-repository.js"
+import type { ConversationMutesRepository } from "../services/conversation-mutes-repository.js"
+import type { DmRepository } from "../services/dm-repository.js"
+import type { BlocksRepository } from "../services/blocks-repository.js"
 import {
   canPostToGroup,
   GROUP_MEMBER_SCAN_CAP,
   makeChatGroupRepository,
-  type ChatGroupRepository,
 } from "../services/chat-group-repository.drizzle.js"
 import { WS_ROUTE, WS_SEND_LIMITS, type GatewayGroupChat } from "../ws/types.js"
 import { makeCityForwardThrottle } from "../services/report-city-forward.js"
@@ -48,10 +50,7 @@ import { makeContainerReportCityForward } from "../services/report-city-forward-
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makeTokenBucketLimiter, type RateLimiter } from "../ws/report-rate-limit.js"
 import { THREAD_SIGNAL_MEMBER_CAP } from "../services/cleanup-service.js"
-import {
-  makeDrizzleChatRepository,
-  type ChatRepository,
-} from "../services/chat-repository.drizzle.js"
+import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import {
   recordChatMentions,
@@ -61,15 +60,12 @@ import {
   makeDrizzleChatReadState,
   monotonicReadWatermarkUpdate,
 } from "../services/read-watermark-repository.drizzle.js"
+import type { NotificationService } from "../services/notification-service.js"
+import { makeRouteNotificationService } from "../services/route-notifier.js"
 import {
-  makeNotificationService,
-  type NotificationService,
-} from "../services/notification-service.js"
-import { makeDrizzleNotificationRepository } from "../services/notification-repository.drizzle.js"
-import {
+  bindMutedUserIdsFor,
   makeConversationMutesRepository,
   makeFailOpenMuteCheck,
-  type ConversationMutesRepository,
 } from "../services/conversation-mutes-repository.drizzle.js"
 import { makeReportChatNotifier } from "../services/report-chat-notifier.js"
 import { makeGroupChatNotifier } from "../services/group-chat-notifier.js"
@@ -83,9 +79,8 @@ import {
   clearConversationBellFor,
   type ConversationBellKind,
 } from "../services/conversation-bell.js"
-import type { DmRepository } from "../services/dm-repository.drizzle.js"
 import { makeDmPeerOf } from "../services/dm-peer.js"
-import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
+import { bindBlockedIdsAmong } from "../services/blocks-repository.drizzle.js"
 import {
   InMemoryChatPresence,
   RedisChatPresence,
@@ -262,7 +257,7 @@ interface WiringContext {
   useFakeChat: boolean
 }
 
-function buildPresence({ container, overrides, useFakeChat }: WiringContext): ChatPresence {
+function makePresence({ container, overrides, useFakeChat }: WiringContext): ChatPresence {
   return (
     overrides?.presence ??
     (useFakeChat ? new InMemoryChatPresence() : new RedisChatPresence(container.getRedis()))
@@ -283,7 +278,7 @@ interface ChatRepos {
   getReportRepo(): DiscussionRepository
 }
 
-function buildChatRepos({ container, overrides, useFakeChat }: WiringContext): ChatRepos {
+function makeChatRepos({ container, overrides, useFakeChat }: WiringContext): ChatRepos {
   let cleanupRepo: CleanupRepository | undefined
   const getCleanupRepo = (): CleanupRepository =>
     (cleanupRepo ??= makeDrizzleCleanupRepository(container.getDb().sql))
@@ -293,10 +288,7 @@ function buildChatRepos({ container, overrides, useFakeChat }: WiringContext): C
 
   const blocksRepo: BlocksRepository = overrides?.blocksRepo ?? container.getBlocksRepo()
   const dmRepo: DmRepository = overrides?.dmRepo ?? container.getDmRepo()
-  const batchBlocked = blocksRepo.blockedIdsAmong
-  const blockedIdsFor: BatchIdLookup | undefined = batchBlocked
-    ? (actorId, candidateIds) => batchBlocked.call(blocksRepo, actorId, candidateIds)
-    : undefined
+  const blockedIdsFor: BatchIdLookup | undefined = bindBlockedIdsAmong(blocksRepo)
 
   const presignMedia = makePrivateMediaPresigner(container.storage)
 
@@ -328,7 +320,7 @@ function buildChatRepos({ container, overrides, useFakeChat }: WiringContext): C
   }
 }
 
-function buildGroupChat(repos: ChatRepos): GatewayGroupChat | undefined {
+function makeGroupChat(repos: ChatRepos): GatewayGroupChat | undefined {
   if (!repos.groupWired) return undefined
   const groups = (): ChatGroupRepository => repos.getGroupsRepo()!
   return {
@@ -373,7 +365,7 @@ interface ChatNotifications {
   >
 }
 
-function buildChatNotifications({
+function makeChatNotifications({
   app,
   container,
   overrides,
@@ -381,14 +373,7 @@ function buildChatNotifications({
 }: WiringContext): ChatNotifications {
   const notificationService: NotificationService | undefined =
     overrides?.notificationService ??
-    (useFakeChat
-      ? undefined
-      : makeNotificationService({
-          repo: makeDrizzleNotificationRepository(container.getDb().sql),
-          pushSender: container.pushSender,
-          userChannel: container.userChannel,
-          logger: app.log,
-        }))
+    (useFakeChat ? undefined : makeRouteNotificationService(container, app.log))
 
   const conversationMutes: ConversationMutesRepository | undefined =
     overrides?.conversationMutes ??
@@ -396,20 +381,14 @@ function buildChatNotifications({
 
   const isMutedFor = makeFailOpenMuteCheck(conversationMutes, app.log)
 
-  const mutedUserIdsForRoom = (
-    kind: FanoutRoomKind,
-  ): ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined => {
-    const repo = conversationMutes
-    const batch = repo?.mutedUserIdsFor
-    if (!repo || !batch) return undefined
-    return (roomId, userIds) => batch.call(repo, kind, roomId, userIds)
-  }
-
   return {
     notificationService,
     conversationMutes,
     isMutedFor,
-    mutedUserIdsFor: { report: mutedUserIdsForRoom("report"), group: mutedUserIdsForRoom("group") },
+    mutedUserIdsFor: {
+      report: bindMutedUserIdsFor(conversationMutes, "report"),
+      group: bindMutedUserIdsFor(conversationMutes, "group"),
+    },
   }
 }
 
@@ -454,7 +433,7 @@ function makeThreadRecipientsOf(
   }
 }
 
-function buildBellDeps(
+function makeBellDeps(
   { useFakeChat }: WiringContext,
   repos: ChatRepos,
   notifications: ChatNotifications,
@@ -580,7 +559,7 @@ interface RoomMemberNotifiers {
   onGroupMessage: OnGroupMessage | undefined
 }
 
-function buildRoomMemberNotifiers(
+function makeRoomMemberNotifiers(
   { app }: WiringContext,
   repos: ChatRepos,
   notifications: ChatNotifications,
@@ -655,7 +634,7 @@ function makeOnReportMessage(
   }
 }
 
-function buildGatewayReportChat(
+function makeWiredGatewayReportChat(
   { overrides, useFakeChat }: WiringContext,
   repos: ChatRepos,
   clearBell: ClearBell,
@@ -678,14 +657,14 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   }
 
   const { readState, markRoomRead } = conversationReadSeam(app, container)
-  const presence = buildPresence(ctx)
-  const repos = buildChatRepos(ctx)
+  const presence = makePresence(ctx)
+  const repos = makeChatRepos(ctx)
   const { isMember, dmRepo, isBlockedEitherWay } = repos
-  const groupChat = buildGroupChat(repos)
+  const groupChat = makeGroupChat(repos)
   const listGroupMembers = makeSharedGroupMemberList(repos.getGroupsRepo)
   const dmPeerOf = makeDmPeerOf(dmRepo)
 
-  const notifications = buildChatNotifications(ctx)
+  const notifications = makeChatNotifications(ctx)
   const { notificationService, isMutedFor } = notifications
   const clearBell = makeClearBell(() => notificationService, app.log)
 
@@ -697,7 +676,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const advanceCleanupWatermark = makeCleanupWatermark(ctx, readState)
   const threadRecipientsOf = makeThreadRecipientsOf(ctx, repos, dmPeerOf, listGroupMembers)
 
-  const bellDeps = buildBellDeps(ctx, repos, notifications, presence)
+  const bellDeps = makeBellDeps(ctx, repos, notifications, presence)
   const chatMentions: GatewayChatMentions | undefined =
     ctx.overrides?.chatMentions ??
     (bellDeps
@@ -712,7 +691,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
   const fanoutHandoff = makeRoomFanoutHandoff(ctx)
   const chatWithResilience = withSendResilience(ctx, repos, makeLazySendDedupe(ctx))
 
-  const { notifyReportChatMembers, onGroupMessage } = buildRoomMemberNotifiers(
+  const { notifyReportChatMembers, onGroupMessage } = makeRoomMemberNotifiers(
     ctx,
     repos,
     notifications,
@@ -724,7 +703,7 @@ export function wireChatGateway(app: FastifyInstance, container: Container): Cha
 
   applyWsUpgradeRateLimit(app)
 
-  const reportChat = buildGatewayReportChat(ctx, repos, clearBell)
+  const reportChat = makeWiredGatewayReportChat(ctx, repos, clearBell)
 
   const wsTicketCache = app.authServices?.cache
   registerChatGateway(app, {

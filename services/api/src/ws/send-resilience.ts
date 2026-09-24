@@ -1,5 +1,8 @@
 import type { FastifyBaseLogger } from "fastify"
 import type { ChatMessageDTO, RoomKind, WsServerMessage } from "@civfix/shared"
+import { unrefSleep } from "../lib/sleep.js"
+import { MS_PER_SECOND } from "../lib/time.js"
+import { settleWithin } from "../lib/timeout.js"
 
 export const SEND_DEDUPE_TTL_SECONDS = 24 * 60 * 60
 
@@ -41,8 +44,6 @@ export function sendDedupeKey(userId: string, roomKey: string, clientId: string)
 }
 
 const IN_MEMORY_SWEEP_THRESHOLD = 5000
-
-const MS_PER_SECOND = 1000
 
 export class InMemorySendDedupeStore implements SendDedupeStore {
   private readonly store = new Map<string, { value: string; expiresAtMs: number }>()
@@ -153,30 +154,10 @@ export interface SendResilience {
   dedupeFailureCount(): number
 }
 
-const realSleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms)
-    if (typeof timer.unref === "function") timer.unref()
-  })
-
 const OPEN: SendReservation = { state: "open" }
 
 function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
-  work.catch(() => undefined)
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timed out")), ms)
-    if (typeof timer.unref === "function") timer.unref()
-    work.then(
-      (value) => {
-        clearTimeout(timer)
-        resolve(value)
-      },
-      (err: unknown) => {
-        clearTimeout(timer)
-        reject(err instanceof Error ? err : new Error(String(err)))
-      },
-    )
-  })
+  return settleWithin(work, ms, { timeoutError: () => new Error("timed out"), unref: true })
 }
 
 export function makeRateLimitedWarn(
@@ -201,7 +182,7 @@ export function makeRateLimitedWarn(
 }
 
 export function makeSendResilience(deps: SendResilienceDeps = {}): SendResilience {
-  const sleep = deps.sleep ?? realSleep
+  const sleep = deps.sleep ?? unrefSleep
   const jitter = deps.jitter ?? Math.random
   const attemptTimeoutMs = deps.attemptTimeoutMs ?? BROADCAST_ATTEMPT_TIMEOUT_MS
   const reserveTimeoutMs = deps.reserveTimeoutMs ?? RESERVE_TIMEOUT_MS

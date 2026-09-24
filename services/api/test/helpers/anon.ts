@@ -25,15 +25,16 @@ import type { AnonTokenRecord } from "../../src/abuse/anon-token.js"
 import type {
   AnonReportRepository,
   AnonReportStatusRow,
+  ClaimRepository,
   CreateAnonReportTxArgs,
   CreateAnonReportTxResult,
-} from "../../src/services/anon-service.js"
+  PendingAnonReport,
+} from "../../src/services/anon-repository.js"
 import type {
-  AnonHoldReleaseRepo,
+  AnonHoldReleaseRepository,
   HeldReportView,
   ReleaseMediaView,
-} from "../../src/services/anon-hold-release.js"
-import type { ClaimRepository, PendingAnonReport } from "../../src/services/claim-service.js"
+} from "../../src/services/anon-hold-release-repository.js"
 import { formatReferenceCode, reportScopeKey, typeCodeFor } from "../../src/db/reference-code.js"
 import type { ReportType } from "@civfix/shared"
 
@@ -295,7 +296,7 @@ export class InMemoryAnonStore {
     }
   }
 
-  holdReleaseRepo(): AnonHoldReleaseRepo {
+  holdReleaseRepo(): AnonHoldReleaseRepository {
     // Arrow-function properties so `this` is the store instance (no this-aliasing).
     return {
       findReport: (reportId: string): Promise<HeldReportView | null> => {

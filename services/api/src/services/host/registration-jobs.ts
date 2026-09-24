@@ -4,7 +4,7 @@ import {
   CHECKIN_NOSHOW_SWEEP_JOB,
   WAITLIST_EXPIRE_SWEEP_JOB,
   WAITLIST_PROMOTE_JOB,
-} from "./registration-queues.js"
+} from "../../lib/queue-names.js"
 import { makeContainerRegistrationServices } from "./registration-wiring.js"
 import type { WaitlistPromoteJob } from "./waitlist-service.js"
 

@@ -1,11 +1,11 @@
 import { TEST_TICKET_SIGNER } from "../../helpers/ticket-signer.js"
 import { randomUUID } from "node:crypto"
 import { beforeEach, describe, expect, it } from "vitest"
-import { buildContainer } from "../../../src/di.js"
+import { makeContainer } from "../../../src/di.js"
 import { loadEnv } from "../../../src/env.js"
 import { InMemoryCacheClient } from "../../../src/auth/cache.js"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import {
   makeContainerRegistrationServices,
   type HostRegistrationServices,
@@ -23,7 +23,7 @@ import {
 } from "../../../src/services/host/insights-service.js"
 import { makeTicketTokenSigner } from "../../../src/services/host/ticket-token.js"
 import type { InsightsServiceDeps } from "../../../src/services/host/insights-service.js"
-import type { SeatDraft } from "../../../src/services/host/registration-repository.types.js"
+import type { SeatDraft } from "../../../src/services/host/registration-repository.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const HOST = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -66,7 +66,7 @@ interface Harness {
 
 function build(): Harness {
   const env = loadEnv({ NODE_ENV: "test" })
-  const container = buildContainer(env)
+  const container = makeContainer(env)
   const repo = new InMemoryHostRegistrationRepository()
   repo.tokenHashResolver = (seatId) => tokens.hashFor(seatId)
   repo.seedEvent({ cleanupId: EVENT, scheduledAt: STARTS_AT })

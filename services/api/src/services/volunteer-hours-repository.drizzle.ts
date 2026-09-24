@@ -7,7 +7,8 @@ import type {
 } from "@civfix/shared"
 import type { Queryable, Sql } from "../db/client.js"
 import { keysetInstant, keysetPredicate, pageWith, paginateKeyset } from "../db/cursor-helpers.js"
-import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
+import { hiddenIdentity } from "./hidden-identity.js"
+import { blockedPairExpr } from "./blocks-sql.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
 import {
@@ -32,11 +33,10 @@ import type {
   VolunteerHoursAnomaly,
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
-} from "./volunteer-hours-service.js"
+} from "./volunteer-hours-repository.js"
+import { MS_PER_SECOND } from "../lib/time.js"
 
 const MORE_PAGES = "more"
-
-const MS_PER_SECOND = 1000
 
 const HOURS_ROUNDING_FACTOR = 100
 

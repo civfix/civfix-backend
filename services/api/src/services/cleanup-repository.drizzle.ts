@@ -5,8 +5,7 @@ import {
   MAX_LINKED_REPORTS,
   MAX_TICKET_TYPES_PER_EVENT,
 } from "@civfix/shared"
-import type postgres from "postgres"
-import type { Queryable, Sql } from "../db/client.js"
+import type { Queryable, Sql, SqlFragment } from "../db/client.js"
 import {
   encodeNearCursor,
   encodeTimeCursor,
@@ -25,7 +24,6 @@ import { NO_HOST_STANDING } from "@civfix/shared/host"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { mediaBoundElsewhere, mediaBoundToCleanup, uploadedByClaimant } from "./media-bindings.js"
 import { userUploader } from "./media-uploader.js"
-import { isUniqueViolationOn } from "./host/registration-sql.js"
 import { applyBanIn } from "./host/registration-repository.drizzle.js"
 import { deterministicUuid } from "./deterministic-uuid.js"
 import { firstUsableLegacyContactExpr, usableContactRowExpr } from "./admin/sql-fragments.js"
@@ -58,9 +56,10 @@ import type {
   SignupSeat,
   SlotReconcileResult,
   UpdateCleanupPatch,
-} from "./cleanup-repository.types.js"
+} from "./cleanup-repository.js"
 import { eventWindowOfRow, hasEventEnded } from "./cleanup-rules.js"
-import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
+import { hiddenIdentity } from "./hidden-identity.js"
+import { blockedPairExpr } from "./blocks-sql.js"
 import {
   buildBboxFilter,
   buildMembershipFilter,
@@ -89,7 +88,7 @@ import type {
 } from "@civfix/shared"
 import type { HostStanding } from "@civfix/shared/host"
 import { touchUserActivity } from "../db/sql/user-activity.js"
-import { PG_UNIQUE_VIOLATION } from "../db/pg-errors.js"
+import { isUniqueViolationOn, PG_UNIQUE_VIOLATION } from "../db/pg-errors.js"
 
 export const LINKED_EVENTS_PER_REPORT_CAP = 20
 export const MAX_EVENTS_PER_REPORT = 50
@@ -355,7 +354,7 @@ function timeCursorOrder(
   sql: Queryable,
   past: boolean,
   rawCursor: string | null | undefined,
-): { cursorFilter: postgres.Fragment; order: postgres.Fragment } {
+): { cursorFilter: SqlFragment; order: SqlFragment } {
   const cursor = parseTimeCursor(rawCursor)
   const cursorFilter =
     cursor !== null
@@ -369,8 +368,8 @@ function timeCursorOrder(
   return { cursorFilter, order }
 }
 
-function hostSetFragments(sql: Queryable, patch: EventHostWrite): postgres.Fragment[] {
-  const sets: postgres.Fragment[] = []
+function hostSetFragments(sql: Queryable, patch: EventHostWrite): SqlFragment[] {
+  const sets: SqlFragment[] = []
   if (patch.endsAt !== undefined) sets.push(sql`ends_at = ${patch.endsAt}`)
   if (patch.timezone !== undefined) sets.push(sql`timezone = ${patch.timezone}`)
   if (patch.visibility !== undefined) sets.push(sql`visibility = ${patch.visibility}`)
@@ -398,8 +397,8 @@ function hostSetFragments(sql: Queryable, patch: EventHostWrite): postgres.Fragm
   return sets
 }
 
-function cleanupSetList(sql: Queryable, patch: UpdateCleanupPatch): postgres.Fragment | null {
-  const sets: postgres.Fragment[] = hostSetFragments(sql, patch)
+function cleanupSetList(sql: Queryable, patch: UpdateCleanupPatch): SqlFragment | null {
+  const sets: SqlFragment[] = hostSetFragments(sql, patch)
   if (patch.title !== undefined) sets.push(sql`title = ${patch.title}`)
   if (patch.description !== undefined) sets.push(sql`description = ${patch.description}`)
   if (patch.eventKind !== undefined) sets.push(sql`event_kind = ${patch.eventKind}`)
@@ -425,7 +424,7 @@ function cleanupSetList(sql: Queryable, patch: UpdateCleanupPatch): postgres.Fra
 async function updateCleanupInTx(
   tx: Queryable,
   id: string,
-  setList: postgres.Fragment,
+  setList: SqlFragment,
   patch: UpdateCleanupPatch,
   actorUserId: string,
 ): Promise<boolean> {

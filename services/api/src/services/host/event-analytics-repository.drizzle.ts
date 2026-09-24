@@ -1,17 +1,12 @@
-import type postgres from "postgres"
 import type { KeyCount } from "@civfix/shared/host"
-import type { Sql } from "../../db/client.js"
-
-type Fragment = postgres.Fragment
+import type { Sql, SqlFragment } from "../../db/client.js"
+import type {
+  EventAnalyticsFacts,
+  EventAnalyticsRepository,
+  EventComparisonMedians,
+} from "./event-analytics-repository.js"
 
 const EVENT_ANALYTICS_SLOT_ROW_LIMIT = 50
-
-export interface EventAnalyticsFacts {
-  walkUps: number
-  reportsLinked: number
-  reportsResolved: number
-  postsCreated: number
-}
 
 const ZERO_EVENT_ANALYTICS_FACTS: EventAnalyticsFacts = Object.freeze({
   walkUps: 0,
@@ -19,28 +14,6 @@ const ZERO_EVENT_ANALYTICS_FACTS: EventAnalyticsFacts = Object.freeze({
   reportsResolved: 0,
   postsCreated: 0,
 })
-
-export interface EventComparisonMedians {
-  sampleSize: number
-  signups: number | null
-  checkInRate: number | null
-  hoursPerVolunteer: number | null
-  fillRate: number | null
-}
-
-export interface EventAnalyticsRepository {
-  previousCompletedEventIds(args: {
-    userId: string
-    organizationId: string | null
-    excludeCleanupId: string
-    limit: number
-  }): Promise<string[]>
-  facts(cleanupId: string): Promise<EventAnalyticsFacts>
-  registrationsBySlot(cleanupId: string): Promise<KeyCount[]>
-  reportStatuses(cleanupId: string): Promise<KeyCount[]>
-  hoursBuckets(cleanupId: string): Promise<KeyCount[]>
-  comparisonMedians(cleanupIds: readonly string[]): Promise<EventComparisonMedians>
-}
 
 const EMPTY_COMPARISON_MEDIANS: EventComparisonMedians = Object.freeze({
   sampleSize: 0,
@@ -57,7 +30,7 @@ function keyCounts(rows: { key: string; n: number }[]): KeyCount[] {
 export function makeDrizzleEventAnalyticsRepository(sql: Sql): EventAnalyticsRepository {
   return {
     async previousCompletedEventIds(args) {
-      const orgFilter = (): Fragment =>
+      const orgFilter = (): SqlFragment =>
         args.organizationId !== null ? sql`AND c.organization_id = ${args.organizationId}` : sql``
       const rows = await sql<{ id: string }[]>`
         WITH hosted AS (

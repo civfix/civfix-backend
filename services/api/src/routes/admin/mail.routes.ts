@@ -32,7 +32,8 @@ import { auditRead } from "./_audit-read.js"
 import { requireOperator } from "../../auth/admin-guard.js"
 import { perIdentity } from "../../plugins/rate-limit.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "../../services/media-presign.js"
+import { PRESIGN_CONCURRENCY } from "../../services/media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
 import { makeMailService } from "../../services/admin/mail-service.js"
 import {
   makeContainerOutboundMailService,
@@ -47,7 +48,7 @@ import {
   makeForwardTemplateService,
   type ForwardTemplateService,
 } from "../../services/admin/forward-template-service.js"
-import type { ForwardTemplateRepository } from "../../services/admin/forward-template-types.js"
+import type { ForwardTemplateRepository } from "../../services/admin/forward-template-repository.js"
 import {
   applyInboundEffects,
   type InboundEffectDeps,

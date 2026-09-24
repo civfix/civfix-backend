@@ -1,5 +1,5 @@
 /**
- * Same shape as chat_message_mentions so makeMentionRepo serves both, except that post_id can carry an
+ * Same shape as chat_message_mentions so makeMessageMentionRepository serves both, except that post_id can carry an
  * FK: posts is not partitioned.
  */
 

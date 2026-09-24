@@ -10,10 +10,8 @@ import { ActivityListQuerySchema, type ActivityListResponse } from "@civfix/shar
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
 import { overridableService, parse, spreadNow } from "./_route-utils.js"
-import {
-  makeActivityService,
-  type ActivityRepository,
-} from "../../services/admin/activity-service.js"
+import { makeActivityService } from "../../services/admin/activity-service.js"
+import type { ActivityRepository } from "../../services/admin/activity-repository.js"
 import { makeDrizzleActivityRepository } from "../../services/admin/activity-repository.drizzle.js"
 import { route } from "../../versioning/route.js"
 

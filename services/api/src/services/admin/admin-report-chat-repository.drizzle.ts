@@ -1,20 +1,10 @@
 import type { RoomKind } from "@civfix/shared"
 import type { Queryable, Sql } from "../../db/client.js"
-import { writeAudit } from "./audit.js"
-
-export interface RemoveReportMessageInput {
-  reason: string | null
-  actorId: string | null
-}
-
-export interface AdminReportChatRepository {
-  reportExists(reportId: string): Promise<boolean>
-  removeMessage(
-    reportId: string,
-    messageId: string,
-    input: RemoveReportMessageInput,
-  ): Promise<boolean>
-}
+import { insertAuditRow } from "./audit-repository.drizzle.js"
+import type {
+  AdminReportChatRepository,
+  RemoveReportMessageInput,
+} from "./admin-report-chat-repository.js"
 
 export async function findMessageRoom(
   sql: Queryable,
@@ -60,7 +50,7 @@ export function makeDrizzleAdminReportChatRepository(sql: Sql): AdminReportChatR
           RETURNING id
         `
         if (removed.length === 0) return false
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "report_message.removed",
           target: `message:${messageId}`,

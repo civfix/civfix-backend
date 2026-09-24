@@ -1,4 +1,5 @@
 import { AppError } from "@civfix/shared"
+import type { FastifyRequest } from "fastify"
 import { z, type ZodTypeAny } from "zod"
 
 // Field key for an issue on the value itself (a non-object body, a refine on the whole schema).
@@ -48,4 +49,18 @@ export function trimTextFields<S extends ZodTypeAny>(
     }
     return trimmed
   }, schema)
+}
+
+// Path params spread last: the URL path is authoritative, so a body or query field can never address a
+// different row than the path names.
+export function paramsOverBody(request: FastifyRequest): Record<string, unknown> {
+  const params = (request.params ?? {}) as Record<string, unknown>
+  const body = (request.body ?? {}) as Record<string, unknown>
+  return { ...body, ...params }
+}
+
+export function paramsOverQuery(request: FastifyRequest): Record<string, unknown> {
+  const params = (request.params ?? {}) as Record<string, unknown>
+  const query = (request.query ?? {}) as Record<string, unknown>
+  return { ...query, ...params }
 }

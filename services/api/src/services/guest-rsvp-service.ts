@@ -5,8 +5,6 @@ import {
   GuestOtpErrorReason,
   MAX_GUEST_NAME,
   type CleanupGuestDTO,
-  type CleanupStatus,
-  type EventVisibility,
   type GetCleanupGuestsRequest,
   type GetCleanupGuestsResponse,
   type GuestContactChannel,
@@ -46,14 +44,22 @@ import { honeypotTripped } from "../abuse/honeypot.js"
 import { normalizeIp } from "../abuse/ip-rate-limit.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
 import { smsFailureKind } from "../errors/sms-failure.js"
-import { mapWithLimit } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { MS_PER_HOUR, MS_PER_SECOND, SECONDS_PER_DAY, SECONDS_PER_MINUTE } from "../lib/time.js"
 import { renderMessage } from "../i18n/renderMessage.js"
-import { parseKeysetCursor, type KeysetCursor } from "../db/cursor-helpers.js"
+import { parseKeysetCursor } from "../db/cursor-helpers.js"
 import { eventEndedError, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
 import { isEventPubliclyVisible } from "./host/authz.js"
 import { enqueueWaitlistPromotion } from "./host/waitlist-promotion.js"
 import { formatEventWhen } from "./host/broadcast-render.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
+import type {
+  GuestEventView,
+  GuestOtpRecord,
+  GuestRecipient,
+  GuestRosterRow,
+  GuestRsvpRepository,
+} from "./guest-rsvp-repository.js"
 
 export const MAX_GUESTS_PER_EVENT = 500
 
@@ -66,8 +72,6 @@ export const GUEST_CONTACT_MAX_PER_DAY = 5
 export const GUEST_IP_MAX_PER_HOUR = 10
 
 const GUEST_IP_WINDOW_SECONDS = 60 * 60
-
-const DAY_SECONDS = 24 * 60 * 60
 
 const GUESTS_DEFAULT_LIMIT = 25
 
@@ -92,12 +96,6 @@ const GUEST_CONTACT_READ_COUNTER_KEY = "host:guestContactReads"
 const GUEST_CONTACT_READS_PER_HOUR = 50
 
 const GUEST_CONTACT_READ_WINDOW_SECONDS = 60 * 60
-
-const MS_PER_SECOND = 1000
-
-const SECONDS_PER_MINUTE = 60
-
-const MS_PER_HOUR = 60 * 60 * MS_PER_SECOND
 
 const SMS_LOCALE = "en"
 
@@ -145,106 +143,9 @@ export interface GuestRegistrationBridge {
   registrationGate?(cleanupId: string): Promise<GuestRegistrationGate | null>
 }
 
-export interface GuestOtpRecord {
-  id: string
-  cleanupId: string
-  channel: GuestContactChannel
-  contact: string
-  name: string
-  codeHash: string
-}
-
-export interface GuestRosterRow {
-  id: string
-  name: string
-  channel: GuestContactChannel
-  email: string | null
-  phone: string | null
-  verifiedAt: Date
-  cancelledAt: Date | null
-}
-
-export interface GuestRecipient {
-  id: string
-  name: string
-  channel: GuestContactChannel
-  email: string | null
-  phone: string | null
-}
-
-export interface GuestNoticeTarget {
-  id: string
-  cleanupId: string
-  name: string
-  email: string | null
-  cancelledAt: Date | null
-  contactScrubbedAt: Date | null
-}
-
-export interface GuestEventView {
-  id: string
-  title: string
-  status: CleanupStatus
-  visibility: EventVisibility
-  scheduledAt: Date
-  endsAt: Date | null
-  address: string | null
-  timezone: string | null
-  lat: number
-  lng: number
-}
-
-export interface InsertGuestOtpArgs {
-  cleanupId: string
-  channel: GuestContactChannel
-  contact: string
-  name: string
-  codeHash: string
-  expiresAt: Date
-}
-
-export interface UpsertGuestArgs {
-  cleanupId: string
-  name: string
-  channel: GuestContactChannel
-  contactKey: string
-  email: string | null
-  phone: string | null
-  manageTokenHash: string
-  now: Date
-}
-
 export interface GuestRetentionResult {
   scrubbedGuests: number
   deletedOtps: number
-}
-
-export interface GuestRsvpRepository {
-  findEvent(cleanupId: string): Promise<GuestEventView | null>
-  countActiveGuests(cleanupId: string): Promise<number>
-  goingCount(cleanupId: string): Promise<number>
-  isPhoneOptedOut(phone: string): Promise<boolean>
-  recordPhoneOptOut(phone: string): Promise<void>
-  invalidateActiveOtps(cleanupId: string, contact: string, now: Date): Promise<void>
-  insertOtp(args: InsertGuestOtpArgs): Promise<void>
-  findLatestActiveOtp(cleanupId: string, contact: string, now: Date): Promise<GuestOtpRecord | null>
-  incrementOtpAttempts(otpId: string): Promise<number>
-  markOtpConsumed(otpId: string, now: Date): Promise<boolean>
-  /** `created` is true when this call inserted the row rather than re-verifying an active one. */
-  upsertVerifiedGuest(args: UpsertGuestArgs): Promise<{ id: string; created: boolean }>
-  findGuestByManageTokenHash(
-    hash: string,
-  ): Promise<{ id: string; cleanupId: string; cancelledAt: Date | null } | null>
-  findGuestForNotice(guestId: string): Promise<GuestNoticeTarget | null>
-  cancelGuest(guestId: string, now: Date): Promise<string[]>
-  listGuests(args: {
-    cleanupId: string
-    cursor: KeysetCursor | null
-    limit: number
-  }): Promise<{ rows: GuestRosterRow[]; nextCursor: string | null }>
-  listContactableGuests(cleanupId: string, limit: number): Promise<GuestRecipient[]>
-  scrubExpiredGuestContacts(args: { cutoff: Date; now: Date; batchSize: number }): Promise<number>
-  deleteStaleOtps(args: { cutoff: Date; batchSize: number }): Promise<number>
 }
 
 export interface GuestRsvpLogger {
@@ -286,10 +187,6 @@ export interface GuestRequestContext {
 export interface GuestUpdateFanoutJob {
   cleanupId: string
 }
-
-export const CLEANUP_GUEST_UPDATE_FANOUT_JOB = "cleanup.guest.update.fanout"
-
-export const GUEST_RETENTION_SWEEP_JOB = "guest.retention.sweep"
 
 export interface GuestRsvpService {
   requestCode(
@@ -592,7 +489,10 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
   async function reserveSmsBudget(purpose: SmsPurpose): Promise<boolean> {
     let used: number
     try {
-      used = await deps.counters.incr(`${SMS_BUDGET_KEY_PREFIX}${utcDayKey(now())}`, DAY_SECONDS)
+      used = await deps.counters.incr(
+        `${SMS_BUDGET_KEY_PREFIX}${utcDayKey(now())}`,
+        SECONDS_PER_DAY,
+      )
     } catch (err) {
       deps.logger?.warn(
         { err, purpose },
@@ -990,7 +890,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
         throw AppError.rateLimited("Too many code requests from this network.")
       }
     }
-    const daily = await deps.cache.incr(contactDayKey(digest), DAY_SECONDS)
+    const daily = await deps.cache.incr(contactDayKey(digest), SECONDS_PER_DAY)
     if (daily > GUEST_CONTACT_MAX_PER_DAY) {
       throw AppError.rateLimited("Too many code requests for this contact today.")
     }
@@ -1229,7 +1129,7 @@ export function makeGuestRsvpService(deps: GuestRsvpServiceDeps): GuestRsvpServi
     async runRetentionSweep(): Promise<GuestRetentionResult> {
       const at = new Date(now())
       const contactCutoff = new Date(
-        now() - GUEST_CONTACT_RETENTION_DAYS * DAY_SECONDS * MS_PER_SECOND,
+        now() - GUEST_CONTACT_RETENTION_DAYS * SECONDS_PER_DAY * MS_PER_SECOND,
       )
       const otpCutoff = new Date(now() - GUEST_OTP_RETENTION_HOURS * MS_PER_HOUR)
       const scrubbedGuests = await drainPages("guest contact scrub", (batchSize) =>

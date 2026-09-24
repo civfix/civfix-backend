@@ -25,10 +25,7 @@ import { DEMO_EMAIL_DOMAIN, DEMO_EMAIL_PATTERN } from "./seed-demo-domain.js"
 import { demoTicketTokenHasher, mintDemoSignupSeats } from "./demo-signup-seats.js"
 import { DEMO_PRNG_SEED, chance, rand, rint, seedDemoRandom, shuffle } from "./demo-random.js"
 import { deriveCleanupStatus, eventWindowOf } from "../services/cleanup-rules.js"
-
-const MINUTE_MS = 60_000
-const HOUR_MS = 60 * MINUTE_MS
-const DAY_MS = 24 * HOUR_MS
+import { MS_PER_DAY, MS_PER_HOUR, MS_PER_MINUTE } from "../lib/time.js"
 
 const DEFAULT_JOIN_COUNT = 15
 const MAX_JOIN_COUNT = 200
@@ -38,17 +35,17 @@ const SLOT_CLAIM_PROBABILITY = 0.45
 // of signups rather than rows backdated before the event was announced. The start is clamped to at
 // least 12h ago so an event with a bogus/near-future created_at still yields a spread of past join
 // times instead of a one-minute cluster.
-const RSVP_SPREAD_MS = 5 * DAY_MS
-const MIN_RSVP_LOOKBACK_MS = 12 * HOUR_MS
+const RSVP_SPREAD_MS = 5 * MS_PER_DAY
+const MIN_RSVP_LOOKBACK_MS = 12 * MS_PER_HOUR
 
 /** Biased toward the recent end, because RSVPs cluster after a promo post. */
 function joinTimestamp(start: Date, now: Date): Date {
-  const span = Math.max(now.getTime() - start.getTime(), MINUTE_MS)
+  const span = Math.max(now.getTime() - start.getTime(), MS_PER_MINUTE)
   const t = new Date(now.getTime() - Math.pow(rand(), 2) * span)
   t.setUTCMinutes(rint(0, 59), rint(0, 59), 0)
   // The minute/second jitter can overshoot either bound; clamp inside (start, now).
-  if (t.getTime() >= now.getTime()) return new Date(now.getTime() - rint(2, 45) * MINUTE_MS)
-  if (t.getTime() <= start.getTime()) return new Date(start.getTime() + MINUTE_MS)
+  if (t.getTime() >= now.getTime()) return new Date(now.getTime() - rint(2, 45) * MS_PER_MINUTE)
+  if (t.getTime() <= start.getTime()) return new Date(start.getTime() + MS_PER_MINUTE)
   return t
 }
 
@@ -176,7 +173,7 @@ async function claimDemoSlots(
     claimed++
     await tx`
               INSERT INTO cleanup_slot_claims (cleanup_id, user_id, slot_id, claimed_at)
-              VALUES (${eventId}, ${m.user_id}, ${slot.id}, ${new Date(m.joined_at.getTime() + rint(1, 30) * MINUTE_MS)})
+              VALUES (${eventId}, ${m.user_id}, ${slot.id}, ${new Date(m.joined_at.getTime() + rint(1, 30) * MS_PER_MINUTE)})
               ON CONFLICT (cleanup_id, user_id) DO NOTHING
             `
   }

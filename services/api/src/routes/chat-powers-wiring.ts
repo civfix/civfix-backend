@@ -16,21 +16,15 @@ import type { Env } from "../env.js"
 import { isAdminEmail } from "../auth/admin-allowlist.js"
 import { makeChatPowersResolver, type ResolveChatPowers } from "../services/chat-room-roles.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
-import {
-  makeReportChatRepository,
-  type ReportChatRepository,
-} from "../services/report-chat-repository.drizzle.js"
-import {
-  makeChatGroupRepository,
-  type ChatGroupRepository,
-} from "../services/chat-group-repository.drizzle.js"
-import type { DmRepository } from "../services/dm-repository.drizzle.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import type { ChatGroupRepository } from "../services/chat-group-repository.js"
+import type { DmRepository } from "../services/dm-repository.js"
+import type { BlocksRepository } from "../services/blocks-repository.js"
+import type { GlobalRole } from "../services/users-repository.js"
+import { makeChatGroupRepository } from "../services/chat-group-repository.drizzle.js"
 import { makeDmPeerOf } from "../services/dm-peer.js"
-import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
-import {
-  makeDrizzleUsersRepository,
-  type GlobalRole,
-} from "../services/users-repository.drizzle.js"
+import { makeDrizzleUsersRepository } from "../services/users-repository.drizzle.js"
 
 /**
  * A thread the caller is not in resolves to no peer and answers false: isDmParticipant already gates
@@ -70,12 +64,12 @@ const resolvers = new WeakMap<FastifyInstance, ResolveChatPowers>()
 export function wireChatPowers(app: FastifyInstance, container: Container): ResolveChatPowers {
   const cached = resolvers.get(app)
   if (cached) return cached
-  const resolver = buildChatPowers(app, container)
+  const resolver = makeChatPowers(app, container)
   resolvers.set(app, resolver)
   return resolver
 }
 
-function buildChatPowers(app: FastifyInstance, container: Container): ResolveChatPowers {
+function makeChatPowers(app: FastifyInstance, container: Container): ResolveChatPowers {
   const overrides = app.chatOverrides
   if (overrides?.chatPowers) return overrides.chatPowers
 

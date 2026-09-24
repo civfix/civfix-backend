@@ -6,7 +6,7 @@ import type {
   ProfileStats,
   SocialRepository,
   UpcomingEventsArgs,
-} from "../../src/services/social-service.js"
+} from "../../src/services/social-repository.js"
 import type { CleanupRecord } from "../../src/services/cleanup-service.js"
 import { encodeTimeCursor, pageWith, parseTimeCursor } from "../../src/db/cursor-helpers.js"
 import {

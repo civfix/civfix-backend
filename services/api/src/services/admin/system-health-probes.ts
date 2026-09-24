@@ -1,6 +1,7 @@
 import type { Sql } from "../../db/client.js"
 import type { ProbeResult, SystemHealthProbes } from "./system-health-service.js"
-import { MEDIA_WORKER_BACKLOG_WARN, PG_UNDEFINED_TABLE } from "./system-health-service.js"
+import { MEDIA_WORKER_BACKLOG_WARN } from "./system-health-service.js"
+import { PG_UNDEFINED_TABLE } from "../../db/pg-errors.js"
 import { makeDrizzleSystemHealthRepository } from "./system-health-repository.drizzle.js"
 
 const PROBE_TIMEOUT_MS = 2000

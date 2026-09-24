@@ -1,15 +1,24 @@
-import type { EventPhase, FunnelStep, SeriesPoint, SuppressedRate } from "@civfix/shared"
+import type {
+  BreakdownRow,
+  EventPhase,
+  FunnelStep,
+  Panel,
+  SeriesPoint,
+  SuppressedRate,
+} from "@civfix/shared"
 import {
   eventPhase,
   suppressRate,
   type DayCount,
+  type DerivedBreakdownRow,
   type DerivedPanel,
   type SeriesClosure,
 } from "@civfix/shared/host"
-import type { EventClockRecord } from "./analytics-repository.drizzle.js"
-import type { MetricRow } from "./metrics-repository.drizzle.js"
+import type { EventClockRecord } from "./analytics-repository.js"
+import type { MetricRow } from "./metrics-repository.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
-export const DAY_MS = 86_400_000
+export const PORTFOLIO_EVENT_LIMIT = 200
 
 const ISO_DAY_LENGTH = 10
 const EPOCH_YEAR = 1970
@@ -21,7 +30,7 @@ export function isoDayOf(at: Date): string {
 export function shiftDayKey(day: string, deltaDays: number): string {
   const [year, month, date] = day.split("-").map(Number)
   const shifted = new Date(
-    Date.UTC(year ?? EPOCH_YEAR, (month ?? 1) - 1, date ?? 1) + deltaDays * DAY_MS,
+    Date.UTC(year ?? EPOCH_YEAR, (month ?? 1) - 1, date ?? 1) + deltaDays * MS_PER_DAY,
   )
   return isoDayOf(shifted)
 }
@@ -97,4 +106,19 @@ export function seriesOf(rows: readonly MetricRow[], metric: string): DayCount[]
     byDay.set(row.day, (byDay.get(row.day) ?? 0) + row.value)
   }
   return [...byDay].map(([day, count]) => ({ day, count }))
+}
+
+export function toPanel(panel: DerivedPanel<DerivedBreakdownRow>, maxRows?: number): Panel {
+  const rows = maxRows === undefined ? panel.rows : panel.rows.slice(0, maxRows)
+  return {
+    panelSuppressed: panel.panelSuppressed,
+    rows: rows.map(
+      (row): BreakdownRow => ({
+        key: row.key,
+        label: row.key,
+        value: row.value,
+        suppressed: row.suppressed,
+      }),
+    ),
+  }
 }

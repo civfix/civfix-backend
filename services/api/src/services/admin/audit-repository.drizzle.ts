@@ -1,15 +1,15 @@
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
+import { clampLimit } from "./pagination.js"
 import {
-  clampLimit,
-  decodeCursor,
+  isUuid,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-} from "./pagination.js"
-import { isUuid } from "../../db/cursor-helpers.js"
-import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
+import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-repository.js"
 import type { WriteAuditInput } from "./audit.js"
-import { likeContains } from "./like.js"
+import { likeContains } from "../../db/like.js"
 
 interface AuditRowSelect {
   id: string
@@ -51,7 +51,7 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
       args: ListAuditArgs,
     ): Promise<{ records: AuditRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor, true)
+      const anchor = parseKeysetCursor(args.cursor)
       const cursorFilter =
         anchor !== null
           ? sql`AND ${keysetPredicate(sql, sql`a.created_at`, sql`a.id`, anchor)}`

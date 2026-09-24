@@ -1,4 +1,3 @@
-import type postgres from "postgres"
 import { AppError, avatarGradient } from "@civfix/shared"
 import type {
   LinkedEventRef,
@@ -10,20 +9,24 @@ import type {
   PostRefDTO,
   UserMentionDTO,
 } from "@civfix/shared"
-import type { Queryable, Sql } from "../db/client.js"
-import type { POST_KIND_VALUES, REPORT_VISIBILITY_VALUES } from "../db/schema/types.js"
+import type { Queryable, Sql, SqlFragment } from "../db/client.js"
 import {
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
   parseKeysetCursor,
 } from "../db/cursor-helpers.js"
-import { loadMentionsFor, makeMentionRepo } from "./message-mentions.drizzle.js"
+import {
+  loadMentionsFor,
+  makeMessageMentionRepository,
+} from "./message-mentions-repository.drizzle.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
-import { claimableAsAttachment, lockUploadsForClaim } from "./media-bindings.js"
+import { claimableAsAttachment } from "./media-bindings.js"
+import { lockUploadsForClaimIn } from "./media-claim-repository.drizzle.js"
 import { uploadersOf } from "./media-uploader.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY, type PresignMedia } from "./media-presign.js"
 import { actorDisplayName, FALLBACK_ACTOR_NAME, publicAuthorIdentity } from "./public-author.js"
 import { officialPersonFlag } from "../auth/official-account.js"
 import { presentIds } from "./present-ids.js"
@@ -34,9 +37,23 @@ import {
   type PrimaryAffiliations,
 } from "./affiliation.js"
 import { firstReadyStillLateral, publicReportFilter } from "./report-sql.js"
-
-type PostKind = (typeof POST_KIND_VALUES)[number]
-type PostVisibility = (typeof REPORT_VISIBILITY_VALUES)[number]
+import type {
+  CreatePostArgs,
+  FeedCandidateArgs,
+  FeedCandidateRow,
+  FeedCountsRow,
+  FeedFilter,
+  FeedPage,
+  HomeFeedArgs,
+  PostBrief,
+  PostKind,
+  PostListArgs,
+  PostRepository,
+  PostVisibility,
+  PublicFeedArgs,
+  RepliesPage,
+  ReplyListArgs,
+} from "./post-repository.js"
 
 export const POSTS_DEFAULT_LIMIT = 20
 
@@ -51,7 +68,7 @@ const SHARED_EVENT_EXCERPT = "Shared an event"
 const SHARED_REPORT_EXCERPT = "Shared a report"
 const UNTITLED_REPORT_TITLE = "Report"
 
-function postColumns(sql: Queryable): postgres.Fragment {
+function postColumns(sql: Queryable): SqlFragment {
   return sql`
     p.id, p.author_id, p.kind, p.body, p.reply_to_id, p.thread_root_id, p.repost_of_id,
     p.event_id, p.report_id, p.like_count, p.repost_count, p.reply_count, p.save_count,
@@ -67,55 +84,6 @@ function organizationRefOf(
   return organizations.get(id) ?? null
 }
 
-export interface CreatePostArgs {
-  authorId: string
-  guestAnonSessionId?: string | undefined
-  kind: PostKind
-  body: string | null
-  replyToId: string | null
-  repostOfId: string | null
-  eventId: string | null
-  reportId: string | null
-  mediaUploadIds: string[]
-  mentionedUserIds: string[]
-  organizationId: string | null
-}
-
-export interface PostBrief {
-  id: string
-  authorId: string
-  kind: PostKind
-  replyToId: string | null
-  repostOfId: string | null
-  deletedAt: Date | null
-  visibility: PostVisibility
-}
-
-export interface FeedPage {
-  items: PostDTO[]
-  nextCursor: string | null
-}
-
-export interface PostListArgs {
-  viewerId: string
-  cursor: string | null
-  limit: number
-}
-
-export interface ReplyListArgs extends PostListArgs {
-  focalAuthorId: string
-}
-
-export interface RepliesPage extends FeedPage {
-  authorReplies: PostDTO[]
-}
-
-export interface HomeFeedArgs extends PostListArgs {
-  filter: "all" | "events" | "fixes"
-}
-
-export type FeedFilter = "all" | "events" | "fixes"
-
 export const FEED_IN_NETWORK_POOL = 250
 export const FEED_NEARBY_POOL = 150
 export const FEED_RECENT_POOL = 150
@@ -128,76 +96,6 @@ const MAX_RADIUS_DEGREES = 90
 
 export function nearbyRadiusDegrees(radiusKm: number): number {
   return Math.min(MAX_RADIUS_DEGREES, radiusKm / KM_PER_DEGREE_LAT / MIN_LATITUDE_COSINE)
-}
-
-export interface FeedCandidateArgs {
-  viewerId: string
-  filter: FeedFilter
-  fallbackLat: number | null
-  fallbackLng: number | null
-  windowDays: number
-  radiusKm: number
-  candidateCap: number
-}
-
-export interface FeedCandidateRow {
-  id: string
-  author_id: string
-  created_at: Date
-  like_count: number
-  reply_count: number
-  repost_count: number
-  has_report: boolean
-  has_live_event: boolean
-  has_media: boolean
-  author_followed: boolean
-  author_is_viewer: boolean
-  viewer_mentioned: boolean
-  author_org_verified: boolean
-  distance_km: number | null
-}
-
-export interface FeedCountsRow {
-  id: string
-  like_count: number
-  repost_count: number
-  reply_count: number
-  save_count: number
-}
-
-export interface PublicFeedArgs {
-  filter: "all" | "events" | "fixes"
-  cursor: string | null
-  limit: number
-}
-
-export interface PostRepository {
-  getPostBrief(id: string): Promise<PostBrief | null>
-  actorNameOf(userId: string): Promise<string>
-  canPostAsOrganization(organizationId: string, userId: string): Promise<boolean>
-  isEventMember(eventId: string, userId: string): Promise<boolean>
-  isReportAttachable(reportId: string): Promise<boolean>
-
-  createPost(args: CreatePostArgs): Promise<string>
-  softDeletePost(postId: string): Promise<void>
-
-  like(postId: string, userId: string): Promise<boolean>
-  unlike(postId: string, userId: string): Promise<boolean>
-  save(postId: string, userId: string): Promise<boolean>
-  unsave(postId: string, userId: string): Promise<boolean>
-  repost(postId: string, userId: string): Promise<{ targetId: string; created: boolean }>
-  unrepost(postId: string, userId: string): Promise<{ targetId: string; removed: boolean }>
-
-  getPostDTO(id: string, viewerId: string): Promise<PostDTO | null>
-  homeFeedChronological(args: HomeFeedArgs): Promise<FeedPage>
-  publicFeed(args: PublicFeedArgs): Promise<FeedPage>
-  feedCandidates(args: FeedCandidateArgs): Promise<FeedCandidateRow[]>
-  hydrateByIds(ids: readonly string[], viewerId: string): Promise<PostDTO[]>
-  followerIdsOf(authorId: string, limit: number): Promise<string[]>
-  readableCounts(postIds: readonly string[], viewerId: string): Promise<FeedCountsRow[]>
-  listReplies(postId: string, args: ReplyListArgs): Promise<RepliesPage>
-  listUserPosts(authorId: string, args: PostListArgs): Promise<FeedPage>
-  listSaves(args: PostListArgs): Promise<FeedPage>
 }
 
 interface PostRowSelect {
@@ -464,7 +362,7 @@ export async function tombstonePostInTx(tx: Queryable, postId: string): Promise<
   return true
 }
 
-function feedFilterClause(sql: Queryable, filter: FeedFilter): postgres.Fragment {
+function feedFilterClause(sql: Queryable, filter: FeedFilter): SqlFragment {
   if (filter === "events") return sql`AND p.event_id IS NOT NULL`
   if (filter === "fixes") {
     return sql`AND EXISTS (SELECT 1 FROM reports fr WHERE fr.id = p.report_id AND fr.status = 'resolved')`
@@ -472,7 +370,7 @@ function feedFilterClause(sql: Queryable, filter: FeedFilter): postgres.Fragment
   return sql``
 }
 
-function viewerBlockClause(sql: Queryable, viewerId: string): postgres.Fragment {
+function viewerBlockClause(sql: Queryable, viewerId: string): SqlFragment {
   return sql`AND NOT EXISTS (
       SELECT 1 FROM user_blocks b
       WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = p.author_id)
@@ -480,13 +378,10 @@ function viewerBlockClause(sql: Queryable, viewerId: string): postgres.Fragment 
     )`
 }
 
-export function feedCandidatesStatement(
-  sql: Queryable,
-  args: FeedCandidateArgs,
-): postgres.Fragment {
+export function feedCandidatesStatement(sql: Queryable, args: FeedCandidateArgs): SqlFragment {
   const viewerId = args.viewerId
   const filterClause = feedFilterClause(sql, args.filter)
-  const eligible = (): postgres.Fragment => sql`
+  const eligible = (): SqlFragment => sql`
     p.deleted_at IS NULL
     AND p.reply_to_id IS NULL
     AND p.visibility = 'public'
@@ -1137,7 +1032,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         const postId = inserted[0]!.id
 
         if (args.mediaUploadIds.length > 0) {
-          await lockUploadsForClaim(tx, args.mediaUploadIds)
+          await lockUploadsForClaimIn(tx, args.mediaUploadIds)
           const claimed = await tx<{ upload_id: string }[]>`
             UPDATE media_assets
             SET post_id = ${postId}, purpose = 'post'
@@ -1158,7 +1053,7 @@ export function makeDrizzlePostRepository(sql: Sql, deps: PostRepoDeps): PostRep
         }
 
         if (args.mentionedUserIds.length > 0) {
-          await makeMentionRepo(sql, "post_mentions", "post_id").recordFor(
+          await makeMessageMentionRepository(sql, "post_mentions", "post_id").recordFor(
             tx,
             postId,
             args.mentionedUserIds,

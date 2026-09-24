@@ -17,6 +17,8 @@ import { renderEmailBody } from "./email-layout.js"
 import { renderMessage } from "../i18n/renderMessage.js"
 import { resolveLocale, type Locale } from "../i18n/locales.js"
 import { OTP_TTL_SECONDS } from "../auth/otp.js"
+import { SECONDS_PER_MINUTE } from "../lib/time.js"
+import { OCI_MAILER_DEFAULT_TIMEOUT_MS } from "./mailer-defaults.js"
 
 const CRLF_RE = /[\r\n\0]/
 const CRLF_GLOBAL_RE = /[\r\n\0]/g
@@ -60,11 +62,7 @@ const consoleLogger: OciMailerLogger = {
   warn: (obj, msg) => console.warn(msg ?? "", obj),
 }
 
-export const OCI_MAILER_DEFAULT_TIMEOUT_MS = 15_000
-
 const SMTPS_IMPLICIT_TLS_PORT = 465
-
-const SECONDS_PER_MINUTE = 60
 
 const DEFAULT_EVENT_TITLE = "the event"
 

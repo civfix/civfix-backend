@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import {
   InMemoryBlocksRepository,
@@ -39,7 +39,7 @@ async function harness(): Promise<{
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -57,7 +57,7 @@ async function harness(): Promise<{
     chatRepo: new InMemoryChatRepository(),
     blocksRepo: blocks,
   }
-  const app = await buildServer({ env, authServices, chatOverrides: overrides })
+  const app = await makeServer({ env, authServices, chatOverrides: overrides })
   current = app
   return { app, mailer, dmRepo }
 }

@@ -11,135 +11,42 @@ import type {
   UserMentionDTO,
 } from "@civfix/shared"
 import type { ChatHistoryPage } from "@civfix/shared/interfaces"
-import {
-  loadChatReactions,
-  loadChatReactionsFor,
-  toggleChatReaction,
-} from "./chat-reactions.drizzle.js"
-import { loadChatMentions, loadChatMentionsFor } from "./chat-mentions-repository.drizzle.js"
-import { attachChatMedia, loadChatAttachments } from "./chat-attachments.drizzle.js"
+import { loadChatReactions, toggleChatReaction } from "./chat-reactions-repository.drizzle.js"
+import { loadChatMentions } from "./chat-mentions-repository.drizzle.js"
+import { attachChatMedia, loadChatAttachments } from "./chat-attachments-repository.drizzle.js"
 import { monotonicReadWatermark } from "./read-watermark-repository.drizzle.js"
 import { assertReplyTarget, replyMapForRows } from "./chat-reply-hydration.js"
-import type { TimeCursor } from "../db/cursor-helpers.js"
+import { msKeysetFilter, type TimeCursor } from "../db/cursor-helpers.js"
 import type { PresignMedia } from "./media-presign.js"
 import {
   makeDrizzleRoomMessagesRepository,
   type RoomScopeSql,
 } from "./room-messages-repository.drizzle.js"
 import { liveMessageIds, toTombstoneDTO } from "./chat-tombstone.js"
+import {
+  loadMessageExtras,
+  messageCoreFields,
+  replyFor,
+  senderColumns,
+  type MessageCoreRow,
+} from "./chat-message-core-sql.js"
+import type {
+  DmMessageMeta,
+  DmPersistInput,
+  DmRepository,
+  DmThread,
+  DmThreadAggregate,
+} from "./dm-repository.js"
 
 // dm_messages is range-partitioned on created_at and an ack carries only the message id, so the bound
 // lets the planner prune the lookup to recent partitions instead of probing every month ever created.
 const DM_ACK_LOOKUP_WINDOW_DAYS = 90
 
-export interface DmThread {
-  id: string
-  userLo: string
-  userHi: string
-  createdAt: Date
-}
-
-export interface DmThreadAggregate {
-  threadId: string
-  createdAt: Date
-  peer: {
-    id: string
-    displayName: string
-    handle: string | null
-    bio: string | null
-    avatarUrl: string | null
-    deleted: boolean
-  }
-  last: {
-    body: string | null
-    createdAt: Date
-    senderId: string
-  } | null
-  unread: number
-}
-
-export interface DmPersistInput {
-  threadId: string
-  senderId: string
-  body: string
-  kind?: ChatMessageKind
-  clientId?: string
-  attachments?: unknown[] | null
-  mediaUploadIds?: string[]
-  replyToId?: string
-}
-
-export interface DmMessageMeta {
-  id: string
-  threadId: string
-  senderId: string
-  kind: ChatMessageKind
-  createdAt: Date
-  deletedAt: Date | null
-}
-
-export interface DmRepository {
-  openOrCreateThread(userA: string, userB: string): Promise<DmThread>
-  getThreadForPair(userA: string, userB: string): Promise<DmThread | null>
-  getThread(threadId: string): Promise<DmThread | null>
-  isParticipant(threadId: string, userId: string): Promise<boolean>
-  persist(input: DmPersistInput): Promise<ChatMessageDTO>
-  editMessage(
-    threadId: string,
-    messageId: string,
-    senderId: string,
-    body: string,
-  ): Promise<ChatMessageDTO | null>
-  findMessageMeta(messageId: string): Promise<DmMessageMeta | null>
-  softDelete(threadId: string, messageId: string, senderId: string): Promise<ChatMessageDTO | null>
-  setPinned(
-    threadId: string,
-    messageId: string,
-    userId: string,
-    pinned: boolean,
-  ): Promise<ChatMessageDTO | null>
-  listPins(threadId: string, viewerUserId: string | null): Promise<ChatMessageDTO[]>
-  history(
-    threadId: string,
-    before: string | undefined,
-    limit: number,
-    viewerUserId?: string | null,
-    around?: string,
-  ): Promise<ChatHistoryPage>
-  findMessage(
-    threadId: string,
-    messageId: string,
-    viewerUserId: string | null,
-  ): Promise<ChatMessageDTO | null>
-  toggleReaction(messageId: string, userId: string, emoji: ReactionEmoji): Promise<boolean>
-  markRead(threadId: string, userId: string, at: Date): Promise<void>
-  lastReadAt(threadId: string, userId: string): Promise<Date | null>
-  countUnread(threadId: string, userId: string): Promise<number>
-  resolveMessageCreatedAt(threadId: string, messageId: string): Promise<Date | null>
-  listThreadsForUser(
-    userId: string,
-    limit?: number,
-    cursor?: TimeCursor | null,
-  ): Promise<DmThreadAggregate[]>
-}
-
-interface DmRowSelect {
-  id: string
+interface DmRowSelect extends MessageCoreRow {
   thread_id: string
   sender_id: string
-  body: string | null
-  kind: ChatMessageKind
   attachments: unknown[] | null
-  created_at: Date
-  edited_at: Date | null
-  deleted_at: Date | null
-  reply_to_id: string | null
-  pinned_at: Date | null
   sender_display_name: string
-  sender_handle: string | null
-  sender_bio: string | null
-  sender_avatar_url: string | null
-  sender_deleted_at: Date | null
 }
 
 interface MessageExtras {
@@ -167,49 +74,14 @@ function buildMessageDTO(
     replyTo,
   }: MessageExtras,
 ): ChatMessageDTO {
-  const author = publicAuthorIdentity({
-    id: r.sender_id,
-    displayName: r.sender_display_name,
-    handle: r.sender_handle,
-    avatarUrl: r.sender_avatar_url,
-    deletedAt: r.sender_deleted_at,
-  })
   return {
     id: r.id,
     cleanupId: r.thread_id,
     roomKind: "dm",
-    from: {
-      id: r.sender_id,
-      name: author.name,
-      handle: author.handle,
-      bio: author.deleted ? null : r.sender_bio,
-      avatar: author.avatar,
-      ...(author.avatarUrl !== undefined ? { avatarUrl: author.avatarUrl } : {}),
-      followers: 0,
-      following: 0,
-      isFollowing: false,
-      ...(author.deleted ? { deleted: true } : officialPersonFlag(r.sender_id)),
-    },
-    ...(r.body !== null ? { body: r.body } : {}),
-    kind: r.kind,
-    attachments,
-    reactions,
-    mentions,
-    createdAt: r.created_at.toISOString(),
-    ...(r.edited_at !== null ? { editedAt: r.edited_at.toISOString() } : {}),
-    ...(r.deleted_at !== null ? { deletedAt: r.deleted_at.toISOString() } : {}),
-    ...(r.reply_to_id !== null ? { replyToId: r.reply_to_id, replyTo: replyTo ?? null } : {}),
-    ...(r.pinned_at != null ? { pinnedAt: r.pinned_at.toISOString() } : {}),
+    ...messageCoreFields(r, r.sender_id, { attachments, reactions, mentions, replyTo }),
     mine: viewerUserId != null && r.sender_id === viewerUserId,
     ...(clientId !== undefined ? { clientId } : {}),
   }
-}
-
-function replyFor(
-  row: Pick<DmRowSelect, "reply_to_id">,
-  replyByTarget: Map<string, ReplyToDTO>,
-): ReplyToDTO | null {
-  return row.reply_to_id !== null ? (replyByTarget.get(row.reply_to_id) ?? null) : null
 }
 
 // dm_threads stores each pair once as (user_lo, user_hi), so both lookups and the insert order the ids.
@@ -231,11 +103,7 @@ function selectDmRowFrom(tag: Queryable, cte: string) {
       ${tag(cte)}.deleted_at,
       ${tag(cte)}.reply_to_id,
       ${tag(cte)}.pinned_at,
-      u.display_name AS sender_display_name,
-      u.handle AS sender_handle,
-      u.bio AS sender_bio,
-      u.avatar_url AS sender_avatar_url,
-      u.deleted_at AS sender_deleted_at
+      ${senderColumns(tag)}
     FROM ${tag(cte)}
     JOIN users u ON u.id = ${tag(cte)}.sender_id
   `
@@ -254,36 +122,15 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
     dm.deleted_at,
     dm.reply_to_id,
     dm.pinned_at,
-    u.display_name AS sender_display_name,
-    u.handle AS sender_handle,
-    u.bio AS sender_bio,
-    u.avatar_url AS sender_avatar_url,
-    u.deleted_at AS sender_deleted_at
+    ${senderColumns(sql)}
   `
 
   async function hydrateDmRows(
     page: DmRowSelect[],
     viewerUserId: string | null,
   ): Promise<ChatMessageDTO[]> {
-    const ids = liveMessageIds(page)
-    const [attachmentsByMessage, reactionsByMessage, mentionsByMessage, replyByTarget] =
-      await Promise.all([
-        presign
-          ? loadChatAttachments(sql, ids, presign, viewerUserId)
-          : Promise.resolve(new Map<string, MediaDTO[]>()),
-        loadChatReactionsFor(sql, ids, viewerUserId),
-        loadChatMentionsFor(sql, ids),
-        replyMapForRows(sql, "dm_messages", page),
-      ])
-    return page.map((r) =>
-      toMessageDTO(r, {
-        reactions: reactionsByMessage.get(r.id) ?? [],
-        mentions: mentionsByMessage.get(r.id) ?? [],
-        viewerUserId,
-        attachments: attachmentsByMessage.get(r.id) ?? [],
-        replyTo: replyFor(r, replyByTarget),
-      }),
-    )
+    const partsFor = await loadMessageExtras(sql, "dm_messages", page, viewerUserId, presign)
+    return page.map((r) => toMessageDTO(r, { ...partsFor(r), viewerUserId }))
   }
 
   async function hydrateDmRow(
@@ -577,14 +424,7 @@ export function makeDrizzleDmRepository(sql: Sql, presign?: PresignMedia): DmRep
       const limitClause = limit !== undefined ? sql`LIMIT ${limit}` : sql``
       const rawActivity = sql`COALESCE(last_msg.created_at, t.created_at)`
       const activity = sql`date_trunc('milliseconds', ${rawActivity})`
-      let cursorFilter = sql``
-      if (cursor !== null && cursor !== undefined) {
-        const msCeiling = new Date(cursor.at.getTime() + 1)
-        cursorFilter = sql`
-          AND ${activity} < ${msCeiling}
-          AND (${activity} < ${cursor.at} OR t.id < ${cursor.id}::uuid)
-        `
-      }
+      const cursorFilter = msKeysetFilter(sql, activity, sql`t.id`, cursor)
       const rows = await sql<
         {
           thread_id: string

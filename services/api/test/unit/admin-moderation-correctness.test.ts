@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest"
 import { makeFakeSql, type SqlHandler } from "../helpers/fake-sql.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleModerationRepository } from "../../src/services/admin/moderation-repository.drizzle.js"
-import { InMemoryModerationRepository } from "../../src/services/admin/moderation-repository.memory.js"
+import { InMemoryModerationRepository } from "../helpers/admin/moderation-repository.memory.js"
 
 const ITEM_ID = "0b8f3a52-7a55-4d6e-9d0c-5a8f1b7c9e31"
 const USER_ID = "0b8f3a52-7a55-4d6e-9d0c-5a8f1b7c9e32"

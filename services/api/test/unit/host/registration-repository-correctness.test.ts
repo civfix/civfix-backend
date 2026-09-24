@@ -8,7 +8,7 @@ import { deterministicUuid } from "../../../src/services/deterministic-uuid.js"
 import type {
   RegisterTxArgs,
   SeatDraft,
-} from "../../../src/services/host/registration-repository.types.js"
+} from "../../../src/services/host/registration-repository.js"
 import { WAITLIST_CLAIM_WINDOW_MS } from "../../../src/services/host/waitlist-service.js"
 import { makeFakeSql, type FakeSqlControl, type SqlHandler } from "../../helpers/fake-sql.js"
 import type { Sql } from "../../../src/db/client.js"

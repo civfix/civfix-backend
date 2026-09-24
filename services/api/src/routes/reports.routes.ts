@@ -28,10 +28,10 @@ import {
   makeReportService,
   type ReportDiscussionMeta,
   type ReportOwner,
-  type ReportRepository,
   type ReportService,
   type ReportServiceDeps,
 } from "../services/report-service.js"
+import type { ReportRepository } from "../services/report-repository.js"
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
 import { resolveJurisdictionCode } from "../db/reference-code.js"
 import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"

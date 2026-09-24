@@ -13,7 +13,7 @@ import type {
   ReportMediaView,
   ReportRecord,
   ReportTimelineView,
-} from "./report-service.types.js"
+} from "./report-repository.js"
 
 export interface ReportRowSelect {
   id: string

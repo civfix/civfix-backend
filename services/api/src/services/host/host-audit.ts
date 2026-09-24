@@ -1,5 +1,6 @@
 import type { Queryable } from "../../db/client.js"
-import { writeAudit, type WriteAuditInput } from "../admin/audit.js"
+import type { WriteAuditInput } from "../admin/audit.js"
+import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
 
 export type HostAuditAction =
   | "event.guests_viewed"
@@ -50,7 +51,7 @@ export interface HostAuditSink {
 }
 
 export function writeHostAudit(tx: Queryable, input: HostAuditInput): Promise<string> {
-  return writeAudit(tx, input satisfies WriteAuditInput)
+  return insertAuditRow(tx, input satisfies WriteAuditInput)
 }
 
 export function makeHostAuditSink(sql: Queryable, logger?: HostAuditLogger): HostAuditSink {

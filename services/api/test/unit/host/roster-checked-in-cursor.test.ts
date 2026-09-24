@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Sql } from "../../../src/db/client.js"
 import { makeDrizzleHostRegistrationRepository } from "../../../src/services/host/registration-repository.drizzle.js"
-import type { RosterQuery } from "../../../src/services/host/registration-repository.types.js"
+import type { RosterQuery } from "../../../src/services/host/registration-repository.js"
 import { makeFakeSql } from "../../helpers/fake-sql.js"
 
 const EVENT = "11111111-1111-4111-8111-111111111111"

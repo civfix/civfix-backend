@@ -66,7 +66,7 @@ export async function registerAdminOrgRoutes(
 
   // Every org-management mutation writes its operator audit, with the mandatory `reason` in its meta, inside
   // the repository transaction, so the audit row and the state change commit or roll back together. The
-  // routes add no second writeAudit.
+  // routes add no second insertAuditRow.
 
   route(app, "adminListOrgs", async (request, reply) => {
     const operatorId = requireOperator(request)
@@ -207,9 +207,9 @@ export async function registerAdminOrgRoutes(
     reply.status(200).send(payload)
   })
 
-  // Unlike broadcasts/pages, which call writeAudit in the route after the effect, this decision is audited
-  // inside the repository transaction (decideVerificationTx), so the audit row and the state change commit
-  // or roll back together. A route-level writeAudit here would double-write the row.
+  // Unlike pages, which call insertAuditRow in the route, this decision is
+  // audited inside the repository transaction (decideVerificationTx), so the audit row and the state change
+  // commit or roll back together. A route-level insertAuditRow here would double-write the row.
   route(app, "adminDecideOrgVerification", { preHandler: csrfProtect }, async (request, reply) => {
     const operatorId = requireOperator(request)
     const { id, body } = parseBodyWithId(DecideOrgVerificationRequestSchema, request)

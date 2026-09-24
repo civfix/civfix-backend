@@ -13,7 +13,7 @@ import type {
   MailSectionCounts,
   ReportsSectionCounts,
   UsersSectionCounts,
-} from "./home-types.js"
+} from "./home-repository.js"
 import type { EventKind, ReportCategory } from "@civfix/shared"
 import { adminEventStatusExpr } from "../cleanup-sql.js"
 

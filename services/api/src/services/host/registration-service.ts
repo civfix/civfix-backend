@@ -41,7 +41,7 @@ import type {
   RegistrationRecord,
   RegistrationSubject,
   SeatDraft,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
 const REGISTER_FLIP_COUNTER_KEY = "event:register"
 

@@ -2,8 +2,8 @@ import { describe, expect, it, beforeAll, afterAll } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeAbuseChecks, FakeMailer, FakeSmsSender } from "@civfix/shared/fakes"
 import { GUEST_OTP_ERROR_FIELD, GuestOtpErrorReason } from "@civfix/shared"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { InMemoryCounterStore } from "../../src/abuse/counter-store.js"
@@ -17,9 +17,9 @@ beforeAll(async () => {
   const env = loadEnv({ NODE_ENV: "test" })
   repo.seedEvent({ id: EVENT_ID, title: "Beach cleanup" })
   repo.memberCounts.set(EVENT_ID, 2)
-  app = await buildServer({
+  app = await makeServer({
     env,
-    container: buildContainer(env),
+    container: makeContainer(env),
     guestRsvpOverrides: {
       repo,
       requireGuestContact: () => Promise.resolve(),

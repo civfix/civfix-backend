@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { InMemoryHomeRepository } from "../../src/services/admin/home-repository.memory.js"
-import { InMemoryAnalyticsRepository } from "../../src/services/admin/analytics-repository.memory.js"
+import { InMemoryHomeRepository } from "../helpers/admin/home-repository.memory.js"
+import { InMemoryAnalyticsRepository } from "../helpers/admin/analytics-repository.memory.js"
 import {
   HOME_SUMMARY_CONCURRENCY,
   makeHomeService,
@@ -9,10 +9,8 @@ import {
   type HomeRepository,
   type HomeService,
 } from "../../src/services/admin/home-service.js"
-import {
-  PINS_BY_WEEK_WEEKS,
-  type AnalyticsRepository,
-} from "../../src/services/admin/analytics-types.js"
+import { PINS_BY_WEEK_WEEKS } from "../../src/services/admin/analytics-types.js"
+import type { AnalyticsRepository } from "../../src/services/admin/analytics-repository.js"
 
 const NOW = new Date("2026-06-15T12:00:00.000Z")
 

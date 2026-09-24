@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { Mailer, SentMail } from "@civfix/shared/interfaces"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import {
   assertOutboundSendPolicy,
   base64Bytes,

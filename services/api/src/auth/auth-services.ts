@@ -21,7 +21,7 @@ import {
 import { PgAuthStores } from "./pg-stores.js"
 import { REVIEWER_OTP_CODE_MIN_LENGTH } from "../env.js"
 import { resolveLocale } from "../i18n/locales.js"
-import { writeAudit } from "../services/admin/audit.js"
+import { insertAuditRow } from "../services/admin/audit-repository.drizzle.js"
 import { dataExportSupportEmail } from "../services/data-export-jobs.js"
 
 export interface AuthServices {
@@ -41,7 +41,7 @@ function enabledProvidersFromConfig(config: OAuthConfig): OAuthProvider[] {
   return providers
 }
 
-export interface BuildAuthServicesOptions {
+export interface MakeAuthServicesOptions {
   stores: AuthStores
   cache: CacheClient
   mailer: Mailer
@@ -54,7 +54,7 @@ export interface BuildAuthServicesOptions {
   audit?: OtpAuditSink
 }
 
-export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices {
+export function makeAuthServices(opts: MakeAuthServicesOptions): AuthServices {
   const now = opts.now
   const sessions = new SessionService({
     store: opts.stores.sessions,
@@ -91,7 +91,7 @@ export function buildAuthServices(opts: BuildAuthServicesOptions): AuthServices 
   }
 }
 
-export function buildAuthServicesFromContainer(
+export function makeAuthServicesFromContainer(
   container: Container,
   opts: { logger?: OtpLogger & SessionLogger } = {},
 ): AuthServices {
@@ -103,14 +103,14 @@ export function buildAuthServicesFromContainer(
   })
   const cache = new RedisCacheClient(container.getRedis())
   const reviewerConfig = reviewerOtpConfigFromEnv(container.env)
-  return buildAuthServices({
+  return makeAuthServices({
     stores,
     cache,
     mailer: container.mailer,
     oauthConfig: oauthConfigFromEnv(container.env),
     supportEmail: dataExportSupportEmail(container.env),
     audit: async (input) => {
-      await writeAudit(container.getDb().sql, input)
+      await insertAuditRow(container.getDb().sql, input)
     },
     ...(opts.logger ? { logger: opts.logger } : {}),
     ...(reviewerConfig !== null ? { reviewer: reviewerConfig } : {}),

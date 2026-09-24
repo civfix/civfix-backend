@@ -4,31 +4,7 @@
 import type { FastifyBaseLogger } from "fastify"
 import type { Sql } from "../db/client.js"
 import type { ConversationMuteRoomKind } from "../db/schema/conversation_mutes.js"
-
-export interface ConversationMutesRepository {
-  isMuted(userId: string, roomKind: ConversationMuteRoomKind, roomId: string): Promise<boolean>
-  /** Idempotent both ways: re-muting and unmuting an unmuted room are no-ops, not errors. */
-  setMuted(
-    userId: string,
-    roomKind: ConversationMuteRoomKind,
-    roomId: string,
-    muted: boolean,
-  ): Promise<void>
-  mutedRoomIdsFor(
-    userId: string,
-    roomKind: ConversationMuteRoomKind,
-    roomIds: string[],
-  ): Promise<Set<string>>
-  /**
-   * Optional so the offline fakes that predate it still satisfy the interface; callers must probe
-   * (`repo.mutedUserIdsFor?.(...)`) and fall back to the per-user `isMuted`.
-   */
-  mutedUserIdsFor?(
-    roomKind: ConversationMuteRoomKind,
-    roomId: string,
-    userIds: string[],
-  ): Promise<Set<string>>
-}
+import type { ConversationMutesRepository } from "./conversation-mutes-repository.js"
 
 export type FailOpenMuteCheck = (
   userId: string,
@@ -50,6 +26,20 @@ export function makeFailOpenMuteCheck(
       return false
     }
   }
+}
+
+/**
+ * Probed, never bound to an empty-Set default: the fan-out treats a present `mutedUserIdsFor` as
+ * authoritative and skips the per-user `isMuted`, so a `new Set()` fallback would silently unmute the
+ * whole room over a mutes store without the batch method.
+ */
+export function bindMutedUserIdsFor(
+  repo: ConversationMutesRepository | undefined,
+  roomKind: ConversationMuteRoomKind,
+): ((roomId: string, userIds: string[]) => Promise<Set<string>>) | undefined {
+  const batch = repo?.mutedUserIdsFor
+  if (!repo || !batch) return undefined
+  return (roomId, userIds) => batch.call(repo, roomKind, roomId, userIds)
 }
 
 export function makeConversationMutesRepository(sql: Sql): ConversationMutesRepository {

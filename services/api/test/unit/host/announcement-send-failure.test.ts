@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
-import { InMemoryBroadcastRepository } from "../../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../../helpers/host/broadcast-repository.memory.js"
 import {
   makeBroadcastService,
   type BroadcastConfig,
 } from "../../../src/services/host/broadcast-service.js"
 import { makeAnnouncementService } from "../../../src/services/host/announcement-service.js"
-import type { AnnouncementIdentityRepository } from "../../../src/services/host/announcement-repository.drizzle.js"
+import type { AnnouncementIdentityRepository } from "../../../src/services/host/announcement-identity-repository.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 const HOST = "00000000-0000-0000-0000-0000000000aa"

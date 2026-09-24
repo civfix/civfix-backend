@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { AdminReportStatus, ReportVisibility } from "@civfix/shared"
-import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
-import type { AdminReportMediaRecord } from "../../src/services/admin/admin-report-types.js"
+import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
+import type { AdminReportMediaRecord } from "../../src/services/admin/admin-report-repository.js"
 import { makeAdminReportService } from "../../src/services/admin/admin-report-service.js"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 import {
   makePacketMediaPresigner,

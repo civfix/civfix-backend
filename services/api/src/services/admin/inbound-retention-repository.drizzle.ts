@@ -1,26 +1,19 @@
 import type { Sql } from "../../db/client.js"
-
-const DAY_MS = 24 * 60 * 60 * 1000
+import { MS_PER_DAY } from "../../lib/time.js"
+import type {
+  InboundRetentionRepository,
+  ReapedInboundEmail,
+} from "./inbound-retention-repository.js"
 
 const INBOUND_EMAIL_RETENTION_DAYS = 180
 
-export const INBOUND_EMAIL_RETENTION_MS = INBOUND_EMAIL_RETENTION_DAYS * DAY_MS
+export const INBOUND_EMAIL_RETENTION_MS = INBOUND_EMAIL_RETENTION_DAYS * MS_PER_DAY
 
 export const INBOUND_EMAIL_RETENTION_BATCH = 200
-
-export interface ReapedInboundEmail {
-  id: string
-  attachmentKeys: string[]
-}
 
 interface ReapedRow {
   id: string
   attachments: { key?: unknown }[] | null
-}
-
-export interface InboundRetentionRepository {
-  findArchivedBefore(input: { before: Date; limit: number }): Promise<ReapedInboundEmail[]>
-  deleteByIds(ids: string[]): Promise<number>
 }
 
 export function makeDrizzleInboundRetentionRepository(sql: Sql): InboundRetentionRepository {

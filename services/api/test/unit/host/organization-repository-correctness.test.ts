@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { makeDrizzleOrganizationRepository } from "../../../src/services/host/organization-repository.drizzle.js"
-import { InMemoryOrganizationRepository } from "../../../src/services/host/organization-repository.memory.js"
+import { InMemoryOrganizationRepository } from "../../helpers/host/organization-repository.memory.js"
 import { makeFakeSql } from "../../helpers/fake-sql.js"
 import type { Sql } from "../../../src/db/client.js"
 

@@ -22,11 +22,11 @@ import { requireAuth } from "../auth/context.js"
 import { CERTIFICATE_VERIFY_PATH } from "../services/certificate-pdf.js"
 import {
   makeCertificateService,
-  type CertificateRepository,
   type CertificateService,
   type CertificateStorage,
 } from "../services/certificate-service.js"
-import type { VolunteerHoursRepository } from "../services/volunteer-hours-service.js"
+import type { CertificateRepository } from "../services/certificate-repository.js"
+import type { VolunteerHoursRepository } from "../services/volunteer-hours-repository.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 

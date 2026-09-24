@@ -8,15 +8,13 @@ import { resolveAuthContext } from "../../src/auth/context.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
-import type { CreateCleanupTxArgs } from "../../src/services/cleanup-repository.types.js"
+import type { CreateCleanupTxArgs } from "../../src/services/cleanup-repository.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "../../src/services/host/event-media.js"
 import { makeDrizzleOrganizationRepository } from "../../src/services/host/organization-repository.drizzle.js"
 import { makeDrizzleHostRegistrationRepository } from "../../src/services/host/registration-repository.drizzle.js"
-import type { SavePageArgs } from "../../src/services/host/registration-repository.types.js"
-import {
-  MEDIA_CHECKS_JOB,
-  makeMediaIntakeService,
-} from "../../src/services/media-intake-service.js"
+import type { SavePageArgs } from "../../src/services/host/registration-repository.js"
+import { makeMediaIntakeService } from "../../src/services/media-intake-service.js"
+import { MEDIA_CHECKS_JOB } from "../../src/lib/queue-names.js"
 import { anonUploader, userUploader } from "../../src/services/media-uploader.js"
 import {
   makeFakeSql,

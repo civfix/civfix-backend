@@ -30,12 +30,12 @@ import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedMediaAsset } from "../helpers/media-pg.js"
-import { buildServer } from "../../src/server.js"
-import { buildContainer, type Container } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer, type Container } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryThreadsRepository } from "../helpers/chat.js"
 import type { ChatGatewayOverrides } from "../../src/routes/chat.routes.js"
@@ -69,7 +69,7 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
     h = pg as PgHarness
 
     const env = loadEnv({ NODE_ENV: "test" })
-    authServices = buildAuthServices({
+    authServices = makeAuthServices({
       stores: makeInMemoryStores(),
       cache: new InMemoryCacheClient(() => Date.now()),
       mailer: new FakeMailer(),
@@ -98,8 +98,8 @@ describe.skipIf(!pg)("chat groups service + routes (integration)", () => {
         groupRoleOf: (groupId, userId) => groups.roleOf(groupId, userId),
       }),
     }
-    container = buildContainer(env)
-    app = await buildServer({
+    container = makeContainer(env)
+    app = await makeServer({
       env,
       container,
       authServices,

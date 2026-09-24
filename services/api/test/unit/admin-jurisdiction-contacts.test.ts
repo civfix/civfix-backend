@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest"
 import { FakeJobs, FakeMailer } from "@civfix/shared/fakes"
-import { InMemoryJurisdictionContactsRepository } from "../../src/services/admin/jurisdiction-contacts-repository.memory.js"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryOutreachRepository } from "../../src/services/admin/outreach-repository.memory.js"
+import { InMemoryJurisdictionContactsRepository } from "../helpers/admin/jurisdiction-contacts-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
+import { InMemoryOutreachRepository } from "../helpers/admin/outreach-repository.memory.js"
 import { makeOutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 import { makeOutreachService } from "../../src/services/admin/outreach-service.js"
 import type { OutreachStateRecord } from "../../src/services/admin/mail-repository.drizzle.js"
@@ -12,10 +12,10 @@ import {
   directoryMethod,
   directoryStatus,
   hasAnyContact,
-  OUTREACH_DIGEST_JOB,
   type JurisdictionContactsService,
-  type JurisdictionDirectoryRecord,
 } from "../../src/services/admin/jurisdiction-contacts-service.js"
+import type { JurisdictionDirectoryRecord } from "../../src/services/admin/jurisdiction-contacts-repository.js"
+import { OUTREACH_DIGEST_JOB } from "../../src/lib/queue-names.js"
 
 const NOW = new Date("2026-06-06T00:00:00.000Z")
 const THROTTLE_DAYS = 7

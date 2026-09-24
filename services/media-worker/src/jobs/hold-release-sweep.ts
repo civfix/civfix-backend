@@ -21,13 +21,13 @@
  */
 
 import type { AbuseChecks } from "@civfix/shared/interfaces"
-import { releaseAnonHoldIfReady, type AnonHoldReleaseRepo } from "@civfix/api/anon-hold-release"
+import { releaseAnonHoldIfReady } from "@civfix/api/anon-hold-release"
+import type { AnonHoldReleaseRepository } from "@civfix/api/anon-hold-release-repository"
+import { ANON_HOLD_RELEASE_SWEEP_JOB } from "@civfix/api/queue-names"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 
-const HOLD_RELEASE_SWEEP = "anon.hold.release.sweep"
-
 export interface HoldReleaseSweepDeps extends JobObsDeps {
-  repo: AnonHoldReleaseRepo
+  repo: AnonHoldReleaseRepository
   abuseChecks: AbuseChecks
   batchSize: number
 }
@@ -47,7 +47,7 @@ export async function runHoldReleaseSweep(
   try {
     ids = await deps.repo.findHeldAnonReportIds(deps.batchSize)
   } catch (err) {
-    report(err, { job: HOLD_RELEASE_SWEEP, phase: "find" })
+    report(err, { job: ANON_HOLD_RELEASE_SWEEP_JOB, phase: "find" })
     log("anon.hold.release.sweep: find failed", { err: String(err) })
     return { scanned: 0, published: 0, errors: 1 }
   }
@@ -65,7 +65,7 @@ export async function runHoldReleaseSweep(
       if (result.published) published++
     } catch (err) {
       errors++
-      report(err, { job: HOLD_RELEASE_SWEEP, phase: "release", reportId })
+      report(err, { job: ANON_HOLD_RELEASE_SWEEP_JOB, phase: "release", reportId })
       log("anon.hold.release.sweep: report failed", { reportId, err: String(err) })
     }
   }

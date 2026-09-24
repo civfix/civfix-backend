@@ -24,30 +24,29 @@ import {
   type AffiliationLoader,
   type PrimaryAffiliations,
 } from "../affiliation.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { MS_PER_DAY, SECONDS_PER_DAY } from "../../lib/time.js"
+import { PRESIGN_CONCURRENCY } from "../media-presign.js"
 import type { MessageKey } from "../../i18n/renderMessage.js"
 import type { CreateNotificationInput } from "../notification-service.js"
 import { assertMayGrantRole, isEventPubliclyVisible, requireCapability } from "./authz.js"
 import type { EventMediaPresigner } from "./event-media.js"
-import type { HostStandingResolution } from "./host-standing-repository.drizzle.js"
+import type { HostStandingResolution } from "./host-standing-repository.js"
 import type {
   EventTeamInviteRecord,
   EventTeamMemberRecord,
   HostTeamRepository,
   PendingInviteForUserRecord,
-} from "./host-team-repository.types.js"
-
-const DAY_SEC = 24 * 60 * 60
-const DAY_MS = DAY_SEC * 1000
+} from "./host-team-repository.js"
 
 export const TEAM_INVITES_PER_EVENT_PER_DAY = 30
-const TEAM_INVITE_WINDOW_SEC = DAY_SEC
+const TEAM_INVITE_WINDOW_SEC = SECONDS_PER_DAY
 const TEAM_INVITE_COUNTER_KEY = "host:teamInvites"
 
 const TEAM_INVITE_TTL_DAYS = 14
-export const TEAM_INVITE_TTL_MS = TEAM_INVITE_TTL_DAYS * DAY_MS
+export const TEAM_INVITE_TTL_MS = TEAM_INVITE_TTL_DAYS * MS_PER_DAY
 
-export const TEAM_INVITE_EMAIL_SCRUB_DELAY_MS = 7 * DAY_MS
+export const TEAM_INVITE_EMAIL_SCRUB_DELAY_MS = 7 * MS_PER_DAY
 
 const TEAM_MEMBER_CAP = 200
 

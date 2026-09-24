@@ -141,17 +141,20 @@ postgres-js client, the R2 adapter, or the GlitchTip reporter. It depends on `@c
 `services/api/package.json`:
 
 - `@civfix/api/db` - the schema barrel + `makeDb` + `Db`/`Sql` types.
-- `@civfix/api/media-repo` - the richer media-worker persistence seam (`MediaWorkerRepo`:
-  findById / applyResult / insertAbuseFlag / findOrphans / deleteOrphan, plus the stuck-media and
-  leaked-object methods), its Drizzle impl, the `MEDIA_CHECKS_JOB` name, and
-  `ensureChatPartitionWindow` / `ensureDmPartitionWindow` (so partition bounds/naming have one source
-  shared with the migrations).
-- `@civfix/api/anon-hold-release`, `@civfix/api/anon-hold-repo`, `@civfix/api/inbound-retention-repo`,
-  `@civfix/api/geocode-cache` - the hold-release logic and repository, the inbound-mail retention
-  repository, and the geocode cache.
-- `@civfix/api/adapters/storage`, `@civfix/api/adapters/storage-local`,
-  `@civfix/api/adapters/abuse-checks`, `@civfix/api/errors`, `@civfix/api/migrate` - the R2 adapter,
-  the development-only local-disk store, the real AbuseChecks adapter, the GlitchTip helper, and the
+- `@civfix/api/media-repo` - the Drizzle impl of the richer media-worker persistence seam and
+  `ensureNextMonthChatPartition` (so partition bounds/naming have one source shared with the
+  migrations).
+- `@civfix/api/media-worker-repository`, `@civfix/api/anon-hold-release-repository`,
+  `@civfix/api/inbound-retention-repository` - the type-only repository contracts the worker's jobs
+  depend on (`MediaWorkerRepository`: find / applyResult / insertAbuseFlag / findOrphans /
+  deleteById; `AnonHoldReleaseRepository`; `InboundRetentionRepository`). Their Drizzle impls stay
+  on `media-repo`, `anon-hold-repo` and `inbound-retention-repo`.
+- `@civfix/api/queue-names` - every pg-boss queue name and the shared queue policy.
+- `@civfix/api/time`, `@civfix/api/concurrency`, `@civfix/api/env-parsers`, `@civfix/api/timeout`,
+  `@civfix/api/capped-body` - import-free helpers the worker shares with the api (time units,
+  `mapWithLimit`, `parseBool`, `settleWithin`, the size-capped stream reader).
+- `@civfix/api/adapters/storage`, `@civfix/api/adapters/abuse-checks`, `@civfix/api/errors`,
+  `@civfix/api/migrate` - the R2 adapter, the real AbuseChecks adapter, the GlitchTip helper, and the
   migration runner (the last reused only by the Docker-gated worker integration harness).
 
 The worker's `tsup` build inlines `@civfix/api` + `@civfix/shared` source into a self-contained

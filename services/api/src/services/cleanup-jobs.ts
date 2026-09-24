@@ -5,7 +5,8 @@ import { makeRouteNotificationService } from "./route-notifier.js"
 import { makeCommsRuntime } from "./host/comms-wiring.js"
 import { makeContainerGuestRsvpService } from "./guest-rsvp-wiring.js"
 import { makeCleanupService } from "./cleanup-service.js"
-import { CLEANUP_CANCEL_FANOUT_JOB, type CleanupCancelFanoutJob } from "./cleanup-notifications.js"
+import type { CleanupCancelFanoutJob } from "./cleanup-notifications.js"
+import { CLEANUP_CANCEL_FANOUT_JOB } from "../lib/queue-names.js"
 
 export async function registerCleanupCancelFanoutJob(
   container: Container,

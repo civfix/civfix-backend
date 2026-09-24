@@ -6,7 +6,7 @@ import {
   ADMIN_MAX_OFFSET,
   decodeOffsetCursor,
   encodeOffsetCursor,
-} from "../../src/services/admin/pagination.js"
+} from "../../src/db/cursor-helpers.js"
 
 // Bypasses encodeOffsetCursor's own lower clamp.
 function forgeCursor(offset: number): string {

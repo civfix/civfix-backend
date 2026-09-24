@@ -1,9 +1,7 @@
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../di.js"
-import {
-  makeAnalyticsService,
-  type AnalyticsRepository,
-} from "../../services/admin/analytics-service.js"
+import { makeAnalyticsService } from "../../services/admin/analytics-service.js"
+import type { AnalyticsRepository } from "../../services/admin/analytics-repository.js"
 import {
   ANALYTICS_CACHE_TTL_MS,
   makeDrizzleAnalyticsRepository,

@@ -20,9 +20,11 @@ import type {
 import { toLinkedEventRef, type LinkedEventView } from "../cleanup-service.js"
 import { toRelAbs } from "./admin-format.js"
 import { toPersonDTO } from "./admin-person.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY, type PresignPacketMedia } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { PRESIGN_CONCURRENCY, type PresignPacketMedia } from "../media-presign.js"
 import { isPubliclyVisibleStatus } from "../report-visibility.js"
-import { ADMIN_DEFAULT_LIMIT } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
+import { PG_DEADLOCK_DETECTED, PG_SERIALIZATION_FAILURE } from "../../db/pg-errors.js"
 import {
   JURISDICTION_REPLY_NOTE,
   resolveListFilter,
@@ -32,16 +34,18 @@ import {
 import { buildReportPacket, type PacketMediaLink } from "./mail-format.js"
 import { pickPreviewMedia, previewThumbnailUrl } from "./admin-report-types.js"
 import type {
-  AdminReportMediaRecord,
-  AdminReportRecord,
   AdminReportService,
   AdminReportServiceDeps,
-  AdminReportTimelineRecord,
   FollowupResult,
-  ListReportsArgs,
-  ReportOutreachState,
   RouteToJurisdictionResult,
 } from "./admin-report-types.js"
+import type {
+  AdminReportMediaRecord,
+  AdminReportRecord,
+  AdminReportTimelineRecord,
+  ListReportsArgs,
+  ReportOutreachState,
+} from "./admin-report-repository.js"
 
 export * from "./admin-report-types.js"
 export * from "./admin-report-status.js"
@@ -76,8 +80,6 @@ const EMPTY_REPORT_COUNTS: AdminReportCounts = {
   needsVerification: 0,
 }
 
-const PG_SERIALIZATION_FAILURE = "40001"
-const PG_DEADLOCK_DETECTED = "40P01"
 
 function firstTemplate(...candidates: (string | null | undefined)[]): string | null {
   for (const candidate of candidates) {
@@ -145,7 +147,7 @@ export function makeAdminReportService(deps: AdminReportServiceDeps): AdminRepor
         flaggedOnly,
         needsVerificationOnly,
         cursor: query.cursor ?? null,
-        limit: query.limit ?? ADMIN_DEFAULT_LIMIT,
+        limit: clampLimit(query.limit),
       }
       const [{ records, nextCursor }, counts] = await Promise.all([
         deps.repo.listReports(args),

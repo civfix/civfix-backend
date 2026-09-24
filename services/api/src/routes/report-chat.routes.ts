@@ -25,20 +25,17 @@ import {
   REPORT_NOT_FOUND,
 } from "./chat-route-helpers.js"
 import { neutralizeChatViewerFields } from "../services/chat-viewer-fields.js"
-import {
-  makeDrizzleChatRepository,
-  type ChatRepository,
-} from "../services/chat-repository.drizzle.js"
-import {
-  makeReportChatRepository,
-  type ReportChatRepository,
-} from "../services/report-chat-repository.drizzle.js"
+import { makeDrizzleChatRepository } from "../services/chat-repository.drizzle.js"
+import type { ChatRepository } from "../services/chat-repository.js"
+import type { ReportChatRepository } from "../services/report-chat-repository.js"
+import { makeReportChatRepository } from "../services/report-chat-repository.drizzle.js"
 import { makeDrizzleDiscussionRepository } from "../services/discussion-repository.drizzle.js"
-import type { DiscussionRepository } from "../services/discussion-types.js"
+import type { DiscussionRepository } from "../services/discussion-repository.js"
 import { isReportVisibleTo } from "../services/report-visibility.js"
 import { makePrivateMediaPresigner } from "../services/media-presign.js"
 import { withAffiliation } from "../services/affiliation.js"
 import { makeChatReactionService } from "../services/chat-reaction-service.js"
+import { nudgeThreads } from "../services/threads-nudge.js"
 import { wireChatPowers } from "./chat-powers-wiring.js"
 
 export interface DiscussionServiceOverrides {
@@ -90,12 +87,6 @@ export async function registerReportChatRoutes(
   ): Promise<void> => {
     const report = await getReportRepo().findReportForDiscussion(reportId)
     if (!isReportVisibleTo(report, viewerUserId)) throw AppError.notFound(REPORT_NOT_FOUND)
-  }
-
-  const nudgeThreads = (userId: string): void => {
-    void Promise.resolve(container.userChannel?.publishToUser(userId, { topic: "threads" })).catch(
-      () => {},
-    )
   }
 
   route(app, "reportMessages", async (request, reply) => {
@@ -190,7 +181,7 @@ export async function registerReportChatRoutes(
       parse(JoinReportChatRequestSchema, { id })
       await requireVisibleReport(id, userId)
       await getReportChatRepo().join(id, userId, "member")
-      nudgeThreads(userId)
+      nudgeThreads(container.userChannel, userId)
       reply.status(200).send({ ok: true })
     },
   )
@@ -228,7 +219,7 @@ export async function registerReportChatRoutes(
       const { id } = parse(ReportChatIdParamsSchema, request.params)
       parse(LeaveReportChatRequestSchema, { id })
       await getReportChatRepo().leave(id, userId)
-      nudgeThreads(userId)
+      nudgeThreads(container.userChannel, userId)
       reply.status(200).send({ ok: true })
     },
   )

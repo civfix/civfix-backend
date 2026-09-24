@@ -6,7 +6,7 @@
  * versions and all unversioned/system paths through untouched.
  *
  * Rather than stand up the full DI bundle, this builds a MINIMAL, self-contained Fastify instance wired
- * exactly like `buildServer` around the gate: the same request-id generator (so the error envelope's
+ * exactly like `makeServer` around the gate: the same request-id generator (so the error envelope's
  * `requestId` is populated) and the same canonical error handler (`makeErrorHandler`) that renders an
  * AppError into `{ code, message, requestId }` with the AppError's HTTP status. On top of that it
  * registers the gate plus four trivial probe routes:
@@ -35,7 +35,7 @@ import {
 } from "../../src/versioning/policy.js"
 
 /**
- * A minimal Fastify instance wired around the version gate the same way `buildServer` is: the gate's
+ * A minimal Fastify instance wired around the version gate the same way `makeServer` is: the gate's
  * `onRequest` hook runs ahead of route matching, the canonical error handler renders AppError → wire
  * envelope, and a handful of probe routes stand in for the real surface.
  */
@@ -45,7 +45,7 @@ async function buildGateProbeServer(): Promise<FastifyInstance> {
   app.setErrorHandler(makeErrorHandler())
   app.setNotFoundHandler(makeNotFoundHandler())
 
-  // Registered before routes, exactly as buildServer does, so it fires at onRequest ahead of handlers.
+  // Registered before routes, exactly as makeServer does, so it fires at onRequest ahead of handlers.
   await registerVersionGate(app)
 
   // A SERVED current version: reaching this 200 proves the gate let it through.

@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { FakeStorage } from "@civfix/shared/fakes"
-import { makeDrizzleMediaWorkerRepo, type MediaWorkerRepo } from "@civfix/api/media-repo"
+import { makeDrizzleMediaWorkerRepository } from "@civfix/api/media-repo"
+import type { MediaWorkerRepository } from "@civfix/api/media-worker-repository"
 import { loadLimits } from "../../src/config.js"
 import { runOrphanSweep } from "../../src/jobs/orphan-sweep.js"
 import { servedKey, thumbnailKey } from "../../src/jobs/media-keys.js"
@@ -12,12 +13,12 @@ const limits = loadLimits({})
 
 describe.skipIf(!pg)("served_key + conditional orphan reap (integration)", () => {
   let h: WorkerPgHarness
-  let repo: MediaWorkerRepo
+  let repo: MediaWorkerRepository
   let storage: FakeStorage
 
   beforeAll(() => {
     h = pg as WorkerPgHarness
-    repo = makeDrizzleMediaWorkerRepo(h.db, h.sql)
+    repo = makeDrizzleMediaWorkerRepository(h.db, h.sql)
     storage = new FakeStorage()
   })
 
@@ -97,7 +98,7 @@ describe.skipIf(!pg)("served_key + conditional orphan reap (integration)", () =>
     }
     await h.sql`UPDATE media_assets SET served_key = ${servedKey(r2Key)} WHERE id = ${id}`
 
-    const racingRepo: MediaWorkerRepo = {
+    const racingRepo: MediaWorkerRepository = {
       ...repo,
       async findOrphans(olderThan, limit) {
         const rows = await repo.findOrphans(olderThan, limit)

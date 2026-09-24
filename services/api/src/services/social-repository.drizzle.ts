@@ -7,7 +7,7 @@ import type {
   ProfileStats,
   SocialRepository,
   UpcomingEventsArgs,
-} from "./social-service.js"
+} from "./social-repository.js"
 import type { CleanupRecord, CleanupPersonView } from "./cleanup-service.js"
 import type {
   CleanupStatus,
@@ -16,7 +16,6 @@ import type {
   EventKind,
   EventVisibility,
   SocialLinks,
-  UserSearchResultDTO,
 } from "@civfix/shared"
 import {
   encodeNameCursor,
@@ -29,27 +28,10 @@ import {
   parseNameCursor,
   parseTimeCursor,
 } from "../db/cursor-helpers.js"
-import { escapeLike } from "./admin/like.js"
+import { likeContains } from "../db/like.js"
 import { cleanupStatusExpr, goingScalar } from "./cleanup-sql.js"
 import { publicServedKeyExpr } from "./media-served-key.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
-import { makeDrizzleUserSearchRepository } from "./user-search-repository.drizzle.js"
-
-export const searchByHandlePrefix = (
-  sql: Sql,
-  q: string,
-  viewerId: string,
-  limit: number,
-): Promise<UserSearchResultDTO[]> =>
-  makeDrizzleUserSearchRepository(sql).searchByHandlePrefix(q, viewerId, limit)
-
-export const searchMentionable = (
-  sql: Sql,
-  q: string,
-  viewerId: string,
-  limit: number,
-): Promise<UserSearchResultDTO[]> =>
-  makeDrizzleUserSearchRepository(sql).searchMentionable(q, viewerId, limit)
 
 const SUGGEST_NEARBY_METERS = 25_000
 
@@ -183,11 +165,11 @@ function toCleanupRecord(r: CleanupRowSelect): CleanupRecord {
   }
 }
 
-function organizedIds(sql: Sql, userId: string): ReturnType<Sql> {
+function organizedIds(sql: Sql, userId: string): SqlFragment {
   return sql`SELECT id AS cleanup_id FROM cleanups WHERE organizer_user_id = ${userId}`
 }
 
-function organizedOrAttendedIds(sql: Sql, userId: string): ReturnType<Sql> {
+function organizedOrAttendedIds(sql: Sql, userId: string): SqlFragment {
   return sql`
     SELECT id AS cleanup_id FROM cleanups WHERE organizer_user_id = ${userId}
     UNION
@@ -197,7 +179,7 @@ function organizedOrAttendedIds(sql: Sql, userId: string): ReturnType<Sql> {
 
 function profileEventRows(
   sql: Sql,
-  args: { ids: ReturnType<Sql>; where: ReturnType<Sql>; order: ReturnType<Sql>; limit: number },
+  args: { ids: SqlFragment; where: SqlFragment; order: SqlFragment; limit: number },
 ): Promise<CleanupRowSelect[]> {
   return sql<CleanupRowSelect[]>`
     WITH ids AS (${args.ids})
@@ -260,7 +242,7 @@ function pageConnections(rows: ConnectionRow[], limit: number): PeoplePage {
 async function connectionsPage(
   sql: Sql,
   args: { viewerId: string | null; cursor: string | null; limit: number },
-  joinPredicate: ReturnType<Sql>,
+  joinPredicate: SqlFragment,
 ): Promise<PeoplePage> {
   const cursor = parseKeysetCursor(args.cursor)
   const viewerId = args.viewerId
@@ -453,7 +435,7 @@ export async function explainSuggestFollows(
 }
 
 export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
-  async function findPerson(keyFilter: ReturnType<Sql>): Promise<PersonView | null> {
+  async function findPerson(keyFilter: SqlFragment): Promise<PersonView | null> {
     const rows = await sql<PersonRowSelect[]>`
       SELECT
         u.id,
@@ -486,7 +468,7 @@ export function makeDrizzleSocialRepository(sql: Sql): SocialRepository {
     async listPeople(args): Promise<PeoplePage> {
       const cursor = parseNameCursor(args.cursor)
       const viewerId = args.viewerId
-      const term = args.q !== null ? "%" + escapeLike(args.q) + "%" : null
+      const term = args.q !== null ? likeContains(args.q) : null
       const qFilter =
         term !== null
           ? sql`AND ((u.handle::text) ILIKE ${term} ESCAPE '\\' OR u.display_name ILIKE ${term} ESCAPE '\\')`

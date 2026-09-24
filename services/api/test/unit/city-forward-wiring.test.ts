@@ -4,8 +4,8 @@ import type { ChatMessageDTO } from "@civfix/shared"
 import type { FastifyInstance } from "fastify"
 import type { Container } from "../../src/di.js"
 import type { OnReportMessage } from "../../src/ws/types.js"
-import type { ReportChatRepository } from "../../src/services/report-chat-repository.drizzle.js"
-import type { DiscussionReportView } from "../../src/services/discussion-types.js"
+import type { ReportChatRepository } from "../../src/services/report-chat-repository.js"
+import type { DiscussionReportView } from "../../src/services/discussion-repository.js"
 import type {
   AppendOutboundInput,
   SendReportInput,
@@ -84,8 +84,8 @@ vi.mock("../../src/services/admin/outbound-mail-service.js", async (importOrigin
   }
 })
 
-vi.mock("../../src/services/report-forward-audit.drizzle.js", () => ({
-  makeReportForwardAudit: () => ({
+vi.mock("../../src/services/report-forward-audit-repository.drizzle.js", () => ({
+  makeDrizzleReportForwardAuditRepository: () => ({
     recordMention: () => Promise.resolve(),
     markForwarded: () => Promise.resolve(),
   }),

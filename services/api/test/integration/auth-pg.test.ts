@@ -17,7 +17,7 @@ import { seedMediaAsset } from "../helpers/media-pg.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { SessionService } from "../../src/auth/session-service.js"
 import { OTP_REFUSED_UNVERIFIED_ACCOUNT_ACTION, OtpService } from "../../src/auth/otp.js"
-import { writeAudit } from "../../src/services/admin/audit.js"
+import { insertAuditRow } from "../../src/services/admin/audit-repository.drizzle.js"
 import {
   PgSessionStore,
   PgUserStore,
@@ -224,7 +224,7 @@ describe.skipIf(!pg)("auth integration: Postgres stores", () => {
       cache: new InMemoryCacheClient(),
       mailer,
       audit: async (input) => {
-        await writeAudit(h.sql, input)
+        await insertAuditRow(h.sql, input)
       },
     })
     const email = "planted.otp.it@example.com"

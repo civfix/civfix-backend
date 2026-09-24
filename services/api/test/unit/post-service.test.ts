@@ -7,12 +7,14 @@ import { makeFakeSql } from "../helpers/fake-sql.js"
 import {
   makeDrizzlePostRepository,
   NIL_VIEWER_ID,
-  type CreatePostArgs,
-  type FeedCandidateArgs,
-  type PostBrief,
-  type PostRepository,
-  type ReplyListArgs,
 } from "../../src/services/post-repository.drizzle.js"
+import type {
+  CreatePostArgs,
+  FeedCandidateArgs,
+  PostBrief,
+  PostRepository,
+  ReplyListArgs,
+} from "../../src/services/post-repository.js"
 import type { PostNotifier } from "../../src/services/notification-service.js"
 
 const LEGACY_CURSOR_ID = "33333333-3333-3333-3333-333333333333"

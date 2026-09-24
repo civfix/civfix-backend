@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { FakeMailer } from "@civfix/shared/fakes"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import {
   BroadcastCapError,
   capError,

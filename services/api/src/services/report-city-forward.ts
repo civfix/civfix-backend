@@ -2,8 +2,8 @@ import { buildDiscussionForwardPacket } from "./admin/mail-format.js"
 import { parseCityMention, effectiveJurisdictionHandle } from "./discussion-mentions.js"
 import { replySubject, type OutboundMailService } from "./admin/outbound-mail-service.js"
 import type { MailThreadRecord } from "./admin/mail-repository.drizzle.js"
-import type { ReportForwardAudit } from "./report-forward-audit.drizzle.js"
-import type { ReportJurisdictionView } from "./discussion-types.js"
+import type { ReportForwardAuditRepository } from "./report-forward-audit-repository.js"
+import type { ReportJurisdictionView } from "./discussion-repository.js"
 import type { CounterStore } from "../abuse/counter-store.js"
 
 export interface CityForwardContext {
@@ -45,7 +45,7 @@ export interface CityForwardLogger {
 
 export interface CityForwardOptions {
   canForward?: CityForwardGate
-  audit?: ReportForwardAudit
+  audit?: ReportForwardAuditRepository
   messageId?: string
   logger?: CityForwardLogger
 }
@@ -160,7 +160,7 @@ async function existingReportThread(
 async function writeAudit(
   opts: CityForwardOptions,
   geoid: string,
-  write: (audit: ReportForwardAudit, messageId: string) => Promise<unknown>,
+  write: (audit: ReportForwardAuditRepository, messageId: string) => Promise<unknown>,
   failureMessage: string,
 ): Promise<void> {
   if (opts.audit === undefined || opts.messageId === undefined) return

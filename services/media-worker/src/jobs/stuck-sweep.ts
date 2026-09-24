@@ -1,19 +1,18 @@
 import type { Jobs, Storage } from "@civfix/shared/interfaces"
+import type { MediaChecksJob } from "@civfix/api/media-repo"
+import type { MediaWorkerRepository, StuckMediaRow } from "@civfix/api/media-worker-repository"
 import {
   MEDIA_CHECKS_JOB,
-  type MediaChecksJob,
-  type MediaWorkerRepo,
-  type StuckMediaRow,
-} from "@civfix/api/media-repo"
+  MEDIA_STUCK_SWEEP_JOB,
+  MEDIA_UPLOAD_REAP_JOB,
+} from "@civfix/api/queue-names"
 import type { WorkerLimits } from "../config.js"
 import { resolveJobObs, type JobObsDeps } from "./obs.js"
 import { deleteRejectedObjects } from "./reject-cleanup.js"
-import { MEDIA_UPLOAD_REAP_JOB, uploadReapDelaySec } from "./upload-reap.js"
-
-const STUCK_SWEEP = "media.stuck.sweep"
+import { uploadReapDelaySec } from "./upload-reap.js"
 
 export interface StuckSweepDeps extends JobObsDeps {
-  repo: MediaWorkerRepo
+  repo: MediaWorkerRepository
   jobs: Pick<Jobs, "enqueue">
   storage: Storage
   limits: WorkerLimits
@@ -35,7 +34,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
   try {
     rows = await deps.repo.findStuckValidating(cutoff, deps.limits.stuckSweepBatch)
   } catch (err) {
-    report(err, { job: STUCK_SWEEP, phase: "find" })
+    report(err, { job: MEDIA_STUCK_SWEEP_JOB, phase: "find" })
     log("media.stuck.sweep: find failed", { err: String(err) })
     return { scanned: 0, requeued: 0, terminalized: 0, errors: 1 }
   }
@@ -99,7 +98,7 @@ async function giveUpOnStuck(
       )
     return false
   } catch (err) {
-    report(err, { job: STUCK_SWEEP, phase: "terminalize", mediaId: row.id })
+    report(err, { job: MEDIA_STUCK_SWEEP_JOB, phase: "terminalize", mediaId: row.id })
     log("media.stuck.sweep: terminalize failed", { mediaId: row.id, err: String(err) })
     return true
   }
@@ -126,7 +125,7 @@ async function requeueStuck(
     return false
   } catch (err) {
     const { log, report } = resolveJobObs(deps)
-    report(err, { job: STUCK_SWEEP, phase: "requeue", mediaId: row.id })
+    report(err, { job: MEDIA_STUCK_SWEEP_JOB, phase: "requeue", mediaId: row.id })
     log("media.stuck.sweep: re-enqueue failed", { mediaId: row.id, err: String(err) })
     return true
   }

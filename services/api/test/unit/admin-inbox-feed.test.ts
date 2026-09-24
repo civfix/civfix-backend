@@ -10,7 +10,7 @@ import { buildAuthServices, type AuthServices } from "../../src/auth/auth-servic
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryInboundRepository } from "../../src/services/admin/inbound-repository.memory.js"
 import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
-import { InMemoryInboxFeedRepository } from "../../src/services/admin/inbox-feed-repository.memory.js"
+import { InMemoryInboxFeedRepository } from "../helpers/admin/inbox-feed-repository.memory.js"
 
 const OPERATOR = "ops@civfix.org"
 

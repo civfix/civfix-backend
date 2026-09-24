@@ -4,7 +4,9 @@ import type { Mailer } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
 import type { CacheClient } from "../../auth/cache.js"
 import { mailFailure } from "../../adapters/mail-failure.js"
-import { mapWithLimit } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { sleep as timerSleep } from "../../lib/sleep.js"
+import { MS_PER_SECOND } from "../../lib/time.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
 import type {
   BroadcastRecord,
@@ -27,7 +29,6 @@ import { mintUnsubscribeToken, unsubscribeExpiryFrom } from "./broadcast-capabil
 import { emailHashOf, type BroadcastConfig } from "./broadcast-service.js"
 
 const DEDUPE_TTL_SEC = 24 * 60 * 60
-const MS_PER_SECOND = 1000
 const AUTOMATED_KINDS: ReadonlySet<BroadcastKind> = new Set<BroadcastKind>([
   "confirmation",
   "waitlist_promoted",
@@ -75,8 +76,7 @@ class TokenBucket {
   constructor(
     private readonly ratePerSec: number,
     private readonly now: () => number = () => Date.now(),
-    private readonly sleep: (ms: number) => Promise<void> = (ms) =>
-      new Promise((resolve) => setTimeout(resolve, ms)),
+    private readonly sleep: (ms: number) => Promise<void> = timerSleep,
   ) {
     this.tokens = ratePerSec
     this.lastRefillMs = now()

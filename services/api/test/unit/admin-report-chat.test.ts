@@ -7,17 +7,14 @@ import {
 } from "@civfix/shared"
 import type { PersistChatInput } from "@civfix/shared/interfaces"
 import { makeAdminReportChatService } from "../../src/services/admin/admin-report-chat-service.js"
-import { InMemoryAdminReportChatRepository } from "../../src/services/admin/admin-report-chat-repository.memory.js"
+import { InMemoryAdminReportChatRepository } from "../helpers/admin/admin-report-chat-repository.memory.js"
 import {
   sendReportChatMessage,
   type ReportChatPersistContext,
   type ReportChatSendDeps,
 } from "../../src/services/report-chat-send.js"
 import { makeAuditedReportChatPersist } from "../../src/services/report-chat-send-wiring.js"
-import type {
-  ChatRepository,
-  InsertMessageOptions,
-} from "../../src/services/chat-repository.drizzle.js"
+import type { ChatRepository, InsertMessageOptions } from "../../src/services/chat-repository.js"
 import type { Queryable } from "../../src/db/client.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 import { roomKeyFor } from "../../src/ws/gateway.js"

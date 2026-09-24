@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto"
 import { FakeJobs, FakeMailer } from "@civfix/shared/fakes"
 import { AppError } from "@civfix/shared"
 import type { CreateReportRequest } from "@civfix/shared"
-import { InMemoryAdminReportRepository } from "../../src/services/admin/admin-report-repository.memory.js"
-import { InMemoryAdminUserRepository } from "../../src/services/admin/admin-user-repository.memory.js"
+import { InMemoryAdminReportRepository } from "../helpers/admin/admin-report-repository.memory.js"
+import { InMemoryAdminUserRepository } from "../helpers/admin/admin-user-repository.memory.js"
 import {
   makeAdminReportService,
   REPORT_VERIFIED_THRESHOLD,
@@ -14,14 +14,15 @@ import {
   makeAdminUserService,
   type AdminUserService,
 } from "../../src/services/admin/admin-user-service.js"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 import {
   makeOutboundMailService,
   OutboundSendDeadlineError,
   type OutboundMailService,
 } from "../../src/services/admin/outbound-mail-service.js"
 import { runAutoForwardWith } from "../../src/services/admin/autoforward-jobs.js"
-import { makeReportService, REPORT_AUTOFORWARD_JOB } from "../../src/services/report-service.js"
+import { makeReportService } from "../../src/services/report-service.js"
+import { REPORT_AUTOFORWARD_JOB } from "../../src/lib/queue-names.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 
 const NOW = new Date("2026-06-22T00:00:00.000Z")

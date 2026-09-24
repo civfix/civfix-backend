@@ -7,10 +7,7 @@ import type {
 } from "@civfix/shared"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
 import { toEventQuestionDTO } from "./registration-dto.js"
-import type {
-  DesiredQuestion,
-  HostRegistrationRepository,
-} from "./registration-repository.types.js"
+import type { DesiredQuestion, HostRegistrationRepository } from "./registration-repository.js"
 
 export interface QuestionServiceDeps {
   repo: HostRegistrationRepository

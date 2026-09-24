@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto"
 import { avatarGradient, AppError } from "@civfix/shared"
 import type { ChatConnection, ChatHistoryPage, PersistChatInput } from "@civfix/shared/interfaces"
 import type { ChatMessageDTO, ReactionEmoji, ReactionSummaryDTO, ReplyToDTO } from "@civfix/shared"
-import {
-  PIN_LIST_CAP,
-  type ChatMessageMeta,
-  type ChatRepository,
-  type SoftDeleteOpts,
-} from "../../src/services/chat-repository.drizzle.js"
+import { PIN_LIST_CAP } from "../../src/services/chat-repository.drizzle.js"
+import type {
+  ChatMessageMeta,
+  ChatRepository,
+  SoftDeleteOpts,
+} from "../../src/services/chat-repository.js"
+import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.js"
 import {
   REPLY_EXCERPT_MAX,
   replyDeletedTarget,
@@ -15,8 +16,7 @@ import {
 } from "../../src/services/chat-reply-hydration.js"
 import { aroundLimits } from "../../src/services/chat-history-window.js"
 import { toTombstoneDTO } from "../../src/services/chat-tombstone.js"
-import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-service.js"
-import type { ConversationHidesRepository } from "../../src/services/conversation-hides-repository.drizzle.js"
+import type { ThreadAggregate, ThreadsRepository } from "../../src/services/threads-repository.js"
 import { visibleAfterHides } from "../../src/services/conversation-hides-repository.memory.js"
 import type { TimeCursor } from "../../src/db/cursor-helpers.js"
 

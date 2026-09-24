@@ -2,12 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { randomUUID } from "node:crypto"
 import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { seedMediaAsset, type SeededMedia } from "../helpers/media-pg.js"
-import { attachChatMedia } from "../../src/services/chat-attachments.drizzle.js"
+import { attachChatMedia } from "../../src/services/chat-attachments-repository.drizzle.js"
 import { userUploader } from "../../src/services/media-uploader.js"
-import {
-  makeDrizzlePostRepository,
-  type PostRepository,
-} from "../../src/services/post-repository.drizzle.js"
+import { makeDrizzlePostRepository } from "../../src/services/post-repository.drizzle.js"
+import type { PostRepository } from "../../src/services/post-repository.js"
 
 const pg = await withPg()
 

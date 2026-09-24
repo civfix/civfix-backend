@@ -5,7 +5,7 @@ import { requireAuth } from "../auth/context.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
 import { perIdentity } from "../plugins/rate-limit.js"
-import { writeAudit } from "../services/admin/audit.js"
+import { insertAuditRow } from "../services/admin/audit-repository.drizzle.js"
 import {
   makeModerationService,
   type ModerationService,
@@ -92,7 +92,7 @@ export async function registerReportContentRoutes(
       })
 
       if (isOwnerTakedown) {
-        await writeAudit(container.getDb().sql, {
+        await insertAuditRow(container.getDb().sql, {
           actorId: userId,
           action: TAKEDOWN_REQUESTED_AUDIT_ACTION,
           target: `report:${body.subjectId}`,

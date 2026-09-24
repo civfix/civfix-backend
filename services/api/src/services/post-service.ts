@@ -17,17 +17,16 @@ import type { UserChannel } from "@civfix/shared/interfaces"
 import { randomInt } from "node:crypto"
 import type { Sql } from "../db/client.js"
 import { assertNoSlur } from "../abuse/slur-filter.js"
-import { resolveMentionTargets } from "./mention-resolver.drizzle.js"
+import { resolveMentionTargets } from "./mention-targets-repository.drizzle.js"
 import { parseTimeCursor } from "../db/cursor-helpers.js"
-import {
-  NIL_VIEWER_ID,
-  POSTS_DEFAULT_LIMIT,
-  type FeedCandidateRow,
-  type FeedPage,
-  type PostBrief,
-  type PostRepository,
-  type RepliesPage,
-} from "./post-repository.drizzle.js"
+import { NIL_VIEWER_ID, POSTS_DEFAULT_LIMIT } from "./post-repository.drizzle.js"
+import type {
+  FeedCandidateRow,
+  FeedPage,
+  PostBrief,
+  PostRepository,
+  RepliesPage,
+} from "./post-repository.js"
 import {
   applyCutoff,
   bucketSeed,
@@ -36,7 +35,7 @@ import {
   type FeedCandidate,
   type RankedCandidate,
 } from "./feed-ranking.js"
-import { mapWithLimit } from "./media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 import { hiddenIdentity } from "./hidden-identity.js"
 import type { FeedPresence, FeedSnapshotEntry } from "./feed-presence.js"
 import type { PostNotifier } from "./notification-service.js"

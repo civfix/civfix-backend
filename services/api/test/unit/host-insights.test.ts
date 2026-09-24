@@ -6,7 +6,7 @@ import {
   makeHostAnalyticsCache,
   type HostAnalyticsCache,
 } from "../../src/services/host/host-analytics-cache.js"
-import { InMemoryHostRegistrationRepository } from "../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../helpers/host/registration-repository.memory.js"
 import {
   INSIGHTS_CACHE_TTL_SEC,
   INSIGHTS_LIVE_CACHE_TTL_SEC,
@@ -15,11 +15,11 @@ import {
   type InsightsServiceDeps,
 } from "../../src/services/host/insights-service.js"
 import { makeTicketTokenSigner } from "../../src/services/host/ticket-token.js"
-import type { SeatDraft } from "../../src/services/host/registration-repository.types.js"
+import type { SeatDraft } from "../../src/services/host/registration-repository.js"
 import type {
   AnalyticsRepository,
   EventClockRecord,
-} from "../../src/services/host/analytics-repository.drizzle.js"
+} from "../../src/services/host/analytics-repository.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 const OTHER_EVENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"

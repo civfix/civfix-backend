@@ -1,5 +1,5 @@
 import type { ConversationHideRoomKind } from "../db/schema/conversation_hides.js"
-import type { ConversationHidesRepository } from "./conversation-hides-repository.drizzle.js"
+import type { ConversationHidesRepository } from "./conversation-hides-repository.js"
 
 export function makeMemoryConversationHidesRepository(
   now: () => Date = () => new Date(),

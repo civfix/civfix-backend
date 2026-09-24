@@ -8,7 +8,7 @@ import {
   MAX_EVENTS_PER_REPORT,
   makeDrizzleCleanupRepository,
 } from "../../src/services/cleanup-repository.drizzle.js"
-import type { DesiredSlot } from "../../src/services/cleanup-repository.types.js"
+import type { DesiredSlot } from "../../src/services/cleanup-repository.js"
 import { makeCleanupService, type CleanupService } from "../../src/services/cleanup-service.js"
 import { InMemoryCleanupRepository } from "../helpers/cleanups.js"
 import { makeFakeSql, type FakeSqlControl, type SqlHandler } from "../helpers/fake-sql.js"

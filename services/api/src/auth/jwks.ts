@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto"
 import { AppError, ErrorCode } from "@civfix/shared"
 import { exposeMessage } from "../errors/exposed-message.js"
 import { constantTimeStringEqual } from "./crypto.js"
+import { sha256HexSync } from "../lib/hash.js"
 
 const JWKS_CACHE_TTL_MS = 60 * 60 * 1000
 
@@ -198,7 +198,7 @@ function decodeJsonSegment<T>(segment: string): T | null {
 
 function nonceMatches(claimNonce: string | undefined, expected: string): boolean {
   if (typeof claimNonce !== "string" || claimNonce.length === 0) return false
-  const expectedHash = createHash("sha256").update(expected).digest("hex")
+  const expectedHash = sha256HexSync(expected)
   return (
     constantTimeStringEqual(claimNonce, expected) ||
     constantTimeStringEqual(claimNonce, expectedHash)

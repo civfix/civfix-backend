@@ -1,13 +1,13 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer, type FakeJobs } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores, type InMemoryUserStore } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
-import { DATA_EXPORT_JOB } from "../../src/services/data-export-jobs.js"
+import { DATA_EXPORT_JOB } from "../../src/lib/queue-names.js"
 
 let current: FastifyInstance | undefined
 afterEach(async () => {
@@ -26,7 +26,7 @@ async function harness(): Promise<{
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -34,7 +34,7 @@ async function harness(): Promise<{
     verifier: new StubJwksVerifier(),
     now: () => Date.now(),
   })
-  const app = await buildServer({ env, authServices: services })
+  const app = await makeServer({ env, authServices: services })
   current = app
   return { app, mailer, services }
 }

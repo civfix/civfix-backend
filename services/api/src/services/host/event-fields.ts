@@ -6,10 +6,9 @@ import {
   MIN_EVENT_DURATION_MINUTES,
 } from "@civfix/shared"
 import { MAX_EVENT_DURATION_MS, MIN_EVENT_DURATION_MS } from "../cleanup-rules.js"
+import { MINUTES_PER_HOUR } from "../../lib/time.js"
 
 export const DEFAULT_EVENT_TIME_ZONE = "America/Los_Angeles"
-
-const MINUTES_PER_HOUR = 60
 
 const EVENT_REMINDER_OFFSET_CHOICES: readonly number[] = [60, 180, 1440, 2880, 10080]
 

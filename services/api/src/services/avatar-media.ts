@@ -6,12 +6,6 @@ import {
   type AvatarMediaRow,
 } from "./media-claim-repository.drizzle.js"
 
-export {
-  avatarClaimQuery,
-  type AvatarClaimant,
-  type AvatarMediaRow,
-} from "./media-claim-repository.drizzle.js"
-
 export interface AvatarMediaRef {
   id: string
   r2Key: string

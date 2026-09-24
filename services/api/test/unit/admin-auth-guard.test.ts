@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices, type AuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import type { WriteAuditInput } from "../../src/services/admin/audit.js"
 import type { AccessIdentity, VerifyAccessJwt } from "../../src/auth/cf-access.js"
@@ -40,7 +40,7 @@ async function makeHarness(opts: { verifyAccessJwt?: VerifyAccessJwt } = {}): Pr
   const stores = makeInMemoryStores()
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
-  const services = buildAuthServices({
+  const services = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -52,7 +52,7 @@ async function makeHarness(opts: { verifyAccessJwt?: VerifyAccessJwt } = {}): Pr
     NODE_ENV: "test",
     ADMIN_EMAILS: `${ALLOWED}, OTHER@civfix.org, ${ALLOWED_RESERVED_LOCAL}`,
   })
-  const app = await buildServer({ env, authServices: services })
+  const app = await makeServer({ env, authServices: services })
   const audits: WriteAuditInput[] = []
   // The offline harness has no DB to write audits through, and no real CF JWKS for the exchange.
   app.adminAuthOverrides = {

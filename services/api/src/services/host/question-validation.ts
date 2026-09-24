@@ -1,6 +1,6 @@
 import { MAX_LONG_TEXT_ANSWER, MAX_QUESTION_OPTIONS, MAX_SHORT_TEXT_ANSWER } from "@civfix/shared"
 import type { EventAnswerInput } from "@civfix/shared"
-import type { AnswerWrite, QuestionRecord } from "./registration-repository.types.js"
+import type { AnswerWrite, QuestionRecord } from "./registration-repository.js"
 
 export type AnswerValidation =
   | { ok: true; writes: AnswerWrite[] }

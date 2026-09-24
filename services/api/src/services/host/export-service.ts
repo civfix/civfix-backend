@@ -8,11 +8,10 @@ import {
   type HostExportBuilder,
   type HostExportContext,
 } from "./export-builders.js"
-import type { HostExportRecord, HostExportRepository } from "./export-repository.drizzle.js"
+import type { HostExportRecord, HostExportRepository } from "./export-repository.js"
 import type { WriteAuditInput } from "../admin/audit.js"
+import { MS_PER_HOUR, MS_PER_SECOND } from "../../lib/time.js"
 
-const MS_PER_SECOND = 1000
-const MS_PER_HOUR = 3_600_000
 const EXPORT_DOWNLOAD_URL_TTL_SEC = 300
 const EXPORT_LIST_LIMIT = 50
 const EXPORT_YIELD_EVERY_ROWS = 1000

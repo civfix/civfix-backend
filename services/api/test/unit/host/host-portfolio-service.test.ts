@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest"
 import { makeHostPortfolioService } from "../../../src/services/host/host-portfolio-service.js"
 import type {
-  HostedEventRecord,
   HostPortfolioRepository,
-} from "../../../src/services/host/host-portfolio-repository.drizzle.js"
+  HostedEventRecord,
+} from "../../../src/services/host/host-portfolio-repository.js"
 import type { HostedEventCounts } from "../../../src/services/host/portfolio-counts.js"
 import { makeFakeSql } from "../../helpers/fake-sql.js"
 import { hostedEventCounts } from "../../../src/services/host/portfolio-counts.js"

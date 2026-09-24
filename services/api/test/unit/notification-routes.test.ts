@@ -2,12 +2,12 @@ import { describe, it, expect, afterEach } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
 import type { FakePushSender } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryNotificationRepository } from "../helpers/notifications.js"
 import {
@@ -41,7 +41,7 @@ async function makeHarness(
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
   const verifier = new StubJwksVerifier()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -54,10 +54,10 @@ async function makeHarness(
   if (seed) seed(repo)
   const notificationOverrides: NotificationServiceOverrides = { repo }
 
-  const container = buildContainer(env)
+  const container = makeContainer(env)
   const push = container.pushSender as FakePushSender
 
-  const app = await buildServer({ env, container, authServices, notificationOverrides })
+  const app = await makeServer({ env, container, authServices, notificationOverrides })
 
   const { token, userId } = await signIn(app, mailer, "notif@example.com")
 

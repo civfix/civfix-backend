@@ -3,9 +3,9 @@ import type { Container } from "../../di.js"
 import type { Sql } from "../../db/client.js"
 import { makeMediaPresigner } from "../media-presign.js"
 import { makeGuestPromotionNotifier, type GuestPromotionNotifier } from "../guest-notify.js"
-import { webBaseUrlOf } from "../../lib/base-url.js"
+import { stripTrailingSlashes, webBaseUrlOf } from "../../lib/base-url.js"
 import { makeDrizzleGuestRsvpRepository } from "../guest-rsvp-repository.drizzle.js"
-import { writeAudit } from "../admin/audit.js"
+import { insertAuditRow } from "../admin/audit-repository.drizzle.js"
 import type { HostCapability } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
 import { makeDrizzleHostStandingRepository } from "./host-standing-repository.drizzle.js"
@@ -30,15 +30,13 @@ import {
 import { makeTicketTypeService, type TicketTypeService } from "./ticket-type-service.js"
 import { makeWaitlistService, type WaitlistService } from "./waitlist-service.js"
 import type { TicketTokenSigner } from "./ticket-token.js"
-import type { HostRegistrationRepository } from "./registration-repository.types.js"
+import type { HostRegistrationRepository } from "./registration-repository.js"
 
 export interface HostServiceLogger {
   warn(obj: unknown, msg?: string): void
   info(obj: unknown, msg?: string): void
   error(obj: unknown, msg?: string): void
 }
-
-const TRAILING_SLASHES = /\/+$/
 
 export interface HostRegistrationOverrides {
   guards?: HostGuards
@@ -77,7 +75,7 @@ export interface HostRegistrationServices {
 function platformMediaUrlPrefixes(container: Container): string[] {
   const bases = [container.env.R2_PUBLIC_BASE ?? "", container.env.PUBLIC_API_URL]
   return bases
-    .map((base) => base.trim().replace(TRAILING_SLASHES, ""))
+    .map((base) => stripTrailingSlashes(base.trim()))
     .filter((base) => base.length > 0)
     .map((base) => `${base}/`)
 }
@@ -94,7 +92,7 @@ function lazyNotifier(container: Container, logger?: HostServiceLogger): Registr
 function auditWriter(sql: Sql, logger?: HostServiceLogger): RegistrationAudit {
   return async (input) => {
     try {
-      await writeAudit(sql, {
+      await insertAuditRow(sql, {
         actorId: input.actorId,
         action: input.action,
         target: input.target,

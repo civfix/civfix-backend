@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import type { Container } from "../../di.js"
 import type { InboundMail, ParsedMail, Storage } from "@civfix/shared/interfaces"
 import type { MailAttachment } from "@civfix/shared"
@@ -11,9 +10,10 @@ import {
 import {
   INBOUND_AUTH_VERDICT_HEADER,
   makeDrizzleInboundRepository,
-  type InboundRepository,
 } from "./inbound-repository.drizzle.js"
-import type { AdminReportRepository, ReporterNotifier } from "./admin-report-service.js"
+import type { InboundRepository } from "./inbound-repository.js"
+import type { ReporterNotifier } from "./admin-report-service.js"
+import type { AdminReportRepository } from "./admin-report-repository.js"
 import { detectBounce, handleBounce } from "./inbound-bounce.js"
 import {
   applyInboundEffects,
@@ -34,6 +34,9 @@ import {
 } from "../../adapters/inbound-mail.cf.js"
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
+import { ATTACHMENT_FILENAME_MAX_CHARS, safeFilenameChars } from "../../lib/filename.js"
+import { sha256HexSync } from "../../lib/hash.js"
+import { passThroughRejection, settleWithin } from "../../lib/timeout.js"
 
 export { detectBounce, resolveMessageId }
 
@@ -59,7 +62,6 @@ const THREADED_ATTACHMENT_PREFIX = "inbound-mail/"
 const INBOX_ATTACHMENT_PREFIX = "inbound-emails/"
 const ATTACHMENT_CONTENT_TYPE = "application/octet-stream"
 const RAW_MAIL_CONTENT_TYPE = "message/rfc822"
-const ATTACHMENT_FILENAME_MAX_CHARS = 120
 
 const CIVFIX_HEADER_PREFIX = "x-civfix-"
 
@@ -70,21 +72,7 @@ export const INBOUND_BOUNCE_MAX_ATTEMPTS = 6
 const CONTENT_DIGEST_HEX_CHARS = 32
 
 function contentDigest(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex").slice(0, CONTENT_DIGEST_HEX_CHARS)
-}
-
-async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error("inbound parse timed out")), ms)
-      }),
-    ])
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-  }
+  return sha256HexSync(bytes).slice(0, CONTENT_DIGEST_HEX_CHARS)
 }
 
 export type ProcessOutcome = "threaded" | "inbox" | "replay" | "skipped" | "failed"
@@ -137,7 +125,10 @@ export async function processInboundObject(
 
   let mail: ParsedMail
   try {
-    mail = await withTimeout(inboundMail.parse(bytes), INBOUND_PARSE_TIMEOUT_MS)
+    mail = await settleWithin(inboundMail.parse(bytes), INBOUND_PARSE_TIMEOUT_MS, {
+      timeoutError: () => new Error("inbound parse timed out"),
+      normalizeError: passThroughRejection,
+    })
   } catch (err) {
     logger.warn({ key, err: errorText(err) }, "inbound: parse failed; parked under inbound/failed/")
     await moveToFailed(storage, key, bytes)
@@ -513,6 +504,6 @@ async function moveToFailed(storage: Storage, key: string, bytes: Uint8Array): P
 }
 
 function sanitizeFilename(name: string): string {
-  const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "")
+  const cleaned = safeFilenameChars(name)
   return cleaned.length > 0 ? cleaned.slice(0, ATTACHMENT_FILENAME_MAX_CHARS) : "file"
 }

@@ -14,6 +14,7 @@
 
 import type { RedisClient } from "../adapters/redis.js"
 import { attachAtomicIncrBy } from "../adapters/redis-incr.js"
+import { MS_PER_SECOND } from "../lib/time.js"
 
 /** Generous for a real reporter: a handful of photos and a short video. */
 export const MEDIA_UPLOAD_BYTES_PER_DAY = 512 * 1024 * 1024
@@ -22,8 +23,6 @@ export const MEDIA_UPLOAD_BYTE_WINDOW_SECONDS = 24 * 60 * 60
 
 /** Distinct bucket from every other abuse counter (see abuse/counter-store.ts). */
 export const MEDIA_UPLOAD_BYTE_PREFIX = "abuse:media:bytes:"
-
-const MS_PER_SECOND = 1000
 
 export interface ByteMeter {
   /** Returns the running total after the add. */

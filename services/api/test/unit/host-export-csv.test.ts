@@ -12,7 +12,7 @@ import { registerEventExportBuilders } from "../../src/services/host/host-export
 import type {
   HostExportRecord,
   HostExportRepository,
-} from "../../src/services/host/export-repository.drizzle.js"
+} from "../../src/services/host/export-repository.js"
 
 describe("csv cells", () => {
   it("quotes commas, quotes and newlines", () => {

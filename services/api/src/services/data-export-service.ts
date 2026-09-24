@@ -5,16 +5,16 @@ import type { UserStore } from "../auth/stores.js"
 import { heading, paragraph } from "../adapters/email-blocks.js"
 import { renderEmailBody } from "../adapters/email-layout.js"
 import { mailFailure } from "../adapters/mail-failure.js"
-import { writeAudit } from "./admin/audit.js"
-import {
-  makeDrizzleDataExportRepository,
-  type BlockExportRow,
-  type DataExportRepository,
-  type FollowerExportRow,
-  type FollowingExportRow,
-  type ProfileRow,
-  type PushTokenRow,
-} from "./data-export-repository.drizzle.js"
+import { insertAuditRow } from "./admin/audit-repository.drizzle.js"
+import { makeDrizzleDataExportRepository } from "./data-export-repository.drizzle.js"
+import type {
+  BlockExportRow,
+  DataExportRepository,
+  FollowerExportRow,
+  FollowingExportRow,
+  ProfileRow,
+  PushTokenRow,
+} from "./data-export-repository.js"
 
 export interface DataExportServiceDeps {
   sql: Sql
@@ -405,7 +405,7 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
    * so the request is on record even if the notice fails. Carries no address or export content.
    */
   async function recordUndeliverable(userId: string, kind: DataExportUndeliverable): Promise<void> {
-    await writeAudit(sql, {
+    await insertAuditRow(sql, {
       actorId: null,
       action: "data_export.undeliverable",
       target: `user:${userId}`,

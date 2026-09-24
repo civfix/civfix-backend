@@ -1,20 +1,20 @@
 import type { Sql } from "../../db/client.js"
-import { eventContextIn } from "./registration-load.drizzle.js"
-import { makeTicketTypeMethods } from "./registration-ticket-types.drizzle.js"
-import { makeQuestionMethods } from "./registration-questions.drizzle.js"
-import { makeRegisterMethods } from "./registration-register.drizzle.js"
-import { makeRosterMethods } from "./registration-roster.drizzle.js"
-import { makeWaitlistMethods } from "./registration-waitlist.drizzle.js"
-import { makeCheckinMethods } from "./registration-checkin.drizzle.js"
-import { makePageMethods } from "./registration-pages.drizzle.js"
+import { eventContextIn } from "./registration-repository-load.drizzle.js"
+import { makeTicketTypeMethods } from "./registration-repository-ticket-types.drizzle.js"
+import { makeQuestionMethods } from "./registration-repository-questions.drizzle.js"
+import { makeRegisterMethods } from "./registration-repository-register.drizzle.js"
+import { makeRosterMethods } from "./registration-repository-roster.drizzle.js"
+import { makeWaitlistMethods } from "./registration-repository-waitlist.drizzle.js"
+import { makeCheckinMethods } from "./registration-repository-checkin.drizzle.js"
+import { makePageMethods } from "./registration-repository-pages.drizzle.js"
 import type {
   EventRegistrationContext,
   HostRegistrationRepository,
-} from "./registration-repository.types.js"
+} from "./registration-repository.js"
 
-export { REGISTER_IDEMPOTENCY_SCOPE } from "./registration-register.drizzle.js"
-export { applyBanIn } from "./registration-roster.drizzle.js"
-export { cancelWaitlistEntriesIn } from "./registration-waitlist.drizzle.js"
+export { REGISTER_IDEMPOTENCY_SCOPE } from "./registration-repository-register.drizzle.js"
+export { applyBanIn } from "./registration-repository-roster.drizzle.js"
+export { cancelWaitlistEntriesIn } from "./registration-repository-waitlist.drizzle.js"
 
 export function makeDrizzleHostRegistrationRepository(sql: Sql): HostRegistrationRepository {
   return {

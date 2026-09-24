@@ -26,12 +26,12 @@ import {
 import { requireOperator } from "../../auth/admin-guard.js"
 import {
   makeAdminReportService,
-  type AdminReportRepository,
   type ReporterNotifier,
 } from "../../services/admin/admin-report-service.js"
+import type { AdminReportRepository } from "../../services/admin/admin-report-repository.js"
 import { makeDrizzleAdminReportRepository } from "../../services/admin/admin-report-repository.drizzle.js"
 import { makeDrizzleForwardTemplateRepository } from "../../services/admin/forward-template-repository.drizzle.js"
-import type { ForwardTemplateRepository } from "../../services/admin/forward-template-types.js"
+import type { ForwardTemplateRepository } from "../../services/admin/forward-template-repository.js"
 import {
   makeContainerOutboundMailService,
   type OutboundMailService,

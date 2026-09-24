@@ -6,14 +6,14 @@ import {
   CITY_FORWARD_PER_GEOID_PER_HOUR,
 } from "../../src/services/report-city-forward.js"
 import { InMemoryCounterStore, type CounterStore } from "../../src/abuse/counter-store.js"
-import type { ReportForwardAudit } from "../../src/services/report-forward-audit.drizzle.js"
+import type { ReportForwardAuditRepository } from "../../src/services/report-forward-audit-repository.js"
 import type {
   AppendOutboundInput,
   OutboundMailService,
   SendReportInput,
 } from "../../src/services/admin/outbound-mail-service.js"
 import type { MailThreadRecord } from "../../src/services/admin/mail-repository.drizzle.js"
-import type { ReportJurisdictionView } from "../../src/services/discussion-types.js"
+import type { ReportJurisdictionView } from "../../src/services/discussion-repository.js"
 
 const REPORT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 const MSG = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -79,7 +79,9 @@ function mailer(opts: { fail?: boolean; thread?: MailThreadRecord | null } = {})
   }
 }
 
-function spyAudit(overrides: Partial<ReportForwardAudit> = {}): ReportForwardAudit & {
+function spyAudit(
+  overrides: Partial<ReportForwardAuditRepository> = {},
+): ReportForwardAuditRepository & {
   recordMention: ReturnType<typeof vi.fn>
   markForwarded: ReturnType<typeof vi.fn>
 } {
@@ -87,7 +89,7 @@ function spyAudit(overrides: Partial<ReportForwardAudit> = {}): ReportForwardAud
     recordMention: vi.fn(() => Promise.resolve()),
     markForwarded: vi.fn(() => Promise.resolve()),
     ...overrides,
-  } as ReportForwardAudit & {
+  } as ReportForwardAuditRepository & {
     recordMention: ReturnType<typeof vi.fn>
     markForwarded: ReturnType<typeof vi.fn>
   }

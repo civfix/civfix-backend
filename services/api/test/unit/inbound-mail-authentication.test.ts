@@ -8,7 +8,7 @@ import {
 } from "../../src/adapters/inbound-mail.cf.js"
 import { sanitizeInboundHtml } from "../../src/services/admin/inbound-html-sanitizer.js"
 import { isJurisdictionSender } from "../../src/services/admin/inbound-thread-correlation.js"
-import { InMemoryMailRepository } from "../../src/services/admin/mail-repository.memory.js"
+import { InMemoryMailRepository } from "../helpers/admin/mail-repository.memory.js"
 
 /**
  * Forged inbound email could impersonate a jurisdiction: there was NO message authentication at all,

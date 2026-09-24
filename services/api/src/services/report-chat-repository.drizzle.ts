@@ -5,10 +5,15 @@ import {
   type ReportChatParticipantDTO,
 } from "@civfix/shared"
 import type { PresignMedia } from "./media-presign.js"
-import type { ReportChatMeta } from "./report-service.types.js"
+import type { ReportChatMeta } from "./report-types.js"
 import { monotonicReadWatermarkUpdate } from "./read-watermark-repository.drizzle.js"
 import { blockedPairExpr } from "./blocks-sql.js"
 import { toRoomMemberPerson, type RoomMemberIdentityRow } from "./room-member-person.js"
+import type {
+  ReportChatMetaQueries,
+  ReportChatRepository,
+  ReportChatRole,
+} from "./report-chat-repository.js"
 
 type ChatSystemPayload = NonNullable<NonNullable<ChatMessageDTO["system"]>>
 type ReportSystemStatus = ChatSystemPayload["status"]
@@ -22,8 +27,6 @@ export interface SystemChatRow {
   system_kind: string | null
   system_body: string | null
 }
-
-export type ReportChatRole = "owner" | "member"
 
 export interface ReportMemberRowSelect extends RoomMemberIdentityRow {
   role: ReportChatRole
@@ -56,30 +59,6 @@ export function mapSystemRow(row: SystemChatRow): ChatMessageDTO {
     createdAt: row.created_at.toISOString(),
     system,
   }
-}
-
-export interface ReportChatRepository {
-  isMember(reportId: string, userId: string): Promise<boolean>
-  roleOf(reportId: string, userId: string): Promise<ReportChatRole | null>
-  join(reportId: string, userId: string, role?: ReportChatRole): Promise<void>
-  leave(reportId: string, userId: string): Promise<void>
-  advanceReadWatermark(reportId: string, userId: string, upToMessageId: string): Promise<void>
-  markRead(reportId: string, userId: string, at: Date): Promise<void>
-  insertSystemMessage(input: {
-    reportId: string
-    status: string
-    kind?: string | null
-    note?: string | null
-    body?: string | null
-  }): Promise<ChatMessageDTO>
-  listMemberIds(reportId: string, limit?: number): Promise<string[]>
-  countMembers(reportId: string): Promise<number>
-  listMembers(reportId: string, viewerId: string): Promise<ReportChatParticipantDTO[]>
-}
-
-export interface ReportChatMetaQueries {
-  loadChatMeta(reportId: string, viewerUserId: string | null): Promise<ReportChatMeta>
-  isReportVerified(userId: string): Promise<boolean>
 }
 
 export function makeReportChatRepository(

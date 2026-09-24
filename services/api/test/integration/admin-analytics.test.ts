@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { makeDrizzleAnalyticsRepository } from "../../src/services/admin/analytics-repository.drizzle.js"
-import type { AnalyticsRepository } from "../../src/services/admin/analytics-service.js"
+import type { AnalyticsRepository } from "../../src/services/admin/analytics-repository.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 import type { CleanupStatus } from "@civfix/shared"
 

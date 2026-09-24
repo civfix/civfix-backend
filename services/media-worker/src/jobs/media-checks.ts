@@ -1,10 +1,14 @@
 import type { MediaKind, MediaStatus } from "@civfix/shared"
 import type { AbuseChecks, Storage, StorageHead } from "@civfix/shared/interfaces"
-import type { MediaResultPatch, MediaWorkerAsset, MediaWorkerRepo } from "@civfix/api/media-repo"
+import type {
+  MediaResultPatch,
+  MediaWorkerAsset,
+  MediaWorkerRepository,
+} from "@civfix/api/media-worker-repository"
 import type { FindPhashDuplicateFn } from "@civfix/api/adapters/abuse-checks"
+import { settleWithin } from "@civfix/api/timeout"
 import type { WorkerLimits } from "../config.js"
 import { DownloadTooLargeError, type DownloadedObject, type DownloadFn } from "../download.js"
-import { settleWithin } from "../timeout.js"
 import {
   resolveJobObs,
   type JobObs,
@@ -12,7 +16,8 @@ import {
   type JobLogFn,
   type JobReportFn,
 } from "./obs.js"
-import { MEDIA_CHECKS_JOB, readEtag } from "@civfix/api/media-repo"
+import { readEtag } from "@civfix/api/media-repo"
+import { MEDIA_CHECKS_JOB } from "@civfix/api/queue-names"
 import { SandboxSpawnError } from "../sandbox/exec.js"
 import { ScratchSetupError } from "../sandbox/tmp.js"
 import { servedKey, thumbnailKey } from "./media-keys.js"
@@ -49,7 +54,7 @@ function withJobTimeout<T>(p: Promise<T>, ms: number, onTimeout?: () => void): P
 }
 
 export interface MediaChecksDeps extends JobObsDeps {
-  repo: MediaWorkerRepo
+  repo: MediaWorkerRepository
   storage: Storage
   abuseChecks: AbuseChecks
   limits: WorkerLimits
@@ -389,7 +394,7 @@ async function onHeld(
     note: result.note,
     flags: result.flags.map((f) => f.reason),
   })
-  if (!asset.reportId || !deps.repo.enqueueHeldModerationItem) return
+  if (!asset.reportId) return
   await deps.repo
     .enqueueHeldModerationItem({
       reportId: asset.reportId,

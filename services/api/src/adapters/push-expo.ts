@@ -1,6 +1,7 @@
 import type { PushLogger, PlatformDispatcher } from "./push-sender.js"
 import { fetchJsonWithTimeout, type FetchJsonResult } from "./http-fetch.js"
-import { mapWithLimit } from "../services/media-presign.js"
+import { sleep } from "../lib/sleep.js"
+import { mapWithLimit } from "../lib/concurrency.js"
 
 export interface ExpoPushConfig {
   accessToken?: string
@@ -26,10 +27,6 @@ const HTTP_SERVER_ERROR_MIN = 500
 
 function isRetryableStatus(status: number): boolean {
   return status === HTTP_TOO_MANY_REQUESTS || status >= HTTP_SERVER_ERROR_MIN
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export function isExpoPushToken(token: string): boolean {

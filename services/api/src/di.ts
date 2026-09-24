@@ -55,20 +55,17 @@ import { WsChatService } from "./adapters/chat-service.ws.js"
 import { RedisChatPubSub } from "./adapters/chat-pubsub.js"
 import { RedisUserChannel } from "./adapters/user-channel.redis.js"
 import { makeDrizzleChatRepository } from "./services/chat-repository.drizzle.js"
-import { makeDrizzleDmRepository, type DmRepository } from "./services/dm-repository.drizzle.js"
+import { makeDrizzleDmRepository } from "./services/dm-repository.drizzle.js"
+import type { DmRepository } from "./services/dm-repository.js"
+import type { BlocksRepository } from "./services/blocks-repository.js"
+import type { PostRepository } from "./services/post-repository.js"
 import { makeMediaPresigner, makePrivateMediaPresigner } from "./services/media-presign.js"
-import {
-  makeDrizzleBlocksRepository,
-  type BlocksRepository,
-} from "./services/blocks-repository.drizzle.js"
+import { makeDrizzleBlocksRepository } from "./services/blocks-repository.drizzle.js"
 import { makeDrizzleVolunteerHoursRepository } from "./services/volunteer-hours-repository.drizzle.js"
-import type { VolunteerHoursRepository } from "./services/volunteer-hours-service.js"
+import type { VolunteerHoursRepository } from "./services/volunteer-hours-repository.js"
+import type { CertificateRepository } from "./services/certificate-repository.js"
 import { makeDrizzleCertificateRepository } from "./services/certificate-repository.drizzle.js"
-import type { CertificateRepository } from "./services/certificate-service.js"
-import {
-  makeDrizzlePostRepository,
-  type PostRepository,
-} from "./services/post-repository.drizzle.js"
+import { makeDrizzlePostRepository } from "./services/post-repository.drizzle.js"
 import { makePostService, type PostService } from "./services/post-service.js"
 import { makeFeedPresence } from "./services/feed-presence.js"
 import {
@@ -166,7 +163,7 @@ function lazy<T>(create: () => T): Lazy<T> {
   }
 }
 
-// Adapters are built before buildServer hands over its logger, so they get a forwarder that resolves
+// Adapters are built before makeServer hands over its logger, so they get a forwarder that resolves
 // the server logger at call time instead of capturing a console fallback at construction.
 function forwardingLogger(resolve: () => NotificationLogger | undefined): AdapterLogger {
   const forward = (level: "warn" | "error", obj: unknown, msg: string | undefined): void => {
@@ -369,7 +366,7 @@ async function closeIfClosable(seam: unknown): Promise<void> {
   if (typeof closable.close === "function") await closable.close()
 }
 
-export function buildContainer(env: Env): Container {
+export function makeContainer(env: Env): Container {
   let serverLogger: NotificationLogger | undefined
   const currentLogger = (): NotificationLogger | undefined => serverLogger
   const adapterLogger = forwardingLogger(currentLogger)

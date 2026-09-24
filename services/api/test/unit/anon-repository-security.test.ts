@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest"
 import type { AnonReportResponse } from "@civfix/shared"
 import { makeDrizzleAnonReportRepository } from "../../src/services/anon-repository.drizzle.js"
-import {
-  ANON_REPORT_CREATE_SCOPE,
-  type CreateAnonReportTxArgs,
-} from "../../src/services/anon-service.js"
+import { ANON_REPORT_CREATE_SCOPE } from "../../src/services/anon-service.js"
+import type { CreateAnonReportTxArgs } from "../../src/services/anon-repository.js"
 import { sha256Hex } from "../../src/auth/crypto.js"
 import type { Queryable, Sql } from "../../src/db/client.js"
 import { mediaBoundElsewhere } from "../../src/services/media-bindings.js"

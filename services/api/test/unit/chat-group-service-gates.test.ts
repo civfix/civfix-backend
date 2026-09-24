@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest"
 import { AppError } from "@civfix/shared"
 import { makeChatGroupService } from "../../src/services/chat-group-service.js"
-import type { ChatGroupRepository } from "../../src/services/chat-group-repository.drizzle.js"
+import type { ChatGroupRepository } from "../../src/services/chat-group-repository.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
 
 const GROUP = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"

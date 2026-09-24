@@ -29,9 +29,9 @@ import {
 import { auditRead } from "./_audit-read.js"
 import {
   makeAdminUserService,
-  type AdminUserRepository,
   type SessionControl,
 } from "../../services/admin/admin-user-service.js"
+import type { AdminUserRepository } from "../../services/admin/admin-user-repository.js"
 import { makeDrizzleAdminUserRepository } from "../../services/admin/admin-user-repository.drizzle.js"
 
 export interface AdminUserRouteOverrides {

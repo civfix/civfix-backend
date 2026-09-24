@@ -1,14 +1,13 @@
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
-import { writeAudit } from "./audit.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { assertTargetIsNotOperatorRole } from "../../auth/operator-target.js"
+import { clampLimit } from "./pagination.js"
 import {
-  clampLimit,
-  decodeCursor,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-  type KeysetAnchor,
-} from "./pagination.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
 import { andAll, ilikeAnyOf } from "./sql-fragments.js"
 import type {
   AdminUserOrganizationRecord,
@@ -18,7 +17,7 @@ import type {
   UserEventRecord,
   UserMessageRecord,
   UserReportRecord,
-} from "./admin-user-service.js"
+} from "./admin-user-repository.js"
 import type {
   AdminReportStatus,
   AdminUserCounts,
@@ -29,7 +28,7 @@ import type {
   Role,
   UserStatus,
 } from "@civfix/shared"
-import { likeContains } from "./like.js"
+import { likeContains } from "../../db/like.js"
 
 const ADMIN_USER_ORGANIZATIONS_LIMIT = 25
 
@@ -186,7 +185,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       args: ListUsersArgs,
     ): Promise<{ records: AdminUserRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeKeyset(args.cursor)
+      const anchor = parseKeysetCursor(args.cursor)
 
       const conds: SqlFragment[] = []
       if (args.status !== null) {
@@ -272,7 +271,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       limit: number,
     ): Promise<{ records: UserReportRecord[]; nextCursor: string | null }> {
       const lim = clampLimit(limit)
-      const anchor = decodeKeyset(cursor)
+      const anchor = parseKeysetCursor(cursor)
       const cursorFilter =
         anchor !== null
           ? sql`AND ${keysetPredicate(sql, sql`r.created_at`, sql`r.id`, anchor)}`
@@ -320,7 +319,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       limit: number,
     ): Promise<{ records: UserEventRecord[]; nextCursor: string | null }> {
       const lim = clampLimit(limit)
-      const anchor = decodeKeyset(cursor)
+      const anchor = parseKeysetCursor(cursor)
       const cursorFilter =
         anchor !== null
           ? sql`AND ${keysetPredicate(sql, sql`cm.joined_at`, sql`c.id`, anchor)}`
@@ -374,7 +373,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
       limit: number,
     ): Promise<{ records: UserMessageRecord[]; nextCursor: string | null }> {
       const lim = clampLimit(limit)
-      const anchor = decodeKeyset(cursor)
+      const anchor = parseKeysetCursor(cursor)
       const branchCursor = (createdAt: SqlFragment, id2: SqlFragment): SqlFragment =>
         anchor !== null ? sql`AND ${keysetPredicate(sql, createdAt, id2, anchor)}` : sql``
       const probe = lim + 1
@@ -488,7 +487,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
             WHERE subject_type = 'user' AND subject_id = ${id} AND resolved_at IS NULL
           `
         }
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: nowFlagged ? "user.flagged" : "user.unflagged",
           target: `user:${id}`,
@@ -517,7 +516,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
           ON CONFLICT (user_id)
           DO UPDATE SET account_status = EXCLUDED.account_status, updated_at = now()
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: input.status === "banned" ? "user.banned" : "user.status_changed",
           target: `user:${id}`,
@@ -536,7 +535,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
         if (priorRole === undefined) return false
         assertTargetIsNotOperatorRole(priorRole, "change the role of")
         await tx`UPDATE users SET role = ${input.role} WHERE id = ${id}`
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "user.role_changed",
           target: `user:${id}`,
@@ -580,7 +579,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
             report_verified_by = ${stampedBy},
             updated_at = now()
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: input.value ? "user.report_verified" : "user.report_unverified",
           target: `user:${id}`,
@@ -612,7 +611,7 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
                 RETURNING id
               `
         if (chat.length === 0 && dm.length === 0) return false
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "message.removed",
           target: `message:${messageId}`,
@@ -623,9 +622,6 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     },
   }
 }
-
-const decodeKeyset = (cursor: string | null | undefined): KeysetAnchor | null =>
-  decodeCursor(cursor, true)
 
 function threadFallback(source: "chat" | "group" | "dm" | "report"): string {
   switch (source) {

@@ -1,6 +1,6 @@
 import type { Container } from "../../di.js"
 import { insertAuditRow } from "./audit-repository.drizzle.js"
-import { OUTREACH_DIGEST_JOB } from "./jurisdiction-contacts-types.js"
+import { OUTREACH_DIGEST_JOB } from "../../lib/queue-names.js"
 import { makeDrizzleMailRepository } from "./mail-repository.drizzle.js"
 import {
   makeContainerOutboundMailService,

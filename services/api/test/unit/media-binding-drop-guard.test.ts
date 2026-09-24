@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DRIZZLE_DIR = join(HERE, "..", "..", "drizzle")
-const WORKER_REPO = join(HERE, "..", "..", "src", "services", "media-worker-repo.ts")
+const WORKER_REPO = join(HERE, "..", "..", "src", "services", "media-worker-repository.drizzle.ts")
 
 function orphanBindingColumns(): string[] {
   const src = readFileSync(WORKER_REPO, "utf8")

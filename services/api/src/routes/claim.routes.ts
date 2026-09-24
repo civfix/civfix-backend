@@ -16,10 +16,9 @@ import { makeDrizzleClaimRepository } from "../services/anon-repository.drizzle.
 import { makeDrizzleReportRepository } from "../services/report-repository.drizzle.js"
 import { makeReportService, type ReportService } from "../services/report-service.js"
 import { makeMediaPresigner, makePrivateMediaPresigner } from "../services/media-presign.js"
+import { ANON_HOLD_RELEASE_JOB } from "../lib/queue-names.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
-
-const ANON_HOLD_RELEASE_JOB = "anon.hold.release"
 
 export interface ClaimServiceOverride {
   service: ClaimService

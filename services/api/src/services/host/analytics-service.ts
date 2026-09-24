@@ -2,7 +2,6 @@ import {
   ANALYTICS_SUPPRESSION_K,
   MAX_PORTFOLIO_TOP_VOLUNTEERS,
   type AnalyticsRange,
-  type BreakdownRow,
   type BroadcastChannel,
   type EventAnalyticsBroadcastsResponse,
   type EventAnalyticsCheckinsResponse,
@@ -28,13 +27,11 @@ import {
   suppressRate,
   type DayCount,
   type DayRange,
-  type DerivedBreakdownRow,
-  type DerivedPanel,
   type KeyCount,
 } from "@civfix/shared/host"
-import type { AnalyticsRepository, LabeledKeyCount } from "./analytics-repository.drizzle.js"
+import type { AnalyticsRepository, LabeledKeyCount } from "./analytics-repository.js"
+import type { MetricRow, MetricsRepository } from "./metrics-repository.js"
 import { leaderboardEntryOf } from "../volunteer-hours-service.js"
-import type { MetricRow, MetricsRepository } from "./metrics-repository.drizzle.js"
 import { hostAnalyticsCacheKey, type HostAnalyticsCache } from "./host-analytics-cache.js"
 import { eventDayKey } from "./event-day.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
@@ -50,7 +47,7 @@ import {
   METRIC_UNSUBSCRIBES,
 } from "./event-metric-names.js"
 import {
-  DAY_MS,
+  PORTFOLIO_EVENT_LIMIT,
   closureAllowsTotal,
   emptyRate,
   isoDayOf,
@@ -58,12 +55,13 @@ import {
   seriesOf,
   shiftDayKey,
   toFunnelSteps,
+  toPanel,
   toRate,
   toSeries,
   toSuppressedRate,
 } from "./host-analytics-shaping.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
-const PORTFOLIO_EVENT_LIMIT = 200
 export const ARRIVAL_SAMPLE_LIMIT = 20_000
 const PORTFOLIO_BY_EVENT_LIMIT = 50
 
@@ -139,7 +137,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
   function utcRangeWindow(days: number | null): { from: string; to: string } {
     const to = now()
     const span = days ?? ALL_RANGE_DAYS
-    const from = new Date(to.getTime() - (span - 1) * DAY_MS)
+    const from = new Date(to.getTime() - (span - 1) * MS_PER_DAY)
     return { from: isoDayOf(from), to: isoDayOf(to) }
   }
 
@@ -437,7 +435,7 @@ export function makeAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsServi
 
 function dayBounds(window: DayRange): { from: Date; to: Date } {
   const from = new Date(`${window.from}T00:00:00.000Z`)
-  const to = new Date(Date.parse(`${window.to}T00:00:00.000Z`) + DAY_MS)
+  const to = new Date(Date.parse(`${window.to}T00:00:00.000Z`) + MS_PER_DAY)
   return { from, to }
 }
 
@@ -539,18 +537,4 @@ function sumMetric(rows: readonly MetricRow[], metric: string, bucket?: string):
   return rows
     .filter((row) => row.metric === metric && (bucket === undefined || row.bucket === bucket))
     .reduce((acc, row) => acc + row.value, 0)
-}
-
-function toPanel(panel: DerivedPanel<DerivedBreakdownRow>): Panel {
-  return {
-    panelSuppressed: panel.panelSuppressed,
-    rows: panel.rows.map(
-      (row): BreakdownRow => ({
-        key: row.key,
-        label: row.key,
-        value: row.value,
-        suppressed: row.suppressed,
-      }),
-    ),
-  }
 }

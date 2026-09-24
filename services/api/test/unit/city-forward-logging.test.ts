@@ -4,7 +4,7 @@ import {
   makeCityForwardThrottle,
 } from "../../src/services/report-city-forward.js"
 import type { CounterStore } from "../../src/abuse/counter-store.js"
-import type { ReportForwardAudit } from "../../src/services/report-forward-audit.drizzle.js"
+import type { ReportForwardAuditRepository } from "../../src/services/report-forward-audit-repository.js"
 import type { OutboundMailService } from "../../src/services/admin/outbound-mail-service.js"
 import type { MailThreadRecord } from "../../src/services/admin/mail-repository.drizzle.js"
 
@@ -73,10 +73,10 @@ describe("city forward failures are logged, not swallowed", () => {
 
   it("logs a failed audit write without failing the forward", async () => {
     const { lines, logger } = capture()
-    const audit: ReportForwardAudit = {
+    const audit: ReportForwardAuditRepository = {
       recordMention: () => Promise.reject(new Error("audit down")),
       markForwarded: () => Promise.resolve(),
-    } as unknown as ReportForwardAudit
+    } as unknown as ReportForwardAuditRepository
     const res = await forwardReportCityMention(mail({}), ctx, "@sf please fix", CREATED, {
       logger,
       audit,

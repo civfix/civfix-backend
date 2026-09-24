@@ -29,9 +29,9 @@ import {
 } from "./_route-utils.js"
 import {
   makeAdminEventService,
-  type AdminEventRepository,
   type AdminEventService,
 } from "../../services/admin/admin-event-service.js"
+import type { AdminEventRepository } from "../../services/admin/admin-event-repository.js"
 import { makeDrizzleAdminEventRepository } from "../../services/admin/admin-event-repository.drizzle.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../../services/media-intake-service.js"
 

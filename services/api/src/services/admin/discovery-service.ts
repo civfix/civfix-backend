@@ -11,7 +11,8 @@
 
 import { AppError, REPORT_CATEGORY_LABELS, relativeAgo } from "@civfix/shared"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
-import { ADMIN_DEFAULT_LIMIT } from "./pagination.js"
+import { clampLimit } from "./pagination.js"
+import { MS_PER_HOUR } from "../../lib/time.js"
 import type {
   DiscoveryContact,
   DiscoveryListQuery,
@@ -20,11 +21,17 @@ import type {
   DiscoverySamplePin,
   DiscoveryTaskDTO,
   DiscoveryTaskDetailDTO,
-  JurisdictionLayer,
   PerCategoryCounts,
   Priority,
   ReportCategory,
 } from "@civfix/shared"
+import type {
+  DiscoveryContactSuggestionRecord,
+  DiscoveryNoteRecord,
+  DiscoveryRepository,
+  DiscoveryTaskRecord,
+  ListDiscoveryArgs,
+} from "./discovery-repository.js"
 
 /**
  * An alias, never a hand-copied list: a second list is how a new category silently drops out of the
@@ -35,114 +42,11 @@ const DISCOVERY_CATEGORIES = ADMIN_CATEGORIES
 /** A task breaches when its oldest waiting report is older than this. */
 export const DISCOVERY_SLA_HOURS = 24
 
-const HOUR_MS = 60 * 60 * 1000
-
 const DISCOVERY_TASK_NOT_FOUND = "Discovery task not found"
 
 const SUGGESTION_NOTE_AUTHOR = "Reporter"
 
 const NO_WAITING_REPORT_LABEL = "-"
-
-export interface DiscoveryTaskRecord {
-  id: string
-  geoid: string
-  place: string
-  layer: JurisdictionLayer
-  population: number | null
-  status: string
-  perCategory: Partial<Record<ReportCategory, number>>
-  total: number
-  oldestWaitingAt: Date | null
-  newestWaitingAt: Date | null
-  contactCategories: ReportCategory[]
-  hasDefaultContact: boolean
-}
-
-/** A null email means the contact row is on file but blank. */
-export interface DiscoveryContactRecord {
-  category: ReportCategory
-  email: string | null
-}
-
-export interface DiscoverySamplePinRecord {
-  category: ReportCategory
-  lat: number
-  lng: number
-}
-
-export interface DiscoveryNoteRecord {
-  text: string
-  who: string
-  createdAt: Date
-}
-
-/** Stored as an audit_log `discovery.contact_suggested` row by the public suggest-contact endpoint. */
-export interface DiscoveryContactSuggestionRecord {
-  email: string | null
-  formUrl: string | null
-  note: string | null
-  createdAt: Date
-}
-
-export interface DiscoveryDetailRecord {
-  task: DiscoveryTaskRecord
-  contacts: DiscoveryContactRecord[]
-  placeGeojson: unknown | null
-  samplePins: DiscoverySamplePinRecord[]
-  center: [number, number] | null
-  zoom: number | null
-}
-
-export type DiscoveryFilter = "all" | "attention" | "clear"
-export type DiscoverySort = "pop" | "reports"
-
-export interface ListDiscoveryArgs {
-  q: string | null
-  filter: DiscoveryFilter
-  sort: DiscoverySort
-  cursor: string | null
-  limit: number
-}
-
-export interface DiscoveryRepository {
-  /** The repository owns the filter and sort semantics so the service stays a pure projector. */
-  listTasks(
-    args: ListDiscoveryArgs,
-  ): Promise<{ records: DiscoveryTaskRecord[]; nextCursor: string | null }>
-  getDetail(id: string): Promise<DiscoveryDetailRecord | null>
-  /** Oldest first. */
-  listNotes(id: string): Promise<DiscoveryNoteRecord[]>
-  /** Oldest first. */
-  listContactSuggestions(geoid: string): Promise<DiscoveryContactSuggestionRecord[]>
-  getTask(id: string): Promise<DiscoveryTaskRecord | null>
-  addNote(
-    id: string,
-    input: { text: string; actorId: string | null; who: string },
-  ): Promise<DiscoveryNoteRecord>
-  /**
-   * Opens an abuse_flag against the task's sample report when one is on file and marks the task
-   * in_progress. False when the task does not exist.
-   */
-  flagTask(id: string, input: { reason: string | null; actorId: string | null }): Promise<boolean>
-  /**
-   * Upserts contacts and the form URL without routing: contact_updated_at, pending pins and outreach are
-   * left alone. False when the task does not exist.
-   */
-  saveDraft(
-    id: string,
-    input: {
-      contacts: Partial<Record<ReportCategory, string | null>>
-      defaultEmails: string[]
-      formUrl: string | null
-      actorId: string | null
-    },
-  ): Promise<boolean>
-  /**
-   * Idempotent: at most one open task per geoid (ON CONFLICT (geoid) WHERE status <> 'done' DO NOTHING).
-   * False when an open task already existed or the jurisdiction is unknown.
-   */
-  materializeDiscoveryTask(input: { geoid: string; population?: number | null }): Promise<boolean>
-}
 
 export function fullPerCategoryCounts(
   partial: Partial<Record<ReportCategory, number>>,
@@ -195,7 +99,7 @@ export function computeContactState(record: DiscoveryTaskRecord): {
 export function isOverSla(oldestWaitingAt: Date | null, now: Date): boolean {
   if (oldestWaitingAt === null) return false
   const ageMs = now.getTime() - oldestWaitingAt.getTime()
-  return ageMs > DISCOVERY_SLA_HOURS * HOUR_MS
+  return ageMs > DISCOVERY_SLA_HOURS * MS_PER_HOUR
 }
 
 /**
@@ -287,7 +191,7 @@ export function makeDiscoveryService(deps: DiscoveryServiceDeps): DiscoveryServi
         filter: query.filter ?? "all",
         sort: query.sort ?? "pop",
         cursor: query.cursor ?? null,
-        limit: query.limit ?? ADMIN_DEFAULT_LIMIT,
+        limit: clampLimit(query.limit),
       }
       const { records, nextCursor } = await deps.repo.listTasks(args)
       // Only the detail renders notes, so list rows carry an empty notes[] rather than a note read

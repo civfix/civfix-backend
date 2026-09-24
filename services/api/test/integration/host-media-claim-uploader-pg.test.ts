@@ -4,9 +4,9 @@ import { withPg, testHandle, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { seedMediaAsset, type SeededMedia } from "../helpers/media-pg.js"
 import { makeDrizzleCleanupRepository } from "../../src/services/cleanup-repository.drizzle.js"
-import type { CleanupRepository } from "../../src/services/cleanup-repository.types.js"
+import type { CleanupRepository } from "../../src/services/cleanup-repository.js"
 import { makeDrizzleOrganizationRepository } from "../../src/services/host/organization-repository.drizzle.js"
-import type { OrganizationRepository } from "../../src/services/host/organization-repository.types.js"
+import type { OrganizationRepository } from "../../src/services/host/organization-repository.js"
 import { userUploader } from "../../src/services/media-uploader.js"
 
 const pg = await withPg()

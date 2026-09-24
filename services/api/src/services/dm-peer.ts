@@ -1,7 +1,7 @@
 // Every DM gate (history, send, edit, react, pin powers, mention scoping) must agree on this, because
 // "no peer" is also how each of them decides "not a participant".
 
-import type { DmRepository, DmThread } from "./dm-repository.drizzle.js"
+import type { DmRepository, DmThread } from "./dm-repository.js"
 
 function dmPeerOfThread(thread: DmThread, userId: string): string | null {
   if (thread.userLo === userId) return thread.userHi

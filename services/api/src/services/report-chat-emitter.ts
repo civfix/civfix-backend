@@ -11,9 +11,11 @@ import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../di.js"
 import { makeReportChatRepository } from "./report-chat-repository.drizzle.js"
 import { makeReportChatNotifier } from "./report-chat-notifier.js"
-import { makeNotificationService } from "./notification-service.js"
-import { makeDrizzleNotificationRepository } from "./notification-repository.drizzle.js"
-import { makeConversationMutesRepository } from "./conversation-mutes-repository.drizzle.js"
+import { makeRouteNotificationService } from "./route-notifier.js"
+import {
+  bindMutedUserIdsFor,
+  makeConversationMutesRepository,
+} from "./conversation-mutes-repository.drizzle.js"
 import { roomKeyFor } from "../ws/gateway.js"
 import {
   makeReportChatSystemEmitter,
@@ -35,27 +37,11 @@ export function makeContainerReportChatEmitter(
   const sql = container.getDb().sql
   const reportChatRepo = makeReportChatRepository(sql)
 
-  const notificationService = makeNotificationService({
-    repo: makeDrizzleNotificationRepository(sql),
-    pushSender: container.pushSender,
-    userChannel: container.userChannel,
-    ...(logger !== undefined ? { logger } : {}),
-  })
+  const notificationService = makeRouteNotificationService(container, logger)
 
   const conversationMutes = makeConversationMutesRepository(sql)
 
-  /**
-   * Probed, never bound to an empty-Set default: the fan-out treats a present `mutedUserIdsFor` as
-   * authoritative and skips the per-user `isMuted`, so a `new Set()` fallback would silently unmute the
-   * whole room over a mutes store without the batch method.
-   */
-  const mutedUserIdsFor = (():
-    | ((roomId: string, userIds: string[]) => Promise<Set<string>>)
-    | undefined => {
-    const batch = conversationMutes.mutedUserIdsFor
-    if (!batch) return undefined
-    return (roomId, userIds) => batch.call(conversationMutes, "report", roomId, userIds)
-  })()
+  const mutedUserIdsFor = bindMutedUserIdsFor(conversationMutes, "report")
 
   const notify = makeReportChatNotifier({
     notificationService,

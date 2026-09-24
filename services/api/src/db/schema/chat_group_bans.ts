@@ -1,5 +1,5 @@
 import { index, pgTable, primaryKey, timestamp, uuid } from "drizzle-orm/pg-core"
-import { chatGroups } from "./chat-groups.js"
+import { chatGroups } from "./chat_groups.js"
 import { users } from "./users.js"
 
 export const chatGroupBans = pgTable(

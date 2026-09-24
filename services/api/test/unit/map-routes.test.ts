@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
-import { buildServer } from "../../src/server.js"
-import { buildContainer } from "../../src/di.js"
+import { makeServer } from "../../src/server.js"
+import { makeContainer } from "../../src/di.js"
 import { loadEnv } from "../../src/env.js"
 import type { Container } from "../../src/di.js"
 import type { ReverseGeocode, ReverseResult } from "../../src/adapters/reverse-geocode.chain.js"
@@ -29,7 +29,7 @@ describe("GET /map/tileinfo", () => {
   // optional TILES_RASTER_URL. minZoom/maxZoom/bounds remain env-tunable.
   it("advertises the default OpenStreetMap/CARTO Voyager raster basemap when unconfigured", async () => {
     // The vitest env sets no TILES_* vars, so this exercises the built-in defaults.
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({ method: "GET", url: "/v1/map/tileinfo" })
     expect(res.statusCode).toBe(200)
     const body = res.json()
@@ -52,8 +52,8 @@ describe("GET /map/tileinfo", () => {
       TILES_MAX_ZOOM: "17",
       TILES_BOUNDS: "-130,20,-60,55",
     })
-    const container = buildContainer(env)
-    app = await buildServer({ env, container })
+    const container = makeContainer(env)
+    app = await makeServer({ env, container })
 
     const res = await app.inject({ method: "GET", url: "/v1/map/tileinfo" })
     expect(res.statusCode).toBe(200)
@@ -69,7 +69,7 @@ describe("GET /map/tileinfo", () => {
 
 describe("POST /map/reverse-label", () => {
   it("returns the FakeGeocoder label for a point", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({
       method: "POST",
       url: "/v1/map/reverse-label",
@@ -81,7 +81,7 @@ describe("POST /map/reverse-label", () => {
   })
 
   it("rejects a malformed body with the 422 validation envelope", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({
       method: "POST",
       url: "/v1/map/reverse-label",
@@ -106,12 +106,12 @@ function withStreetChain(container: Container, result: ReverseResult | null): Co
 describe("POST /map/resolve-address", () => {
   it("returns the chain's rung plus the locality hint", async () => {
     const env = loadEnv({ NODE_ENV: "test" })
-    const container = withStreetChain(buildContainer(env), {
+    const container = withStreetChain(makeContainer(env), {
       line: "123 Imperial Hwy, Inglewood, CA",
       precision: "street",
       provider: "photon",
     })
-    app = await buildServer({ env, container })
+    app = await makeServer({ env, container })
 
     const res = await app.inject({
       method: "POST",
@@ -129,8 +129,8 @@ describe("POST /map/resolve-address", () => {
 
   it("falls back to locality on a chain miss, and says so", async () => {
     const env = loadEnv({ NODE_ENV: "test" })
-    const container = withStreetChain(buildContainer(env), null)
-    app = await buildServer({ env, container })
+    const container = withStreetChain(makeContainer(env), null)
+    app = await makeServer({ env, container })
 
     const res = await app.inject({
       method: "POST",
@@ -148,12 +148,12 @@ describe("POST /map/resolve-address", () => {
 
   it("returns a landmark line RAW, leaving the 'Near ' prefix to the client's locale", async () => {
     const env = loadEnv({ NODE_ENV: "test" })
-    const container = withStreetChain(buildContainer(env), {
+    const container = withStreetChain(makeContainer(env), {
       line: "Vista Hermosa Park, Los Angeles, CA",
       precision: "landmark",
       provider: "photon",
     })
-    app = await buildServer({ env, container })
+    app = await makeServer({ env, container })
 
     const res = await app.inject({
       method: "POST",
@@ -166,7 +166,7 @@ describe("POST /map/resolve-address", () => {
   })
 
   it("rejects a malformed body with the 422 validation envelope", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({
       method: "POST",
       url: "/v1/map/resolve-address",
@@ -182,7 +182,7 @@ describe("POST /map/jurisdictions/:geoid/suggest-contact (validation, no DB)", (
   // with no Postgres wired. The 404 (unknown geoid) and 201 (audit written) paths need the DB and are
   // covered by the Docker-gated integration test.
   it("422s when neither an email nor a form URL is provided", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({
       method: "POST",
       url: "/v1/map/jurisdictions/0644000/suggest-contact",
@@ -193,7 +193,7 @@ describe("POST /map/jurisdictions/:geoid/suggest-contact (validation, no DB)", (
   })
 
   it("422s a malformed contact email", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({
       method: "POST",
       url: "/v1/map/jurisdictions/0644000/suggest-contact",
@@ -208,7 +208,7 @@ describe("GET /map/cleanups bbox validation (P2)", () => {
   // The bbox ordering check runs at query-parse time, BEFORE any DB access, so an inverted bbox is a
   // clean 422 even with no database wired (the valid-bbox happy path needs Postgres -> integration test).
   it("422s an inverted bbox (west >= east) without a silent empty result", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const bbox = JSON.stringify({ west: -118.2, south: 34.0, east: -118.5, north: 34.2 })
     const res = await app.inject({
       method: "GET",
@@ -219,7 +219,7 @@ describe("GET /map/cleanups bbox validation (P2)", () => {
   })
 
   it("422s a degenerate bbox (south >= north)", async () => {
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const bbox = JSON.stringify({ west: -118.5, south: 34.2, east: -118.2, north: 34.0 })
     const res = await app.inject({
       method: "GET",
@@ -256,7 +256,7 @@ describe("POST /map/suggest", () => {
   it("F162: forwards the caller's language to the suggest provider", async () => {
     const urls: string[] = []
     captureFetch(urls)
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({
       method: "POST",
       url: "/v1/map/suggest",
@@ -271,7 +271,7 @@ describe("POST /map/suggest", () => {
   it('keeps the provider\'s "en" default when the caller sends no language', async () => {
     const urls: string[] = []
     captureFetch(urls)
-    app = await buildServer({ env: loadEnv() })
+    app = await makeServer({ env: loadEnv() })
     const res = await app.inject({
       method: "POST",
       url: "/v1/map/suggest",

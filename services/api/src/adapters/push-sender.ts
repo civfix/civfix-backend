@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import type { PushSender, PushPayload, PushPlatform } from "@civfix/shared/interfaces"
 import type { Db } from "../db/client.js"
 import { pushTokens } from "../db/schema/push_tokens.js"
@@ -7,7 +6,8 @@ import { makeApnsDispatcher } from "./push-apns.js"
 import { makeFcmDispatcher } from "./push-fcm.js"
 import { makeWebPushDispatcher } from "./push-webpush.js"
 import { makeExpoDispatcher, isExpoPushToken, type ExpoPushConfig } from "./push-expo.js"
-import { mapWithLimit } from "../services/media-presign.js"
+import { mapWithLimit } from "../lib/concurrency.js"
+import { sha256HexSync } from "../lib/hash.js"
 import type { CounterStore } from "../abuse/counter-store.js"
 import type { PushAddressResolver } from "../services/push-token-policy.js"
 
@@ -43,7 +43,7 @@ export interface PushLogger {
 const LOG_HASH_HEX_CHARS = 12
 
 export function hashForLog(value: string): string {
-  return createHash("sha256").update(value).digest("hex").slice(0, LOG_HASH_HEX_CHARS)
+  return sha256HexSync(value).slice(0, LOG_HASH_HEX_CHARS)
 }
 
 const ACTIVE_TOKEN_SCAN_CAP_PER_USER = 20

@@ -32,7 +32,10 @@ import { toAttendeePersonDTO, toOrganizationRef } from "../cleanup-dto.js"
 import { NO_AFFILIATIONS, withAffiliation, type AffiliationLoader } from "../affiliation.js"
 import { hostForbiddenCopy } from "./authz.js"
 import { assertSlugAllowed } from "./slugs.js"
-import { mapWithLimit, PRESIGN_CONCURRENCY } from "../media-presign.js"
+import { mapWithLimit } from "../../lib/concurrency.js"
+import { stripTrailingSlashes } from "../../lib/base-url.js"
+import { MS_PER_DAY, SECONDS_PER_DAY, SECONDS_PER_HOUR } from "../../lib/time.js"
+import { PRESIGN_CONCURRENCY } from "../media-presign.js"
 import type {
   AdminActorView,
   AdminOrganizationRecord,
@@ -45,22 +48,18 @@ import type {
   OrganizationRepository,
   OrgVerificationRecord,
   UpdateOrganizationPatch,
-} from "./organization-repository.types.js"
-
-const HOUR_SEC = 60 * 60
-const DAY_SEC = 24 * HOUR_SEC
-const DAY_MS = DAY_SEC * 1000
+} from "./organization-repository.js"
 
 export const ORGS_CREATED_PER_DAY = 5
-const ORG_CREATE_WINDOW_SEC = DAY_SEC
+const ORG_CREATE_WINDOW_SEC = SECONDS_PER_DAY
 const ORG_CREATE_COUNTER_KEY = "org:create"
 
 const ORG_INVITES_PER_HOUR = 20
-const ORG_INVITE_WINDOW_SEC = HOUR_SEC
+const ORG_INVITE_WINDOW_SEC = SECONDS_PER_HOUR
 const ORG_INVITE_COUNTER_KEY = "org:invites"
 
 const ORG_VERIFICATIONS_PER_DAY = 3
-const ORG_VERIFICATION_WINDOW_SEC = DAY_SEC
+const ORG_VERIFICATION_WINDOW_SEC = SECONDS_PER_DAY
 const ORG_VERIFY_COUNTER_KEY = "org:verify"
 
 const MY_ORGANIZATIONS_CAP = 50
@@ -71,7 +70,7 @@ const EIN_RETENTION_DAYS = 90
 
 /** Same lifetime as event team invites. */
 const ORG_INVITE_TTL_DAYS = 14
-const ORG_INVITE_TTL_MS = ORG_INVITE_TTL_DAYS * DAY_MS
+const ORG_INVITE_TTL_MS = ORG_INVITE_TTL_DAYS * MS_PER_DAY
 
 const ORG_INVITE_TOKEN_BYTES = 32
 
@@ -81,8 +80,6 @@ const ORG_INVITE_LIST_CAP = 100
 const MY_ORG_INVITES_CAP = 20
 
 const ACTION_EMAIL_TEMPLATE = "action"
-
-const TRAILING_SLASHES = /\/+$/
 
 const ORG_INVITE_ACCEPT_PATH = "/manage/org-invites/accept"
 
@@ -424,7 +421,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
   const now = deps.now ?? (() => new Date())
   const newId = deps.newId ?? (() => randomUUID())
   const newToken = deps.newToken ?? (() => generateToken(ORG_INVITE_TOKEN_BYTES))
-  const webBase = () => deps.webOrigin.replace(TRAILING_SLASHES, "")
+  const webBase = () => stripTrailingSlashes(deps.webOrigin)
 
   async function logoUrlOf(record: OrganizationBaseRecord): Promise<string | null> {
     if (record.logoKey === null || deps.presignLogo === undefined) return null
@@ -1360,7 +1357,7 @@ export function makeOrganizationService(deps: OrganizationServiceDeps): Organiza
     },
 
     scrubDecidedEins(limit: number): Promise<number> {
-      const cutoff = new Date(now().getTime() - EIN_RETENTION_DAYS * DAY_MS)
+      const cutoff = new Date(now().getTime() - EIN_RETENTION_DAYS * MS_PER_DAY)
       return deps.repo.scrubDecidedEins(cutoff, limit)
     },
   }

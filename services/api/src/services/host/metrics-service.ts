@@ -1,7 +1,7 @@
 import type { PageViewSource } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import type { CacheClient } from "../../auth/cache.js"
-import type { MetricUpsert, MetricsRepository } from "./metrics-repository.drizzle.js"
+import type { MetricUpsert, MetricsRepository } from "./metrics-repository.js"
 import { eventDayKey } from "./event-day.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
 import {
@@ -10,7 +10,8 @@ import {
   METRIC_SOURCE,
   NO_BUCKET,
 } from "./event-metric-names.js"
-import { DAY_MS, isoDayOf } from "./host-analytics-shaping.js"
+import { isoDayOf } from "./host-analytics-shaping.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
 export { eventDayKey }
 
@@ -150,7 +151,7 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
   function flushDays(): string[] {
     const days: string[] = []
     for (let i = -FLUSH_LEAD_DAYS; i <= deps.lookbackDays; i += 1) {
-      days.push(isoDayOf(new Date(now().getTime() - i * DAY_MS)))
+      days.push(isoDayOf(new Date(now().getTime() - i * MS_PER_DAY)))
     }
     return days
   }
@@ -215,7 +216,7 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
     },
 
     async rollup() {
-      const since = new Date(now().getTime() - deps.lookbackDays * DAY_MS)
+      const since = new Date(now().getTime() - deps.lookbackDays * MS_PER_DAY)
       let after: string | null = null
       let events = 0
       let rows = 0

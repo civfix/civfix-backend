@@ -3,8 +3,8 @@ import { AppError, MAX_TEAM_INVITES_PER_EVENT, type HostCapability } from "@civf
 import { can, NO_HOST_STANDING, type HostStanding } from "@civfix/shared/host"
 import { InMemoryCounterStore } from "../../../src/abuse/counter-store.js"
 import { hostForbiddenCopy } from "../../../src/services/host/authz.js"
-import type { HostStandingResolution } from "../../../src/services/host/host-standing-repository.drizzle.js"
-import { InMemoryHostTeamRepository } from "../../../src/services/host/host-team-repository.memory.js"
+import type { HostStandingResolution } from "../../../src/services/host/host-standing-repository.js"
+import { InMemoryHostTeamRepository } from "../../helpers/host/host-team-repository.memory.js"
 import { fakeCleanupDTO } from "../../helpers/host-team.js"
 import {
   makeHostTeamService,

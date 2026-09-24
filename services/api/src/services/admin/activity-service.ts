@@ -12,39 +12,15 @@ import type {
   ActivityListQuery,
   ActivityListResponse,
 } from "@civfix/shared"
-import { ADMIN_DEFAULT_LIMIT, clampLimit } from "./pagination.js"
-
-export type ActivitySource = "audit" | "report" | "cleanup" | "mail_event"
-
-export interface ActivitySourceRecord {
-  source: ActivitySource
-  id: string
-  ts: Date
-  who: string
-  actorless?: boolean
-  where: string
-  action?: string | null
-  eventType?: string | null
-  subject?: string | null
-}
-
-export type ActivityFilter = "all" | ActivityKind
-
-export type ActivitySort = "newest" | "oldest"
-
-export interface ListActivityArgs {
-  q: string | null
-  filter: ActivityFilter
-  sort: ActivitySort
-  cursor: string | null
-  limit: number
-}
-
-export interface ActivityRepository {
-  list(
-    args: ListActivityArgs,
-  ): Promise<{ records: ActivitySourceRecord[]; nextCursor: string | null }>
-}
+import { clampLimit } from "./pagination.js"
+import type {
+  ActivityFilter,
+  ActivityRepository,
+  ActivitySort,
+  ActivitySource,
+  ActivitySourceRecord,
+  ListActivityArgs,
+} from "./activity-repository.js"
 
 /**
  * `filter` / `sort` are free-form strings on the wire (ActivityListQuerySchema), so an unrecognized value
@@ -286,7 +262,7 @@ export function makeActivityService(deps: ActivityServiceDeps): ActivityService 
         filter: parseActivityFilter(query.filter),
         sort: parseActivitySort(query.sort),
         cursor: query.cursor ?? null,
-        limit: clampLimit(query.limit ?? ADMIN_DEFAULT_LIMIT),
+        limit: clampLimit(query.limit),
       }
       const { records, nextCursor } = await deps.repo.list(args)
       return { items: records.map((r) => classifyActivity(r, ref)), nextCursor }

@@ -2,7 +2,7 @@
  * Worker integration test (Docker-gated; SKIPS without Docker).
  *
  * Runs the FULL media.checks job against a live PostGIS database using the production Drizzle worker
- * repo (makeDrizzleMediaWorkerRepo) + FakeStorage + FakeAbuseChecks. Proves the real DB writes:
+ * repo (makeDrizzleMediaWorkerRepository) + FakeStorage + FakeAbuseChecks. Proves the real DB writes:
  *   - a valid image -> status ready, width/height/phash/thumb_key persisted.
  *   - a crafted bad image -> status rejected (safe failure end-to-end through Postgres).
  * Also exercises the orphan sweep and partition maintenance against real SQL.
@@ -11,10 +11,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { FakeStorage, FakeAbuseChecks } from "@civfix/shared/fakes"
 import {
-  makeDrizzleMediaWorkerRepo,
+  makeDrizzleMediaWorkerRepository,
   ensureNextMonthChatPartition,
-  type MediaWorkerRepo,
 } from "@civfix/api/media-repo"
+import type { MediaWorkerRepository } from "@civfix/api/media-worker-repository"
 import { loadLimits } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
 import { runMediaChecksJob } from "../../src/jobs/media-checks.js"
@@ -28,12 +28,12 @@ const limits = loadLimits({})
 
 describe.skipIf(!pg)("worker media.checks (integration)", () => {
   let h: WorkerPgHarness
-  let repo: MediaWorkerRepo
+  let repo: MediaWorkerRepository
   let storage: FakeStorage
 
   beforeAll(() => {
     h = pg as WorkerPgHarness
-    repo = makeDrizzleMediaWorkerRepo(h.db, h.sql)
+    repo = makeDrizzleMediaWorkerRepository(h.db, h.sql)
     storage = new FakeStorage()
   })
 

@@ -1,4 +1,10 @@
 import type { SystemHealthResponse, SystemService } from "@civfix/shared"
+import {
+  PG_INVALID_AUTHORIZATION,
+  PG_INVALID_CATALOG_NAME,
+  PG_INVALID_PASSWORD,
+  PG_UNDEFINED_TABLE,
+} from "../../db/pg-errors.js"
 
 export type HealthStatus = "ok" | "warn" | "down" | "not_deployed"
 
@@ -32,14 +38,6 @@ export interface SystemHealthService {
 }
 
 export const MEDIA_WORKER_BACKLOG_WARN = 50
-
-export const PG_UNDEFINED_TABLE = "42P01"
-
-const PG_INVALID_PASSWORD = "28P01"
-
-const PG_INVALID_AUTHORIZATION = "28000"
-
-const PG_INVALID_CATALOG_NAME = "3D000"
 
 const NO_PROBE: { status: HealthStatus; val: string } = { status: "down", val: "No probe" }
 

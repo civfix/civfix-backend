@@ -22,14 +22,10 @@ import {
   makeAdminReportChatService,
   type AdminReportChatService,
 } from "../../services/admin/admin-report-chat-service.js"
-import {
-  makeDrizzleAdminReportChatRepository,
-  type AdminReportChatRepository,
-} from "../../services/admin/admin-report-chat-repository.drizzle.js"
-import {
-  makeDrizzleChatRepository,
-  type ChatRepository,
-} from "../../services/chat-repository.drizzle.js"
+import { makeDrizzleAdminReportChatRepository } from "../../services/admin/admin-report-chat-repository.drizzle.js"
+import type { AdminReportChatRepository } from "../../services/admin/admin-report-chat-repository.js"
+import type { ChatRepository } from "../../services/chat-repository.js"
+import { makeDrizzleChatRepository } from "../../services/chat-repository.drizzle.js"
 import type { ChatHistorySource } from "../chat-route-helpers.js"
 import { makePrivateMediaPresigner } from "../../services/media-presign.js"
 import { makeContainerReportChatSendDeps } from "../../services/report-chat-send-wiring.js"
@@ -73,13 +69,13 @@ export async function registerAdminReportChatRoutes(
         historySource: historySourceFrom(() => overrides.chatRepo),
         send: overrides.send,
       }),
-    () => (containerService ??= buildContainerService()),
+    () => (containerService ??= makeContainerService()),
   )
 
   let containerService: AdminReportChatService | undefined
   let chatRepo: ChatRepository | undefined
 
-  function buildContainerService(): AdminReportChatService {
+  function makeContainerService(): AdminReportChatService {
     const sql = container.getDb().sql
     const getChatRepo = (): ChatRepository =>
       (chatRepo ??= makeDrizzleChatRepository(sql, makePrivateMediaPresigner(container.storage)))

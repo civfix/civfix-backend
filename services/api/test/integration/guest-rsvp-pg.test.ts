@@ -6,7 +6,7 @@ import { seedCleanup } from "../helpers/cleanups.js"
 import { parseKeysetCursor, type KeysetCursor } from "../../src/db/cursor-helpers.js"
 import { makeDrizzleGuestRsvpRepository } from "../../src/services/guest-rsvp-repository.drizzle.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
-import type { GuestRsvpRepository } from "../../src/services/guest-rsvp-service.js"
+import type { GuestRsvpRepository } from "../../src/services/guest-rsvp-repository.js"
 
 const pg = await withPg()
 

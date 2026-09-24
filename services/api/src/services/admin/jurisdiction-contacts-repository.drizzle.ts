@@ -1,6 +1,7 @@
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
-import { decodeOffsetCursor, encodeOffsetCursor, clampLimit } from "./pagination.js"
-import { writeAudit } from "./audit.js"
+import { clampLimit } from "./pagination.js"
+import { decodeOffsetCursor, encodeOffsetCursor } from "../../db/cursor-helpers.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { buildUnmappedRecord, shouldIncludeUnmapped } from "./jurisdiction-directory-projection.js"
 import {
   ADMIN_CATEGORIES,
@@ -19,21 +20,15 @@ import type {
   ListDirectoryResult,
   PatchContactsInput,
   SaveContactsInput,
-} from "./jurisdiction-contacts-types.js"
+} from "./jurisdiction-contacts-repository.js"
 import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
 import { ilikeAnyOf } from "./sql-fragments.js"
-import { PG_UNIQUE_VIOLATION } from "../../db/pg-errors.js"
+import { isUniqueViolationOn } from "../../db/pg-errors.js"
 
 const JURISDICTION_HANDLE_CONSTRAINT = "jurisdictions_handle_lower_key"
 
 const HANDLE_TAKEN_BY_JURISDICTION = "That @handle is already used by another jurisdiction."
-
-function isJurisdictionHandleConflict(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false
-  const e = err as { code?: unknown; constraint_name?: unknown }
-  return e.code === PG_UNIQUE_VIOLATION && e.constraint_name === JURISDICTION_HANDLE_CONSTRAINT
-}
 
 interface DirectoryRow extends CategoryCountRow {
   geoid: string
@@ -221,7 +216,7 @@ export function makeDrizzleJurisdictionContactsRepository(
         `
         const taskResolved = tasks.length > 0
 
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: audit.actorId,
           action: "discovery.contacts_saved",
           target: `jurisdiction:${geoid}`,
@@ -296,7 +291,7 @@ export function makeDrizzleJurisdictionContactsRepository(
             try {
               await tx`UPDATE jurisdictions SET handle = ${handle} WHERE geoid = ${geoid}`
             } catch (err) {
-              if (isJurisdictionHandleConflict(err)) {
+              if (isUniqueViolationOn(err, JURISDICTION_HANDLE_CONSTRAINT)) {
                 throw AppError.conflict(HANDLE_TAKEN_BY_JURISDICTION)
               }
               throw err
@@ -311,7 +306,7 @@ export function makeDrizzleJurisdictionContactsRepository(
           const t = input.forwardBodyTemplate
           await tx`UPDATE jurisdictions SET forward_body_template = ${t === null || t === "" ? null : t} WHERE geoid = ${geoid}`
         }
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: audit.actorId,
           action: "jurisdiction.patched",
           target: `jurisdiction:${geoid}`,

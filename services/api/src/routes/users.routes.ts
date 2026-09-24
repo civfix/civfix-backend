@@ -21,12 +21,13 @@ import { requireAuth } from "../auth/context.js"
 import { isOfficialAccount } from "../auth/official-account.js"
 import { clearCsrfCookie } from "../auth/csrf.js"
 import { clearSessionCookie } from "../auth/transport.js"
-import { searchByHandlePrefix, searchMentionable } from "../services/social-repository.drizzle.js"
+import { makeDrizzleUserSearchRepository } from "../services/user-search-repository.drizzle.js"
 import { toUserDTO, type AuthServices } from "../auth/auth-services.js"
 import { exposeMessage } from "../errors/exposed-message.js"
-import { writeAudit } from "../services/admin/audit.js"
-import { DATA_EXPORT_JOB, dataExportSupportEmail } from "../services/data-export-jobs.js"
-import type { BlocksRepository } from "../services/blocks-repository.drizzle.js"
+import { insertAuditRow } from "../services/admin/audit-repository.drizzle.js"
+import { dataExportSupportEmail } from "../services/data-export-jobs.js"
+import { DATA_EXPORT_JOB } from "../lib/queue-names.js"
+import type { BlocksRepository } from "../services/blocks-repository.js"
 import { dropContainerSuggestions } from "../services/social-suggestions-wiring.js"
 import { route } from "../versioning/route.js"
 import { perIdentity } from "../plugins/rate-limit.js"
@@ -87,7 +88,11 @@ export async function registerUsersRoutes(
       const results =
         term.length === 0
           ? []
-          : await searchByHandlePrefix(container.getDb().sql, term, userId, limit)
+          : await makeDrizzleUserSearchRepository(container.getDb().sql).searchByHandlePrefix(
+              term,
+              userId,
+              limit,
+            )
       const payload: SearchUsersResponse = { results }
       reply.status(200).send(payload)
     },
@@ -104,7 +109,11 @@ export async function registerUsersRoutes(
       const results =
         term.length === 0
           ? []
-          : await searchMentionable(container.getDb().sql, term, userId, USER_SEARCH_DEFAULT_LIMIT)
+          : await makeDrizzleUserSearchRepository(container.getDb().sql).searchMentionable(
+              term,
+              userId,
+              USER_SEARCH_DEFAULT_LIMIT,
+            )
       const payload: SearchUsersResponse = { results }
       reply.status(200).send(payload)
     },
@@ -228,7 +237,7 @@ export async function registerUsersRoutes(
           [
             "audit.account-deleted",
             () =>
-              writeAudit(container.getDb().sql, {
+              insertAuditRow(container.getDb().sql, {
                 actorId: userId,
                 action: ACCOUNT_DELETED_AUDIT_ACTION,
                 target: `user:${userId}`,

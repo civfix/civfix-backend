@@ -6,7 +6,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { withPg, seedFollowEdge, testHandle, type PgHarness } from "../helpers/pg.js"
 import { makeDrizzleSocialRepository } from "../../src/services/social-repository.drizzle.js"
-import type { SocialRepository } from "../../src/services/social-service.js"
+import type { SocialRepository } from "../../src/services/social-repository.js"
 
 const pg = await withPg()
 

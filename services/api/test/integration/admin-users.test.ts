@@ -23,7 +23,7 @@ import { withPg, type PgHarness, testHandle } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleAdminUserRepository } from "../../src/services/admin/admin-user-repository.drizzle.js"
-import type { AdminUserRepository } from "../../src/services/admin/admin-user-service.js"
+import type { AdminUserRepository } from "../../src/services/admin/admin-user-repository.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
 const pg = await withPg()

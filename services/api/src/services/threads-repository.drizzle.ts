@@ -3,30 +3,15 @@ import type { ReportCategory } from "@civfix/shared"
 import type { Sql, SqlFragment } from "../db/client.js"
 import type { ConversationHideRoomKind } from "../db/schema/conversation_hides.js"
 import { publicReportFilter } from "./report-sql.js"
-import type { TimeCursor } from "../db/cursor-helpers.js"
+import { msKeysetFilter, type TimeCursor } from "../db/cursor-helpers.js"
 import {
   THREADS_DEFAULT_LIMIT,
   type GroupThreadAggregateView,
   type GroupThreadsSource,
   type ReportThreadAggregateView,
   type ReportThreadsSource,
-  type ThreadAggregate,
-  type ThreadsRepository,
 } from "./threads-service.js"
-
-function threadsCursorFilter(
-  sql: Sql,
-  activity: SqlFragment,
-  idColumn: SqlFragment,
-  cursor: TimeCursor | null | undefined,
-): SqlFragment {
-  if (cursor === null || cursor === undefined) return sql``
-  const msCeiling = new Date(cursor.at.getTime() + 1)
-  return sql`
-    AND ${activity} < ${msCeiling}
-    AND (${activity} < ${cursor.at} OR ${idColumn} < ${cursor.id}::uuid)
-  `
-}
+import type { ThreadAggregate, ThreadsRepository } from "./threads-repository.js"
 
 function reportThreadTitle(category: ReportCategory | string, addr: string | null): string {
   const label = REPORT_CATEGORY_LABELS[category as ReportCategory] ?? category
@@ -63,7 +48,7 @@ async function listThreadFamily<R extends ThreadFamilyRow>(
   const scope = sql(spec.scopeColumn)
   const rawActivity = sql`COALESCE(last_msg.created_at, mem.joined_at)`
   const activity = sql`date_trunc('milliseconds', ${rawActivity})`
-  const cursorFilter = threadsCursorFilter(sql, activity, sql`r.id`, cursor)
+  const cursorFilter = msKeysetFilter(sql, activity, sql`r.id`, cursor)
   return await sql<R[]>`
     WITH page AS (
       SELECT

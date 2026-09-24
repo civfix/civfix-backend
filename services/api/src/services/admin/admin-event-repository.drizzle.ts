@@ -1,13 +1,13 @@
 import type { Queryable, Sql, SqlFragment } from "../../db/client.js"
-import { isUuid } from "../../db/cursor-helpers.js"
+import { clampLimit } from "./pagination.js"
 import {
-  decodeCursor,
-  clampLimit,
+  isUuid,
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
-} from "./pagination.js"
-import { writeAudit } from "./audit.js"
+  parseKeysetCursor,
+} from "../../db/cursor-helpers.js"
+import { insertAuditRow } from "./audit-repository.drizzle.js"
 import { adminEventStatusExpr } from "../cleanup-sql.js"
 import { personSelect } from "./admin-person-sql.js"
 import { toPersonRecord } from "./admin-person.js"
@@ -28,7 +28,7 @@ import type {
   AdminEventTimelineRecord,
   AdminOrganizerRecord,
   ListEventsArgs,
-} from "./admin-event-service.js"
+} from "./admin-event-repository.js"
 import type { LinkedReportView } from "../cleanup-service.js"
 import type { AdminEventCounts, EventKind, ReportCategory, ReportStatus } from "@civfix/shared"
 
@@ -152,7 +152,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
       args: ListEventsArgs,
     ): Promise<{ records: AdminEventRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
-      const anchor = decodeCursor(args.cursor, true)
+      const anchor = parseKeysetCursor(args.cursor)
 
       const conds: SqlFragment[] = []
       if (args.status !== null) {
@@ -267,7 +267,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'outcome', ${eventOutcomeNote(input.bags)}, ${input.actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "event.outcome_logged",
           target: `cleanup:${id}`,
@@ -303,7 +303,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
             ${input.actorId}
           )
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: nowFlagged ? "event.flagged" : "event.unflagged",
           target: `cleanup:${id}`,
@@ -330,7 +330,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'cancel', ${input.note}, ${input.actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "event.cancelled",
           target: `cleanup:${id}`,
@@ -363,7 +363,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           WHERE cm.cleanup_id = ${id}
           RETURNING user_id
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId: input.actorId,
           action: "event.message_posted",
           target: `cleanup:${id}`,
@@ -454,7 +454,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
             FROM unnest(${linked}::uuid[]) AS rid
           `
         }
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId,
           action: "event.reports_linked",
           target: `cleanup:${id}`,
@@ -482,7 +482,7 @@ export function makeDrizzleAdminEventRepository(sql: Sql): AdminEventRepository 
           INSERT INTO cleanup_timeline (cleanup_id, kind, note, actor_id)
           VALUES (${id}, 'report_unlinked', ${`Unlinked report ${reportId}`}, ${actorId})
         `
-        await writeAudit(tx, {
+        await insertAuditRow(tx, {
           actorId,
           action: "event.report_unlinked",
           target: `cleanup:${id}`,

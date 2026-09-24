@@ -7,7 +7,7 @@ import type {
   DiscussionReportView,
   DiscussionRepository,
   ReportJurisdictionView,
-} from "./discussion-types.js"
+} from "./discussion-repository.js"
 import type { ReportCategory } from "@civfix/shared"
 
 export function makeDrizzleDiscussionRepository(sql: Sql): DiscussionRepository {

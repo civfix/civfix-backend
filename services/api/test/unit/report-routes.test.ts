@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
 import type { FastifyInstance } from "fastify"
 import { FakeMailer } from "@civfix/shared/fakes"
-import { buildServer } from "../../src/server.js"
+import { makeServer } from "../../src/server.js"
 import { loadEnv } from "../../src/env.js"
 import { InMemoryCacheClient } from "../../src/auth/cache.js"
 import { makeInMemoryStores } from "../../src/auth/stores.js"
-import { buildAuthServices } from "../../src/auth/auth-services.js"
+import { makeAuthServices } from "../../src/auth/auth-services.js"
 import { StubJwksVerifier } from "../helpers/auth.js"
 import { InMemoryReportRepository } from "../helpers/reports.js"
 import { clientQuery } from "../helpers/query.js"
@@ -13,7 +13,7 @@ import type { ReportServiceOverrides } from "../../src/routes/reports.routes.js"
 
 /**
  * Route-level tests for the report plugin, run with NO database: an in-memory ReportRepository (+ fake
- * jurisdiction/presign) is injected via buildServer(opts.reportOverrides), and a full in-memory auth
+ * jurisdiction/presign) is injected via makeServer(opts.reportOverrides), and a full in-memory auth
  * bundle is injected so the [auth] routes get a real bearer session. Exercised through the real Fastify
  * app via app.inject. The Drizzle/PostGIS transaction path is covered by the Docker-gated integration
  * test instead.
@@ -46,7 +46,7 @@ async function makeHarness(
   const cache = new InMemoryCacheClient(() => Date.now())
   const mailer = new FakeMailer()
   const verifier = new StubJwksVerifier()
-  const authServices = buildAuthServices({
+  const authServices = makeAuthServices({
     stores,
     cache,
     mailer,
@@ -74,7 +74,7 @@ async function makeHarness(
       ),
   }
 
-  const app = await buildServer({ env, authServices, reportOverrides })
+  const app = await makeServer({ env, authServices, reportOverrides })
 
   // Sign in through the real OTP flow (mobile transport -> bearer token in the body).
   const email = "reporter@example.com"

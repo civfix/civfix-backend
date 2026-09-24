@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Sql } from "../../src/db/client.js"
 import { makeDrizzleBroadcastRepository } from "../../src/services/host/broadcast-repository.drizzle.js"
-import { InMemoryBroadcastRepository } from "../../src/services/host/broadcast-repository.memory.js"
+import { InMemoryBroadcastRepository } from "../helpers/host/broadcast-repository.memory.js"
 import { makeFakeSql } from "../helpers/fake-sql.js"
 
 describe("operator host search", () => {

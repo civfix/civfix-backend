@@ -1,5 +1,6 @@
 import type { Sql } from "../../db/client.js"
 import { makeDrizzleRegistrationRetentionRepository } from "./registration-retention-repository.drizzle.js"
+import { MS_PER_DAY } from "../../lib/time.js"
 
 export const REGISTRATION_RETENTION_BATCH = 500
 
@@ -12,8 +13,6 @@ export const CHECKIN_COARSEN_DAYS = 30
 const ATTENDEE_NAME_RETENTION_DAYS = 30
 
 export const HOST_NOTE_RETENTION_DAYS = 90
-
-const DAY_MS = 24 * 60 * 60 * 1000
 
 export interface RegistrationRetentionResult {
   scrubbedAnswers: number
@@ -56,10 +55,10 @@ export async function runRegistrationRetentionLanes(
   logger?: RegistrationRetentionLogger,
 ): Promise<RegistrationRetentionResult> {
   const repo = makeDrizzleRegistrationRetentionRepository(sql)
-  const answerCutoff = new Date(now.getTime() - ANSWER_RETENTION_DAYS * DAY_MS)
-  const checkinCutoff = new Date(now.getTime() - CHECKIN_COARSEN_DAYS * DAY_MS)
-  const nameCutoff = new Date(now.getTime() - ATTENDEE_NAME_RETENTION_DAYS * DAY_MS)
-  const noteCutoff = new Date(now.getTime() - HOST_NOTE_RETENTION_DAYS * DAY_MS)
+  const answerCutoff = new Date(now.getTime() - ANSWER_RETENTION_DAYS * MS_PER_DAY)
+  const checkinCutoff = new Date(now.getTime() - CHECKIN_COARSEN_DAYS * MS_PER_DAY)
+  const nameCutoff = new Date(now.getTime() - ATTENDEE_NAME_RETENTION_DAYS * MS_PER_DAY)
+  const noteCutoff = new Date(now.getTime() - HOST_NOTE_RETENTION_DAYS * MS_PER_DAY)
 
   const scrubbedAnswers = await drain(
     "event answers",

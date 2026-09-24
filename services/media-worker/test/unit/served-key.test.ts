@@ -5,7 +5,7 @@ import { loadLimits, type WorkerLimits } from "../../src/config.js"
 import { makeDownloader } from "../../src/download.js"
 import { runMediaChecksJob, type MediaChecksDeps } from "../../src/jobs/media-checks.js"
 import { servedKey, thumbnailKey } from "../../src/jobs/media-keys.js"
-import { InMemoryWorkerRepo } from "../helpers/in-memory-repo.js"
+import { InMemoryMediaWorkerRepository } from "../helpers/in-memory-media-worker-repository.js"
 import * as fx from "../fixtures/make.js"
 
 const limits: WorkerLimits = loadLimits({})
@@ -13,10 +13,10 @@ const limits: WorkerLimits = loadLimits({})
 function makeDeps(over?: Partial<MediaChecksDeps>): {
   deps: MediaChecksDeps
   storage: FakeStorage
-  repo: InMemoryWorkerRepo
+  repo: InMemoryMediaWorkerRepository
 } {
   const storage = new FakeStorage()
-  const repo = new InMemoryWorkerRepo()
+  const repo = new InMemoryMediaWorkerRepository()
   const deps: MediaChecksDeps = {
     repo,
     storage,
@@ -32,7 +32,7 @@ function makeDeps(over?: Partial<MediaChecksDeps>): {
 
 async function seed(
   storage: FakeStorage,
-  repo: InMemoryWorkerRepo,
+  repo: InMemoryMediaWorkerRepository,
   bytes: Uint8Array,
 ): Promise<{ id: string; uploadId: string; r2Key: string }> {
   const id = `media-${Math.random().toString(36).slice(2, 10)}`

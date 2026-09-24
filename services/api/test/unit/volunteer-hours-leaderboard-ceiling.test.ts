@@ -5,7 +5,7 @@ import {
   makeVolunteerHoursService,
   type CleanupHoursLookup,
 } from "../../src/services/volunteer-hours-service.js"
-import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
+import { InMemoryVolunteerHoursRepository } from "../helpers/volunteer-hours-repository.memory.js"
 
 const GEOID = "0667000"
 

@@ -18,7 +18,7 @@ import type {
   EventSlotView,
   LinkedEventView,
   LinkedReportView,
-} from "./cleanup-repository.types.js"
+} from "./cleanup-repository.js"
 import { officialPersonFlag } from "../auth/official-account.js"
 
 export const CLEANUPS_DEFAULT_LIMIT = 20

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { Sql } from "../../../src/db/client.js"
 import { makeDrizzleCleanupRepository } from "../../../src/services/cleanup-repository.drizzle.js"
 import { makeDrizzleHostRegistrationRepository } from "../../../src/services/host/registration-repository.drizzle.js"
-import { InMemoryHostRegistrationRepository } from "../../../src/services/host/registration-repository.memory.js"
+import { InMemoryHostRegistrationRepository } from "../../helpers/host/registration-repository.memory.js"
 import { makeFakeSql, type RecordedStatement } from "../../helpers/fake-sql.js"
 
 const EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"

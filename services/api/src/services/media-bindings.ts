@@ -1,8 +1,6 @@
 import type { Queryable } from "../db/client.js"
 import { MEDIA_CLAIM_WINDOW_SEC } from "./host/event-media.js"
 
-export { lockUploadsForClaimIn as lockUploadsForClaim } from "./media-claim-repository.drizzle.js"
-
 export const MEDIA_BINDING_RELATIONS = [
   "users.avatar_media_id",
   "chat_groups.avatar_media_id",

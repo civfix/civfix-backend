@@ -7,10 +7,7 @@ import {
   makeMetricsService,
   parseCounterKey,
 } from "../../src/services/host/metrics-service.js"
-import type {
-  MetricUpsert,
-  MetricsRepository,
-} from "../../src/services/host/metrics-repository.drizzle.js"
+import type { MetricUpsert, MetricsRepository } from "../../src/services/host/metrics-repository.js"
 
 const EVENT = "00000000-0000-0000-0000-0000000000ee"
 

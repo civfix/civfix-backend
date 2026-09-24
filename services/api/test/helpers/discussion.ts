@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto"
 import type {
   DiscussionReportView,
   DiscussionRepository,
-} from "../../src/services/discussion-types.js"
+} from "../../src/services/discussion-repository.js"
 
 /** A seeded jurisdiction (name/handle/contact resolved for a report). */
 export interface SeededJurisdiction {

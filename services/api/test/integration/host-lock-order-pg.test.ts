@@ -8,7 +8,7 @@ import { PgUserStore } from "../../src/auth/pg-stores.js"
 import type {
   HostRegistrationRepository,
   SeatDraft,
-} from "../../src/services/host/registration-repository.types.js"
+} from "../../src/services/host/registration-repository.js"
 
 const pg = await withPg()
 const tokens = makeTicketTokenSigner("integration-lock-order-secret-long-enough")

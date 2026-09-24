@@ -5,9 +5,9 @@ import {
   needsDiscovery,
   isRoutable,
   makeJurisdictionService,
-  JURISDICTION_DISCOVERY_JOB,
   type JurisdictionHealthRow,
 } from "../../src/services/jurisdiction-service.js"
+import { JURISDICTION_DISCOVERY_JOB } from "../../src/lib/queue-names.js"
 import {
   CachedJurisdictionLookup,
   FakeJurisdictionLookup,

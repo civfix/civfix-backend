@@ -11,7 +11,7 @@ import type {
   FeedCandidateRow,
   PostBrief,
   PostRepository,
-} from "../../src/services/post-repository.drizzle.js"
+} from "../../src/services/post-repository.js"
 
 const VIEWER = "11111111-1111-1111-1111-111111111111"
 const AUTHOR = "22222222-2222-2222-2222-222222222222"

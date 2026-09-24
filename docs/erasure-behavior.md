@@ -215,7 +215,7 @@ tombstone (`softDeleteAndAnonymize`, `services/api/src/auth/pg-stores.ts`):
    `total_hours`, `entry_count`, the period bounds and `document_sha256`.
 3. **Best-effort deletes the R2 object** for each row, after the commit. Same
    primitive the holder's own `revoke()` uses. Wired in production through
-   `buildAuthServicesFromContainer`; if the object store is not wired the row
+   `makeAuthServicesFromContainer`; if the object store is not wired the row
    scrub still happens and the skipped object is logged.
 
 Already-revoked rows are included in the scrub: their PII is no less PII, and

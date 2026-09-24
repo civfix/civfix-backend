@@ -1,7 +1,5 @@
 import { avatarGradient } from "@civfix/shared"
 
-export { blockedPairExpr } from "./blocks-sql.js"
-
 export const HIDDEN_USER_LABEL = "Community member"
 
 type AvatarPair = ReturnType<typeof avatarGradient>

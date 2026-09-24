@@ -119,7 +119,7 @@ vi.mock("pg-boss", () => {
   return { default: StubPgBoss }
 })
 
-const { PgBossWorkerJobs, buildJobs, stopGraceMsFor } = await import("../../src/jobs.js")
+const { PgBossWorkerJobs, makeJobs, stopGraceMsFor } = await import("../../src/worker-jobs.js")
 
 /** The stub instance created by the most recent start(). */
 function lastBoss(): StubBoss {
@@ -423,9 +423,9 @@ describe("PgBossWorkerJobs unsupported name-agnostic complete/fail", () => {
   })
 })
 
-describe("buildJobs seam selection", () => {
+describe("makeJobs seam selection", () => {
   it("defaults to the fake outside production (the worker boots offline)", () => {
-    const handle = buildJobs({ NODE_ENV: "test" } as NodeJS.ProcessEnv)
+    const handle = makeJobs({ NODE_ENV: "test" } as NodeJS.ProcessEnv)
     expect(handle.jobs).toBeInstanceOf(FakeJobs)
   })
 
@@ -435,7 +435,7 @@ describe("buildJobs seam selection", () => {
    */
   it("THROWS when USE_FAKE_JOBS is explicitly on in production", () => {
     expect(() =>
-      buildJobs({
+      makeJobs({
         NODE_ENV: "production",
         USE_FAKE_JOBS: "1",
         DATABASE_URL: "postgres://stub/civfix",
@@ -444,13 +444,13 @@ describe("buildJobs seam selection", () => {
   })
 
   it("THROWS when the real seam is selected without a DATABASE_URL", () => {
-    expect(() => buildJobs({ NODE_ENV: "test", USE_FAKE_JOBS: "0" } as NodeJS.ProcessEnv)).toThrow(
+    expect(() => makeJobs({ NODE_ENV: "test", USE_FAKE_JOBS: "0" } as NodeJS.ProcessEnv)).toThrow(
       /DATABASE_URL is required when USE_FAKE_JOBS is off/,
     )
   })
 
   it("builds the real handle in production and derives its stop grace from MEDIA_JOB_TIMEOUT_MS", async () => {
-    const handle = buildJobs({
+    const handle = makeJobs({
       NODE_ENV: "production",
       DATABASE_URL: "postgres://stub/civfix",
       MEDIA_JOB_TIMEOUT_MS: "10000",
