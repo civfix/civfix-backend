@@ -1,23 +1,26 @@
 # civfix-backend
 
-Hello
-Backend monorepo for civfix: a Fastify 5 API, a media worker, and deployment infra. All Phase-1
-domains are implemented: auth (Apple/Google/email-OTP), jurisdiction/map, media intake + the sandboxed
-media worker, reports, anonymous submit + abuse controls + claim, cleanups, real-time chat over
-WebSocket, social (people/follow/profile), and notifications/push. Every external dependency sits
-behind one of the 9 `@civfix/shared/interfaces`, selected real-vs-fake in the DI container, so the
-whole stack boots offline with no credentials for development and tests.
+Backend monorepo for civfix: a Fastify 5 API, a sandboxed media worker, and the Cloudflare Email
+Worker for inbound mail. The API covers auth (Apple/Google/email OTP), jurisdictions and the map, media
+intake, reports (including anonymous submit, abuse controls and claim), cleanups and events, real-time
+chat and direct messages over WebSocket, posts, social (people/follow/profile), volunteer hours and
+service-hours certificates, notifications/push, city mail (outbound packets and inbound replies), and
+the operator (admin) plane. External services sit behind the 11 seam interfaces from
+`@civfix/shared/interfaces` (plus two API-local adapter interfaces, reverse geocoding and jurisdiction
+lookup), selected real-vs-fake in the DI container, so the whole stack boots offline with no
+credentials for development and tests.
 
-Deployment is via Docker Compose (per-service multi-stage Dockerfiles) given external Postgres/Redis
-in env files. See "Deploy with Docker Compose" below.
+Deployment is Docker Compose, owned by the civfix-infra repo, running the images this repo's CI builds.
+See "Deploy (Docker Compose, via the civfix-infra repo)" below.
 
 Part of a set of independent repos that share one contract:
 
-- `civfix-shared` (the contract: zod schemas, domain types, the 9 vendor-neutral interfaces, fakes,
-  design tokens, typed client) - published as `@civfix/shared` to the private registry at
+- `civfix-app` (the consumer-plane monorepo: the web and mobile apps, plus the contract in
+  `packages/shared`: zod schemas, domain types, the 11 vendor-neutral seam interfaces, fakes, design
+  tokens, typed client). The contract is published as `@civfix/shared` to the private registry at
   `repo.civfix.org` and installed here as a normal dependency.
 - `civfix-backend` (this repo).
-- the web app, the mobile app, and the admin app (separate repos).
+- `civfix-admin` (the operator dashboard) and `civfix-infra` (VPS infra and deploy).
 
 ## Layout
 
@@ -25,16 +28,15 @@ Part of a set of independent repos that share one contract:
 civfix-backend/
   .npmrc                        @civfix:registry=https://repo.civfix.org/ (installs @civfix/shared)
   packages/
-    config/                     shared eslint / prettier / tsconfig presets (@civfix/config)
+    config/                     shared eslint + prettier presets (@civfix/config)
   services/
     api/                        Fastify API (@civfix/api)
     media-worker/               pg-boss media worker (@civfix/media-worker)
   infra/
-    compose/                    docker-compose (prod-ish + dev)
-    caddy/                      reverse-proxy Caddyfile
-    secrets/                    SOPS + age docs and .sops.yaml
-    tiles/                      note: map uses OpenStreetMap (CARTO Voyager) raster; no self-hosted tiles
-  .github/workflows/ci.yml      lint / typecheck / build / test + integration services
+    email-worker/               Cloudflare Email Worker for inbound mail (standalone, own wrangler toolchain)
+  scripts/                      the CI no-frontend guard + the manual dynamic-SQL check (pnpm check:sql)
+  docs/                         engineering notes (retention, erasure, migrations, operator runbook, ...)
+  .github/workflows/            ci.yml (PR checks), build-images.yml, deploy-staging.yml, deploy.yml
   tsconfig.base.json            strict base TS config
   turbo.json                    turborepo task graph
   pnpm-workspace.yaml
@@ -44,7 +46,7 @@ civfix-backend/
 
 - Node >= 22 (see `.nvmrc`)
 - pnpm 9.12.0 (this repo is pnpm-only)
-- Docker is only needed later for integration tests / running infra; not required to build or test.
+- Docker is needed only for the integration suites; it is not required to build or test.
   The Docker-gated suites SKIP themselves on a machine with no Docker so `pnpm test` stays green — but
   only there: with `CI` (set by GitHub Actions) or `CIVFIX_REQUIRE_PG=1` in the environment, a failed
   container start FAILS the run instead of silently dropping every integration test from it. Set
@@ -56,9 +58,10 @@ civfix-backend/
 `https://repo.civfix.org`, so the backend always builds against a published, versioned contract.
 
 The repo-root `.npmrc` scopes `@civfix` to the registry
-(`@civfix:registry=https://repo.civfix.org/`), and the service `package.json` files depend on a
-published version (`^0.1.0` today). The registry allows anonymous read, so no credentials are needed
-to install. A fresh clone needs only:
+(`@civfix:registry=https://repo.civfix.org/`), and both service `package.json` files
+(`services/api`, `services/media-worker`) depend on a published version by caret range (`^0.55.0`
+today). The registry allows anonymous read, so no credentials are needed to install. A fresh clone
+needs only:
 
 ```
 git clone <civfix-backend remote>
@@ -66,8 +69,12 @@ cd civfix-backend
 pnpm install   # fetches @civfix/shared from repo.civfix.org
 ```
 
-Contract changes are made in `civfix-shared`, published as a new version (push a `vX.Y.Z` tag), and
-adopted here by bumping the `@civfix/shared` dependency range and running `pnpm install`.
+Contract changes are made in `civfix-app` (`packages/shared`), versioned with changesets and published
+by that repo's `publish-shared.yml` workflow on a push to its `main` (a `vX.Y.Z` tag publishes nothing).
+They are adopted here by bumping the `@civfix/shared` range in BOTH services and refreshing the
+lockfile: `pnpm install` after a range edit, `pnpm --filter <service> update @civfix/shared` for an
+in-range patch (plain `pnpm install` leaves the lockfile untouched in that case). On `0.x` the caret
+pins the minor, so every minor bump needs a range edit.
 
 ## Install
 
@@ -75,17 +82,19 @@ adopted here by bumping the `@civfix/shared` dependency range and running `pnpm 
 pnpm install
 ```
 
-This installs the workspace, including the `shared` package (built via its own tsup on first build).
+This installs the workspace (both services and `@civfix/config`) and fetches the prebuilt
+`@civfix/shared` from the registry; nothing in this repo builds the contract.
 
 ## Common tasks (run from the repo root; delegated to turbo)
 
 ```
-pnpm build        # build @civfix/shared, then api + media-worker
-pnpm typecheck    # tsc --noEmit across all packages
-pnpm lint         # eslint across all packages
-pnpm test         # vitest unit tests
-pnpm dev          # run services in watch mode (persistent)
+pnpm build        # tsup build of api + media-worker
+pnpm typecheck    # tsc --noEmit in both services
+pnpm lint         # eslint in both services
+pnpm test         # vitest in both services: unit + the Docker-gated integration suites
+pnpm dev          # run both services in watch mode (persistent)
 pnpm clean        # remove build artifacts
+pnpm check:sql    # dynamic-SQL guard (manual; not run by CI)
 ```
 
 ## Running the API in dev (offline, no credentials)
@@ -95,7 +104,7 @@ every `USE_FAKE_*` seam, so the server boots with no database, Redis, or cloud c
 
 ```
 pnpm --filter @civfix/api dev
-# GET http://localhost:8080/healthz -> { "ok": true, "service": "civfix-api", "version": "0.0.0" }
+# GET http://localhost:8080/healthz -> { "ok": true, "service": "civfix-api" }
 ```
 
 See `services/api/.env.example` for the full, annotated env reference (every var, with [BOOT]/[OPT]
@@ -104,20 +113,27 @@ throws an aggregated error listing each missing one.
 
 ## Architecture: the seam boundary
 
-All external dependencies (object storage, mail, push, geocoding, chat transport, routing, abuse
-checks, background jobs, inbound mail) sit behind the 9 interfaces from `@civfix/shared/interfaces`.
-The application code never imports a vendor SDK directly; vendor SDKs are confined to adapter files
-under `services/api/src/adapters/`. The DI container (`services/api/src/di.ts`) is the single place
-that chooses a REAL adapter or an in-memory FAKE per `USE_FAKE_*` flag.
+External dependencies (object storage, mail, inbound mail, geocoding, chat transport, the per-user
+realtime channel, push, routing, abuse checks, background jobs, SMS) sit behind the 11 interfaces from
+`@civfix/shared/interfaces`. The API's application code never imports a vendor SDK directly; vendor
+SDKs are confined to adapter files under `services/api/src/adapters/`. The DI container
+(`services/api/src/di.ts`) is the single place that chooses a REAL adapter or an in-memory FAKE, per
+`USE_FAKE_*` flag (InboundMail and RoutingProvider switch on `NODE_ENV` instead, and
+`LOCAL_STORAGE_DIR` selects the development-only local-disk store). The media worker is the
+deliberate exception: decoding untrusted bytes with sharp/exifr/ffmpeg and running pg-boss's work side
+is its job, and it has its own two-seam picker (`services/media-worker/src/seams.ts`).
 
 ## Media worker (`services/media-worker`)
 
 The worker consumes the `media.checks` job the API enqueues on finalize and runs the sandboxed,
 untrusted-byte pipeline: decode-guard, EXIF/GPS read + strip, ~400px thumbnail, perceptual hash
 (dHash), NSFW + near-duplicate seams for images; ffprobe validate + stream-copy metadata-strip remux +
-frame-grab thumbnail for video. It also runs two pg-boss crons: `orphan.sweep` (reap never-attached
-media, section 11) and `chat.partition.maintenance` (pre-create next month's chat partition,
-sections 7/12).
+frame-grab thumbnail for video. It also works the `anon.hold.release` and `media.upload.reap` queues
+and runs five pg-boss crons (`services/media-worker/src/worker.ts`): `orphan.sweep` (reap
+never-attached media), `chat.partition.maintenance` (keep the chat and DM monthly partitions created
+two months ahead), `anon.hold.release.sweep` (backstop for held anonymous reports), `retention.sweep`
+(the retention TTLs in `docs/retention-cleanup.md`) and `media.stuck.sweep` (terminalize media stuck in
+`validating`).
 
 Data layer (single source, no duplication): the worker does NOT re-declare the Drizzle schema, the
 postgres-js client, the R2 adapter, or the GlitchTip reporter. It depends on `@civfix/api`
@@ -126,37 +142,49 @@ postgres-js client, the R2 adapter, or the GlitchTip reporter. It depends on `@c
 
 - `@civfix/api/db` - the schema barrel + `makeDb` + `Db`/`Sql` types.
 - `@civfix/api/media-repo` - the richer media-worker persistence seam (`MediaWorkerRepo`:
-  find / applyResult / insertAbuseFlag / findOrphans / deleteById), its Drizzle impl, the
-  `MEDIA_CHECKS_JOB` name, and `ensureNextMonthChatPartition` (so partition bounds/naming have one
-  source shared with the migrations).
-- `@civfix/api/adapters/storage`, `@civfix/api/adapters/abuse-checks`, `@civfix/api/errors`,
-  `@civfix/api/migrate` - the R2 adapter, the real AbuseChecks adapter, the GlitchTip helper, and the
+  findById / applyResult / insertAbuseFlag / findOrphans / deleteOrphan, plus the stuck-media and
+  leaked-object methods), its Drizzle impl, the `MEDIA_CHECKS_JOB` name, and
+  `ensureChatPartitionWindow` / `ensureDmPartitionWindow` (so partition bounds/naming have one source
+  shared with the migrations).
+- `@civfix/api/anon-hold-release`, `@civfix/api/anon-hold-repo`, `@civfix/api/inbound-retention-repo`,
+  `@civfix/api/geocode-cache` - the hold-release logic and repository, the inbound-mail retention
+  repository, and the geocode cache.
+- `@civfix/api/adapters/storage`, `@civfix/api/adapters/storage-local`,
+  `@civfix/api/adapters/abuse-checks`, `@civfix/api/errors`, `@civfix/api/migrate` - the R2 adapter,
+  the development-only local-disk store, the real AbuseChecks adapter, the GlitchTip helper, and the
   migration runner (the last reused only by the Docker-gated worker integration harness).
 
 The worker's `tsup` build inlines `@civfix/api` + `@civfix/shared` source into a self-contained
 `dist`, keeping only native/heavy deps external (`sharp`, `ffmpeg-static`, `ffprobe-static`, `execa`,
-`exifr`, `pg-boss`, `postgres`, `drizzle-orm`, `@aws-sdk/*`, `@sentry/node`).
+`exifr`, `pg-boss`, `postgres`, `drizzle-orm`, `@sentry/node`, `undici`, `https-proxy-agent`,
+`@smithy/node-http-handler`, `@aws-sdk/*`).
 
-Safe failure (Phase-1 done-criterion): `runMediaChecksJob` and the pure `processMedia` core NEVER
-throw. Any malformed/oversize/undecodable/unsupported input results in `media_assets.status =
-"rejected"` (or `held` for an NSFW policy hold; a near-duplicate is non-blocking, see #43) plus an abuse_flag/log/GlitchTip event,
-and the job COMPLETES - a crafted upload can never crash the worker or poison the queue. This is proven
-by `services/media-worker/test/unit/media-checks.test.ts` running REAL sharp + REAL ffmpeg/ffprobe
-against crafted fixtures.
+Safe failure: `runMediaChecksJob` and the pure `processMedia` core never throw on untrusted input. Any
+malformed/oversize/undecodable/unsupported input results in `media_assets.status = "rejected"` (or
+`held` for an NSFW policy hold; a near-duplicate is non-blocking) plus an abuse_flag/log/GlitchTip
+event, and the job COMPLETES - a crafted upload can never crash the worker or poison the queue. The only
+error that leaves the job is `MediaInfraError`, a retryable infrastructure failure (load, download,
+timeout, persist, sandbox spawn, among others) raised deliberately so pg-boss retries it;
+`processMedia` rethrows `SandboxSpawnError`, which `media-checks.ts` converts into
+`MediaInfraError("sandbox-spawn")`. This is
+proven by `services/media-worker/test/unit/media-checks.test.ts` running REAL sharp + REAL
+ffmpeg/ffprobe against crafted fixtures.
 
 Sandboxing + limits (`services/media-worker/src/config.ts`, overridable by env): ffprobe/ffmpeg run
 via `execa` with an ARGS ARRAY (no shell, no injection), a hard per-tool timeout, `killSignal`
 SIGKILL, and a `maxBuffer` output cap; sharp uses `limitInputPixels` + a wrapped wall-clock timeout.
-`media.checks` concurrency is capped (default 2; `MEDIA_CHECKS_CONCURRENCY`), per-job budget 60s
-(`MEDIA_JOB_TIMEOUT_MS`), download capped at `MAX_VIDEO_BYTES`. The infra compose additionally caps
-container CPU.
+`media.checks` concurrency is capped (default 2; `MEDIA_CHECKS_CONCURRENCY`), per-job budget 90s
+(`MEDIA_JOB_TIMEOUT_MS`), download capped at `MEDIA_MAX_DOWNLOAD_BYTES` (default: the contract's
+`MAX_VIDEO_BYTES`). The infra compose additionally caps container CPU.
 
 NSFW seam: `AbuseChecks.nsfwScore` stays behind the seam and defaults to `FakeAbuseChecks` (benign)
-under `USE_FAKE_ABUSE_NSFW=1`. The flag-and-hold FLOW is fully implemented and tested against the
-fake; wiring a real ONNX/NSFW model is a flag-gated pre-launch follow-up (plan sections 3/20) that
-swaps only the adapter behind the seam.
+outside production (`USE_FAKE_ABUSE_NSFW` defaults on there). The real adapter has no NSFW model wired:
+it returns no verdict, and `MEDIA_UNSCORED_POLICY` decides what unscored media does (`flag`, the
+default, publishes it with a note; `hold` holds it for review). A model over threshold
+(`MEDIA_NSFW_HOLD_THRESHOLD`, default 0.8) holds the media. The flag-and-hold FLOW is implemented and
+tested; wiring a real model is gated by `USE_REAL_NSFW` and swaps only the adapter behind the seam.
 
-## Adding routes (extension point for later steps)
+## Adding routes
 
 Register a route plugin in `services/api/src/routes/index.ts` - one line in `registerRoutes`:
 
@@ -168,14 +196,17 @@ await registerReportRoutes(app, container)
 
 Each plugin has the shape `(app: FastifyInstance, container: Container) => Promise<void>` and reads
 its seams from `container` (or `app.container`). Health routes are already registered there.
+Handlers register through `route(app, "<endpointName>", ...)` (`src/versioning/route.ts`), which takes
+the method and versioned path from the shared `endpoints` registry; `test/unit/route-coverage.test.ts`
+fails until a new registry entry has test wiring.
 
 ## Migrations
 
-The canonical, hand-authored DDL lives in `services/api/drizzle/0000..0096.sql` (PostGIS geometry,
+The canonical, hand-authored DDL lives in `services/api/drizzle/NNNN_*.sql` (PostGIS geometry,
 GiST indexes, and declarative partitioning that drizzle-kit cannot express). The Drizzle schema under
 `services/api/src/db/schema/` mirrors it for type-safe queries. The runner applies every `.sql` file in
-lexical order, each in its own transaction, recording applied files in `_civfix_migrations` so re-runs
-are a no-op.
+lexical order under a Postgres advisory lock, each in its own transaction, recording applied files in
+`_civfix_migrations` so re-runs are a no-op. There are no down migrations.
 
 ```
 # Dev (tsx, against a live DATABASE_URL):
@@ -185,12 +216,12 @@ pnpm --filter @civfix/api db:migrate
 node dist/db/migrate.js        # == pnpm --filter @civfix/api start:migrate
 ```
 
-The chain starts at `0000_extensions` (PostGIS/citext), `0001_core` (all Phase-1 tables + indexes),
-`0002_chat_partitioning` (range-partitioned `chat_messages`), `0003_users_email` (partial-unique citext
-email) and currently ends at `0096_cleanup_guests`; a new file takes the next number after the highest
-in the directory (`ls services/api/drizzle | tail -1`). The ordering + the canonical file set are
-guarded by `test/unit/migrate-files.test.ts` (locally), and the resulting schema shape by
-`test/integration/schema.test.ts` (Docker-gated).
+The chain starts at `0000_extensions` (PostGIS/pgcrypto/citext), `0001_core` (the original
+non-partitioned tables + indexes), `0002_chat_partitioning` (range-partitioned `chat_messages`),
+`0003_users_email` (partial-unique citext email). The numbering has gaps, so a new file takes the
+highest number in the directory plus one (`ls services/api/drizzle | tail -1`). The lexical ordering
+and the fixed head of the chain are guarded by `test/unit/migrate-files.test.ts` (locally), and the
+resulting schema shape by `test/integration/schema.test.ts` (Docker-gated).
 
 ### Expand/contract is MANDATORY (blue/green deploys)
 
@@ -254,9 +285,12 @@ sudo -u civfix /opt/civfix/infra/ops/deploy.sh
 DEPLOY SEQUENCE (enforced by `depends_on` in the compose file):
 
 1. The `migrate` one-shot service runs `node dist/db/migrate.js` (it reuses the API image, which carries
-   the runner + the `drizzle/*.sql`), applies the whole `0000..0096` chain in lexical order — every
-   deploy runs migrations; they are never applied by hand — then exits 0.
-2. `api` and `media-worker` start only after `migrate` completes successfully AND `redis` is healthy.
+   the runner + the `drizzle/*.sql`) and applies every pending file in lexical order (every deploy runs
+   migrations; they are never applied by hand), then runs the idempotent
+   `node dist/db/backfill-served-key.js` and exits 0. A `seed` one-shot (jurisdiction seed, same image)
+   follows it.
+2. The api colors start only after `migrate` and `seed` complete successfully and Postgres + Redis are
+   healthy; `media-worker` waits on `migrate` and healthy Postgres + Redis (and its egress proxy).
 
 The API exposes `GET /healthz` (liveness, pure, `Cache-Control: no-store`) and `GET /readyz`
 (readiness: pings DB + Redis when wired). Both processes install SIGTERM/SIGINT graceful shutdown. The
@@ -265,11 +299,11 @@ API drains first (`src/lifecycle.ts`), in three bounded phases:
 1. **Drain (`SHUTDOWN_DRAIN_MS`).** `/healthz` answers `503 {"ok":false}` with an
    `x-civfix-draining: 1` response header (a header, so the public body stays a bare `{ok:false}`
    with no deploy state in the JSON clients parse), so Caddy's active health check demotes this
-   color while the process keeps serving every request normally. **The paired civfix-infra change
-   must set `SHUTDOWN_DRAIN_MS=8000` and Caddy `health_interval 2s` + `health_timeout 1s`
-   (demotion inside ~4s); until it lands, the box still runs the older values and the CI
-   availability assertion will not hold.** A configured value above the 10s ceiling is clamped and
-   logged as a warning, so a stale compose value can never be silently reduced.
+   color while the process keeps serving every request normally. civfix-infra pairs this with
+   `SHUTDOWN_DRAIN_MS=8000` on the api service and Caddy `health_interval 2s` + `health_timeout 1s`
+   (demotion inside ~4s); the CI availability assertion depends on both. A configured value above the
+   10s ceiling is clamped and logged as a warning, so an oversized compose value is never silently
+   reduced.
 2. **Close (bounded by the 15s `requestTimeout`).** Fastify is built with
    `forceCloseConnections: false`; its default (`'idle'`) calls `closeAllConnections()` and DESTROYS
    sockets with a request in flight, which is exactly the dropped request the drain exists to prevent.
@@ -289,7 +323,7 @@ API drains first (`src/lifecycle.ts`), in three bounded phases:
 than the container's `stop_grace_period` gets SIGKILLed mid-teardown, which is worse than not draining
 at all. The deployed value is set in the civfix-infra compose `api` service `environment:` block, on the
 same service that carries `stop_grace_period: 45s`, so the drain and its SIGKILL deadline cannot land in
-different deploys; the value this release expects there is **8000**.
+different deploys; the value set there is **8000**.
 
 The loader AND `makeShutdown` both clamp it to 10s, which makes the whole
 shutdown budget explicit and enforced: **drain 10 + close wait 15 + teardown watchdog 15 = 40s, 5s
@@ -299,7 +333,8 @@ grace period fails CI. A hard deadline of the same length (drain + close wait + 
 armed the moment the signal lands, so the process exits inside the grace period even if a phase
 somehow outlives its own bound — the guarantee the old single close watchdog provided.
 
-Resource budget (compose `mem_limit`/`cpus`): api 1.5G / 2 cpu, media-worker 2.5G / 1.5 cpu, redis 1G.
+Resource budget (prod compose `mem_limit`/`cpus`): api 1.5G / 2 cpu per color, media-worker 2.5G /
+1.5 cpu, redis 1G / 1 cpu. The staging overlay trims these.
 
 ### Trusted proxy / client IP (`TRUST_PROXY`)
 
@@ -316,7 +351,8 @@ header. `TRUST_PROXY` configures that trust:
   falls back to the safe default above rather than silently trusting nothing.
 - a CIDR/IP comma list (e.g. `TRUST_PROXY=10.0.0.0/8,127.0.0.1`): trust `X-Forwarded-*` only from those
   source addresses.
-- `true` / `false`: trust all (UNSAFE; private networks only) / trust none (read the raw socket peer).
+- `true` / `false`: trust all (UNSAFE; private networks only, and the loader refuses it in production)
+  / trust none (read the raw socket peer).
 
 This pairs with the Caddyfile in the civfix-infra repo (`edge/caddy/Caddyfile`), which SETS
 `X-Forwarded-For` fresh from Cloudflare's `Cf-Connecting-Ip`, so a client cannot pre-seed the header
@@ -332,17 +368,21 @@ docker build -f services/api/Dockerfile -t civfix/api:latest .
 docker build -f services/media-worker/Dockerfile -t civfix/media-worker:latest .
 ```
 
-ffmpeg/sharp in-container: the worker image relies on `ffmpeg-static` + `ffprobe-static` (self-contained
-statically-linked linux-x64 binaries downloaded on install - no system ffmpeg needed) and `sharp`'s
-prebuilt linux-x64 binaries (glibc, which the Debian bookworm base provides). These are installed INSIDE
-the linux image (never copied from the host) so the platform is correct. See the Dockerfile headers.
+ffmpeg/sharp in-container: the worker image downloads ONE pinned, SHA-256-verified FFmpeg release per
+CPU architecture (selected by BuildKit's `TARGETARCH`; the boxes are arm64) and exports
+`FFMPEG_PATH`/`FFPROBE_PATH`, which the worker requires in production. The npm `ffmpeg-static` /
+`ffprobe-static` packages are devDependencies used only by local runs and tests, and are pruned out of
+the image. `sharp` uses its prebuilt linux binaries for the target architecture (glibc, which the
+Debian bookworm base provides). Everything is installed INSIDE the linux image (never copied from the
+host) so the platform is correct. See the Dockerfile headers.
 
 ## Dev flags: USE_FAKE_*
 
 Outside production, the env loader supplies insecure dev defaults for the signing keys and defaults
 every `USE_FAKE_*` flag to ON, so the server + worker boot with no database, Redis, or cloud
-credentials. In production every flag defaults to OFF and the corresponding [BOOT] credentials are
-required (a missing one fails boot with an aggregated error).
+credentials. In production every flag defaults to OFF, setting any of them ON fails boot, and the
+corresponding [BOOT] credentials are required (a missing one fails boot with an aggregated error). The
+full list, each with its written consequence, is `FAKE_SEAM_FLAGS` in `services/api/src/env.ts`.
 
 | Flag                  | When ON (dev default)             | When OFF (prod default) needs                          |
 | --------------------- | --------------------------------- | ------------------------------------------------------ |
@@ -352,11 +392,14 @@ required (a missing one fails boot with an aggregated error).
 | `USE_FAKE_ABUSE_NSFW` | benign NSFW/dedupe scores         | the real abuse adapter (Turnstile secret optional)     |
 | `USE_FAKE_CHAT`       | in-process chat fan-out           | `DATABASE_URL` + `REDIS_URL` (Drizzle repo + Redis pub/sub) |
 | `USE_FAKE_JOBS`       | in-memory job queue               | `DATABASE_URL` (pg-boss)                               |
+| `USE_FAKE_USER_CHANNEL` | in-process per-user realtime signals | `REDIS_URL` (Redis pub/sub)                        |
+| `USE_FAKE_GEOCODER`   | labels every point "Los Angeles, CA" | `DATABASE_URL` (TIGER lookup over the jurisdictions PostGIS table) |
+| `USE_FAKE_SMS`        | swallows guest-RSVP texts         | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_SMS_FROM` when `SMS_GUEST_ENABLED` is on |
 
 ### Outbound mail to cities is opt-in
 
 Two flags, both OFF by default in every environment, decide whether civfix ever emails a city without
-an operator pressing "Approve & send to jurisdiction" on a report:
+an operator pressing "Send to city" (or "Verify and send to city") on a report in the admin dashboard:
 
 | Flag                        | When ON                                                                                     |
 | --------------------------- | ------------------------------------------------------------------------------------------- |
@@ -364,8 +407,8 @@ an operator pressing "Approve & send to jurisdiction" on a report:
 | `OUTREACH_DIGEST_ENABLED`    | the daily `outreach.digest` cron and the enqueue after saving a jurisdiction's contacts send the per-jurisdiction "reports awaiting your attention" digest |
 
 With both off, the only mail a city receives is the packet an operator sends per report. Enabling either
-is a SOPS edit on the box's `api.sops.env` (`OUTREACH_DIGEST_ENABLED` also needs a restart so the cron is
-scheduled).
+is a SOPS edit to that environment's `secrets/<env>/api.sops.env` in civfix-infra followed by a deploy
+(both flags are read at boot; `OUTREACH_DIGEST_ENABLED` is also what schedules the cron).
 
 To exercise a real seam locally, run the dev infra from the civfix-infra repo
 (`compose/docker-compose.dev.yml` brings up PostGIS + Redis), set `DATABASE_URL` / `REDIS_URL`, and turn
@@ -400,11 +443,6 @@ verifying with the configured code signs in and, on first use, creates a fully s
 works for this exact address, that address never accepts a mailed code, and a wrong guess spends the
 same per-IP verify throttle as any other failed sign-in. `@reviewer` is on the reserved-handle
 blocklist so no real user can take it.
-
-## Phase-1 acceptance
-
-`services/api/PHASE1-ACCEPTANCE.md` maps each Phase-1 done-criterion to the endpoint(s)/code that
-satisfy it and the test(s) that prove it, and marks which are proven locally vs Docker-gated/CI.
 
 ## License
 

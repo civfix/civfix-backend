@@ -7,7 +7,7 @@ Korean fallback that keeps a Hangul name or event title from printing as `.notde
 **Every file here is a STATIC INSTANCE, never a variable font.** pdfkit/fontkit embed a variable font's
 *default instance only*, so a `wght`-axis VF would silently render SemiBold as Regular. `MANIFEST.json`
 records a SHA-256 per file and `test/unit/certificate-fonts.test.ts` re-hashes them on every run, which is
-the same guarantee `scripts/copy-contract-fonts.mjs` gives the web app.
+the same guarantee civfix-app's `apps/community-web/scripts/copy-contract-fonts.mjs` gives the web app.
 
 Nothing in this directory was instanced, subsetted, renamed or otherwise modified by us — each file is a
 byte-for-byte copy of an upstream static release, so the OFL's Reserved Font Name clause is not engaged.
@@ -19,8 +19,9 @@ Google Fonts publishes Baloo 2, Bricolage Grotesque, Hanken Grotesk and JetBrain
 `github.com/google/fonts` as **variable** TTFs only (`Baloo2[wght].ttf`,
 `BricolageGrotesque[opsz,wdth,wght].ttf`, `HankenGrotesk[wght].ttf`, `JetBrainsMono[wght].ttf`), which is
 exactly the trap described above. The static per-weight instances published by the
-`@expo-google-fonts/*` packages — the same files civfix-mobile already ships and renders with, so the
-printed document matches the app — were vendored instead:
+`@expo-google-fonts/*` packages — the same files the community mobile app (civfix-app
+`apps/community-mobile`) already ships and renders with, so the printed document matches the app — were
+vendored instead:
 
 | file | copied from | package version | font version |
 |---|---|---|---|
@@ -62,8 +63,8 @@ forbidden for exactly that reason. pdfkit/fontkit embed and subset CFF OpenType 
 run. The `SubsetOTF` in the upstream path means "Korean subset of the pan-CJK family", not "already
 subsetted for us" — fontkit still subsets it per document.
 
-Only the Regular weight is vendored (DP §2.2's stated lever): a CJK Bold would add another ~4.8 MB to the
-image for one typographic nuance, so CJK headings render Regular.
+Only the Regular weight is vendored, deliberately: a CJK Bold would add another ~4.8 MB to the image for
+one typographic nuance, so CJK headings render Regular.
 
 ## Re-vendoring checklist
 
@@ -73,4 +74,5 @@ image for one typographic nuance, so CJK headings render Regular.
 4. `pnpm --filter @civfix/api test certificate-` — the manifest re-hash, the size bounds (no 0-byte file,
    nothing over 8 MB, which is how a committed Git-LFS pointer gets caught) and the Hangul render all run
    there.
-5. `pnpm --filter @civfix/api exec tsx scripts/render-sample-certificate.ts` and eyeball the output.
+5. `pnpm --filter @civfix/api render:sample-certificate` and eyeball the output (written to
+   `/tmp/civfix-cert` by default).

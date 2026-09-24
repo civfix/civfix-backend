@@ -1,11 +1,11 @@
 # Location coarsening for public display — assessment & recommendation
 
 **Audience:** internal (engineering + product + privacy counsel). Not served publicly.
-**Last updated:** 2026-06-20 (privacy/backend-hardening).
+**Last updated:** 2026-09-23 (checked against the code; first written 2026-06-20).
 
-Backs `documents/21-privacy-compliance.md` section 7.3 ("Location coarsening at
-rest/display where precision isn't needed"), flagged P1 with a counsel/product
-judgment marker.
+Backs the privacy item "location coarsening at rest/display where precision
+isn't needed", which is a counsel/product judgment rather than an engineering
+one.
 
 ## Assessment: do public report responses expose full precision? YES.
 
@@ -14,9 +14,15 @@ into the DTO at **full stored precision** on every PUBLIC surface:
 
 | Surface | Code | Field |
 |---|---|---|
-| Public report detail (non-owner read) | `services/api/src/services/report-service.ts` `toReportDTO` | `lat: record.lat, lng: record.lng` |
-| Map pins (browse) | same file, `toMapPinDTO` | `lat: pin.lat, lng: pin.lng` |
+| Public report detail (non-owner read) | `services/api/src/services/report-service.ts` `toReportDTO` | `lat: record.lat, lng: record.lng`, plus `addr` / `addrSource` / `addrPrecision` |
+| Map pins (browse) | same file, `listReportsInBBox` -> `toMapPinDTO` | `lat: pin.lat, lng: pin.lng`, plus `addr` |
 | Search results | same file, `searchReports` -> `toMapPinDTO` | same |
+
+`addr` is the address line snapshotted at creation: the reporter's own text or
+the server's reverse geocode, with `addrSource` (`user` / `resolved`) and
+`addrPrecision` (`street`, `intersection`, `landmark`, `locality`) recording
+where it came from and how precise it is (migration 0179). A street-precision `addr` locates the report as exactly as the
+coordinate does.
 
 The owner's own detail/list (`mine: true`) and the create-time idempotency
 snapshot also carry full precision; routing to a jurisdiction uses the precise
@@ -30,7 +36,9 @@ coordinate this platform already publishes at full precision on the linked
 report or event, it is never populated from a client-supplied coordinate, and
 it is never projected into any DTO — it only orders the feed, and the feed
 emits `PostDTO`, which carries no post-level coordinate at all. The only
-derived value that leaves the server is the ranking score.
+derived value that leaves the server is the ranking score (inside the feed
+cursor), and the distance it is computed from is first rounded to 1 km
+(`FEED_DISTANCE_RESOLUTION_KM`, `services/post-service.ts`).
 
 Consequence for any future coarsening decision: rounding the projected
 `lat`/`lng` would NOT cover `posts.geom`, which would keep ordering the feed at
@@ -42,11 +50,15 @@ transit — has to cover this column, `reports.geom`, `cleanups.geom` and
 
 ## Is a backend-only coarsening possible without a shared-contract change?
 
-**Technically yes.** `ReportDTO.lat/lng` and `ReportPinDTO.lat/lng` are
-unconstrained `z.number()` in `@civfix/shared`, so rounding them server-side
+**Technically yes.** `ReportDTO.lat/lng` and `ReportPinDTO.lat/lng` come from
+`LatLngFields` in `@civfix/shared`, which checks only the range (-90..90,
+-180..180) and puts no constraint on precision, so rounding them server-side
 before send is a pure display transform that needs NO contract change and NO
 migration. The precise `geom` stays untouched for routing; only the projected
-number is rounded.
+number is rounded. Coarsening the coordinate alone is not enough, though: the
+same responses carry `addr`, which would need a matching display rule (for
+example dropping or generalising a `street`-precision line for non-owners,
+which `addrPrecision` makes possible without a re-geocode).
 
 It IS contained: a single `coarsen(lat, lng)` helper applied in `toMapPinDTO` and
 in `toReportDTO` **only when `mine === false`** (owner keeps precise; the
@@ -56,10 +68,8 @@ emitted leaf pins).
 
 ## Why this was NOT implemented here (product/counsel DECISION)
 
-Per the task's guard ("if it would require ... a product decision, do NOT
-implement; write a recommendation"), and because the privacy doc flags this with a
-counsel marker, the COARSENING RADIUS is a product decision, not an engineering
-one:
+The COARSENING RADIUS is a product and counsel decision, not an engineering
+one, so it was written up as a recommendation instead of implemented:
 
 - ~3 decimal places ≈ 110 m grid (hides the exact doorstep; still "this block").
 - ~4 decimal places ≈ 11 m (barely hides anything).
@@ -80,8 +90,9 @@ the map, is a product + counsel call.
    for a uniform privacy cell.
 2. **Implement as a backend-only transform** once the radius is chosen: a
    `coarsenForPublicDisplay(lat, lng)` helper applied in `toMapPinDTO` and in
-   `toReportDTO` guarded by `!mine`. No shared-contract change, no migration.
-   Cluster math stays on precise points; round only the emitted leaf pins.
+   `toReportDTO` guarded by `!mine`, with the matching `addr` rule. No
+   shared-contract change, no migration. Cluster math stays on precise points;
+   round only the emitted leaf pins.
 3. **Keep `geom` precise** for jurisdiction routing and the owner's own views.
 4. Reflect the chosen behavior in the public privacy policy ("we show approximate
    locations publicly").

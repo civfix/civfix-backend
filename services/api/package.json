@@ -2,8 +2,8 @@
   "name": "@civfix/api",
   "version": "1.2.0",
   "private": true,
-  "description": "civfix Fastify 5 API service. Hosts HTTP + WS endpoints; all external dependencies sit behind the 12 @civfix/shared interfaces, selected real-vs-fake in the DI container.",
-  "license": "UNLICENSED",
+  "description": "civfix Fastify 5 API service. Hosts HTTP + WS endpoints; all external dependencies sit behind the 11 @civfix/shared seam interfaces, selected real-vs-fake in the DI container.",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/server.js",
   "exports": {
@@ -52,6 +52,7 @@
     "db:backfill:signup-seats": "tsx src/db/backfill-signup-seats.ts",
     "db:backfill:post-geom": "tsx src/db/backfill-post-geom.ts",
     "email:gallery": "tsx scripts/render-email-gallery.ts",
+    "render:sample-certificate": "tsx scripts/render-sample-certificate.ts",
     "db:certificate:revoke": "tsx scripts/revoke-certificate.ts",
     "db:prepare-boundaries": "tsx scripts/prepare-boundaries.ts",
     "db:boundaries:refresh": "tsx scripts/refresh-boundaries.ts",

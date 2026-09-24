@@ -2,26 +2,17 @@
   "name": "@civfix/config",
   "version": "0.0.0",
   "private": true,
-  "description": "Shared build/lint/format presets for civfix backend services: eslint flat config, base tsconfig, and prettier config.",
+  "description": "Shared lint and format presets for civfix backend services: the eslint flat config and the prettier config.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "exports": {
     "./eslint": "./eslint.config.js",
-    "./prettier": "./prettier.config.js",
-    "./tsconfig.json": "./tsconfig.json"
+    "./prettier": "./prettier.config.js"
   },
   "files": [
     "eslint.config.js",
-    "prettier.config.js",
-    "tsconfig.json"
+    "prettier.config.js"
   ],
-  "scripts": {
-    "build": "echo \"@civfix/config: nothing to build\"",
-    "typecheck": "echo \"@civfix/config: nothing to typecheck\"",
-    "lint": "echo \"@civfix/config: nothing to lint\"",
-    "test": "echo \"@civfix/config: no tests\"",
-    "clean": "echo \"@civfix/config: nothing to clean\""
-  },
   "devDependencies": {
     "@eslint/js": "^9.16.0",
     "eslint": "^9.16.0",

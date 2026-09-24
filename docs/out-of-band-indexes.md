@@ -26,6 +26,13 @@ ssh civfix
 sudo -n docker exec -it compose-postgres-1 psql -U civfix -d civfix
 ```
 
+Both boxes run the same migrations, so every entry below is built on staging
+too: `ssh civfix-dev`, where the container prefix is the project name
+(`civfix-staging-postgres-1`). The api is blue/green, so a command that runs
+inside the api container targets the LIVE color, read from the state file
+`/opt/civfix/state/active-color` (prod container `compose-api-<color>-1`,
+staging `civfix-staging-api-<color>-1`); there is no `compose-api-1`.
+
 ## Pending
 
 ### `users_last_activity_gist` + `users_last_activity_at_idx` (migration 0102, audit H18)
@@ -196,8 +203,11 @@ WHERE report_id IS NULL AND chat_message_id IS NULL AND post_id IS NULL
 LIMIT 1000;
 ```
 
-The plan must show `Index Scan using media_assets_orphan_sweep_idx`. The two
-avatar `NOT EXISTS` probes are evaluated on the (now small) candidate set.
+The plan must show `Index Scan using media_assets_orphan_sweep_idx`. The
+remaining binding probes (`mediaBoundElsewhere` in
+`services/api/src/services/media-bindings.ts`: user and group avatars,
+organization logos, event cover/gallery, signup-page media) are evaluated on the
+(now small) candidate set.
 
 ## Done
 

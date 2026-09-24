@@ -21,7 +21,7 @@
  * `document_sha256` against the stored PDF. Revoke, notify the holder, let them re-issue: after the void
  * their ledger fingerprint differs, so the `(user_id, ledger_fingerprint) WHERE revoked_at IS NULL`
  * idempotency index does not block the new document. The detection query is in the migration banner and in
- * docs/security/2026-07-24-full-backend-security-review.md §1b.
+ * docs/operator-runbook.md §1b.
  *
  * DELIBERATELY NOT AN HTTP ROUTE. An admin endpoint that revokes another person's signed document is a
  * standing capability on a public-verification surface; this is a rare, deliberate, per-code action, so it

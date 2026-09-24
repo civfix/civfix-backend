@@ -31,7 +31,7 @@ Every step was legal, every hour landed on a transcript, and nothing was flagged
 | a | A credit is capped at the event's own window: `COALESCE(completed_at, ends_at) - scheduled_at` **+ 1 h grace**, never above `MAX_EVENT_HOURS` (24) | `volunteer-hours-service.ts` (`creditableHoursForEvent`, `eventDurationMs`) | `VALIDATION` naming the event's real length |
 | b | One person may hold at most **24 h across every event scheduled on the same local calendar day**, read in the event's own IANA zone (`cleanups.timezone`, falling back to `DEFAULT_EVENT_TIME_ZONE`) | `volunteer-hours-repository.drizzle.ts`, inside the crediting transaction under a per-user advisory lock | `CONFLICT` naming what they already hold |
 | c | Reciprocity inside one event is refused **in both directions** — whoever credits second is the one refused (covers the organizer ↔ promoted-co-host swap) | same transaction | `CONFLICT` |
-| d | Two anomaly signals are **flagged to moderation, never blocked**: >60 h credited in a rolling 7 days, and A↔B crediting each other on *different* events within 30 days | detected in the transaction, filed by `volunteer-hours-anomaly.ts` | an open `moderation_items` row, `kind = 'pattern'`, `subject_type = 'user'` |
+| d | Two anomaly signals are **flagged to moderation, never blocked**: >60 h credited in a rolling 7 days, and A↔B crediting each other on *different* events within 30 days | detected in the transaction (`detectHoursAnomalies`, `volunteer-hours-repository.drizzle.ts`), filed after commit by `reportAnomalies` (`volunteer-hours-service.ts`) as the item `toHoursAnomalyModerationItem` (`volunteer-hours-anomaly.ts`) builds | an open `moderation_items` row, `kind = 'pattern'`, `subject_type = 'user'` |
 | e | Hours can be logged only **once the event has ended** (`now >= ends_at`), and never against an event whose window is **shorter than 15 minutes** | `volunteer-hours-service.ts` (`hasEventEnded`, then the `MIN_EVENT_DURATION_MS` check in `logEventHours`) | `CONFLICT` |
 
 Rule (e)'s 15-minute floor is really enforced at write time: `assertEventWindow`
@@ -99,8 +99,9 @@ the weekly flag (48 h in two days is well inside a 60 h week, but a repeat of th
 pattern is not).
 
 **`users.last_activity_geom` is not cleared when its source report is deleted.**
-The column is written on report/event create and on event completion, never on
-delete, so a tombstoned report's point can outlive it. This is staleness in a
+The column is written on report create and event create (`touchUserActivity`,
+`db/sql/user-activity.ts`), never on delete, so a tombstoned report's point can
+outlive it. This is staleness in a
 ranking input only: the value is **never served to any client** — it exists solely
 to bound the follow-suggestions candidate scan — and it *is* nulled, with the rest
 of the tombstone, when the account itself is erased (`auth/pg-stores.ts`). The next
@@ -127,9 +128,18 @@ Issuance (`certificate-service.ts` → `entriesForCertificate`) already excludes
 rows and `source = 'report'` rows. There is **no per-row "flagged" or "pending moderation" state** on
 `volunteer_hours`, and none was added: a moderation signal is a suspicion about a pattern, not a verdict
 on a row, and a silently-omitted row would make the printed total disagree with the ledger the holder
-can see. The operator remedy for confirmed abuse is the existing one — void the rows
-(`voided_at`), which removes them from every future certificate, and revoke any certificate already
-issued over them (`POST /v1/me/volunteer-hours/certificates/:code/revoke`, or the admin void path).
+can see.
+
+The remedy for confirmed abuse is to void the rows (`voided_at`), which removes them from every future
+certificate and from every total, and to revoke any certificate already issued over them. **Neither has
+an operator path in the API today.** No route or service sets `volunteer_hours.voided_at` (the only
+writers are migration `0065_void_report_volunteer_hours.sql` and the in-memory test repository), so
+voiding is a hand-run SQL `UPDATE`. `POST /v1/me/volunteer-hours/certificates/:code/revoke` revokes only
+the caller's own certificate (`WHERE user_id = ${userId}` in `certificate-repository.drizzle.ts`, reason
+`holder`). There is deliberately no admin HTTP route for either; revoking a certificate the holder will
+not revoke is the operator CLI `pnpm --filter @civfix/api db:certificate:revoke <code> --reason issued_in_error`
+(run `--dry-run` first), which records an operator reason and deletes the stored PDF. Never hand-edit the
+certificate row. The procedure is in `docs/operator-runbook.md` §1b.
 
 ## Configuration
 

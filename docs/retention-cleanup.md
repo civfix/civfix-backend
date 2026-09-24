@@ -3,17 +3,19 @@
 **Audience:** internal (engineering + ops). Not served publicly.
 **Last updated:** 2026-09-02 (audit-fix pass: inbound_emails TTL + doc-drift corrections).
 
-Backs the "written retention schedule + scheduled cleanup jobs" item in
-`documents/21-privacy-compliance.md` §7.1 for the TTL-able auth artifacts that
-previously accumulated forever (no existing path deleted them).
+The written retention schedule and its scheduled cleanup jobs. It started with
+the TTL-able auth artifacts that previously accumulated forever (no existing path
+deleted them).
 
 ## What runs
 
 A `retention.sweep` cron in the **media-worker** (the same process that runs
 `orphan.sweep` and `chat.partition.maintenance`) deletes expired rows from the
-tables below. Every lane but `inbound_emails` deletes already-expired rows only
-and needs no schema of its own (`geocode_cache` brings its own index, created
-with the table).
+tables below. Every lane but `inbound_emails` deletes already-expired rows only;
+the only schema the lanes need is a supporting index per predicate
+(`idempotency_keys_created_idx` 0037, `notifications_created_idx` 0094,
+`email_otps_expires_idx` / `email_otps_consumed_idx` 0098, and the index
+`geocode_cache` was created with).
 
 | Table | Rows deleted | Source schema |
 |---|---|---|
@@ -27,8 +29,11 @@ with the table).
 
 `cutoff = now - grace`, where `grace` defaults to **1 hour** past expiry (so a
 just-expired row is never raced out from under an in-flight request). Each table
-is deleted in a bounded batch (default **5000** rows/run, via a `ctid` subselect)
-so a backlog drains over several daily runs rather than one long-locking DELETE.
+is deleted in bounded pages (default **5000** rows/page, `RETENTION_BATCH`, via a
+`LIMIT`ed key subselect: the primary key, or `ctid` for `idempotency_keys`), up to
+**20** pages per table per run (`RETENTION_MAX_PAGES`), so a backlog drains over
+several daily runs rather than one long-locking DELETE. The `inbound_emails` lane
+pages at 200 rows (`INBOUND_EMAIL_RETENTION_BATCH`).
 
 ## Where it lives
 
@@ -52,9 +57,11 @@ and chat-partition maintenance. When the worker boots against a real
 
 ## Tuning
 
-Overridable per run via `runRetentionSweep({ graceMs, batchSize })`. The cron
-expression is a code constant (`RETENTION_SWEEP_CRON`); change it there if a more
-frequent cadence is wanted.
+Overridable per run via `runRetentionSweep({ graceMs, batchSize, maxPages })`;
+the worker passes `batchSize` and `maxPages` from the `RETENTION_SWEEP_BATCH` /
+`RETENTION_SWEEP_MAX_PAGES` env vars (defaults 5000 / 20,
+`services/media-worker/src/config.ts`). The cron expression is a code constant
+(`RETENTION_SWEEP_CRON`); change it there if a more frequent cadence is wanted.
 
 ## Not covered here (deliberately)
 
@@ -93,8 +100,8 @@ shown in the feed), split into a second drain — no schema change needed.
 INDEX: `notifications_created_idx` (migration `0094_notifications_created_idx.sql`)
 now covers the bare `created_at` drain — this was previously listed as deferred.
 The F089 `notifications_feed_idx` is `(user_id, created_at DESC, id DESC) WHERE
-type <> …` and does NOT cover it. The `DELETE /me` erasure cleanup step and the
-`docs/erasure-behavior.md` row are owned by the users/erasure workstream.
+type <> …` and does NOT cover it. Account deletion separately deletes the user's
+own notifications in a `DELETE /me` cleanup step (`docs/erasure-behavior.md`).
 
 UPDATE (H19, audit 2026-09) — the inflow side is now bounded too. Group/report
 room activity used to write ONE row per member per message. Two windows now
@@ -146,8 +153,10 @@ A caller opts in by passing `dispatchToJob` (and optionally the cross-process
 `claimWindow`) to `makeRoomFanoutNotifier`; with neither, the notifier fans out
 inline exactly as before, and an enqueue that throws (queue not started) also
 falls back inline so bells are never silently dropped. The REST poll lane stays
-inline on purpose — a poll create is one event, not a burst. Wiring the WS send
-lane (`src/routes/chat-gateway-wiring.ts`) is the remaining step.
+inline on purpose: a poll create is one event, not a burst. The WS send lane
+(`src/routes/chat-gateway-wiring.ts`) opts in: it passes `dispatchToJob` when
+`roomFanoutMode` reports the queued mode and `claimWindow` when it reports the
+claimed mode.
 
 ---
 
@@ -192,9 +201,9 @@ poison object.
 - **Retention:** delete `inbound/failed/**` objects older than **14 days**.
 - **How it is enforced:** OWNED BY OPS — an R2 lifecycle rule on the inbound
   bucket, or a bounded pass inside the retention sweep. This code change adds
-  the visibility signal only (`runInboundSweep` now returns `parked`, logged by
-  `inbound.sweep`), not the reaper. See the wiring request in
-  `SCRATCH/wiring/adminmail-a.md` (F106).
+  the visibility signal only (`runInboundSweep` in
+  `services/api/src/services/admin/inbound-sweep.ts` returns `parked`, logged by
+  `inbound.sweep`), not the reaper.
 - **No new PII surface:** the bytes are already the raw inbound message; this
   documents an existing store and bounds its lifetime, it does not add data.
 
@@ -299,16 +308,18 @@ re-qualifying the row could only leave a row pointing at deleted objects. The wi
 single sweep run, and the only way a row could stop qualifying inside it is an operator un-archiving it in
 that instant — for which "the row goes" is the consistent outcome, not a lost decision.
 
-**OPS:** the worker's SOPS env (`civfix-infra/secrets/media-worker.sops.env`)
-currently carries `R2_PUBLIC_BASE` but NOT `R2_INBOUND_BUCKET`, so the bucket
-cannot be identified there yet. The worker does **not** refuse to boot over
-this: it logs a warning, leaves `inboundStorage` undefined, and the lane is
-**skipped entirely** — rows are KEPT, never deleted with unreachable
-attachments. Add `R2_INBOUND_BUCKET` (the same value the API uses) to the
-worker's env to activate the lane. A failed object delete is counted
-(`inboundEmailObjectsLeaked`) and reported to GlitchTip, and the row is **kept** so the next run retries
-it — a row is only deleted once every one of its objects is gone. A page where nothing at all could be
-reaped ends the drain rather than re-selecting the same rows.
+**OPS:** the prod worker's SOPS env (`civfix-infra/secrets/prod/media-worker.sops.env`)
+carries `R2_INBOUND_BUCKET`, so the lane runs on prod. The staging worker's env
+(`civfix-infra/secrets/staging/media-worker.sops.env`) carries `R2_PUBLIC_BASE`
+but NOT `R2_INBOUND_BUCKET`, so the bucket cannot be identified there. The
+worker does **not** refuse to boot over this: it logs a warning, leaves
+`inboundStorage` undefined, and the lane is **skipped entirely**: rows are
+KEPT, never deleted with unreachable attachments. Add `R2_INBOUND_BUCKET` (the
+same value that environment's API uses) to the worker's env to activate the
+lane. A failed object delete is counted (`inboundEmailObjectsLeaked`) and
+reported to GlitchTip, and the row is **kept** so the next run retries it; a row
+is only deleted once every one of its objects is gone. A page where nothing at
+all could be reaped ends the drain rather than re-selecting the same rows.
 
 **Not covered:** `mail_threads` / `mail_messages` (the operator outreach record
 for reports and events) are civic-record correspondence about a public report and
@@ -353,9 +364,12 @@ must outlive the in-flight and stale-claim windows by a wide margin.
 Organizations, ticketed registration and host broadcasts each add
 stores with their own rule. Everything below is enforced by the
 `host.retention.sweep` cron (`HOST_RETENTION_CRON`, default `35 4 * * *`) unless
-another lane is named; every lane is bounded (`RETENTION_BATCH_SIZE` = 1000 rows ×
-`RETENTION_MAX_PAGES` = 50 pages per run, `retention-lanes.ts`) and NEVER throws —
-a failed lane is logged and the next lane still runs.
+another lane is named. The lanes are registered in
+`services/api/src/services/host/comms-jobs.ts` (`registerHostRetentionLanes`) and
+every lane is bounded: `RETENTION_BATCH_SIZE` = 1000 rows × `RETENTION_MAX_PAGES`
+= 50 pages per run (`retention-lanes.ts`), except the `registrations` lane, which
+pages at 500 rows × 20 pages per sub-lane (`registration-retention.ts`). A lane
+NEVER throws out of the sweep: a failed lane is logged and the next lane still runs.
 
 ### Organizations and event team
 
@@ -387,7 +401,7 @@ a failed lane is logged and the next lane still runs.
 | `broadcast_deliveries` rows | **180 d** from `created_at` | `host.retention.sweep` → `broadcast_deliveries` |
 | `broadcasts` subject + body + CTA | scrubbed **180 d** after `finished_at`; the counts and the row are kept indefinitely as the audit record that a message was sent | `host.retention.sweep` → `broadcast_content` |
 | `host_exports` rows | **90 d** from `requested_at` | `host.retention.sweep` → `host_exports` |
-| host export OBJECTS | **24 h** (`HOST_EXPORT_TTL_HOURS`); objects are deleted BEFORE their rows | `host.export.reap` |
+| host export OBJECTS | **24 h** (`HOST_EXPORT_TTL_HOURS`); the object is deleted BEFORE its row is marked `expired`, and a failed delete leaves the row for the next pass (the row itself goes with the `host_exports` lane) | `host.export.reap` |
 | `event_metrics_daily` | **never** — aggregates with no identifier of any kind, and the only long-run record a host has | — |
 | `broadcast_unsubscribes`, `email_suppressions` | **indefinite, deliberately** — a suppression list that expires re-enables mailing someone who said stop (same reasoning as `sms_opt_outs`) | — |
 
