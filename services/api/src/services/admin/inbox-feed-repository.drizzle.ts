@@ -95,7 +95,10 @@ function toInboxFeedItem(row: InboxFeedRow): InboxFeedItemDTO {
 }
 
 export function toInboxFeedPage(rows: readonly InboxFeedRow[], limit: number): InboxFeedResponse {
-  const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({ atText: r.cursor_at, id: r.id }))
+  const { items, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+    atText: r.cursor_at,
+    id: r.id,
+  }))
   return { items: items.map(toInboxFeedItem), nextCursor }
 }
 
@@ -109,9 +112,7 @@ export function makeDrizzleInboxFeedRepository(sql: Sql): InboxFeedRepository {
       const search = (columns: SqlFragment[]): SqlFragment =>
         q === "" ? sql`` : sql`AND ${ilikeAnyOf(sql, columns, q)}`
       const before = (ts: SqlFragment, id: SqlFragment): SqlFragment =>
-        anchor === null
-          ? sql``
-          : sql`AND ${keysetPredicate(sql, ts, id, anchor)}`
+        anchor === null ? sql`` : sql`AND ${keysetPredicate(sql, ts, id, anchor)}`
 
       const branches: SqlFragment[] = []
       if (INBOX_FEED_EMAIL_FILTERS.has(filter)) {

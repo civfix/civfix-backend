@@ -80,7 +80,6 @@ const EMPTY_REPORT_COUNTS: AdminReportCounts = {
   needsVerification: 0,
 }
 
-
 function firstTemplate(...candidates: (string | null | undefined)[]): string | null {
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim() !== "") return candidate
