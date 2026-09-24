@@ -17,6 +17,8 @@ import {
   type CategoryCountRow,
 } from "./category-counts.js"
 import type {
+  DirectoryFilter,
+  DirectorySort,
   JurisdictionContactsRepository,
   JurisdictionDirectoryRecord,
   JurisdictionGeometryRecord,
@@ -27,10 +29,12 @@ import type {
 } from "./jurisdiction-contacts-types.js"
 import { AppError } from "@civfix/shared"
 import type { JurisdictionLayer, ReportCategory } from "@civfix/shared"
-import { ilikeAnyOf } from "./sql-fragments.js"
+import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 
 const PG_UNIQUE_VIOLATION = "23505"
 const JURISDICTION_HANDLE_CONSTRAINT = "jurisdictions_handle_lower_key"
+
+const HANDLE_TAKEN_BY_JURISDICTION = "That @handle is already used by another jurisdiction."
 
 function isJurisdictionHandleConflict(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false
@@ -103,6 +107,77 @@ async function loadUnmappedAggregate(
   `
   const r = rows[0]
   return { total: parseCount(r?.total), perCategoryCounts: parseCategoryCounts(r) }
+}
+
+function directoryMethodFilter(
+  sql: Sql,
+  filter: DirectoryFilter,
+  hasEmailExpr: SqlFragment,
+  hasFormExpr: SqlFragment,
+): SqlFragment {
+  switch (filter) {
+    case "email":
+      return sql`AND ${hasEmailExpr}`
+    case "form":
+      return sql`AND NOT ${hasEmailExpr} AND ${hasFormExpr}`
+    case "none":
+      return sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr})`
+    case "routed":
+      return sql`AND (${hasEmailExpr} OR ${hasFormExpr})`
+    case "needs_mapping":
+      return sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr}) AND COALESCE(w.total, 0) > 0`
+    default:
+      return sql``
+  }
+}
+
+function directoryOrderBy(sql: Sql, sort: DirectorySort): SqlFragment {
+  switch (sort) {
+    case "reports":
+      return sql`ORDER BY COALESCE(w.total, 0) DESC, j.geoid ASC`
+    case "name":
+      return sql`ORDER BY j.name ASC, j.geoid ASC`
+    case "oldest":
+      return sql`ORDER BY w.oldest_waiting_at ASC NULLS LAST, j.geoid ASC`
+    default:
+      return sql`ORDER BY COALESCE(j.population, 0) DESC, j.geoid ASC`
+  }
+}
+
+interface FacetAggregateRow {
+  total: string
+  routed: string
+  unrouted: string
+}
+
+async function directoryTotals(
+  args: ListDirectoryArgs,
+  offset: number,
+  filteredTotal: string | undefined,
+  queryFacets: () => Promise<FacetAggregateRow | undefined>,
+): Promise<Pick<ListDirectoryResult, "total" | "facets">> {
+  if (offset !== 0) return { total: null, facets: null }
+  const isDefaultView = args.filter === "all" && args.q === null && args.layer === null
+  const cached = isDefaultView ? readDirectoryFacetCache() : null
+  if (cached !== null) return { total: cached.total, facets: cached.facets }
+  const a = await queryFacets()
+  const facets = { routed: Number(a?.routed ?? "0"), unrouted: Number(a?.unrouted ?? "0") }
+  if (isDefaultView) writeDirectoryFacetCache({ total: Number(a?.total ?? "0"), facets })
+  return { total: Number(filteredTotal ?? "0"), facets }
+}
+
+async function withUnmappedRecord(
+  sql: Sql,
+  args: ListDirectoryArgs,
+  result: ListDirectoryResult,
+): Promise<ListDirectoryResult> {
+  if (!shouldIncludeUnmapped(args)) return result
+  const unmapped = await loadUnmappedAggregate(sql)
+  if (unmapped.total <= 0) return result
+  return {
+    ...result,
+    records: [buildUnmappedRecord(unmapped.total, unmapped.perCategoryCounts), ...result.records],
+  }
 }
 
 export function makeDrizzleJurisdictionContactsRepository(
@@ -217,7 +292,7 @@ export function makeDrizzleJurisdictionContactsRepository(
               LIMIT 1
             `
             if (dupeJurisdiction.length > 0) {
-              throw AppError.conflict("That @handle is already used by another jurisdiction.")
+              throw AppError.conflict(HANDLE_TAKEN_BY_JURISDICTION)
             }
             const dupeUser = await tx<{ id: string }[]>`
               SELECT id FROM users WHERE lower(handle::text) = lower(${handle}) LIMIT 1
@@ -229,7 +304,7 @@ export function makeDrizzleJurisdictionContactsRepository(
               await tx`UPDATE jurisdictions SET handle = ${handle} WHERE geoid = ${geoid}`
             } catch (err) {
               if (isJurisdictionHandleConflict(err)) {
-                throw AppError.conflict("That @handle is already used by another jurisdiction.")
+                throw AppError.conflict(HANDLE_TAKEN_BY_JURISDICTION)
               }
               throw err
             }
@@ -289,29 +364,11 @@ export function makeDrizzleJurisdictionContactsRepository(
         )
       )`
       const hasFormExpr = sql`(j.report_form_url IS NOT NULL AND btrim(j.report_form_url) <> '')`
-      const methodFilter =
-        args.filter === "email"
-          ? sql`AND ${hasEmailExpr}`
-          : args.filter === "form"
-            ? sql`AND NOT ${hasEmailExpr} AND ${hasFormExpr}`
-            : args.filter === "none"
-              ? sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr})`
-              : args.filter === "routed"
-                ? sql`AND (${hasEmailExpr} OR ${hasFormExpr})`
-                : args.filter === "needs_mapping"
-                  ? sql`AND NOT (${hasEmailExpr} OR ${hasFormExpr}) AND COALESCE(w.total, 0) > 0`
-                  : sql``
+      const methodFilter = directoryMethodFilter(sql, args.filter, hasEmailExpr, hasFormExpr)
 
       const layerFilter = args.layer !== null ? sql`AND j.layer = ${args.layer}` : sql``
 
-      const orderBy =
-        args.sort === "reports"
-          ? sql`ORDER BY COALESCE(w.total, 0) DESC, j.geoid ASC`
-          : args.sort === "name"
-            ? sql`ORDER BY j.name ASC, j.geoid ASC`
-            : args.sort === "oldest"
-              ? sql`ORDER BY w.oldest_waiting_at ASC NULLS LAST, j.geoid ASC`
-              : sql`ORDER BY COALESCE(j.population, 0) DESC, j.geoid ASC`
+      const orderBy = directoryOrderBy(sql, args.sort)
 
       const rows = await sql<DirectoryRow[]>`
         WITH waiting AS (
@@ -400,16 +457,12 @@ export function makeDrizzleJurisdictionContactsRepository(
       const page = (hasMore ? rows.slice(0, limit) : rows).map(toRecord)
       const nextCursor = hasMore ? encodeOffsetCursor(offset + limit) : null
 
-      let total: number | null = null
-      let facets: { routed: number; unrouted: number } | null = null
-      if (offset === 0) {
-        const isDefaultView = args.q === null && args.layer === null
-        const cached = args.filter === "all" && isDefaultView ? readDirectoryFacetCache() : null
-        if (cached !== null) {
-          total = cached.total
-          facets = cached.facets
-        } else {
-          const agg = await sql<{ total: string; routed: string; unrouted: string }[]>`
+      const { total, facets } = await directoryTotals(
+        args,
+        offset,
+        rows[0]?.filtered_total,
+        async () => {
+          const agg = await sql<FacetAggregateRow[]>`
             SELECT
               COUNT(*)::text AS total,
               COUNT(*) FILTER (WHERE ${hasEmailExpr} OR ${hasFormExpr})::text AS routed,
@@ -417,27 +470,11 @@ export function makeDrizzleJurisdictionContactsRepository(
             FROM jurisdictions j
             WHERE true ${search} ${layerFilter}
           `
-          const a = agg[0]
-          total = Number(rows[0]?.filtered_total ?? "0")
-          facets = { routed: Number(a?.routed ?? "0"), unrouted: Number(a?.unrouted ?? "0") }
-          if (args.filter === "all" && isDefaultView) {
-            writeDirectoryFacetCache({ total: Number(a?.total ?? "0"), facets })
-          }
-        }
-      }
+          return agg[0]
+        },
+      )
 
-      if (shouldIncludeUnmapped(args)) {
-        const unmapped = await loadUnmappedAggregate(sql)
-        if (unmapped.total > 0) {
-          return {
-            records: [buildUnmappedRecord(unmapped.total, unmapped.perCategoryCounts), ...page],
-            nextCursor,
-            total,
-            facets,
-          }
-        }
-      }
-      return { records: page, nextCursor, total, facets }
+      return withUnmappedRecord(sql, args, { records: page, nextCursor, total, facets })
     },
 
     async getGeometry(geoid: string): Promise<JurisdictionGeometryRecord | null> {

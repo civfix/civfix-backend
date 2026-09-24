@@ -29,13 +29,30 @@ import {
   timelineDefaultNote,
 } from "./admin-event-helpers.js"
 
-// Re-exported so importers of the helpers' old home (tests, the memory repo) keep their import path.
+// Re-exported so tests that import the helpers from their old home keep their import path.
 export {
   resolveEventFilter,
   eventStatusNote,
   flaggedFromTimeline,
   eventTimelineKind,
 } from "./admin-event-helpers.js"
+
+const ADMIN_EVENTS_DEFAULT_LIMIT = 25
+
+const EVENT_NOT_FOUND = "Event not found"
+
+// A cleanup always HAS an organizer, so this stands in for corrupt data, not for a supported "no organizer"
+// state (the reports surface's anonymous case). Hence `id: ""`, not null: the contract's organizer.id is a
+// plain string.
+const MISSING_ORGANIZER = { id: "", name: "Unknown", handle: "unknown" }
+
+const ZERO_EVENT_COUNTS: AdminEventCounts = {
+  all: 0,
+  upcoming: 0,
+  in_progress: 0,
+  completed: 0,
+  flagged: 0,
+}
 
 /** Field-identical to a report's reporter; the alias keeps the events domain's name for this person. */
 export type AdminOrganizerRecord = AdminPersonRecord
@@ -170,10 +187,7 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
       attendees: record.attendees,
       capacity: record.capacity,
       bags: record.bags,
-      // A cleanup always HAS an organizer, so these fallbacks stand in for corrupt data, not for a
-      // supported "no organizer" state (the reports surface's anonymous case). Hence `id: ""`, not null:
-      // the contract's organizer.id is a plain string.
-      organizer: toPersonDTO(record.organizer, ref, { id: "", name: "Unknown", handle: "unknown" }),
+      organizer: toPersonDTO(record.organizer, ref, MISSING_ORGANIZER),
       date: toRelAbs(record.scheduledAt, ref),
       coords: [record.lat, record.lng],
     }
@@ -201,7 +215,7 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
         status,
         flaggedOnly,
         cursor: query.cursor ?? null,
-        limit: query.limit ?? 25,
+        limit: query.limit ?? ADMIN_EVENTS_DEFAULT_LIMIT,
       }
       // The counts describe the whole searched set rather than the page, so they are computed on page 1
       // only (the shared admin-list policy; the console reads them off the first page).
@@ -209,13 +223,7 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
         deps.repo.listEvents(args),
         args.cursor === null
           ? deps.repo.countByBucket({ q: args.q })
-          : Promise.resolve<AdminEventCounts>({
-              all: 0,
-              upcoming: 0,
-              in_progress: 0,
-              completed: 0,
-              flagged: 0,
-            }),
+          : Promise.resolve<AdminEventCounts>({ ...ZERO_EVENT_COUNTS }),
       ])
       return { items: records.map((r) => toListItem(r, ref)), nextCursor, counts }
     },
@@ -240,7 +248,7 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
     async get(id: string): Promise<AdminEventDTO> {
       const ref = now()
       const record = await deps.repo.getEvent(id)
-      if (!record) throw AppError.notFound("Event not found")
+      if (!record) throw AppError.notFound(EVENT_NOT_FOUND)
       const [timeline, messages, linkedViews] = await Promise.all([
         deps.repo.listTimeline(id),
         deps.repo.listMessages(id),
@@ -278,12 +286,12 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
         note: eventStatusNote("cancelled"),
         actorId: input.actorId,
       })
-      if (!ok) throw AppError.notFound("Event not found")
+      if (!ok) throw AppError.notFound(EVENT_NOT_FOUND)
     },
 
     async setOutcome(id: string, input: { bags: number; actorId: string | null }): Promise<void> {
       const ok = await deps.repo.setBags(id, input)
-      if (!ok) throw AppError.notFound("Event not found")
+      if (!ok) throw AppError.notFound(EVENT_NOT_FOUND)
     },
 
     async flag(
@@ -291,7 +299,7 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
       input: { reason: string | null; actorId: string | null },
     ): Promise<boolean> {
       const flagged = await deps.repo.toggleFlag(id, input)
-      if (flagged === null) throw AppError.notFound("Event not found")
+      if (flagged === null) throw AppError.notFound(EVENT_NOT_FOUND)
       return flagged
     },
 
@@ -304,12 +312,12 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
           ? `Event cancelled: ${input.reason.trim()}`
           : eventStatusNote("cancelled")
       const ok = await deps.repo.cancel(id, { note, actorId: input.actorId })
-      if (!ok) throw AppError.notFound("Event not found")
+      if (!ok) throw AppError.notFound(EVENT_NOT_FOUND)
     },
 
     async postMessage(id: string, input: { body: string; actorId: string }): Promise<number> {
       const result = await deps.repo.postMessage(id, input)
-      if (result === null) throw AppError.notFound("Event not found")
+      if (result === null) throw AppError.notFound(EVENT_NOT_FOUND)
       return result.notified
     },
 
@@ -320,18 +328,18 @@ export function makeAdminEventService(deps: AdminEventServiceDeps): AdminEventSe
     ): Promise<{ linked: string[] }> {
       // Rejected before any write, so a non-cleanup event never gains a link.
       const record = await deps.repo.getEvent(id)
-      if (!record) throw AppError.notFound("Event not found")
+      if (!record) throw AppError.notFound(EVENT_NOT_FOUND)
       if (record.eventKind !== "cleanup") {
         throw AppError.validation({ reportIds: "only cleanup events can link reports" })
       }
       const result = await deps.repo.linkReports(id, reportIds, actorId)
-      if (result === null) throw AppError.notFound("Event not found")
+      if (result === null) throw AppError.notFound(EVENT_NOT_FOUND)
       return result
     },
 
     async unlinkReport(id: string, reportId: string, actorId: string | null): Promise<void> {
       const result = await deps.repo.unlinkReport(id, reportId, actorId)
-      if (result === null) throw AppError.notFound("Event not found")
+      if (result === null) throw AppError.notFound(EVENT_NOT_FOUND)
       // result === false means there was no such link; the unlink is idempotent so that is still a success.
     },
   }

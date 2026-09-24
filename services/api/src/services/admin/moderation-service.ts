@@ -22,6 +22,12 @@ import type { MessageUpdateAnnouncer } from "./admin-report-chat-service.js"
 
 export type ModerationFilter = "all" | ModerationKind | "high"
 
+/** Shared by the service's chat mirror and the repository's report_timeline row, which must agree. */
+export const MODERATION_APPROVED_NOTE = "Approved in moderation"
+export const MODERATION_REMOVED_NOTE = "Removed in moderation"
+
+const MODERATION_ITEM_NOT_FOUND = "Moderation item not found"
+
 export interface ListModerationArgs {
   q: string | null
   filter: ModerationFilter
@@ -118,7 +124,7 @@ export interface ModerationRepository {
   backfillFromHeldReports(): Promise<number>
 }
 
-export const NEUTRAL_USER_SNAPSHOT: ModerationUserSnapshot = {
+const NEUTRAL_USER_SNAPSHOT: ModerationUserSnapshot = {
   id: null,
   handle: "",
   name: "Unknown",
@@ -156,8 +162,12 @@ export interface ModerationServiceDeps {
   announceMessageUpdate?: MessageUpdateAnnouncer
 }
 
-function isMessageSubject(subjectType: ModerationItemRecord["subjectType"]): boolean {
+export function isMessageSubject(subjectType: ModerationSubjectType): boolean {
   return subjectType === "chat" || subjectType === "message"
+}
+
+export function isUserSubject(subjectType: ModerationSubjectType): boolean {
+  return subjectType === "user" || subjectType === "profile"
 }
 
 export interface ModerationService {
@@ -235,7 +245,7 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       const ref = now()
       const args: ListModerationArgs = {
         q: query.q && query.q.trim() !== "" ? query.q.trim() : null,
-        filter: (query.filter ?? "all") as ModerationFilter,
+        filter: query.filter ?? "all",
         cursor: query.cursor ?? null,
         limit: clampLimit(query.limit),
       }
@@ -246,7 +256,7 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
     async getItem(id: string): Promise<ModerationItemDTO> {
       const ref = now()
       const record = await deps.repo.getItem(id)
-      if (!record) throw AppError.notFound("Moderation item not found")
+      if (!record) throw AppError.notFound(MODERATION_ITEM_NOT_FOUND)
       return toDetailDTO(record, ref)
     },
 
@@ -255,13 +265,13 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       input: { actorId: string | null; note: string | null },
     ): Promise<void> {
       const result = await deps.repo.approve(id, input)
-      if (!result) throw AppError.notFound("Moderation item not found")
+      if (!result) throw AppError.notFound(MODERATION_ITEM_NOT_FOUND)
       if (deps.reportChatEmitter && result.reportTimelineStatus === "published") {
         await deps.reportChatEmitter.emit({
           reportId: result.subjectId,
           status: "published",
           kind: timelineKindForStatus("published"),
-          note: "Approved in moderation",
+          note: MODERATION_APPROVED_NOTE,
         })
       }
     },
@@ -271,7 +281,7 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       input: { actorId: string | null; reason: string | null },
     ): Promise<void> {
       const result = await deps.repo.remove(id, input)
-      if (!result) throw AppError.notFound("Moderation item not found")
+      if (!result) throw AppError.notFound(MODERATION_ITEM_NOT_FOUND)
       if (isMessageSubject(result.subjectType)) {
         await deps.announceMessageUpdate?.(result.subjectId)
       }
@@ -283,14 +293,14 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
           reportId: result.subjectId,
           status: "rejected",
           kind: timelineKindForStatus("rejected"),
-          note: input.reason ?? "Removed in moderation",
+          note: input.reason ?? MODERATION_REMOVED_NOTE,
         })
       }
     },
 
     async hold(id: string, input: { actorId: string | null; note: string | null }): Promise<void> {
       const result = await deps.repo.hold(id, input)
-      if (!result) throw AppError.notFound("Moderation item not found")
+      if (!result) throw AppError.notFound(MODERATION_ITEM_NOT_FOUND)
     },
 
     async appeal(
@@ -298,7 +308,7 @@ export function makeModerationService(deps: ModerationServiceDeps): ModerationSe
       input: { decision: "uphold" | "overturn"; actorId: string | null; note: string | null },
     ): Promise<void> {
       const result = await deps.repo.decideAppeal(id, input)
-      if (!result) throw AppError.notFound("Moderation item not found")
+      if (!result) throw AppError.notFound(MODERATION_ITEM_NOT_FOUND)
       if (input.decision === "overturn" && isMessageSubject(result.subjectType)) {
         await deps.announceMessageUpdate?.(result.subjectId)
       }

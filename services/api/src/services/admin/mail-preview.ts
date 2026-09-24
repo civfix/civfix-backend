@@ -21,6 +21,17 @@ const LINK_HREF_RE = /\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i
 
 const HTML_TAG_NAME_RE = /[a-zA-Z][^\s/>]{0,16}/y
 
+const ABSOLUTE_HTTP_URL_RE = /^https?:\/\//i
+
+const EXTRA_BLANK_LINES_RE = /\n{3,}/g
+
+const WHITESPACE_RUN_RE = /\s+/g
+
+const MAX_CODE_POINT = 0x10ffff
+const SURROGATE_MIN = 0xd800
+const SURROGATE_MAX = 0xdfff
+const REPLACEMENT_CHARACTER = 0xfffd
+
 function tagNameAt(html: string, at: number): { name: string; end: number } | null {
   HTML_TAG_NAME_RE.lastIndex = at
   const m = HTML_TAG_NAME_RE.exec(html)
@@ -46,7 +57,7 @@ export function htmlToText(html: string): string {
   let href: string | null = null
   let anchorText = ""
   const breakLine = (): void => {
-    const text = line.replace(/\s+/g, " ").trim()
+    const text = collapse(line)
     lines.push(quoteDepth > 0 && text !== "" ? `> ${text}` : text)
     line = ""
   }
@@ -89,7 +100,7 @@ export function htmlToText(html: string): string {
         href = m === null ? null : decodeTextEntities(m[1] ?? m[2] ?? m[3] ?? "")
         anchorText = ""
       } else if (href !== null) {
-        if (/^https?:\/\//i.test(href) && anchorText.trim() !== href) line += ` (${href})`
+        if (ABSOLUTE_HTTP_URL_RE.test(href) && anchorText.trim() !== href) line += ` (${href})`
         href = null
       }
       continue
@@ -102,10 +113,7 @@ export function htmlToText(html: string): string {
     i = closeGt + 1
   }
   breakLine()
-  return lines
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim()
+  return lines.join("\n").replace(EXTRA_BLANK_LINES_RE, "\n\n").trim()
 }
 
 const TEXT_NAMED_ENTITIES: ReadonlyMap<string, string> = new Map(
@@ -153,14 +161,15 @@ function decodeTextEntities(text: string): string {
 }
 
 function codePointText(code: number): string {
-  const invalid = code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)
-  return String.fromCodePoint(invalid ? 0xfffd : code)
+  const invalid =
+    code === 0 || code > MAX_CODE_POINT || (code >= SURROGATE_MIN && code <= SURROGATE_MAX)
+  return String.fromCodePoint(invalid ? REPLACEMENT_CHARACTER : code)
 }
 
 function collapse(value: string): string {
-  return value.replace(/\s+/g, " ").trim()
+  return value.replace(WHITESPACE_RUN_RE, " ").trim()
 }
 
 function truncate(value: string): string {
-  return value.length > PREVIEW_LEN ? value.slice(0, PREVIEW_LEN) : value
+  return value.slice(0, PREVIEW_LEN)
 }

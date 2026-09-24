@@ -7,7 +7,7 @@ import type {
   ReportStatus,
 } from "@civfix/shared"
 import type { AnalyticsRepository } from "./analytics-types.js"
-import { buildCoverage, buildPinsByWeek, pct } from "./analytics-shaping.js"
+import { buildCoverage, buildPinsByWeek, round1 } from "./analytics-shaping.js"
 import { PINS_BY_WEEK_WEEKS } from "./analytics-types.js"
 import type {
   DiscoverySectionCounts,
@@ -78,7 +78,7 @@ export function toMapPin(record: HomeMapPinRecord): HomeMapPin {
   return record.attendees !== null ? { ...base, attendees: record.attendees } : base
 }
 
-export const HOME_MAP_PIN_LIMIT = 200
+const HOME_MAP_PIN_LIMIT = 200
 
 export const HOME_SUMMARY_CONCURRENCY = 3
 
@@ -88,7 +88,7 @@ type SectionResults<T extends SectionTasks> = {
   -readonly [K in keyof T]: Awaited<ReturnType<T[K]>>
 }
 
-export async function runBounded<T extends SectionTasks>(
+async function runBounded<T extends SectionTasks>(
   limit: number,
   tasks: T,
 ): Promise<SectionResults<T>> {
@@ -127,7 +127,7 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
   ): AnalyticsMini {
     return {
       pinsThisMonth: kpis ? kpis.pins.current : 0,
-      resolvedPct: kpis ? round1Pct(kpis.resolvedRatio.current) : 0,
+      resolvedPct: kpis ? round1(kpis.resolvedRatio.current * 100) : 0,
       coveragePct: coverage ? coverage.pct : 0,
       cleanups: kpis ? kpis.cleanupsPlanned.current : 0,
       eventsThisMonth: kpis ? kpis.events.current : 0,
@@ -197,8 +197,4 @@ export function makeHomeService(deps: HomeServiceDeps): HomeService {
       return { pins: records.map(toMapPin) }
     },
   }
-}
-
-function round1Pct(ratio: number): number {
-  return pct(ratio * 100, 100)
 }

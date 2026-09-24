@@ -4,17 +4,27 @@ export const OUTBOUND_PAYLOAD_BUDGET_BYTES = 8 * 1024 * 1024
 
 export const OUTBOUND_SEND_MIN_THROUGHPUT_BPS = 256 * 1024
 
-export const OUTBOUND_SEND_MIN_THROUGHPUT_FLOOR_BPS = 1024
+const OUTBOUND_SEND_MIN_THROUGHPUT_FLOOR_BPS = 1024
 
-export const OUTBOUND_SMTP_TIMEOUT_CEILING_MS = 60_000
+const OUTBOUND_SMTP_TIMEOUT_CEILING_MS = 60_000
 
 export const OUTBOUND_SEND_MAX_DEADLINE_MS = 2 ** 31 - 1
 
-export const BASE64_EXPANSION_NUMERATOR = 4
+const BASE64_EXPANSION_NUMERATOR = 4
 
-export const BASE64_EXPANSION_DENOMINATOR = 3
+const BASE64_EXPANSION_DENOMINATOR = 3
 
-export const OUTBOUND_INFLIGHT_SLACK_SECONDS = 120
+const OUTBOUND_INFLIGHT_SLACK_SECONDS = 120
+
+// nodemailer's connect, greeting and socket timeouts are each the full SMTP timeout and are inactivity
+// timeouts, so the phase budget allows all three before the transfer time is added.
+const SMTP_TIMEOUT_PHASES = 3
+
+const ROUTE_INFLIGHT_FLOOR_SECONDS = 15 * 60
+
+// The default OCI_EMAIL_SMTP_TIMEOUT_MS. The floor dominates at this timeout, and assertOutboundSendPolicy
+// refuses to boot a configuration whose largest deadline would outlive the resulting window.
+const ROUTE_GUARD_SMTP_TIMEOUT_MS = OUTBOUND_SMTP_TIMEOUT_CEILING_MS / 4
 
 export function base64Bytes(rawBytes: number): number {
   return Math.ceil(
@@ -48,7 +58,7 @@ export function maxOutboundSendDeadlineMs(input: {
 }
 
 export function phaseBudgetFor(smtpTimeoutMs: number): number {
-  return Math.max(0, smtpTimeoutMs) * 3
+  return Math.max(0, smtpTimeoutMs) * SMTP_TIMEOUT_PHASES
 }
 
 export function inflightWindowSeconds(input: {
@@ -59,9 +69,9 @@ export function inflightWindowSeconds(input: {
 }
 
 export const ROUTE_DEADLINE_INFLIGHT_SECONDS = Math.max(
-  15 * 60,
+  ROUTE_INFLIGHT_FLOOR_SECONDS,
   inflightWindowSeconds({
-    smtpTimeoutMs: OUTBOUND_SMTP_TIMEOUT_CEILING_MS / 4,
+    smtpTimeoutMs: ROUTE_GUARD_SMTP_TIMEOUT_MS,
     minThroughputBytesPerSec: OUTBOUND_SEND_MIN_THROUGHPUT_BPS,
   }),
 )

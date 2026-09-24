@@ -6,7 +6,7 @@ import type {
   SetForwardTemplateInput,
 } from "./forward-template-types.js"
 
-export const FORWARD_TEMPLATE_AUDIT_TARGET = "mail:forward-template"
+const FORWARD_TEMPLATE_AUDIT_TARGET = "mail:forward-template"
 
 interface ForwardTemplateRowSelect {
   subject_template: string | null

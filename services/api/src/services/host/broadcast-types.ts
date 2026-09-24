@@ -180,6 +180,11 @@ export interface AdminHostListParams {
   limit: number
 }
 
+// Matches the broadcasts.chunk_size column default, which createIfAbsent relies on.
+export const DEFAULT_BROADCAST_CHUNK_SIZE = 200
+
+export const MAX_DELIVERY_ATTEMPTS = 3
+
 export const CRITICAL_BROADCAST_KINDS: ReadonlySet<BroadcastKind> = new Set<BroadcastKind>([
   "event_updated",
   "event_cancelled",

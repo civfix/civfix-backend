@@ -28,7 +28,7 @@ import {
   type AdminReportTimelineRecord,
   type ListReportsArgs,
   type ReportOutreachState,
-} from "./admin-report-service.js"
+} from "./admin-report-types.js"
 import type {
   AdminReportCounts,
   AdminReportStatus,
@@ -67,6 +67,9 @@ function searchReportsFragment(sql: Queryable, q: string | null): SqlFragment {
 }
 
 const MEDIA_CAP = 20
+
+const UNTITLED_REPORT_TITLE = "Untitled report"
+const UNNAMED_REPORTER_NAME = "Neighbor"
 
 interface ReportRowSelect {
   id: string
@@ -110,7 +113,7 @@ function toRecord(r: ReportRowSelect): AdminReportRecord {
       hasOauth: r.reporter_has_oauth,
       joinedAt: r.reporter_joined,
     },
-    "Neighbor",
+    UNNAMED_REPORTER_NAME,
   )
   return {
     id: r.id,
@@ -118,7 +121,7 @@ function toRecord(r: ReportRowSelect): AdminReportRecord {
     status: r.status,
     visibility: r.visibility,
     flagged: r.flagged,
-    title: r.title ?? "Untitled report",
+    title: r.title ?? UNTITLED_REPORT_TITLE,
     place: r.place ?? "",
     reporter,
     confirmations: Number(r.confirmations ?? "0"),

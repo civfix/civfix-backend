@@ -121,18 +121,23 @@ export function toOutreachRecord(r: OutreachRowSelect): OutreachStateRecord {
 }
 
 const TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
+const THREAD_TOKEN_CHARS = 12
+const TOKEN_ALPHABET_MASK = TOKEN_ALPHABET.length - 1
+
+const INBOUND_WHO_FALLBACK = "Inbound"
+const OUTBOUND_WHO_FALLBACK = "civfix"
 
 export function mintThreadToken(): string {
-  const bytes = new Uint8Array(12)
+  const bytes = new Uint8Array(THREAD_TOKEN_CHARS)
   globalThis.crypto.getRandomValues(bytes)
   let out = ""
-  for (const b of bytes) out += TOKEN_ALPHABET[b & 31]
+  for (const b of bytes) out += TOKEN_ALPHABET[b & TOKEN_ALPHABET_MASK]
   return out
 }
 
 export function deriveWho(direction: MailDirection, fromAddr: string | null): string {
   if (fromAddr && fromAddr.length > 0) return fromAddr
-  return direction === "in" ? "Inbound" : "civfix"
+  return direction === "in" ? INBOUND_WHO_FALLBACK : OUTBOUND_WHO_FALLBACK
 }
 
 export function toThreadListItem(
@@ -203,8 +208,4 @@ export function toThreadDTO(
     ...toThreadListItem(thread, latest),
     messages: messages.map((message) => toMessageDTO(message, thread)),
   }
-}
-
-export function anchorOf(thread: MailThreadRecord): CursorAnchor {
-  return { createdAt: thread.lastMessageAt ?? thread.createdAt, id: thread.id }
 }

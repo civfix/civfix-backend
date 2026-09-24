@@ -41,7 +41,7 @@ export function directoryStatus(
   return "pending"
 }
 
-export function primaryEmail(record: JurisdictionDirectoryRecord): string | null {
+function primaryEmail(record: JurisdictionDirectoryRecord): string | null {
   const def = record.defaultEmails.find((e) => e.trim() !== "")
   if (def) return def
   const cat = record.categoryContacts.find((c) => c.email !== null && c.email.trim() !== "")

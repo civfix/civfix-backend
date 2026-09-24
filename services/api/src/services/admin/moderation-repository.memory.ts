@@ -5,6 +5,8 @@ import {
   assertTargetIsNotOperatorRole,
 } from "../../auth/operator-target.js"
 import {
+  isMessageSubject,
+  isUserSubject,
   type CreateModerationItemInput,
   type ListModerationArgs,
   type ModerationItemRecord,
@@ -20,8 +22,16 @@ export interface SeededHeldReport {
   createdAt: Date
 }
 
-function isUserSubjectType(subjectType: ModerationItemRecord["subjectType"]): boolean {
-  return subjectType === "user" || subjectType === "profile"
+const DEFAULT_ITEM_PRIORITY = "med"
+
+function directDestination(
+  subjectType: ModerationItemRecord["subjectType"],
+  subjectId: string,
+): Pick<ModerationItemRecord, "destinationKind" | "destinationId"> {
+  if (subjectType === "report") return { destinationKind: "report", destinationId: subjectId }
+  if (subjectType === "event") return { destinationKind: "event", destinationId: subjectId }
+  if (isUserSubject(subjectType)) return { destinationKind: "user", destinationId: subjectId }
+  return { destinationKind: null, destinationId: null }
 }
 
 export class InMemoryModerationRepository implements ModerationRepository {
@@ -42,23 +52,11 @@ export class InMemoryModerationRepository implements ModerationRepository {
     return new Date(this.now.getTime() + this.tick)
   }
 
-  private directDestination(
-    subjectType: ModerationItemRecord["subjectType"],
-    subjectId: string,
-  ): Pick<ModerationItemRecord, "destinationKind" | "destinationId"> {
-    if (subjectType === "report") return { destinationKind: "report", destinationId: subjectId }
-    if (subjectType === "event") return { destinationKind: "event", destinationId: subjectId }
-    if (subjectType === "user" || subjectType === "profile") {
-      return { destinationKind: "user", destinationId: subjectId }
-    }
-    return { destinationKind: null, destinationId: null }
-  }
-
   seedItem(input: Partial<ModerationItemRecord> & { id?: string }): ModerationItemRecord {
     const id = input.id ?? randomUUID()
     const subjectType = input.subjectType ?? "report"
     const subjectId = input.subjectId ?? randomUUID()
-    const destination = this.directDestination(subjectType, subjectId)
+    const destination = directDestination(subjectType, subjectId)
     const record: ModerationItemRecord = {
       id,
       kind: input.kind ?? "image",
@@ -72,7 +70,7 @@ export class InMemoryModerationRepository implements ModerationRepository {
       reason: input.reason ?? null,
       category: input.category ?? null,
       place: input.place ?? null,
-      priority: input.priority ?? "med",
+      priority: input.priority ?? DEFAULT_ITEM_PRIORITY,
       autoAction: input.autoAction ?? null,
       reporter: input.reporter ?? null,
       reporterId: input.reporterId ?? null,
@@ -180,7 +178,7 @@ export class InMemoryModerationRepository implements ModerationRepository {
     _input: { actorId: string | null; reason: string | null },
   ): Promise<ModerationItemRecord | null> {
     const pending = this.items.get(id)
-    if (pending && isUserSubjectType(pending.subjectType)) {
+    if (pending && isUserSubject(pending.subjectType)) {
       assertTargetIsNotOfficialAccount(pending.subjectId, "remove")
       assertTargetIsNotOperatorRole(this.userRoles.get(pending.subjectId), "remove")
     }
@@ -191,13 +189,8 @@ export class InMemoryModerationRepository implements ModerationRepository {
       this.reportStatus.set(item.subjectId, "rejected")
       item.reportTimelineStatus = "rejected"
     }
-    if (item.subjectType === "chat" || item.subjectType === "message") {
-      this.tombstoned.add(item.subjectId)
-    }
-    if (
-      isUserSubjectType(item.subjectType) &&
-      this.accountStatus.get(item.subjectId) !== "banned"
-    ) {
+    if (isMessageSubject(item.subjectType)) this.tombstoned.add(item.subjectId)
+    if (isUserSubject(item.subjectType) && this.accountStatus.get(item.subjectId) !== "banned") {
       this.accountStatus.set(item.subjectId, "suspended")
       item.suspendedUserId = item.subjectId
     }
@@ -220,11 +213,9 @@ export class InMemoryModerationRepository implements ModerationRepository {
     item.status = "approved"
     this.suspensions.set(item.subjectId, input.decision === "uphold")
     delete item.restoredUserId
-    if (input.decision === "overturn" && this.restoreSubject(item.subjectType, item.subjectId)) {
-      if (item.subjectType === "user" || item.subjectType === "profile") {
-        item.restoredUserId = item.subjectId
-      }
-    }
+    const restored =
+      input.decision === "overturn" && this.restoreSubject(item.subjectType, item.subjectId)
+    if (restored && isUserSubject(item.subjectType)) item.restoredUserId = item.subjectId
     return item
   }
 
@@ -232,10 +223,8 @@ export class InMemoryModerationRepository implements ModerationRepository {
     subjectType: ModerationItemRecord["subjectType"],
     subjectId: string,
   ): boolean {
-    if (subjectType === "chat" || subjectType === "message") {
-      return this.tombstoned.delete(subjectId)
-    }
-    if (subjectType === "user" || subjectType === "profile") {
+    if (isMessageSubject(subjectType)) return this.tombstoned.delete(subjectId)
+    if (isUserSubject(subjectType)) {
       if (this.deletedUserIds.has(subjectId)) return false
       if (this.accountStatus.get(subjectId) !== "suspended") return false
       this.accountStatus.set(subjectId, "active")
@@ -265,7 +254,7 @@ export class InMemoryModerationRepository implements ModerationRepository {
       reason: input.reason ?? null,
       category: input.category ?? null,
       place: input.place ?? null,
-      priority: input.priority ?? "med",
+      priority: input.priority ?? DEFAULT_ITEM_PRIORITY,
       autoAction: input.autoAction ?? null,
       reporter: input.reporter ?? null,
       reporterId: input.reporterUserId ?? null,

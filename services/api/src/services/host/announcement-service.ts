@@ -18,15 +18,15 @@ import type { FastifyBaseLogger } from "fastify"
 import { paginateKeyset, parseKeysetCursor } from "../../db/cursor-helpers.js"
 import type { AnnouncementCap, BroadcastRepository } from "./broadcast-repository.js"
 import type { BroadcastRecord } from "./broadcast-types.js"
-import { broadcastLinkWarnings } from "./broadcast-render.js"
-import { announcementPath } from "./broadcast-pipeline.js"
+import { ANNOUNCEMENT_VISIBLE_STATUSES } from "./broadcast-types.js"
+import { announcementPath, broadcastLinkWarnings } from "./broadcast-render.js"
 import type { BroadcastConfig, BroadcastService } from "./broadcast-service.js"
 import type { AnnouncementIdentityRepository } from "./announcement-repository.drizzle.js"
 
-export const ANNOUNCEMENT_DEFAULT_LIMIT = 20
-export const ANNOUNCEMENT_MAX_LIMIT = 50
-export const ANNOUNCEMENT_WINDOW_MS = 24 * 60 * 60 * 1000
-export const ANNOUNCEMENT_CTA_LABEL = "View announcement"
+const ANNOUNCEMENT_DEFAULT_LIMIT = 20
+const ANNOUNCEMENT_MAX_LIMIT = 50
+const ANNOUNCEMENT_WINDOW_MS = 24 * 60 * 60 * 1000
+const ANNOUNCEMENT_CTA_LABEL = "View announcement"
 
 export interface AnnouncementServiceDeps {
   repo: BroadcastRepository
@@ -59,7 +59,7 @@ export interface AnnouncementService {
   ): Promise<AnnouncementDTO>
 }
 
-export function announcementRateLimited(): AppError {
+function announcementRateLimited(): AppError {
   return AppError.rateLimited(
     "Announcement limit reached for today. Use the group chat for ongoing discussion.",
   )
@@ -226,7 +226,7 @@ export function makeAnnouncementService(deps: AnnouncementServiceDeps): Announce
     async get(cleanupId, announcementId, projection) {
       const record = await repo.findForEvent(cleanupId, announcementId)
       if (record === null || record.kind !== ANNOUNCEMENT_BROADCAST_KIND) throw notFound()
-      if (!projection.host && record.status !== "sending" && record.status !== "sent") {
+      if (!projection.host && !ANNOUNCEMENT_VISIBLE_STATUSES.includes(record.status)) {
         throw notFound()
       }
       return hydrateOne(cleanupId, record, projection)

@@ -12,8 +12,8 @@ import { sendReportChatMessage, type ReportChatSendDeps } from "../report-chat-s
 import type { AdminReportChatRepository } from "./admin-report-chat-repository.drizzle.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../auth/official-account.js"
 
-export const ADMIN_REPORT_CHAT_HISTORY_DEFAULT = 30
-export const ADMIN_REPORT_CHAT_HISTORY_MAX = 50
+const ADMIN_REPORT_CHAT_HISTORY_DEFAULT = 30
+const ADMIN_REPORT_CHAT_HISTORY_MAX = 50
 
 /** Called only after the operator's change committed; never throws. */
 export type MessageUpdateAnnouncer = (messageId: string) => Promise<void>

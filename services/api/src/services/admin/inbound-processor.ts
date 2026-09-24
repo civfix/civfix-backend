@@ -14,7 +14,7 @@ import {
   type InboundRepository,
 } from "./inbound-repository.drizzle.js"
 import type { AdminReportRepository, ReporterNotifier } from "./admin-report-service.js"
-import { detectBounce, handleBounce, type BounceDetection } from "./inbound-bounce.js"
+import { detectBounce, handleBounce } from "./inbound-bounce.js"
 import {
   applyInboundEffects,
   findThreadByReferences,
@@ -23,7 +23,6 @@ import {
   type InboundLogger,
   isJurisdictionSender,
   isSelfOriginated,
-  parseMessageIdList,
   resolveMessageId,
 } from "./inbound-thread-correlation.js"
 import type { CleanupRepository } from "../cleanup-service.js"
@@ -36,14 +35,7 @@ import {
 import { sanitizeInboundHtml } from "./inbound-html-sanitizer.js"
 import { htmlToText } from "./mail-preview.js"
 
-export {
-  detectBounce,
-  resolveMessageId,
-  parseMessageIdList,
-  type BounceDetection,
-  type InboundLogger,
-}
-export { readMailAuthVerdict, sanitizeInboundHtml, type MailAuthVerdict }
+export { detectBounce, resolveMessageId }
 
 export const INBOUND_PENDING_PREFIX = "inbound/pending/"
 const INBOUND_FAILED_PREFIX = "inbound/failed/"
@@ -52,11 +44,24 @@ export const INBOUND_PENDING_KEY_RE = /^inbound\/pending\/[^/]+\.eml$/
 export const INBOUND_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 export const INBOUND_ATTACHMENT_MAX_COUNT = 50
-export const INBOUND_ATTACHMENT_TOTAL_MAX_BYTES = 30 * 1024 * 1024
+const INBOUND_ATTACHMENT_TOTAL_MAX_BYTES = 30 * 1024 * 1024
 
-export const INBOUND_OBJECT_MAX_BYTES = 30 * 1024 * 1024
+const INBOUND_OBJECT_MAX_BYTES = 30 * 1024 * 1024
 
 export const INBOUND_PARSE_TIMEOUT_MS = 20_000
+
+export const INBOUND_HTML_SOURCE_MAX_CHARS = 1024 * 1024
+export const INBOUND_BODY_TEXT_MAX_CHARS = 256 * 1024
+const INBOUND_HEADER_VALUE_MAX_CHARS = 4 * 1024
+const BODY_TRUNCATION_MARKER = "\n… [truncated]"
+
+const THREADED_ATTACHMENT_PREFIX = "inbound-mail/"
+const INBOX_ATTACHMENT_PREFIX = "inbound-emails/"
+const ATTACHMENT_CONTENT_TYPE = "application/octet-stream"
+const RAW_MAIL_CONTENT_TYPE = "message/rfc822"
+const ATTACHMENT_FILENAME_MAX_CHARS = 120
+
+const CIVFIX_HEADER_PREFIX = "x-civfix-"
 
 // At the 5-minute sweep cadence this parks a DSN after roughly half an hour of failing bookkeeping, long
 // enough to ride out a transient fault and short enough that poison DSNs cannot fill the sweep batch.
@@ -317,7 +322,7 @@ async function insertThreadedMessage(
   // attachment.
   const { attachments, oversize } = await streamAttachments(
     storage,
-    `inbound-mail/${thread.id}/${contentDigest(raw)}`,
+    `${THREADED_ATTACHMENT_PREFIX}${thread.id}/${contentDigest(raw)}`,
     mail,
   )
   const message = await mailRepo.insertMessage({
@@ -346,8 +351,6 @@ function plainTextBody(mail: ParsedMail): string | null {
   return clipBodyText(htmlToText(mail.html.slice(0, INBOUND_HTML_SOURCE_MAX_CHARS)))
 }
 
-export const INBOUND_HTML_SOURCE_MAX_CHARS = 1024 * 1024
-
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
@@ -364,7 +367,7 @@ async function routeInbox(
   // attachment objects, so a folder another row also pointed at would lose that row's evidence.
   const { attachments } = await streamAttachments(
     storage,
-    `inbound-emails/${contentDigest(raw)}`,
+    `${INBOX_ATTACHMENT_PREFIX}${contentDigest(raw)}`,
     mail,
   )
   const recipient = mail.to[0]?.address ?? null
@@ -402,13 +405,10 @@ async function discardUnreferenced(
   for (const key of orphans) await storage.delete(key)
 }
 
-export const INBOUND_BODY_TEXT_MAX_CHARS = 256 * 1024
-const INBOUND_HEADER_VALUE_MAX_CHARS = 4 * 1024
-
 function clipBodyText(text: string | null | undefined): string | null {
   if (text === null || text === undefined) return null
   if (text.length <= INBOUND_BODY_TEXT_MAX_CHARS) return text
-  return `${text.slice(0, INBOUND_BODY_TEXT_MAX_CHARS)}\n… [truncated]`
+  return `${text.slice(0, INBOUND_BODY_TEXT_MAX_CHARS)}${BODY_TRUNCATION_MARKER}`
 }
 
 const STORED_HEADER_ALLOWLIST = new Set([
@@ -432,12 +432,9 @@ function buildStoredHeaders(
   const out: Record<string, string> = {}
   for (const [rawKey, value] of Object.entries(headers)) {
     const key = rawKey.toLowerCase()
-    if (!STORED_HEADER_ALLOWLIST.has(key) && !key.startsWith("x-civfix-")) continue
+    if (!STORED_HEADER_ALLOWLIST.has(key) && !key.startsWith(CIVFIX_HEADER_PREFIX)) continue
     if (typeof value !== "string") continue
-    out[key] =
-      value.length > INBOUND_HEADER_VALUE_MAX_CHARS
-        ? value.slice(0, INBOUND_HEADER_VALUE_MAX_CHARS)
-        : value
+    out[key] = value.slice(0, INBOUND_HEADER_VALUE_MAX_CHARS)
   }
   out[INBOUND_AUTH_VERDICT_HEADER] = authVerdict
   return out
@@ -475,7 +472,7 @@ async function streamAttachments(
       continue
     }
     const objKey = `${keyPrefix}/${contentDigest(bytes)}/${sanitizeFilename(filename)}`
-    await storage.put(objKey, bytes, { contentType: "application/octet-stream" })
+    await storage.put(objKey, bytes, { contentType: ATTACHMENT_CONTENT_TYPE })
     attachments.push({ key: objKey, filename, size: bytes.byteLength })
     totalBytes += bytes.byteLength
   }
@@ -511,11 +508,11 @@ async function moveToFailed(storage: Storage, key: string, bytes: Uint8Array): P
   const failedKey = key.startsWith(INBOUND_PENDING_PREFIX)
     ? INBOUND_FAILED_PREFIX + key.slice(INBOUND_PENDING_PREFIX.length)
     : INBOUND_FAILED_PREFIX + key
-  await storage.put(failedKey, bytes, { contentType: "message/rfc822" })
+  await storage.put(failedKey, bytes, { contentType: RAW_MAIL_CONTENT_TYPE })
   await storage.delete(key)
 }
 
 function sanitizeFilename(name: string): string {
   const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^\.+/, "")
-  return cleaned.length > 0 ? cleaned.slice(0, 120) : "file"
+  return cleaned.length > 0 ? cleaned.slice(0, ATTACHMENT_FILENAME_MAX_CHARS) : "file"
 }

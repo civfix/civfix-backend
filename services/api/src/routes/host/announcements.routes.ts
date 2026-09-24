@@ -13,7 +13,7 @@ import { perIdentity } from "../../plugins/rate-limit.js"
 import { route } from "../../versioning/route.js"
 import { parse, trimTextFields } from "../_validate.js"
 import { requireCapability, resolveVisibleStanding } from "../../services/host/authz.js"
-import { BroadcastCapError, capError } from "../../services/host/broadcast-service.js"
+import { withCaps } from "../../services/host/broadcast-service.js"
 import { auditBestEffort, makeCommsRuntime } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
 import type {
@@ -70,13 +70,7 @@ export async function registerHostAnnouncementRoutes(
         mergeParams(request),
       )
       await requireCapability(container.getDb().sql, body.id, userId, "broadcast")
-      let payload: AnnouncementDTO
-      try {
-        payload = await service().create(body.id, userId, body)
-      } catch (err) {
-        if (err instanceof BroadcastCapError) throw capError(err.kind)
-        throw err
-      }
+      const payload = await withCaps(() => service().create(body.id, userId, body))
       await auditBestEffort(
         container.getDb().sql,
         {

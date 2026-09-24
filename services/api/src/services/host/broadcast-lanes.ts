@@ -2,18 +2,46 @@ import type { BroadcastChannel } from "@civfix/shared"
 import type { FastifyBaseLogger } from "fastify"
 import type { CounterStore } from "../../abuse/counter-store.js"
 import type { BroadcastRepository } from "./broadcast-repository.js"
-import type { EventBroadcastContext } from "./broadcast-types.js"
+import type { BroadcastCreateInput, EventBroadcastContext } from "./broadcast-types.js"
+import { verifiedReplyTo } from "./broadcast-render.js"
 import { eventWindowOf, hasEventEnded } from "../cleanup-rules.js"
 
 export const DEFAULT_REMINDER_OFFSETS_MIN = [1440, 180] as const
 
-export const REMINDER_STALE_HOURS = 6
+const REMINDER_STALE_HOURS = 6
 
-export const REMINDER_SWEEP_LIMIT = 200
+const REMINDER_SWEEP_LIMIT = 200
 
 const AUTOMATED_CHANNELS: BroadcastChannel[] = ["inapp", "push", "email"]
 
-export const EVENT_UPDATE_WINDOW_SEC = 3600
+const MS_PER_SECOND = 1000
+const MS_PER_HOUR = 3_600_000
+const EVENT_UPDATE_WINDOW_SEC = MS_PER_HOUR / MS_PER_SECOND
+// An ISO timestamp cut to "YYYY-MM-DDTHH" names the UTC hour the throttle window counts in.
+const ISO_HOUR_LENGTH = 13
+
+type AutomatedKind = "event_updated" | "event_cancelled" | "reminder"
+
+function automatedBroadcast(
+  event: EventBroadcastContext,
+  kind: AutomatedKind,
+  subject: string,
+  bodyMd: string,
+  startedAt: Date,
+): BroadcastCreateInput {
+  return {
+    cleanupId: event.cleanupId,
+    createdBy: null,
+    kind,
+    subject,
+    bodyMd,
+    segment: { kind: "all_registered" },
+    channels: AUTOMATED_CHANNELS,
+    status: "sending",
+    startedAt,
+    replyTo: verifiedReplyTo(event),
+  }
+}
 
 export type EventUpdateVerdict =
   | { status: "started"; broadcastId: string }
@@ -32,35 +60,13 @@ export interface BroadcastLaneDeps {
 export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
   const now = deps.now ?? (() => new Date())
 
-  async function startLane(
-    event: EventBroadcastContext,
-    kind: "event_updated",
-    subject: string,
-    bodyMd: string,
-  ): Promise<string> {
-    const record = await deps.repo.create({
-      cleanupId: event.cleanupId,
-      createdBy: null,
-      kind,
-      subject,
-      bodyMd,
-      segment: { kind: "all_registered" },
-      channels: AUTOMATED_CHANNELS,
-      status: "sending",
-      startedAt: now(),
-      replyTo: event.replyToVerified ? event.replyTo : null,
-    })
-    await deps.enqueuePlan(record.id)
-    return record.id
-  }
-
   function secondsToWindowEnd(at: Date): number {
-    const nextHourMs = Math.floor(at.getTime() / 3_600_000) * 3_600_000 + 3_600_000
-    return Math.max(1, Math.ceil((nextHourMs - at.getTime()) / 1000))
+    const nextHourMs = Math.floor(at.getTime() / MS_PER_HOUR) * MS_PER_HOUR + MS_PER_HOUR
+    return Math.max(1, Math.ceil((nextHourMs - at.getTime()) / MS_PER_SECOND))
   }
 
   async function reserveEventUpdateSlot(cleanupId: string): Promise<boolean> {
-    const hourKey = now().toISOString().slice(0, 13)
+    const hourKey = now().toISOString().slice(0, ISO_HOUR_LENGTH)
     try {
       const used = await deps.counters.incr(
         `bcast:evupd:${cleanupId}:${hourKey}`,
@@ -113,13 +119,17 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
       if (!(await reserveEventUpdateSlot(cleanupId))) {
         return { status: "throttled", retryAfterSec: secondsToWindowEnd(now()) }
       }
-      const broadcastId = await startLane(
-        event,
-        "event_updated",
-        `${event.title} has new details`,
-        `The details for **${event.title}** have changed. Open the event to see what is different and confirm you can still make it.`,
+      const record = await deps.repo.create(
+        automatedBroadcast(
+          event,
+          "event_updated",
+          `${event.title} has new details`,
+          `The details for **${event.title}** have changed. Open the event to see what is different and confirm you can still make it.`,
+          now(),
+        ),
       )
-      return { status: "started", broadcastId }
+      await deps.enqueuePlan(record.id)
+      return { status: "started", broadcastId: record.id }
     },
 
     async eventCancelled(cleanupId: string, reason: string | null): Promise<string | null> {
@@ -129,18 +139,15 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
         reason !== null && reason.trim().length > 0
           ? `**${event.title}** has been cancelled by the organizer.\n\nReason: ${reason.trim()}`
           : `**${event.title}** has been cancelled by the organizer.`
-      const record = await deps.repo.createIfAbsent({
-        cleanupId: event.cleanupId,
-        createdBy: null,
-        kind: "event_cancelled",
-        subject: `${event.title} has been cancelled`,
-        bodyMd: body,
-        segment: { kind: "all_registered" },
-        channels: AUTOMATED_CHANNELS,
-        status: "sending",
-        startedAt: now(),
-        replyTo: event.replyToVerified ? event.replyTo : null,
-      })
+      const record = await deps.repo.createIfAbsent(
+        automatedBroadcast(
+          event,
+          "event_cancelled",
+          `${event.title} has been cancelled`,
+          body,
+          now(),
+        ),
+      )
       if (record === null) {
         await replanUnplannedCancellation(cleanupId)
         return null
@@ -153,7 +160,7 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
       const at = now()
       const due = await deps.repo.listDueReminders({
         now: at,
-        staleAfter: new Date(at.getTime() - REMINDER_STALE_HOURS * 3_600_000),
+        staleAfter: new Date(at.getTime() - REMINDER_STALE_HOURS * MS_PER_HOUR),
         defaultOffsets: DEFAULT_REMINDER_OFFSETS_MIN,
         limit: REMINDER_SWEEP_LIMIT,
       })
@@ -162,17 +169,14 @@ export function makeBroadcastLanes(deps: BroadcastLaneDeps) {
         const event = await deps.repo.eventContext(reminder.cleanupId)
         if (event === null) continue
         const record = await deps.repo.createIfAbsent({
-          cleanupId: reminder.cleanupId,
-          createdBy: null,
-          kind: "reminder",
+          ...automatedBroadcast(
+            event,
+            "reminder",
+            `Reminder: ${event.title}`,
+            `**${event.title}** is coming up. Check the event page for the meeting point and what to bring.`,
+            at,
+          ),
           reminderOffsetMin: reminder.offsetMin,
-          subject: `Reminder: ${event.title}`,
-          bodyMd: `**${event.title}** is coming up. Check the event page for the meeting point and what to bring.`,
-          segment: { kind: "all_registered" },
-          channels: AUTOMATED_CHANNELS,
-          status: "sending",
-          startedAt: at,
-          replyTo: event.replyToVerified ? event.replyTo : null,
         })
         if (record === null) continue
         created += 1

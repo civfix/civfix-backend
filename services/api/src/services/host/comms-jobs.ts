@@ -21,10 +21,15 @@ import { makeDrizzleHostTeamRepository } from "./host-team-repository.drizzle.js
 import { TEAM_INVITE_EMAIL_SCRUB_DELAY_MS } from "./host-team-service.js"
 import { runRegistrationRetentionLanes } from "./registration-retention.js"
 
-export const DELIVERY_RETENTION_DAYS = 180
-export const BROADCAST_CONTENT_RETENTION_DAYS = 180
-export const EXPORT_ROW_RETENTION_DAYS = 90
-export const EXPORT_REAP_LIMIT = 200
+const DELIVERY_RETENTION_DAYS = 180
+const BROADCAST_CONTENT_RETENTION_DAYS = 180
+const EXPORT_ROW_RETENTION_DAYS = 90
+const EXPORT_REAP_LIMIT = 200
+const MS_PER_DAY = 86_400_000
+
+function daysBefore(now: Date, days: number): Date {
+  return new Date(now.getTime() - days * MS_PER_DAY)
+}
 
 export async function registerCommsJobs(
   container: Container,
@@ -33,25 +38,30 @@ export async function registerCommsJobs(
   const env = container.env
   const runtime = () => makeCommsRuntime(container, logger)
 
+  async function workParsed<T>(
+    jobName: string,
+    parseJob: (data: unknown) => T | null,
+    run: (data: T) => Promise<unknown>,
+  ): Promise<void> {
+    await container.jobs.work(jobName, async (job) => {
+      const data = parseJob(job.data)
+      if (data === null) {
+        logger?.warn({ jobId: job.id }, `${jobName}: malformed job data (skipped)`)
+        return
+      }
+      await run(data)
+    })
+  }
+
   registerHostRetentionLanes()
 
-  await container.jobs.work(BROADCAST_PLAN_JOB, async (job) => {
-    const data = parseBroadcastPlanJob(job.data)
-    if (data === null) {
-      logger?.warn({ jobId: job.id }, "broadcast.plan: malformed job data (skipped)")
-      return
-    }
-    await runtime().pipeline.plan(data.broadcastId)
-  })
+  await workParsed(BROADCAST_PLAN_JOB, parseBroadcastPlanJob, (data) =>
+    runtime().pipeline.plan(data.broadcastId),
+  )
 
-  await container.jobs.work(BROADCAST_CHUNK_JOB, async (job) => {
-    const data = parseBroadcastChunkJob(job.data)
-    if (data === null) {
-      logger?.warn({ jobId: job.id }, "broadcast.chunk: malformed job data (skipped)")
-      return
-    }
-    await runtime().pipeline.runChunk(data.broadcastId, data.chunkNo, data.authRetry)
-  })
+  await workParsed(BROADCAST_CHUNK_JOB, parseBroadcastChunkJob, (data) =>
+    runtime().pipeline.runChunk(data.broadcastId, data.chunkNo, data.authRetry),
+  )
 
   await container.jobs.schedule(BROADCAST_SCHEDULE_SWEEP_JOB, env.BROADCAST_SWEEP_CRON)
   await container.jobs.work(BROADCAST_SCHEDULE_SWEEP_JOB, async () => {
@@ -75,14 +85,9 @@ export async function registerCommsJobs(
     )
   })
 
-  await container.jobs.work(HOST_EXPORT_JOB, async (job) => {
-    const data = parseHostExportJob(job.data)
-    if (data === null) {
-      logger?.warn({ jobId: job.id }, "host.export: malformed job data (skipped)")
-      return
-    }
-    await runtime().exports.run(data.exportId)
-  })
+  await workParsed(HOST_EXPORT_JOB, parseHostExportJob, (data) =>
+    runtime().exports.run(data.exportId),
+  )
 
   await container.jobs.schedule(HOST_EXPORT_REAP_JOB, env.HOST_EXPORT_REAP_CRON)
   await container.jobs.work(HOST_EXPORT_REAP_JOB, async () => {
@@ -99,19 +104,19 @@ export async function registerCommsJobs(
 export function registerHostRetentionLanes(): void {
   registerRetentionLane("broadcast_deliveries", async (sql, now) => {
     const repo = makeDrizzleBroadcastRepository(sql)
-    const cutoff = new Date(now.getTime() - DELIVERY_RETENTION_DAYS * 86_400_000)
+    const cutoff = daysBefore(now, DELIVERY_RETENTION_DAYS)
     return drainTable((batchSize) => repo.deleteOldDeliveries(cutoff, batchSize))
   })
 
   registerRetentionLane("broadcast_content", async (sql, now) => {
     const repo = makeDrizzleBroadcastRepository(sql)
-    const cutoff = new Date(now.getTime() - BROADCAST_CONTENT_RETENTION_DAYS * 86_400_000)
+    const cutoff = daysBefore(now, BROADCAST_CONTENT_RETENTION_DAYS)
     return drainTable((batchSize) => repo.scrubBroadcastContent(cutoff, batchSize))
   })
 
   registerRetentionLane("host_exports", async (sql, now) => {
     const repo = makeDrizzleHostExportRepository(sql)
-    const cutoff = new Date(now.getTime() - EXPORT_ROW_RETENTION_DAYS * 86_400_000)
+    const cutoff = daysBefore(now, EXPORT_ROW_RETENTION_DAYS)
     return drainTable((batchSize) => repo.deleteOlderThan(cutoff, batchSize))
   })
 

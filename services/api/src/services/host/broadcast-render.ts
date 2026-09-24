@@ -1,4 +1,4 @@
-import { AppError, MAX_BROADCAST_BODY } from "@civfix/shared"
+import { ANNOUNCEMENT_BROADCAST_KIND, AppError, MAX_BROADCAST_BODY } from "@civfix/shared"
 import {
   BroadcastLinkError,
   assertSafeBroadcastLinks,
@@ -14,7 +14,14 @@ import {
 import { markdownToPlainText, parseMarkdownSubset } from "@civfix/shared/markdown"
 import { button, richList, richParagraph, type EmailBlock } from "../../adapters/email-blocks.js"
 import { eventFooter, renderEmailBody } from "../../adapters/email-layout.js"
+import type { BroadcastRecord, EventBroadcastContext } from "./broadcast-types.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
+
+const DEFAULT_CTA_LABEL = "Open"
+const DEFAULT_EVENT_WHERE = "the meeting point"
+const EVENT_WHEN_LOCALE = "en-US"
+const BROADCAST_LINK_FIELD = "bodyMd"
+const PER_RECIPIENT_VARS = ["first_name", "ticket_type"] as const
 
 export interface BroadcastContent {
   subject: string
@@ -58,7 +65,7 @@ export function renderBroadcast(
     node.type === "list" ? richList(node) : richParagraph(node.children),
   )
   if (ctaUrl.length > 0) {
-    blocks.push(button(ctaUrl, ctaLabel.length > 0 ? ctaLabel : "Open"))
+    blocks.push(button(ctaUrl, ctaLabel.length > 0 ? ctaLabel : DEFAULT_CTA_LABEL))
   }
 
   const footerOpts = {
@@ -89,7 +96,7 @@ export function renderBroadcast(
 
 export function formatEventWhen(scheduledAt: Date, timezone: string | null): string {
   try {
-    return new Intl.DateTimeFormat("en-US", {
+    return new Intl.DateTimeFormat(EVENT_WHEN_LOCALE, {
       timeZone: timezone ?? DEFAULT_EVENT_TIME_ZONE,
       weekday: "long",
       month: "long",
@@ -118,7 +125,61 @@ export function eventManageUrl(
   return `${webBaseUrl}${eventPath(pageSlug, cleanupId)}`
 }
 
-export const BROADCAST_LINK_FIELD = "bodyMd"
+export function announcementPath(cleanupId: string, announcementId: string): string {
+  return `/cleanups/${cleanupId}/announcements/${announcementId}`
+}
+
+export function notificationLink(
+  record: Pick<BroadcastRecord, "id" | "kind" | "cleanupId">,
+  event: Pick<EventBroadcastContext, "pageSlug">,
+): string {
+  return record.kind === ANNOUNCEMENT_BROADCAST_KIND
+    ? announcementPath(record.cleanupId, record.id)
+    : eventPath(event.pageSlug, record.cleanupId)
+}
+
+export function eventTemplateVars(
+  event: EventBroadcastContext,
+  webBaseUrl: string,
+): BroadcastVarValues {
+  return {
+    event_title: event.title,
+    event_when: formatEventWhen(event.scheduledAt, event.timezone),
+    event_where: event.address ?? DEFAULT_EVENT_WHERE,
+    manage_link: eventManageUrl(webBaseUrl, event.pageSlug, event.cleanupId),
+  }
+}
+
+export function broadcastContentOf(
+  record: Pick<BroadcastRecord, "subject" | "bodyMd" | "ctaLabel" | "ctaUrl">,
+): BroadcastContent {
+  return {
+    subject: record.subject ?? "",
+    bodyMd: record.bodyMd ?? "",
+    ctaLabel: record.ctaLabel,
+    ctaUrl: record.ctaUrl,
+  }
+}
+
+export function templateTextOf(
+  record: Pick<BroadcastRecord, "subject" | "bodyMd" | "ctaLabel">,
+): string {
+  return `${record.subject ?? ""} ${record.bodyMd ?? ""} ${record.ctaLabel ?? ""}`
+}
+
+export function usesVar(text: string, name: string): boolean {
+  return text.includes(`{${name}}`)
+}
+
+export function usesPerRecipientVar(text: string): boolean {
+  return PER_RECIPIENT_VARS.some((name) => usesVar(text, name))
+}
+
+export function verifiedReplyTo(
+  event: Pick<EventBroadcastContext, "replyTo" | "replyToVerified">,
+): string | null {
+  return event.replyToVerified ? event.replyTo : null
+}
 
 export function assertBroadcastLinkPolicy(
   text: string,
@@ -160,7 +221,6 @@ function issueCopy(issue: BroadcastLinkIssue): string {
     case "too_many":
       return `too many links (${issue.count}; the limit is ${issue.max})`
     case "insecure_scheme":
-      return "links must start with https://"
     case "scheme_relative":
       return "links must start with https://"
     case "userinfo":

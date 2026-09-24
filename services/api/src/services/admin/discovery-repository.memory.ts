@@ -218,34 +218,12 @@ export class InMemoryDiscoveryRepository implements DiscoveryRepository {
     for (const seeded of this.tasks.values()) {
       if (seeded.task.geoid === input.geoid && seeded.task.status !== "done") return false
     }
-    const id = randomUUID()
-    this.tasks.set(id, {
-      task: {
-        id,
-        geoid: input.geoid,
-        place: input.geoid,
-        layer: "place",
-        population: input.population ?? null,
-        status: "open",
-        perCategory: {},
-        total: 0,
-        oldestWaitingAt: null,
-        newestWaitingAt: null,
-        contactCategories: [],
-        hasDefaultContact: false,
-      },
-      contacts: [],
-      placeGeojson: null,
-      samplePins: [],
-      center: null,
-      zoom: null,
-    })
+    this.seedTask({ geoid: input.geoid, place: input.geoid, population: input.population ?? null })
     return true
   }
 }
 
-/** Shared with the in-memory contacts repository so both mutate the seeded state identically. */
-export function upsertContacts(
+function upsertContacts(
   seeded: SeededDiscoveryTask,
   contacts: Partial<Record<ReportCategory, string | null>>,
   defaultEmails: string[],

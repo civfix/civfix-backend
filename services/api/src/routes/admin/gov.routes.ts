@@ -27,7 +27,7 @@ import {
 } from "../../services/admin/gov-claims-service.js"
 import { makeDrizzleGovClaimsRepository } from "../../services/admin/gov-claims-repository.drizzle.js"
 import type { RevokeAllSessions } from "../../services/admin/role-change.js"
-import type { UserStore } from "../../auth/stores.js"
+import type { UserRecord, UserStore } from "../../auth/stores.js"
 
 export interface GovClaimsRouteOverrides {
   repo: GovClaimsRepository
@@ -42,22 +42,22 @@ declare module "fastify" {
   }
 }
 
+function toProvisionedUser(user: UserRecord): ProvisionedUser {
+  return { id: user.id, email: user.email, role: user.role, emailVerified: user.emailVerified }
+}
+
 function provisionerFromUserStore(store: UserStore): UserProvisioner {
   const norm = (email: string): string => email.trim().toLowerCase()
   return {
     async findByEmail(email: string): Promise<ProvisionedUser | null> {
       const user = await store.findByEmail(norm(email))
-      return user
-        ? { id: user.id, email: user.email, role: user.role, emailVerified: user.emailVerified }
-        : null
+      return user ? toProvisionedUser(user) : null
     },
     async create(email: string, displayName: string): Promise<ProvisionedUser> {
-      const user = await store.create(norm(email), { displayName, role: "citizen" })
-      return { id: user.id, email: user.email, role: user.role, emailVerified: user.emailVerified }
+      return toProvisionedUser(await store.create(norm(email), { displayName, role: "citizen" }))
     },
     async setRole(id: string, role: Role): Promise<ProvisionedUser> {
-      const user = await store.setRole(id, role)
-      return { id: user.id, email: user.email, role: user.role, emailVerified: user.emailVerified }
+      return toProvisionedUser(await store.setRole(id, role))
     },
   }
 }

@@ -21,6 +21,7 @@ import {
   type ThreadRowSelect,
 } from "./mail-mappers.js"
 import { buildMailStats } from "./mail-stats.js"
+import { parseCount } from "./category-counts.js"
 import { sendInFlightExpr } from "./outbound-send-sql.js"
 import {
   MAIL_STATS_WINDOW_DAYS,
@@ -51,17 +52,7 @@ import {
 import type { MailDirection, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
 
 export * from "./mail-repository.js"
-export {
-  anchorOf,
-  deriveWho,
-  mintThreadToken,
-  toMessageDTO,
-  toMessageRecord,
-  toOutreachRecord,
-  toThreadDTO,
-  toThreadListItem,
-  toThreadRecord,
-} from "./mail-mappers.js"
+export { deriveWho, mintThreadToken, toThreadDTO } from "./mail-mappers.js"
 export { buildMailStats } from "./mail-stats.js"
 
 const MAIL_THREAD_MESSAGE_CAP = 500
@@ -192,6 +183,50 @@ async function insertOrSelectThread(
   const row = existing[0]
   if (!row) throw new Error(`${label}: row vanished after conflict`)
   return toThreadRecord(row)
+}
+
+interface ThreadListRowSelect extends ThreadRowSelect {
+  lm_direction: MailDirection | null
+  lm_from_addr: string | null
+  lm_to_addr: string | null
+  lm_body: string | null
+}
+
+function latestPreviewMessage(
+  r: ThreadListRowSelect,
+  thread: MailThreadRecord,
+): MailMessageRecord | null {
+  if (r.lm_direction === null) return null
+  return {
+    id: "",
+    threadId: r.id,
+    direction: r.lm_direction,
+    fromAddr: r.lm_from_addr,
+    toAddr: r.lm_to_addr,
+    subject: null,
+    body: r.lm_body,
+    html: null,
+    kind: null,
+    attachments: [],
+    messageId: null,
+    inReplyTo: null,
+    unaffiliated: false,
+    effectsClaimedAt: null,
+    effectsAppliedAt: null,
+    effectsStage: 0,
+    authVerdict: null,
+    createdAt: thread.lastMessageAt ?? thread.createdAt,
+  }
+}
+
+async function writeMailAudit(tx: Queryable, audit: MailAuditInput | undefined): Promise<void> {
+  if (!audit) return
+  await writeAudit(tx, {
+    actorId: audit.actorId,
+    action: audit.action,
+    target: audit.target,
+    meta: audit.meta ?? null,
+  })
 }
 
 function bounceEventMatch(sql: Queryable, input: BounceEventKey): SqlFragment {
@@ -374,14 +409,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
               ${input.threadStatus !== undefined ? tx`, status = ${input.threadStatus}` : tx``}
           WHERE id = ${input.threadId}
         `
-        if (input.audit) {
-          await writeAudit(tx, {
-            actorId: input.audit.actorId,
-            action: input.audit.action,
-            target: input.audit.target,
-            meta: input.audit.meta ?? null,
-          })
-        }
+        await writeMailAudit(tx, input.audit)
         return toMessageRecord(row)
       })
     },
@@ -409,15 +437,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
         input.q !== undefined && input.q.trim().length > 0
           ? sql`AND ${ilikeAnyOf(sql, [sql`t.org`, sql`t.subject`, sql`lm.from_addr`], input.q.trim())}`
           : sql``
-      const rows = await sql<
-        (ThreadRowSelect & {
-          lm_direction: MailDirection | null
-          lm_from_addr: string | null
-          lm_to_addr: string | null
-          lm_body: string | null
-          cursor_at: string
-        })[]
-      >`
+      const rows = await sql<(ThreadListRowSelect & { cursor_at: string })[]>`
         SELECT ${threadColumns(sql, "t")},
                lm.direction AS lm_direction, lm.from_addr AS lm_from_addr, lm.to_addr AS lm_to_addr,
                lm.body AS lm_body, ${keysetInstant(sql, activityAt)} AS cursor_at
@@ -446,30 +466,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       }))
       const items = page.map((r) => {
         const thread = toThreadRecord(r)
-        const latest: MailMessageRecord | null =
-          r.lm_direction !== null
-            ? {
-                id: "",
-                threadId: r.id,
-                direction: r.lm_direction,
-                fromAddr: r.lm_from_addr,
-                toAddr: r.lm_to_addr,
-                subject: null,
-                body: r.lm_body,
-                html: null,
-                kind: null,
-                attachments: [],
-                messageId: null,
-                inReplyTo: null,
-                unaffiliated: false,
-                effectsClaimedAt: null,
-                effectsAppliedAt: null,
-                effectsStage: 0,
-                authVerdict: null,
-                createdAt: thread.lastMessageAt ?? thread.createdAt,
-              }
-            : null
-        return toThreadListItem(thread, latest)
+        return toThreadListItem(thread, latestPreviewMessage(r, thread))
       })
       return { items, nextCursor }
     },
@@ -758,14 +755,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
           UPDATE mail_threads SET status = ${status} WHERE id = ${id} RETURNING id
         `
         if (rows.length === 0) return false
-        if (audit) {
-          await writeAudit(tx, {
-            actorId: audit.actorId,
-            action: audit.action,
-            target: audit.target,
-            meta: audit.meta ?? null,
-          })
-        }
+        await writeMailAudit(tx, audit)
         return true
       })
     },
@@ -790,14 +780,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
           VALUES (${input.threadId}, ${input.messageId}, 'failed', ${meta})
         `
         await tx`UPDATE mail_threads SET status = 'needs_action' WHERE id = ${input.threadId}`
-        if (input.audit) {
-          await writeAudit(tx, {
-            actorId: input.audit.actorId,
-            action: input.audit.action,
-            target: input.audit.target,
-            meta: input.audit.meta ?? null,
-          })
-        }
+        await writeMailAudit(tx, input.audit)
       })
     },
 
@@ -851,8 +834,7 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
       `
       const counts = { sent: 0, bounced: 0, failed: 0 }
       for (const row of eventRows) {
-        const n = Number.parseInt(row.n, 10)
-        if (row.type in counts) counts[row.type as keyof typeof counts] = Number.isNaN(n) ? 0 : n
+        if (row.type in counts) counts[row.type as keyof typeof counts] = parseCount(row.n)
       }
       const mailbox = await sql<{ unread: string; threads: string }[]>`
         SELECT
@@ -860,11 +842,9 @@ export function makeDrizzleMailRepository(sql: Sql): MailRepository {
           COUNT(*)::text AS threads
         FROM mail_threads
       `
-      const unread = Number.parseInt(mailbox[0]?.unread ?? "0", 10)
-      const threads = Number.parseInt(mailbox[0]?.threads ?? "0", 10)
       return buildMailStats({
-        unread: Number.isNaN(unread) ? 0 : unread,
-        threads: Number.isNaN(threads) ? 0 : threads,
+        unread: parseCount(mailbox[0]?.unread),
+        threads: parseCount(mailbox[0]?.threads),
         counts,
       })
     },

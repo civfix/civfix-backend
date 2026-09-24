@@ -4,20 +4,33 @@ import type { CacheClient } from "../../auth/cache.js"
 import type { MetricUpsert, MetricsRepository } from "./metrics-repository.drizzle.js"
 import { eventDayKey } from "./event-day.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./event-fields.js"
+import {
+  METRIC_DONATION_CLICKS,
+  METRIC_PAGE_VIEWS,
+  METRIC_SOURCE,
+  NO_BUCKET,
+} from "./event-metric-names.js"
+import { DAY_MS, isoDayOf } from "./host-analytics-shaping.js"
 
 export { eventDayKey }
 
-export const METRIC_PAGE_VIEWS = "page_views"
-export const METRIC_SOURCE = "source"
-export const METRIC_DONATION_CLICKS = "donation_clicks"
+const COUNTER_TTL_SEC = 4 * 24 * 60 * 60
 
-export const COUNTER_TTL_SEC = 4 * 24 * 60 * 60
+const ROLLUP_PAGE_SIZE = 500
 
-export const ROLLUP_PAGE_SIZE = 500
+const FLUSH_READ_BATCH = 200
 
-const DAY_MS = 86_400_000
+const FLUSH_UPSERT_BATCH = 500
+
+// One day ahead: a bump keys its dirty set by the event-local day, which east of UTC is already
+// tomorrow.
+const FLUSH_LEAD_DAYS = 1
 
 const COUNTER_PREFIX = "evm:v1"
+
+const COUNTER_KEY_PARTS = 6
+
+const DAY_KEY_LENGTH = 10
 
 const BOT_UA_RE =
   /bot|crawler|spider|crawling|slurp|facebookexternalhit|embedly|quora link preview|whatsapp|telegram|discordbot|preview|monitor|curl|wget|python-requests|headless|lighthouse|pingdom|uptime/i
@@ -134,6 +147,14 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
     return `${COUNTER_PREFIX}:dirty:${day}`
   }
 
+  function flushDays(): string[] {
+    const days: string[] = []
+    for (let i = -FLUSH_LEAD_DAYS; i <= deps.lookbackDays; i += 1) {
+      days.push(isoDayOf(new Date(now().getTime() - i * DAY_MS)))
+    }
+    return days
+  }
+
   async function bump(
     cleanupId: string,
     timezone: string | null,
@@ -165,24 +186,19 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
         ...(input.referrer !== undefined ? { referrer: input.referrer } : {}),
         selfHosts: deps.selfHosts,
       })
-      await bump(resolved.cleanupId, resolved.timezone, METRIC_PAGE_VIEWS, "")
+      await bump(resolved.cleanupId, resolved.timezone, METRIC_PAGE_VIEWS, NO_BUCKET)
       await bump(resolved.cleanupId, resolved.timezone, METRIC_SOURCE, source)
       return { ok: true }
     },
 
     async recordDonationClick(cleanupId: string) {
       const timezone = await deps.repo.eventTimezone(cleanupId)
-      await bump(cleanupId, timezone, METRIC_DONATION_CLICKS, "")
+      await bump(cleanupId, timezone, METRIC_DONATION_CLICKS, NO_BUCKET)
     },
 
     async flushCounters() {
-      // A bump keys its dirty set by the event-local day, which east of UTC is already tomorrow.
-      const days: string[] = []
-      for (let i = -1; i <= deps.lookbackDays; i += 1) {
-        days.push(new Date(now().getTime() - i * DAY_MS).toISOString().slice(0, 10))
-      }
       const upserts: MetricUpsert[] = []
-      for (const day of days) {
+      for (const day of flushDays()) {
         let keys: string[]
         try {
           keys = await deps.cache.smembers(dirtyKey(day))
@@ -190,21 +206,10 @@ export function makeMetricsService(deps: MetricsServiceDeps): MetricsService {
           deps.logger?.warn({ err, day }, "event metrics: dirty-set read failed (skipping day)")
           continue
         }
-        for (let i = 0; i < keys.length; i += 200) {
-          const batch = keys.slice(i, i + 200)
-          const values = await readMany(deps.cache, batch)
-          batch.forEach((key, index) => {
-            const parsed = parseCounterKey(key)
-            const raw = values[index]
-            if (parsed === null || raw === null || raw === undefined) return
-            const value = Number(raw)
-            if (!Number.isFinite(value) || value <= 0) return
-            upserts.push({ ...parsed, value })
-          })
-        }
+        await collectCounters(deps.cache, keys, upserts)
       }
-      for (let i = 0; i < upserts.length; i += 500) {
-        await deps.repo.upsertGreatest(upserts.slice(i, i + 500))
+      for (let i = 0; i < upserts.length; i += FLUSH_UPSERT_BATCH) {
+        await deps.repo.upsertGreatest(upserts.slice(i, i + FLUSH_UPSERT_BATCH))
       }
       return { flushed: upserts.length }
     },
@@ -238,11 +243,30 @@ async function readMany(cache: CacheClient, keys: readonly string[]): Promise<(s
   return Promise.all(keys.map((key) => cache.get(key)))
 }
 
+async function collectCounters(
+  cache: CacheClient,
+  keys: readonly string[],
+  upserts: MetricUpsert[],
+): Promise<void> {
+  for (let i = 0; i < keys.length; i += FLUSH_READ_BATCH) {
+    const batch = keys.slice(i, i + FLUSH_READ_BATCH)
+    const values = await readMany(cache, batch)
+    batch.forEach((key, index) => {
+      const parsed = parseCounterKey(key)
+      const raw = values[index]
+      if (parsed === null || raw === null || raw === undefined) return
+      const value = Number(raw)
+      if (!Number.isFinite(value) || value <= 0) return
+      upserts.push({ ...parsed, value })
+    })
+  }
+}
+
 export function parseCounterKey(
   key: string,
 ): { cleanupId: string; day: string; metric: string; bucket: string } | null {
   const parts = key.split(":")
-  if (parts.length !== 6) return null
+  if (parts.length !== COUNTER_KEY_PARTS) return null
   const [prefix, version, cleanupId, day, metric, bucket] = parts as [
     string,
     string,
@@ -252,6 +276,6 @@ export function parseCounterKey(
     string,
   ]
   if (`${prefix}:${version}` !== COUNTER_PREFIX) return null
-  if (cleanupId.length === 0 || day.length !== 10 || metric.length === 0) return null
+  if (cleanupId.length === 0 || day.length !== DAY_KEY_LENGTH || metric.length === 0) return null
   return { cleanupId, day, metric, bucket }
 }

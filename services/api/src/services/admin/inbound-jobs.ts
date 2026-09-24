@@ -9,8 +9,8 @@ export async function registerInboundJobs(container: Container): Promise<void> {
     const result = await runInboundSweep(container, {
       deps: {
         logger: {
-          warn: (obj, msg) => console.warn(msg ?? "inbound.sweep", obj),
-          error: (obj, msg) => console.error(msg ?? "inbound.sweep", obj),
+          warn: (obj, msg) => console.warn(msg ?? INBOUND_SWEEP_JOB, obj),
+          error: (obj, msg) => console.error(msg ?? INBOUND_SWEEP_JOB, obj),
         },
       },
     })

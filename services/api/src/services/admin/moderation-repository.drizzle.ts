@@ -4,9 +4,9 @@ import { writeAudit } from "./audit.js"
 import {
   clampLimit,
   decodeCursor,
-  encodeKeysetCursor,
   keysetInstant,
   keysetPredicate,
+  paginateKeyset,
 } from "./pagination.js"
 import { ADMIN_CATEGORIES } from "./category-counts.js"
 import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
@@ -17,6 +17,10 @@ import {
 } from "../../auth/operator-target.js"
 import { moderationMediaKeyExpr, moderationMediaFilter } from "../media-served-key.js"
 import {
+  isMessageSubject,
+  isUserSubject,
+  MODERATION_APPROVED_NOTE,
+  MODERATION_REMOVED_NOTE,
   type CreateModerationItemInput,
   type ListModerationArgs,
   type ModerationItemRecord,
@@ -27,9 +31,8 @@ import {
 
 type SubjectType = ModerationItemRecord["subjectType"]
 
-function isMessageSubject(subjectType: SubjectType): boolean {
-  return subjectType === "chat" || subjectType === "message"
-}
+const UNKNOWN_USER_NAME = "Unknown"
+const DEFAULT_ITEM_PRIORITY = "med"
 
 function itemColumns(sql: Queryable): SqlFragment {
   return sql`
@@ -210,7 +213,7 @@ function parseMeta(raw: unknown): {
     user = {
       id: typeof u.id === "string" ? u.id : null,
       handle: typeof u.handle === "string" ? u.handle : "",
-      name: typeof u.name === "string" ? u.name : "Unknown",
+      name: typeof u.name === "string" ? u.name : UNKNOWN_USER_NAME,
       joined: typeof u.joined === "string" ? u.joined : "",
       priorReports: typeof u.priorReports === "number" ? u.priorReports : 0,
       priorRemovals: typeof u.priorRemovals === "number" ? u.priorRemovals : 0,
@@ -274,6 +277,21 @@ async function loadMedia(
   }))
 }
 
+function facetFilter(sql: Queryable, filter: ListModerationArgs["filter"]): SqlFragment {
+  if (filter === "high") return sql`AND priority = 'high'`
+  if (filter !== "all") return sql`AND kind = ${filter}`
+  return sql``
+}
+
+function searchFilter(sql: Queryable, q: string | null): SqlFragment {
+  if (q === null) return sql``
+  return sql`AND ${ilikeAnyOf(
+    sql,
+    [sql`COALESCE(flag, '')`, sql`COALESCE(meta->>'reporter', '')`, sql`COALESCE(reason, '')`],
+    q,
+  )}`
+}
+
 export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository {
   return {
     async listOpen(
@@ -281,25 +299,6 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
     ): Promise<{ records: ModerationItemRecord[]; nextCursor: string | null }> {
       const limit = clampLimit(args.limit)
       const anchor = decodeCursor(args.cursor, true)
-
-      const facet =
-        args.filter === "high"
-          ? sql`AND priority = 'high'`
-          : args.filter !== "all"
-            ? sql`AND kind = ${args.filter}`
-            : sql``
-      const search =
-        args.q !== null
-          ? sql`AND ${ilikeAnyOf(
-              sql,
-              [
-                sql`COALESCE(flag, '')`,
-                sql`COALESCE(meta->>'reporter', '')`,
-                sql`COALESCE(reason, '')`,
-              ],
-              args.q,
-            )}`
-          : sql``
       const keyset = anchor
         ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, anchor)}`
         : sql``
@@ -308,20 +307,19 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         SELECT ${itemColumns(sql)}, ${keysetInstant(sql, sql`created_at`)} AS cursor_at
         FROM moderation_items
         WHERE status = 'open'
-        ${facet}
-        ${search}
+        ${facetFilter(sql, args.filter)}
+        ${searchFilter(sql, args.q)}
         ${keyset}
         ORDER BY created_at DESC, id DESC
         LIMIT ${limit + 1}
       `) as unknown as (ModerationItemRow & { cursor_at: string })[]
 
-      const hasMore = rows.length > limit
-      const page = hasMore ? rows.slice(0, limit) : rows
+      const { items: page, nextCursor } = paginateKeyset(rows, limit, (r) => ({
+        atText: r.cursor_at,
+        id: r.id,
+      }))
       await attachDestinationRefs(sql, page)
-      const records = page.map((r) => toRecord(r, []))
-      const last = page[page.length - 1]
-      const nextCursor = hasMore && last ? encodeKeysetCursor(last.cursor_at, last.id) : null
-      return { records, nextCursor }
+      return { records: page.map((r) => toRecord(r, [])), nextCursor }
     },
 
     async getItem(id: string): Promise<ModerationItemRecord | null> {
@@ -356,7 +354,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
             publishedReport = true
             await tx`
               INSERT INTO report_timeline (report_id, status, note, actor_id)
-              VALUES (${resolved.subject_id}, 'published', ${"Approved in moderation"}, ${input.actorId})
+              VALUES (${resolved.subject_id}, 'published', ${MODERATION_APPROVED_NOTE}, ${input.actorId})
             `
           }
         }
@@ -394,7 +392,7 @@ export function makeDrizzleModerationRepository(sql: Sql): ModerationRepository 
         if (removedReport) {
           await tx`
             INSERT INTO report_timeline (report_id, status, note, actor_id)
-            VALUES (${resolved.subject_id}, 'rejected', ${input.reason ?? "Removed in moderation"}, ${input.actorId})
+            VALUES (${resolved.subject_id}, 'rejected', ${input.reason ?? MODERATION_REMOVED_NOTE}, ${input.actorId})
           `
         }
         if (removed && !isOwnerTakedown(resolved.meta)) {
@@ -702,17 +700,13 @@ async function buildUserSnapshot(
   return {
     id: row.id,
     handle: row.handle ?? "",
-    name: row.name ?? "Unknown",
+    name: row.name ?? UNKNOWN_USER_NAME,
     joined: row.joined ?? "",
     priorReports: Number.parseInt(row.prior_reports ?? "0", 10) || 0,
     priorRemovals: row.removals ?? 0,
     strikes: row.strikes ?? 0,
     device: row.device ?? "",
   }
-}
-
-function isUserSubject(subjectType: SubjectType): boolean {
-  return subjectType === "user" || subjectType === "profile"
 }
 
 function abuseSubjectTypeFor(subjectType: SubjectType): string {
@@ -938,7 +932,7 @@ export async function insertModerationItem(
       ${input.reason ?? null},
       ${input.category ?? null},
       ${input.place ?? null},
-      ${input.priority ?? "med"},
+      ${input.priority ?? DEFAULT_ITEM_PRIORITY},
       ${input.autoAction ?? null},
       ${tx.json((input.signals ?? []) as Parameters<typeof tx.json>[0])},
       ${tx.json((input.similar ?? []) as Parameters<typeof tx.json>[0])},

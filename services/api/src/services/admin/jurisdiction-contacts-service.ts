@@ -6,6 +6,8 @@ import type { JurisdictionListQuery } from "@civfix/shared"
 import { toDirectoryDTO, hasAnyContact } from "./jurisdiction-directory-projection.js"
 import type { DirectoryFilter, DirectorySort } from "./jurisdiction-contacts-types.js"
 import { isReservedHandle } from "../../auth/reserved-handles.js"
+import { ADMIN_DEFAULT_LIMIT } from "./pagination.js"
+import { isThrottled } from "./outreach-service.js"
 import {
   OUTREACH_DIGEST_JOB,
   type JurisdictionContactsService,
@@ -17,6 +19,8 @@ import {
 
 export * from "./jurisdiction-contacts-types.js"
 export * from "./jurisdiction-directory-projection.js"
+
+const JURISDICTION_NOT_FOUND = "Jurisdiction not found"
 
 export function makeJurisdictionContactsService(
   deps: JurisdictionContactsServiceDeps,
@@ -30,7 +34,7 @@ export function makeJurisdictionContactsService(
       actorId: string,
     ): Promise<SaveAndRouteResult> {
       const exists = await deps.repo.jurisdictionExists(geoid)
-      if (!exists) throw AppError.notFound("Jurisdiction not found")
+      if (!exists) throw AppError.notFound(JURISDICTION_NOT_FOUND)
       if (!hasAnyContact(input)) {
         throw AppError.validation({ contacts: "At least one contact is required to route." })
       }
@@ -53,7 +57,7 @@ export function makeJurisdictionContactsService(
         throw AppError.validation({ handle: "That @handle is reserved." })
       }
       const ok = await deps.repo.patch(geoid, input, { actorId })
-      if (!ok) throw AppError.notFound("Jurisdiction not found")
+      if (!ok) throw AppError.notFound(JURISDICTION_NOT_FOUND)
     },
 
     async listDirectory(query: JurisdictionListQuery) {
@@ -64,7 +68,7 @@ export function makeJurisdictionContactsService(
         layer: query.layer ?? null,
         sort: (query.sort ?? "population") as DirectorySort,
         cursor: query.cursor ?? null,
-        limit: query.limit ?? 25,
+        limit: query.limit ?? ADMIN_DEFAULT_LIMIT,
       })
       return {
         items: records.map(toDirectoryDTO),
@@ -87,10 +91,7 @@ export function makeJurisdictionContactsService(
     if (!deps.outreachDigestEnabled) return false
     const state = await deps.repo.getOutreachState(geoid)
     if (state?.suppressed) return false
-    if (state?.lastOutreachAt) {
-      const windowMs = deps.throttleDays * 24 * 60 * 60 * 1000
-      if (now().getTime() - state.lastOutreachAt.getTime() < windowMs) return false
-    }
+    if (isThrottled(state?.lastOutreachAt ?? null, now(), deps.throttleDays)) return false
     await deps.jobs.enqueue(OUTREACH_DIGEST_JOB, { geoid }, { singletonKey: geoid })
     return true
   }

@@ -25,7 +25,7 @@ import {
   type SettleThreadStatusInput,
   type ThreadInit,
 } from "./mail-repository.js"
-import { deriveWho, mintThreadToken, toMessageDTO, toThreadListItem } from "./mail-mappers.js"
+import { mintThreadToken, toMessageDTO, toThreadListItem } from "./mail-mappers.js"
 import { buildMailStats } from "./mail-stats.js"
 import {
   ROUTE_CLAIM_STALE_SECONDS,
@@ -33,6 +33,8 @@ import {
 } from "./outbound-send-policy.js"
 import { clampLimit, decodeCursor, encodeCursor } from "./pagination.js"
 import type { MailDelivery, MailStatsResponse, MailStatus, MailThreadDTO } from "@civfix/shared"
+
+const DAY_MS = 24 * 60 * 60 * 1000
 
 export interface StoredMailEvent {
   id: string
@@ -161,31 +163,37 @@ export class InMemoryMailRepository implements MailRepository {
     return Promise.resolve({ ...record })
   }
 
-  findOrCreateReportThread(reportId: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
+  private newestThread(matches: (t: MailThreadRecord) => boolean): MailThreadRecord | null {
     let best: MailThreadRecord | null = null
     for (const t of this.threads.values()) {
-      if (t.reportId !== reportId) continue
-      if (best === null || cmpThreadNewest(t, best) > 0) best = t
+      if (!matches(t)) continue
+      if (best === null || cmpCreated(t, best) > 0) best = t
     }
+    return best
+  }
+
+  private latestMessage(matches: (m: MailMessageRecord) => boolean): MailMessageRecord | null {
+    let best: MailMessageRecord | null = null
+    for (const m of this.messages) {
+      if (!matches(m)) continue
+      if (best === null || cmpCreated(m, best) > 0) best = m
+    }
+    return best
+  }
+
+  findOrCreateReportThread(reportId: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
+    const best = this.newestThread((t) => t.reportId === reportId)
     if (best) return Promise.resolve({ ...best })
     return this.createThread({ ...init, reportId, threadToken: mintThreadToken() })
   }
 
   findReportThread(reportId: string): Promise<MailThreadRecord | null> {
-    let best: MailThreadRecord | null = null
-    for (const t of this.threads.values()) {
-      if (t.reportId !== reportId) continue
-      if (best === null || cmpThreadNewest(t, best) > 0) best = t
-    }
+    const best = this.newestThread((t) => t.reportId === reportId)
     return Promise.resolve(best === null ? null : { ...best })
   }
 
   findOrCreateEventThread(cleanupId: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
-    let best: MailThreadRecord | null = null
-    for (const t of this.threads.values()) {
-      if (t.cleanupId !== cleanupId) continue
-      if (best === null || cmpThreadNewest(t, best) > 0) best = t
-    }
+    const best = this.newestThread((t) => t.cleanupId === cleanupId)
     if (best) return Promise.resolve({ ...best })
     return this.createThread({ ...init, cleanupId, threadToken: mintThreadToken() })
   }
@@ -199,11 +207,9 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   upsertThreadByGeoid(geoid: string, init: ThreadInit = {}): Promise<MailThreadRecord> {
-    let best: MailThreadRecord | null = null
-    for (const t of this.threads.values()) {
-      if (t.jurisdictionGeoid !== geoid || t.reportId !== null || t.cleanupId !== null) continue
-      if (best === null || cmpThreadNewest(t, best) > 0) best = t
-    }
+    const best = this.newestThread(
+      (t) => t.jurisdictionGeoid === geoid && t.reportId === null && t.cleanupId === null,
+    )
     if (best) return Promise.resolve({ ...best })
     return this.createThread({
       ...init,
@@ -229,7 +235,7 @@ export class InMemoryMailRepository implements MailRepository {
       if (m.direction !== "out" || m.messageId === null || !ids.has(m.messageId)) continue
       const t = this.threads.get(m.threadId)
       if (!t) continue
-      if (best === null || cmpThreadNewest(t, best) > 0) best = t
+      if (best === null || cmpCreated(t, best) > 0) best = t
     }
     return Promise.resolve(best ? { ...best } : null)
   }
@@ -387,13 +393,10 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   getLastOutboundRecipient(threadId: string): Promise<string | null> {
-    let best: MailMessageRecord | null = null
-    for (const m of this.messages) {
-      if (m.threadId !== threadId) continue
-      if (m.direction !== "out") continue
-      if (m.toAddr === null || m.toAddr === "") continue
-      if (best === null || cmpCreated(m, best) > 0) best = m
-    }
+    const best = this.latestMessage(
+      (m) =>
+        m.threadId === threadId && m.direction === "out" && m.toAddr !== null && m.toAddr !== "",
+    )
     return Promise.resolve(best?.toAddr ?? null)
   }
 
@@ -405,11 +408,7 @@ export class InMemoryMailRepository implements MailRepository {
   hasSendInFlight(threadId: string): Promise<boolean> {
     const inflightBefore = this.now.getTime() - ROUTE_DEADLINE_INFLIGHT_SECONDS * 1000
     const staleBefore = this.now.getTime() - ROUTE_CLAIM_STALE_SECONDS * 1000
-    let latest: MailMessageRecord | null = null
-    for (const m of this.messages) {
-      if (m.threadId !== threadId || m.direction !== "out") continue
-      if (latest === null || cmpCreated(m, latest) > 0) latest = m
-    }
+    const latest = this.latestMessage((m) => m.threadId === threadId && m.direction === "out")
     if (latest === null) return Promise.resolve(false)
     const own = this.events.filter((e) => e.messageId === latest.id)
     if (own.some((e) => e.type === "sent")) return Promise.resolve(false)
@@ -610,11 +609,7 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   latestOutboundMessageId(threadId: string): Promise<string | null> {
-    let best: MailMessageRecord | null = null
-    for (const m of this.messages) {
-      if (m.threadId !== threadId || m.direction !== "out") continue
-      if (best === null || cmpCreated(m, best) > 0) best = m
-    }
+    const best = this.latestMessage((m) => m.threadId === threadId && m.direction === "out")
     return Promise.resolve(best?.id ?? null)
   }
 
@@ -631,7 +626,7 @@ export class InMemoryMailRepository implements MailRepository {
   }
 
   stats7d(): Promise<MailStatsResponse> {
-    const cutoff = this.now.getTime() - MAIL_STATS_WINDOW_DAYS * 24 * 60 * 60 * 1000
+    const cutoff = this.now.getTime() - MAIL_STATS_WINDOW_DAYS * DAY_MS
     const counts = { sent: 0, bounced: 0, failed: 0 }
     for (const e of this.events) {
       if (e.createdAt.getTime() < cutoff) continue
@@ -669,16 +664,11 @@ export class InMemoryMailRepository implements MailRepository {
   }
 }
 
-function cmpCreated(a: MailMessageRecord, b: MailMessageRecord): number {
+function cmpCreated(
+  a: { createdAt: Date; id: string },
+  b: { createdAt: Date; id: string },
+): number {
   const d = a.createdAt.getTime() - b.createdAt.getTime()
   if (d !== 0) return d
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
-
-function cmpThreadNewest(a: MailThreadRecord, b: MailThreadRecord): number {
-  const d = a.createdAt.getTime() - b.createdAt.getTime()
-  if (d !== 0) return d
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
-}
-
-export { deriveWho }

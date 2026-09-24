@@ -49,7 +49,6 @@ function withCacheIn<T>(
   key: string,
   run: () => Promise<T>,
 ): Promise<T> {
-  if (ttlMs <= 0) return run()
   const hit = analyticsCache.get(key)
   if (hit !== undefined && Date.now() - hit.at <= ttlMs) return hit.value as Promise<T>
   const value = run()
@@ -61,6 +60,40 @@ function withCacheIn<T>(
     if (cur !== undefined && cur.value === value) analyticsCache.delete(key)
   })
   return value
+}
+
+interface RetentionCell {
+  y: string
+  m: string
+  size: string
+  period: string
+  active: string
+}
+
+function toRetentionRows(cells: readonly RetentionCell[], cohorts: number): RetentionRow[] {
+  const byCohort = new Map<string, RetentionRow>()
+  for (const cell of cells) {
+    const year = num(cell.y)
+    const month = num(cell.m)
+    const key = `${year}-${month}`
+    let cohort = byCohort.get(key)
+    if (!cohort) {
+      cohort = { year, month, size: num(cell.size), activeByPeriod: [] }
+      byCohort.set(key, cohort)
+    }
+    const period = num(cell.period)
+    if (period >= 0 && period < cohorts) {
+      cohort.activeByPeriod[period] = num(cell.active)
+    }
+  }
+  const result: RetentionRow[] = []
+  for (const cohort of byCohort.values()) {
+    const dense: number[] = []
+    for (let i = 0; i < cohorts; i++) dense.push(cohort.activeByPeriod[i] ?? 0)
+    result.push({ ...cohort, activeByPeriod: dense })
+  }
+  result.sort((a, b) => b.year * 12 + b.month - (a.year * 12 + a.month))
+  return result
 }
 
 export function makeDrizzleAnalyticsRepository(
@@ -413,9 +446,7 @@ export function makeDrizzleAnalyticsRepository(
     },
 
     async retention(cohorts: number): Promise<RetentionRow[]> {
-      const rows = await sql<
-        { y: string; m: string; size: string; period: string; active: string }[]
-      >`
+      const rows = await sql<RetentionCell[]>`
         WITH cohort_users AS (
           SELECT
             u.id AS user_id,
@@ -463,29 +494,7 @@ export function makeDrizzleAnalyticsRepository(
         LEFT JOIN active_counts ac ON ac.cohort_month = cs.cohort_month
         ORDER BY cs.cohort_month, period
       `
-      const byCohort = new Map<string, RetentionRow>()
-      for (const row of rows) {
-        const year = num(row.y)
-        const month = num(row.m)
-        const key = `${year}-${month}`
-        let cohort = byCohort.get(key)
-        if (!cohort) {
-          cohort = { year, month, size: num(row.size), activeByPeriod: [] }
-          byCohort.set(key, cohort)
-        }
-        const period = num(row.period)
-        if (period >= 0 && period < cohorts) {
-          cohort.activeByPeriod[period] = num(row.active)
-        }
-      }
-      const result: RetentionRow[] = []
-      for (const cohort of byCohort.values()) {
-        const dense: number[] = []
-        for (let i = 0; i < cohorts; i++) dense.push(cohort.activeByPeriod[i] ?? 0)
-        result.push({ ...cohort, activeByPeriod: dense })
-      }
-      result.sort((a, b) => b.year * 12 + b.month - (a.year * 12 + a.month))
-      return result
+      return toRetentionRows(rows, cohorts)
     },
   }
 
@@ -493,22 +502,22 @@ export function makeDrizzleAnalyticsRepository(
   if (ttl <= 0) return base
 
   const cache = cacheFor(sql)
-  const withCache = <T>(ttlMs: number, key: string, run: () => Promise<T>): Promise<T> =>
-    withCacheIn(cache, ttlMs, key, run)
+  const withCache = <T>(key: string, run: () => Promise<T>): Promise<T> =>
+    withCacheIn(cache, ttl, key, run)
   return {
-    kpis: () => withCache(ttl, "kpis", () => base.kpis()),
-    pinsByWeek: (weeks) => withCache(ttl, `pinsByWeek:${weeks}`, () => base.pinsByWeek(weeks)),
-    byCategory: () => withCache(ttl, "byCategory", () => base.byCategory()),
-    funnel: () => withCache(ttl, "funnel", () => base.funnel()),
-    coverage: () => withCache(ttl, "coverage", () => base.coverage()),
+    kpis: () => withCache("kpis", () => base.kpis()),
+    pinsByWeek: (weeks) => withCache(`pinsByWeek:${weeks}`, () => base.pinsByWeek(weeks)),
+    byCategory: () => withCache("byCategory", () => base.byCategory()),
+    funnel: () => withCache("funnel", () => base.funnel()),
+    coverage: () => withCache("coverage", () => base.coverage()),
     resolutionByCategory: () =>
-      withCache(ttl, "resolutionByCategory", () => base.resolutionByCategory()),
-    events: (months) => withCache(ttl, `events:${months}`, () => base.events(months)),
+      withCache("resolutionByCategory", () => base.resolutionByCategory()),
+    events: (months) => withCache(`events:${months}`, () => base.events(months)),
     topJurisdictions: (limit) =>
-      withCache(ttl, `topJurisdictions:${limit}`, () => base.topJurisdictions(limit)),
+      withCache(`topJurisdictions:${limit}`, () => base.topJurisdictions(limit)),
     topContributors: (limit) =>
-      withCache(ttl, `topContributors:${limit}`, () => base.topContributors(limit)),
-    heatmap: (limit) => withCache(ttl, `heatmap:${limit}`, () => base.heatmap(limit)),
-    retention: (cohorts) => withCache(ttl, `retention:${cohorts}`, () => base.retention(cohorts)),
+      withCache(`topContributors:${limit}`, () => base.topContributors(limit)),
+    heatmap: (limit) => withCache(`heatmap:${limit}`, () => base.heatmap(limit)),
+    retention: (cohorts) => withCache(`retention:${cohorts}`, () => base.retention(cohorts)),
   }
 }

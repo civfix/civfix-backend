@@ -27,10 +27,11 @@ import {
   keysetInstant,
   keysetPredicate,
   paginateKeyset,
+  type KeysetAnchor,
 } from "./pagination.js"
 import { AUDIT_READ_ACTIONS } from "./audit.js"
 import { likePrefix } from "./like.js"
-import { ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
+import { anyOf, ilikeAnyOf, type SqlFragment } from "./sql-fragments.js"
 import {
   AUDIT_ACTION_RULES,
   AUDIT_FALLBACK_KIND,
@@ -71,72 +72,71 @@ function toRecord(r: ActivityRowSelect): ActivitySourceRecord {
   }
 }
 
-export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
-  // The catch-all kind matches none of the rules; it must stay derived from the one rule table or the
-  // chip drifts from the label.
-  function auditKindFilter(args: ListActivityArgs): SqlFragment {
-    if (args.filter === "all") return sql``
-    const own = auditRulesForKind(args.filter)
-    if (own.length > 0) return sql`AND ${anyRule(own)}`
-    if (args.filter === AUDIT_FALLBACK_KIND) return sql`AND NOT ${anyRule(AUDIT_ACTION_RULES)}`
-    // The kind cannot come from the audit branch at all; sourcesForKind already pruned it, so this is
-    // unreachable defense rather than a filter.
-    return sql`AND false`
-  }
+interface PageSpec {
+  anchor: KeysetAnchor | null
+  desc: boolean
+  limit: number
+}
 
-  function anyRule(rules: readonly AuditActionRule[]): SqlFragment {
-    // The prefixes contain `_` (gov_claim.), a LIKE wildcard, so they are escaped to match literally, as
-    // the service classifier's startsWith does.
-    const branches = rules.map((rule) =>
+type BranchBuilder = (sql: Sql, args: ListActivityArgs, page: PageSpec) => SqlFragment
+
+// The catch-all kind matches none of the rules; it must stay derived from the one rule table or the chip
+// drifts from the label.
+function auditKindFilter(sql: Sql, args: ListActivityArgs): SqlFragment {
+  if (args.filter === "all") return sql``
+  const own = auditRulesForKind(args.filter)
+  if (own.length > 0) return sql`AND ${anyRule(sql, own)}`
+  if (args.filter === AUDIT_FALLBACK_KIND) return sql`AND NOT ${anyRule(sql, AUDIT_ACTION_RULES)}`
+  // The kind cannot come from the audit branch at all; sourcesForKind already pruned it, so this is
+  // unreachable defense rather than a filter.
+  return sql`AND false`
+}
+
+function anyRule(sql: Sql, rules: readonly AuditActionRule[]): SqlFragment {
+  // The prefixes contain `_` (gov_claim.), a LIKE wildcard, so they are escaped to match literally, as
+  // the service classifier's startsWith does.
+  return anyOf(
+    sql,
+    rules.map((rule) =>
       rule.exact !== undefined
         ? sql`a.action = ${rule.exact}`
         : sql`a.action LIKE ${likePrefix(rule.prefix)} ESCAPE '\\'`,
-    )
-    const first = branches[0]
-    if (first === undefined) return sql`(false)`
-    return sql`(${branches.slice(1).reduce<SqlFragment>((acc, b) => sql`${acc} OR ${b}`, first)})`
-  }
+    ),
+  )
+}
 
-  function mailKindFilter(args: ListActivityArgs): SqlFragment {
-    const types = [...MAIL_BOUNCE_EVENT_TYPES]
-    if (args.filter === "outreach_bounce") return sql`AND e.type = ANY(${types}::text[])`
-    if (args.filter === "outreach_open") return sql`AND e.type <> ALL(${types}::text[])`
-    return sql``
-  }
+function mailKindFilter(sql: Sql, args: ListActivityArgs): SqlFragment {
+  const types = [...MAIL_BOUNCE_EVENT_TYPES]
+  if (args.filter === "outreach_bounce") return sql`AND e.type = ANY(${types}::text[])`
+  if (args.filter === "outreach_open") return sql`AND e.type <> ALL(${types}::text[])`
+  return sql``
+}
 
-  return {
-    async list(
-      args: ListActivityArgs,
-    ): Promise<{ records: ActivitySourceRecord[]; nextCursor: string | null }> {
-      const limit = clampLimit(args.limit)
-      // requireUuid is false: the keyset compares `id::text`, never `${id}::uuid`, so a non-uuid id in a
-      // hand-made cursor cannot raise a 22P02; it simply anchors past every real row.
-      const anchor = decodeCursor(args.cursor)
-      const desc = args.sort === "newest"
-      const sources = args.filter === "all" ? null : new Set(sourcesForKind(args.filter))
-      const wants = (source: ActivitySource): boolean => sources === null || sources.has(source)
+function pageWindow(
+  sql: Sql,
+  page: PageSpec,
+  tsCol: SqlFragment,
+  idText: SqlFragment,
+): SqlFragment {
+  const keyset =
+    page.anchor === null
+      ? sql``
+      : sql`AND ${keysetPredicate(sql, tsCol, idText, page.anchor, {
+          direction: page.desc ? "desc" : "asc",
+          idType: "text",
+        })}`
+  const order = page.desc
+    ? sql`ORDER BY ${tsCol} DESC, ${idText} DESC`
+    : sql`ORDER BY ${tsCol} ASC, ${idText} ASC`
+  return sql`${keyset} ${order} LIMIT ${page.limit + 1}`
+}
 
-      const pageWindow = (tsCol: SqlFragment, idText: SqlFragment): SqlFragment => {
-        const keyset =
-          anchor === null
-            ? sql``
-            : sql`AND ${keysetPredicate(sql, tsCol, idText, anchor, {
-                direction: desc ? "desc" : "asc",
-                idType: "text",
-              })}`
-        const order = desc
-          ? sql`ORDER BY ${tsCol} DESC, ${idText} DESC`
-          : sql`ORDER BY ${tsCol} ASC, ${idText} ASC`
-        return sql`${keyset} ${order} LIMIT ${limit + 1}`
-      }
+function searchFilter(sql: Sql, q: string | null, columns: readonly SqlFragment[]): SqlFragment {
+  return q === null ? sql`` : sql`AND ${ilikeAnyOf(sql, columns, q)}`
+}
 
-      const search = (columns: readonly SqlFragment[]): SqlFragment =>
-        args.q === null ? sql`` : sql`AND ${ilikeAnyOf(sql, columns, args.q)}`
-
-      const branches: SqlFragment[] = []
-
-      if (wants("audit")) {
-        branches.push(sql`(
+function auditBranch(sql: Sql, args: ListActivityArgs, page: PageSpec): SqlFragment {
+  return sql`(
           SELECT 'audit'::text AS source, a.id::text AS id, a.created_at AS ts,
                  ${keysetInstant(sql, sql`a.created_at`)} AS cursor_at,
                  u.display_name AS who, a.actor_id IS NULL AS actorless, a.target AS where_label,
@@ -147,14 +147,14 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
           -- fill this branch's whole per-source window and evict every real action from the feed. They
           -- remain in the audit-log view.
           WHERE a.action <> ALL(${[...AUDIT_READ_ACTIONS]})
-          ${auditKindFilter(args)}
-          ${search([sql`a.action`, sql`u.display_name`, sql`a.target`])}
-          ${pageWindow(sql`a.created_at`, sql`a.id::text`)}
-        )`)
-      }
+          ${auditKindFilter(sql, args)}
+          ${searchFilter(sql, args.q, [sql`a.action`, sql`u.display_name`, sql`a.target`])}
+          ${pageWindow(sql, page, sql`a.created_at`, sql`a.id::text`)}
+        )`
+}
 
-      if (wants("report")) {
-        branches.push(sql`(
+function reportBranch(sql: Sql, args: ListActivityArgs, page: PageSpec): SqlFragment {
+  return sql`(
           SELECT 'report'::text AS source, r.id::text AS id, r.created_at AS ts,
                  ${keysetInstant(sql, sql`r.created_at`)} AS cursor_at,
                  ru.display_name AS who, false AS actorless, j.name AS where_label,
@@ -163,15 +163,15 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
           LEFT JOIN users ru ON ru.id = r.reporter_user_id
           LEFT JOIN jurisdictions j ON j.geoid = r.jurisdiction_geoid
           WHERE r.deleted_at IS NULL AND r.visibility = 'public'
-          ${search([sql`r.category`, sql`ru.display_name`, sql`j.name`])}
+          ${searchFilter(sql, args.q, [sql`r.category`, sql`ru.display_name`, sql`j.name`])}
           -- reports.created_at is DEFAULT now() (effectively non-null on every row), so ordering on the
           -- bare column lets the (created_at) index serve the sort instead of a seq-scan+top-N heap sort.
-          ${pageWindow(sql`r.created_at`, sql`r.id::text`)}
-        )`)
-      }
+          ${pageWindow(sql, page, sql`r.created_at`, sql`r.id::text`)}
+        )`
+}
 
-      if (wants("cleanup")) {
-        branches.push(sql`(
+function cleanupBranch(sql: Sql, args: ListActivityArgs, page: PageSpec): SqlFragment {
+  return sql`(
           SELECT 'cleanup'::text AS source, c.id::text AS id, c.created_at AS ts,
                  ${keysetInstant(sql, sql`c.created_at`)} AS cursor_at,
                  cu.display_name AS who, false AS actorless, c.address AS where_label,
@@ -179,15 +179,15 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
           FROM cleanups c
           LEFT JOIN users cu ON cu.id = c.organizer_user_id
           WHERE true
-          ${search([sql`c.title`, sql`cu.display_name`, sql`c.address`])}
+          ${searchFilter(sql, args.q, [sql`c.title`, sql`cu.display_name`, sql`c.address`])}
           -- cleanups.created_at is DEFAULT now() (set on insert, effectively non-null), so ordering on the
           -- bare column lets the (created_at) index serve the sort.
-          ${pageWindow(sql`c.created_at`, sql`c.id::text`)}
-        )`)
-      }
+          ${pageWindow(sql, page, sql`c.created_at`, sql`c.id::text`)}
+        )`
+}
 
-      if (wants("mail_event")) {
-        branches.push(sql`(
+function mailEventBranch(sql: Sql, args: ListActivityArgs, page: PageSpec): SqlFragment {
+  return sql`(
           SELECT 'mail_event'::text AS source, e.id::text AS id, e.created_at AS ts,
                  ${keysetInstant(sql, sql`e.created_at`)} AS cursor_at,
                  t.org AS who, false AS actorless, COALESCE(t.org, t.jurisdiction_geoid) AS where_label,
@@ -195,11 +195,37 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
           FROM mail_events e
           LEFT JOIN mail_threads t ON t.id = e.thread_id
           WHERE true
-          ${mailKindFilter(args)}
-          ${search([sql`e.type`, sql`t.org`, sql`t.jurisdiction_geoid`, sql`t.subject`])}
-          ${pageWindow(sql`e.created_at`, sql`e.id::text`)}
-        )`)
+          ${mailKindFilter(sql, args)}
+          ${searchFilter(sql, args.q, [sql`e.type`, sql`t.org`, sql`t.jurisdiction_geoid`, sql`t.subject`])}
+          ${pageWindow(sql, page, sql`e.created_at`, sql`e.id::text`)}
+        )`
+}
+
+// Union order is fixed so the statement text is the same for every request that selects the same sources.
+const SOURCE_BRANCHES: readonly (readonly [ActivitySource, BranchBuilder])[] = [
+  ["audit", auditBranch],
+  ["report", reportBranch],
+  ["cleanup", cleanupBranch],
+  ["mail_event", mailEventBranch],
+]
+
+export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
+  return {
+    async list(
+      args: ListActivityArgs,
+    ): Promise<{ records: ActivitySourceRecord[]; nextCursor: string | null }> {
+      const limit = clampLimit(args.limit)
+      // requireUuid is false: the keyset compares `id::text`, never `${id}::uuid`, so a non-uuid id in a
+      // hand-made cursor cannot raise a 22P02; it simply anchors past every real row.
+      const page: PageSpec = {
+        anchor: decodeCursor(args.cursor),
+        desc: args.sort === "newest",
+        limit,
       }
+      const sources = args.filter === "all" ? null : new Set(sourcesForKind(args.filter))
+      const branches = SOURCE_BRANCHES.filter(
+        ([source]) => sources === null || sources.has(source),
+      ).map(([, build]) => build(sql, args, page))
 
       const first = branches[0]
       // No branch can produce the requested kind (today: filter=claim). An empty union is not valid SQL, so
@@ -209,7 +235,7 @@ export function makeDrizzleActivityRepository(sql: Sql): ActivityRepository {
         .slice(1)
         .reduce<SqlFragment>((acc, branch) => sql`${acc} UNION ALL ${branch}`, first)
 
-      const outerOrder = desc
+      const outerOrder = page.desc
         ? sql`ORDER BY feed.ts DESC, feed.id DESC`
         : sql`ORDER BY feed.ts ASC, feed.id ASC`
       // The union is wrapped in a FROM subquery (rather than trailing the branches with a bare ORDER BY) so

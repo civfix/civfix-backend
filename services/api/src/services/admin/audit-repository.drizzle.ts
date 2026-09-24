@@ -1,4 +1,4 @@
-import type { Sql } from "../../db/client.js"
+import type { Queryable, Sql } from "../../db/client.js"
 import {
   clampLimit,
   decodeCursor,
@@ -9,6 +9,7 @@ import {
 import { isUuid } from "../../db/cursor-helpers.js"
 import type { AuditRecord, AuditRepository, ListAuditArgs } from "./audit-service.js"
 import { likeContains } from "./like.js"
+import type { SqlFragment } from "./sql-fragments.js"
 
 interface AuditRowSelect {
   id: string
@@ -33,6 +34,17 @@ function toRecord(r: AuditRowSelect): AuditRecord {
   }
 }
 
+function auditActorFilter(sql: Queryable, actor: string | null): SqlFragment {
+  if (actor === null) return sql``
+  const like = likeContains(actor)
+  const asUuid = isUuid(actor) ? actor : null
+  return sql`AND (${asUuid}::uuid IS NOT NULL AND a.actor_id = ${asUuid}::uuid OR u.display_name ILIKE ${like} ESCAPE '\\')`
+}
+
+function containsFilter(sql: Queryable, column: SqlFragment, term: string | null): SqlFragment {
+  return term === null ? sql`` : sql`AND ${column} ILIKE ${likeContains(term)} ESCAPE '\\'`
+}
+
 export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
   return {
     async list(
@@ -44,22 +56,9 @@ export function makeDrizzleAuditRepository(sql: Sql): AuditRepository {
         anchor !== null
           ? sql`AND ${keysetPredicate(sql, sql`a.created_at`, sql`a.id`, anchor)}`
           : sql``
-      const actorFilter =
-        args.actor !== null
-          ? (() => {
-              const like = likeContains(args.actor)
-              const asUuid = isUuid(args.actor) ? args.actor : null
-              return sql`AND (${asUuid}::uuid IS NOT NULL AND a.actor_id = ${asUuid}::uuid OR u.display_name ILIKE ${like} ESCAPE '\\')`
-            })()
-          : sql``
-      const actionFilter =
-        args.action !== null
-          ? sql`AND a.action ILIKE ${likeContains(args.action)} ESCAPE '\\'`
-          : sql``
-      const targetFilter =
-        args.target !== null
-          ? sql`AND a.target ILIKE ${likeContains(args.target)} ESCAPE '\\'`
-          : sql``
+      const actorFilter = auditActorFilter(sql, args.actor)
+      const actionFilter = containsFilter(sql, sql`a.action`, args.action)
+      const targetFilter = containsFilter(sql, sql`a.target`, args.target)
 
       const rows = await sql<AuditRowSelect[]>`
         SELECT a.id, a.actor_id, u.display_name AS actor_name, a.action, a.target, a.meta, a.created_at,

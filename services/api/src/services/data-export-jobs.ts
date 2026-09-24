@@ -7,7 +7,9 @@ import { isFinalJobAttempt } from "./job-attempt.js"
 
 export const DATA_EXPORT_JOB = "data.export"
 
-export interface DataExportJob {
+const SUPPORT_MAILBOX_LOCAL_PART = "support"
+
+interface DataExportJob {
   userId: string
 }
 
@@ -22,7 +24,7 @@ export interface RegisterDataExportOpts {
 }
 
 export function dataExportSupportEmail(env: Env): string {
-  return `support@${env.MAIL_REPLY_DOMAIN}`
+  return `${SUPPORT_MAILBOX_LOCAL_PART}@${env.MAIL_REPLY_DOMAIN}`
 }
 
 export async function registerDataExportJobs(

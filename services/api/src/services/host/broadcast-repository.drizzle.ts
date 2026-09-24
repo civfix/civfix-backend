@@ -41,7 +41,7 @@ import type {
   HostMessagingState,
   MemberContact,
 } from "./broadcast-types.js"
-import { ANNOUNCEMENT_VISIBLE_STATUSES } from "./broadcast-types.js"
+import { ANNOUNCEMENT_VISIBLE_STATUSES, DEFAULT_BROADCAST_CHUNK_SIZE } from "./broadcast-types.js"
 
 interface BroadcastRowSelect {
   id: string
@@ -109,6 +109,13 @@ function toKeysetRecord(row: CursorRowSelect): KeysetRow<BroadcastRecord> {
   return { ...toRecord(row), cursorAt: row.cursor_at }
 }
 
+function broadcastColumns(tag: Queryable) {
+  return tag`id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
+               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
+               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
+               suppressed_count, content_scrubbed_at, created_at, updated_at`
+}
+
 function joinSet(sql: Sql, fragments: Array<ReturnType<Sql>>): ReturnType<Sql> {
   const [first, ...rest] = fragments
   if (first === undefined) throw new Error("broadcast UPDATE needs at least one column to set")
@@ -131,10 +138,7 @@ function firstName(displayName: string): string {
 export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
   async function selectById(broadcastId: string): Promise<BroadcastRecord | null> {
     const rows = await sql<BroadcastRowSelect[]>`
-      SELECT id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at FROM broadcasts WHERE id = ${broadcastId} LIMIT 1`
+      SELECT ${broadcastColumns(sql)} FROM broadcasts WHERE id = ${broadcastId} LIMIT 1`
     return rows[0] ? toRecord(rows[0]) : null
   }
 
@@ -151,12 +155,9 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
           ${input.status ?? "draft"}, ${input.subject}, ${input.bodyMd}, ${input.ctaLabel ?? null},
           ${input.ctaUrl ?? null}, ${jsonParam(sql, input.segment)},
           ${input.channels}::text[], ${input.replyTo ?? null}, ${input.scheduledAt ?? null},
-          ${input.startedAt ?? null}, ${input.chunkSize ?? 200}
+          ${input.startedAt ?? null}, ${input.chunkSize ?? DEFAULT_BROADCAST_CHUNK_SIZE}
         )
-        RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at`
+        RETURNING ${broadcastColumns(sql)}`
     return toRecord(rows[0]!)
   }
 
@@ -193,10 +194,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
           ${input.replyTo ?? null}, ${input.startedAt ?? null}
         )
         ON CONFLICT DO NOTHING
-        RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at`
+        RETURNING ${broadcastColumns(sql)}`
       return rows[0] ? toRecord(rows[0]) : null
     },
 
@@ -204,10 +202,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
 
     async findForEvent(cleanupId: string, broadcastId: string): Promise<BroadcastRecord | null> {
       const rows = await sql<BroadcastRowSelect[]>`
-        SELECT id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at FROM broadcasts
+        SELECT ${broadcastColumns(sql)} FROM broadcasts
          WHERE id = ${broadcastId} AND cleanup_id = ${cleanupId}
          LIMIT 1`
       return rows[0] ? toRecord(rows[0]) : null
@@ -215,10 +210,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
 
     async findEventCancellation(cleanupId: string): Promise<BroadcastRecord | null> {
       const rows = await sql<BroadcastRowSelect[]>`
-        SELECT id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at FROM broadcasts
+        SELECT ${broadcastColumns(sql)} FROM broadcasts
          WHERE cleanup_id = ${cleanupId} AND kind = 'event_cancelled'
          LIMIT 1`
       return rows[0] ? toRecord(rows[0]) : null
@@ -231,10 +223,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
           ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, query.cursor)}`
           : sql``
       const rows = await sql<CursorRowSelect[]>`
-        SELECT id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at,
+        SELECT ${broadcastColumns(sql)},
                ${keysetInstant(sql, sql`created_at`)} AS cursor_at
           FROM broadcasts
          WHERE cleanup_id = ${query.cleanupId}
@@ -251,10 +240,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
           ? sql`AND ${keysetPredicate(sql, sql`created_at`, sql`id`, query.cursor)}`
           : sql``
       const rows = await sql<CursorRowSelect[]>`
-        SELECT id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at,
+        SELECT ${broadcastColumns(sql)},
                ${keysetInstant(sql, sql`created_at`)} AS cursor_at
           FROM broadcasts
          WHERE cleanup_id = ${query.cleanupId}
@@ -456,10 +442,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       const rows = await sql<BroadcastRowSelect[]>`
         UPDATE broadcasts SET ${joinSet(sql, sets)}, updated_at = now()
          WHERE id = ${broadcastId} AND cleanup_id = ${cleanupId} AND status = 'draft'
-        RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at`
+        RETURNING ${broadcastColumns(sql)}`
       return rows[0] ? toRecord(rows[0]) : null
     },
 
@@ -486,10 +469,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       const rows = await sql<BroadcastRowSelect[]>`
         UPDATE broadcasts SET ${joinSet(sql, sets)}, updated_at = now()
          WHERE id = ${broadcastId} AND status = ANY(${[...from]}::text[])
-        RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at`
+        RETURNING ${broadcastColumns(sql)}`
       return rows[0] ? toRecord(rows[0]) : null
     },
 
@@ -688,10 +668,7 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
               FROM broadcast_deliveries WHERE broadcast_id = ${broadcastId}
           ) AS c
          WHERE b.id = ${broadcastId}
-        RETURNING id, cleanup_id, created_by, kind, reminder_offset_min, status, subject, body_md,
-               cta_label, cta_url, segment, channels, reply_to, scheduled_at, planned_at, started_at,
-               finished_at, chunk_size, chunk_count, recipient_count, sent_count, failed_count,
-               suppressed_count, content_scrubbed_at, created_at, updated_at`
+        RETURNING ${broadcastColumns(sql)}`
       return rows[0] ? toRecord(rows[0]) : null
     },
 

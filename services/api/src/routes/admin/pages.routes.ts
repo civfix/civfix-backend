@@ -24,7 +24,7 @@ import { makeDrizzleHostRegistrationRepository } from "../../services/host/regis
 import { toEventPageDTO } from "../../services/host/registration-dto.js"
 import { makeEventMediaPresigner } from "../../services/host/event-media.js"
 
-export const ADMIN_EVENT_PAGE_DEFAULT_LIMIT = 50
+const ADMIN_EVENT_PAGE_DEFAULT_LIMIT = 50
 
 type RecordAudit = (entry: WriteAuditInput) => Promise<unknown>
 

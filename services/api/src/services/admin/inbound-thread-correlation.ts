@@ -43,13 +43,20 @@ export const EFFECTS_LEASE_MS = 10 * 60 * 1000
 
 const EVENT_REPLY_FALLBACK_NOTE = "Jurisdiction replied"
 
-export const EFFECTS_STAGE_TIMELINE = 1
-export const EFFECTS_STAGE_CHAT = 2
-export const EFFECTS_STAGE_NOTIFIED = 3
-export const EFFECTS_STAGE_SETTLED = 4
+const EFFECTS_STAGE_TIMELINE = 1
+const EFFECTS_STAGE_CHAT = 2
+const EFFECTS_STAGE_NOTIFIED = 3
+const EFFECTS_STAGE_SETTLED = 4
+
+const JURISDICTION_REPLY_NOTIFICATION_TITLE = "Your report got a response"
 
 export const JURISDICTION_REPLY_NOTIFICATION_BODY =
   "The city responded. See their reply in the report chat."
+
+const BRACKETED_MESSAGE_ID_RE = /<[^>]+>/g
+
+const DERIVED_ID_BODY_PREFIX_CHARS = 4096
+const DERIVED_ID_PREFIX = "derived:"
 
 export function inboundEffectDeps(
   deps: {
@@ -134,7 +141,7 @@ export function stripQuotedHistory(raw: string, replyDomain = DEFAULT_REPLY_DOMA
   return lines.slice(0, end).join("\n").trim()
 }
 
-export function clipToMessageBody(text: string, max: number = MESSAGE_BODY_MAX): string {
+function clipToMessageBody(text: string, max: number = MESSAGE_BODY_MAX): string {
   if (text.length <= max) return text
   let kept = ""
   for (const cluster of segmentGraphemes(text)) {
@@ -168,9 +175,7 @@ export const MESSAGE_ID_LIST_CAP = 20
 export function parseMessageIdList(value: string | undefined): string[] {
   if (!value || value.length === 0) return []
   const out: string[] = []
-  const re = /<[^>]+>/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(value)) !== null) {
+  for (const m of value.matchAll(BRACKETED_MESSAGE_ID_RE)) {
     out.push(m[0])
     if (out.length >= MESSAGE_ID_LIST_CAP) return out
   }
@@ -274,7 +279,7 @@ export async function applyInboundEffects(
   }
 }
 
-export async function onJurisdictionReply(
+async function onJurisdictionReply(
   container: Container,
   injected: InboundEffectDeps,
   mailRepo: MailRepository,
@@ -298,13 +303,17 @@ export async function onJurisdictionReply(
     if (advances) {
       await reportRepo.setStatus(reportId, {
         status: "in_progress",
-        note,
+        note: JURISDICTION_REPLY_NOTE,
         actorId: null,
         kind: "reply",
         body: null,
       })
     } else {
-      await reportRepo.appendSystemTimeline(reportId, { note, kind: "reply", body: null })
+      await reportRepo.appendSystemTimeline(reportId, {
+        note: JURISDICTION_REPLY_NOTE,
+        kind: "reply",
+        body: null,
+      })
     }
     await mailRepo.setMessageEffectsStage(messageId, EFFECTS_STAGE_TIMELINE)
   }
@@ -330,7 +339,7 @@ export async function onJurisdictionReply(
       const notifications = injected.notifications ?? container.getNotificationService()
       await notifications.createNotification(reporterUserId, {
         type: "report_update",
-        title: "Your report got a response",
+        title: JURISDICTION_REPLY_NOTIFICATION_TITLE,
         body: JURISDICTION_REPLY_NOTIFICATION_BODY,
         link: `/reports/${reportId}`,
       })
@@ -389,8 +398,6 @@ export async function onEventReply(
   }
 }
 
-const DERIVED_ID_BODY_PREFIX_CHARS = 4096
-
 export function resolveMessageId(mail: ParsedMail): string {
   if (mail.messageId && mail.messageId.length > 0) return mail.messageId
   const body = mail.text ?? mail.html ?? ""
@@ -401,5 +408,5 @@ export function resolveMessageId(mail: ParsedMail): string {
     String(body.length),
     body.slice(0, DERIVED_ID_BODY_PREFIX_CHARS),
   ].join("|")
-  return `derived:${createHash("sha256").update(basis).digest("hex")}`
+  return `${DERIVED_ID_PREFIX}${createHash("sha256").update(basis).digest("hex")}`
 }

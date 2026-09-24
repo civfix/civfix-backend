@@ -2,7 +2,8 @@ import type { BroadcastKind, BroadcastSegment } from "@civfix/shared"
 import type { Queryable } from "../../db/client.js"
 import { CRITICAL_BROADCAST_KINDS, HOST_COMPOSED_BROADCAST_KINDS } from "./broadcast-types.js"
 
-export const AUDIENCE_PAGE_SIZE = 1000
+// Sorts before every real id, so a first page starts at the beginning of the keyset.
+const FIRST_UUID = "00000000-0000-0000-0000-000000000000"
 
 export interface AudienceQuery {
   cleanupId: string
@@ -78,7 +79,7 @@ function guestSuppressionTail(sql: Queryable, cleanupId: string, kind: Broadcast
 
 function memberQuery(sql: Queryable, q: AudienceQuery): Promise<IdRow[]> {
   const tail = memberSuppressionTail(sql, q.cleanupId, q.kind)
-  const after = q.after ?? "00000000-0000-0000-0000-000000000000"
+  const after = q.after ?? FIRST_UUID
   switch (q.segment.kind) {
     case "all_registered":
       return sql<IdRow[]>`
@@ -150,7 +151,7 @@ function memberQuery(sql: Queryable, q: AudienceQuery): Promise<IdRow[]> {
 
 function guestQuery(sql: Queryable, q: AudienceQuery): Promise<IdRow[]> {
   const tail = guestSuppressionTail(sql, q.cleanupId, q.kind)
-  const after = q.after ?? "00000000-0000-0000-0000-000000000000"
+  const after = q.after ?? FIRST_UUID
   switch (q.segment.kind) {
     case "all_registered":
     case "guests_only":

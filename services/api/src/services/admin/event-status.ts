@@ -7,8 +7,6 @@
 
 import type { EventStatus } from "@civfix/shared"
 
-export type StoredCleanupStatus = "upcoming" | "active" | "done" | "cancelled"
-
 export function toEventStatus(stored: string): EventStatus {
   switch (stored) {
     case "active":

@@ -15,8 +15,6 @@ import {
 import { makePacketMediaPresigner, makePrivateMediaPresigner } from "../media-presign.js"
 import { makeContainerReportChatEmitter } from "../report-chat-emitter.js"
 
-export { REPORT_AUTOFORWARD_JOB }
-
 export interface AutoForwardLogger {
   info: (obj: unknown, msg?: string) => void
   warn: (obj: unknown, msg?: string) => void
@@ -37,7 +35,7 @@ export async function registerAutoForwardJobs(
   })
 }
 
-export async function runAutoForward(
+async function runAutoForward(
   container: Container,
   reportId: string,
   logger?: AutoForwardJobLogger,

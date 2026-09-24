@@ -3,15 +3,27 @@ import type { HostExportDTO, HostExportFilters, HostExportKind } from "@civfix/s
 import type { Storage } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
 import { csvProvenanceRow, csvRow } from "./export-csv.js"
-import { hostExportBuilder, type HostExportContext } from "./export-builders.js"
+import {
+  hostExportBuilder,
+  type HostExportBuilder,
+  type HostExportContext,
+} from "./export-builders.js"
 import type { HostExportRecord, HostExportRepository } from "./export-repository.drizzle.js"
 import type { WriteAuditInput } from "../admin/audit.js"
 
-export const EXPORT_DOWNLOAD_URL_TTL_SEC = 300
-export const EXPORT_LIST_LIMIT = 50
-export const EXPORT_YIELD_EVERY_ROWS = 1000
+const MS_PER_SECOND = 1000
+const MS_PER_HOUR = 3_600_000
+const EXPORT_DOWNLOAD_URL_TTL_SEC = 300
+const EXPORT_LIST_LIMIT = 50
+const EXPORT_YIELD_EVERY_ROWS = 1000
 export const EXPORT_RUN_STALE_MS = 10 * 60 * 1000
 export const EXPORT_ABANDON_AFTER_MS = 60 * 60 * 1000
+const EXPORT_CONTENT_TYPE = "text/csv; charset=utf-8"
+const FALLBACK_EXPORT_FILENAME = "civfix-export.csv"
+const ERROR_BUILD_FAILED = "build_failed"
+const ERROR_FORBIDDEN = "forbidden"
+const ERROR_NOT_STARTED = "not_started"
+export const EXPORT_NOT_FOUND = "Export not found"
 
 export interface HostExportConfig {
   maxRows: number
@@ -25,6 +37,13 @@ interface PresignStorage {
   put: Storage["put"]
   presignGet(key: string, ttlSec: number, opts?: { forceSigned?: boolean }): Promise<string>
   delete(key: string): Promise<void>
+}
+
+interface RenderedCsv {
+  parts: Buffer[]
+  bytes: number
+  rowCount: number
+  truncated: boolean
 }
 
 export interface HostExportServiceDeps {
@@ -93,7 +112,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
       await deps.storage.delete(key)
       await deps.repo.releaseObject(
         { id: claimed.id, status: "failed", runToken: claimed.runToken },
-        "build_failed",
+        ERROR_BUILD_FAILED,
       )
     } catch (err) {
       deps.logger?.warn(
@@ -101,6 +120,133 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
         "host export: failed run could not clean up its object; the reaper will retry",
       )
     }
+  }
+
+  async function claimIsAuthorized(claimed: HostExportRecord): Promise<boolean> {
+    if (deps.authorize === undefined) return true
+    try {
+      await deps.authorize(claimed)
+      return true
+    } catch (err) {
+      deps.logger?.warn(
+        { err, exportId: claimed.id },
+        "host export refused: the requester no longer holds the capability",
+      )
+      await deps.repo.markFailed(claimed.id, ERROR_FORBIDDEN, claimed.runToken)
+      return false
+    }
+  }
+
+  async function renderCsv(
+    builder: HostExportBuilder,
+    ctx: HostExportContext,
+  ): Promise<RenderedCsv> {
+    const provenance = await builder.provenance(ctx)
+    const header = await builder.header(ctx)
+    const parts: Buffer[] = []
+    let bytes = 0
+    const append = (text: string): void => {
+      const buf = Buffer.from(text, "utf8")
+      parts.push(buf)
+      bytes += buf.byteLength
+    }
+    for (const line of provenance) append(csvProvenanceRow(line))
+    append(csvRow(header))
+
+    let rowCount = 0
+    let truncated = false
+    for await (const row of builder.rows(ctx)) {
+      if (rowCount >= deps.config.maxRows || bytes >= deps.config.maxBytes) {
+        truncated = true
+        break
+      }
+      append(csvRow(row))
+      rowCount += 1
+      if (rowCount % EXPORT_YIELD_EVERY_ROWS === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+    }
+    if (truncated) {
+      append(
+        csvProvenanceRow(
+          `truncated: this file stops at ${rowCount} rows (${deps.config.maxRows} row / ${deps.config.maxBytes} byte cap)`,
+        ),
+      )
+    }
+    return { parts, bytes, rowCount, truncated }
+  }
+
+  async function discardSupersededObject(claimed: HostExportRecord, key: string): Promise<void> {
+    await deps.storage.delete(key).catch((err: unknown) => {
+      deps.logger?.warn(
+        { err, exportId: claimed.id, key },
+        "host export: losing run could not delete its own object",
+      )
+    })
+    deps.logger?.warn(
+      { evt: "host.export.superseded", exportId: claimed.id },
+      "host export run superseded by a newer claim; its object was discarded",
+    )
+  }
+
+  async function reapExpired(limit: number): Promise<number> {
+    const expired = await deps.repo.listExpired(now(), limit)
+    let reaped = 0
+    for (const record of expired) {
+      if (record.r2Key !== null) {
+        try {
+          await deps.storage.delete(record.r2Key)
+        } catch (err) {
+          deps.logger?.warn(
+            { err, exportId: record.id },
+            "host export reap: object delete failed; row left ready for the next pass",
+          )
+          continue
+        }
+      }
+      await deps.repo.markExpired(record.id)
+      reaped += 1
+    }
+    return reaped
+  }
+
+  async function reapOrphaned(limit: number): Promise<number> {
+    let reaped = 0
+    const orphaned = await deps.repo.listOrphaned({
+      staleBefore: new Date(now().getTime() - EXPORT_ABANDON_AFTER_MS),
+      limit,
+    })
+    for (const record of orphaned) {
+      const errorCode = record.status === "queued" ? ERROR_NOT_STARTED : ERROR_BUILD_FAILED
+      // Fence first: failing the row under its run token makes a still-live run's markReady miss, so
+      // no ready row can end up naming the object deleted below. The key stays on the failed row
+      // until the delete succeeds.
+      if (
+        record.status !== "failed" &&
+        !(await deps.repo.markFailed(record.id, errorCode, record.runToken))
+      ) {
+        continue
+      }
+      if (record.r2Key === null) {
+        reaped += 1
+        continue
+      }
+      try {
+        await deps.storage.delete(record.r2Key)
+      } catch (err) {
+        deps.logger?.warn(
+          { err, exportId: record.id },
+          "host export reap: orphaned object delete failed; row kept for the next pass",
+        )
+        continue
+      }
+      const released = await deps.repo.releaseObject(
+        { id: record.id, status: "failed", runToken: record.runToken },
+        errorCode,
+      )
+      if (released) reaped += 1
+    }
+    return reaped
   }
 
   return {
@@ -130,7 +276,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
 
     async get(exportId) {
       const record = await deps.repo.findById(exportId)
-      if (record === null) throw AppError.notFound("Export not found")
+      if (record === null) throw AppError.notFound(EXPORT_NOT_FOUND)
       return record
     },
 
@@ -141,18 +287,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
         new Date(at.getTime() - EXPORT_RUN_STALE_MS),
       )
       if (claimed === null) return { status: "skipped" }
-      if (deps.authorize !== undefined) {
-        try {
-          await deps.authorize(claimed)
-        } catch (err) {
-          deps.logger?.warn(
-            { err, exportId: claimed.id },
-            "host export refused: the requester no longer holds the capability",
-          )
-          await deps.repo.markFailed(claimed.id, "forbidden", claimed.runToken)
-          return { status: "failed" }
-        }
-      }
+      if (!(await claimIsAuthorized(claimed))) return { status: "failed" }
       let key: string | null = null
       const ctx: HostExportContext = {
         exportId: claimed.id,
@@ -164,44 +299,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
       }
       try {
         const builder = hostExportBuilder(claimed.kind)
-        const provenance = await builder.provenance(ctx)
-        const header = await builder.header(ctx)
-        const parts: Buffer[] = []
-        let bytes = 0
-        for (const line of provenance) {
-          const buf = Buffer.from(csvProvenanceRow(line), "utf8")
-          parts.push(buf)
-          bytes += buf.byteLength
-        }
-        const headerBuf = Buffer.from(csvRow(header), "utf8")
-        parts.push(headerBuf)
-        bytes += headerBuf.byteLength
-
-        let rowCount = 0
-        let truncated = false
-        for await (const row of builder.rows(ctx)) {
-          if (rowCount >= deps.config.maxRows || bytes >= deps.config.maxBytes) {
-            truncated = true
-            break
-          }
-          const buf = Buffer.from(csvRow(row), "utf8")
-          parts.push(buf)
-          bytes += buf.byteLength
-          rowCount += 1
-          if (rowCount % EXPORT_YIELD_EVERY_ROWS === 0) {
-            await new Promise<void>((resolve) => setImmediate(resolve))
-          }
-        }
-        if (truncated) {
-          const note = Buffer.from(
-            csvProvenanceRow(
-              `truncated: this file stops at ${rowCount} rows (${deps.config.maxRows} row / ${deps.config.maxBytes} byte cap)`,
-            ),
-            "utf8",
-          )
-          parts.push(note)
-          bytes += note.byteLength
-        }
+        const { parts, bytes, rowCount, truncated } = await renderCsv(builder, ctx)
 
         // A re-claimed row still names the crashed run's object. It is deleted before this run's key
         // replaces it; if the delete fails the row fails holding that key, so the reaper finishes it.
@@ -220,10 +318,10 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
           return { status: "skipped" }
         }
         await deps.storage.put(key, Buffer.concat(parts), {
-          contentType: "text/csv; charset=utf-8",
+          contentType: EXPORT_CONTENT_TYPE,
           contentDisposition: `attachment; filename="${builder.filename(ctx)}"`,
         })
-        const expiresAt = new Date(at.getTime() + deps.config.ttlHours * 3_600_000)
+        const expiresAt = new Date(at.getTime() + deps.config.ttlHours * MS_PER_HOUR)
         const ready = await deps.repo.markReady(claimed.id, {
           r2Key: key,
           rowCount,
@@ -233,16 +331,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
           runToken: claimed.runToken,
         })
         if (ready === null) {
-          await deps.storage.delete(key).catch((err: unknown) => {
-            deps.logger?.warn(
-              { err, exportId: claimed.id, key },
-              "host export: losing run could not delete its own object",
-            )
-          })
-          deps.logger?.warn(
-            { evt: "host.export.superseded", exportId: claimed.id },
-            "host export run superseded by a newer claim; its object was discarded",
-          )
+          await discardSupersededObject(claimed, key)
           return { status: "skipped" }
         }
         deps.logger?.info(
@@ -252,7 +341,7 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
         return { status: "ready" }
       } catch (err) {
         deps.logger?.error({ err, exportId: claimed.id }, "host export failed")
-        await deps.repo.markFailed(claimed.id, "build_failed", claimed.runToken)
+        await deps.repo.markFailed(claimed.id, ERROR_BUILD_FAILED, claimed.runToken)
         if (key !== null) await discardFailedObject(claimed, key)
         return { status: "failed" }
       }
@@ -268,66 +357,18 @@ export function makeHostExportService(deps: HostExportServiceDeps): HostExportSe
       const url = await deps.storage.presignGet(record.r2Key, EXPORT_DOWNLOAD_URL_TTL_SEC, {
         forceSigned: true,
       })
-      const filename = record.r2Key.split("/").pop() ?? "civfix-export.csv"
+      const filename = record.r2Key.split("/").pop() ?? FALLBACK_EXPORT_FILENAME
       return {
         url,
-        expiresAt: new Date(now().getTime() + EXPORT_DOWNLOAD_URL_TTL_SEC * 1000).toISOString(),
+        expiresAt: new Date(
+          now().getTime() + EXPORT_DOWNLOAD_URL_TTL_SEC * MS_PER_SECOND,
+        ).toISOString(),
         filename,
       }
     },
 
     async reap(limit) {
-      const expired = await deps.repo.listExpired(now(), limit)
-      let reaped = 0
-      for (const record of expired) {
-        if (record.r2Key !== null) {
-          try {
-            await deps.storage.delete(record.r2Key)
-          } catch (err) {
-            deps.logger?.warn(
-              { err, exportId: record.id },
-              "host export reap: object delete failed; row left ready for the next pass",
-            )
-            continue
-          }
-        }
-        await deps.repo.markExpired(record.id)
-        reaped += 1
-      }
-      const orphaned = await deps.repo.listOrphaned({
-        staleBefore: new Date(now().getTime() - EXPORT_ABANDON_AFTER_MS),
-        limit,
-      })
-      for (const record of orphaned) {
-        const errorCode = record.status === "queued" ? "not_started" : "build_failed"
-        // Fence first: failing the row under its run token makes a still-live run's markReady miss, so
-        // no ready row can end up naming the object deleted below. The key stays on the failed row
-        // until the delete succeeds.
-        if (
-          record.status !== "failed" &&
-          !(await deps.repo.markFailed(record.id, errorCode, record.runToken))
-        ) {
-          continue
-        }
-        if (record.r2Key === null) {
-          reaped += 1
-          continue
-        }
-        try {
-          await deps.storage.delete(record.r2Key)
-        } catch (err) {
-          deps.logger?.warn(
-            { err, exportId: record.id },
-            "host export reap: orphaned object delete failed; row kept for the next pass",
-          )
-          continue
-        }
-        const released = await deps.repo.releaseObject(
-          { id: record.id, status: "failed", runToken: record.runToken },
-          errorCode,
-        )
-        if (released) reaped += 1
-      }
+      const reaped = (await reapExpired(limit)) + (await reapOrphaned(limit))
       return { reaped }
     },
   }

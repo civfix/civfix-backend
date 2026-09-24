@@ -8,12 +8,12 @@ import type {
   BroadcastSegment,
   BroadcastStatus,
   CreateEventBroadcastRequest,
-  HostBroadcastChannel,
   ListBroadcastDeliveriesRequest,
   ListEventBroadcastsRequest,
   PreviewEventBroadcastRequest,
   UpdateEventBroadcastRequest,
 } from "@civfix/shared"
+import type { BroadcastVarValues } from "@civfix/shared/host"
 import type { Mailer } from "@civfix/shared/interfaces"
 import type { FastifyBaseLogger } from "fastify"
 import { assertNoSlur } from "../../abuse/slur-filter.js"
@@ -28,20 +28,25 @@ import type {
 import { CRITICAL_BROADCAST_KINDS } from "./broadcast-types.js"
 import {
   assertBroadcastLinkPolicy,
+  broadcastContentOf,
   broadcastLinkWarnings,
-  eventManageUrl,
-  formatEventWhen,
+  eventTemplateVars,
   renderBroadcast,
+  verifiedReplyTo,
 } from "./broadcast-render.js"
 import { verifyUnsubscribeToken } from "./broadcast-capability-token.js"
+import { audiencePages } from "./broadcast-audience.js"
 
-export const BROADCAST_DEFAULT_LIMIT = 20
-export const BROADCAST_TEST_SENDS_PER_HOUR = 5
-export const TEST_SEND_WINDOW_SEC = 60 * 60
+const BROADCAST_DEFAULT_LIMIT = 20
+const BROADCAST_TEST_SENDS_PER_HOUR = 5
+const TEST_SEND_WINDOW_SEC = 60 * 60
 export const DAY_SECONDS = 24 * 60 * 60
-export const AUDIENCE_PAGE_SIZE = 1000
-export const AUDIENCE_MAX_PAGES = 100
-export const LAST_UUID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+const MS_PER_HOUR = 3_600_000
+const ISO_DAY_LENGTH = 10
+const COOLDOWN_SENDS = 1
+const PREVIEW_SAMPLE_FIRST_NAME = "Alex"
+const PREVIEW_SAMPLE_TICKET_TYPE = "General"
+const TEST_SUBJECT_PREFIX = "[Test] "
 
 export interface BroadcastConfig {
   killSwitch: boolean
@@ -119,10 +124,19 @@ export function emailHashOf(email: string): string {
 }
 
 export function utcDayKey(at: Date): string {
-  return at.toISOString().slice(0, 10)
+  return at.toISOString().slice(0, ISO_DAY_LENGTH)
 }
 
-export function toBroadcastDTO(record: BroadcastRecord): BroadcastDTO {
+export async function withCaps<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn()
+  } catch (err) {
+    if (err instanceof BroadcastCapError) throw capError(err.kind)
+    throw err
+  }
+}
+
+function toBroadcastDTO(record: BroadcastRecord): BroadcastDTO {
   return {
     id: record.id,
     cleanupId: record.cleanupId,
@@ -220,7 +234,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
     if (!state.emailVerified) {
       throw new BroadcastCapError("unverified_email", CAP_COPY.unverified_email)
     }
-    const ageHours = (now().getTime() - state.accountCreatedAt.getTime()) / 3_600_000
+    const ageHours = (now().getTime() - state.accountCreatedAt.getTime()) / MS_PER_HOUR
     if (ageHours < config.minAccountAgeHours) {
       throw new BroadcastCapError("account_too_new", CAP_COPY.account_too_new)
     }
@@ -268,7 +282,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
 
   async function reserveSendCounters(cleanupId: string, actorId: string): Promise<void> {
     const cooldownKey = `bcast:cool:${actorId}:${cleanupId}`
-    await reserve(cooldownKey, config.cooldownSec, 1, "cooldown")
+    await reserve(cooldownKey, config.cooldownSec, COOLDOWN_SENDS, "cooldown")
     try {
       await reserve(
         `bcast:event:${cleanupId}:${utcDayKey(now())}`,
@@ -339,7 +353,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
     const event = await requireEventOrgNotSuspended(cleanupId)
     const moved = await repo.transition(broadcastId, ["draft", "scheduled"], "sending", {
       startedAt: now(),
-      replyTo: event.replyToVerified ? event.replyTo : null,
+      replyTo: verifiedReplyTo(event),
     })
     if (moved === null) throw AppError.conflict("That message is already sending.")
     if (!skipEventSendCounters) {
@@ -480,7 +494,7 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
           eventTitle: event.title,
           vars: previewVars(event, config.webBaseUrl),
           unsubscribeUrl: `${config.webBaseUrl}/unsubscribe`,
-          replyTo: event.replyToVerified ? event.replyTo : null,
+          replyTo: verifiedReplyTo(event),
           allowedLinkHosts: config.linkAllowedHosts,
         },
       )
@@ -517,28 +531,20 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
       if (contact?.email == null) {
         throw AppError.validation({ email: "missing" }, "Add an email address to send a test.")
       }
-      const rendered = renderBroadcast(
-        {
-          subject: record.subject ?? "",
-          bodyMd: record.bodyMd ?? "",
-          ctaLabel: record.ctaLabel,
-          ctaUrl: record.ctaUrl,
+      const rendered = renderBroadcast(broadcastContentOf(record), {
+        eventTitle: event.title,
+        vars: {
+          ...previewVars(event, config.webBaseUrl),
+          first_name: contact.firstName,
         },
-        {
-          eventTitle: event.title,
-          vars: {
-            ...previewVars(event, config.webBaseUrl),
-            first_name: contact.firstName,
-          },
-          unsubscribeUrl: `${config.webBaseUrl}/unsubscribe`,
-          replyTo: event.replyToVerified ? event.replyTo : null,
-          allowedLinkHosts: config.linkAllowedHosts,
-        },
-      )
+        unsubscribeUrl: `${config.webBaseUrl}/unsubscribe`,
+        replyTo: verifiedReplyTo(event),
+        allowedLinkHosts: config.linkAllowedHosts,
+      })
       await deps.mailer.sendOutbound({
         from: config.mailFromEvents,
         to: contact.email,
-        subject: `[Test] ${rendered.subject}`,
+        subject: `${TEST_SUBJECT_PREFIX}${rendered.subject}`,
         text: rendered.text,
         html: rendered.html,
         headers: { "Auto-Submitted": "auto-generated" },
@@ -676,14 +682,11 @@ export function makeBroadcastService(deps: BroadcastServiceDeps): BroadcastServi
   }
 }
 
-function previewVars(event: EventBroadcastContext, webBaseUrl: string): Record<string, string> {
+function previewVars(event: EventBroadcastContext, webBaseUrl: string): BroadcastVarValues {
   return {
-    first_name: "Alex",
-    event_title: event.title,
-    event_when: formatEventWhen(event.scheduledAt, event.timezone),
-    event_where: event.address ?? "the meeting point",
-    ticket_type: "General",
-    manage_link: eventManageUrl(webBaseUrl, event.pageSlug, event.cleanupId),
+    ...eventTemplateVars(event, webBaseUrl),
+    first_name: PREVIEW_SAMPLE_FIRST_NAME,
+    ticket_type: PREVIEW_SAMPLE_TICKET_TYPE,
   }
 }
 
@@ -693,28 +696,11 @@ async function countAudience(
   segment: BroadcastSegment,
   cap: number,
 ): Promise<number> {
+  if (cap <= 0) return cap
   let total = 0
-  let afterMember: string | null = null
-  let afterGuest: string | null = null
-  let memberDone = false
-  let guestDone = false
-  for (let page = 0; page < AUDIENCE_MAX_PAGES && total < cap; page += 1) {
-    const result: { members: string[]; guests: string[] } = await repo.audiencePage({
-      cleanupId,
-      segment,
-      kind: "host_broadcast",
-      afterMember: memberDone ? LAST_UUID : afterMember,
-      afterGuest: guestDone ? LAST_UUID : afterGuest,
-      limit: AUDIENCE_PAGE_SIZE,
-    })
-    total += result.members.length + result.guests.length
-    if (result.members.length < AUDIENCE_PAGE_SIZE) memberDone = true
-    else afterMember = result.members.at(-1) ?? afterMember
-    if (result.guests.length < AUDIENCE_PAGE_SIZE) guestDone = true
-    else afterGuest = result.guests.at(-1) ?? afterGuest
-    if (memberDone && guestDone) break
+  for await (const page of audiencePages(repo, { cleanupId, segment, kind: "host_broadcast" })) {
+    total += page.members.length + page.guests.length
+    if (total >= cap) break
   }
   return Math.min(total, cap)
 }
-
-export type { HostBroadcastChannel, BroadcastStatus }

@@ -9,7 +9,7 @@ export const INSIGHTS_TREND_LIMIT = 400
 
 export const INSIGHTS_SOURCE_LIMIT = 10
 
-export const SUMMARY_DAY_ZONE = "UTC"
+const SUMMARY_DAY_ZONE = "UTC"
 
 export interface EventKpiRow {
   registered: number
@@ -98,7 +98,7 @@ export interface PortfolioHoursTotals {
   volunteersCredited: number
 }
 
-export const ZERO_PORTFOLIO_HOURS_TOTALS: PortfolioHoursTotals = Object.freeze({
+const ZERO_PORTFOLIO_HOURS_TOTALS: PortfolioHoursTotals = Object.freeze({
   credited: 0,
   volunteersCredited: 0,
 })
@@ -126,7 +126,7 @@ export interface HostActivityTotals {
   postsCreated: number
 }
 
-export const ZERO_HOST_ACTIVITY_TOTALS: HostActivityTotals = Object.freeze({
+const ZERO_HOST_ACTIVITY_TOTALS: HostActivityTotals = Object.freeze({
   registrations: 0,
   cancellations: 0,
   hoursTotal: 0,
@@ -143,7 +143,7 @@ export interface HeldEventTotals {
   noShow: number
 }
 
-export const ZERO_HELD_EVENT_TOTALS: HeldEventTotals = Object.freeze({
+const ZERO_HELD_EVENT_TOTALS: HeldEventTotals = Object.freeze({
   events: 0,
   registered: 0,
   checkedIn: 0,
@@ -205,11 +205,19 @@ export interface AnalyticsRepository {
   ): Promise<HostSummarySignups>
 }
 
-export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
-  async function dayCounts(rows: { day: string; n: string }[]): Promise<DayCount[]> {
-    return rows.map((row) => ({ day: row.day, count: Number(row.n) }))
-  }
+function dayCounts(rows: { day: string; n: string }[]): DayCount[] {
+  return rows.map((row) => ({ day: row.day, count: Number(row.n) }))
+}
 
+function keyCounts(rows: { key: string; n: string }[]): KeyCount[] {
+  return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
+}
+
+function labeledKeyCounts(rows: { key: string; label: string; n: string }[]): LabeledKeyCount[] {
+  return rows.map((row) => ({ key: row.key, label: row.label, count: Number(row.n) }))
+}
+
+export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
   return {
     async eventKpis(cleanupId: string): Promise<EventKpiRow> {
       const rows = await sql<
@@ -274,7 +282,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           LEFT JOIN cleanup_ticket_types t ON t.id = r.ticket_type_id
          WHERE r.cleanup_id = ${cleanupId} AND r.status = 'registered'
          GROUP BY 1 ORDER BY 2 DESC LIMIT 50`
-      return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
+      return keyCounts(rows)
     },
 
     async registrationsByAudience(cleanupId) {
@@ -284,7 +292,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           FROM cleanup_registrations
          WHERE cleanup_id = ${cleanupId} AND status = 'registered'
          GROUP BY 1`
-      return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
+      return keyCounts(rows)
     },
 
     async checkinsByTicketType(cleanupId) {
@@ -295,7 +303,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           LEFT JOIN cleanup_ticket_types t ON t.id = r.ticket_type_id
          WHERE s.cleanup_id = ${cleanupId} AND s.checked_in_at IS NOT NULL
          GROUP BY 1 ORDER BY 2 DESC LIMIT 50`
-      return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
+      return keyCounts(rows)
     },
 
     async checkinsBySlot(cleanupId) {
@@ -308,7 +316,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
           LEFT JOIN cleanup_slots sl ON sl.id = sc.slot_id
          WHERE s.cleanup_id = ${cleanupId} AND s.checked_in_at IS NOT NULL
          GROUP BY 1 ORDER BY 2 DESC LIMIT 50`
-      return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
+      return keyCounts(rows)
     },
 
     async arrivalOffsets(cleanupId, limit) {
@@ -401,7 +409,7 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
          GROUP BY c.id, c.title
          ORDER BY 2 DESC
          LIMIT ${limit}`
-      return rows.map((row) => ({ key: row.key, count: Number(row.n) }))
+      return keyCounts(rows)
     },
 
     async broadcastsSent(cleanupId, timezone, from, to) {
@@ -744,17 +752,9 @@ export function makeDrizzleAnalyticsRepository(sql: Sql): AnalyticsRepository {
            LIMIT ${MAX_HOST_SUMMARY_EVENT_ROWS}`,
       ])
       return {
-        daily: await dayCounts(dailyRows),
-        byEvent: byEventRows.map((row) => ({
-          key: row.key,
-          label: row.label,
-          count: Number(row.n),
-        })),
-        hoursByEvent: hoursRows.map((row) => ({
-          key: row.key,
-          label: row.label,
-          count: Number(row.n),
-        })),
+        daily: dayCounts(dailyRows),
+        byEvent: labeledKeyCounts(byEventRows),
+        hoursByEvent: labeledKeyCounts(hoursRows),
       }
     },
   }

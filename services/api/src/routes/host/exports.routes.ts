@@ -18,11 +18,18 @@ import { requireCapability } from "../../services/host/authz.js"
 import { HOST_EXPORT_JOB } from "../../services/host/broadcast-queues.js"
 import { makeCommsRuntime } from "../../services/host/comms-wiring.js"
 import type { CommsRuntime } from "../../services/host/comms-wiring.js"
-import { toHostExportDTO, type HostExportService } from "../../services/host/export-service.js"
+import {
+  EXPORT_NOT_FOUND,
+  toHostExportDTO,
+  type HostExportService,
+} from "../../services/host/export-service.js"
 
 export const EXPORT_REQUEST_RATE_LIMIT = perIdentity({ max: 10, timeWindow: "1 hour" })
 export const EXPORT_READ_RATE_LIMIT = perIdentity({ max: 60, timeWindow: "1 minute" })
 export const EXPORT_DOWNLOAD_RATE_LIMIT = perIdentity({ max: 30, timeWindow: "1 minute" })
+
+const EXPORT_JOB_RETRY_LIMIT = 2
+const EXPORT_AUDIT_ACTION = "event.roster_exported"
 
 export interface HostExportOverrides {
   exports: HostExportService
@@ -74,7 +81,7 @@ export async function registerHostExportRoutes(
         kind: body.kind,
         filters: body.filters,
         audit: (exportId) => ({
-          action: "event.roster_exported",
+          action: EXPORT_AUDIT_ACTION,
           actorId: userId,
           target: `cleanup:${body.id}`,
           meta: { exportId, kind: body.kind },
@@ -83,7 +90,7 @@ export async function registerHostExportRoutes(
       await container.jobs.enqueue(
         HOST_EXPORT_JOB,
         { exportId: payload.id },
-        { singletonKey: `export:${payload.id}`, retryLimit: 2 },
+        { singletonKey: `export:${payload.id}`, retryLimit: EXPORT_JOB_RETRY_LIMIT },
       )
       reply.status(200).send(payload)
     },
@@ -112,7 +119,7 @@ export async function registerHostExportRoutes(
       const params = parse(GetEventExportRequestSchema, mergeParams(request))
       await requireCapability(container.getDb().sql, params.id, userId, "export")
       const record = await exports().get(params.exportId)
-      if (record.cleanupId !== params.id) throw AppError.notFound("Export not found")
+      if (record.cleanupId !== params.id) throw AppError.notFound(EXPORT_NOT_FOUND)
       reply.status(200).send(toHostExportDTO(record))
     },
   )
@@ -125,8 +132,8 @@ export async function registerHostExportRoutes(
       const userId = requireAuth(request)
       const params = parse(DownloadHostExportRequestSchema, request.params)
       const record = await exports().get(params.id)
-      if (record.requestedBy !== userId) throw AppError.notFound("Export not found")
-      if (record.cleanupId === null) throw AppError.notFound("Export not found")
+      if (record.requestedBy !== userId) throw AppError.notFound(EXPORT_NOT_FOUND)
+      if (record.cleanupId === null) throw AppError.notFound(EXPORT_NOT_FOUND)
       await requireCapability(container.getDb().sql, record.cleanupId, userId, "export")
       const payload: DownloadHostExportResponse = await exports().downloadUrl(record)
       reply.status(200).send(payload)

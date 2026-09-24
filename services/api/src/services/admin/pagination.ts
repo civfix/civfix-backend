@@ -10,7 +10,7 @@ export {
 
 export const ADMIN_DEFAULT_LIMIT = 25
 /** Mirrors the shared AdminListQuery limit ceiling. */
-export const ADMIN_MAX_LIMIT = 100
+const ADMIN_MAX_LIMIT = 100
 
 export interface CursorAnchor {
   createdAt: Date

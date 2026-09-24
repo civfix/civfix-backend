@@ -26,6 +26,8 @@ const SAMPLE_PIN_CAP = 50
 
 const DISCOVERY_NOTE_CAP = 200
 
+const DISCOVERY_DETAIL_ZOOM = 11
+
 interface TaskAggRow extends CategoryCountRow {
   id: string
   geoid: string | null
@@ -141,6 +143,15 @@ async function taskAggregateSql(
   return rows as unknown as TaskAggRow[]
 }
 
+function taskAggregateByIdSql(sql: Queryable, id: string): Promise<TaskAggRow[]> {
+  return taskAggregateSql(
+    sql,
+    sql`AND t.id = ${id}`,
+    sql``,
+    sql`SELECT dt.geoid FROM jurisdiction_discovery_tasks dt WHERE dt.id = ${id} AND dt.geoid IS NOT NULL`,
+  )
+}
+
 export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
   return {
     async listTasks(
@@ -178,12 +189,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
     },
 
     async getDetail(id: string): Promise<DiscoveryDetailRecord | null> {
-      const rows = await taskAggregateSql(
-        sql,
-        sql`AND t.id = ${id}`,
-        sql``,
-        sql`SELECT dt.geoid FROM jurisdiction_discovery_tasks dt WHERE dt.id = ${id} AND dt.geoid IS NOT NULL`,
-      )
+      const rows = await taskAggregateByIdSql(sql, id)
       const row = rows[0]
       if (!row) return null
       const task = toTaskRecord(row)
@@ -255,12 +261,7 @@ export function makeDrizzleDiscoveryRepository(sql: Sql): DiscoveryRepository {
     },
 
     async getTask(id: string): Promise<DiscoveryTaskRecord | null> {
-      const rows = await taskAggregateSql(
-        sql,
-        sql`AND t.id = ${id}`,
-        sql``,
-        sql`SELECT dt.geoid FROM jurisdiction_discovery_tasks dt WHERE dt.id = ${id} AND dt.geoid IS NOT NULL`,
-      )
+      const rows = await taskAggregateByIdSql(sql, id)
       const row = rows[0]
       return row ? toTaskRecord(row) : null
     },
@@ -429,7 +430,7 @@ async function loadGeometry(
   const c = centerRows[0]
   const center: [number, number] | null =
     c && c.lat !== null && c.lng !== null ? [c.lat, c.lng] : null
-  const zoom = center !== null ? 11 : null
+  const zoom = center !== null ? DISCOVERY_DETAIL_ZOOM : null
   return { placeGeojson, center, zoom }
 }
 
@@ -461,18 +462,12 @@ export function invalidateDirectoryFacetCache(): void {
   directoryFacetCache = null
 }
 
-export interface UpsertDefaultContactOpts {
-  setEmail?: boolean
-  setFormUrl?: boolean
-}
-
 export async function upsertJurisdictionContacts(
   tx: Queryable,
   geoid: string,
   contacts: Partial<Record<ReportCategory, string | null>>,
   defaultEmails: string[],
   formUrl: string | null,
-  opts?: UpsertDefaultContactOpts,
 ): Promise<void> {
   for (const [category, rawEmail] of Object.entries(contacts) as [
     ReportCategory,
@@ -495,30 +490,18 @@ export async function upsertJurisdictionContacts(
 
   const defaultEmail = defaultEmails.find((e) => e.trim() !== "")?.trim() ?? null
   const form = formUrl && formUrl.trim() !== "" ? formUrl.trim() : null
-  const setEmail = opts?.setEmail ?? defaultEmail !== null
-  const setForm = opts?.setFormUrl ?? form !== null
-  const writeEmail = setEmail && defaultEmail !== null
-  const writeForm = setForm && form !== null
-  if (writeEmail || writeForm) {
+  const setEmail = defaultEmail !== null
+  const setForm = form !== null
+  if (setEmail || setForm) {
     await tx`
       INSERT INTO jurisdiction_contacts (geoid, category, email, form_url, updated_at, bounced_at)
-      VALUES (${geoid}, NULL, ${writeEmail ? defaultEmail : null}, ${writeForm ? form : null}, now(), NULL)
+      VALUES (${geoid}, NULL, ${defaultEmail}, ${form}, now(), NULL)
       ON CONFLICT (geoid) WHERE category IS NULL
       DO UPDATE SET
         email = CASE WHEN ${setEmail} THEN EXCLUDED.email ELSE jurisdiction_contacts.email END,
         form_url = CASE WHEN ${setForm} THEN EXCLUDED.form_url ELSE jurisdiction_contacts.form_url END,
         updated_at = now(),
         bounced_at = CASE WHEN ${setEmail} THEN NULL ELSE jurisdiction_contacts.bounced_at END
-    `
-  } else if (setEmail || setForm) {
-    await tx`
-      UPDATE jurisdiction_contacts
-      SET
-        email = CASE WHEN ${setEmail} THEN NULL ELSE email END,
-        form_url = CASE WHEN ${setForm} THEN NULL ELSE form_url END,
-        updated_at = now(),
-        bounced_at = CASE WHEN ${setEmail} THEN NULL ELSE bounced_at END
-      WHERE geoid = ${geoid} AND category IS NULL
     `
   }
 

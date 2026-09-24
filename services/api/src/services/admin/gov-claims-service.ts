@@ -22,10 +22,13 @@ import { clampLimit } from "./pagination.js"
 /** Display order. */
 export const GOV_CHECKS: readonly GovVerificationCheck[] = ["linkedin", "directory", "callback"]
 
-export const GOV_ADMIN_ROLE: Role = "gov_admin"
+const GOV_ADMIN_ROLE: Role = "gov_admin"
 
 /** Approving a claim must never re-role an operator account. */
 const OPERATOR_ROLE: Role = "operator"
+
+const GOV_CLAIM_NOT_FOUND = "Gov claim not found"
+const GOV_CLAIM_NOT_PENDING = "Gov claim is not pending"
 
 export interface GovCheckRecord {
   status: GovCheckStatus
@@ -52,7 +55,7 @@ export type GovClaimFilter = "all" | GovClaimStatus
 
 export type GovClaimSort = "newest" | "oldest"
 
-export function parseGovClaimSort(sort: string | undefined): GovClaimSort {
+function parseGovClaimSort(sort: string | undefined): GovClaimSort {
   return sort === "oldest" ? "oldest" : "newest"
 }
 
@@ -186,6 +189,43 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
     }
   }
 
+  // A null write result covers both a missing claim and a decided one; re-reading lets an operator racing
+  // a colleague's decision get a conflict, not "not found".
+  async function throwMissingOrDecided(id: string): Promise<never> {
+    const claim = await deps.repo.getClaim(id)
+    if (!claim) throw AppError.notFound(GOV_CLAIM_NOT_FOUND)
+    throw AppError.conflict(GOV_CLAIM_NOT_PENDING)
+  }
+
+  // Find-or-create carries no privilege, so it runs before the claim transition commits.
+  async function findOrCreateClaimUser(email: string, claimName: string): Promise<ProvisionedUser> {
+    const user = await deps.users.findByEmail(email)
+    if (!user) {
+      // The placeholder's email is unverified: it has no sessions and only becomes usable when the real
+      // owner signs in via Email-OTP, which proves control of the address.
+      return deps.users.create(email, newAccountDisplayName(claimName, "citizen"))
+    }
+    // Security: contact_email is unverified free text. Elevating a pre-existing account whose email
+    // is not verified would let a duped or compromised operator elevate an arbitrary victim account
+    // by entering its address.
+    if (!user.emailVerified) {
+      throw AppError.validation(
+        { contactEmail: "unverified" },
+        "Cannot elevate an existing account whose email is not verified",
+      )
+    }
+    // Same rule as the users console's setRole: an operator account is not changeable from the
+    // console. Otherwise a claim carrying an operator's address would demote them and revoke their
+    // sessions, one operator stripping another through the gov queue. Operator authority is governed
+    // by ADMIN_EMAILS + Cloudflare Access.
+    if (user.role === OPERATOR_ROLE) {
+      throw AppError.forbidden(
+        "Operator accounts are managed through ADMIN_EMAILS; they cannot be changed from the console.",
+      )
+    }
+    return user
+  }
+
   return {
     async list(query: GovClaimListQuery): Promise<GovClaimListResponse> {
       const ref = now()
@@ -203,7 +243,7 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
     async getClaim(id: string): Promise<GovClaimDTO> {
       const ref = now()
       const record = await deps.repo.getClaim(id)
-      if (!record) throw AppError.notFound("Gov claim not found")
+      if (!record) throw AppError.notFound(GOV_CLAIM_NOT_FOUND)
       return toDTO(record, ref)
     },
 
@@ -218,20 +258,14 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
       },
     ): Promise<void> {
       const updated = await deps.repo.setCheck(id, input)
-      if (!updated) {
-        // setCheck returns null for both a missing claim and a decided one; re-read so an operator racing
-        // a colleague's decision gets a conflict, not "not found".
-        const claim = await deps.repo.getClaim(id)
-        if (!claim) throw AppError.notFound("Gov claim not found")
-        throw AppError.conflict("Gov claim is not pending")
-      }
+      if (!updated) await throwMissingOrDecided(id)
     },
 
     async approve(id: string, input: { actorId: string; note: string | null }): Promise<void> {
       const claim = await deps.repo.getClaim(id)
-      if (!claim) throw AppError.notFound("Gov claim not found")
+      if (!claim) throw AppError.notFound(GOV_CLAIM_NOT_FOUND)
       if (claim.status !== "pending") {
-        throw AppError.conflict("Gov claim is not pending")
+        throw AppError.conflict(GOV_CLAIM_NOT_PENDING)
       }
       const email = claim.contactEmail?.trim()
       if (!email) {
@@ -243,32 +277,7 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
 
       // The privilege grant happens only after the claim transition commits, so a concurrent decision or
       // a failed transition never leaves a gov_admin elevation with no approved claim to justify it.
-      // Find-or-create first: it carries no privilege.
-      let user = await deps.users.findByEmail(email)
-      if (user) {
-        // Security: contact_email is unverified free text. Elevating a pre-existing account whose email
-        // is not verified would let a duped or compromised operator elevate an arbitrary victim account
-        // by entering its address.
-        if (!user.emailVerified) {
-          throw AppError.validation(
-            { contactEmail: "unverified" },
-            "Cannot elevate an existing account whose email is not verified",
-          )
-        }
-        // Same rule as the users console's setRole: an operator account is not changeable from the
-        // console. Otherwise a claim carrying an operator's address would demote them and revoke their
-        // sessions, one operator stripping another through the gov queue. Operator authority is governed
-        // by ADMIN_EMAILS + Cloudflare Access.
-        if (user.role === OPERATOR_ROLE) {
-          throw AppError.forbidden(
-            "Operator accounts are managed through ADMIN_EMAILS; they cannot be changed from the console.",
-          )
-        }
-      } else {
-        // The placeholder's email is unverified: it has no sessions and only becomes usable when the real
-        // owner signs in via Email-OTP, which proves control of the address.
-        user = await deps.users.create(email, newAccountDisplayName(claim.name, "citizen"))
-      }
+      const user = await findOrCreateClaimUser(email, claim.name)
 
       const updated = await deps.repo.approve(id, {
         userId: user.id,
@@ -277,7 +286,7 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
       })
       if (!updated) {
         // A concurrent decision won. The user has not been elevated, so there is nothing to compensate.
-        throw AppError.conflict("Gov claim is not pending")
+        throw AppError.conflict(GOV_CLAIM_NOT_PENDING)
       }
 
       // A failure from here on leaves the claim approved without the role, the recoverable direction:
@@ -285,7 +294,6 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
       // needs too: live sessions carry the old role in the Redis projection and sliding expiry keeps them
       // alive indefinitely.
       if (user.role !== GOV_ADMIN_ROLE) {
-        const target = user
         await applyRoleChange(
           {
             write: async (userId, role) => {
@@ -293,7 +301,7 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
             },
             revokeAll: deps.revokeSessions,
           },
-          target.id,
+          user.id,
           GOV_ADMIN_ROLE,
         )
       }
@@ -301,11 +309,7 @@ export function makeGovClaimsService(deps: GovClaimsServiceDeps): GovClaimsServi
 
     async reject(id: string, input: { reason: string; actorId: string }): Promise<void> {
       const updated = await deps.repo.reject(id, input)
-      if (!updated) {
-        const claim = await deps.repo.getClaim(id)
-        if (!claim) throw AppError.notFound("Gov claim not found")
-        throw AppError.conflict("Gov claim is not pending")
-      }
+      if (!updated) await throwMissingOrDecided(id)
     },
   }
 }
