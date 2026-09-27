@@ -1,8 +1,9 @@
 # Volunteer-hours integrity (civfix-backend)
 
 **Audience:** internal (engineering + operators). Not served publicly.
-**Last updated:** 2026-09-26 (a host re-save only rewrites rows it changes, and
-re-crediting a voided row revives it; see "Re-saving and voided rows").
+**Last updated:** 2026-09-26 (operators credit and void hours from the admin console; see
+"Operator credits and voids". A host re-save only rewrites rows it changes, and re-crediting a
+voided row revives it; see "Re-saving and voided rows").
 
 Volunteer hours are the input to `POST /v1/me/volunteer-hours/certificates`, which mints a signed,
 publicly verifiable PDF transcript that residents hand to schools and courts. Hours are supplied by
@@ -76,6 +77,46 @@ The host editor re-submits the whole sheet, so `logEventHours` is written to be 
 
 `credited` in the response still counts every entry the host submitted, so the host's
 confirmation reads the same whether or not a row changed.
+
+## Operator credits and voids
+
+The admin console's Hours tab (DECISIONS §58 in the shared contract) is the one writer besides the
+host sheet. It runs through `admin-user-hours-service.ts` and the repository methods
+`creditEventAsOperator`, `creditManual` and `voidEntry`, each one transaction that writes its
+`audit_log` row (`user.hours_credited` / `user.hours_voided`, actor = the operator, meta = entry,
+hours and reason) before it commits.
+
+- **`POST /v1/admin/users/:id/hours` with `kind: "event"`** credits a person who is not on the
+  roster, typically someone who attended before they had the app. It obeys rules (a), (b) and (e)
+  exactly as the host path does (the same `assertEventCreditable` / `assertCreditableEventHours`
+  and the same locked daily-cap read); only roster membership is skipped. A live row for that
+  person and event is a `CONFLICT`: the operator voids it first. The row is written through the
+  shared `writeEventCredits` upsert with `logged_by_user_id` = the CivFix official account, so the
+  user, the event, the public history and the leaderboard see "credited by CivFix"; the operator
+  lands in `credited_by_operator_id` and in the `volunteer_hours_audit` journal as actor.
+- **`kind: "manual"`** is work outside any event. The row has no `cleanup_id` and no
+  jurisdiction, so it counts toward the person's total and toward no leaderboard, and it carries a
+  `service_date`: required on manual rows and refused on every other source (the 0182 CHECK),
+  on or after 2000-01-01 (the contract's floor), and never after today as read in
+  `DEFAULT_EVENT_TIME_ZONE`. The service date is what dates the row on the ledger and on a
+  transcript. Rule (b) counts manual rows on their `service_date` together with event rows on
+  their local event day, so an operator adjustment cannot push a day past 24 h, in either order.
+  A second identical manual credit (same person, hours, date and operator) within 60 s is a
+  `CONFLICT`, which absorbs a double-submitted form.
+- **`POST /v1/admin/users/:id/hours/:entryId/void`** is the "admin void path" and the only
+  correction: entries are never edited in place, so a wrong credit is voided with a reason and a
+  new one credited. The entry must belong to the account in the path (`NOT_FOUND` otherwise), a
+  second void is a `CONFLICT`, and a retired `source = 'report'` row is never voidable. The void
+  takes the hours out of `user_jurisdiction_hours` and, for an event row, journals
+  `previous_hours = hours, new_hours = 0`. A host may credit the person again afterwards, which
+  revives the row as described above.
+
+Neither operator write runs rule (c) or the rule (d) detectors. Both exist to catch accounts
+crediting *each other*; an operator credit is attributed to CivFix, which can be in no such
+exchange, and the act is already an audited operator action with a written reason, so filing it to
+the moderation queue that same operator works would add noise and no oversight. The operator's
+reason and identity stay on the admin plane: no user-facing read and no data export carries
+`note`, `void_reason` or either operator column.
 
 ## What the anomaly items look like
 
@@ -152,9 +193,15 @@ Issuance (`certificate-service.ts` → `entriesForCertificate`) already excludes
 rows and `source = 'report'` rows. There is **no per-row "flagged" or "pending moderation" state** on
 `volunteer_hours`, and none was added: a moderation signal is a suspicion about a pattern, not a verdict
 on a row, and a silently-omitted row would make the printed total disagree with the ledger the holder
-can see. The operator remedy for confirmed abuse is the existing one — void the rows
-(`voided_at`), which removes them from every future certificate, and revoke any certificate already
-issued over them (`POST /v1/me/volunteer-hours/certificates/:code/revoke`, or the admin void path).
+can see. The operator remedy for confirmed abuse is to void the rows from the admin console
+(`POST /v1/admin/users/:id/hours/:entryId/void`), which removes them from every future certificate.
+A certificate already issued is a frozen snapshot and keeps verifying with the old total, so the void
+response lists the holder's live certificates whose snapshot itemised the entry
+(`affectedCertificates`, read by `CertificateRepository.liveCodesListingEntry`). Revoking those stays
+a deliberate, separate step: the holder can revoke their own
+(`POST /v1/me/volunteer-hours/certificates/:code/revoke`), and an operator runs
+`pnpm --filter @civfix/api db:certificate:revoke <code> --reason ledger_corrected`
+(`services/api/scripts/revoke-certificate.ts`, `--dry-run` first). The console never revokes one.
 
 ## Configuration
 

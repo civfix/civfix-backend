@@ -79,6 +79,7 @@ response can be answered truthfully. It is the source of record for the
 | `donations` | **Kept.** `user_id` NULLed and `profile_unlinked_at` stamped immediately. On a CHARGED donation `donor_email` / `donor_name` survive until `charged_at + 7 years`; on one that never charged they are NULLed at once. ⚖️ DECISION below. |
 | `org_payouts` | **Kept, with the FK intact.** The row records that an organization moved its own money, not anything about the person who pressed the button; `requested_by` declares `ON DELETE SET NULL`, but civfix erasure is a SOFT delete, so that action never fires and the actor stays the tombstoned account. There is no contact detail in the table to scrub. |
 | `cleanup_slot_claims` (which signup slot they took, P9) | **Kept**. The row is `(cleanup_id, user_id, slot_id, claimed_at)` — roster data with no free-text PII, held exactly like the `cleanup_members` row it accompanies, and with no `ON DELETE CASCADE` to `users` by design (`drizzle/0063_cleanup_slots.sql`). The attendee/roster read joins `users` with `deleted_at IS NULL`, so a tombstoned claimant disappears from the visible roster; the row still counts toward the slot's `claimed` total. |
+| `volunteer_hours` (the hours ledger) | **Kept, untouched**, like reports: the rows are the record of work done at other people's events, and the leaderboard and public hours reads already hide a tombstoned account. The operator-credit columns from 0182 stay with their row: `service_date`, `credited_by_operator_id`, `voided_by_operator_id`, and the operator's free-text `note` (credit reason) and `void_reason`. The two operator ids name the operator, not the departing person, and the two reasons are admin-plane notes that no user-facing read or export carries. An operator can still void a deleted account's entries (`POST /v1/admin/users/:id/hours/:entryId/void`) but can no longer credit them. |
 | `service_hours_certificates` (issued PDF transcripts, P5) | **Revoked + scrubbed**, rows kept, **R2 objects deleted**. See the next section. |
 
 ### The host-transfer ladder
@@ -310,6 +311,12 @@ truncation remedy copy no longer says "reply to this email" (the export is sent
 From the no-reply mailbox); it now directs the user to the monitored support/DSAR
 address. Excluded/redacted as before: push-token secrets (`[REDACTED]`),
 certificate `snapshot`/`r2_key`, and all OTP/session/OAuth secrets.
+
+Each exported `volunteer_hours` row also carries `voided_at` and `service_date` (0182), so the
+holder can see which entries were voided and the day a manual adjustment was for. The export never
+includes the operator-plane columns: the credit `note`, the `void_reason`, and the
+`credited_by_operator_id` / `voided_by_operator_id` of the operator who acted (DECISIONS §58 in the
+shared contract). An operator credit's `logged_by_user_id` is the CivFix official account.
 
 ### F018 — bounded, off-request-path export assembly
 
