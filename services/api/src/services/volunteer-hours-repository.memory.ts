@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { AppError, avatarGradient } from "@civfix/shared"
-import { CIVFIX_OFFICIAL_USER_ID, isOfficialAccount } from "../auth/official-account.js"
+import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
 import type {
   LeaderboardEntryDTO,
   MyVolunteerHoursDTO,
@@ -15,7 +15,6 @@ import {
   ITEMISED_SOURCES,
   MANUAL_CREDIT_REPEAT_WINDOW_MS,
   MAX_ORG_CHIPS_FETCH,
-  OPERATOR_LEDGER_MAX_LIMIT,
   RECIPROCAL_LOOKBACK_MS,
   WEEKLY_HOURS_FLAG_DEFAULT,
 } from "./volunteer-hours-service.js"
@@ -33,9 +32,6 @@ import type {
   MyVolunteerHoursTotals,
   OperatorCreditResult,
   OperatorEventCreditArgs,
-  OperatorLedgerArgs,
-  OperatorLedgerEntryView,
-  OperatorLedgerTotals,
   OperatorManualCreditArgs,
   OperatorVoidArgs,
   OrgHoursView,
@@ -74,7 +70,7 @@ export interface MemoryOrganization {
   suspended?: boolean
 }
 
-interface LedgerEntry {
+export interface LedgerEntry {
   id: string
   userId: string
   source: VolunteerHoursSource
@@ -182,6 +178,11 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
     })
     if (geoid !== null) this.addRollup(userId, geoid, hours)
     return id
+  }
+
+  ledgerRow(entryId: string): LedgerEntry | null {
+    const row = this.entries.find((e) => e.id === entryId)
+    return row === undefined ? null : { ...row }
   }
 
   async logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
@@ -521,12 +522,7 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
       entries: rows
         .slice()
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
-        .map((e) => ({
-          userId: e.userId,
-          hours: round2(e.hours),
-          loggedAt: e.createdAt,
-          creditedByOfficial: isOfficialAccount(e.loggedByUserId),
-        })),
+        .map((e) => ({ userId: e.userId, hours: round2(e.hours), loggedAt: e.createdAt })),
       anyLogged: all.length > 0,
     })
   }
@@ -698,80 +694,6 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
       },
     })
     return { id: row.id, source: row.source, cleanupId: row.cleanupId, hours: row.hours }
-  }
-
-  listOperatorLedger(
-    args: OperatorLedgerArgs,
-  ): Promise<{ items: OperatorLedgerEntryView[]; nextCursor: string | null }> {
-    const limit = Math.min(Math.max(1, Math.floor(args.limit)), OPERATOR_LEDGER_MAX_LIMIT)
-    const rows = this.entries
-      .filter((e) => e.userId === args.userId)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
-      .filter((e) => {
-        if (args.cursor === null) return true
-        const at = e.createdAt.getTime()
-        const anchor = args.cursor.at.getTime()
-        return at < anchor || (at === anchor && e.id < args.cursor.id)
-      })
-      .slice(0, limit + 1)
-    const { items, nextCursor } = pageWith(rows, limit, (last) =>
-      encodeTimeCursor({ at: last.createdAt, id: last.id }),
-    )
-    return Promise.resolve({ items: items.map((e) => this.toOperatorView(e)), nextCursor })
-  }
-
-  operatorLedgerTotals(userId: string): Promise<OperatorLedgerTotals> {
-    const mine = this.entries.filter((e) => e.userId === userId)
-    return Promise.resolve({
-      totalHours: this.computeTotalHours(userId),
-      liveEntries: mine.filter((e) => e.voidedAt === undefined).length,
-      voidedEntries: mine.filter((e) => e.voidedAt !== undefined).length,
-    })
-  }
-
-  private toOperatorView(e: LedgerEntry): OperatorLedgerEntryView {
-    const meta = e.cleanupId !== null ? (this.cleanups.get(e.cleanupId) ?? null) : null
-    const nameOf = (id: string): string => this.users.get(id)?.name ?? ""
-    return {
-      id: e.id,
-      source: e.source,
-      hours: round2(e.hours),
-      occurredAt: this.occurredAt(e),
-      createdAt: e.createdAt,
-      serviceDate: e.serviceDate,
-      event:
-        e.cleanupId !== null
-          ? {
-              id: e.cleanupId,
-              title: meta?.title ?? "",
-              referenceCode: meta?.referenceCode ?? null,
-            }
-          : null,
-      jurisdiction:
-        e.geoid !== null
-          ? { geoid: e.geoid, name: this.jurisdictionNames.get(e.geoid) ?? null }
-          : null,
-      creditedBy:
-        e.loggedByUserId !== null
-          ? {
-              id: e.loggedByUserId,
-              name: nameOf(e.loggedByUserId),
-              handle: this.users.get(e.loggedByUserId)?.handle ?? null,
-              official: isOfficialAccount(e.loggedByUserId),
-            }
-          : null,
-      operator:
-        e.creditedByOperatorId !== null
-          ? { id: e.creditedByOperatorId, name: nameOf(e.creditedByOperatorId) }
-          : null,
-      note: e.note,
-      voidedAt: e.voidedAt ?? null,
-      voidedBy:
-        e.voidedByOperatorId !== null
-          ? { id: e.voidedByOperatorId, name: nameOf(e.voidedByOperatorId) }
-          : null,
-      voidReason: e.voidReason,
-    }
   }
 
   private occurredAt(e: LedgerEntry): Date {

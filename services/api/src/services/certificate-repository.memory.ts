@@ -16,13 +16,12 @@
  *   - reads hand back CLONES, so a test mutating a returned row cannot corrupt the store (the Drizzle
  *     repo obviously cannot be corrupted that way).
  *
- * `snapshot` is read back only by `liveCodesListingEntry`, exactly as in production.
+ * `snapshot` is stored but never read back, exactly as in production.
  */
 
 import { randomUUID } from "node:crypto"
 import {
   CertificateConflictError,
-  type CertificateEntryCode,
   type CertificateHolder,
   type CertificateInsert,
   type CertificateRepository,
@@ -140,20 +139,6 @@ export class InMemoryCertificateRepository implements CertificateRepository {
       row.regeneratedAt = args.at
     }
     return Promise.resolve()
-  }
-
-  liveCodesListingEntry(userId: string, entryId: string): Promise<CertificateEntryCode[]> {
-    const codes = [...this.rows.values()]
-      .filter(
-        (row) =>
-          row.userId === userId &&
-          row.revokedAt === null &&
-          row.snapshot.rows.some((item) => item.id === entryId),
-      )
-      .sort((a, b) => b.issuedAt.getTime() - a.issuedAt.getTime() || b.id.localeCompare(a.id))
-      .slice(0, 200)
-      .map((row) => ({ code: row.code, issuedAt: row.issuedAt }))
-    return Promise.resolve(codes)
   }
 
   findHolder(userId: string): Promise<CertificateHolder | null> {

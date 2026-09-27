@@ -539,14 +539,17 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     loggedBy?: string | null
     voided?: boolean
   }): Promise<void> {
+    // volunteer_hours_service_date_chk requires a service date on exactly the manual rows.
+    const serviceDate = args.source === "manual" ? args.createdAt.slice(0, 10) : null
     await h.sql`
       INSERT INTO volunteer_hours
         (id, user_id, hours, source, cleanup_id, report_id, jurisdiction_geoid, logged_by_user_id,
-         created_at, voided_at)
+         service_date, created_at, voided_at)
       VALUES (
         ${args.id}, ${args.userId}, ${args.hours}, ${args.source},
         ${args.cleanupId ?? null}, ${args.reportId ?? null}, ${args.geoid ?? null},
         ${args.loggedBy ?? null},
+        ${serviceDate}::date,
         ${args.createdAt}::timestamptz,
         ${args.voided === true ? args.createdAt : null}
       )

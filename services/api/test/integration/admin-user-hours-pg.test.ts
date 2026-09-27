@@ -3,9 +3,6 @@ import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
-import { parseTimeCursor } from "../../src/db/cursor-helpers.js"
-import { buildTranscriptModel } from "../../src/services/certificate-model.js"
-import { makeDrizzleCertificateRepository } from "../../src/services/certificate-repository.drizzle.js"
 import { makeDrizzleVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.drizzle.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
@@ -70,6 +67,14 @@ describe.skipIf(!pg)("operator volunteer-hours ledger (integration)", () => {
       FROM volunteer_hours WHERE id = ${entryId}
     `
     return r!
+  }
+
+  async function eventEntryId(cleanupId: string, userId: string): Promise<string> {
+    const [r] = await h.sql<{ id: string }[]>`
+      SELECT id FROM volunteer_hours
+      WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND source = 'event'
+    `
+    return r!.id
   }
 
   async function journalFor(cleanupId: string, userId: string) {
@@ -168,7 +173,7 @@ describe.skipIf(!pg)("operator volunteer-hours ledger (integration)", () => {
       },
     ])
     const hostSheet = await repo.listEventHours(cleanupId, null)
-    expect(hostSheet.entries.map((e) => [e.userId, e.creditedByOfficial])).toEqual([[alice, true]])
+    expect(hostSheet.entries.map((e) => [e.userId, e.hours])).toEqual([[alice, 3]])
 
     await expect(
       repo.creditEventAsOperator({
@@ -195,28 +200,27 @@ describe.skipIf(!pg)("operator volunteer-hours ledger (integration)", () => {
       geoid: GEOID,
       entries: [{ userId: alice, hours: 3 }],
     })
-    const [hostRow] = (await repo.listOperatorLedger({ userId: alice, cursor: null, limit: 10 }))
-      .items
+    const hostRowId = await eventEntryId(cleanupId, alice)
 
     const voided = await repo.voidEntry({
       operatorId: operator,
       userId: alice,
-      entryId: hostRow!.id,
+      entryId: hostRowId,
       reason: "Was not there",
     })
-    expect(voided).toEqual({ id: hostRow!.id, source: "event", cleanupId, hours: 3 })
-    expect(await row(hostRow!.id)).toMatchObject({
+    expect(voided).toEqual({ id: hostRowId, source: "event", cleanupId, hours: 3 })
+    expect(await row(hostRowId)).toMatchObject({
       voided_by_operator_id: operator,
       void_reason: "Was not there",
     })
-    expect((await row(hostRow!.id)).voided_at).toBeInstanceOf(Date)
+    expect((await row(hostRowId)).voided_at).toBeInstanceOf(Date)
     expect(await rollupAt(alice)).toBe(0)
 
     await expect(
-      repo.voidEntry({ operatorId: operator, userId: alice, entryId: hostRow!.id, reason: "x" }),
+      repo.voidEntry({ operatorId: operator, userId: alice, entryId: hostRowId, reason: "x" }),
     ).rejects.toMatchObject({ code: "CONFLICT" })
     await expect(
-      repo.voidEntry({ operatorId: operator, userId: host, entryId: hostRow!.id, reason: "x" }),
+      repo.voidEntry({ operatorId: operator, userId: host, entryId: hostRowId, reason: "x" }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" })
     await expect(
       repo.voidEntry({ operatorId: operator, userId: alice, entryId: randomUUID(), reason: "x" }),
@@ -230,7 +234,7 @@ describe.skipIf(!pg)("operator volunteer-hours ledger (integration)", () => {
       hours: 2,
       reason: "Came for the second half",
     })
-    expect(entryId).toBe(hostRow!.id)
+    expect(entryId).toBe(hostRowId)
     expect(await row(entryId)).toMatchObject({
       voided_at: null,
       voided_by_operator_id: null,
@@ -392,7 +396,7 @@ describe.skipIf(!pg)("operator volunteer-hours ledger (integration)", () => {
         geoid: GEOID,
         entries: [{ userId: b, hours: 2 }],
       })
-      const bRow = (await repo.listOperatorLedger({ userId: b, cursor: null, limit: 1 })).items[0]!
+      const bRowId = await eventEntryId(cleanupId, b)
 
       const outcomes = await Promise.allSettled([
         repo.logEventHours({
@@ -416,7 +420,7 @@ describe.skipIf(!pg)("operator volunteer-hours ledger (integration)", () => {
         repo.voidEntry({
           operatorId: operator,
           userId: b,
-          entryId: bRow.id,
+          entryId: bRowId,
           reason: `round ${round}`,
         }),
         repo.creditManual({
@@ -437,99 +441,12 @@ describe.skipIf(!pg)("operator volunteer-hours ledger (integration)", () => {
 
     expect(await driftFor(attendees)).toEqual([])
     for (const userId of attendees) {
-      const totals = await repo.operatorLedgerTotals(userId)
+      const total = await repo.totalHoursFor(userId)
       const [ledger] = await h.sql<{ total: number }[]>`
         SELECT COALESCE(SUM(hours), 0)::float8 AS total FROM volunteer_hours
         WHERE user_id = ${userId} AND voided_at IS NULL AND source <> 'report'
       `
-      expect(totals.totalHours).toBe(ledger!.total)
+      expect(total).toBe(ledger!.total)
     }
-  })
-
-  it("pages the operator ledger by (created_at, id), voided rows included, with live and voided counts", async () => {
-    const alice = await newUser("Page Alice")
-    const operator = await newUser("Page Olive")
-    const repo = makeDrizzleVolunteerHoursRepository(h.sql)
-    const ids: string[] = []
-    for (let day = 1; day <= 5; day++) {
-      const { entryId } = await repo.creditManual({
-        operatorId: operator,
-        userId: alice,
-        hours: 1,
-        serviceDate: `2026-05-0${day}`,
-        reason: `day ${day}`,
-      })
-      ids.unshift(entryId)
-    }
-    await repo.voidEntry({ operatorId: operator, userId: alice, entryId: ids[1]!, reason: "dup" })
-
-    const first = await repo.listOperatorLedger({ userId: alice, cursor: null, limit: 3 })
-    const second = await repo.listOperatorLedger({
-      userId: alice,
-      cursor: parseTimeCursor(first.nextCursor!),
-      limit: 3,
-    })
-    expect([...first.items, ...second.items].map((i) => i.id)).toEqual(ids)
-    expect(second.nextCursor).toBeNull()
-    expect(first.items[1]).toMatchObject({
-      voidedBy: { id: operator, name: "Page Olive" },
-      voidReason: "dup",
-      operator: { id: operator, name: "Page Olive" },
-      creditedBy: { id: CIVFIX_OFFICIAL_USER_ID, official: true },
-    })
-    expect(await repo.operatorLedgerTotals(alice)).toEqual({
-      totalHours: 4,
-      liveEntries: 4,
-      voidedEntries: 1,
-    })
-  })
-
-  it("finds the live certificates whose snapshot itemised an entry", async () => {
-    const alice = await newUser("Cert Alice")
-    const certs = makeDrizzleCertificateRepository(h.sql)
-    const entry = randomUUID()
-
-    async function issue(code: string, entryIds: string[], issuedAt: string): Promise<void> {
-      await certs.insert({
-        id: randomUUID(),
-        userId: alice,
-        code,
-        locale: "en",
-        holderName: "Cert Alice",
-        holderHandle: null,
-        holderVerified: false,
-        totalHours: entryIds.length,
-        entryCount: entryIds.length,
-        periodStart: null,
-        periodEnd: null,
-        ledgerFingerprint: `fp-${code}`,
-        snapshot: buildTranscriptModel({
-          holder: { userId: alice, displayName: "Cert Alice", handle: null },
-          rows: entryIds.map((id) => ({
-            id,
-            source: "event" as const,
-            hours: 1,
-            occurredAt: new Date(issuedAt),
-          })),
-          locale: "en",
-        }),
-        r2Key: `certificates/${code}.pdf`,
-        documentSha256: "0".repeat(64),
-        byteSize: 1,
-        issuedAt: new Date(issuedAt),
-      })
-    }
-
-    const suffix = randomUUID().slice(0, 6).toUpperCase()
-    await issue(`A${suffix}`, [entry], "2026-07-01T00:00:00Z")
-    await issue(`B${suffix}`, [randomUUID(), entry], "2026-07-02T00:00:00Z")
-    await issue(`C${suffix}`, [randomUUID()], "2026-07-03T00:00:00Z")
-    await issue(`D${suffix}`, [entry], "2026-07-04T00:00:00Z")
-    await certs.revoke(alice, `D${suffix}`, "ledger_corrected", new Date())
-
-    expect(await certs.liveCodesListingEntry(alice, entry)).toEqual([
-      { code: `B${suffix}`, issuedAt: new Date("2026-07-02T00:00:00Z") },
-      { code: `A${suffix}`, issuedAt: new Date("2026-07-01T00:00:00Z") },
-    ])
   })
 })
