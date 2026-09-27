@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { AppError, avatarGradient } from "@civfix/shared"
+import { CIVFIX_OFFICIAL_USER_ID, isOfficialAccount } from "../auth/official-account.js"
 import type {
   LeaderboardEntryDTO,
   MyVolunteerHoursDTO,
@@ -12,7 +13,9 @@ import { eventDayKey } from "./host/event-day.js"
 import {
   DAILY_HOURS_CAP,
   ITEMISED_SOURCES,
+  MANUAL_CREDIT_REPEAT_WINDOW_MS,
   MAX_ORG_CHIPS_FETCH,
+  OPERATOR_LEDGER_MAX_LIMIT,
   RECIPROCAL_LOOKBACK_MS,
   WEEKLY_HOURS_FLAG_DEFAULT,
 } from "./volunteer-hours-service.js"
@@ -28,10 +31,18 @@ import type {
   LogEventHoursArgs,
   LogEventHoursResult,
   MyVolunteerHoursTotals,
+  OperatorCreditResult,
+  OperatorEventCreditArgs,
+  OperatorLedgerArgs,
+  OperatorLedgerEntryView,
+  OperatorLedgerTotals,
+  OperatorManualCreditArgs,
+  OperatorVoidArgs,
   OrgHoursView,
   VolunteerHoursAnomaly,
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
+  VoidedEntry,
 } from "./volunteer-hours-service.js"
 import { assertWithinDailyHoursCap } from "./volunteer-hours-rules.js"
 
@@ -73,7 +84,31 @@ interface LedgerEntry {
   reportId: string | null
   geoid: string | null
   loggedByUserId: string | null
+  note: string | null
+  serviceDate: string | null
+  creditedByOperatorId: string | null
+  voidedByOperatorId: string | null
+  voidReason: string | null
   voidedAt?: Date
+}
+
+export interface RecordedHoursAudit {
+  actorId: string
+  action: string
+  target: string
+  meta: Record<string, unknown>
+}
+
+export interface RecordedHoursJournal {
+  cleanupId: string
+  userId: string
+  actorUserId: string
+  previousHours: number | null
+  newHours: number
+}
+
+function serviceDayNoonUtc(serviceDate: string): Date {
+  return new Date(`${serviceDate}T12:00:00.000Z`)
 }
 
 function round2(n: number): number {
@@ -94,6 +129,8 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
   private readonly cleanups = new Map<string, MemoryCleanupMeta>()
   private readonly organizations = new Map<string, MemoryOrganization>()
   private readonly entries: LedgerEntry[] = []
+  readonly audits: RecordedHoursAudit[] = []
+  readonly journal: RecordedHoursJournal[] = []
   private readonly now: () => Date
   private readonly newId: () => string
 
@@ -118,7 +155,7 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
     this.organizations.set(org.id, org)
   }
 
-  voidEntry(entryId: string): void {
+  markVoided(entryId: string): void {
     const row = this.entries.find((e) => e.id === entryId)
     if (row === undefined || row.voidedAt !== undefined) return
     row.voidedAt = this.now()
@@ -137,12 +174,17 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
       reportId,
       geoid,
       loggedByUserId: null,
+      note: null,
+      serviceDate: null,
+      creditedByOperatorId: null,
+      voidedByOperatorId: null,
+      voidReason: null,
     })
     if (geoid !== null) this.addRollup(userId, geoid, hours)
     return id
   }
 
-  logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
+  async logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
     this.assertNoReciprocalCredit(args)
     this.assertDailyCap(args)
     const changed = this.writeEventCredits({
@@ -150,13 +192,15 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
       geoid: args.geoid,
       actorId: args.actorId,
       loggedByUserId: args.actorId,
+      note: null,
+      creditedByOperatorId: null,
       entries: args.entries,
     })
-    return Promise.resolve({
+    return {
       credited: args.entries.length,
       changed,
       anomalies: this.detectAnomalies(args),
-    })
+    }
   }
 
   private writeEventCredits(write: EventCreditWrite): EventCreditChange[] {
@@ -169,10 +213,14 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
       const live = existing !== undefined && existing.voidedAt === undefined ? existing : null
       if (live !== null && live.hours === hours && live.geoid === write.geoid) continue
 
-      changed.push({
+      const previousHours = existing === undefined ? null : (live?.hours ?? 0)
+      changed.push({ userId: entry.userId, hours, previousHours })
+      this.journal.push({
+        cleanupId: write.cleanupId,
         userId: entry.userId,
-        hours,
-        previousHours: existing === undefined ? null : (live?.hours ?? 0),
+        actorUserId: write.actorId,
+        previousHours,
+        newHours: hours,
       })
       if (live !== null && live.geoid !== null) this.addRollup(entry.userId, live.geoid, -live.hours)
       if (write.geoid !== null) this.addRollup(entry.userId, write.geoid, hours)
@@ -188,6 +236,11 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
           reportId: null,
           geoid: write.geoid,
           loggedByUserId: write.loggedByUserId,
+          note: write.note,
+          serviceDate: null,
+          creditedByOperatorId: write.creditedByOperatorId,
+          voidedByOperatorId: null,
+          voidReason: null,
         })
         continue
       }
@@ -198,6 +251,10 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
       existing.hours = hours
       existing.geoid = write.geoid
       existing.loggedByUserId = write.loggedByUserId
+      existing.note = write.note
+      existing.creditedByOperatorId = write.creditedByOperatorId
+      existing.voidedByOperatorId = null
+      existing.voidReason = null
     }
     return changed
   }
@@ -238,11 +295,25 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
   ): Map<string, number> | null {
     const day = this.eventDay(cleanupId)
     if (day === null) return null
+    return this.creditedHoursOnDay(day, userIds, cleanupId)
+  }
+
+  private creditedHoursOnDay(
+    day: string,
+    userIds: readonly string[],
+    excludeCleanupId: string | null,
+  ): Map<string, number> {
     const held = new Map<string, number>()
     for (const e of this.entries) {
-      if (e.source !== "event" || e.voidedAt !== undefined || !userIds.includes(e.userId)) continue
-      if (e.cleanupId === null || e.cleanupId === cleanupId) continue
-      if (this.eventDay(e.cleanupId) !== day) continue
+      if (e.voidedAt !== undefined || !userIds.includes(e.userId)) continue
+      if (e.source === "manual") {
+        if (e.serviceDate !== day) continue
+      } else if (e.source === "event") {
+        if (e.cleanupId === null || e.cleanupId === excludeCleanupId) continue
+        if (this.eventDay(e.cleanupId) !== day) continue
+      } else {
+        continue
+      }
       held.set(e.userId, (held.get(e.userId) ?? 0) + e.hours)
     }
     return held
@@ -450,7 +521,12 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
       entries: rows
         .slice()
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
-        .map((e) => ({ userId: e.userId, hours: round2(e.hours), loggedAt: e.createdAt })),
+        .map((e) => ({
+          userId: e.userId,
+          hours: round2(e.hours),
+          loggedAt: e.createdAt,
+          creditedByOfficial: isOfficialAccount(e.loggedByUserId),
+        })),
       anyLogged: all.length > 0,
     })
   }
@@ -484,6 +560,227 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
     })
   }
 
+  async creditEventAsOperator(args: OperatorEventCreditArgs): Promise<OperatorCreditResult> {
+    const hours = round2(args.hours)
+    const live = this.entries.find(
+      (e) =>
+        e.source === "event" &&
+        e.cleanupId === args.cleanupId &&
+        e.userId === args.userId &&
+        e.voidedAt === undefined,
+    )
+    if (live !== undefined) {
+      throw AppError.conflict(
+        `That volunteer already holds ${round2(live.hours)} h for this event; void that entry first.`,
+      )
+    }
+    const entries = [{ userId: args.userId, hours }]
+    const held = this.sameDayEventHours(args.cleanupId, [args.userId])
+    if (held !== null) {
+      assertWithinDailyHoursCap(entries, held, args.dailyCapHours ?? DAILY_HOURS_CAP)
+    }
+    this.writeEventCredits({
+      cleanupId: args.cleanupId,
+      geoid: args.geoid,
+      actorId: args.operatorId,
+      loggedByUserId: CIVFIX_OFFICIAL_USER_ID,
+      note: args.reason,
+      creditedByOperatorId: args.operatorId,
+      entries,
+    })
+    const row = this.entries.find(
+      (e) => e.source === "event" && e.cleanupId === args.cleanupId && e.userId === args.userId,
+    )
+    if (row === undefined)
+      throw new Error("creditEventAsOperator: the upserted event row is missing")
+    this.audits.push({
+      actorId: args.operatorId,
+      action: "user.hours_credited",
+      target: `user:${args.userId}`,
+      meta: {
+        entryId: row.id,
+        source: "event",
+        cleanupId: args.cleanupId,
+        hours,
+        reason: args.reason,
+      },
+    })
+    return { entryId: row.id }
+  }
+
+  async creditManual(args: OperatorManualCreditArgs): Promise<OperatorCreditResult> {
+    const hours = round2(args.hours)
+    const nowMs = this.now().getTime()
+    const repeat = this.entries.some(
+      (e) =>
+        e.userId === args.userId &&
+        e.source === "manual" &&
+        e.voidedAt === undefined &&
+        e.hours === hours &&
+        e.serviceDate === args.serviceDate &&
+        e.creditedByOperatorId === args.operatorId &&
+        nowMs - e.createdAt.getTime() < MANUAL_CREDIT_REPEAT_WINDOW_MS,
+    )
+    if (repeat) {
+      throw AppError.conflict(
+        "That adjustment was recorded moments ago; check the ledger before adding it again.",
+      )
+    }
+    assertWithinDailyHoursCap(
+      [{ userId: args.userId, hours }],
+      this.creditedHoursOnDay(args.serviceDate, [args.userId], null),
+      args.dailyCapHours ?? DAILY_HOURS_CAP,
+    )
+    const entryId = this.newId()
+    this.entries.push({
+      id: entryId,
+      userId: args.userId,
+      source: "manual",
+      hours,
+      createdAt: this.now(),
+      cleanupId: null,
+      reportId: null,
+      geoid: null,
+      loggedByUserId: CIVFIX_OFFICIAL_USER_ID,
+      note: args.reason,
+      serviceDate: args.serviceDate,
+      creditedByOperatorId: args.operatorId,
+      voidedByOperatorId: null,
+      voidReason: null,
+    })
+    this.audits.push({
+      actorId: args.operatorId,
+      action: "user.hours_credited",
+      target: `user:${args.userId}`,
+      meta: {
+        entryId,
+        source: "manual",
+        hours,
+        serviceDate: args.serviceDate,
+        reason: args.reason,
+      },
+    })
+    return { entryId }
+  }
+
+  async voidEntry(args: OperatorVoidArgs): Promise<VoidedEntry> {
+    const row = this.entries.find((e) => e.id === args.entryId && e.userId === args.userId)
+    if (row === undefined) throw AppError.notFound("Hours entry not found")
+    if (row.voidedAt !== undefined) {
+      throw AppError.conflict("That hours entry is already void.")
+    }
+    if (row.source === "report") {
+      throw AppError.conflict("Report credits are retired and can't be voided.")
+    }
+    row.voidedAt = this.now()
+    row.voidedByOperatorId = args.operatorId
+    row.voidReason = args.reason
+    if (row.source === "event" && row.cleanupId !== null) {
+      this.journal.push({
+        cleanupId: row.cleanupId,
+        userId: row.userId,
+        actorUserId: args.operatorId,
+        previousHours: row.hours,
+        newHours: 0,
+      })
+    }
+    if (row.geoid !== null) this.addRollup(row.userId, row.geoid, -row.hours)
+    this.audits.push({
+      actorId: args.operatorId,
+      action: "user.hours_voided",
+      target: `user:${args.userId}`,
+      meta: {
+        entryId: row.id,
+        source: row.source,
+        ...(row.cleanupId !== null ? { cleanupId: row.cleanupId } : {}),
+        hours: row.hours,
+        reason: args.reason,
+      },
+    })
+    return { id: row.id, source: row.source, cleanupId: row.cleanupId, hours: row.hours }
+  }
+
+  listOperatorLedger(
+    args: OperatorLedgerArgs,
+  ): Promise<{ items: OperatorLedgerEntryView[]; nextCursor: string | null }> {
+    const limit = Math.min(Math.max(1, Math.floor(args.limit)), OPERATOR_LEDGER_MAX_LIMIT)
+    const rows = this.entries
+      .filter((e) => e.userId === args.userId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
+      .filter((e) => {
+        if (args.cursor === null) return true
+        const at = e.createdAt.getTime()
+        const anchor = args.cursor.at.getTime()
+        return at < anchor || (at === anchor && e.id < args.cursor.id)
+      })
+      .slice(0, limit + 1)
+    const { items, nextCursor } = pageWith(rows, limit, (last) =>
+      encodeTimeCursor({ at: last.createdAt, id: last.id }),
+    )
+    return Promise.resolve({ items: items.map((e) => this.toOperatorView(e)), nextCursor })
+  }
+
+  operatorLedgerTotals(userId: string): Promise<OperatorLedgerTotals> {
+    const mine = this.entries.filter((e) => e.userId === userId)
+    return Promise.resolve({
+      totalHours: this.computeTotalHours(userId),
+      liveEntries: mine.filter((e) => e.voidedAt === undefined).length,
+      voidedEntries: mine.filter((e) => e.voidedAt !== undefined).length,
+    })
+  }
+
+  private toOperatorView(e: LedgerEntry): OperatorLedgerEntryView {
+    const meta = e.cleanupId !== null ? (this.cleanups.get(e.cleanupId) ?? null) : null
+    const nameOf = (id: string): string => this.users.get(id)?.name ?? ""
+    return {
+      id: e.id,
+      source: e.source,
+      hours: round2(e.hours),
+      occurredAt: this.occurredAt(e),
+      createdAt: e.createdAt,
+      serviceDate: e.serviceDate,
+      event:
+        e.cleanupId !== null
+          ? {
+              id: e.cleanupId,
+              title: meta?.title ?? "",
+              referenceCode: meta?.referenceCode ?? null,
+            }
+          : null,
+      jurisdiction:
+        e.geoid !== null
+          ? { geoid: e.geoid, name: this.jurisdictionNames.get(e.geoid) ?? null }
+          : null,
+      creditedBy:
+        e.loggedByUserId !== null
+          ? {
+              id: e.loggedByUserId,
+              name: nameOf(e.loggedByUserId),
+              handle: this.users.get(e.loggedByUserId)?.handle ?? null,
+              official: isOfficialAccount(e.loggedByUserId),
+            }
+          : null,
+      operator:
+        e.creditedByOperatorId !== null
+          ? { id: e.creditedByOperatorId, name: nameOf(e.creditedByOperatorId) }
+          : null,
+      note: e.note,
+      voidedAt: e.voidedAt ?? null,
+      voidedBy:
+        e.voidedByOperatorId !== null
+          ? { id: e.voidedByOperatorId, name: nameOf(e.voidedByOperatorId) }
+          : null,
+      voidReason: e.voidReason,
+    }
+  }
+
+  private occurredAt(e: LedgerEntry): Date {
+    const scheduledAt = e.cleanupId !== null ? this.cleanups.get(e.cleanupId)?.scheduledAt : null
+    if (scheduledAt != null) return scheduledAt
+    if (e.serviceDate !== null) return serviceDayNoonUtc(e.serviceDate)
+    return e.createdAt
+  }
+
   private aggregateVisible(userId: string): boolean {
     const user = this.users.get(userId)
     if (user?.deleted === true) return false
@@ -498,7 +795,7 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
       source: e.source,
       hours: round2(e.hours),
       createdAt: e.createdAt,
-      occurredAt: meta?.scheduledAt ?? e.createdAt,
+      occurredAt: this.occurredAt(e),
       cleanupId: e.cleanupId,
       cleanupTitle: meta?.title ?? null,
       cleanupReferenceCode: meta?.referenceCode ?? null,

@@ -89,7 +89,79 @@ export interface EventCreditWrite {
   geoid: string | null
   actorId: string
   loggedByUserId: string
+  note: string | null
+  creditedByOperatorId: string | null
   entries: readonly EventHoursEntry[]
+}
+
+export const MANUAL_CREDIT_REPEAT_WINDOW_MS = 60_000
+
+export const OPERATOR_LEDGER_MAX_LIMIT = 50
+
+export interface OperatorEventCreditArgs {
+  operatorId: string
+  userId: string
+  cleanupId: string
+  geoid: string | null
+  hours: number
+  reason: string
+  dailyCapHours?: number
+}
+
+export interface OperatorManualCreditArgs {
+  operatorId: string
+  userId: string
+  hours: number
+  serviceDate: string
+  reason: string
+  dailyCapHours?: number
+}
+
+export interface OperatorCreditResult {
+  entryId: string
+}
+
+export interface OperatorVoidArgs {
+  operatorId: string
+  userId: string
+  entryId: string
+  reason: string
+}
+
+export interface VoidedEntry {
+  id: string
+  source: VolunteerHoursSource
+  cleanupId: string | null
+  hours: number
+}
+
+export interface OperatorLedgerArgs {
+  userId: string
+  cursor: TimeCursor | null
+  limit: number
+}
+
+export interface OperatorLedgerEntryView {
+  id: string
+  source: VolunteerHoursSource
+  hours: number
+  occurredAt: Date
+  createdAt: Date
+  serviceDate: string | null
+  event: { id: string; title: string; referenceCode: string | null } | null
+  jurisdiction: { geoid: string; name: string | null } | null
+  creditedBy: { id: string; name: string; handle: string | null; official: boolean } | null
+  operator: { id: string; name: string } | null
+  note: string | null
+  voidedAt: Date | null
+  voidedBy: { id: string; name: string } | null
+  voidReason: string | null
+}
+
+export interface OperatorLedgerTotals {
+  totalHours: number
+  liveEntries: number
+  voidedEntries: number
 }
 
 export interface LogEventHoursResult {
@@ -122,6 +194,7 @@ export interface EventHoursLedgerEntry {
   userId: string
   hours: number
   loggedAt: Date
+  creditedByOfficial: boolean
 }
 
 export interface EventHoursLedger {
@@ -213,6 +286,13 @@ export interface VolunteerHoursRepository {
   listEventHours(cleanupId: string, viewerId: string | null): Promise<EventHoursLedger>
   hoursVisibilityFor(userId: string): Promise<HoursVisibility>
   entriesForCertificate(args: EntriesForCertificateArgs): Promise<CertificateEntriesPage>
+  creditEventAsOperator(args: OperatorEventCreditArgs): Promise<OperatorCreditResult>
+  creditManual(args: OperatorManualCreditArgs): Promise<OperatorCreditResult>
+  voidEntry(args: OperatorVoidArgs): Promise<VoidedEntry>
+  listOperatorLedger(
+    args: OperatorLedgerArgs,
+  ): Promise<{ items: OperatorLedgerEntryView[]; nextCursor: string | null }>
+  operatorLedgerTotals(userId: string): Promise<OperatorLedgerTotals>
 }
 
 export interface CleanupHoursView {
