@@ -427,7 +427,22 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       ])
     })
 
+    // The leaderboard tests assert exact per-jurisdiction rosters on the shared seeds, so a moved
+    // event lands in a jurisdiction no other test reads.
+    const MOVED_GEOID = "TESTHOURSMOVED"
+    async function ensureMovedJurisdiction(): Promise<void> {
+      await h.sql`
+        INSERT INTO jurisdictions (geoid, name, layer, priority, geom)
+        VALUES (
+          ${MOVED_GEOID}, 'Moved Event Jurisdiction', 'county', 5,
+          ST_Multi(ST_SetSRID(ST_GeomFromText('POLYGON((-117 33,-117 33.1,-117.1 33.1,-117.1 33,-117 33))'), 4326))
+        )
+        ON CONFLICT (geoid) DO NOTHING
+      `
+    }
+
     it("a voided row revived after the event moved credits only the new jurisdiction", async () => {
+      await ensureMovedJurisdiction()
       const org = await newUser("Revive Moved Org")
       const alice = await newUser("Revive Moved Alice")
       const cleanupId = await newCleanup(org)
@@ -438,12 +453,12 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       await repo.logEventHours({
         actorId: org,
         cleanupId,
-        geoid: LA_COUNTY.geoid,
+        geoid: MOVED_GEOID,
         entries: [{ userId: alice, hours: 2 }],
       })
 
       expect(await rollupAt(alice, GEOID)).toBe(0)
-      expect(await rollupAt(alice, LA_COUNTY.geoid)).toBe(2)
+      expect(await rollupAt(alice, MOVED_GEOID)).toBe(2)
       expect(await driftFor(alice)).toEqual([])
     })
 
@@ -498,6 +513,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     })
 
     it("a same-hours re-save after the event moved re-homes the hours", async () => {
+      await ensureMovedJurisdiction()
       const org = await newUser("Rehome Org")
       const alice = await newUser("Rehome Alice")
       const cleanupId = await newCleanup(org)
@@ -507,13 +523,13 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       const moved = await repo.logEventHours({
         actorId: org,
         cleanupId,
-        geoid: LA_COUNTY.geoid,
+        geoid: MOVED_GEOID,
         entries: [{ userId: alice, hours: 2 }],
       })
       expect(moved.changed).toEqual([{ userId: alice, hours: 2, previousHours: 2 }])
-      expect((await eventRow(cleanupId, alice)).geoid).toBe(LA_COUNTY.geoid)
+      expect((await eventRow(cleanupId, alice)).geoid).toBe(MOVED_GEOID)
       expect(await rollupAt(alice, GEOID)).toBe(0)
-      expect(await rollupAt(alice, LA_COUNTY.geoid)).toBe(2)
+      expect(await rollupAt(alice, MOVED_GEOID)).toBe(2)
       expect(await driftFor(alice)).toEqual([])
       expect((await repo.totalsFor(alice)).totalHours).toBe(2)
     })
