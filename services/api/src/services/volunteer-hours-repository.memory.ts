@@ -23,6 +23,8 @@ import type {
   HoursVisibility,
   LeaderboardPage,
   ListEntriesArgs,
+  EventCreditChange,
+  EventCreditWrite,
   LogEventHoursArgs,
   LogEventHoursResult,
   MyVolunteerHoursTotals,
@@ -31,6 +33,7 @@ import type {
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
 } from "./volunteer-hours-service.js"
+import { assertWithinDailyHoursCap } from "./volunteer-hours-rules.js"
 
 export interface MemoryLeaderboardUser {
   name: string
@@ -142,14 +145,29 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
   logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
     this.assertNoReciprocalCredit(args)
     this.assertDailyCap(args)
-    const changed: LogEventHoursResult["changed"] = []
-    for (const entry of args.entries) {
+    const changed = this.writeEventCredits({
+      cleanupId: args.cleanupId,
+      geoid: args.geoid,
+      actorId: args.actorId,
+      loggedByUserId: args.actorId,
+      entries: args.entries,
+    })
+    return Promise.resolve({
+      credited: args.entries.length,
+      changed,
+      anomalies: this.detectAnomalies(args),
+    })
+  }
+
+  private writeEventCredits(write: EventCreditWrite): EventCreditChange[] {
+    const changed: EventCreditChange[] = []
+    for (const entry of write.entries) {
       const hours = round2(entry.hours)
       const existing = this.entries.find(
-        (e) => e.source === "event" && e.cleanupId === args.cleanupId && e.userId === entry.userId,
+        (e) => e.source === "event" && e.cleanupId === write.cleanupId && e.userId === entry.userId,
       )
       const live = existing !== undefined && existing.voidedAt === undefined ? existing : null
-      if (live !== null && live.hours === hours && live.geoid === args.geoid) continue
+      if (live !== null && live.hours === hours && live.geoid === write.geoid) continue
 
       changed.push({
         userId: entry.userId,
@@ -157,7 +175,7 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
         previousHours: existing === undefined ? null : (live?.hours ?? 0),
       })
       if (live !== null && live.geoid !== null) this.addRollup(entry.userId, live.geoid, -live.hours)
-      if (args.geoid !== null) this.addRollup(entry.userId, args.geoid, hours)
+      if (write.geoid !== null) this.addRollup(entry.userId, write.geoid, hours)
 
       if (existing === undefined) {
         this.entries.push({
@@ -166,10 +184,10 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
           source: "event",
           hours,
           createdAt: this.now(),
-          cleanupId: args.cleanupId,
+          cleanupId: write.cleanupId,
           reportId: null,
-          geoid: args.geoid,
-          loggedByUserId: args.actorId,
+          geoid: write.geoid,
+          loggedByUserId: write.loggedByUserId,
         })
         continue
       }
@@ -178,14 +196,10 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
         existing.createdAt = this.now()
       }
       existing.hours = hours
-      existing.geoid = args.geoid
-      existing.loggedByUserId = args.actorId
+      existing.geoid = write.geoid
+      existing.loggedByUserId = write.loggedByUserId
     }
-    return Promise.resolve({
-      credited: args.entries.length,
-      changed,
-      anomalies: this.detectAnomalies(args),
-    })
+    return changed
   }
 
   private assertNoReciprocalCredit(args: LogEventHoursArgs): void {
@@ -210,27 +224,28 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
   }
 
   private assertDailyCap(args: LogEventHoursArgs): void {
-    const day = this.eventDay(args.cleanupId)
-    if (day === null) return
-    const dailyCapHours = args.dailyCapHours ?? DAILY_HOURS_CAP
-    for (const entry of args.entries) {
-      const held = this.entries
-        .filter(
-          (e) =>
-            e.source === "event" &&
-            e.userId === entry.userId &&
-            e.voidedAt === undefined &&
-            e.cleanupId !== null &&
-            e.cleanupId !== args.cleanupId &&
-            this.eventDay(e.cleanupId) === day,
-        )
-        .reduce((sum, e) => sum + e.hours, 0)
-      if (held + entry.hours > dailyCapHours) {
-        throw AppError.conflict(
-          `That attendee already holds ${round2(held)} h for events on this date; the daily limit is ${dailyCapHours} h.`,
-        )
-      }
+    const held = this.sameDayEventHours(
+      args.cleanupId,
+      args.entries.map((e) => e.userId),
+    )
+    if (held === null) return
+    assertWithinDailyHoursCap(args.entries, held, args.dailyCapHours ?? DAILY_HOURS_CAP)
+  }
+
+  private sameDayEventHours(
+    cleanupId: string,
+    userIds: readonly string[],
+  ): Map<string, number> | null {
+    const day = this.eventDay(cleanupId)
+    if (day === null) return null
+    const held = new Map<string, number>()
+    for (const e of this.entries) {
+      if (e.source !== "event" || e.voidedAt !== undefined || !userIds.includes(e.userId)) continue
+      if (e.cleanupId === null || e.cleanupId === cleanupId) continue
+      if (this.eventDay(e.cleanupId) !== day) continue
+      held.set(e.userId, (held.get(e.userId) ?? 0) + e.hours)
     }
+    return held
   }
 
   private eventDay(cleanupId: string): string | null {

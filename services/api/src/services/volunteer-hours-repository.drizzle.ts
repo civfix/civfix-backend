@@ -9,7 +9,12 @@ import type { Queryable, Sql } from "../db/client.js"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { servedKeyExpr } from "./media-served-key.js"
-import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
+import {
+  lockEventCredits,
+  sameDayEventHours,
+  writeEventCredits,
+} from "./volunteer-hours-credit.drizzle.js"
+import { assertWithinDailyHoursCap } from "./volunteer-hours-rules.js"
 import {
   DAILY_HOURS_CAP,
   EVENT_HOURS_MEMBER_CAP,
@@ -170,17 +175,8 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
     async logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
       if (args.entries.length === 0) return { credited: 0, changed: [], anomalies: [] }
       const userIds = args.entries.map((e) => e.userId)
-      const hoursByRow = args.entries.map((e) => e.hours)
       return sql.begin(async (tx) => {
-        await tx`SELECT pg_advisory_xact_lock(hashtext('volunteer_event:' || ${args.cleanupId}))`
-        const lockIds = [...new Set(userIds)].sort()
-        if (lockIds.length > 0) {
-          await tx`
-            SELECT pg_advisory_xact_lock(hashtext('volunteer_user:' || u))
-            FROM unnest(${lockIds}::uuid[]) AS t(u)
-            ORDER BY u
-          `
-        }
+        await lockEventCredits(tx, args.cleanupId, userIds)
 
         const reciprocal = await tx<{ logged_by_user_id: string }[]>`
           SELECT DISTINCT logged_by_user_id
@@ -198,115 +194,19 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           )
         }
 
-        const sameDay = await tx<{ user_id: string; hours: number }[]>`
-          SELECT vh.user_id, COALESCE(SUM(vh.hours), 0)::float8 AS hours
-          FROM volunteer_hours vh
-          JOIN cleanups c ON c.id = vh.cleanup_id
-          WHERE vh.user_id = ANY(${userIds}::uuid[])
-            AND vh.source = 'event'
-            AND vh.voided_at IS NULL
-            AND vh.cleanup_id <> ${args.cleanupId}
-            AND (c.scheduled_at AT TIME ZONE COALESCE(c.timezone, ${DEFAULT_EVENT_TIME_ZONE}))::date = (
-              SELECT (scheduled_at AT TIME ZONE COALESCE(timezone, ${DEFAULT_EVENT_TIME_ZONE}))::date
-              FROM cleanups WHERE id = ${args.cleanupId}
-            )
-          GROUP BY vh.user_id
-        `
-        const dailyCapHours = args.dailyCapHours ?? DAILY_HOURS_CAP
-        const heldByUser = new Map(sameDay.map((r) => [r.user_id, r.hours]))
-        for (const entry of args.entries) {
-          const held = heldByUser.get(entry.userId) ?? 0
-          if (held + entry.hours > dailyCapHours) {
-            throw AppError.conflict(
-              `That attendee already holds ${Math.round(held * 100) / 100} h for events on this date; the daily limit is ${dailyCapHours} h.`,
-            )
-          }
-        }
+        assertWithinDailyHoursCap(
+          args.entries,
+          await sameDayEventHours(tx, args.cleanupId, userIds),
+          args.dailyCapHours ?? DAILY_HOURS_CAP,
+        )
 
-        const journal = await tx<
-          { user_id: string; previous_hours: number | null; new_hours: number }[]
-        >`
-          WITH prev AS (
-            -- A voided row already left user_jurisdiction_hours when it was voided, so it counts as
-            -- holding 0 hours in no jurisdiction: the revival's rollup delta is its full hours. It
-            -- still exists, so the journal records previous_hours = 0, keeping NULL (0053) for a
-            -- genuine first credit.
-            SELECT
-              user_id,
-              CASE WHEN voided_at IS NULL THEN hours ELSE 0 END AS old_hours,
-              CASE WHEN voided_at IS NULL THEN jurisdiction_geoid END AS old_geoid
-            FROM volunteer_hours
-            WHERE cleanup_id = ${args.cleanupId}
-              AND source = 'event'
-              AND user_id = ANY(${userIds}::uuid[])
-          ),
-          upsert AS (
-            INSERT INTO volunteer_hours (user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id)
-            SELECT t.u, t.h, 'event', ${args.cleanupId}, ${args.geoid}::text, ${args.actorId}
-            FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
-            ON CONFLICT (cleanup_id, user_id) WHERE source = 'event'
-            DO UPDATE SET
-              hours = EXCLUDED.hours,
-              jurisdiction_geoid = EXCLUDED.jurisdiction_geoid,
-              logged_by_user_id = EXCLUDED.logged_by_user_id,
-              created_at = CASE
-                WHEN volunteer_hours.voided_at IS NULL THEN volunteer_hours.created_at
-                ELSE now()
-              END,
-              voided_at = NULL
-            -- An unchanged live row is left alone so a co-host re-saving the whole sheet does not
-            -- re-attribute every credit to themselves, journal a no-op, or move the rollup.
-            WHERE volunteer_hours.voided_at IS NOT NULL
-               OR volunteer_hours.hours <> EXCLUDED.hours
-               OR volunteer_hours.jurisdiction_geoid IS DISTINCT FROM EXCLUDED.jurisdiction_geoid
-            RETURNING user_id, hours, jurisdiction_geoid
-          ),
-          journal AS (
-            INSERT INTO volunteer_hours_audit
-              (cleanup_id, user_id, actor_user_id, previous_hours, new_hours)
-            SELECT ${args.cleanupId}, up.user_id, ${args.actorId}, p.old_hours, up.hours
-            FROM upsert up
-            LEFT JOIN prev p ON p.user_id = up.user_id
-            RETURNING user_id, previous_hours, new_hours
-          ),
-          deltas AS (
-            SELECT
-              up.user_id,
-              up.jurisdiction_geoid AS geoid,
-              up.hours - COALESCE(
-                CASE WHEN p.old_geoid = up.jurisdiction_geoid THEN p.old_hours END, 0
-              ) AS delta
-            FROM upsert up
-            LEFT JOIN prev p ON p.user_id = up.user_id
-            WHERE up.jurisdiction_geoid IS NOT NULL
-            UNION ALL
-            -- The event moved jurisdictions (or out of coverage) since this attendee was last
-            -- credited: take the stale hours back out of the jurisdiction it no longer belongs to.
-            -- Disjoint from the branch above (that one is always the CURRENT geoid), so no
-            -- (user, geoid) pair is inserted twice.
-            SELECT p.user_id, p.old_geoid, -p.old_hours
-            FROM upsert up
-            JOIN prev p ON p.user_id = up.user_id
-            WHERE p.old_geoid IS NOT NULL
-              AND p.old_geoid IS DISTINCT FROM up.jurisdiction_geoid
-          ),
-          rollup AS (
-            INSERT INTO user_jurisdiction_hours (user_id, jurisdiction_geoid, total_hours)
-            SELECT d.user_id, d.geoid, d.delta FROM deltas d
-            ON CONFLICT (user_id, jurisdiction_geoid)
-            DO UPDATE SET total_hours = user_jurisdiction_hours.total_hours + EXCLUDED.total_hours
-          )
-          SELECT
-            user_id,
-            previous_hours::float8 AS previous_hours,
-            new_hours::float8 AS new_hours
-          FROM journal
-        `
-        const changed = journal.map((r) => ({
-          userId: r.user_id,
-          hours: r.new_hours,
-          previousHours: r.previous_hours,
-        }))
+        const changed = await writeEventCredits(tx, {
+          cleanupId: args.cleanupId,
+          geoid: args.geoid,
+          actorId: args.actorId,
+          loggedByUserId: args.actorId,
+          entries: args.entries,
+        })
         const anomalies = await detectHoursAnomalies(tx, {
           actorId: args.actorId,
           cleanupId: args.cleanupId,

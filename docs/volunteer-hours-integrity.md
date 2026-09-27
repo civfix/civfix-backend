@@ -26,11 +26,11 @@ Every step was legal, every hour landed on a transcript, and nothing was flagged
 
 | # | Rule | Where | Effect when tripped |
 |---|---|---|---|
-| a | A credit is capped at the event's own window: `COALESCE(completed_at, ends_at) - scheduled_at` **+ 1 h grace**, never above `MAX_EVENT_HOURS` (24) | `volunteer-hours-service.ts` (`creditableHoursForEvent`, `eventDurationMs`) | `VALIDATION` naming the event's real length |
-| b | One person may hold at most **24 h across every event scheduled on the same local calendar day**, read in the event's own IANA zone (`cleanups.timezone`, falling back to `DEFAULT_EVENT_TIME_ZONE`) | `volunteer-hours-repository.drizzle.ts`, inside the crediting transaction under a per-user advisory lock | `CONFLICT` naming what they already hold |
+| a | A credit is capped at the event's own window: `COALESCE(completed_at, ends_at) - scheduled_at` **+ 1 h grace**, never above `MAX_EVENT_HOURS` (24) | `volunteer-hours-rules.ts` (`creditableHoursForEvent`, `eventDurationMs`, checked by `assertCreditableEventHours`) | `VALIDATION` naming the event's real length |
+| b | One person may hold at most **24 h across every event scheduled on the same local calendar day**, read in the event's own IANA zone (`cleanups.timezone`, falling back to `DEFAULT_EVENT_TIME_ZONE`) | `sameDayEventHours` (`volunteer-hours-credit.drizzle.ts`) and `assertWithinDailyHoursCap` (`volunteer-hours-rules.ts`), inside the crediting transaction under a per-user advisory lock | `CONFLICT` naming what they already hold |
 | c | Reciprocity inside one event is refused **in both directions** — whoever credits second is the one refused (covers the organizer ↔ promoted-co-host swap) | same transaction | `CONFLICT` |
 | d | Two anomaly signals are **flagged to moderation, never blocked**: >60 h credited in a rolling 7 days, and A↔B crediting each other on *different* events within 30 days | detected in the transaction, filed by `volunteer-hours-anomaly.ts` | an open `moderation_items` row, `kind = 'pattern'`, `subject_type = 'user'` |
-| e | Hours can be logged only **once the event has ended** (`now >= ends_at`), and never against an event whose window is **shorter than 15 minutes** | `volunteer-hours-service.ts` (`hasEventEnded`, then the `MIN_EVENT_DURATION_MS` check in `logEventHours`) | `CONFLICT` |
+| e | Hours can be logged only **once the event has ended** (`now >= ends_at`), and never against an event whose window is **shorter than 15 minutes** | `assertEventCreditable` in `volunteer-hours-rules.ts` (`hasEventEnded`, then the `MIN_EVENT_DURATION_MS` check) | `CONFLICT` |
 
 Rule (e)'s 15-minute floor is really enforced at write time: `assertEventWindow`
 (`host/event-fields.ts`) refuses any create or update whose `ends_at` is less than
@@ -49,6 +49,8 @@ by `assertEventWindow`'s 15 minute / 24 hour duration limits.
 Rule (b) is enforced with `pg_advisory_xact_lock` per credited user, taken in sorted order after the
 per-event lock, so two hosts crediting the same attendee on two different events serialize instead of
 both reading a stale sum. Sorted acquisition is what keeps a batch of concurrent credits deadlock-free.
+Both locks are taken by `lockEventCredits` (`volunteer-hours-credit.drizzle.ts`), and the shared
+upsert there, `writeEventCredits`, relies on the caller already holding them.
 
 ## Re-saving and voided rows
 
