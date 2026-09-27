@@ -73,7 +73,7 @@ export function assertWithinDailyHoursCap(
     const held = heldByUser.get(entry.userId) ?? 0
     if (held + entry.hours > dailyCapHours) {
       throw AppError.conflict(
-        `That attendee already holds ${round2(held)} h for events on this date; the daily limit is ${dailyCapHours} h.`,
+        `That volunteer already holds ${round2(held)} h on this date; the daily limit is ${dailyCapHours} h.`,
       )
     }
   }

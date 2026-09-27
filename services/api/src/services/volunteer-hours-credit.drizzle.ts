@@ -1,3 +1,4 @@
+import type postgres from "postgres"
 import type { TransactionSql } from "../db/client.js"
 import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
 import type { EventCreditChange, EventCreditWrite } from "./volunteer-hours-service.js"
@@ -10,14 +11,57 @@ export async function lockEventCredits(
   userIds: readonly string[],
 ): Promise<void> {
   await tx`SELECT pg_advisory_xact_lock(hashtext('volunteer_event:' || ${cleanupId}))`
+  await lockUserCredits(tx, userIds)
+}
+
+// A writer with no event (a manual credit) takes only the user locks; a writer touching an event row
+// must call lockEventCredits instead, so the event lock is never taken after a user lock.
+export async function lockUserCredits(
+  tx: TransactionSql,
+  userIds: readonly string[],
+): Promise<void> {
   const lockIds = [...new Set(userIds)].sort()
-  if (lockIds.length > 0) {
-    await tx`
-      SELECT pg_advisory_xact_lock(hashtext('volunteer_user:' || u))
-      FROM unnest(${lockIds}::uuid[]) AS t(u)
-      ORDER BY u
-    `
-  }
+  if (lockIds.length === 0) return
+  await tx`
+    SELECT pg_advisory_xact_lock(hashtext('volunteer_user:' || u))
+    FROM unnest(${lockIds}::uuid[]) AS t(u)
+    ORDER BY u
+  `
+}
+
+// The daily cap counts every live credit dated to the day: event rows by their event's local date,
+// manual rows by their service date.
+async function creditedHoursOnDay(
+  tx: TransactionSql,
+  userIds: readonly string[],
+  day: postgres.Fragment,
+  excludeCleanupId: string | null,
+): Promise<Map<string, number>> {
+  const rows = await tx<{ user_id: string; hours: number }[]>`
+    WITH day AS (${day}),
+    held AS (
+      SELECT vh.user_id, vh.hours
+      FROM volunteer_hours vh
+      JOIN cleanups c ON c.id = vh.cleanup_id
+      WHERE vh.user_id = ANY(${userIds}::uuid[])
+        AND vh.source = 'event'
+        AND vh.voided_at IS NULL
+        AND vh.cleanup_id IS DISTINCT FROM ${excludeCleanupId}::uuid
+        AND (c.scheduled_at AT TIME ZONE COALESCE(c.timezone, ${DEFAULT_EVENT_TIME_ZONE}))::date
+          = (SELECT d FROM day)
+      UNION ALL
+      SELECT vh.user_id, vh.hours
+      FROM volunteer_hours vh
+      WHERE vh.user_id = ANY(${userIds}::uuid[])
+        AND vh.source = 'manual'
+        AND vh.voided_at IS NULL
+        AND vh.service_date = (SELECT d FROM day)
+    )
+    SELECT user_id, COALESCE(SUM(hours), 0)::float8 AS hours
+    FROM held
+    GROUP BY user_id
+  `
+  return new Map(rows.map((r) => [r.user_id, r.hours]))
 }
 
 export async function sameDayEventHours(
@@ -25,21 +69,23 @@ export async function sameDayEventHours(
   cleanupId: string,
   userIds: readonly string[],
 ): Promise<Map<string, number>> {
-  const rows = await tx<{ user_id: string; hours: number }[]>`
-    SELECT vh.user_id, COALESCE(SUM(vh.hours), 0)::float8 AS hours
-    FROM volunteer_hours vh
-    JOIN cleanups c ON c.id = vh.cleanup_id
-    WHERE vh.user_id = ANY(${userIds}::uuid[])
-      AND vh.source = 'event'
-      AND vh.voided_at IS NULL
-      AND vh.cleanup_id <> ${cleanupId}
-      AND (c.scheduled_at AT TIME ZONE COALESCE(c.timezone, ${DEFAULT_EVENT_TIME_ZONE}))::date = (
-        SELECT (scheduled_at AT TIME ZONE COALESCE(timezone, ${DEFAULT_EVENT_TIME_ZONE}))::date
-        FROM cleanups WHERE id = ${cleanupId}
-      )
-    GROUP BY vh.user_id
-  `
-  return new Map(rows.map((r) => [r.user_id, r.hours]))
+  return creditedHoursOnDay(
+    tx,
+    userIds,
+    tx`
+      SELECT (scheduled_at AT TIME ZONE COALESCE(timezone, ${DEFAULT_EVENT_TIME_ZONE}))::date AS d
+      FROM cleanups WHERE id = ${cleanupId}
+    `,
+    cleanupId,
+  )
+}
+
+export async function hoursHeldOnServiceDate(
+  tx: TransactionSql,
+  userId: string,
+  serviceDate: string,
+): Promise<Map<string, number>> {
+  return creditedHoursOnDay(tx, [userId], tx`SELECT ${serviceDate}::date AS d`, null)
 }
 
 // The prev CTE reads each row before the upsert rewrites it, so the caller must already hold
@@ -51,9 +97,7 @@ export async function writeEventCredits(
 ): Promise<EventCreditChange[]> {
   const userIds = write.entries.map((e) => e.userId)
   const hoursByRow = write.entries.map((e) => e.hours)
-  const journal = await tx<
-    { user_id: string; previous_hours: number | null; new_hours: number }[]
-  >`
+  const journal = await tx<{ user_id: string; previous_hours: number | null; new_hours: number }[]>`
     WITH prev AS (
       -- A voided row already left user_jurisdiction_hours when it was voided, so it counts as
       -- holding 0 hours in no jurisdiction: the revival's rollup delta is its full hours. It
@@ -69,14 +113,27 @@ export async function writeEventCredits(
         AND user_id = ANY(${userIds}::uuid[])
     ),
     upsert AS (
-      INSERT INTO volunteer_hours (user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id)
-      SELECT t.u, t.h, 'event', ${write.cleanupId}, ${write.geoid}::text, ${write.loggedByUserId}
+      INSERT INTO volunteer_hours (
+        user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id,
+        note, credited_by_operator_id
+      )
+      SELECT
+        t.u, t.h, 'event', ${write.cleanupId}, ${write.geoid}::text, ${write.loggedByUserId},
+        ${write.note}::text, ${write.creditedByOperatorId}::uuid
       FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
       ON CONFLICT (cleanup_id, user_id) WHERE source = 'event'
       DO UPDATE SET
         hours = EXCLUDED.hours,
         jurisdiction_geoid = EXCLUDED.jurisdiction_geoid,
         logged_by_user_id = EXCLUDED.logged_by_user_id,
+        -- A write that changes or revives the row takes over its attribution whole: a host's
+        -- correction of an operator credit must not keep showing the operator's reason, and a
+        -- revived row is live again, so the previous void's operator and reason no longer describe
+        -- it (audit_log and volunteer_hours_audit keep that history).
+        note = EXCLUDED.note,
+        credited_by_operator_id = EXCLUDED.credited_by_operator_id,
+        voided_by_operator_id = NULL,
+        void_reason = NULL,
         created_at = CASE
           WHEN volunteer_hours.voided_at IS NULL THEN volunteer_hours.created_at
           ELSE now()

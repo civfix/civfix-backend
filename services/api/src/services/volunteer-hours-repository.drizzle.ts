@@ -5,12 +5,16 @@ import type {
   OrgVerificationStatus,
   VolunteerHoursSource,
 } from "@civfix/shared"
-import type { Queryable, Sql } from "../db/client.js"
+import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
+import type { Queryable, Sql, TransactionSql } from "../db/client.js"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
+import { writeAudit } from "./admin/audit.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { servedKeyExpr } from "./media-served-key.js"
 import {
+  hoursHeldOnServiceDate,
   lockEventCredits,
+  lockUserCredits,
   sameDayEventHours,
   writeEventCredits,
 } from "./volunteer-hours-credit.drizzle.js"
@@ -19,6 +23,7 @@ import {
   DAILY_HOURS_CAP,
   EVENT_HOURS_MEMBER_CAP,
   ITEMISED_SOURCES,
+  MANUAL_CREDIT_REPEAT_WINDOW_MS,
   MAX_ORG_CHIPS_FETCH,
   RECIPROCAL_LOOKBACK_MS,
   WEEKLY_HOURS_FLAG_DEFAULT,
@@ -33,23 +38,46 @@ import type {
   LogEventHoursArgs,
   LogEventHoursResult,
   MyVolunteerHoursTotals,
+  OperatorCreditResult,
+  OperatorEventCreditArgs,
+  OperatorManualCreditArgs,
+  OperatorVoidArgs,
   OrgHoursView,
   VolunteerHoursAnomaly,
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
+  VoidedEntry,
 } from "./volunteer-hours-service.js"
 
 const MORE_PAGES = "more"
 
 const RECIPROCAL_LOOKBACK_INTERVAL = `${RECIPROCAL_LOOKBACK_MS / 1000} seconds`
 const WEEKLY_WINDOW_INTERVAL = "7 days"
+const MANUAL_REPEAT_INTERVAL = `${MANUAL_CREDIT_REPEAT_WINDOW_MS / 1000} seconds`
+
+// Transcripts and entry lists date a row by when the service happened: the event's start, a manual
+// row's service day, and only failing both, when the row was written. A manual row has no
+// jurisdiction and so no zone of its own; it is anchored at noon UTC on its date so that no reader
+// within ±11 h of UTC sees it on a neighbouring day, whatever the session time zone.
+function occurredAtExpr(sql: Queryable) {
+  return sql`COALESCE(
+    c.scheduled_at,
+    make_timestamptz(
+      extract(year FROM vh.service_date)::int,
+      extract(month FROM vh.service_date)::int,
+      extract(day FROM vh.service_date)::int,
+      12, 0, 0, 'UTC'
+    ),
+    vh.created_at
+  )`
+}
 
 interface LedgerRow {
   id: string
   source: VolunteerHoursSource
   hours: number
   created_at: Date
-  scheduled_at: Date | null
+  occurred_at: Date
   cleanup_id: string | null
   cleanup_title: string | null
   reference_code: string | null
@@ -89,7 +117,7 @@ function toEntryView(r: LedgerRow): VolunteerHoursEntryView {
     source: r.source,
     hours: r.hours,
     createdAt: r.created_at,
-    occurredAt: r.scheduled_at ?? r.created_at,
+    occurredAt: r.occurred_at,
     cleanupId: r.cleanup_id,
     cleanupTitle: r.cleanup_title,
     cleanupReferenceCode: r.reference_code,
@@ -170,6 +198,38 @@ async function detectHoursAnomalies(
   return anomalies
 }
 
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
+}
+
+async function eventEntryId(
+  tx: TransactionSql,
+  cleanupId: string,
+  userId: string,
+): Promise<string> {
+  const rows = await tx<{ id: string }[]>`
+    SELECT id FROM volunteer_hours
+    WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND source = 'event'
+    LIMIT 1
+  `
+  const id = rows[0]?.id
+  if (id === undefined) throw new Error("creditEventAsOperator: the upserted event row is missing")
+  return id
+}
+
+async function refuseUnvoidable(tx: TransactionSql, args: OperatorVoidArgs): Promise<never> {
+  const rows = await tx<{ source: VolunteerHoursSource; voided: boolean }[]>`
+    SELECT source, (voided_at IS NOT NULL) AS voided
+    FROM volunteer_hours
+    WHERE id = ${args.entryId} AND user_id = ${args.userId}
+    LIMIT 1
+  `
+  const row = rows[0]
+  if (row === undefined) throw AppError.notFound("Hours entry not found")
+  if (row.voided) throw AppError.conflict("That hours entry is already void.")
+  throw AppError.conflict("Report credits are retired and can't be voided.")
+}
+
 export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRepository {
   return {
     async logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
@@ -205,6 +265,8 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           geoid: args.geoid,
           actorId: args.actorId,
           loggedByUserId: args.actorId,
+          note: null,
+          creditedByOperatorId: null,
           entries: args.entries,
         })
         const anomalies = await detectHoursAnomalies(tx, {
@@ -385,7 +447,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           vh.source,
           vh.hours::float8 AS hours,
           vh.created_at,
-          c.scheduled_at,
+          ${occurredAtExpr(sql)} AS occurred_at,
           vh.cleanup_id,
           c.title AS cleanup_title,
           c.reference_code,
@@ -464,7 +526,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           vh.source,
           vh.hours::float8 AS hours,
           vh.created_at,
-          c.scheduled_at,
+          ${occurredAtExpr(sql)} AS occurred_at,
           vh.cleanup_id,
           c.title AS cleanup_title,
           c.reference_code,
@@ -503,6 +565,187 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         totalHours: Math.round(items.reduce((sum, r) => sum + r.hours, 0) * 100) / 100,
         entryCount: countRows[0]?.count ?? items.length,
       }
+    },
+
+    async creditEventAsOperator(args: OperatorEventCreditArgs): Promise<OperatorCreditResult> {
+      return sql.begin(async (tx) => {
+        await lockEventCredits(tx, args.cleanupId, [args.userId])
+
+        const live = await tx<{ hours: number }[]>`
+          SELECT hours::float8 AS hours
+          FROM volunteer_hours
+          WHERE cleanup_id = ${args.cleanupId}
+            AND user_id = ${args.userId}
+            AND source = 'event'
+            AND voided_at IS NULL
+          LIMIT 1
+        `
+        const held = live[0]
+        if (held !== undefined) {
+          throw AppError.conflict(
+            `That volunteer already holds ${round2(held.hours)} h for this event; void that entry first.`,
+          )
+        }
+
+        const entries = [{ userId: args.userId, hours: args.hours }]
+        assertWithinDailyHoursCap(
+          entries,
+          await sameDayEventHours(tx, args.cleanupId, [args.userId]),
+          args.dailyCapHours ?? DAILY_HOURS_CAP,
+        )
+
+        await writeEventCredits(tx, {
+          cleanupId: args.cleanupId,
+          geoid: args.geoid,
+          actorId: args.operatorId,
+          loggedByUserId: CIVFIX_OFFICIAL_USER_ID,
+          note: args.reason,
+          creditedByOperatorId: args.operatorId,
+          entries,
+        })
+        const entryId = await eventEntryId(tx, args.cleanupId, args.userId)
+        await writeAudit(tx, {
+          actorId: args.operatorId,
+          action: "user.hours_credited",
+          target: `user:${args.userId}`,
+          meta: {
+            entryId,
+            source: "event",
+            cleanupId: args.cleanupId,
+            hours: args.hours,
+            reason: args.reason,
+          },
+        })
+        return { entryId }
+      })
+    },
+
+    async creditManual(args: OperatorManualCreditArgs): Promise<OperatorCreditResult> {
+      return sql.begin(async (tx) => {
+        await lockUserCredits(tx, [args.userId])
+
+        const repeat = await tx<{ id: string }[]>`
+          SELECT id
+          FROM volunteer_hours
+          WHERE user_id = ${args.userId}
+            AND source = 'manual'
+            AND voided_at IS NULL
+            AND hours = ${args.hours}::numeric(6, 2)
+            AND service_date = ${args.serviceDate}::date
+            AND credited_by_operator_id = ${args.operatorId}
+            AND created_at > now() - ${MANUAL_REPEAT_INTERVAL}::interval
+          LIMIT 1
+        `
+        if (repeat.length > 0) {
+          throw AppError.conflict(
+            "That adjustment was recorded moments ago; check the ledger before adding it again.",
+          )
+        }
+
+        assertWithinDailyHoursCap(
+          [{ userId: args.userId, hours: args.hours }],
+          await hoursHeldOnServiceDate(tx, args.userId, args.serviceDate),
+          args.dailyCapHours ?? DAILY_HOURS_CAP,
+        )
+
+        const inserted = await tx<{ id: string }[]>`
+          INSERT INTO volunteer_hours (
+            user_id, hours, source, logged_by_user_id, note, service_date, credited_by_operator_id
+          )
+          VALUES (
+            ${args.userId}, ${args.hours}, 'manual', ${CIVFIX_OFFICIAL_USER_ID}, ${args.reason},
+            ${args.serviceDate}::date, ${args.operatorId}
+          )
+          RETURNING id
+        `
+        const entryId = inserted[0]?.id
+        if (entryId === undefined) throw new Error("creditManual: insert returned no row")
+        await writeAudit(tx, {
+          actorId: args.operatorId,
+          action: "user.hours_credited",
+          target: `user:${args.userId}`,
+          meta: {
+            entryId,
+            source: "manual",
+            hours: args.hours,
+            serviceDate: args.serviceDate,
+            reason: args.reason,
+          },
+        })
+        return { entryId }
+      })
+    },
+
+    async voidEntry(args: OperatorVoidArgs): Promise<VoidedEntry> {
+      return sql.begin(async (tx) => {
+        // user_id and cleanup_id never change on a row, so reading them before the locks is safe;
+        // the event lock has to be known up front because it must be taken before the user lock.
+        const owner = await tx<{ cleanup_id: string | null }[]>`
+          SELECT cleanup_id FROM volunteer_hours
+          WHERE id = ${args.entryId} AND user_id = ${args.userId}
+          LIMIT 1
+        `
+        const found = owner[0]
+        if (found === undefined) throw AppError.notFound("Hours entry not found")
+        if (found.cleanup_id !== null) {
+          await lockEventCredits(tx, found.cleanup_id, [args.userId])
+        } else {
+          await lockUserCredits(tx, [args.userId])
+        }
+
+        const voided = await tx<
+          {
+            source: VolunteerHoursSource
+            cleanup_id: string | null
+            jurisdiction_geoid: string | null
+            hours: number
+          }[]
+        >`
+          UPDATE volunteer_hours
+          SET voided_at = now(),
+              voided_by_operator_id = ${args.operatorId},
+              void_reason = ${args.reason}
+          WHERE id = ${args.entryId}
+            AND user_id = ${args.userId}
+            AND voided_at IS NULL
+            AND source <> 'report'
+          RETURNING source, cleanup_id, jurisdiction_geoid, hours::float8 AS hours
+        `
+        const row = voided[0]
+        if (row === undefined) return refuseUnvoidable(tx, args)
+
+        if (row.source === "event" && row.cleanup_id !== null) {
+          await tx`
+            INSERT INTO volunteer_hours_audit
+              (cleanup_id, user_id, actor_user_id, previous_hours, new_hours)
+            SELECT cleanup_id, user_id, ${args.operatorId}, hours, 0
+            FROM volunteer_hours WHERE id = ${args.entryId}
+          `
+        }
+        if (row.jurisdiction_geoid !== null) {
+          await tx`
+            UPDATE user_jurisdiction_hours ujh
+            SET total_hours = ujh.total_hours - vh.hours
+            FROM volunteer_hours vh
+            WHERE vh.id = ${args.entryId}
+              AND ujh.user_id = vh.user_id
+              AND ujh.jurisdiction_geoid = vh.jurisdiction_geoid
+          `
+        }
+        await writeAudit(tx, {
+          actorId: args.operatorId,
+          action: "user.hours_voided",
+          target: `user:${args.userId}`,
+          meta: {
+            entryId: args.entryId,
+            source: row.source,
+            ...(row.cleanup_id !== null ? { cleanupId: row.cleanup_id } : {}),
+            hours: row.hours,
+            reason: args.reason,
+          },
+        })
+        return { id: args.entryId, source: row.source, cleanupId: row.cleanup_id, hours: row.hours }
+      })
     },
   }
 }

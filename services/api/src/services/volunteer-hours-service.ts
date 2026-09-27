@@ -89,7 +89,48 @@ export interface EventCreditWrite {
   geoid: string | null
   actorId: string
   loggedByUserId: string
+  note: string | null
+  creditedByOperatorId: string | null
   entries: readonly EventHoursEntry[]
+}
+
+export const MANUAL_CREDIT_REPEAT_WINDOW_MS = 60_000
+
+export interface OperatorEventCreditArgs {
+  operatorId: string
+  userId: string
+  cleanupId: string
+  geoid: string | null
+  hours: number
+  reason: string
+  dailyCapHours?: number
+}
+
+export interface OperatorManualCreditArgs {
+  operatorId: string
+  userId: string
+  hours: number
+  serviceDate: string
+  reason: string
+  dailyCapHours?: number
+}
+
+export interface OperatorCreditResult {
+  entryId: string
+}
+
+export interface OperatorVoidArgs {
+  operatorId: string
+  userId: string
+  entryId: string
+  reason: string
+}
+
+export interface VoidedEntry {
+  id: string
+  source: VolunteerHoursSource
+  cleanupId: string | null
+  hours: number
 }
 
 export interface LogEventHoursResult {
@@ -213,6 +254,9 @@ export interface VolunteerHoursRepository {
   listEventHours(cleanupId: string, viewerId: string | null): Promise<EventHoursLedger>
   hoursVisibilityFor(userId: string): Promise<HoursVisibility>
   entriesForCertificate(args: EntriesForCertificateArgs): Promise<CertificateEntriesPage>
+  creditEventAsOperator(args: OperatorEventCreditArgs): Promise<OperatorCreditResult>
+  creditManual(args: OperatorManualCreditArgs): Promise<OperatorCreditResult>
+  voidEntry(args: OperatorVoidArgs): Promise<VoidedEntry>
 }
 
 export interface CleanupHoursView {

@@ -27,7 +27,7 @@ Every step was legal, every hour landed on a transcript, and nothing was flagged
 | # | Rule | Where | Effect when tripped |
 |---|---|---|---|
 | a | A credit is capped at the event's own window: `COALESCE(completed_at, ends_at) - scheduled_at` **+ 1 h grace**, never above `MAX_EVENT_HOURS` (24) | `volunteer-hours-rules.ts` (`creditableHoursForEvent`, `eventDurationMs`, checked by `assertCreditableEventHours`) | `VALIDATION` naming the event's real length |
-| b | One person may hold at most **24 h across every event scheduled on the same local calendar day**, read in the event's own IANA zone (`cleanups.timezone`, falling back to `DEFAULT_EVENT_TIME_ZONE`) | `sameDayEventHours` (`volunteer-hours-credit.drizzle.ts`) and `assertWithinDailyHoursCap` (`volunteer-hours-rules.ts`), inside the crediting transaction under a per-user advisory lock | `CONFLICT` naming what they already hold |
+| b | One person may hold at most **24 h across every event scheduled on the same local calendar day**, read in the event's own IANA zone (`cleanups.timezone`, falling back to `DEFAULT_EVENT_TIME_ZONE`), **plus every live manual adjustment whose `service_date` is that day** | `sameDayEventHours` and `hoursHeldOnServiceDate` (`volunteer-hours-credit.drizzle.ts`) and `assertWithinDailyHoursCap` (`volunteer-hours-rules.ts`), inside the crediting transaction under a per-user advisory lock | `CONFLICT` naming what they already hold |
 | c | Reciprocity inside one event is refused **in both directions** — whoever credits second is the one refused (covers the organizer ↔ promoted-co-host swap) | same transaction | `CONFLICT` |
 | d | Two anomaly signals are **flagged to moderation, never blocked**: >60 h credited in a rolling 7 days, and A↔B crediting each other on *different* events within 30 days | detected in the transaction, filed by `volunteer-hours-anomaly.ts` | an open `moderation_items` row, `kind = 'pattern'`, `subject_type = 'user'` |
 | e | Hours can be logged only **once the event has ended** (`now >= ends_at`), and never against an event whose window is **shorter than 15 minutes** | `assertEventCreditable` in `volunteer-hours-rules.ts` (`hasEventEnded`, then the `MIN_EVENT_DURATION_MS` check) | `CONFLICT` |
@@ -68,6 +68,11 @@ The host editor re-submits the whole sheet, so `logEventHours` is written to be 
   records `previous_hours = 0` (not `NULL`, which 0053 reserves for a genuine first credit, so the
   journal still shows the attendee was credited before), the attendee is notified because the
   hours went up, `voided_at` is cleared and `created_at` moves to the re-credit time.
+- **A change or revival takes over the row's attribution whole.** `logged_by_user_id`, `note` and
+  `credited_by_operator_id` (0182) come from the new write, and the previous void's
+  `voided_by_operator_id` and `void_reason` are cleared, so a host correcting an operator's credit
+  does not keep showing the operator's reason on a row the host now owns. `audit_log` and
+  `volunteer_hours_audit` keep that history.
 
 `credited` in the response still counts every entry the host submitted, so the host's
 confirmation reads the same whether or not a row changed.
