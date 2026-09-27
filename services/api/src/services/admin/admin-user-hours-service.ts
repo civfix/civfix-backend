@@ -8,9 +8,11 @@ import type {
   AdminVoidUserHoursRequest,
   AdminVoidUserHoursResponse,
 } from "@civfix/shared"
+import { isOfficialAccount } from "../../auth/official-account.js"
 import {
   assertTargetIsNotOfficialAccount,
   assertTargetIsNotOperatorRole,
+  isOperatorRole,
 } from "../../auth/operator-target.js"
 import { parseTimeCursor } from "../../db/cursor-helpers.js"
 import type { CertificateRepository } from "../certificate-service.js"
@@ -60,7 +62,10 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100
 }
 
-export function toAdminUserHoursEntryDTO(view: OperatorLedgerEntryView): AdminUserHoursEntryDTO {
+export function toAdminUserHoursEntryDTO(
+  view: OperatorLedgerEntryView,
+  accountAllowsVoid: boolean,
+): AdminUserHoursEntryDTO {
   return {
     id: view.id,
     source: view.source,
@@ -90,7 +95,7 @@ export function toAdminUserHoursEntryDTO(view: OperatorLedgerEntryView): AdminUs
     voidedAt: view.voidedAt === null ? null : view.voidedAt.toISOString(),
     voidedBy: view.voidedBy === null ? null : { id: view.voidedBy.id, name: view.voidedBy.name },
     voidReason: view.voidReason,
-    voidable: view.voidedAt === null && view.source !== "report",
+    voidable: accountAllowsVoid && view.voidedAt === null && view.source !== "report",
   }
 }
 
@@ -185,7 +190,8 @@ export function makeAdminUserHoursService(deps: AdminUserHoursServiceDeps): Admi
 
   return {
     async getUserHours(query: AdminUserHoursQuery): Promise<AdminUserHoursResponse> {
-      await accountOf(query.id)
+      const target = await accountOf(query.id)
+      const accountAllowsVoid = !isOfficialAccount(query.id) && !isOperatorRole(target.role)
       const [page, totals] = await Promise.all([
         deps.hours.listOperatorLedger({
           userId: query.id,
@@ -195,7 +201,7 @@ export function makeAdminUserHoursService(deps: AdminUserHoursServiceDeps): Admi
         deps.hours.operatorLedgerTotals(query.id),
       ])
       return {
-        items: page.items.map(toAdminUserHoursEntryDTO),
+        items: page.items.map((view) => toAdminUserHoursEntryDTO(view, accountAllowsVoid)),
         nextCursor: page.nextCursor,
         totals,
       }

@@ -24,7 +24,7 @@ import type {
   VolunteerHoursSource,
 } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
-import { parseTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
+import { parseTimeCursor, type DecodedTimeCursor, type TimeCursor } from "../db/cursor-helpers.js"
 import type { MessageKey, MessageVars } from "../i18n/renderMessage.js"
 import { mapWithLimit, PRESIGN_CONCURRENCY } from "./media-presign.js"
 import { assertCreditableEventHours, assertEventCreditable } from "./volunteer-hours-rules.js"
@@ -142,7 +142,7 @@ export interface VoidedEntry {
 
 export interface OperatorLedgerArgs {
   userId: string
-  cursor: TimeCursor | null
+  cursor: DecodedTimeCursor | null
   limit: number
 }
 

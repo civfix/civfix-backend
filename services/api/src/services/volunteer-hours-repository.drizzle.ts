@@ -7,7 +7,7 @@ import type {
 } from "@civfix/shared"
 import { CIVFIX_OFFICIAL_USER_ID, isOfficialAccount } from "../auth/official-account.js"
 import type { Queryable, Sql, TransactionSql } from "../db/client.js"
-import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
+import { cursorAtSql, cursorInstantSql, encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
 import { writeAudit } from "./admin/audit.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { servedKeyExpr } from "./media-served-key.js"
@@ -207,6 +207,7 @@ interface OperatorLedgerRow {
   source: VolunteerHoursSource
   hours: number
   created_at: Date
+  cursor_at: string
   occurred_at: Date
   service_date: string | null
   cleanup_id: string | null
@@ -818,7 +819,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
       const limit = Math.min(Math.max(1, Math.floor(args.limit)), OPERATOR_LEDGER_MAX_LIMIT)
       const keyset =
         args.cursor !== null
-          ? sql`AND (vh.created_at, vh.id) < (${args.cursor.at}, ${args.cursor.id}::uuid)`
+          ? sql`AND (vh.created_at, vh.id) < (${cursorAtSql(sql, args.cursor)}, ${args.cursor.id}::uuid)`
           : sql``
       const rows = await sql<OperatorLedgerRow[]>`
         SELECT
@@ -826,6 +827,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           vh.source,
           vh.hours::float8 AS hours,
           vh.created_at,
+          ${cursorInstantSql(sql, sql`vh.created_at`)} AS cursor_at,
           ${occurredAtExpr(sql)} AS occurred_at,
           vh.service_date::text AS service_date,
           vh.cleanup_id,
@@ -855,7 +857,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         LIMIT ${limit + 1}
       `
       const { items, nextCursor } = pageWith(rows, limit, (last) =>
-        encodeTimeCursor({ at: last.created_at, id: last.id }),
+        encodeTimeCursor({ at: last.cursor_at, id: last.id }),
       )
       return { items: items.map(toOperatorLedgerView), nextCursor }
     },

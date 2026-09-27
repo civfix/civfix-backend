@@ -225,6 +225,21 @@ describe("getUserHours", () => {
     })
   })
 
+  it("marks no entry voidable on an account the void path refuses", async () => {
+    const h = harness()
+    await h.hours.creditManual({
+      operatorId: OTHER_OPERATOR,
+      userId: OPERATOR,
+      hours: 1,
+      serviceDate: "2026-07-01",
+      reason: "Seeded before the operator role was granted",
+    })
+
+    const res = await h.svc.getUserHours({ id: OPERATOR })
+    expect(res.items).toHaveLength(1)
+    expect(res.items[0]?.voidable).toBe(false)
+  })
+
   it("pages with the requested limit and a cursor", async () => {
     const h = harness()
     await h.svc.creditUserHours(OPERATOR, manualCredit(1, "2026-07-01"))
