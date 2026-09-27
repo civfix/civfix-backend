@@ -96,6 +96,8 @@ export interface EventCreditWrite {
 
 export const MANUAL_CREDIT_REPEAT_WINDOW_MS = 60_000
 
+export const OPERATOR_LEDGER_MAX_LIMIT = 50
+
 export interface OperatorEventCreditArgs {
   operatorId: string
   userId: string
@@ -133,6 +135,35 @@ export interface VoidedEntry {
   hours: number
 }
 
+export interface OperatorLedgerArgs {
+  userId: string
+  cursor: TimeCursor | null
+  limit: number
+}
+
+export interface OperatorLedgerEntryView {
+  id: string
+  source: VolunteerHoursSource
+  hours: number
+  occurredAt: Date
+  createdAt: Date
+  serviceDate: string | null
+  event: { id: string; title: string; referenceCode: string | null } | null
+  jurisdiction: { geoid: string; name: string | null } | null
+  creditedBy: { id: string; name: string; handle: string | null; official: boolean } | null
+  operator: { id: string; name: string } | null
+  note: string | null
+  voidedAt: Date | null
+  voidedBy: { id: string; name: string } | null
+  voidReason: string | null
+}
+
+export interface OperatorLedgerTotals {
+  totalHours: number
+  liveEntries: number
+  voidedEntries: number
+}
+
 export interface LogEventHoursResult {
   credited: number
   changed: EventCreditChange[]
@@ -163,6 +194,7 @@ export interface EventHoursLedgerEntry {
   userId: string
   hours: number
   loggedAt: Date
+  creditedByOfficial: boolean
 }
 
 export interface EventHoursLedger {
@@ -257,6 +289,10 @@ export interface VolunteerHoursRepository {
   creditEventAsOperator(args: OperatorEventCreditArgs): Promise<OperatorCreditResult>
   creditManual(args: OperatorManualCreditArgs): Promise<OperatorCreditResult>
   voidEntry(args: OperatorVoidArgs): Promise<VoidedEntry>
+  listOperatorLedger(
+    args: OperatorLedgerArgs,
+  ): Promise<{ items: OperatorLedgerEntryView[]; nextCursor: string | null }>
+  operatorLedgerTotals(userId: string): Promise<OperatorLedgerTotals>
 }
 
 export interface CleanupHoursView {

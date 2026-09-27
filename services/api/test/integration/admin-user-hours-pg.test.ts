@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto"
 import { withPg, type PgHarness } from "../helpers/pg.js"
 import { seedCleanup } from "../helpers/cleanups.js"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
+import { parseTimeCursor } from "../../src/db/cursor-helpers.js"
+import { buildTranscriptModel } from "../../src/services/certificate-model.js"
+import { makeDrizzleCertificateRepository } from "../../src/services/certificate-repository.drizzle.js"
 import { makeDrizzleVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.drizzle.js"
 import { LA_CITY } from "../../src/db/seed-fixtures.js"
 
@@ -173,7 +176,9 @@ describe.skipIf(!pg)("operator volunteer-hours ledger (integration)", () => {
       },
     ])
     const hostSheet = await repo.listEventHours(cleanupId, null)
-    expect(hostSheet.entries.map((e) => [e.userId, e.hours])).toEqual([[alice, 3]])
+    expect(hostSheet.entries.map((e) => [e.userId, e.hours, e.creditedByOfficial])).toEqual([
+      [alice, 3, true],
+    ])
 
     await expect(
       repo.creditEventAsOperator({
@@ -448,5 +453,92 @@ describe.skipIf(!pg)("operator volunteer-hours ledger (integration)", () => {
       `
       expect(total).toBe(ledger!.total)
     }
+  })
+
+  it("pages the operator ledger by (created_at, id), voided rows included, with live and voided counts", async () => {
+    const alice = await newUser("Page Alice")
+    const operator = await newUser("Page Olive")
+    const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+    const ids: string[] = []
+    for (let day = 1; day <= 5; day++) {
+      const { entryId } = await repo.creditManual({
+        operatorId: operator,
+        userId: alice,
+        hours: 1,
+        serviceDate: `2026-05-0${day}`,
+        reason: `day ${day}`,
+      })
+      ids.unshift(entryId)
+    }
+    await repo.voidEntry({ operatorId: operator, userId: alice, entryId: ids[1]!, reason: "dup" })
+
+    const first = await repo.listOperatorLedger({ userId: alice, cursor: null, limit: 3 })
+    const second = await repo.listOperatorLedger({
+      userId: alice,
+      cursor: parseTimeCursor(first.nextCursor!),
+      limit: 3,
+    })
+    expect([...first.items, ...second.items].map((i) => i.id)).toEqual(ids)
+    expect(second.nextCursor).toBeNull()
+    expect(first.items[1]).toMatchObject({
+      voidedBy: { id: operator, name: "Page Olive" },
+      voidReason: "dup",
+      operator: { id: operator, name: "Page Olive" },
+      creditedBy: { id: CIVFIX_OFFICIAL_USER_ID, official: true },
+    })
+    expect(await repo.operatorLedgerTotals(alice)).toEqual({
+      totalHours: 4,
+      liveEntries: 4,
+      voidedEntries: 1,
+    })
+  })
+
+  it("finds the live certificates whose snapshot itemised an entry", async () => {
+    const alice = await newUser("Cert Alice")
+    const certs = makeDrizzleCertificateRepository(h.sql)
+    const entry = randomUUID()
+
+    async function issue(code: string, entryIds: string[], issuedAt: string): Promise<void> {
+      await certs.insert({
+        id: randomUUID(),
+        userId: alice,
+        code,
+        locale: "en",
+        holderName: "Cert Alice",
+        holderHandle: null,
+        holderVerified: false,
+        totalHours: entryIds.length,
+        entryCount: entryIds.length,
+        periodStart: null,
+        periodEnd: null,
+        ledgerFingerprint: `fp-${code}`,
+        snapshot: buildTranscriptModel({
+          holder: { userId: alice, displayName: "Cert Alice", handle: null },
+          rows: entryIds.map((id) => ({
+            id,
+            source: "event" as const,
+            hours: 1,
+            occurredAt: new Date(issuedAt),
+          })),
+          locale: "en",
+        }),
+        r2Key: `certificates/${code}.pdf`,
+        documentSha256: "0".repeat(64),
+        byteSize: 1,
+        issuedAt: new Date(issuedAt),
+      })
+    }
+
+    const suffix = randomUUID().slice(0, 6).toUpperCase()
+    await issue(`A${suffix}`, [entry], "2026-07-01T00:00:00Z")
+    await issue(`B${suffix}`, [randomUUID(), entry], "2026-07-02T00:00:00Z")
+    await issue(`C${suffix}`, [randomUUID()], "2026-07-03T00:00:00Z")
+    await issue(`D${suffix}`, [entry], "2026-07-04T00:00:00Z")
+    await certs.revoke(alice, `D${suffix}`, "ledger_corrected", new Date())
+
+    expect(await certs.liveCodesListingEntry(alice, entry)).toEqual([
+      { code: `B${suffix}`, issuedAt: new Date("2026-07-02T00:00:00Z") },
+      { code: `A${suffix}`, issuedAt: new Date("2026-07-01T00:00:00Z") },
+    ])
   })
 })
