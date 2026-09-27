@@ -151,7 +151,11 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
       const live = existing !== undefined && existing.voidedAt === undefined ? existing : null
       if (live !== null && live.hours === hours && live.geoid === args.geoid) continue
 
-      changed.push({ userId: entry.userId, hours, previousHours: live === null ? null : live.hours })
+      changed.push({
+        userId: entry.userId,
+        hours,
+        previousHours: existing === undefined ? null : (live?.hours ?? 0),
+      })
       if (live !== null && live.geoid !== null) this.addRollup(entry.userId, live.geoid, -live.hours)
       if (args.geoid !== null) this.addRollup(entry.userId, args.geoid, hours)
 

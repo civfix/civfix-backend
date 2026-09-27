@@ -60,11 +60,12 @@ The host editor re-submits the whole sheet, so `logEventHours` is written to be 
   credits; changing a row's hours does, and that change is journaled with the co-host as actor.
 - **A jurisdiction move is a change.** When the event now resolves to a different jurisdiction (or
   none), a re-save with the same hours takes them out of the old rollup and adds them to the new one.
-- **A voided row is treated as absent.** Every void path takes the row's hours out of
-  `user_jurisdiction_hours` when it voids it (0065 did it by recompute), so a re-credit reads its previous value as
-  `NULL`: the full hours go back into the rollup, the journal records `previous_hours = NULL`, the
-  attendee is notified as for a first credit, `voided_at` is cleared and `created_at` moves to the
-  re-credit time.
+- **A voided row holds 0 hours.** Every void path takes the row's hours out of
+  `user_jurisdiction_hours` when it voids it (0065 did it by recompute), so a re-credit reads its
+  previous value as `0` in no jurisdiction: the full hours go back into the rollup, the journal
+  records `previous_hours = 0` (not `NULL`, which 0053 reserves for a genuine first credit, so the
+  journal still shows the attendee was credited before), the attendee is notified because the
+  hours went up, `voided_at` is cleared and `created_at` moves to the re-credit time.
 
 `credited` in the response still counts every entry the host submitted, so the host's
 confirmation reads the same whether or not a row changed.

@@ -227,15 +227,18 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           { user_id: string; previous_hours: number | null; new_hours: number }[]
         >`
           WITH prev AS (
-            -- A voided row already left user_jurisdiction_hours when it was voided, so it holds
-            -- nothing to reverse: treating it as absent keeps the rollup delta exact on revival and
-            -- journals the revival as a first credit, which is what rings the attendee.
-            SELECT user_id, hours AS old_hours, jurisdiction_geoid AS old_geoid
+            -- A voided row already left user_jurisdiction_hours when it was voided, so it counts as
+            -- holding 0 hours in no jurisdiction: the revival's rollup delta is its full hours. It
+            -- still exists, so the journal records previous_hours = 0, keeping NULL (0053) for a
+            -- genuine first credit.
+            SELECT
+              user_id,
+              CASE WHEN voided_at IS NULL THEN hours ELSE 0 END AS old_hours,
+              CASE WHEN voided_at IS NULL THEN jurisdiction_geoid END AS old_geoid
             FROM volunteer_hours
             WHERE cleanup_id = ${args.cleanupId}
               AND source = 'event'
               AND user_id = ANY(${userIds}::uuid[])
-              AND voided_at IS NULL
           ),
           upsert AS (
             INSERT INTO volunteer_hours (user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id)

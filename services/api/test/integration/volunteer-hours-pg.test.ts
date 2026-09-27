@@ -395,7 +395,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       })
     }
 
-    it("re-crediting a voided row revives it: exact rollup, null previous in the result and the journal", async () => {
+    it("re-crediting a voided row revives it: exact rollup, previous 0 (not NULL) in the result and the journal", async () => {
       const org = await newUser("Revive Org")
       const alice = await newUser("Revive Alice")
       const cleanupId = await newCleanup(org)
@@ -413,7 +413,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
         entries: [{ userId: alice, hours: 3 }],
       })
       expect(revived.credited).toBe(1)
-      expect(revived.changed).toEqual([{ userId: alice, hours: 3, previousHours: null }])
+      expect(revived.changed).toEqual([{ userId: alice, hours: 3, previousHours: 0 }])
 
       const row = await eventRow(cleanupId, alice)
       expect(row.voided_at).toBeNull()
@@ -423,7 +423,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
       expect((await repo.totalsFor(alice)).totalHours).toBe(3)
       expect((await auditFor(cleanupId, alice)).map((r) => [r.previous_hours, r.new_hours])).toEqual([
         [null, 3],
-        [null, 3],
+        [0, 3],
       ])
     })
 

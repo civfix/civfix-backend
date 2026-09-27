@@ -1376,7 +1376,7 @@ describe("volunteer hours: void-aware re-crediting and no-op re-saves", () => {
     expect(board.entries).toEqual([])
   })
 
-  it("re-crediting a voided row revives it as a first credit: exact rollup, null previous, a bell", async () => {
+  it("re-crediting a voided row revives it: exact rollup, previous 0 (not a first credit), a bell", async () => {
     const clock = makeClock("2026-07-06T10:00:00.000Z")
     const repo = new InMemoryVolunteerHoursRepository({ now: clock.now })
     repo.seedJurisdiction(GEOID_A, "San Francisco")
@@ -1395,7 +1395,7 @@ describe("volunteer hours: void-aware re-crediting and no-op re-saves", () => {
       geoid: GEOID_A,
       entries: flat([BOB], 3),
     })
-    expect(repoResult.changed).toEqual([{ userId: BOB, hours: 3, previousHours: null }])
+    expect(repoResult.changed).toEqual([{ userId: BOB, hours: 3, previousHours: 0 }])
 
     const totals = await repo.totalsFor(BOB)
     expect(totals.totalHours).toBe(3)
