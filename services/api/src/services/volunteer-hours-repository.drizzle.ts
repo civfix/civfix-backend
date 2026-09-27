@@ -223,119 +223,94 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           }
         }
 
-        const audit = await tx<
+        const journal = await tx<
           { user_id: string; previous_hours: number | null; new_hours: number }[]
         >`
-          INSERT INTO volunteer_hours_audit
-            (cleanup_id, user_id, actor_user_id, previous_hours, new_hours)
-          SELECT
-            ${args.cleanupId}, t.u, ${args.actorId}, prev.hours, t.h
-          FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
-          LEFT JOIN volunteer_hours prev
-            ON prev.cleanup_id = ${args.cleanupId}
-           AND prev.source = 'event'
-           AND prev.user_id = t.u
-          RETURNING
-            user_id,
-            previous_hours::float8 AS previous_hours,
-            new_hours::float8 AS new_hours
-        `
-        const changed = audit.map((r) => ({
-          userId: r.user_id,
-          hours: r.new_hours,
-          previousHours: r.previous_hours,
-        }))
-
-        if (args.geoid === null) {
-          const upserted = await tx<{ user_id: string }[]>`
-            WITH prev AS (
-              SELECT user_id, hours AS old_hours, jurisdiction_geoid AS old_geoid
-              FROM volunteer_hours
-              WHERE cleanup_id = ${args.cleanupId}
-                AND source = 'event'
-                AND user_id = ANY(${userIds}::uuid[])
-            ),
-            upsert AS (
-              INSERT INTO volunteer_hours (user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id)
-              SELECT t.u, t.h, 'event', ${args.cleanupId}, NULL, ${args.actorId}
-              FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
-              ON CONFLICT (cleanup_id, user_id) WHERE source = 'event'
-              DO UPDATE SET
-                hours = EXCLUDED.hours,
-                jurisdiction_geoid = EXCLUDED.jurisdiction_geoid,
-                logged_by_user_id = EXCLUDED.logged_by_user_id
-              RETURNING user_id
-            ),
-            reversal AS (
-              INSERT INTO user_jurisdiction_hours (user_id, jurisdiction_geoid, total_hours)
-              SELECT p.user_id, p.old_geoid, -p.old_hours
-              FROM upsert up
-              JOIN prev p ON p.user_id = up.user_id
-              WHERE p.old_geoid IS NOT NULL
-              ON CONFLICT (user_id, jurisdiction_geoid)
-              DO UPDATE SET total_hours = user_jurisdiction_hours.total_hours + EXCLUDED.total_hours
-              RETURNING user_id
-            )
-            SELECT user_id FROM upsert
-          `
-          const anomalies = await detectHoursAnomalies(tx, {
-            actorId: args.actorId,
-            cleanupId: args.cleanupId,
-            userIds,
-            weeklyFlagHours: args.weeklyFlagHours ?? WEEKLY_HOURS_FLAG_DEFAULT,
-          })
-          return { credited: upserted.length, changed, anomalies }
-        }
-        const upserted = await tx<{ user_id: string }[]>`
           WITH prev AS (
+            -- A voided row already left user_jurisdiction_hours when it was voided, so it holds
+            -- nothing to reverse: treating it as absent keeps the rollup delta exact on revival and
+            -- journals the revival as a first credit, which is what rings the attendee.
             SELECT user_id, hours AS old_hours, jurisdiction_geoid AS old_geoid
             FROM volunteer_hours
             WHERE cleanup_id = ${args.cleanupId}
               AND source = 'event'
               AND user_id = ANY(${userIds}::uuid[])
+              AND voided_at IS NULL
           ),
           upsert AS (
             INSERT INTO volunteer_hours (user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id)
-            SELECT t.u, t.h, 'event', ${args.cleanupId}, ${args.geoid}, ${args.actorId}
+            SELECT t.u, t.h, 'event', ${args.cleanupId}, ${args.geoid}::text, ${args.actorId}
             FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
             ON CONFLICT (cleanup_id, user_id) WHERE source = 'event'
             DO UPDATE SET
               hours = EXCLUDED.hours,
               jurisdiction_geoid = EXCLUDED.jurisdiction_geoid,
-              logged_by_user_id = EXCLUDED.logged_by_user_id
-            RETURNING user_id, hours
+              logged_by_user_id = EXCLUDED.logged_by_user_id,
+              created_at = CASE
+                WHEN volunteer_hours.voided_at IS NULL THEN volunteer_hours.created_at
+                ELSE now()
+              END,
+              voided_at = NULL
+            -- An unchanged live row is left alone so a co-host re-saving the whole sheet does not
+            -- re-attribute every credit to themselves, journal a no-op, or move the rollup.
+            WHERE volunteer_hours.voided_at IS NOT NULL
+               OR volunteer_hours.hours <> EXCLUDED.hours
+               OR volunteer_hours.jurisdiction_geoid IS DISTINCT FROM EXCLUDED.jurisdiction_geoid
+            RETURNING user_id, hours, jurisdiction_geoid
+          ),
+          journal AS (
+            INSERT INTO volunteer_hours_audit
+              (cleanup_id, user_id, actor_user_id, previous_hours, new_hours)
+            SELECT ${args.cleanupId}, up.user_id, ${args.actorId}, p.old_hours, up.hours
+            FROM upsert up
+            LEFT JOIN prev p ON p.user_id = up.user_id
+            RETURNING user_id, previous_hours, new_hours
           ),
           deltas AS (
             SELECT
               up.user_id,
-              ${args.geoid}::text AS geoid,
+              up.jurisdiction_geoid AS geoid,
               up.hours - COALESCE(
-                CASE WHEN p.old_geoid = ${args.geoid} THEN p.old_hours END, 0
+                CASE WHEN p.old_geoid = up.jurisdiction_geoid THEN p.old_hours END, 0
               ) AS delta
             FROM upsert up
             LEFT JOIN prev p ON p.user_id = up.user_id
+            WHERE up.jurisdiction_geoid IS NOT NULL
             UNION ALL
-            -- The event moved jurisdictions since this attendee was last credited: take the stale hours
-            -- back out of the jurisdiction it no longer belongs to. Disjoint from the branch above (that
-            -- one is always the CURRENT geoid), so no (user, geoid) pair is inserted twice.
+            -- The event moved jurisdictions (or out of coverage) since this attendee was last
+            -- credited: take the stale hours back out of the jurisdiction it no longer belongs to.
+            -- Disjoint from the branch above (that one is always the CURRENT geoid), so no
+            -- (user, geoid) pair is inserted twice.
             SELECT p.user_id, p.old_geoid, -p.old_hours
             FROM upsert up
             JOIN prev p ON p.user_id = up.user_id
-            WHERE p.old_geoid IS NOT NULL AND p.old_geoid <> ${args.geoid}
+            WHERE p.old_geoid IS NOT NULL
+              AND p.old_geoid IS DISTINCT FROM up.jurisdiction_geoid
+          ),
+          rollup AS (
+            INSERT INTO user_jurisdiction_hours (user_id, jurisdiction_geoid, total_hours)
+            SELECT d.user_id, d.geoid, d.delta FROM deltas d
+            ON CONFLICT (user_id, jurisdiction_geoid)
+            DO UPDATE SET total_hours = user_jurisdiction_hours.total_hours + EXCLUDED.total_hours
           )
-          INSERT INTO user_jurisdiction_hours (user_id, jurisdiction_geoid, total_hours)
-          SELECT d.user_id, d.geoid, d.delta FROM deltas d
-          ON CONFLICT (user_id, jurisdiction_geoid)
-          DO UPDATE SET total_hours = user_jurisdiction_hours.total_hours + EXCLUDED.total_hours
-          RETURNING user_id
+          SELECT
+            user_id,
+            previous_hours::float8 AS previous_hours,
+            new_hours::float8 AS new_hours
+          FROM journal
         `
+        const changed = journal.map((r) => ({
+          userId: r.user_id,
+          hours: r.new_hours,
+          previousHours: r.previous_hours,
+        }))
         const anomalies = await detectHoursAnomalies(tx, {
           actorId: args.actorId,
           cleanupId: args.cleanupId,
           userIds,
           weeklyFlagHours: args.weeklyFlagHours ?? WEEKLY_HOURS_FLAG_DEFAULT,
         })
-        return { credited: new Set(upserted.map((r) => r.user_id)).size, changed, anomalies }
+        return { credited: args.entries.length, changed, anomalies }
       })
     },
 

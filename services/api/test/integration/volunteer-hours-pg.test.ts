@@ -254,7 +254,7 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     expect(rows[0]!.count).toBe(0)
   })
 
-  it("M21: every upsert appends an immutable audit row carrying the previous + new value", async () => {
+  it("M21: every change appends an immutable audit row carrying the previous + new value", async () => {
     const org = await newUser("Audit Org")
     const alice = await newUser("Audit Alice")
     const cohost = await newUser("Audit Cohost")
@@ -321,6 +321,203 @@ describe.skipIf(!pg)("volunteer hours (integration)", () => {
     ])
   })
 
+
+  describe("void-aware upsert and no-op re-saves", () => {
+    async function rollupAt(userId: string, geoid: string): Promise<number> {
+      const rows = await h.sql<{ total: number }[]>`
+        SELECT total_hours::float8 AS total FROM user_jurisdiction_hours
+        WHERE user_id = ${userId} AND jurisdiction_geoid = ${geoid}
+      `
+      return rows[0]?.total ?? 0
+    }
+
+    /** Every rollup of this user equals the SUM of their live ledger rows in that jurisdiction. */
+    async function driftFor(userId: string): Promise<string[]> {
+      const rows = await h.sql<{ geoid: string }[]>`
+        SELECT ujh.jurisdiction_geoid AS geoid
+        FROM user_jurisdiction_hours ujh
+        WHERE ujh.user_id = ${userId}
+          AND ujh.total_hours <> COALESCE((
+            SELECT SUM(vh.hours) FROM volunteer_hours vh
+            WHERE vh.user_id = ujh.user_id
+              AND vh.jurisdiction_geoid = ujh.jurisdiction_geoid
+              AND vh.voided_at IS NULL
+          ), 0)
+      `
+      return rows.map((r) => r.geoid)
+    }
+
+    async function eventRow(cleanupId: string, userId: string) {
+      const [row] = await h.sql<
+        {
+          hours: number
+          geoid: string | null
+          logged_by: string
+          voided_at: Date | null
+          created_at: Date
+        }[]
+      >`
+        SELECT hours::float8 AS hours, jurisdiction_geoid AS geoid,
+               logged_by_user_id AS logged_by, voided_at, created_at
+        FROM volunteer_hours
+        WHERE cleanup_id = ${cleanupId} AND source = 'event' AND user_id = ${userId}
+      `
+      return row!
+    }
+
+    async function auditFor(cleanupId: string, userId: string) {
+      return h.sql<{ actor: string; previous_hours: number | null; new_hours: number }[]>`
+        SELECT actor_user_id AS actor, previous_hours::float8 AS previous_hours,
+               new_hours::float8 AS new_hours
+        FROM volunteer_hours_audit
+        WHERE cleanup_id = ${cleanupId} AND user_id = ${userId}
+        ORDER BY created_at ASC, id ASC
+      `
+    }
+
+    /** Voids the way every void writer must: the row goes dark AND its hours leave the rollup. */
+    async function voidCredit(cleanupId: string, userId: string): Promise<void> {
+      await h.sql.begin(async (tx) => {
+        const [row] = await tx<{ hours: string; geoid: string | null }[]>`
+          UPDATE volunteer_hours
+          SET voided_at = now(), created_at = created_at - interval '2 days'
+          WHERE cleanup_id = ${cleanupId} AND source = 'event' AND user_id = ${userId}
+            AND voided_at IS NULL
+          RETURNING hours::text AS hours, jurisdiction_geoid AS geoid
+        `
+        if (row!.geoid !== null) {
+          await tx`
+            UPDATE user_jurisdiction_hours
+            SET total_hours = total_hours - ${row!.hours}::numeric
+            WHERE user_id = ${userId} AND jurisdiction_geoid = ${row!.geoid}
+          `
+        }
+      })
+    }
+
+    it("re-crediting a voided row revives it: exact rollup, null previous in the result and the journal", async () => {
+      const org = await newUser("Revive Org")
+      const alice = await newUser("Revive Alice")
+      const cleanupId = await newCleanup(org)
+      const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+
+      await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 3 }] })
+      await voidCredit(cleanupId, alice)
+      expect(await rollupFor(alice)).toBe(0)
+      const voided = await eventRow(cleanupId, alice)
+
+      const revived = await repo.logEventHours({
+        actorId: org,
+        cleanupId,
+        geoid: GEOID,
+        entries: [{ userId: alice, hours: 3 }],
+      })
+      expect(revived.credited).toBe(1)
+      expect(revived.changed).toEqual([{ userId: alice, hours: 3, previousHours: null }])
+
+      const row = await eventRow(cleanupId, alice)
+      expect(row.voided_at).toBeNull()
+      expect(row.created_at.getTime()).toBeGreaterThan(voided.created_at.getTime())
+      expect(await rollupFor(alice)).toBe(3)
+      expect(await driftFor(alice)).toEqual([])
+      expect((await repo.totalsFor(alice)).totalHours).toBe(3)
+      expect((await auditFor(cleanupId, alice)).map((r) => [r.previous_hours, r.new_hours])).toEqual([
+        [null, 3],
+        [null, 3],
+      ])
+    })
+
+    it("a voided row revived after the event moved credits only the new jurisdiction", async () => {
+      const org = await newUser("Revive Moved Org")
+      const alice = await newUser("Revive Moved Alice")
+      const cleanupId = await newCleanup(org)
+      const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+
+      await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
+      await voidCredit(cleanupId, alice)
+      await repo.logEventHours({
+        actorId: org,
+        cleanupId,
+        geoid: LA_COUNTY.geoid,
+        entries: [{ userId: alice, hours: 2 }],
+      })
+
+      expect(await rollupAt(alice, GEOID)).toBe(0)
+      expect(await rollupAt(alice, LA_COUNTY.geoid)).toBe(2)
+      expect(await driftFor(alice)).toEqual([])
+    })
+
+    it("an unchanged re-save by a co-host does not re-attribute, journal or move the rollup", async () => {
+      const org = await newUser("Resave Org")
+      const cohost = await newUser("Resave Cohost")
+      const alice = await newUser("Resave Alice")
+      const cleanupId = await newCleanup(org)
+      const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+
+      await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2.5 }] })
+      const before = await eventRow(cleanupId, alice)
+
+      const resaved = await repo.logEventHours({
+        actorId: cohost,
+        cleanupId,
+        geoid: GEOID,
+        entries: [{ userId: alice, hours: 2.5 }],
+      })
+      expect(resaved.credited).toBe(1)
+      expect(resaved.changed).toEqual([])
+
+      const after = await eventRow(cleanupId, alice)
+      expect(after.logged_by).toBe(org)
+      expect(after.created_at.getTime()).toBe(before.created_at.getTime())
+      expect(await auditFor(cleanupId, alice)).toHaveLength(1)
+      expect(await rollupFor(alice)).toBe(2.5)
+    })
+
+    it("a co-host who changes the hours takes over the attribution and is journaled", async () => {
+      const org = await newUser("Change Org")
+      const cohost = await newUser("Change Cohost")
+      const alice = await newUser("Change Alice")
+      const cleanupId = await newCleanup(org)
+      const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+
+      await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
+      const changed = await repo.logEventHours({
+        actorId: cohost,
+        cleanupId,
+        geoid: GEOID,
+        entries: [{ userId: alice, hours: 3 }],
+      })
+      expect(changed.changed).toEqual([{ userId: alice, hours: 3, previousHours: 2 }])
+      expect((await eventRow(cleanupId, alice)).logged_by).toBe(cohost)
+      expect((await auditFor(cleanupId, alice)).map((r) => [r.actor, r.previous_hours, r.new_hours])).toEqual([
+        [org, null, 2],
+        [cohost, 2, 3],
+      ])
+      expect(await rollupFor(alice)).toBe(3)
+      expect(await driftFor(alice)).toEqual([])
+    })
+
+    it("a same-hours re-save after the event moved re-homes the hours", async () => {
+      const org = await newUser("Rehome Org")
+      const alice = await newUser("Rehome Alice")
+      const cleanupId = await newCleanup(org)
+      const repo = makeDrizzleVolunteerHoursRepository(h.sql)
+
+      await repo.logEventHours({ actorId: org, cleanupId, geoid: GEOID, entries: [{ userId: alice, hours: 2 }] })
+      const moved = await repo.logEventHours({
+        actorId: org,
+        cleanupId,
+        geoid: LA_COUNTY.geoid,
+        entries: [{ userId: alice, hours: 2 }],
+      })
+      expect(moved.changed).toEqual([{ userId: alice, hours: 2, previousHours: 2 }])
+      expect((await eventRow(cleanupId, alice)).geoid).toBe(LA_COUNTY.geoid)
+      expect(await rollupAt(alice, GEOID)).toBe(0)
+      expect(await rollupAt(alice, LA_COUNTY.geoid)).toBe(2)
+      expect(await driftFor(alice)).toEqual([])
+      expect((await repo.totalsFor(alice)).totalHours).toBe(2)
+    })
+  })
 
   async function newUserWithFlag(name: string, flag: boolean | null): Promise<string> {
     const [u] = await h.sql<{ id: string }[]>`

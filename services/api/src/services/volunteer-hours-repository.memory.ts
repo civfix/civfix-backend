@@ -85,7 +85,6 @@ export interface InMemoryVolunteerHoursRepositoryOpts {
 }
 
 export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepository {
-  private readonly eventLedger = new Map<string, { hours: number; geoid: string | null }>()
   private readonly rollup = new Map<string, number>()
   private readonly users = new Map<string, MemoryLeaderboardUser>()
   private readonly jurisdictionNames = new Map<string, string>()
@@ -118,7 +117,9 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
 
   voidEntry(entryId: string): void {
     const row = this.entries.find((e) => e.id === entryId)
-    if (row) row.voidedAt = this.now()
+    if (row === undefined || row.voidedAt !== undefined) return
+    row.voidedAt = this.now()
+    if (row.geoid !== null) this.addRollup(row.userId, row.geoid, -row.hours)
   }
 
   seedLegacyReportEntry(userId: string, reportId: string, geoid: string | null, hours = 0.1): string {
@@ -143,41 +144,38 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
     this.assertDailyCap(args)
     const changed: LogEventHoursResult["changed"] = []
     for (const entry of args.entries) {
-      const key = `${args.cleanupId}|${entry.userId}`
-      const previous = this.eventLedger.get(key) ?? null
-      changed.push({
-        userId: entry.userId,
-        hours: entry.hours,
-        previousHours: previous === null ? null : previous.hours,
-      })
-      this.eventLedger.set(key, { hours: entry.hours, geoid: args.geoid })
-      if (previous !== null && previous.geoid !== null && previous.geoid !== args.geoid) {
-        this.addRollup(entry.userId, previous.geoid, -previous.hours)
-      }
-      if (args.geoid !== null) {
-        const priorHere = previous !== null && previous.geoid === args.geoid ? previous.hours : 0
-        this.addRollup(entry.userId, args.geoid, entry.hours - priorHere)
-      }
+      const hours = round2(entry.hours)
       const existing = this.entries.find(
         (e) => e.source === "event" && e.cleanupId === args.cleanupId && e.userId === entry.userId,
       )
-      if (existing !== undefined) {
-        existing.hours = entry.hours
-        existing.geoid = args.geoid
-        existing.loggedByUserId = args.actorId
-      } else {
+      const live = existing !== undefined && existing.voidedAt === undefined ? existing : null
+      if (live !== null && live.hours === hours && live.geoid === args.geoid) continue
+
+      changed.push({ userId: entry.userId, hours, previousHours: live === null ? null : live.hours })
+      if (live !== null && live.geoid !== null) this.addRollup(entry.userId, live.geoid, -live.hours)
+      if (args.geoid !== null) this.addRollup(entry.userId, args.geoid, hours)
+
+      if (existing === undefined) {
         this.entries.push({
           id: this.newId(),
           userId: entry.userId,
           source: "event",
-          hours: entry.hours,
+          hours,
           createdAt: this.now(),
           cleanupId: args.cleanupId,
           reportId: null,
           geoid: args.geoid,
           loggedByUserId: args.actorId,
         })
+        continue
       }
+      if (existing.voidedAt !== undefined) {
+        delete existing.voidedAt
+        existing.createdAt = this.now()
+      }
+      existing.hours = hours
+      existing.geoid = args.geoid
+      existing.loggedByUserId = args.actorId
     }
     return Promise.resolve({
       credited: args.entries.length,

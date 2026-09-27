@@ -1,10 +1,8 @@
 # Volunteer-hours integrity (civfix-backend)
 
 **Audience:** internal (engineering + operators). Not served publicly.
-**Last updated:** 2026-09-13 (0168: an event's status is a clock reading over
-`scheduled_at`/`ends_at`, `cleanups.ends_at` is NOT NULL, and the retired
-"mark completed" action is gone - so the window cap now falls back to `ends_at`
-and the daily cap keys on the event's own time zone).
+**Last updated:** 2026-09-26 (a host re-save only rewrites rows it changes, and
+re-crediting a voided row revives it; see "Re-saving and voided rows").
 
 Volunteer hours are the input to `POST /v1/me/volunteer-hours/certificates`, which mints a signed,
 publicly verifiable PDF transcript that residents hand to schools and courts. Hours are supplied by
@@ -51,6 +49,25 @@ by `assertEventWindow`'s 15 minute / 24 hour duration limits.
 Rule (b) is enforced with `pg_advisory_xact_lock` per credited user, taken in sorted order after the
 per-event lock, so two hosts crediting the same attendee on two different events serialize instead of
 both reading a stale sum. Sorted acquisition is what keeps a batch of concurrent credits deadlock-free.
+
+## Re-saving and voided rows
+
+The host editor re-submits the whole sheet, so `logEventHours` is written to be idempotent per row:
+
+- **An unchanged live row is not rewritten.** Same hours, same jurisdiction, not voided: the row
+  keeps its `logged_by_user_id`, gets no `volunteer_hours_audit` entry, moves no rollup and rings
+  no one. A co-host re-saving the sheet therefore never silently takes over another host's
+  credits; changing a row's hours does, and that change is journaled with the co-host as actor.
+- **A jurisdiction move is a change.** When the event now resolves to a different jurisdiction (or
+  none), a re-save with the same hours takes them out of the old rollup and adds them to the new one.
+- **A voided row is treated as absent.** Every void path takes the row's hours out of
+  `user_jurisdiction_hours` when it voids it (0065 did it by recompute), so a re-credit reads its previous value as
+  `NULL`: the full hours go back into the rollup, the journal records `previous_hours = NULL`, the
+  attendee is notified as for a first credit, `voided_at` is cleared and `created_at` moves to the
+  re-credit time.
+
+`credited` in the response still counts every entry the host submitted, so the host's
+confirmation reads the same whether or not a row changed.
 
 ## What the anomaly items look like
 

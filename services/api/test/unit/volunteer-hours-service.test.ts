@@ -1332,3 +1332,165 @@ describe("#110: logging hours refreshes the host console", () => {
     ).rejects.toMatchObject({ code: "VALIDATION" })
   })
 })
+
+describe("volunteer hours: void-aware re-crediting and no-op re-saves", () => {
+  const doneEvent: CleanupHoursView = {
+    organizerUserId: HOST,
+    status: "done",
+    jurisdictionGeoid: GEOID_A,
+    title: "Ocean Beach sweep",
+    scheduledAt: SCHEDULED_AT,
+    endsAt: ENDS_AT,
+    completedAt: COMPLETED_AT,
+    timezone: null,
+  }
+
+  function makeClock(start: string): { now: () => Date; advance: (ms: number) => void } {
+    let at = new Date(start).getTime()
+    return {
+      now: () => new Date(at),
+      advance: (ms) => {
+        at += ms
+      },
+    }
+  }
+
+  async function onlyEntry(repo: InMemoryVolunteerHoursRepository, userId: string) {
+    const page = await repo.listEntries({ userId, cursor: null, limit: 50 })
+    expect(page.items).toHaveLength(1)
+    return page.items[0]!
+  }
+
+  it("voiding takes the row's hours back out of its jurisdiction's rollup, once", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    await repo.logEventHours({ actorId: HOST, cleanupId: CLEANUP, geoid: GEOID_A, entries: flat([BOB], 3) })
+    const entry = await onlyEntry(repo, BOB)
+
+    repo.voidEntry(entry.id)
+    repo.voidEntry(entry.id)
+
+    const totals = await repo.totalsFor(BOB)
+    expect(totals.totalHours).toBe(0)
+    expect(totals.byJurisdiction).toEqual([])
+    const board = await makeService({ repo, view: null }).leaderboard(GEOID_A, { geoid: GEOID_A })
+    expect(board.entries).toEqual([])
+  })
+
+  it("re-crediting a voided row revives it as a first credit: exact rollup, null previous, a bell", async () => {
+    const clock = makeClock("2026-07-06T10:00:00.000Z")
+    const repo = new InMemoryVolunteerHoursRepository({ now: clock.now })
+    repo.seedJurisdiction(GEOID_A, "San Francisco")
+    const notifier = makeNotifier()
+    const service = makeService({ repo, view: doneEvent, members: [HOST, BOB], notifier })
+
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 3) })
+    const original = await onlyEntry(repo, BOB)
+    repo.voidEntry(original.id)
+    notifier.sent.length = 0
+    clock.advance(3_600_000)
+
+    const repoResult = await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: flat([BOB], 3),
+    })
+    expect(repoResult.changed).toEqual([{ userId: BOB, hours: 3, previousHours: null }])
+
+    const totals = await repo.totalsFor(BOB)
+    expect(totals.totalHours).toBe(3)
+    expect(totals.byJurisdiction).toEqual([{ geoid: GEOID_A, name: "San Francisco", hours: 3 }])
+    const revived = await onlyEntry(repo, BOB)
+    expect(revived.id).toBe(original.id)
+    expect(revived.createdAt).toEqual(clock.now())
+
+    repo.voidEntry(revived.id)
+    const result = await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: HOST,
+      entries: flat([BOB], 2),
+    })
+    expect(result.credited).toBe(1)
+    expect(notifier.sent.map((s) => [s.userId, s.vars.hours])).toEqual([[BOB, 2]])
+    expect((await repo.totalsFor(BOB)).byJurisdiction).toEqual([
+      { geoid: GEOID_A, name: "San Francisco", hours: 2 },
+    ])
+  })
+
+  it("an unchanged re-save by a co-host neither re-attributes the credit nor journals it", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const notifier = makeNotifier()
+    const service = makeService({
+      repo,
+      view: doneEvent,
+      members: [HOST, BOB, CAROL],
+      cohosts: [CAROL],
+      notifier,
+    })
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 2) })
+    notifier.sent.length = 0
+
+    const repoResult = await repo.logEventHours({
+      actorId: CAROL,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: flat([BOB], 2),
+    })
+    expect(repoResult).toMatchObject({ credited: 1, changed: [] })
+
+    const result = await service.logEventHours({
+      cleanupId: CLEANUP,
+      actorId: CAROL,
+      entries: flat([BOB], 2),
+    })
+    expect(result.credited).toBe(1)
+    expect(notifier.sent).toEqual([])
+    expect((await onlyEntry(repo, BOB)).creditedBy?.id).toBe(HOST)
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(2)
+  })
+
+  it("a co-host who CHANGES the hours takes over the attribution", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    const service = makeService({
+      repo,
+      view: doneEvent,
+      members: [HOST, BOB, CAROL],
+      cohosts: [CAROL],
+    })
+    await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 2) })
+
+    const repoResult = await repo.logEventHours({
+      actorId: CAROL,
+      cleanupId: CLEANUP,
+      geoid: GEOID_A,
+      entries: flat([BOB], 3.5),
+    })
+    expect(repoResult.changed).toEqual([{ userId: BOB, hours: 3.5, previousHours: 2 }])
+    expect((await onlyEntry(repo, BOB)).creditedBy?.id).toBe(CAROL)
+    expect((await repo.totalsFor(BOB)).totalHours).toBe(3.5)
+  })
+
+  it("a re-save after the event moved jurisdictions re-homes the unchanged hours", async () => {
+    const repo = new InMemoryVolunteerHoursRepository()
+    repo.seedJurisdiction(GEOID_A, "San Francisco")
+    repo.seedJurisdiction(GEOID_B, "Oakland")
+    await repo.logEventHours({ actorId: HOST, cleanupId: CLEANUP, geoid: GEOID_A, entries: flat([BOB], 2) })
+
+    const moved = await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: CLEANUP,
+      geoid: GEOID_B,
+      entries: flat([BOB], 2),
+    })
+    expect(moved.changed).toEqual([{ userId: BOB, hours: 2, previousHours: 2 }])
+    let totals = await repo.totalsFor(BOB)
+    expect(totals.totalHours).toBe(2)
+    expect(totals.byJurisdiction).toEqual([{ geoid: GEOID_B, name: "Oakland", hours: 2 }])
+    expect((await onlyEntry(repo, BOB)).jurisdictionGeoid).toBe(GEOID_B)
+
+    await repo.logEventHours({ actorId: HOST, cleanupId: CLEANUP, geoid: null, entries: flat([BOB], 2) })
+    totals = await repo.totalsFor(BOB)
+    expect(totals.totalHours).toBe(2)
+    expect(totals.byJurisdiction).toEqual([])
+  })
+})
