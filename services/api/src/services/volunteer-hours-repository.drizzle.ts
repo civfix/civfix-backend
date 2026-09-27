@@ -5,15 +5,25 @@ import type {
   OrgVerificationStatus,
   VolunteerHoursSource,
 } from "@civfix/shared"
-import type { Queryable, Sql } from "../db/client.js"
+import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
+import type { Queryable, Sql, TransactionSql } from "../db/client.js"
 import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
+import { writeAudit } from "./admin/audit.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { servedKeyExpr } from "./media-served-key.js"
-import { DEFAULT_EVENT_TIME_ZONE } from "./host/event-fields.js"
+import {
+  hoursHeldOnServiceDate,
+  lockEventCredits,
+  lockUserCredits,
+  sameDayEventHours,
+  writeEventCredits,
+} from "./volunteer-hours-credit.drizzle.js"
+import { assertWithinDailyHoursCap } from "./volunteer-hours-rules.js"
 import {
   DAILY_HOURS_CAP,
   EVENT_HOURS_MEMBER_CAP,
   ITEMISED_SOURCES,
+  MANUAL_CREDIT_REPEAT_WINDOW_MS,
   MAX_ORG_CHIPS_FETCH,
   RECIPROCAL_LOOKBACK_MS,
   WEEKLY_HOURS_FLAG_DEFAULT,
@@ -28,23 +38,46 @@ import type {
   LogEventHoursArgs,
   LogEventHoursResult,
   MyVolunteerHoursTotals,
+  OperatorCreditResult,
+  OperatorEventCreditArgs,
+  OperatorManualCreditArgs,
+  OperatorVoidArgs,
   OrgHoursView,
   VolunteerHoursAnomaly,
   VolunteerHoursEntryView,
   VolunteerHoursRepository,
+  VoidedEntry,
 } from "./volunteer-hours-service.js"
 
 const MORE_PAGES = "more"
 
 const RECIPROCAL_LOOKBACK_INTERVAL = `${RECIPROCAL_LOOKBACK_MS / 1000} seconds`
 const WEEKLY_WINDOW_INTERVAL = "7 days"
+const MANUAL_REPEAT_INTERVAL = `${MANUAL_CREDIT_REPEAT_WINDOW_MS / 1000} seconds`
+
+// Transcripts and entry lists date a row by when the service happened: the event's start, a manual
+// row's service day, and only failing both, when the row was written. A manual row has no
+// jurisdiction and so no zone of its own; it is anchored at noon UTC on its date so that no reader
+// within ±11 h of UTC sees it on a neighbouring day, whatever the session time zone.
+function occurredAtExpr(sql: Queryable) {
+  return sql`COALESCE(
+    c.scheduled_at,
+    make_timestamptz(
+      extract(year FROM vh.service_date)::int,
+      extract(month FROM vh.service_date)::int,
+      extract(day FROM vh.service_date)::int,
+      12, 0, 0, 'UTC'
+    ),
+    vh.created_at
+  )`
+}
 
 interface LedgerRow {
   id: string
   source: VolunteerHoursSource
   hours: number
   created_at: Date
-  scheduled_at: Date | null
+  occurred_at: Date
   cleanup_id: string | null
   cleanup_title: string | null
   reference_code: string | null
@@ -84,7 +117,7 @@ function toEntryView(r: LedgerRow): VolunteerHoursEntryView {
     source: r.source,
     hours: r.hours,
     createdAt: r.created_at,
-    occurredAt: r.scheduled_at ?? r.created_at,
+    occurredAt: r.occurred_at,
     cleanupId: r.cleanup_id,
     cleanupTitle: r.cleanup_title,
     cleanupReferenceCode: r.reference_code,
@@ -165,22 +198,45 @@ async function detectHoursAnomalies(
   return anomalies
 }
 
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
+}
+
+async function eventEntryId(
+  tx: TransactionSql,
+  cleanupId: string,
+  userId: string,
+): Promise<string> {
+  const rows = await tx<{ id: string }[]>`
+    SELECT id FROM volunteer_hours
+    WHERE cleanup_id = ${cleanupId} AND user_id = ${userId} AND source = 'event'
+    LIMIT 1
+  `
+  const id = rows[0]?.id
+  if (id === undefined) throw new Error("creditEventAsOperator: the upserted event row is missing")
+  return id
+}
+
+async function refuseUnvoidable(tx: TransactionSql, args: OperatorVoidArgs): Promise<never> {
+  const rows = await tx<{ source: VolunteerHoursSource; voided: boolean }[]>`
+    SELECT source, (voided_at IS NOT NULL) AS voided
+    FROM volunteer_hours
+    WHERE id = ${args.entryId} AND user_id = ${args.userId}
+    LIMIT 1
+  `
+  const row = rows[0]
+  if (row === undefined) throw AppError.notFound("Hours entry not found")
+  if (row.voided) throw AppError.conflict("That hours entry is already void.")
+  throw AppError.conflict("Report credits are retired and can't be voided.")
+}
+
 export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRepository {
   return {
     async logEventHours(args: LogEventHoursArgs): Promise<LogEventHoursResult> {
       if (args.entries.length === 0) return { credited: 0, changed: [], anomalies: [] }
       const userIds = args.entries.map((e) => e.userId)
-      const hoursByRow = args.entries.map((e) => e.hours)
       return sql.begin(async (tx) => {
-        await tx`SELECT pg_advisory_xact_lock(hashtext('volunteer_event:' || ${args.cleanupId}))`
-        const lockIds = [...new Set(userIds)].sort()
-        if (lockIds.length > 0) {
-          await tx`
-            SELECT pg_advisory_xact_lock(hashtext('volunteer_user:' || u))
-            FROM unnest(${lockIds}::uuid[]) AS t(u)
-            ORDER BY u
-          `
-        }
+        await lockEventCredits(tx, args.cleanupId, userIds)
 
         const reciprocal = await tx<{ logged_by_user_id: string }[]>`
           SELECT DISTINCT logged_by_user_id
@@ -198,115 +254,21 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           )
         }
 
-        const sameDay = await tx<{ user_id: string; hours: number }[]>`
-          SELECT vh.user_id, COALESCE(SUM(vh.hours), 0)::float8 AS hours
-          FROM volunteer_hours vh
-          JOIN cleanups c ON c.id = vh.cleanup_id
-          WHERE vh.user_id = ANY(${userIds}::uuid[])
-            AND vh.source = 'event'
-            AND vh.voided_at IS NULL
-            AND vh.cleanup_id <> ${args.cleanupId}
-            AND (c.scheduled_at AT TIME ZONE COALESCE(c.timezone, ${DEFAULT_EVENT_TIME_ZONE}))::date = (
-              SELECT (scheduled_at AT TIME ZONE COALESCE(timezone, ${DEFAULT_EVENT_TIME_ZONE}))::date
-              FROM cleanups WHERE id = ${args.cleanupId}
-            )
-          GROUP BY vh.user_id
-        `
-        const dailyCapHours = args.dailyCapHours ?? DAILY_HOURS_CAP
-        const heldByUser = new Map(sameDay.map((r) => [r.user_id, r.hours]))
-        for (const entry of args.entries) {
-          const held = heldByUser.get(entry.userId) ?? 0
-          if (held + entry.hours > dailyCapHours) {
-            throw AppError.conflict(
-              `That attendee already holds ${Math.round(held * 100) / 100} h for events on this date; the daily limit is ${dailyCapHours} h.`,
-            )
-          }
-        }
+        assertWithinDailyHoursCap(
+          args.entries,
+          await sameDayEventHours(tx, args.cleanupId, userIds),
+          args.dailyCapHours ?? DAILY_HOURS_CAP,
+        )
 
-        const journal = await tx<
-          { user_id: string; previous_hours: number | null; new_hours: number }[]
-        >`
-          WITH prev AS (
-            -- A voided row already left user_jurisdiction_hours when it was voided, so it counts as
-            -- holding 0 hours in no jurisdiction: the revival's rollup delta is its full hours. It
-            -- still exists, so the journal records previous_hours = 0, keeping NULL (0053) for a
-            -- genuine first credit.
-            SELECT
-              user_id,
-              CASE WHEN voided_at IS NULL THEN hours ELSE 0 END AS old_hours,
-              CASE WHEN voided_at IS NULL THEN jurisdiction_geoid END AS old_geoid
-            FROM volunteer_hours
-            WHERE cleanup_id = ${args.cleanupId}
-              AND source = 'event'
-              AND user_id = ANY(${userIds}::uuid[])
-          ),
-          upsert AS (
-            INSERT INTO volunteer_hours (user_id, hours, source, cleanup_id, jurisdiction_geoid, logged_by_user_id)
-            SELECT t.u, t.h, 'event', ${args.cleanupId}, ${args.geoid}::text, ${args.actorId}
-            FROM unnest(${userIds}::uuid[], ${hoursByRow}::float8[]) AS t(u, h)
-            ON CONFLICT (cleanup_id, user_id) WHERE source = 'event'
-            DO UPDATE SET
-              hours = EXCLUDED.hours,
-              jurisdiction_geoid = EXCLUDED.jurisdiction_geoid,
-              logged_by_user_id = EXCLUDED.logged_by_user_id,
-              created_at = CASE
-                WHEN volunteer_hours.voided_at IS NULL THEN volunteer_hours.created_at
-                ELSE now()
-              END,
-              voided_at = NULL
-            -- An unchanged live row is left alone so a co-host re-saving the whole sheet does not
-            -- re-attribute every credit to themselves, journal a no-op, or move the rollup.
-            WHERE volunteer_hours.voided_at IS NOT NULL
-               OR volunteer_hours.hours <> EXCLUDED.hours
-               OR volunteer_hours.jurisdiction_geoid IS DISTINCT FROM EXCLUDED.jurisdiction_geoid
-            RETURNING user_id, hours, jurisdiction_geoid
-          ),
-          journal AS (
-            INSERT INTO volunteer_hours_audit
-              (cleanup_id, user_id, actor_user_id, previous_hours, new_hours)
-            SELECT ${args.cleanupId}, up.user_id, ${args.actorId}, p.old_hours, up.hours
-            FROM upsert up
-            LEFT JOIN prev p ON p.user_id = up.user_id
-            RETURNING user_id, previous_hours, new_hours
-          ),
-          deltas AS (
-            SELECT
-              up.user_id,
-              up.jurisdiction_geoid AS geoid,
-              up.hours - COALESCE(
-                CASE WHEN p.old_geoid = up.jurisdiction_geoid THEN p.old_hours END, 0
-              ) AS delta
-            FROM upsert up
-            LEFT JOIN prev p ON p.user_id = up.user_id
-            WHERE up.jurisdiction_geoid IS NOT NULL
-            UNION ALL
-            -- The event moved jurisdictions (or out of coverage) since this attendee was last
-            -- credited: take the stale hours back out of the jurisdiction it no longer belongs to.
-            -- Disjoint from the branch above (that one is always the CURRENT geoid), so no
-            -- (user, geoid) pair is inserted twice.
-            SELECT p.user_id, p.old_geoid, -p.old_hours
-            FROM upsert up
-            JOIN prev p ON p.user_id = up.user_id
-            WHERE p.old_geoid IS NOT NULL
-              AND p.old_geoid IS DISTINCT FROM up.jurisdiction_geoid
-          ),
-          rollup AS (
-            INSERT INTO user_jurisdiction_hours (user_id, jurisdiction_geoid, total_hours)
-            SELECT d.user_id, d.geoid, d.delta FROM deltas d
-            ON CONFLICT (user_id, jurisdiction_geoid)
-            DO UPDATE SET total_hours = user_jurisdiction_hours.total_hours + EXCLUDED.total_hours
-          )
-          SELECT
-            user_id,
-            previous_hours::float8 AS previous_hours,
-            new_hours::float8 AS new_hours
-          FROM journal
-        `
-        const changed = journal.map((r) => ({
-          userId: r.user_id,
-          hours: r.new_hours,
-          previousHours: r.previous_hours,
-        }))
+        const changed = await writeEventCredits(tx, {
+          cleanupId: args.cleanupId,
+          geoid: args.geoid,
+          actorId: args.actorId,
+          loggedByUserId: args.actorId,
+          note: null,
+          creditedByOperatorId: null,
+          entries: args.entries,
+        })
         const anomalies = await detectHoursAnomalies(tx, {
           actorId: args.actorId,
           cleanupId: args.cleanupId,
@@ -485,7 +447,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           vh.source,
           vh.hours::float8 AS hours,
           vh.created_at,
-          c.scheduled_at,
+          ${occurredAtExpr(sql)} AS occurred_at,
           vh.cleanup_id,
           c.title AS cleanup_title,
           c.reference_code,
@@ -564,7 +526,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
           vh.source,
           vh.hours::float8 AS hours,
           vh.created_at,
-          c.scheduled_at,
+          ${occurredAtExpr(sql)} AS occurred_at,
           vh.cleanup_id,
           c.title AS cleanup_title,
           c.reference_code,
@@ -603,6 +565,187 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         totalHours: Math.round(items.reduce((sum, r) => sum + r.hours, 0) * 100) / 100,
         entryCount: countRows[0]?.count ?? items.length,
       }
+    },
+
+    async creditEventAsOperator(args: OperatorEventCreditArgs): Promise<OperatorCreditResult> {
+      return sql.begin(async (tx) => {
+        await lockEventCredits(tx, args.cleanupId, [args.userId])
+
+        const live = await tx<{ hours: number }[]>`
+          SELECT hours::float8 AS hours
+          FROM volunteer_hours
+          WHERE cleanup_id = ${args.cleanupId}
+            AND user_id = ${args.userId}
+            AND source = 'event'
+            AND voided_at IS NULL
+          LIMIT 1
+        `
+        const held = live[0]
+        if (held !== undefined) {
+          throw AppError.conflict(
+            `That volunteer already holds ${round2(held.hours)} h for this event; void that entry first.`,
+          )
+        }
+
+        const entries = [{ userId: args.userId, hours: args.hours }]
+        assertWithinDailyHoursCap(
+          entries,
+          await sameDayEventHours(tx, args.cleanupId, [args.userId]),
+          args.dailyCapHours ?? DAILY_HOURS_CAP,
+        )
+
+        await writeEventCredits(tx, {
+          cleanupId: args.cleanupId,
+          geoid: args.geoid,
+          actorId: args.operatorId,
+          loggedByUserId: CIVFIX_OFFICIAL_USER_ID,
+          note: args.reason,
+          creditedByOperatorId: args.operatorId,
+          entries,
+        })
+        const entryId = await eventEntryId(tx, args.cleanupId, args.userId)
+        await writeAudit(tx, {
+          actorId: args.operatorId,
+          action: "user.hours_credited",
+          target: `user:${args.userId}`,
+          meta: {
+            entryId,
+            source: "event",
+            cleanupId: args.cleanupId,
+            hours: args.hours,
+            reason: args.reason,
+          },
+        })
+        return { entryId }
+      })
+    },
+
+    async creditManual(args: OperatorManualCreditArgs): Promise<OperatorCreditResult> {
+      return sql.begin(async (tx) => {
+        await lockUserCredits(tx, [args.userId])
+
+        const repeat = await tx<{ id: string }[]>`
+          SELECT id
+          FROM volunteer_hours
+          WHERE user_id = ${args.userId}
+            AND source = 'manual'
+            AND voided_at IS NULL
+            AND hours = ${args.hours}::numeric(6, 2)
+            AND service_date = ${args.serviceDate}::date
+            AND credited_by_operator_id = ${args.operatorId}
+            AND created_at > now() - ${MANUAL_REPEAT_INTERVAL}::interval
+          LIMIT 1
+        `
+        if (repeat.length > 0) {
+          throw AppError.conflict(
+            "That adjustment was recorded moments ago; check the ledger before adding it again.",
+          )
+        }
+
+        assertWithinDailyHoursCap(
+          [{ userId: args.userId, hours: args.hours }],
+          await hoursHeldOnServiceDate(tx, args.userId, args.serviceDate),
+          args.dailyCapHours ?? DAILY_HOURS_CAP,
+        )
+
+        const inserted = await tx<{ id: string }[]>`
+          INSERT INTO volunteer_hours (
+            user_id, hours, source, logged_by_user_id, note, service_date, credited_by_operator_id
+          )
+          VALUES (
+            ${args.userId}, ${args.hours}, 'manual', ${CIVFIX_OFFICIAL_USER_ID}, ${args.reason},
+            ${args.serviceDate}::date, ${args.operatorId}
+          )
+          RETURNING id
+        `
+        const entryId = inserted[0]?.id
+        if (entryId === undefined) throw new Error("creditManual: insert returned no row")
+        await writeAudit(tx, {
+          actorId: args.operatorId,
+          action: "user.hours_credited",
+          target: `user:${args.userId}`,
+          meta: {
+            entryId,
+            source: "manual",
+            hours: args.hours,
+            serviceDate: args.serviceDate,
+            reason: args.reason,
+          },
+        })
+        return { entryId }
+      })
+    },
+
+    async voidEntry(args: OperatorVoidArgs): Promise<VoidedEntry> {
+      return sql.begin(async (tx) => {
+        // user_id and cleanup_id never change on a row, so reading them before the locks is safe;
+        // the event lock has to be known up front because it must be taken before the user lock.
+        const owner = await tx<{ cleanup_id: string | null }[]>`
+          SELECT cleanup_id FROM volunteer_hours
+          WHERE id = ${args.entryId} AND user_id = ${args.userId}
+          LIMIT 1
+        `
+        const found = owner[0]
+        if (found === undefined) throw AppError.notFound("Hours entry not found")
+        if (found.cleanup_id !== null) {
+          await lockEventCredits(tx, found.cleanup_id, [args.userId])
+        } else {
+          await lockUserCredits(tx, [args.userId])
+        }
+
+        const voided = await tx<
+          {
+            source: VolunteerHoursSource
+            cleanup_id: string | null
+            jurisdiction_geoid: string | null
+            hours: number
+          }[]
+        >`
+          UPDATE volunteer_hours
+          SET voided_at = now(),
+              voided_by_operator_id = ${args.operatorId},
+              void_reason = ${args.reason}
+          WHERE id = ${args.entryId}
+            AND user_id = ${args.userId}
+            AND voided_at IS NULL
+            AND source <> 'report'
+          RETURNING source, cleanup_id, jurisdiction_geoid, hours::float8 AS hours
+        `
+        const row = voided[0]
+        if (row === undefined) return refuseUnvoidable(tx, args)
+
+        if (row.source === "event" && row.cleanup_id !== null) {
+          await tx`
+            INSERT INTO volunteer_hours_audit
+              (cleanup_id, user_id, actor_user_id, previous_hours, new_hours)
+            SELECT cleanup_id, user_id, ${args.operatorId}, hours, 0
+            FROM volunteer_hours WHERE id = ${args.entryId}
+          `
+        }
+        if (row.jurisdiction_geoid !== null) {
+          await tx`
+            UPDATE user_jurisdiction_hours ujh
+            SET total_hours = ujh.total_hours - vh.hours
+            FROM volunteer_hours vh
+            WHERE vh.id = ${args.entryId}
+              AND ujh.user_id = vh.user_id
+              AND ujh.jurisdiction_geoid = vh.jurisdiction_geoid
+          `
+        }
+        await writeAudit(tx, {
+          actorId: args.operatorId,
+          action: "user.hours_voided",
+          target: `user:${args.userId}`,
+          meta: {
+            entryId: args.entryId,
+            source: row.source,
+            ...(row.cleanup_id !== null ? { cleanupId: row.cleanup_id } : {}),
+            hours: row.hours,
+            reason: args.reason,
+          },
+        })
+        return { id: args.entryId, source: row.source, cleanupId: row.cleanup_id, hours: row.hours }
+      })
     },
   }
 }

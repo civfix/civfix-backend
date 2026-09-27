@@ -1178,7 +1178,7 @@ describe("#110: hours grouped by the organization that hosted the event", () => 
     const page = await repo.listEntries({ userId: BOB, cursor: null, limit: 50 })
     const orgAEntry = page.items.find((item) => item.cleanupId === CLEANUP_A1)
     expect(orgAEntry).toBeDefined()
-    repo.voidEntry(orgAEntry!.id)
+    repo.markVoided(orgAEntry!.id)
 
     const hours = await makeService({ repo, view: null }).getMyHours(BOB)
     expect(hours.byOrganization.map((row) => row.organization.id)).toEqual([ORG_B])
@@ -1366,8 +1366,8 @@ describe("volunteer hours: void-aware re-crediting and no-op re-saves", () => {
     await repo.logEventHours({ actorId: HOST, cleanupId: CLEANUP, geoid: GEOID_A, entries: flat([BOB], 3) })
     const entry = await onlyEntry(repo, BOB)
 
-    repo.voidEntry(entry.id)
-    repo.voidEntry(entry.id)
+    repo.markVoided(entry.id)
+    repo.markVoided(entry.id)
 
     const totals = await repo.totalsFor(BOB)
     expect(totals.totalHours).toBe(0)
@@ -1385,7 +1385,7 @@ describe("volunteer hours: void-aware re-crediting and no-op re-saves", () => {
 
     await service.logEventHours({ cleanupId: CLEANUP, actorId: HOST, entries: flat([BOB], 3) })
     const original = await onlyEntry(repo, BOB)
-    repo.voidEntry(original.id)
+    repo.markVoided(original.id)
     notifier.sent.length = 0
     clock.advance(3_600_000)
 
@@ -1404,7 +1404,7 @@ describe("volunteer hours: void-aware re-crediting and no-op re-saves", () => {
     expect(revived.id).toBe(original.id)
     expect(revived.createdAt).toEqual(clock.now())
 
-    repo.voidEntry(revived.id)
+    repo.markVoided(revived.id)
     const result = await service.logEventHours({
       cleanupId: CLEANUP,
       actorId: HOST,

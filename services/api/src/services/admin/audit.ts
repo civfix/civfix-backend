@@ -1,4 +1,3 @@
-
 import type { Queryable } from "../../db/client.js"
 
 export type AdminAuditAction =
@@ -28,6 +27,8 @@ export type AdminAuditAction =
   | "user.role_changed"
   | "user.verified"
   | "user.unverified"
+  | "user.hours_credited"
+  | "user.hours_voided"
   | "gov_claim.verified"
   | "gov_claim.approved"
   | "gov_claim.rejected"
