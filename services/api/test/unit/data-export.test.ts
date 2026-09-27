@@ -111,7 +111,9 @@ describe("data export", () => {
             jurisdiction_geoid: "0600000",
             hours: 2,
             logged_by_user_id: null,
+            service_date: null,
             created_at: new Date("2026-02-02T00:00:00.000Z"),
+            voided_at: new Date("2026-02-03T00:00:00.000Z"),
           },
         ],
       },
@@ -123,6 +125,28 @@ describe("data export", () => {
     expect((parsed.posts as { body: string }[])[0]!.body).toBe("hello neighbors")
     expect(Array.isArray(parsed.volunteerHours)).toBe(true)
     expect((parsed.volunteerHours as { hours: number }[])[0]!.hours).toBe(2)
+    expect(parsed.volunteerHours).toEqual([
+      expect.objectContaining({ service_date: null, voided_at: "2026-02-03T00:00:00.000Z" }),
+    ])
+  })
+
+  it("exports each hours row's void time and service date, never the operator-plane columns", async () => {
+    const users = new InMemoryUserStore()
+    const user = userRecord()
+    users.seed(user.email, user)
+    const fake = makeFakeSql()
+    const service = makeDataExportService({
+      sql: fake.sql as unknown as Sql,
+      mailer: new FakeMailer(),
+      users,
+      fromNoReply: FROM,
+      supportEmail: SUPPORT,
+    })
+    await service.exportData(USER_ID)
+    const hoursQuery = fake.statements.find((st) => /FROM volunteer_hours/.test(st.sql))?.sql ?? ""
+    expect(hoursQuery).toMatch(/\bvoided_at\b/)
+    expect(hoursQuery).toMatch(/\bservice_date\b/)
+    expect(hoursQuery).not.toMatch(/\bnote\b|void_reason|_operator_id/)
   })
 
   it("bounds the attachment to the byte budget and records byte-truncated sections (F018)", async () => {

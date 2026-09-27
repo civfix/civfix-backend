@@ -247,7 +247,7 @@ function toOperatorLedgerView(r: OperatorLedgerRow): OperatorLedgerEntryView {
         ? {
             id: r.creditor_id,
             name: r.creditor_name ?? "",
-            handle: r.creditor_handle,
+            handle: r.creditor_handle ?? "",
             official: isOfficialAccount(r.creditor_id),
           }
         : null,

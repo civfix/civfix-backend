@@ -1,4 +1,9 @@
-import { AppError, avatarGradient, MAX_EVENT_HOURS_ENTRIES } from "@civfix/shared"
+import {
+  ADMIN_USER_HOURS_PAGE_MAX,
+  AppError,
+  avatarGradient,
+  MAX_EVENT_HOURS_ENTRIES,
+} from "@civfix/shared"
 import type {
   CleanupMemberRole,
   CleanupStatus,
@@ -96,7 +101,7 @@ export interface EventCreditWrite {
 
 export const MANUAL_CREDIT_REPEAT_WINDOW_MS = 60_000
 
-export const OPERATOR_LEDGER_MAX_LIMIT = 50
+export const OPERATOR_LEDGER_MAX_LIMIT = ADMIN_USER_HOURS_PAGE_MAX
 
 export interface OperatorEventCreditArgs {
   operatorId: string
@@ -150,7 +155,7 @@ export interface OperatorLedgerEntryView {
   serviceDate: string | null
   event: { id: string; title: string; referenceCode: string | null } | null
   jurisdiction: { geoid: string; name: string | null } | null
-  creditedBy: { id: string; name: string; handle: string | null; official: boolean } | null
+  creditedBy: { id: string; name: string; handle: string; official: boolean } | null
   operator: { id: string; name: string } | null
   note: string | null
   voidedAt: Date | null
@@ -434,15 +439,12 @@ export function toVolunteerHoursEntryDTO(view: VolunteerHoursEntryView): Volunte
   }
 }
 
-function toEventHoursRow(entry: EventHoursLedgerEntry): {
-  userId: string
-  hours: number
-  loggedAt: string
-} {
+function toEventHoursRow(entry: EventHoursLedgerEntry): EventHoursResponse["entries"][number] {
   return {
     userId: entry.userId,
     hours: round2(entry.hours),
     loggedAt: entry.loggedAt.toISOString(),
+    creditedByOfficial: entry.creditedByOfficial,
   }
 }
 

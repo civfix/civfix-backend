@@ -48,6 +48,7 @@ export type AdminAuditAction =
   | "inbox.status_changed"
   | "user.detail_viewed"
   | "user.messages_viewed"
+  | "user.hours_viewed"
   | "inbox.message_viewed"
   | "mail.thread_viewed"
   | "media.viewed"
@@ -101,6 +102,7 @@ export type AdminAuditAction =
 export const AUDIT_READ_ACTIONS: readonly AdminAuditAction[] = [
   "user.detail_viewed",
   "user.messages_viewed",
+  "user.hours_viewed",
   "inbox.message_viewed",
   "mail.thread_viewed",
   "media.viewed",

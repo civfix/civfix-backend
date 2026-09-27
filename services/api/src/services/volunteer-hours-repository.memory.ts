@@ -761,7 +761,7 @@ export class InMemoryVolunteerHoursRepository implements VolunteerHoursRepositor
           ? {
               id: e.loggedByUserId,
               name: nameOf(e.loggedByUserId),
-              handle: this.users.get(e.loggedByUserId)?.handle ?? null,
+              handle: this.users.get(e.loggedByUserId)?.handle ?? "",
               official: isOfficialAccount(e.loggedByUserId),
             }
           : null,

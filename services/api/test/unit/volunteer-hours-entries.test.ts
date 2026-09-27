@@ -459,7 +459,7 @@ describe("hours ledger: getEventHours scope matrix (C10)", () => {
     const res = await service.getEventHours(EVENT, CAROL)
     expect(res.scope).toBe("self")
     expect(res.entries).toEqual([
-      { userId: CAROL, hours: 1.5, loggedAt: res.entries[0]!.loggedAt },
+      { userId: CAROL, hours: 1.5, loggedAt: res.entries[0]!.loggedAt, creditedByOfficial: false },
     ])
     expect(res.anyLogged).toBe(true)
   })

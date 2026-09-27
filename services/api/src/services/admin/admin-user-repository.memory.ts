@@ -16,6 +16,7 @@
 import { randomUUID } from "node:crypto"
 import { pageInMemoryById } from "./pagination.js"
 import type {
+  AdminAccountTarget,
   AdminUserOrganizationRecord,
   AdminUserRecord,
   AdminUserRepository,
@@ -169,6 +170,11 @@ export class InMemoryAdminUserRepository implements AdminUserRepository {
     // Existence only, matching getUser's reach: a soft-deleted account still EXISTS for the console (the
     // list/detail render it with deletedAt set), so its sub-activity tabs must keep resolving.
     return this.users.has(id)
+  }
+
+  async findAccountTarget(id: string): Promise<AdminAccountTarget | null> {
+    const r = this.users.get(id)
+    return r ? { role: r.role, deletedAt: r.deletedAt } : null
   }
 
   async getUser(id: string): Promise<AdminUserRecord | null> {

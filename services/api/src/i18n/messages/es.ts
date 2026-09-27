@@ -66,6 +66,10 @@ export const es: Partial<Record<MessageKey, string>> = {
   "notification.hours_logged.title": "Horas de servicio acreditadas",
   "notification.hours_logged.body": "Se acreditaron {{hours}} horas por {{title}}.",
 
+  "notification.hours_adjusted.title": "Horas de servicio acreditadas",
+  "notification.hours_adjusted.body":
+    "CivFix acreditó {{hours}} horas a tu registro de voluntariado.",
+
   "notification.cleanup_slot.removed.title": "Tu rol en el evento cambió",
   "notification.cleanup_slot.removed.body": 'Se eliminó el rol "{{slot}}" de {{title}}.',
   "notification.cleanup_slot.moved.title": "El horario de tu turno cambió",
