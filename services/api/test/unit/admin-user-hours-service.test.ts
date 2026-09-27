@@ -375,7 +375,10 @@ describe("creditUserHours: target guards", () => {
   it("refuses the official account, an operator account and the operator themselves", async () => {
     const h = harness()
     await expect(
-      h.svc.creditUserHours(OPERATOR, manualCredit(1, "2026-07-05", { id: CIVFIX_OFFICIAL_USER_ID })),
+      h.svc.creditUserHours(
+        OPERATOR,
+        manualCredit(1, "2026-07-05", { id: CIVFIX_OFFICIAL_USER_ID }),
+      ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" })
     await expect(
       h.svc.creditUserHours(OPERATOR, manualCredit(1, "2026-07-05", { id: OTHER_OPERATOR })),
@@ -453,7 +456,10 @@ describe("voidUserHours", () => {
     expect(h.sent).toEqual([])
     expect(h.bumps).toEqual([EVENT])
     expect((await h.svc.getUserHours({ id: BOB })).totals.totalHours).toBe(0)
-    expect(h.hours.audits.map((a) => a.action)).toEqual(["user.hours_credited", "user.hours_voided"])
+    expect(h.hours.audits.map((a) => a.action)).toEqual([
+      "user.hours_credited",
+      "user.hours_voided",
+    ])
   })
 
   it("does not bump any event's insights for a manual row and returns no certificates when none listed it", async () => {
