@@ -127,6 +127,7 @@ import {
   ADMIN_MAIL_REPLY_PUBLISH_RATE_LIMIT,
   ADMIN_OUTBOUND_MAIL_RATE_LIMIT,
 } from "../../src/routes/admin/mail.routes.js"
+import { ADMIN_USER_HOURS_WRITE_RATE_LIMIT } from "../../src/routes/admin/user-hours.routes.js"
 import { PUSH_TOKEN_RATE_LIMIT } from "../../src/routes/notifications.routes.js"
 import { FOLLOW_RATE_LIMIT, FOLLOW_SUGGESTIONS_RATE_LIMIT } from "../../src/routes/social.routes.js"
 import { DATA_EXPORT_RATE_LIMIT, LIST_BLOCKS_RATE_LIMIT } from "../../src/routes/users.routes.js"
@@ -480,6 +481,7 @@ const IDENTITY_SCOPED_LIMITS = {
   PUSH_TOKEN_RATE_LIMIT,
   ADMIN_OUTBOUND_MAIL_RATE_LIMIT,
   ADMIN_MAIL_REPLY_PUBLISH_RATE_LIMIT,
+  ADMIN_USER_HOURS_WRITE_RATE_LIMIT,
   FOLLOW_RATE_LIMIT,
   FOLLOW_SUGGESTIONS_RATE_LIMIT,
   DATA_EXPORT_RATE_LIMIT,
@@ -605,6 +607,11 @@ describe("rate limiter: route bucket scoping policy (CVX-012)", () => {
   it("keys the outbound-mail admin buckets by operator identity and fails CLOSED on a store error", () => {
     expect(ADMIN_OUTBOUND_MAIL_RATE_LIMIT.skipOnError).toBe(false)
     expect(ROUTE_REPORT_RATE_LIMIT.skipOnError).toBe(false)
+  })
+
+  it("bounds the operator hours credits and voids and fails CLOSED", () => {
+    expect(ADMIN_USER_HOURS_WRITE_RATE_LIMIT.max).toBe(30)
+    expect(ADMIN_USER_HOURS_WRITE_RATE_LIMIT.skipOnError).toBe(false)
   })
 
   it("bounds the operator report mutations (status / remove / flag / verdict) and fails CLOSED", () => {
