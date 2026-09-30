@@ -193,6 +193,8 @@ export function describeAuditAction(action: string): string {
     "user.unverified": "Removed an account's verification",
     "user.report_verified": "Granted report-verified status",
     "user.report_unverified": "Revoked report-verified status",
+    "user.hours_credited": "Credited volunteer hours",
+    "user.hours_voided": "Voided volunteer hours",
     "message.removed": "Removed a message",
     "gov_claim.verified": "Verified a gov claim check",
     "gov_claim.approved": "Approved a gov claim",
@@ -215,6 +217,7 @@ export function describeAuditAction(action: string): string {
     // only matter if a row reaches the classifier another way (a fake, or a future feed that includes them).
     "user.detail_viewed": "Viewed an account",
     "user.messages_viewed": "Viewed an account's messages",
+    "user.hours_viewed": "Viewed an account's hours",
     "inbox.message_viewed": "Viewed an inbox message",
     "mail.thread_viewed": "Viewed a mail thread",
   }

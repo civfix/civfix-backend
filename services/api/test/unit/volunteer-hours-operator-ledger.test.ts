@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { CIVFIX_OFFICIAL_USER_ID } from "../../src/auth/official-account.js"
+import { parseTimeCursor } from "../../src/db/cursor-helpers.js"
+import { buildTranscriptModel } from "../../src/services/certificate-model.js"
+import { InMemoryCertificateRepository } from "../../src/services/certificate-repository.memory.js"
 import { InMemoryVolunteerHoursRepository } from "../../src/services/volunteer-hours-repository.memory.js"
 import {
   DAILY_HOURS_CAP,
@@ -106,7 +109,9 @@ describe("operator event credit", () => {
     ])
 
     const hostView = await repo.listEventHours(EVENT, null)
-    expect(hostView.entries.map((e) => [e.userId, e.hours])).toEqual([[BOB, 3]])
+    expect(hostView.entries).toEqual([
+      expect.objectContaining({ userId: BOB, hours: 3, creditedByOfficial: true }),
+    ])
   })
 
   it("journals and audits the human operator, not the official account", async () => {
@@ -261,6 +266,7 @@ describe("host writes over an operator credit", () => {
       creditedByOperatorId: null,
       note: null,
     })
+    expect((await repo.listEventHours(EVENT, null)).entries[0]!.creditedByOfficial).toBe(false)
   })
 
   it("a host may re-credit an attendee whose entry an operator voided", async () => {
@@ -458,5 +464,169 @@ describe("operator void", () => {
     await expect(
       repo.voidEntry({ operatorId: OPERATOR, userId: BOB, entryId: reportRow, reason: "x" }),
     ).rejects.toMatchObject({ code: "CONFLICT", message: expect.stringContaining("retired") })
+  })
+})
+
+describe("operator ledger read", () => {
+  it("lists voided rows too, newest first, keyset-paged, with the admin-plane attribution", async () => {
+    const { repo, clock } = makeRepo()
+    await repo.logEventHours({
+      actorId: HOST,
+      cleanupId: SAME_DAY_EVENT,
+      geoid: GEOID,
+      entries: [{ userId: BOB, hours: 1 }],
+    })
+    clock.advance(1_000)
+    const event = await repo.creditEventAsOperator(eventCredit(3))
+    clock.advance(1_000)
+    const manual = await repo.creditManual(manualCredit(2))
+    clock.advance(1_000)
+    await repo.voidEntry({
+      operatorId: OTHER_OPERATOR,
+      userId: BOB,
+      entryId: manual.entryId,
+      reason: "Typo",
+    })
+
+    const first = await repo.listOperatorLedger({ userId: BOB, cursor: null, limit: 2 })
+    expect(first.items.map((i) => i.id)).toEqual([manual.entryId, event.entryId])
+    expect(first.items[0]).toMatchObject({
+      source: "manual",
+      serviceDate: "2026-07-05",
+      event: null,
+      jurisdiction: null,
+      creditedBy: { id: CIVFIX_OFFICIAL_USER_ID, name: "CivFix", handle: "civfix", official: true },
+      operator: { id: OPERATOR, name: "Olive Operator" },
+      note: "Tabling at the library fair",
+      voidedBy: { id: OTHER_OPERATOR, name: "" },
+      voidReason: "Typo",
+    })
+    expect(first.items[0]!.voidedAt).toBeInstanceOf(Date)
+    expect(first.items[1]).toMatchObject({
+      event: { id: EVENT, title: "Ocean Beach sweep", referenceCode: "EV-1" },
+      jurisdiction: { geoid: GEOID, name: "Los Angeles" },
+      occurredAt: SCHEDULED_AT,
+      voidedAt: null,
+    })
+    expect(first.nextCursor).not.toBeNull()
+
+    const second = await repo.listOperatorLedger({
+      userId: BOB,
+      cursor: parseTimeCursor(first.nextCursor!),
+      limit: 2,
+    })
+    expect(second.items.map((i) => [i.source, i.creditedBy?.id, i.operator])).toEqual([
+      ["event", HOST, null],
+    ])
+    expect(second.nextCursor).toBeNull()
+  })
+
+  it("never returns more than the ledger page cap", async () => {
+    const { repo, clock } = makeRepo()
+    for (let day = 1; day <= 60; day++) {
+      await repo.creditManual(
+        manualCredit(0.25, `2026-05-${String((day % 28) + 1).padStart(2, "0")}`),
+      )
+      clock.advance(MANUAL_CREDIT_REPEAT_WINDOW_MS)
+    }
+
+    const page = await repo.listOperatorLedger({ userId: BOB, cursor: null, limit: 500 })
+    expect(page.items).toHaveLength(50)
+    expect(page.nextCursor).not.toBeNull()
+  })
+
+  it("totals match the profile total and count live and voided entries", async () => {
+    const { repo } = makeRepo()
+    await repo.creditEventAsOperator(eventCredit(3))
+    const manual = await repo.creditManual(manualCredit(2))
+    await repo.creditManual(manualCredit(1, "2026-07-01"))
+    await repo.voidEntry({
+      operatorId: OPERATOR,
+      userId: BOB,
+      entryId: manual.entryId,
+      reason: "Typo",
+    })
+
+    const totals = await repo.operatorLedgerTotals(BOB)
+    expect(totals).toEqual({ totalHours: 4, liveEntries: 2, voidedEntries: 1 })
+    expect(totals.totalHours).toBe((await repo.totalsFor(BOB)).totalHours)
+  })
+})
+
+describe("certificates listing a ledger entry", () => {
+  function certificate(
+    certs: InMemoryCertificateRepository,
+    input: { userId: string; code: string; entryIds: string[]; issuedAt: string },
+  ) {
+    const snapshot = buildTranscriptModel({
+      holder: { userId: input.userId, displayName: "Bob", handle: "bob" },
+      rows: input.entryIds.map((id) => ({
+        id,
+        source: "event" as const,
+        hours: 1,
+        occurredAt: SCHEDULED_AT,
+      })),
+      locale: "en",
+    })
+    return certs.insert({
+      id: `${input.code}-id`,
+      userId: input.userId,
+      code: input.code,
+      locale: "en",
+      holderName: "Bob",
+      holderHandle: "bob",
+      holderVerified: false,
+      totalHours: input.entryIds.length,
+      entryCount: input.entryIds.length,
+      periodStart: null,
+      periodEnd: null,
+      ledgerFingerprint: `fp-${input.code}`,
+      snapshot,
+      r2Key: `certs/${input.code}.pdf`,
+      documentSha256: "0".repeat(64),
+      byteSize: 1,
+      issuedAt: new Date(input.issuedAt),
+    })
+  }
+
+  it("names only the holder's live certificates whose snapshot itemised the entry, newest first", async () => {
+    const certs = new InMemoryCertificateRepository()
+    const entry = "00000000-0000-4000-8000-0000000000e1"
+    await certificate(certs, {
+      userId: BOB,
+      code: "OLD",
+      entryIds: [entry],
+      issuedAt: "2026-07-01T00:00:00Z",
+    })
+    await certificate(certs, {
+      userId: BOB,
+      code: "NEW",
+      entryIds: ["x", entry],
+      issuedAt: "2026-07-03T00:00:00Z",
+    })
+    await certificate(certs, {
+      userId: BOB,
+      code: "GONE",
+      entryIds: [entry],
+      issuedAt: "2026-07-02T00:00:00Z",
+    })
+    await certificate(certs, {
+      userId: BOB,
+      code: "OTHER",
+      entryIds: ["x"],
+      issuedAt: "2026-07-04T00:00:00Z",
+    })
+    await certificate(certs, {
+      userId: CAROL,
+      code: "CAROL",
+      entryIds: [entry],
+      issuedAt: "2026-07-05T00:00:00Z",
+    })
+    await certs.revoke(BOB, "GONE", "holder", new Date("2026-07-06T00:00:00Z"))
+
+    expect(await certs.liveCodesListingEntry(BOB, entry)).toEqual([
+      { code: "NEW", issuedAt: new Date("2026-07-03T00:00:00Z") },
+      { code: "OLD", issuedAt: new Date("2026-07-01T00:00:00Z") },
+    ])
   })
 })

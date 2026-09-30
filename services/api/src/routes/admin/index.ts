@@ -10,6 +10,7 @@ import { registerAdminReportsRoutes } from "./reports.routes.js"
 import { registerAdminReportChatRoutes } from "./report-chat.routes.js"
 import { registerAdminEventsRoutes } from "./events.routes.js"
 import { registerAdminUsersRoutes } from "./users.routes.js"
+import { registerAdminUserHoursRoutes } from "./user-hours.routes.js"
 import { registerAdminGovRoutes } from "./gov.routes.js"
 import { registerAdminModerationRoutes } from "./moderation.routes.js"
 import { registerAdminMailRoutes } from "./mail.routes.js"
@@ -40,6 +41,7 @@ export async function registerAdminRoutes(
     await registerAdminReportChatRoutes(operator, container)
     await registerAdminEventsRoutes(operator, container)
     await registerAdminUsersRoutes(operator, container)
+    await registerAdminUserHoursRoutes(operator, container)
     await registerAdminGovRoutes(operator, container)
     await registerAdminModerationRoutes(operator, container)
     await registerAdminMailRoutes(operator, container)

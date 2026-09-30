@@ -66,6 +66,9 @@ export const ko: Partial<Record<MessageKey, string>> = {
   "notification.hours_logged.title": "봉사 시간이 인정되었어요",
   "notification.hours_logged.body": "{{title}} 활동으로 {{hours}}시간이 인정되었어요.",
 
+  "notification.hours_adjusted.title": "봉사 시간이 인정되었어요",
+  "notification.hours_adjusted.body": "CivFix에서 봉사 기록에 {{hours}}시간을 인정했어요.",
+
   "notification.cleanup_slot.removed.title": "이벤트 역할이 변경되었어요",
   "notification.cleanup_slot.removed.body": '{{title}}에서 "{{slot}}" 역할이 삭제되었어요.',
   "notification.cleanup_slot.moved.title": "교대 시간이 변경되었어요",

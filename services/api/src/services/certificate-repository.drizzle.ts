@@ -8,8 +8,9 @@
  * of jsonb, which Postgres stores out of line in TOAST. A `SELECT *` (or any projection naming
  * `snapshot`) detoasts that blob on EVERY holder list read and on EVERY anonymous public verification —
  * the highest-traffic read in this feature, served to a school registrar who needs six scalars. The
- * column is written once and read back by nothing; `service-hours-certificates-pg.test.ts` greps this
- * source to keep it that way.
+ * column is written once and never projected; `service-hours-certificates-pg.test.ts` greps this
+ * source to keep it that way. The one read that looks inside it is `liveCodesListingEntry`, a
+ * containment filter run only when an operator voids a ledger entry, over one holder's live rows.
  *
  * The two unique indexes are surfaced as a typed `CertificateConflictError` rather than a leaked driver
  * error, because the service's recoveries are completely different: a `code` collision re-mints and
@@ -20,6 +21,7 @@
 import type { Sql } from "../db/client.js"
 import {
   CertificateConflictError,
+  type CertificateEntryCode,
   type CertificateHolder,
   type CertificateInsert,
   type CertificateRepository,
@@ -253,6 +255,19 @@ export function makeDrizzleCertificateRepository(sql: Sql): CertificateRepositor
         handle: row.handle,
         locale: row.locale,
       }
+    },
+
+    async liveCodesListingEntry(userId: string, entryId: string): Promise<CertificateEntryCode[]> {
+      const rows = await sql<{ code: string; issued_at: Date }[]>`
+        SELECT code, issued_at
+        FROM service_hours_certificates
+        WHERE user_id = ${userId}
+          AND revoked_at IS NULL
+          AND snapshot->'rows' @> jsonb_build_array(jsonb_build_object('id', ${entryId}::text))
+        ORDER BY issued_at DESC, id DESC
+        LIMIT 200
+      `
+      return rows.map((r) => ({ code: r.code, issuedAt: r.issued_at }))
     },
   }
 }

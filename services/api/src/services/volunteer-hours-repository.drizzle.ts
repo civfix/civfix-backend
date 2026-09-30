@@ -5,9 +5,9 @@ import type {
   OrgVerificationStatus,
   VolunteerHoursSource,
 } from "@civfix/shared"
-import { CIVFIX_OFFICIAL_USER_ID } from "../auth/official-account.js"
+import { CIVFIX_OFFICIAL_USER_ID, isOfficialAccount } from "../auth/official-account.js"
 import type { Queryable, Sql, TransactionSql } from "../db/client.js"
-import { encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
+import { cursorAtSql, cursorInstantSql, encodeTimeCursor, pageWith } from "../db/cursor-helpers.js"
 import { writeAudit } from "./admin/audit.js"
 import { blockedPairExpr, hiddenIdentity } from "./hidden-identity.js"
 import { servedKeyExpr } from "./media-served-key.js"
@@ -25,6 +25,7 @@ import {
   ITEMISED_SOURCES,
   MANUAL_CREDIT_REPEAT_WINDOW_MS,
   MAX_ORG_CHIPS_FETCH,
+  OPERATOR_LEDGER_MAX_LIMIT,
   RECIPROCAL_LOOKBACK_MS,
   WEEKLY_HOURS_FLAG_DEFAULT,
 } from "./volunteer-hours-service.js"
@@ -40,6 +41,9 @@ import type {
   MyVolunteerHoursTotals,
   OperatorCreditResult,
   OperatorEventCreditArgs,
+  OperatorLedgerArgs,
+  OperatorLedgerEntryView,
+  OperatorLedgerTotals,
   OperatorManualCreditArgs,
   OperatorVoidArgs,
   OrgHoursView,
@@ -196,6 +200,64 @@ async function detectHoursAnomalies(
   }
 
   return anomalies
+}
+
+interface OperatorLedgerRow {
+  id: string
+  source: VolunteerHoursSource
+  hours: number
+  created_at: Date
+  cursor_at: string
+  occurred_at: Date
+  service_date: string | null
+  cleanup_id: string | null
+  cleanup_title: string | null
+  reference_code: string | null
+  jurisdiction_geoid: string | null
+  jurisdiction_name: string | null
+  creditor_id: string | null
+  creditor_name: string | null
+  creditor_handle: string | null
+  operator_id: string | null
+  operator_name: string | null
+  note: string | null
+  voided_at: Date | null
+  voided_by_id: string | null
+  voided_by_name: string | null
+  void_reason: string | null
+}
+
+function toOperatorLedgerView(r: OperatorLedgerRow): OperatorLedgerEntryView {
+  return {
+    id: r.id,
+    source: r.source,
+    hours: r.hours,
+    occurredAt: r.occurred_at,
+    createdAt: r.created_at,
+    serviceDate: r.service_date,
+    event:
+      r.cleanup_id !== null
+        ? { id: r.cleanup_id, title: r.cleanup_title ?? "", referenceCode: r.reference_code }
+        : null,
+    jurisdiction:
+      r.jurisdiction_geoid !== null
+        ? { geoid: r.jurisdiction_geoid, name: r.jurisdiction_name }
+        : null,
+    creditedBy:
+      r.creditor_id !== null
+        ? {
+            id: r.creditor_id,
+            name: r.creditor_name ?? "",
+            handle: r.creditor_handle ?? "",
+            official: isOfficialAccount(r.creditor_id),
+          }
+        : null,
+    operator: r.operator_id !== null ? { id: r.operator_id, name: r.operator_name ?? "" } : null,
+    note: r.note,
+    voidedAt: r.voided_at,
+    voidedBy: r.voided_by_id !== null ? { id: r.voided_by_id, name: r.voided_by_name ?? "" } : null,
+    voidReason: r.void_reason,
+  }
 }
 
 function round2(n: number): number {
@@ -476,8 +538,10 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
 
     async listEventHours(cleanupId: string, viewerId: string | null): Promise<EventHoursLedger> {
       const mine = viewerId !== null ? sql`AND vh.user_id = ${viewerId}::uuid` : sql``
-      const rows = await sql<{ user_id: string; hours: number; created_at: Date }[]>`
-        SELECT vh.user_id, vh.hours::float8 AS hours, vh.created_at
+      const rows = await sql<
+        { user_id: string; hours: number; created_at: Date; logged_by_user_id: string | null }[]
+      >`
+        SELECT vh.user_id, vh.hours::float8 AS hours, vh.created_at, vh.logged_by_user_id
         FROM volunteer_hours vh
         WHERE vh.cleanup_id = ${cleanupId}
           AND vh.source = 'event'
@@ -490,6 +554,7 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         userId: r.user_id,
         hours: r.hours,
         loggedAt: r.created_at,
+        creditedByOfficial: isOfficialAccount(r.logged_by_user_id),
       }))
       if (viewerId === null) return { entries, anyLogged: entries.length > 0 }
       const probe = await sql<{ any_logged: boolean }[]>`
@@ -746,6 +811,70 @@ export function makeDrizzleVolunteerHoursRepository(sql: Sql): VolunteerHoursRep
         })
         return { id: args.entryId, source: row.source, cleanupId: row.cleanup_id, hours: row.hours }
       })
+    },
+
+    async listOperatorLedger(
+      args: OperatorLedgerArgs,
+    ): Promise<{ items: OperatorLedgerEntryView[]; nextCursor: string | null }> {
+      const limit = Math.min(Math.max(1, Math.floor(args.limit)), OPERATOR_LEDGER_MAX_LIMIT)
+      const keyset =
+        args.cursor !== null
+          ? sql`AND (vh.created_at, vh.id) < (${cursorAtSql(sql, args.cursor)}, ${args.cursor.id}::uuid)`
+          : sql``
+      const rows = await sql<OperatorLedgerRow[]>`
+        SELECT
+          vh.id,
+          vh.source,
+          vh.hours::float8 AS hours,
+          vh.created_at,
+          ${cursorInstantSql(sql, sql`vh.created_at`)} AS cursor_at,
+          ${occurredAtExpr(sql)} AS occurred_at,
+          vh.service_date::text AS service_date,
+          vh.cleanup_id,
+          c.title AS cleanup_title,
+          c.reference_code,
+          vh.jurisdiction_geoid,
+          j.name AS jurisdiction_name,
+          lb.id AS creditor_id,
+          lb.display_name AS creditor_name,
+          lb.handle AS creditor_handle,
+          op.id AS operator_id,
+          op.display_name AS operator_name,
+          vh.note,
+          vh.voided_at,
+          vb.id AS voided_by_id,
+          vb.display_name AS voided_by_name,
+          vh.void_reason
+        FROM volunteer_hours vh
+        LEFT JOIN cleanups c      ON c.id = vh.cleanup_id
+        LEFT JOIN jurisdictions j ON j.geoid = vh.jurisdiction_geoid
+        LEFT JOIN users lb        ON lb.id = vh.logged_by_user_id
+        LEFT JOIN users op        ON op.id = vh.credited_by_operator_id
+        LEFT JOIN users vb        ON vb.id = vh.voided_by_operator_id
+        WHERE vh.user_id = ${args.userId}
+          ${keyset}
+        ORDER BY vh.created_at DESC, vh.id DESC
+        LIMIT ${limit + 1}
+      `
+      const { items, nextCursor } = pageWith(rows, limit, (last) =>
+        encodeTimeCursor({ at: last.cursor_at, id: last.id }),
+      )
+      return { items: items.map(toOperatorLedgerView), nextCursor }
+    },
+
+    async operatorLedgerTotals(userId: string): Promise<OperatorLedgerTotals> {
+      const rows = await sql<{ live: number; voided: number }[]>`
+        SELECT
+          count(*) FILTER (WHERE voided_at IS NULL)::int AS live,
+          count(*) FILTER (WHERE voided_at IS NOT NULL)::int AS voided
+        FROM volunteer_hours
+        WHERE user_id = ${userId}
+      `
+      return {
+        totalHours: await computeTotalHours(sql, userId),
+        liveEntries: rows[0]?.live ?? 0,
+        voidedEntries: rows[0]?.voided ?? 0,
+      }
     },
   }
 }

@@ -164,11 +164,14 @@ export function makeDataExportService(deps: DataExportServiceDeps): DataExportSe
           jurisdiction_geoid: string | null
           hours: number
           logged_by_user_id: string | null
+          service_date: string | null
           created_at: Date
+          voided_at: Date | null
         }[]
       >`
         SELECT id, source, report_id, cleanup_id, jurisdiction_geoid,
-          hours::float8 AS hours, logged_by_user_id, created_at
+          hours::float8 AS hours, logged_by_user_id, service_date::text AS service_date,
+          created_at, voided_at
         FROM volunteer_hours
         WHERE user_id = ${userId}
         ORDER BY created_at DESC

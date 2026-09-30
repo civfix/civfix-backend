@@ -51,15 +51,19 @@ export function assertEventCreditable(cleanup: CreditableEvent, nowMs: number): 
   return { durationMs, windowCap: creditableHoursForEvent(cleanup) }
 }
 
-export function assertCreditableEventHours(hours: number, limits: EventCreditLimits): void {
+export function assertCreditableEventHours(
+  hours: number,
+  limits: EventCreditLimits,
+  field = "entries",
+): void {
   if (!(hours >= MIN_EVENT_HOURS) || hours > MAX_EVENT_HOURS) {
     throw AppError.validation({
-      entries: `hours must be at least ${MIN_EVENT_HOURS} and at most ${MAX_EVENT_HOURS}`,
+      [field]: `hours must be at least ${MIN_EVENT_HOURS} and at most ${MAX_EVENT_HOURS}`,
     })
   }
   if (hours > limits.windowCap) {
     throw AppError.validation({
-      entries: `this event ran for ${round2(limits.durationMs / 3_600_000)} h, so at most ${limits.windowCap} h may be credited per attendee`,
+      [field]: `this event ran for ${round2(limits.durationMs / 3_600_000)} h, so at most ${limits.windowCap} h may be credited per attendee`,
     })
   }
 }
