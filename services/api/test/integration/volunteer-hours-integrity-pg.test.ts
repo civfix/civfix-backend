@@ -188,7 +188,7 @@ describe.skipIf(!pg)("H9: volunteer-hours integrity bounds (integration)", () =>
   })
 
   it("keeps a legacy completed_at as the hours window and falls back to ends_at without one", async () => {
-    const { creditableHoursForEvent } = await import("../../src/services/volunteer-hours-service.js")
+    const { creditableHoursForEvent } = await import("../../src/services/volunteer-hours-rules.js")
     const org = await newUser("Window Org")
 
     const legacyId = randomUUID()
