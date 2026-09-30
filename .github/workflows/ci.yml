@@ -123,7 +123,7 @@ jobs:
     # entrypoint must be able to drop root -> node while keeping ambient CAP_SETUID/CAP_SETGID under the
     # PRODUCTION capability set (cap_drop ALL + cap_add SETUID,SETGID + no-new-privileges), and the
     # worker's preflight must then prove that a child spawned through setpriv has the sandbox uid and NO
-    # capabilities, and that the image lane actually runs. None of this is reachable from a unit test.
+    # capabilities, and that the image and video lanes actually run. None of this is reachable from a unit test.
     # Independent of every other job: nothing else here needs Docker.
     steps:
       - name: Checkout
