@@ -1,5 +1,5 @@
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import sharp from "sharp"
@@ -14,6 +14,8 @@ import {
   sniffAllowedImageContainer,
 } from "../../src/sandbox/image.js"
 import { perceptualHash } from "../../src/sandbox/phash.js"
+import { resetMediaToolPaths } from "../../src/sandbox/binaries.js"
+import { assertVideoLaneRuns } from "../../src/sandbox/preflight.js"
 import exifr from "exifr"
 import * as fx from "../fixtures/make.js"
 import { readContainerTags, readStreamTags } from "../helpers/ffprobe-tags.js"
@@ -392,5 +394,23 @@ describe("sandbox/image magic-byte container gate (L15)", () => {
   it("still accepts a real JPEG through the gate", async () => {
     const jpeg = await fx.makeValidJpegWithGps()
     await expect(processImage(jpeg, limits)).resolves.toBeDefined()
+  })
+})
+
+describe("sandbox/preflight video lane", () => {
+  it("pushes the built-in h264 and hevc clips through probe, remux and the poster-frame grab", async () => {
+    await expect(assertVideoLaneRuns()).resolves.toBeUndefined()
+  })
+
+  it("refuses a boot whose ffmpeg build cannot process them", async () => {
+    vi.stubEnv("FFMPEG_PATH", "/usr/bin/false")
+    vi.stubEnv("FFPROBE_PATH", "/usr/bin/false")
+    resetMediaToolPaths()
+    try {
+      await expect(assertVideoLaneRuns()).rejects.toThrow(/cannot process the built-in h264 clip/)
+    } finally {
+      vi.unstubAllEnvs()
+      resetMediaToolPaths()
+    }
   })
 })
