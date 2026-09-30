@@ -75,7 +75,7 @@ ARG FFMPEG_VERSION=8.1.3
 ARG FFMPEG_SHA256=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
 ARG FFMPEG_KEY_FPR=FCF986EA15E6E293A5644F10B4322F04D67658D8
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl xz-utils gpg gcc libc6-dev make nasm \
+ && apt-get install -y --no-install-recommends ca-certificates curl xz-utils gpg gpgv gcc libc6-dev make nasm \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /tmp/ffmpeg
 # --toolchain=hardened: stack protector, FORTIFY_SOURCE, full RELRO and PIE for the one binary that
@@ -84,9 +84,8 @@ RUN curl -fsSL --retry 5 --retry-all-errors -O "https://ffmpeg.org/releases/ffmp
  && curl -fsSL --retry 5 --retry-all-errors -O "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz.asc" \
  && echo "${FFMPEG_SHA256}  ffmpeg-${FFMPEG_VERSION}.tar.xz" | sha256sum -c - \
  && curl -fsSL --retry 5 --retry-all-errors -o ffmpeg-devel.asc https://ffmpeg.org/ffmpeg-devel.asc \
- && export GNUPGHOME="$(mktemp -d)" \
- && gpg --batch --quiet --import ffmpeg-devel.asc \
- && gpg --batch --status-fd 1 --verify "ffmpeg-${FFMPEG_VERSION}.tar.xz.asc" "ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+ && gpg --batch --yes --dearmor -o ffmpeg-devel.gpg ffmpeg-devel.asc \
+ && gpgv --keyring ./ffmpeg-devel.gpg --status-fd 1 "ffmpeg-${FFMPEG_VERSION}.tar.xz.asc" "ffmpeg-${FFMPEG_VERSION}.tar.xz" \
       | grep -q "^\[GNUPG:\] VALIDSIG .* ${FFMPEG_KEY_FPR}\$" \
  && tar -xJf "ffmpeg-${FFMPEG_VERSION}.tar.xz" --strip-components=1 \
  && ./configure \
