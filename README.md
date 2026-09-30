@@ -332,10 +332,11 @@ docker build -f services/api/Dockerfile -t civfix/api:latest .
 docker build -f services/media-worker/Dockerfile -t civfix/media-worker:latest .
 ```
 
-ffmpeg/sharp in-container: the worker image relies on `ffmpeg-static` + `ffprobe-static` (self-contained
-statically-linked linux-x64 binaries downloaded on install - no system ffmpeg needed) and `sharp`'s
-prebuilt linux-x64 binaries (glibc, which the Debian bookworm base provides). These are installed INSIDE
-the linux image (never copied from the host) so the platform is correct. See the Dockerfile headers.
+ffmpeg/sharp in-container: the worker image compiles a minimal ffmpeg + ffprobe from the signed official
+FFmpeg source release (`ffmpeg-static` / `ffprobe-static` are dev-only and pruned from the image) and uses
+`sharp`'s prebuilt linux binaries (glibc, which the Debian bookworm base provides). Both are built or
+installed INSIDE the linux image (never copied from the host) so the platform is correct. See the
+Dockerfile header and `docs/media-pipeline-hardening.md` §3.
 
 ## Dev flags: USE_FAKE_*
 

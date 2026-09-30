@@ -1,5 +1,5 @@
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import sharp from "sharp"
@@ -403,20 +403,13 @@ describe("sandbox/preflight video lane", () => {
   })
 
   it("refuses a boot whose ffmpeg build cannot process them", async () => {
-    const saved = { ffmpeg: process.env.FFMPEG_PATH, ffprobe: process.env.FFPROBE_PATH }
-    process.env.FFMPEG_PATH = "/usr/bin/false"
-    process.env.FFPROBE_PATH = "/usr/bin/false"
+    vi.stubEnv("FFMPEG_PATH", "/usr/bin/false")
+    vi.stubEnv("FFPROBE_PATH", "/usr/bin/false")
     resetMediaToolPaths()
     try {
       await expect(assertVideoLaneRuns()).rejects.toThrow(/cannot process the built-in h264 clip/)
     } finally {
-      for (const [key, value] of [
-        ["FFMPEG_PATH", saved.ffmpeg],
-        ["FFPROBE_PATH", saved.ffprobe],
-      ] as const) {
-        if (value === undefined) delete process.env[key]
-        else process.env[key] = value
-      }
+      vi.unstubAllEnvs()
       resetMediaToolPaths()
     }
   })

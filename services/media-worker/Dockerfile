@@ -16,22 +16,23 @@
 #     third-party binary build. ffprobe-static@3.1.0 ships an FFmpeg 4.0.2 binary from 2018 — the tool
 #     that must interpret untrusted container bytes — with no channel for the demuxer memory-safety
 #     fixes released since. FFmpeg publishes no binaries of its own, and the dated third-party builds
-#     this stage used to download are pruned after about two weeks, which broke every build that
-#     still pinned one. The `ffmpeg` stage downloads the ffmpeg.org release tarball, checks it
-#     against FFMPEG_SHA256 AND requires a signature by FFmpeg's release signing key, pinned by its
-#     fingerprint FFMPEG_KEY_FPR, then compiles ONLY what src/sandbox uses: the mov
-#     demuxer, the mp4 + image2 muxers, the h264/hevc decoders, the mjpeg encoder for the poster frame
-#     and the file protocol (configure adds the filters the ffmpeg CLI inserts itself). Every other
-#     demuxer and decoder, the network stack and all autodetected external libraries are left out, so
-#     a hostile upload can only reach the parsers a real upload needs. The runtime stage exports
+#     this stage used to download are pruned after about two weeks, which broke every build that still
+#     pinned one. The `ffmpeg` stage downloads the ffmpeg.org release tarball, checks it against
+#     FFMPEG_SHA256 AND requires a signature by FFmpeg's release signing key, pinned by its fingerprint
+#     FFMPEG_KEY_FPR, then compiles ONLY what src/sandbox uses: the mov demuxer, the mp4 + image2
+#     muxers, the h264/hevc decoders, the mjpeg encoder for the poster frame and the file protocol
+#     (configure adds the filters the ffmpeg CLI inserts itself). Every other demuxer and decoder, the
+#     IAMF audio parser the mov demuxer would otherwise pull in, the network stack and all autodetected
+#     external libraries are left out, so a hostile upload only reaches the mov demuxer (with its ISO
+#     media and RIFF helpers) and the h264/hevc parsers and decoders. The runtime stage exports
 #     FFMPEG_PATH/FFPROBE_PATH, which sandbox/binaries.ts REQUIRES in production (the npm static
-#     packages are devDependencies and are pruned out of this image by `pnpm --prod deploy`, so there
-#     is no silent fallback to the 2018 build), and the boot preflight pushes an h264 and an hevc clip
+#     packages are devDependencies and are pruned out of this image by `pnpm --prod deploy`, so there is
+#     no silent fallback to the 2018 build), and the boot preflight pushes an h264 and an hevc clip
 #     through the real video lane, so a build missing a component fails the CI smoke job.
 #     BUMPING IT: set FFMPEG_VERSION to a newer release from https://ffmpeg.org/releases/, verify its
 #     .asc against https://ffmpeg.org/ffmpeg-devel.asc (`gpg --verify`), and set FFMPEG_SHA256 to the
-#     `sha256sum` of the tarball.
-#     A new sandbox feature that needs another format or codec adds it to the configure line.
+#     `sha256sum` of the tarball. A new sandbox feature that needs another format or codec adds it to
+#     the configure line.
 #   * sharp 0.33.x ships prebuilt linux-x64 binaries (@img/sharp-linux-x64) that run on glibc, which the
 #     Debian bookworm base provides. No build toolchain or libvips apt package is required.
 #   Both are installed INSIDE this linux image (never copied from the host), so the platform is correct.
@@ -79,10 +80,10 @@ RUN apt-get update \
 WORKDIR /tmp/ffmpeg
 # --toolchain=hardened: stack protector, FORTIFY_SOURCE, full RELRO and PIE for the one binary that
 # parses attacker-supplied bytes.
-RUN curl -fsSLO "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
- && curl -fsSLO "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz.asc" \
+RUN curl -fsSL --retry 5 --retry-all-errors -O "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+ && curl -fsSL --retry 5 --retry-all-errors -O "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz.asc" \
  && echo "${FFMPEG_SHA256}  ffmpeg-${FFMPEG_VERSION}.tar.xz" | sha256sum -c - \
- && curl -fsSL -o ffmpeg-devel.asc https://ffmpeg.org/ffmpeg-devel.asc \
+ && curl -fsSL --retry 5 --retry-all-errors -o ffmpeg-devel.asc https://ffmpeg.org/ffmpeg-devel.asc \
  && export GNUPGHOME="$(mktemp -d)" \
  && gpg --batch --quiet --import ffmpeg-devel.asc \
  && gpg --batch --status-fd 1 --verify "ffmpeg-${FFMPEG_VERSION}.tar.xz.asc" "ffmpeg-${FFMPEG_VERSION}.tar.xz" \
@@ -97,6 +98,7 @@ RUN curl -fsSLO "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
       --disable-doc \
       --disable-debug \
       --disable-ffplay \
+      --disable-iamf \
       --enable-protocol=file \
       --enable-demuxer=mov \
       --enable-muxer=mp4,image2 \
