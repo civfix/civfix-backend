@@ -4,6 +4,8 @@ import { access, constants } from "node:fs/promises"
 import type { SandboxIdentity } from "../config.js"
 import { loadLimits } from "../config.js"
 import { resolveMediaToolPaths } from "./binaries.js"
+import { grabFrameJpeg, remuxStripMetadata } from "./ffmpeg-remux.js"
+import { probeBytes } from "./ffprobe.js"
 import { imageLaneEntry, processImageLane } from "./image-lane.js"
 import { dropBoundingSet, runTool, sandboxIdentity } from "./exec.js"
 import { makeScratch } from "./tmp.js"
@@ -14,6 +16,18 @@ const ONE_PIXEL_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQI12NgZGIGAAAOAAcGTPsnAAAAAElFTkSuQmCC",
   "base64",
 )
+// 16x16 single-frame clips carrying a quarter-turn display matrix, as phone video does, so the
+// poster-frame grab also runs the rotation filters the ffmpeg CLI inserts on its own.
+const PREFLIGHT_CLIPS: Record<"h264" | "hevc", Buffer> = {
+  h264: Buffer.from(
+    "AAAAFGZ0eXBxdCAgAAACAHF0ICAAAAAId2lkZQAAABNtZGF0AAAAB2WIhDomKA4AAALDbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAk90cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAAAAP//AAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAHHbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAQAB//wAAAAAALWhkbHIAAAAAbWhscnZpZGUAAAAAAAAAAAAAAAAMVmlkZW9IYW5kbGVyAAABcm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACxoZGxyAAAAAGRobHJ1cmwgAAAAAAAAAAAAAAAAC0RhdGFIYW5kbGVyAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAABBnN0YmwAAACic3RzZAAAAAAAAAABAAAAkmF2YzEAAAAAAAAAAQAAAABGRk1QAAACAAAAAgAAEAAQAEgAAABIAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY//8AAAAsYXZjQwFCwAr/4QAVZ0LACtp7ARAAAAMAEAAAAwAg8SJqAQAEaM4PyAAAABBwYXNwAAAAAQAAAAEAAAAYc3R0cwAAAAAAAAABAAAAAQAAQAAAAAAcc3RzYwAAAAAAAAABAAAAAQAAAAEAAAABAAAAFHN0c3oAAAAAAAAACwAAAAEAAAAUc3RjbwAAAAAAAAABAAAAJA==",
+    "base64",
+  ),
+  hevc: Buffer.from(
+    "AAAAFGZ0eXBxdCAgAAACAHF0ICAAAAAId2lkZQAAABRtZGF0AAAACCgBrE7cuahAAAADFW1vb3YAAABsbXZoZAAAAAAAAAAAAAAAAAAAA+gAAAPoAAEAAAEAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAKhdHJhawAAAFx0a2hkAAAAAwAAAAAAAAAAAAAAAQAAAAAAAAPoAAAAAAAAAAAAAAAAAAAAAAAAAAD//wAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAQAAAAEAAAAAAAJGVkdHMAAAAcZWxzdAAAAAAAAAABAAAD6AAAAAAAAQAAAAACGW1kaWEAAAAgbWRoZAAAAAAAAAAAAAAAAAAAQAAAAEAAf/8AAAAAAC1oZGxyAAAAAG1obHJ2aWRlAAAAAAAAAAAAAAAADFZpZGVvSGFuZGxlcgAAAcRtaW5mAAAAFHZtaGQAAAABAAAAAAAAAAAAAAAsaGRscgAAAABkaGxydXJsIAAAAAAAAAAAAAAAAAtEYXRhSGFuZGxlcgAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAVhzdGJsAAAA9HN0c2QAAAAAAAAAAQAAAORodmMxAAAAAAAAAAEAAAAARkZNUAAAAgAAAAIAABAAEABIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAAdGh2Y0MBAWAAAACQAAAAAAAe8AD8/fj4AAAPA6AAAQAYQAEMAf//AWAAAAMAkAAAAwAAAwAelZQJoQABAChCAQEBYAAAAwCQAAADAAADAB6giEWWVlW8LwFoCAAAAwAIAAADAAhAogABAAZEAcBzwIkAAAAKZmllbAEAAAAAEHBhc3AAAAABAAAAAQAAABhzdHRzAAAAAAAAAAEAAAABAABAAAAAABxzdHNjAAAAAAAAAAEAAAABAAAAAQAAAAEAAAAUc3RzegAAAAAAAAAMAAAAAQAAABRzdGNvAAAAAAAAAAEAAAAk",
+    "base64",
+  ),
+}
 const STATUS_READER = "/bin/cat"
 const PROC_STATUS = "/proc/self/status"
 
@@ -118,7 +132,7 @@ export async function assertSandboxPreflight(
 
   await assertScratchHandover(identity)
   await assertImageLaneRuns()
-  await assertVideoLaneRuns(tools.ffprobe)
+  await assertVideoLaneRuns()
 
   if (process.platform !== "linux") {
     log("media-worker: sandbox capability proof skipped (not Linux)", { platform: process.platform })
@@ -145,16 +159,30 @@ function assertImageLaneEntryExists(): void {
   )
 }
 
-async function assertVideoLaneRuns(ffprobePath: string): Promise<void> {
-  try {
-    await runTool("preflight-ffprobe", ffprobePath, ["-hide_banner", "-version"], {
-      timeoutMs: PREFLIGHT_TIMEOUT_MS,
-      maxStdoutBytes: 64 * 1024,
-    })
-  } catch (err) {
-    throw new Error(
-      `media-worker: the sandboxed ffprobe cannot run (${String(err)}). Every video would be rejected.`,
-    )
+export async function assertVideoLaneRuns(): Promise<void> {
+  const limits = loadLimits()
+  for (const [codec, clip] of Object.entries(PREFLIGHT_CLIPS)) {
+    let probedCodec: string | null
+    let remuxed: Buffer
+    let frame: Buffer
+    try {
+      probedCodec = (await probeBytes(clip, limits)).codec
+      remuxed = await remuxStripMetadata(clip, limits)
+      frame = await grabFrameJpeg(clip, 0, limits)
+    } catch (err) {
+      throw new Error(
+        `media-worker: the sandboxed video lane cannot process the built-in ${codec} clip ` +
+          `(${String(err)}). Every ${codec} upload would be rejected or published without a ` +
+          "poster frame. Check that FFMPEG_PATH/FFPROBE_PATH point at the image's ffmpeg build and " +
+          "that its configure line still enables what src/sandbox uses.",
+      )
+    }
+    if (probedCodec !== codec || remuxed.byteLength === 0 || frame.byteLength === 0) {
+      throw new Error(
+        `media-worker: the sandboxed video lane read the built-in ${codec} clip as ` +
+          `${probedCodec ?? "no codec"} or produced empty output`,
+      )
+    }
   }
 }
 
