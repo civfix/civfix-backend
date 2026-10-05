@@ -76,6 +76,8 @@ jobs:
   deploy:
     name: ssh deploy + availability assertion
     needs: images
+    # The environment's ref policy refuses this job on any ref but main.
+    environment: staging
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
