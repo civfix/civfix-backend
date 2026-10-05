@@ -29,7 +29,17 @@ import { drizzle } from "drizzle-orm/postgres-js"
 import { schema, type Db, type Sql } from "@civfix/api/db"
 import { applyMigrations } from "@civfix/api/migrate"
 
-export const POSTGIS_IMAGE = "postgis/postgis:16-3.4"
+export const DEFAULT_POSTGIS_IMAGE = "postgis/postgis:16-3.4"
+
+/**
+ * Same override as the API harness's postgisImage (services/api/test/helpers/pg-container.ts):
+ * postgis/postgis publishes no arm64 tag, so an arm64 host points CIVFIX_TEST_PG_IMAGE at a local build
+ * of civfix-infra/postgres/Dockerfile.
+ */
+export function postgisImage(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.CIVFIX_TEST_PG_IMAGE?.trim()
+  return override !== undefined && override !== "" ? override : DEFAULT_POSTGIS_IMAGE
+}
 
 /**
  * Server knobs for a THROWAWAY database, matching the API harness's POSTGRES_TUNING: durability is
@@ -71,8 +81,9 @@ function assertSkipAllowed(reason: string, env: NodeJS.ProcessEnv = process.env)
   const because = isOn(env.CIVFIX_REQUIRE_PG) ? "CIVFIX_REQUIRE_PG is set" : `CI=${env.CI ?? ""}`
   throw new Error(
     `[worker pg harness] Postgres is REQUIRED in this environment (${because}), but the PostGIS ` +
-      `container could not start, which would have SILENTLY SKIPPED the worker integration suite. ` +
-      `Fix Docker, or set CIVFIX_ALLOW_PG_SKIP=1 to accept a run with no integration coverage. ` +
+      `container (${postgisImage(env)}) could not start, which would have SILENTLY SKIPPED the worker ` +
+      `integration suite. Fix Docker, or set CIVFIX_ALLOW_PG_SKIP=1 to accept a run with no integration ` +
+      `coverage. On an arm64 host, set CIVFIX_TEST_PG_IMAGE to an arm64 PostGIS image (see README). ` +
       `Underlying failure: ${reason}`,
   )
 }
@@ -93,7 +104,7 @@ export async function withWorkerPg(): Promise<WorkerPgHarness | null> {
   let started: import("@testcontainers/postgresql").StartedPostgreSqlContainer
   try {
     const { PostgreSqlContainer } = await import("@testcontainers/postgresql")
-    started = await new PostgreSqlContainer(POSTGIS_IMAGE).withCommand(POSTGRES_TUNING).start()
+    started = await new PostgreSqlContainer(postgisImage()).withCommand(POSTGRES_TUNING).start()
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
     // Developer machine: skip. CI: fail loudly rather than run zero integration tests.

@@ -25,8 +25,18 @@ import type { Sql } from "../../src/db/client.js"
 import { applyMigrations } from "../../src/db/migrate.js"
 import { seedJurisdictions } from "../../src/db/seed.js"
 
-/** The PostGIS image we run. Pinned so spatial behavior is reproducible. */
-export const POSTGIS_IMAGE = "postgis/postgis:16-3.4"
+/** The PostGIS image CI runs. Pinned so spatial behavior is reproducible. */
+export const DEFAULT_POSTGIS_IMAGE = "postgis/postgis:16-3.4"
+
+/**
+ * postgis/postgis publishes no arm64 tag, so an arm64 host points CIVFIX_TEST_PG_IMAGE at a local build
+ * of civfix-infra/postgres/Dockerfile. That image keeps the official postgres entrypoint, so
+ * PostgreSqlContainer's pg_isready health-check wait needs no change for it.
+ */
+export function postgisImage(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.CIVFIX_TEST_PG_IMAGE?.trim()
+  return override !== undefined && override !== "" ? override : DEFAULT_POSTGIS_IMAGE
+}
 
 /**
  * The migrated+seeded database every test database is cloned from. Never connected to by a test: a
@@ -120,8 +130,9 @@ export function assertPgSkipAllowed(reason: string, env: NodeJS.ProcessEnv = pro
   if (decision.allowed) return
   throw new Error(
     `[pg harness] Postgres is REQUIRED in this environment (${decision.because}), but the PostGIS ` +
-      `container could not start, which would have SILENTLY SKIPPED the whole integration suite. ` +
-      `Fix Docker, or set CIVFIX_ALLOW_PG_SKIP=1 to accept a run with no integration coverage. ` +
+      `container (${postgisImage(env)}) could not start, which would have SILENTLY SKIPPED the whole ` +
+      `integration suite. Fix Docker, or set CIVFIX_ALLOW_PG_SKIP=1 to accept a run with no integration ` +
+      `coverage. On an arm64 host, set CIVFIX_TEST_PG_IMAGE to an arm64 PostGIS image (see README). ` +
       `Underlying failure: ${reason}`,
   )
 }
@@ -138,7 +149,7 @@ export function assertPgSkipAllowed(reason: string, env: NodeJS.ProcessEnv = pro
 export async function startSharedPg(): Promise<StartSharedPgResult> {
   let started: StartedPostgreSqlContainer
   try {
-    started = await new PostgreSqlContainer(POSTGIS_IMAGE).withCommand(POSTGRES_TUNING).start()
+    started = await new PostgreSqlContainer(postgisImage()).withCommand(POSTGRES_TUNING).start()
   } catch (err) {
     // Docker not installed / daemon not running / image unavailable: skip, do not fail — but only where
     // a skip is legitimate. In CI this throws.

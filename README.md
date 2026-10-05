@@ -49,6 +49,10 @@ civfix-backend/
   only there: with `CI` (set by GitHub Actions) or `CIVFIX_REQUIRE_PG=1` in the environment, a failed
   container start FAILS the run instead of silently dropping every integration test from it. Set
   `CIVFIX_ALLOW_PG_SKIP=1` to opt a CI job back into skipping.
+- `CIVFIX_TEST_PG_IMAGE` overrides the integration suites' PostGIS image (default
+  `postgis/postgis:16-3.4`, which publishes no arm64 tag). On an arm64 host, build the infra image from
+  the umbrella root with `docker build -t civfix/postgis:16-local civfix-infra/postgres` and set
+  `CIVFIX_TEST_PG_IMAGE=civfix/postgis:16-local`.
 
 ## The shared contract (`@civfix/shared` from the private registry)
 
