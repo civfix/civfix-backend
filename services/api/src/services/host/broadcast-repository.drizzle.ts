@@ -570,7 +570,9 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
       const reasons = outcomes.map((o) => o.suppressionReason ?? null)
       const failures = outcomes.map((o) => o.failureKind ?? null)
       const providerIds = outcomes.map((o) => o.providerMessageId ?? null)
-      const sentAts = outcomes.map((o) => o.sentAt ?? null)
+      // postgres-js types an array parameter by its first element, so a Date[] binds as a scalar
+      // timestamptz and the ::timestamptz[] cast fails; ISO strings bind untyped and cast cleanly.
+      const sentAts = outcomes.map((o) => o.sentAt?.toISOString() ?? null)
       await sql`
         UPDATE broadcast_deliveries d
            SET status = t.status,
