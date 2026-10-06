@@ -172,7 +172,16 @@ describe.skipIf(!pg)("broadcast delivery on Postgres (integration)", () => {
         attempts: 1,
       })
     }
-    expect((await repo.findById(record.id))?.status).toBe("sent")
+    // 11 sent rows across 3 channels, but sentCount counts people: noEmail is reached on
+    // inapp + push only and still counts once.
+    const counts = {
+      status: "sent",
+      recipientCount: memberIds.length,
+      sentCount: memberIds.length,
+      failedCount: 0,
+      suppressedCount: 1,
+    }
+    expect(await repo.findById(record.id)).toMatchObject(counts)
     expect(await notificationsPerMember()).toEqual(new Map(memberIds.map((id) => [id, 1])))
     expect(emailsPerMember()).toEqual(emailed.map(() => 1))
     expect(mailer.sent).toHaveLength(emailed.length)
@@ -188,5 +197,6 @@ describe.skipIf(!pg)("broadcast delivery on Postgres (integration)", () => {
       SELECT max(attempts)::int AS max_attempts FROM broadcast_deliveries
        WHERE broadcast_id = ${record.id}`
     expect(after!.max_attempts).toBe(1)
+    expect(await repo.findById(record.id)).toMatchObject(counts)
   })
 })

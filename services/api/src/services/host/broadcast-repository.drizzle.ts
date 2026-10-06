@@ -657,7 +657,12 @@ export function makeDrizzleBroadcastRepository(sql: Sql): BroadcastRepository {
                suppressed_count = c.suppressed,
                updated_at = now()
           FROM (
-            SELECT count(*) FILTER (WHERE status = 'sent') AS sent,
+            -- sent counts people, not (person, channel) rows, so it reads against
+            -- recipient_count. A NULL recipient_id (hard-deleted user) cannot be
+            -- deduplicated and counts per row, as in the unique index.
+            SELECT count(DISTINCT (recipient_kind, recipient_id))
+                     FILTER (WHERE status = 'sent' AND recipient_id IS NOT NULL)
+                   + count(*) FILTER (WHERE status = 'sent' AND recipient_id IS NULL) AS sent,
                    count(*) FILTER (WHERE status = 'failed') AS failed,
                    count(*) FILTER (WHERE status IN ('suppressed','skipped')) AS suppressed
               FROM broadcast_deliveries WHERE broadcast_id = ${broadcastId}

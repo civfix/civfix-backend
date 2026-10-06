@@ -549,9 +549,14 @@ export class InMemoryBroadcastRepository implements BroadcastRepository {
     const found = this.broadcasts.get(broadcastId)
     if (!found) return null
     const counts = await this.deliveryCounts(broadcastId)
+    const reached = new Set<string>()
+    for (const row of this.deliveries.values()) {
+      if (row.broadcastId !== broadcastId || row.status !== "sent") continue
+      reached.add(`${row.recipientKind}|${row.userId ?? row.guestId ?? row.id}`)
+    }
     const next: BroadcastRecord = {
       ...found,
-      sentCount: counts.sent,
+      sentCount: reached.size,
       failedCount: counts.failed,
       suppressedCount: counts.suppressed + counts.skipped,
       updatedAt: new Date(),
