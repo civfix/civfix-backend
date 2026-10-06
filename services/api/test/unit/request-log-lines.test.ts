@@ -1,3 +1,4 @@
+import { get as httpGet } from "node:http"
 import { afterEach, describe, expect, it } from "vitest"
 import type { FastifyInstance, LogLevel } from "fastify"
 import { buildServer } from "../../src/server.js"
@@ -31,11 +32,19 @@ describe("request log lines", () => {
       logCapture: { level, stream: { write: (line) => lines.push(JSON.parse(line) as LogLine) } },
     })
     app.get("/__log-probe", async () => ({ ok: true }))
+    app.get("/__log-slow", async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      return { ok: true }
+    })
     await app.ready()
     return app
   }
 
   const requestLines = () => lines.filter((line) => line.req !== undefined || line.res !== undefined)
+
+  async function untilRequestLine(): Promise<void> {
+    await expect.poll(() => requestLines().length, { timeout: 2000 }).toBeGreaterThan(0)
+  }
 
   it("writes nothing for a passing /healthz or /readyz probe", async () => {
     const server = await serve("info")
@@ -83,4 +92,48 @@ describe("request log lines", () => {
       [INFO, "request completed"],
     ])
   })
+
+  it("still writes a line for a WebSocket upgrade, which never completes", async () => {
+    const server = await serve("info")
+    const port = await listen(server)
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=SECRET-TICKET`)
+    await new Promise((resolve) => socket.addEventListener("close", resolve))
+    await untilRequestLine()
+
+    expect(requestLines()).toMatchObject([
+      { level: INFO, msg: "incoming request", req: { method: "GET", url: "/ws", remoteAddress: "127.0.0.1" } },
+    ])
+    expect(typeof requestLines()[0]?.reqId).toBe("string")
+    expect(JSON.stringify(lines)).not.toContain("SECRET-TICKET")
+  })
+
+  it("still writes a line for a request the client abandons", async () => {
+    const server = await serve("info")
+    const port = await listen(server)
+    const abandoned = httpGet(`http://127.0.0.1:${port}/__log-slow?accessCode=SUMMER2026`)
+    const hungUp = new Promise((resolve) => abandoned.once("error", resolve))
+    setTimeout(() => abandoned.destroy(), 100)
+    await hungUp
+    await untilRequestLine()
+    // The handler still finishes after the abort; it must not add a completed line.
+    await new Promise((resolve) => setTimeout(resolve, 600))
+
+    const written = requestLines()
+    expect(written).toHaveLength(1)
+    expect(written[0]).toMatchObject({
+      level: INFO,
+      msg: "request aborted",
+      req: { method: "GET", url: "/__log-slow", remoteAddress: "127.0.0.1" },
+    })
+    expect(typeof written[0]?.reqId).toBe("string")
+    expect(typeof written[0]?.responseTime).toBe("number")
+    expect(JSON.stringify(lines)).not.toContain("SUMMER2026")
+  })
 })
+
+async function listen(server: FastifyInstance): Promise<number> {
+  await server.listen({ host: "127.0.0.1", port: 0 })
+  const address = server.server.address()
+  if (address === null || typeof address === "string") throw new Error("server has no TCP address")
+  return address.port
+}

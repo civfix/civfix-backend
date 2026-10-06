@@ -185,11 +185,27 @@ const HEALTH_PROBE_PATHS = new Set(["/healthz", "/readyz"])
  * pair. The edge probes /healthz every 2 s from each site, so a passing probe writes nothing; a failing
  * one (503 while draining, readiness down) is the line an operator needs and is kept. `res.statusCode`
  * stays the field name: the Grafana overview counts errors with `res_statusCode >= 500`.
+ *
+ * Fastify only reports completion on the response's `finish`, which never comes for a WebSocket upgrade
+ * (the socket is handed to ws) or a request the client abandons, so those keep a line of their own: the
+ * upgrade at arrival, the abandoned request when its response closes unfinished.
  */
 export class RequestLogController extends LogController {
-  override incomingRequest(request: FastifyRequest): void {
+  override incomingRequest(request: FastifyRequest, reply: FastifyReply): void {
     if (this.isLogDisabled(request)) return
+    if (request.headers.upgrade !== undefined) {
+      request.log.info({ req: request }, "incoming request")
+      return
+    }
     request.log.debug({ req: request }, "incoming request")
+    let finished = false
+    reply.raw.once("finish", () => {
+      finished = true
+    })
+    reply.raw.once("close", () => {
+      if (finished) return
+      reply.log.info({ req: request, responseTime: reply.elapsedTime }, "request aborted")
+    })
   }
 
   override requestCompleted(
