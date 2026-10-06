@@ -2,6 +2,7 @@ import type { FastifyBaseLogger } from "fastify"
 import type { Container } from "../di.js"
 import { makeContainerGuestRsvpService } from "./guest-rsvp-wiring.js"
 import { makeCommsRuntime } from "./host/comms-wiring.js"
+import { sweepLogLevel } from "./sweep-log.js"
 import type { EventUpdateVerdict } from "./host/broadcast-lanes.js"
 import {
   CLEANUP_GUEST_UPDATE_FANOUT_JOB,
@@ -82,10 +83,8 @@ export async function registerGuestJobs(
       undefined,
       logger,
     ).runRetentionSweep()
-    logger?.info(
-      { scrubbedGuests: result.scrubbedGuests, deletedOtps: result.deletedOtps },
-      "guest.retention.sweep: complete",
-    )
+    const counts = { scrubbedGuests: result.scrubbedGuests, deletedOtps: result.deletedOtps }
+    logger?.[sweepLogLevel(counts)](counts, "guest.retention.sweep: complete")
   })
 }
 

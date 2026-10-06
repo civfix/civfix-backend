@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest"
+import Fastify from "fastify"
 import type { Sql } from "../../src/db/client.js"
 import {
   drainTable,
@@ -8,6 +9,7 @@ import {
   runRetentionLanes,
 } from "../../src/services/host/retention-lanes.js"
 import { registerHostRetentionLanes } from "../../src/services/host/comms-jobs.js"
+import { sweepLogLevel } from "../../src/services/sweep-log.js"
 
 const SQL = {} as Sql
 
@@ -53,6 +55,49 @@ describe("retention lane registry", () => {
     })
     await runRetentionLanes(SQL, new Date(1000))
     expect(seen).toEqual([1000, 1000])
+  })
+})
+
+describe("the retention sweep summary", () => {
+  beforeEach(() => {
+    resetRetentionLanesForTests()
+  })
+
+  async function infoLines(): Promise<string[]> {
+    const lines: string[] = []
+    const { log } = Fastify({
+      logger: { level: "info", stream: { write: (line: string) => lines.push(line) } },
+    })
+    await runRetentionLanes(SQL, new Date(), log)
+    return lines.map((line) => (JSON.parse(line) as { msg: string }).msg)
+  }
+
+  it("writes no info line when no lane had anything to do", async () => {
+    registerRetentionLane("a", () => Promise.resolve(0))
+    registerRetentionLane("b", () => Promise.resolve(0))
+    expect(await infoLines()).toEqual([])
+  })
+
+  it("writes the summary when a lane processed rows", async () => {
+    registerRetentionLane("a", () => Promise.resolve(0))
+    registerRetentionLane("b", () => Promise.resolve(4))
+    expect(await infoLines()).toEqual(["host retention sweep complete"])
+  })
+
+  it("writes the summary when a lane failed", async () => {
+    registerRetentionLane("a", () => Promise.reject(new Error("boom")))
+    expect(await infoLines()).toEqual([
+      "host retention: lane failed (other lanes continue)",
+      "host retention sweep complete",
+    ])
+  })
+})
+
+describe("sweepLogLevel", () => {
+  it("is debug when every count is zero and info when any is positive", () => {
+    expect(sweepLogLevel({})).toBe("debug")
+    expect(sweepLogLevel({ released: 0, resumed: 0 })).toBe("debug")
+    expect(sweepLogLevel({ released: 0, resumed: 2 })).toBe("info")
   })
 })
 

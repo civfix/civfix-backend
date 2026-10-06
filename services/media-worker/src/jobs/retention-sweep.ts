@@ -45,7 +45,7 @@ export const RETENTION_INBOUND_EMAILS_BATCH = INBOUND_EMAIL_RETENTION_BATCH
 export const RETENTION_MAX_PAGES = 20
 
 export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<RetentionSweepResult> {
-  const { log, report, now: clock } = resolveJobObs(deps)
+  const { log, debug, report, now: clock } = resolveJobObs(deps)
   const now = clock()
   const grace = deps.graceMs ?? RETENTION_GRACE_MS
   const pageSize = deps.batchSize ?? RETENTION_BATCH
@@ -181,7 +181,8 @@ export async function runRetentionSweep(deps: RetentionSweepDeps): Promise<Reten
     report,
   })
 
-  log("retention.sweep: done", {
+  const summary = Object.values(result).some((count) => count > 0) ? log : debug
+  summary("retention.sweep: done", {
     otps: result.otps,
     anonTokens: result.anonTokens,
     sessions: result.sessions,

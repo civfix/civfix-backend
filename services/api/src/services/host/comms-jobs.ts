@@ -24,6 +24,7 @@ import { makeDrizzleBroadcastRepository } from "./broadcast-repository.drizzle.j
 import { makeDrizzleHostTeamRepository } from "./host-team-repository.drizzle.js"
 import { TEAM_INVITE_EMAIL_SCRUB_DELAY_MS } from "./host-team-service.js"
 import { runRegistrationRetentionLanes } from "./registration-retention.js"
+import { sweepLogLevel } from "../sweep-log.js"
 
 export const DELIVERY_RETENTION_DAYS = 180
 export const BROADCAST_CONTENT_RETENTION_DAYS = 180
@@ -60,7 +61,10 @@ export async function registerCommsJobs(
   await container.jobs.schedule(BROADCAST_SCHEDULE_SWEEP_JOB, env.BROADCAST_SWEEP_CRON)
   await container.jobs.work(BROADCAST_SCHEDULE_SWEEP_JOB, async () => {
     const result = await runtime().pipeline.sweep()
-    logger?.info({ evt: "broadcast.sweep.done", ...result }, "broadcast schedule sweep complete")
+    logger?.[sweepLogLevel(result)](
+      { evt: "broadcast.sweep.done", ...result },
+      "broadcast schedule sweep complete",
+    )
   })
 
   await container.jobs.schedule(EVENT_REMINDERS_SWEEP_JOB, env.EVENT_REMINDERS_CRON)
@@ -73,8 +77,9 @@ export async function registerCommsJobs(
     const metrics = runtime().metrics
     const flushed = await metrics.flushCounters()
     const rolled = await metrics.rollup()
-    logger?.info(
-      { evt: "metrics.rollup.done", ...flushed, ...rolled },
+    const counts = { ...flushed, ...rolled }
+    logger?.[sweepLogLevel(counts)](
+      { evt: "metrics.rollup.done", ...counts },
       "event metrics rollup complete",
     )
   })
@@ -91,7 +96,10 @@ export async function registerCommsJobs(
   await container.jobs.schedule(HOST_EXPORT_REAP_JOB, env.HOST_EXPORT_REAP_CRON)
   await container.jobs.work(HOST_EXPORT_REAP_JOB, async () => {
     const result = await runtime().exports.reap(EXPORT_REAP_LIMIT)
-    logger?.info({ evt: "host.export.reap.done", ...result }, "host export reap complete")
+    logger?.[sweepLogLevel(result)](
+      { evt: "host.export.reap.done", ...result },
+      "host export reap complete",
+    )
   })
 
   await container.jobs.schedule(HOST_RETENTION_SWEEP_JOB, env.HOST_RETENTION_CRON)
