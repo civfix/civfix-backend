@@ -1,5 +1,8 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  // Off: when turbo detects an AI agent it otherwise writes a managed block into a root AGENTS.md
+  // before every command, and that block tells the agent to commit it.
+  "agentGuidance": false,
   // Turbo runs tasks with a STRICT env by default, so anything not listed here is stripped before the
   // task sees it. The integration suites boot Postgres via testcontainers and SKIP THEMSELVES (they do
   // not fail) when Docker is unreachable — so without this passthrough a local `pnpm test` silently
