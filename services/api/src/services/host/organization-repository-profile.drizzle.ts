@@ -166,6 +166,8 @@ export function makeOrganizationProfileMethods(
       const verifiedKind = args.verifiedKind ?? null
       try {
         return await sql.begin(async (tx) => {
+          // Before the insert, so the new row's logo cannot vouch for itself.
+          await claimOrgLogoInTx(tx, args.organizationId, args.logoMediaId, args.createdBy)
           await tx`
             INSERT INTO organizations (
               id, slug, name, description, website_url, logo_media_id, social_links,
@@ -191,7 +193,6 @@ export function makeOrganizationProfileMethods(
             INSERT INTO organization_members (organization_id, user_id, role, joined_at)
             VALUES (${args.organizationId}, ${ownerUserId}, 'owner', ${args.now})
           `
-          await claimOrgLogoInTx(tx, args.organizationId, args.logoMediaId, args.createdBy)
           if (args.operatorReason !== undefined) {
             await writeHostAudit(tx, {
               actorId: args.createdBy,
@@ -291,13 +292,16 @@ export function makeOrganizationProfileMethods(
       const setList = organizationPatchSet(sql, patch, now)
       try {
         return await sql.begin(async (tx): Promise<UpdateOrganizationOutcome> => {
-          const updated = await tx<{ id: string }[]>`
-            UPDATE organizations SET ${setList}
+          const locked = await tx<{ id: string }[]>`
+            SELECT id FROM organizations
             WHERE id = ${id} AND deleted_at IS NULL
-            RETURNING id
+            LIMIT 1 FOR NO KEY UPDATE
           `
-          if (updated.length === 0) return "not_found"
+          if (locked.length === 0) return "not_found"
+          // The claim runs before the write: once logo_media_id holds the new id, it reads as this
+          // organization's current logo and skips the uploader check.
           await claimOrgLogoInTx(tx, id, patch.logoMediaId ?? null, actorId)
+          await tx`UPDATE organizations SET ${setList} WHERE id = ${id}`
           if (audit !== undefined) {
             await writeHostAudit(tx, {
               actorId: audit.actorId,

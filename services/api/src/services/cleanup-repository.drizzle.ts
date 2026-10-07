@@ -428,11 +428,14 @@ async function updateCleanupInTx(
   patch: UpdateCleanupPatch,
   actorUserId: string,
 ): Promise<boolean> {
-  const updated = await tx<{ id: string }[]>`
-    UPDATE cleanups SET ${setList} WHERE id = ${id} RETURNING id
+  const locked = await tx<{ id: string }[]>`
+    SELECT id FROM cleanups WHERE id = ${id} LIMIT 1 FOR NO KEY UPDATE
   `
-  if (updated.length === 0) return false
+  if (locked.length === 0) return false
+  // The claim runs before the write: once the row holds the patch's ids, every one of them reads as
+  // already bound to this event and skips the uploader check.
   await claimEventMediaInTx(tx, id, patch, actorUserId)
+  await tx`UPDATE cleanups SET ${setList} WHERE id = ${id}`
   return true
 }
 
@@ -511,6 +514,8 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
       try {
         const record = await sql.begin(async (tx) => {
           const referenceCode = await allocateEventReferenceCode(tx, args.jurCode)
+          // Before the insert, so the new row's cover and gallery cannot vouch for themselves.
+          await claimEventMediaInTx(tx, args.cleanupId, args.host, args.organizerUserId)
 
           await tx`
             INSERT INTO cleanups (
@@ -555,7 +560,6 @@ export function makeDrizzleCleanupRepository(sql: Sql): CleanupRepository {
           `
           await linkReportsInTx(tx, args.cleanupId, args.linkedReportIds, args.organizerUserId)
           await insertSlotsInTx(tx, args.cleanupId, args.slots)
-          await claimEventMediaInTx(tx, args.cleanupId, args.host, args.organizerUserId)
           if (args.copyFrom !== undefined) {
             await copyEventExtrasInTx(tx, args.cleanupId, args.copyFrom)
           }

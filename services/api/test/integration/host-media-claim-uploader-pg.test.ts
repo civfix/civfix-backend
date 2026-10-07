@@ -126,6 +126,31 @@ describe.skipIf(!pg)(
       expect(await purposeOf(foreign.id)).toBe("report")
     })
 
+    it("an event edit keeps a gallery image the event already binds, whoever uploaded it", async () => {
+      const host = await newUser("event host")
+      const cleanupId = await seedCleanup(h.sql, {
+        organizerUserId: host,
+        title: "Kept gallery sweep",
+        lng: -118.25,
+        lat: 34.05,
+        scheduledAt: FUTURE,
+      })
+      const bound = await uploadBy(await newUser("co-host"))
+      await h.sql`
+      UPDATE cleanups SET gallery_media_ids = ARRAY[${bound.id}::uuid] WHERE id = ${cleanupId}
+    `
+      const own = await uploadBy(host)
+
+      expect(
+        await cleanups.updateCleanup(cleanupId, { galleryMediaIds: [bound.id, own.id] }, host),
+      ).toBe(true)
+
+      const [row] = await h.sql<{ gallery_media_ids: string[] }[]>`
+      SELECT gallery_media_ids FROM cleanups WHERE id = ${cleanupId}
+    `
+      expect(row!.gallery_media_ids).toEqual([bound.id, own.id])
+    })
+
     it("a new organization refuses another account's upload as its logo", async () => {
       const creator = await newUser("org creator")
       const foreign = await uploadBy(await newUser("uploader"))
@@ -148,6 +173,18 @@ describe.skipIf(!pg)(
       SELECT logo_media_id FROM organizations WHERE id = ${created.id}
     `
       expect(row!.logo_media_id).toBeNull()
+    })
+
+    it("an organization edit keeps the logo it already binds, whoever uploaded it", async () => {
+      const owner = await newUser("org owner")
+      const created = await newOrg(owner, null)
+      if (created === "slug_taken") throw new Error("slug unexpectedly taken")
+      const bound = await uploadBy(await newUser("former owner"))
+      await h.sql`UPDATE organizations SET logo_media_id = ${bound.id} WHERE id = ${created.id}`
+
+      expect(
+        await orgs.updateOrganizationTx(created.id, { logoMediaId: bound.id }, new Date(), owner),
+      ).toBe("updated")
     })
 
     it("an organization edit claims the editor's own upload as its logo", async () => {

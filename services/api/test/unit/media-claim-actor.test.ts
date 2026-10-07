@@ -91,7 +91,12 @@ describe("event media claims bind only the acting host's own uploads", () => {
 
   it("an event edit claims new images as the editor, while images already on the event stay", async () => {
     const editor = randomUUID()
-    const fake = makeFakeSql([{ match: /UPDATE cleanups SET/, rows: [{ id: randomUUID() }] }])
+    const fake = makeFakeSql([
+      {
+        match: /FROM cleanups WHERE id = \S+ LIMIT 1 FOR NO KEY UPDATE/,
+        rows: [{ id: randomUUID() }],
+      },
+    ])
 
     await expect(
       makeDrizzleCleanupRepository(repoSql(fake)).updateCleanup(
@@ -175,7 +180,9 @@ describe("organization media claims bind only the acting member's own uploads", 
 
   it("an organization edit claims its new logo as the editor", async () => {
     const editor = randomUUID()
-    const fake = makeFakeSql([{ match: /UPDATE organizations SET/, rows: [{ id: randomUUID() }] }])
+    const fake = makeFakeSql([
+      { match: /FROM organizations[\s\S]*FOR NO KEY UPDATE/, rows: [{ id: randomUUID() }] },
+    ])
 
     await expect(
       makeDrizzleOrganizationRepository(repoSql(fake)).updateOrganizationTx(
