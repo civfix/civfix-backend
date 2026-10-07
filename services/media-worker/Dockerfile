@@ -12,18 +12,27 @@
 #     docker build -f services/media-worker/Dockerfile -t civfix/media-worker:latest .
 #
 # FFMPEG / SHARP IN-CONTAINER (the key correctness point):
-#   * FFMPEG IS PINNED AND CHECKSUMMED HERE, not taken from npm. ffprobe-static@3.1.0 ships an FFmpeg
-#     4.0.2 binary from 2018 (the tool that must interpret untrusted container bytes) with no channel
-#     for the demuxer memory-safety fixes released since. The `ffmpeg` stage below downloads ONE pinned
-#     release per CPU architecture (FFMPEG_URL_/FFMPEG_SHA256_{AMD64,ARM64} ARGs, selected
-#     by BuildKit's TARGETARCH; the boxes are arm64), verifies its SHA-256 and fails the build on a
-#     mismatch. The runtime stage exports FFMPEG_PATH/FFPROBE_PATH, which sandbox/binaries.ts REQUIRES
-#     in production (the npm static packages are devDependencies and are pruned out of this image by
-#     `pnpm --prod deploy`, so there is no silent fallback to the 2018 build).
-#     BUMPING IT: pick the linux64 AND linuxarm64 assets of one newer autobuild, put their URLs in the
-#     two FFMPEG_URL_* ARGs, and set each FFMPEG_SHA256_* to the `sha256sum` of its download. BtbN
-#     prunes old dated autobuild tags, so a stale pin eventually 404s the build: a loud failure, never a
-#     silent downgrade.
+#   * FFMPEG IS BUILT HERE FROM THE OFFICIAL SOURCE RELEASE, not taken from npm or from a third-party
+#     binary build. ffprobe-static@3.1.0 ships an FFmpeg 4.0.2 binary from 2018 (the tool that must
+#     interpret untrusted container bytes) with no channel for the demuxer memory-safety fixes released
+#     since. FFmpeg publishes no binaries of its own, and the dated third-party builds this stage used to
+#     download are pruned after about two weeks, which broke every build that still pinned one. The
+#     `ffmpeg` stage downloads the ffmpeg.org release tarball, checks it against FFMPEG_SHA256 AND
+#     requires a signature by FFmpeg's release signing key, pinned by its fingerprint FFMPEG_KEY_FPR,
+#     then compiles ONLY what src/sandbox uses: the mov demuxer, the mp4 + image2 muxers, the h264/hevc
+#     decoders, the mjpeg encoder for the poster frame and the file protocol (configure adds the filters
+#     the ffmpeg CLI inserts itself). Every other demuxer and decoder, the IAMF audio parser the mov
+#     demuxer would otherwise pull in, the network stack and all autodetected external libraries are
+#     left out, so a hostile upload only reaches the mov demuxer (with its ISO media and RIFF helpers)
+#     and the h264/hevc parsers and decoders. The runtime stage exports FFMPEG_PATH/FFPROBE_PATH, which
+#     sandbox/binaries.ts REQUIRES in production (the npm static packages are devDependencies and are
+#     pruned out of this image by `pnpm --prod deploy`, so there is no silent fallback to the 2018
+#     build), and the boot preflight pushes an h264 and an hevc clip through the real video lane, so a
+#     build missing a component fails the CI smoke job.
+#     BUMPING IT: set FFMPEG_VERSION to a newer release from https://ffmpeg.org/releases/, verify its
+#     .asc against https://ffmpeg.org/ffmpeg-devel.asc (`gpg --verify`), and set FFMPEG_SHA256 to the
+#     `sha256sum` of the tarball. A new sandbox feature that needs another format or codec adds it to
+#     the configure line.
 #   * sharp 0.33.x ships prebuilt linux binaries (@img/sharp-linux-*) that run on glibc, which the
 #     Debian bookworm base provides. No build toolchain or libvips apt package is required.
 #   Both are installed INSIDE this linux image (never copied from the host), so the platform is correct.
@@ -45,7 +54,7 @@
 #
 # Stages:
 #   base    pinned Node 22 (bookworm-slim, glibc) + corepack-pinned pnpm.
-#   ffmpeg  download + checksum-verify the pinned FFmpeg release; keep only ffmpeg + ffprobe.
+#   ffmpeg  verify the pinned FFmpeg source release and compile the minimal ffmpeg + ffprobe.
 #   build   install the FULL workspace, build shared -> api(src is inlined) -> worker, then
 #           `pnpm deploy --prod` the worker into a self-contained, dev-pruned /out.
 #   runtime copy /out + the pinned binaries, provision the sandbox user, drop privileges in the
@@ -60,30 +69,44 @@ RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 WORKDIR /app
 
 FROM base AS ffmpeg
-ARG TARGETARCH
-ARG FFMPEG_VERSION=n8.1.2
-ARG FFMPEG_RELEASE=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-14-13-17
-ARG FFMPEG_URL_AMD64=${FFMPEG_RELEASE}/ffmpeg-n8.1.2-52-g5a03dfa0f6-linux64-lgpl-8.1.tar.xz
-ARG FFMPEG_SHA256_AMD64=0aa0402135ee553746f8015ec65eea50ba521b44d713d1ee60c04eb936230305
-ARG FFMPEG_URL_ARM64=${FFMPEG_RELEASE}/ffmpeg-n8.1.2-52-g5a03dfa0f6-linuxarm64-lgpl-8.1.tar.xz
-ARG FFMPEG_SHA256_ARM64=0f776300bba480239f67e635e1b18f9e3d8e9a02c89d9abc2f0aa4f501d17075
+ARG FFMPEG_VERSION=8.1.3
+ARG FFMPEG_SHA256=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
+ARG FFMPEG_KEY_FPR=FCF986EA15E6E293A5644F10B4322F04D67658D8
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+ && apt-get install -y --no-install-recommends ca-certificates curl xz-utils gpg gpgv gcc libc6-dev make nasm \
  && rm -rf /var/lib/apt/lists/*
-RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
-      amd64) FFMPEG_URL="$FFMPEG_URL_AMD64"; FFMPEG_SHA256="$FFMPEG_SHA256_AMD64" ;; \
-      arm64) FFMPEG_URL="$FFMPEG_URL_ARM64"; FFMPEG_SHA256="$FFMPEG_SHA256_ARM64" ;; \
-      *) echo "unsupported TARGETARCH '${TARGETARCH}' for the pinned FFmpeg build" >&2; exit 1 ;; \
-    esac \
- && curl -fsSL -o /tmp/ffmpeg.tar.xz "$FFMPEG_URL" \
- && echo "${FFMPEG_SHA256}  /tmp/ffmpeg.tar.xz" | sha256sum -c - \
- && mkdir -p /opt/ffmpeg/bin \
- && tar -xJf /tmp/ffmpeg.tar.xz -C /opt/ffmpeg/bin --strip-components=2 \
-      --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' \
- && rm -f /tmp/ffmpeg.tar.xz \
- && chmod 0755 /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe \
- && /opt/ffmpeg/bin/ffprobe -version | head -n 1 | grep -q "$FFMPEG_VERSION" \
- && /opt/ffmpeg/bin/ffmpeg -version | head -n 1 | grep -q "$FFMPEG_VERSION"
+WORKDIR /tmp/ffmpeg
+# --toolchain=hardened: stack protector, FORTIFY_SOURCE, full RELRO and PIE for the one binary that
+# parses attacker-supplied bytes.
+RUN curl -fsSL --retry 5 --retry-all-errors -O "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+ && curl -fsSL --retry 5 --retry-all-errors -O "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz.asc" \
+ && echo "${FFMPEG_SHA256}  ffmpeg-${FFMPEG_VERSION}.tar.xz" | sha256sum -c - \
+ && curl -fsSL --retry 5 --retry-all-errors -o ffmpeg-devel.asc https://ffmpeg.org/ffmpeg-devel.asc \
+ && gpg --batch --yes --dearmor -o ffmpeg-devel.gpg ffmpeg-devel.asc \
+ && gpgv --keyring ./ffmpeg-devel.gpg --status-fd 1 "ffmpeg-${FFMPEG_VERSION}.tar.xz.asc" "ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+      | grep -q "^\[GNUPG:\] VALIDSIG .* ${FFMPEG_KEY_FPR}\$" \
+ && tar -xJf "ffmpeg-${FFMPEG_VERSION}.tar.xz" --strip-components=1 \
+ && ./configure \
+      --toolchain=hardened \
+      --disable-everything \
+      --disable-autodetect \
+      --disable-network \
+      --disable-avdevice \
+      --disable-doc \
+      --disable-debug \
+      --disable-ffplay \
+      --disable-iamf \
+      --enable-protocol=file \
+      --enable-demuxer=mov \
+      --enable-muxer=mp4,image2 \
+      --enable-decoder=h264,hevc \
+      --enable-parser=h264,hevc \
+      --enable-encoder=mjpeg \
+      --enable-filter=scale \
+ && make -j"$(nproc)" \
+ && install -D -m 0755 -t /opt/ffmpeg/bin ffmpeg ffprobe \
+ && /opt/ffmpeg/bin/ffprobe -version | head -n 1 | grep -q "version ${FFMPEG_VERSION} " \
+ && /opt/ffmpeg/bin/ffmpeg -version | head -n 1 | grep -q "version ${FFMPEG_VERSION} "
 
 FROM base AS build
 COPY . .

@@ -78,6 +78,11 @@ export const en = {
   "notification.hours_logged.title": "Service hours credited",
   "notification.hours_logged.body": "{{hours}} hours were credited for {{title}}.",
 
+  // The CivFix team credited hours for work outside any event, so there is no event title to name. Sent
+  // on a manual credit only; a void is silent. {{hours}} = the credited amount.
+  "notification.hours_adjusted.title": "Service hours credited",
+  "notification.hours_adjusted.body": "CivFix credited {{hours}} hours to your volunteer record.",
+
   // The host edited the event's roles and the one you had claimed no longer exists, so you are back in
   // the crew with no role. {{slot}} = the removed role's title, {{title}} = the event. There is
   // deliberately no "slot claimed" bell to the host.

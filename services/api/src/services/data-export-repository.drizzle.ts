@@ -69,7 +69,8 @@ export function makeDrizzleDataExportRepository(sql: Sql): DataExportRepository 
 
     volunteerHours: (userId, rowCap) => sql<VolunteerHoursExportRow[]>`
       SELECT id, source, report_id, cleanup_id, jurisdiction_geoid,
-        hours::float8 AS hours, logged_by_user_id, created_at
+        hours::float8 AS hours, logged_by_user_id, service_date::text AS service_date,
+        created_at, voided_at
       FROM volunteer_hours
       WHERE user_id = ${userId}
       ORDER BY created_at DESC

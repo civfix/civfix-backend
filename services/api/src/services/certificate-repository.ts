@@ -59,7 +59,10 @@ export interface CertificateInsert {
   periodStart: Date | null
   periodEnd: Date | null
   ledgerFingerprint: string
-  /** The exact rendered model, stored so the object is re-renderable. Written once, never read back. */
+  /**
+   * The exact rendered model, stored so the object is re-renderable. Written once; only
+   * `liveCodesListingEntry` reads inside it.
+   */
   snapshot: TranscriptModel
   r2Key: string
   documentSha256: string
@@ -92,4 +95,15 @@ export interface CertificateRepository {
     at: Date
   }): Promise<void>
   findHolder(userId: string): Promise<CertificateHolder | null>
+  /**
+   * Live (unrevoked) certificates of `userId` whose frozen snapshot itemised ledger entry `entryId`,
+   * newest first. An operator void does not change an issued document, so the admin plane lists these
+   * for a revoke through `db:certificate:revoke`.
+   */
+  liveCodesListingEntry(userId: string, entryId: string): Promise<CertificateEntryCode[]>
+}
+
+export interface CertificateEntryCode {
+  code: string
+  issuedAt: Date
 }

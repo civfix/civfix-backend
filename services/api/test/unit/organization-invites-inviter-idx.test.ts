@@ -12,7 +12,7 @@ const MIGRATION = join(
   "..",
   "..",
   "drizzle",
-  "0182_organization_invites_invited_by_idx.sql",
+  "0193_organization_invites_invited_by_idx.sql",
 )
 
 describe("organization_invites inviter index for account erasure", () => {

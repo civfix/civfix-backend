@@ -200,6 +200,9 @@ jobs:
   deploy:
     name: ssh deploy + availability assertion
     needs: promote
+    # The one approval per release: promote only re-tags the newest release, which only a founder can
+    # publish, so the gate sits on the job that changes the box.
+    environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # No checkout: the VPS pulls the code itself; this job only needs to SSH in.

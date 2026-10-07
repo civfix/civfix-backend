@@ -39,6 +39,8 @@ export type AdminAuditAction =
   | "user.unverified"
   | "user.report_verified"
   | "user.report_unverified"
+  | "user.hours_credited"
+  | "user.hours_voided"
   | "message.removed"
   | "gov_claim.verified"
   | "gov_claim.approved"
@@ -59,6 +61,7 @@ export type AdminAuditAction =
   | "inbox.status_changed"
   | "user.detail_viewed"
   | "user.messages_viewed"
+  | "user.hours_viewed"
   | "inbox.message_viewed"
   | "mail.thread_viewed"
   | "media.viewed"
@@ -112,6 +115,7 @@ export type AdminAuditAction =
 export const AUDIT_READ_ACTIONS: readonly AdminAuditAction[] = [
   "user.detail_viewed",
   "user.messages_viewed",
+  "user.hours_viewed",
   "inbox.message_viewed",
   "mail.thread_viewed",
   "media.viewed",

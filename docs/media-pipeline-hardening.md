@@ -200,8 +200,10 @@ user, with no capabilities and no environment:
   left behind are reaped instead of accumulating as zombies against `pids_limit`.
 - **Boot self-check (`src/sandbox/preflight.ts`).** In production the worker asserts it is not root,
   resolves both binaries, hands over one scratch dir, runs the REAL image lane on a built-in 1×1 PNG and
-  the pinned ffprobe through the wrapper (so a missing `dist/image-lane.js`, a `node_modules` the sandbox
-  uid cannot read, or a broken protocol refuses the boot instead of rejecting every upload), and (this
+  the REAL video lane (probe, remux and poster-frame grab) on built-in 16×16 h264 and hevc clips that
+  carry a rotation matrix (so a missing `dist/image-lane.js`, a `node_modules` the sandbox uid cannot
+  read, a broken protocol, or an ffmpeg build missing a component the lanes use refuses the boot instead
+  of rejecting every upload or silently dropping every poster frame), and (this
   is the part that matters) spawns
   `cat /proc/self/status` **through the real wrapper** and requires the child to report
   `Uid: 1001 1001 1001 1001`, `Gid: 1001 1001 1001 1001` and `CapInh/CapPrm/CapEff/CapAmb` all zero
@@ -230,22 +232,38 @@ Never place an executable in `/tmp`: the compose tmpfs is `noexec`.
 must interpret an untrusted container) with no security-patch channel. It is a
 **devDependency** now and is pruned out of the production image.
 
-The image installs a pinned, checksum-verified release instead: one BtbN
-autobuild per CPU architecture, selected by BuildKit's `TARGETARCH`
-(`FFMPEG_URL_AMD64` / `FFMPEG_SHA256_AMD64` and `FFMPEG_URL_ARM64` /
-`FFMPEG_SHA256_ARM64` ARGs in `services/media-worker/Dockerfile`, currently
-**FFmpeg n8.1.2**, LGPL static; the boxes are arm64). The build fails on a
-checksum mismatch and checks that both `ffprobe -version` and `ffmpeg -version`
-report `FFMPEG_VERSION`. `FFMPEG_PATH` /
-`FFPROBE_PATH` are set in the image and **required in production**
-(`src/sandbox/binaries.ts`), so there is no silent fallback to the 2018 build;
-outside production the npm statics remain the fallback so local dev and the unit
-suite need no setup.
+FFmpeg publishes no binaries, only signed source releases. The image used to
+download a pinned third-party static build, but those dated builds are pruned
+after about two weeks, so every pin broke the build soon after it was set. The
+`ffmpeg` stage of `services/media-worker/Dockerfile` now builds the official
+source release instead (currently **FFmpeg 8.1.3**, LGPL):
 
-Bumping: pick the linux64 and linuxarm64 assets of one newer autobuild, set
-`FFMPEG_VERSION`, `FFMPEG_RELEASE` and both `FFMPEG_URL_*` ARGs, and set each
-`FFMPEG_SHA256_*` to the `sha256sum` of its download. The build breaks loudly if
-the pinned URL is pruned upstream.
+- **Provenance.** The tarball must match `FFMPEG_SHA256` AND carry a valid
+  signature from FFmpeg's release signing key, pinned by its fingerprint
+  `FFMPEG_KEY_FPR` (`FCF9 86EA 15E6 E293 A564 4F10 B432 2F04 D676 58D8`). The
+  build fails on either mismatch.
+- **Minimal surface.** `--disable-everything` and `--disable-autodetect`, then
+  only what `src/sandbox` uses: the `file` protocol, the `mov` demuxer, the
+  `mp4` and `image2` muxers, the `h264`/`hevc` parsers and decoders, and the
+  `mjpeg` encoder for the poster frame. `configure` adds the filters the ffmpeg
+  CLI inserts on its own (autorotate, scale, format). There is no network stack,
+  no other demuxer or decoder, and no IAMF parser (`--disable-iamf`), so a
+  hostile upload only reaches the mov demuxer and the h264/hevc decoders.
+- **Hardening.** `--toolchain=hardened`: stack protector, `_FORTIFY_SOURCE`,
+  full RELRO and PIE.
+
+`FFMPEG_PATH` / `FFPROBE_PATH` are set in the image and **required in
+production** (`src/sandbox/binaries.ts`), so there is no silent fallback to the
+2018 build; outside production the npm statics remain the fallback so local dev
+and the unit suite need no setup. Because the boot preflight (§2) pushes h264
+and hevc clips through the real video lane, a build that drops a component the
+worker needs fails the CI smoke job instead of reaching a box.
+
+Bumping: set `FFMPEG_VERSION` to a newer release from
+<https://ffmpeg.org/releases/>, verify its `.asc` against
+<https://ffmpeg.org/ffmpeg-devel.asc> with `gpg --verify`, and set
+`FFMPEG_SHA256` to the tarball's `sha256sum`. A sandbox feature that needs
+another format or codec adds it to the `configure` line.
 
 The probe is also narrowed: `-f mov,mp4,m4a,3gp,3g2,mj2` forces the demuxer
 family intake accepts (container auto-detection was the widest parser surface),

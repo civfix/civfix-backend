@@ -1,5 +1,5 @@
 -- =============================================================================
--- 0182_organization_invites_invited_by_idx.sql
+-- 0193_organization_invites_invited_by_idx.sql
 -- -----------------------------------------------------------------------------
 -- Account erasure (PgUserStore.softDeleteAndAnonymize) revokes every pending
 -- organization invite the user sent or received:

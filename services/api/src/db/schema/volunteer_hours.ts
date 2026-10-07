@@ -1,5 +1,7 @@
 import { sql } from "drizzle-orm"
 import {
+  check,
+  date,
   index,
   numeric,
   pgTable,
@@ -33,6 +35,10 @@ export const volunteerHours = pgTable(
     note: text("note"),
     voidedAt: timestamp("voided_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    serviceDate: date("service_date"),
+    creditedByOperatorId: uuid("credited_by_operator_id").references(() => users.id),
+    voidedByOperatorId: uuid("voided_by_operator_id").references(() => users.id),
+    voidReason: text("void_reason"),
   },
   (t) => [
     index("volunteer_hours_user_idx").on(t.userId),
@@ -43,6 +49,14 @@ export const volunteerHours = pgTable(
     uniqueIndex("volunteer_hours_event_uidx")
       .on(t.cleanupId, t.userId)
       .where(sql`${t.source} = 'event'`),
+    check(
+      "volunteer_hours_service_date_chk",
+      sql`(${t.source} = 'manual') = (${t.serviceDate} IS NOT NULL)`,
+    ),
+    check(
+      "volunteer_hours_void_reason_len_chk",
+      sql`${t.voidReason} IS NULL OR char_length(${t.voidReason}) <= 1000`,
+    ),
   ],
 )
 

@@ -51,6 +51,10 @@ civfix-backend/
   only there: with `CI` (set by GitHub Actions) or `CIVFIX_REQUIRE_PG=1` in the environment, a failed
   container start FAILS the run instead of silently dropping every integration test from it. Set
   `CIVFIX_ALLOW_PG_SKIP=1` to opt a CI job back into skipping.
+- `CIVFIX_TEST_PG_IMAGE` overrides the integration suites' PostGIS image (default
+  `postgis/postgis:16-3.4`, which publishes no arm64 tag). On an arm64 host, build the infra image from
+  the umbrella root with `docker build -t civfix/postgis:16-local civfix-infra/postgres` and set
+  `CIVFIX_TEST_PG_IMAGE=civfix/postgis:16-local`.
 
 ## The shared contract (`@civfix/shared` from the private registry)
 
@@ -384,13 +388,11 @@ docker build -f services/api/Dockerfile -t civfix/api:latest .
 docker build -f services/media-worker/Dockerfile -t civfix/media-worker:latest .
 ```
 
-ffmpeg/sharp in-container: the worker image downloads ONE pinned, SHA-256-verified FFmpeg release per
-CPU architecture (selected by BuildKit's `TARGETARCH`; the boxes are arm64) and exports
-`FFMPEG_PATH`/`FFPROBE_PATH`, which the worker requires in production. The npm `ffmpeg-static` /
-`ffprobe-static` packages are devDependencies used only by local runs and tests, and are pruned out of
-the image. `sharp` uses its prebuilt linux binaries for the target architecture (glibc, which the
-Debian bookworm base provides). Everything is installed INSIDE the linux image (never copied from the
-host) so the platform is correct. See the Dockerfile headers.
+ffmpeg/sharp in-container: the worker image compiles a minimal ffmpeg + ffprobe from the signed official
+FFmpeg source release (`ffmpeg-static` / `ffprobe-static` are dev-only and pruned from the image) and uses
+`sharp`'s prebuilt linux binaries (glibc, which the Debian bookworm base provides). Both are built or
+installed INSIDE the linux image (never copied from the host) so the platform is correct. See the
+Dockerfile header and `docs/media-pipeline-hardening.md` §3.
 
 ## Dev flags: USE_FAKE_*
 

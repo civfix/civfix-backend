@@ -162,7 +162,7 @@ describe("hours ledger: getMyHoursEntries keyset paging", () => {
     expect(all.items.map((e) => e.source).sort()).toEqual(["event", "event"])
 
     const voided = all.items.find((e) => e.eventTitle === "Voided")!
-    repo.voidEntry(voided.id)
+    repo.markVoided(voided.id)
     const after = await service.getMyHoursEntries(BOB, {})
     expect(after.items.map((e) => e.source)).toEqual(["event"])
     expect(after.items.map((e) => e.eventTitle)).toEqual(["Kept"])
@@ -458,7 +458,9 @@ describe("hours ledger: getEventHours scope matrix (C10)", () => {
     )
     const res = await service.getEventHours(EVENT, CAROL)
     expect(res.scope).toBe("self")
-    expect(res.entries).toEqual([{ userId: CAROL, hours: 1.5, loggedAt: res.entries[0]!.loggedAt }])
+    expect(res.entries).toEqual([
+      { userId: CAROL, hours: 1.5, loggedAt: res.entries[0]!.loggedAt, creditedByOfficial: false },
+    ])
     expect(res.anyLogged).toBe(true)
   })
 
@@ -512,7 +514,7 @@ describe("hours ledger: getEventHours scope matrix (C10)", () => {
     const ledger = await repo.listEventHours(EVENT, null)
     expect(ledger.entries).toHaveLength(2)
     const owned = await service.getMyHoursEntries(BOB, {})
-    repo.voidEntry(owned.items[0]!.id)
+    repo.markVoided(owned.items[0]!.id)
 
     const after = await service.getEventHours(EVENT, HOST)
     expect(after.entries.map((e) => e.userId)).toEqual([CAROL])

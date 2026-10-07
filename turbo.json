@@ -21,6 +21,10 @@
     "CIVFIX_REQUIRE_PG",
     "CIVFIX_ALLOW_PG_SKIP"
   ],
+  // The arm64 PostGIS image override (test/helpers/pg-container.ts). In globalEnv, not the passthrough
+  // list, because it changes which suite actually runs: unhashed, an arm64 run that skipped on the
+  // amd64-only default image would be cached green and replayed after the override is set.
+  "globalEnv": ["CIVFIX_TEST_PG_IMAGE"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

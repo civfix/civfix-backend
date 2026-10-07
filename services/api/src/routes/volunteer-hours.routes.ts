@@ -26,13 +26,13 @@ import type { VolunteerHoursRepository } from "../services/volunteer-hours-repos
 import { toHoursAnomalyModerationItem } from "../services/volunteer-hours-anomaly.js"
 import { makeModerationService } from "../services/admin/moderation-service.js"
 import { makeDrizzleModerationRepository } from "../services/admin/moderation-repository.drizzle.js"
-import { makeDrizzleCleanupRepository } from "../services/cleanup-repository.drizzle.js"
 import { makeInsightsGeneration } from "../services/host/host-analytics-cache.js"
 import { MEDIA_GET_URL_TTL_SEC } from "../services/media-intake-service.js"
 import { makeRouteNotificationService } from "../services/route-notifier.js"
 import type { NotificationService } from "../services/notification-service.js"
 import { route } from "../versioning/route.js"
 import { parse } from "./_validate.js"
+import { makeCleanupHoursLookup } from "./volunteer-hours-wiring.js"
 
 export interface VolunteerHoursOverrides {
   repo: VolunteerHoursRepository
@@ -101,33 +101,7 @@ export async function registerVolunteerHoursRoutes(
   function cleanupLookup(): CleanupHoursLookup {
     const overrides = app.volunteerOverrides
     if (overrides?.cleanups) return overrides.cleanups
-    return {
-      async load(cleanupId: string) {
-        const record = await makeDrizzleCleanupRepository(container.getDb().sql).findCleanupById(
-          cleanupId,
-          null,
-        )
-        if (!record) return null
-        return {
-          organizerUserId: record.organizerUserId,
-          status: record.status,
-          visibility: record.visibility,
-          jurisdictionGeoid: record.jurisdictionGeoid,
-          title: record.title,
-          scheduledAt: record.scheduledAt,
-          endsAt: record.endsAt,
-          completedAt: record.completedAt,
-          timezone: record.timezone,
-        }
-      },
-      listMemberIds: (cleanupId: string, limit: number) =>
-        makeDrizzleCleanupRepository(container.getDb().sql).listMemberIds(cleanupId, limit),
-      roleOf: (cleanupId: string, userId: string) =>
-        makeDrizzleCleanupRepository(container.getDb().sql).roleOf(cleanupId, userId),
-      async standingOf(cleanupId: string, userId: string) {
-        return makeDrizzleCleanupRepository(container.getDb().sql).standingOf(cleanupId, userId)
-      },
-    }
+    return makeCleanupHoursLookup(container)
   }
 
   function notifier(): Pick<NotificationService, "createNotification"> | undefined {

@@ -1,10 +1,9 @@
 # Volunteer-hours integrity (civfix-backend)
 
 **Audience:** internal (engineering + operators). Not served publicly.
-**Last updated:** 2026-09-13 (0168: an event's status is a clock reading over
-`scheduled_at`/`ends_at`, `cleanups.ends_at` is NOT NULL, and the retired
-"mark completed" action is gone - so the window cap now falls back to `ends_at`
-and the daily cap keys on the event's own time zone).
+**Last updated:** 2026-09-26 (operators credit and void hours from the admin console; see
+"Operator credits and voids". A host re-save only rewrites rows it changes, and re-crediting a
+voided row revives it; see "Re-saving and voided rows").
 
 Volunteer hours are the input to `POST /v1/me/volunteer-hours/certificates`, which mints a signed,
 publicly verifiable PDF transcript that residents hand to schools and courts. Hours are supplied by
@@ -28,11 +27,11 @@ Every step was legal, every hour landed on a transcript, and nothing was flagged
 
 | # | Rule | Where | Effect when tripped |
 |---|---|---|---|
-| a | A credit is capped at the event's own window: `COALESCE(completed_at, ends_at) - scheduled_at` **+ 1 h grace**, never above `MAX_EVENT_HOURS` (24) | `volunteer-hours-service.ts` (`creditableHoursForEvent`, `eventDurationMs`) | `VALIDATION` naming the event's real length |
-| b | One person may hold at most **24 h across every event scheduled on the same local calendar day**, read in the event's own IANA zone (`cleanups.timezone`, falling back to `DEFAULT_EVENT_TIME_ZONE`) | `volunteer-hours-repository.drizzle.ts`, inside the crediting transaction under a per-user advisory lock | `CONFLICT` naming what they already hold |
+| a | A credit is capped at the event's own window: `COALESCE(completed_at, ends_at) - scheduled_at` **+ 1 h grace**, never above `MAX_EVENT_HOURS` (24) | `volunteer-hours-rules.ts` (`creditableHoursForEvent`, `eventDurationMs`, checked by `assertCreditableEventHours`) | `VALIDATION` naming the event's real length |
+| b | One person may hold at most **24 h across every event scheduled on the same local calendar day**, read in the event's own IANA zone (`cleanups.timezone`, falling back to `DEFAULT_EVENT_TIME_ZONE`), **plus every live manual adjustment whose `service_date` is that day** | `sameDayEventHours` and `hoursHeldOnServiceDate` (`volunteer-hours-credit.drizzle.ts`) and `assertWithinDailyHoursCap` (`volunteer-hours-rules.ts`), inside the crediting transaction under a per-user advisory lock | `CONFLICT` naming what they already hold |
 | c | Reciprocity inside one event is refused **in both directions**; whoever credits second is the one refused (covers the organizer ↔ promoted-co-host swap) | same transaction | `CONFLICT` |
 | d | Two anomaly signals are **flagged to moderation, never blocked**: >60 h credited in a rolling 7 days, and A↔B crediting each other on *different* events within 30 days | detected in the transaction (`detectHoursAnomalies`, `volunteer-hours-repository.drizzle.ts`), filed after commit by `reportAnomalies` (`volunteer-hours-service.ts`) as the item `toHoursAnomalyModerationItem` (`volunteer-hours-anomaly.ts`) builds | an open `moderation_items` row, `kind = 'pattern'`, `subject_type = 'user'` |
-| e | Hours can be logged only **once the event has ended** (`now >= ends_at`), and never against an event whose window is **shorter than 15 minutes** | `volunteer-hours-service.ts` (`hasEventEnded`, then the `MIN_EVENT_DURATION_MS` check in `logEventHours`) | `CONFLICT` |
+| e | Hours can be logged only **once the event has ended** (`now >= ends_at`), and never against an event whose window is **shorter than 15 minutes** | `assertEventCreditable` in `volunteer-hours-rules.ts` (`hasEventEnded`, then the `MIN_EVENT_DURATION_MS` check) | `CONFLICT` |
 
 Rule (e)'s 15-minute floor is really enforced at write time: `assertEventWindow`
 (`host/event-fields.ts`) refuses any create or update whose `ends_at` is less than
@@ -51,6 +50,73 @@ by `assertEventWindow`'s 15 minute / 24 hour duration limits.
 Rule (b) is enforced with `pg_advisory_xact_lock` per credited user, taken in sorted order after the
 per-event lock, so two hosts crediting the same attendee on two different events serialize instead of
 both reading a stale sum. Sorted acquisition is what keeps a batch of concurrent credits deadlock-free.
+Both locks are taken by `lockEventCredits` (`volunteer-hours-credit.drizzle.ts`), and the shared
+upsert there, `writeEventCredits`, relies on the caller already holding them.
+
+## Re-saving and voided rows
+
+The host editor re-submits the whole sheet, so `logEventHours` is written to be idempotent per row:
+
+- **An unchanged live row is not rewritten.** Same hours, same jurisdiction, not voided: the row
+  keeps its `logged_by_user_id`, gets no `volunteer_hours_audit` entry, moves no rollup and rings
+  no one. A co-host re-saving the sheet therefore never silently takes over another host's
+  credits; changing a row's hours does, and that change is journaled with the co-host as actor.
+- **A jurisdiction move is a change.** When the event now resolves to a different jurisdiction (or
+  none), a re-save with the same hours takes them out of the old rollup and adds them to the new one.
+- **A voided row holds 0 hours.** Every void path takes the row's hours out of
+  `user_jurisdiction_hours` when it voids it (0065 did it by recompute), so a re-credit reads its
+  previous value as `0` in no jurisdiction: the full hours go back into the rollup, the journal
+  records `previous_hours = 0` (not `NULL`, which 0053 reserves for a genuine first credit, so the
+  journal still shows the attendee was credited before), the attendee is notified because the
+  hours went up, `voided_at` is cleared and `created_at` moves to the re-credit time.
+- **A change or revival takes over the row's attribution whole.** `logged_by_user_id`, `note` and
+  `credited_by_operator_id` (0182) come from the new write, and the previous void's
+  `voided_by_operator_id` and `void_reason` are cleared, so a host correcting an operator's credit
+  does not keep showing the operator's reason on a row the host now owns. `audit_log` and
+  `volunteer_hours_audit` keep that history.
+
+`credited` in the response still counts every entry the host submitted, so the host's
+confirmation reads the same whether or not a row changed.
+
+## Operator credits and voids
+
+The admin console's Hours tab (DECISIONS §58 in the shared contract) is the one writer besides the
+host sheet. It runs through `admin-user-hours-service.ts` and the repository methods
+`creditEventAsOperator`, `creditManual` and `voidEntry`, each one transaction that writes its
+`audit_log` row (`user.hours_credited` / `user.hours_voided`, actor = the operator, meta = entry,
+hours and reason) before it commits.
+
+- **`POST /v1/admin/users/:id/hours` with `kind: "event"`** credits a person who is not on the
+  roster, typically someone who attended before they had the app. It obeys rules (a), (b) and (e)
+  exactly as the host path does (the same `assertEventCreditable` / `assertCreditableEventHours`
+  and the same locked daily-cap read); only roster membership is skipped. A live row for that
+  person and event is a `CONFLICT`: the operator voids it first. The row is written through the
+  shared `writeEventCredits` upsert with `logged_by_user_id` = the CivFix official account, so the
+  user, the event, the public history and the leaderboard see "credited by CivFix"; the operator
+  lands in `credited_by_operator_id` and in the `volunteer_hours_audit` journal as actor.
+- **`kind: "manual"`** is work outside any event. The row has no `cleanup_id` and no
+  jurisdiction, so it counts toward the person's total and toward no leaderboard, and it carries a
+  `service_date`: required on manual rows and refused on every other source (the 0182 CHECK),
+  on or after 2000-01-01 (the contract's floor), and never after today as read in
+  `DEFAULT_EVENT_TIME_ZONE`. The service date is what dates the row on the ledger and on a
+  transcript. Rule (b) counts manual rows on their `service_date` together with event rows on
+  their local event day, so an operator adjustment cannot push a day past 24 h, in either order.
+  A second identical manual credit (same person, hours, date and operator) within 60 s is a
+  `CONFLICT`, which absorbs a double-submitted form.
+- **`POST /v1/admin/users/:id/hours/:entryId/void`** is the "admin void path" and the only
+  correction: entries are never edited in place, so a wrong credit is voided with a reason and a
+  new one credited. The entry must belong to the account in the path (`NOT_FOUND` otherwise), a
+  second void is a `CONFLICT`, and a retired `source = 'report'` row is never voidable. The void
+  takes the hours out of `user_jurisdiction_hours` and, for an event row, journals
+  `previous_hours = hours, new_hours = 0`. A host may credit the person again afterwards, which
+  revives the row as described above.
+
+Neither operator write runs rule (c) or the rule (d) detectors. Both exist to catch accounts
+crediting *each other*; an operator credit is attributed to CivFix, which can be in no such
+exchange, and the act is already an audited operator action with a written reason, so filing it to
+the moderation queue that same operator works would add noise and no oversight. The operator's
+reason and identity stay on the admin plane: no user-facing read and no data export carries
+`note`, `void_reason` or either operator column.
 
 ## What the anomaly items look like
 
@@ -128,18 +194,17 @@ Issuance (`certificate-service.ts` → `entriesForCertificate`) already excludes
 rows and `source = 'report'` rows. There is **no per-row "flagged" or "pending moderation" state** on
 `volunteer_hours`, and none was added: a moderation signal is a suspicion about a pattern, not a verdict
 on a row, and a silently-omitted row would make the printed total disagree with the ledger the holder
-can see.
-
-The remedy for confirmed abuse is to void the rows (`voided_at`), which removes them from every future
-certificate and from every total, and to revoke any certificate already issued over them. **Neither has
-an operator path in the API today.** No route or service sets `volunteer_hours.voided_at` (the only
-writers are migration `0065_void_report_volunteer_hours.sql` and the in-memory test repository), so
-voiding is a hand-run SQL `UPDATE`. `POST /v1/me/volunteer-hours/certificates/:code/revoke` revokes only
-the caller's own certificate (`WHERE user_id = ${userId}` in `certificate-repository.drizzle.ts`, reason
-`holder`). There is deliberately no admin HTTP route for either; revoking a certificate the holder will
-not revoke is the operator CLI `pnpm --filter @civfix/api db:certificate:revoke <code> --reason issued_in_error`
-(run `--dry-run` first), which records an operator reason and deletes the stored PDF. Never hand-edit the
-certificate row. The procedure is in `docs/operator-runbook.md` §1b.
+can see. The operator remedy for confirmed abuse is to void the rows from the admin console
+(`POST /v1/admin/users/:id/hours/:entryId/void`), which removes them from every future certificate
+and from every total. A certificate already issued is a frozen snapshot and keeps verifying with the
+old total, so the void response lists the holder's live certificates whose snapshot itemised the entry
+(`affectedCertificates`, read by `CertificateRepository.liveCodesListingEntry`). Revoking those stays
+a deliberate, separate step: the holder can revoke their own
+(`POST /v1/me/volunteer-hours/certificates/:code/revoke`, reason `holder`), and an operator runs
+`pnpm --filter @civfix/api db:certificate:revoke <code> --reason ledger_corrected`
+(`services/api/scripts/revoke-certificate.ts`, `--dry-run` first), which records the operator reason
+and deletes the stored PDF. The console never revokes one, and the certificate row is never
+hand-edited. The procedure is in `docs/operator-runbook.md` §1b.
 
 ## Configuration
 

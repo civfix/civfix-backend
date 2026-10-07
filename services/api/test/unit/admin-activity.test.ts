@@ -54,6 +54,12 @@ describe("describeAuditAction", () => {
     )
     expect(describeAuditAction("mail.reply_published")).toBe("Published a city reply")
   })
+
+  it("labels the volunteer hours ledger actions", () => {
+    expect(describeAuditAction("user.hours_credited")).toBe("Credited volunteer hours")
+    expect(describeAuditAction("user.hours_voided")).toBe("Voided volunteer hours")
+    expect(describeAuditAction("user.hours_viewed")).toBe("Viewed an account's hours")
+  })
 })
 
 describe("classifyActivity (per source)", () => {

@@ -59,7 +59,9 @@ export interface VolunteerHoursExportRow {
   jurisdiction_geoid: string | null
   hours: number
   logged_by_user_id: string | null
+  service_date: string | null
   created_at: Date
+  voided_at: Date | null
 }
 
 export interface CleanupOrganizedExportRow {

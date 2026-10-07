@@ -10,7 +10,7 @@
 -- The invited_user_id branch is served by cleanup_team_invites_invitee_pending_idx
 -- (0163); the invited_by branch had no index, so the OR fell back to a
 -- sequential scan inside the erasure transaction. This partial index lets the
--- planner BitmapOr the two branches (the 0182 twin for organization invites).
+-- planner BitmapOr the two branches (the 0193 twin for organization invites).
 --
 -- NOT A HOT TABLE: `cleanup_team_invites` is absent from the hot-table list in
 -- docs/out-of-band-indexes.md, so this builds inline. If it has grown large by

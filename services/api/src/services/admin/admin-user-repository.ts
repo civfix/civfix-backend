@@ -77,10 +77,16 @@ export interface ListUsersArgs {
   limit: number
 }
 
+export interface AdminAccountTarget {
+  role: Role
+  deletedAt: Date | null
+}
+
 export interface AdminUserRepository {
   listUsers(args: ListUsersArgs): Promise<{ records: AdminUserRecord[]; nextCursor: string | null }>
   countByFacet(args: { q: string | null }): Promise<AdminUserCounts>
   userExists(id: string): Promise<boolean>
+  findAccountTarget(id: string): Promise<AdminAccountTarget | null>
   getUser(id: string): Promise<AdminUserRecord | null>
   listUserReports(
     id: string,

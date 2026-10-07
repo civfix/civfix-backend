@@ -3,7 +3,7 @@ import { withPg, type PgHarness } from "../helpers/pg.js"
 
 const pg = await withPg()
 
-describe.skipIf(!pg)("organization_invites inviter index (0182, integration)", () => {
+describe.skipIf(!pg)("organization_invites inviter index (0193, integration)", () => {
   let h: PgHarness
 
   beforeAll(() => {

@@ -118,7 +118,8 @@ import * as m114 from "../../src/services/social-repository.drizzle.js"
 import * as m115 from "../../src/services/threads-repository.drizzle.js"
 import * as m116 from "../../src/services/user-search-repository.drizzle.js"
 import * as m117 from "../../src/services/users-repository.drizzle.js"
-import * as m118 from "../../src/services/volunteer-hours-repository.drizzle.js"
+import * as m118 from "../../src/services/volunteer-hours-credit.drizzle.js"
+import * as m119 from "../../src/services/volunteer-hours-repository.drizzle.js"
 
 export interface TranscriptCase {
   key: string
@@ -377,6 +378,11 @@ export const cases: TranscriptCase[] = [
     key: "makeDrizzleAdminUserRepository.countByFacet",
     run: async (sql: any) =>
       (m6 as any).makeDrizzleAdminUserRepository(sql).countByFacet({ q: "q-1" }),
+  },
+  {
+    key: "makeDrizzleAdminUserRepository.findAccountTarget",
+    run: async (sql: any) =>
+      (m6 as any).makeDrizzleAdminUserRepository(sql).findAccountTarget("id-1"),
   },
   {
     key: "makeDrizzleAdminUserRepository.getUser",
@@ -1624,6 +1630,13 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleCertificateRepository.listFor",
     run: async (sql: any) => (m30 as any).makeDrizzleCertificateRepository(sql).listFor("userId-1"),
+  },
+  {
+    key: "makeDrizzleCertificateRepository.liveCodesListingEntry",
+    run: async (sql: any) =>
+      (m30 as any)
+        .makeDrizzleCertificateRepository(sql)
+        .liveCodesListingEntry("userId-1", "entryId-1"),
   },
   {
     key: "makeDrizzleCertificateRepository.markRegenerated",
@@ -6889,7 +6902,7 @@ export const cases: TranscriptCase[] = [
     run: async (sql: any) =>
       (m103 as any).explainFeedCandidates(sql, {
         viewerId: "viewerId-1",
-        filter: "all",
+        filter: "events",
         fallbackLat: 3,
         fallbackLng: 3,
         windowDays: 3,
@@ -7013,7 +7026,7 @@ export const cases: TranscriptCase[] = [
         })
         .feedCandidates({
           viewerId: "viewerId-1",
-          filter: "all",
+          filter: "events",
           fallbackLat: 3,
           fallbackLng: 3,
           windowDays: 3,
@@ -7124,7 +7137,7 @@ export const cases: TranscriptCase[] = [
             ),
         })
         .homeFeedChronological({
-          filter: "all",
+          filter: "events",
           viewerId: "viewerId-1",
           cursor: "cursor-1",
           limit: 3,
@@ -7341,7 +7354,7 @@ export const cases: TranscriptCase[] = [
               ]),
             ),
         })
-        .publicFeed({ filter: "all", cursor: "cursor-1", limit: 3 }),
+        .publicFeed({ filter: "events", cursor: "cursor-1", limit: 3 }),
   },
   {
     key: "makeDrizzlePostRepository.readableCounts",
@@ -8164,7 +8177,7 @@ export const cases: TranscriptCase[] = [
         })
         .homeFeed(
           "viewerId-1",
-          { filter: "all", limit: 3, cursor: "cursor-1" },
+          { filter: "events", limit: 3, cursor: "cursor-1" },
           { lat: 3, lng: 3 },
         ),
   },
@@ -8791,7 +8804,7 @@ export const cases: TranscriptCase[] = [
           now: () => 3,
           feedSeed: () => 3,
         })
-        .publicFeed({ filter: "all", limit: 3, cursor: "cursor-1" }, { lat: 3, lng: 3 }),
+        .publicFeed({ filter: "events", limit: 3, cursor: "cursor-1" }, { lat: 3, lng: 3 }),
   },
   {
     key: "makePostService.repostPost",
@@ -10417,9 +10430,63 @@ export const cases: TranscriptCase[] = [
       (m117 as any).makeDrizzleUsersRepository(sql).findRoleAndEmail("userId-1"),
   },
   {
+    key: "lockEventCredits",
+    run: async (sql: any) => (m118 as any).lockEventCredits(sql, "cleanupId-1", ["userId-1"]),
+  },
+  {
+    key: "lockUserCredits",
+    run: async (sql: any) => (m118 as any).lockUserCredits(sql, ["userId-1"]),
+  },
+  {
+    key: "sameDayEventHours",
+    run: async (sql: any) => (m118 as any).sameDayEventHours(sql, "cleanupId-1", ["userId-1"]),
+  },
+  {
+    key: "hoursHeldOnServiceDate",
+    run: async (sql: any) => (m118 as any).hoursHeldOnServiceDate(sql, "userId-1", "serviceDate-1"),
+  },
+  {
+    key: "writeEventCredits",
+    run: async (sql: any) =>
+      (m118 as any).writeEventCredits(sql, {
+        cleanupId: "cleanupId-1",
+        geoid: "geoid-1",
+        actorId: "actorId-1",
+        loggedByUserId: "loggedByUserId-1",
+        note: "note-1",
+        creditedByOperatorId: "creditedByOperatorId-1",
+        entries: [{ userId: "userId-1", hours: 3 }],
+      }),
+  },
+  {
+    key: "makeDrizzleVolunteerHoursRepository.creditEventAsOperator",
+    run: async (sql: any) =>
+      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).creditEventAsOperator({
+        operatorId: "operatorId-1",
+        userId: "userId-1",
+        cleanupId: "cleanupId-1",
+        geoid: "geoid-1",
+        hours: 3,
+        reason: "reason-1",
+        dailyCapHours: 3,
+      }),
+  },
+  {
+    key: "makeDrizzleVolunteerHoursRepository.creditManual",
+    run: async (sql: any) =>
+      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).creditManual({
+        operatorId: "operatorId-1",
+        userId: "userId-1",
+        hours: 3,
+        serviceDate: "serviceDate-1",
+        reason: "reason-1",
+        dailyCapHours: 3,
+      }),
+  },
+  {
     key: "makeDrizzleVolunteerHoursRepository.entriesForCertificate",
     run: async (sql: any) =>
-      (m118 as any).makeDrizzleVolunteerHoursRepository(sql).entriesForCertificate({
+      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).entriesForCertificate({
         userId: "userId-1",
         geoid: "geoid-1",
         from: new Date("2026-03-04T05:06:07.000Z"),
@@ -10430,19 +10497,19 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.hoursVisibilityFor",
     run: async (sql: any) =>
-      (m118 as any).makeDrizzleVolunteerHoursRepository(sql).hoursVisibilityFor("userId-1"),
+      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).hoursVisibilityFor("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.leaderboard",
     run: async (sql: any) =>
-      (m118 as any)
+      (m119 as any)
         .makeDrizzleVolunteerHoursRepository(sql)
         .leaderboard("geoid-1", 3, 3, "viewerId-1", true),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.listEntries",
     run: async (sql: any) =>
-      (m118 as any).makeDrizzleVolunteerHoursRepository(sql).listEntries({
+      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).listEntries({
         userId: "userId-1",
         cursor: { atText: "atText-1", at: new Date("2026-03-04T05:06:07.000Z"), id: "id-1" },
         limit: 3,
@@ -10452,14 +10519,23 @@ export const cases: TranscriptCase[] = [
   {
     key: "makeDrizzleVolunteerHoursRepository.listEventHours",
     run: async (sql: any) =>
-      (m118 as any)
+      (m119 as any)
         .makeDrizzleVolunteerHoursRepository(sql)
         .listEventHours("cleanupId-1", "viewerId-1"),
   },
   {
+    key: "makeDrizzleVolunteerHoursRepository.listOperatorLedger",
+    run: async (sql: any) =>
+      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).listOperatorLedger({
+        userId: "userId-1",
+        cursor: { atText: "atText-1", at: new Date("2026-03-04T05:06:07.000Z"), id: "id-1" },
+        limit: 3,
+      }),
+  },
+  {
     key: "makeDrizzleVolunteerHoursRepository.logEventHours",
     run: async (sql: any) =>
-      (m118 as any).makeDrizzleVolunteerHoursRepository(sql).logEventHours({
+      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).logEventHours({
         actorId: "actorId-1",
         cleanupId: "cleanupId-1",
         geoid: "geoid-1",
@@ -10469,13 +10545,28 @@ export const cases: TranscriptCase[] = [
       }),
   },
   {
+    key: "makeDrizzleVolunteerHoursRepository.operatorLedgerTotals",
+    run: async (sql: any) =>
+      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).operatorLedgerTotals("userId-1"),
+  },
+  {
     key: "makeDrizzleVolunteerHoursRepository.totalHoursFor",
     run: async (sql: any) =>
-      (m118 as any).makeDrizzleVolunteerHoursRepository(sql).totalHoursFor("userId-1"),
+      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).totalHoursFor("userId-1"),
   },
   {
     key: "makeDrizzleVolunteerHoursRepository.totalsFor",
     run: async (sql: any) =>
-      (m118 as any).makeDrizzleVolunteerHoursRepository(sql).totalsFor("userId-1"),
+      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).totalsFor("userId-1"),
+  },
+  {
+    key: "makeDrizzleVolunteerHoursRepository.voidEntry",
+    run: async (sql: any) =>
+      (m119 as any).makeDrizzleVolunteerHoursRepository(sql).voidEntry({
+        operatorId: "operatorId-1",
+        userId: "userId-1",
+        entryId: "entryId-1",
+        reason: "reason-1",
+      }),
   },
 ]

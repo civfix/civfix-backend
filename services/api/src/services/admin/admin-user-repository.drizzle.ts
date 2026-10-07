@@ -10,6 +10,7 @@ import {
 } from "../../db/cursor-helpers.js"
 import { andAll, ilikeAnyOf } from "./sql-fragments.js"
 import type {
+  AdminAccountTarget,
   AdminUserOrganizationRecord,
   AdminUserRecord,
   AdminUserRepository,
@@ -253,6 +254,14 @@ export function makeDrizzleAdminUserRepository(sql: Sql): AdminUserRepository {
     async userExists(id: string): Promise<boolean> {
       const rows = await sql<{ ok: number }[]>`SELECT 1 AS ok FROM users WHERE id = ${id} LIMIT 1`
       return rows.length > 0
+    },
+
+    async findAccountTarget(id: string): Promise<AdminAccountTarget | null> {
+      const rows = await sql<{ role: Role; deleted_at: Date | null }[]>`
+        SELECT role, deleted_at FROM users WHERE id = ${id}
+      `
+      const row = rows[0]
+      return row === undefined ? null : { role: row.role, deletedAt: row.deleted_at }
     },
 
     async getUser(id: string): Promise<AdminUserRecord | null> {

@@ -36,7 +36,7 @@ const EXPECTED_PROJECTIONS: ReadonlyArray<readonly [from: string, columns: strin
   ["dm_messages", "id, thread_id, body, created_at, deleted_at"],
   [
     "volunteer_hours",
-    "id, source, report_id, cleanup_id, jurisdiction_geoid, hours::float8 AS hours, logged_by_user_id, created_at",
+    "id, source, report_id, cleanup_id, jurisdiction_geoid, hours::float8 AS hours, logged_by_user_id, service_date::text AS service_date, created_at, voided_at",
   ],
   ["cleanups", "id, title, created_at"],
   ["cleanup_members", "cleanup_id, role, joined_at"],

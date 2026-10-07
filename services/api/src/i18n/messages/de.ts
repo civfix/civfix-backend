@@ -64,6 +64,10 @@ export const de: Partial<Record<MessageKey, string>> = {
   "notification.hours_logged.title": "Ehrenamtsstunden gutgeschrieben",
   "notification.hours_logged.body": "Für {{title}} wurden dir {{hours}} Stunden gutgeschrieben.",
 
+  "notification.hours_adjusted.title": "Ehrenamtsstunden gutgeschrieben",
+  "notification.hours_adjusted.body":
+    "CivFix hat deinem Ehrenamtskonto {{hours}} Stunden gutgeschrieben.",
+
   "notification.cleanup_slot.removed.title": "Deine Rolle im Event hat sich geändert",
   "notification.cleanup_slot.removed.body": 'Die Rolle "{{slot}}" wurde aus {{title}} entfernt.',
   "notification.cleanup_slot.moved.title": "Deine Schichtzeit hat sich geändert",

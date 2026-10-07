@@ -1,9 +1,8 @@
 import {
+  ADMIN_USER_HOURS_PAGE_MAX,
   AppError,
   avatarGradient,
-  MAX_EVENT_HOURS,
   MAX_EVENT_HOURS_ENTRIES,
-  MIN_EVENT_HOURS,
 } from "@civfix/shared"
 import type {
   CleanupMemberRole,
@@ -26,11 +25,15 @@ import type {
 } from "@civfix/shared"
 import { can, type HostStanding } from "@civfix/shared/host"
 import { parseKeysetCursor } from "../db/cursor-helpers.js"
-import { MIN_EVENT_DURATION_MS, eventWindowOf, hasEventEnded } from "./cleanup-rules.js"
+import type { MessageKey, MessageVars } from "../i18n/renderMessage.js"
 import { mapWithLimit } from "../lib/concurrency.js"
 import { clampPageLimit } from "../lib/page-limit.js"
-import { MS_PER_HOUR, MS_PER_MINUTE } from "../lib/time.js"
 import { PRESIGN_CONCURRENCY } from "./media-presign.js"
+import {
+  assertCreditableEventHours,
+  assertEventCreditable,
+  type EventCreditLimits,
+} from "./volunteer-hours-rules.js"
 import type { AffiliationLoader } from "./affiliation.js"
 import { hasHostStanding, isEventPubliclyVisible } from "./host/authz.js"
 import type { TopVolunteerRow } from "./host/analytics-repository.js"
@@ -38,7 +41,6 @@ import type { InsightsInvalidator } from "./host/host-analytics-cache.js"
 import type { NotificationService } from "./notification-service.js"
 import type {
   EventHoursLedgerEntry,
-  LogEventHoursResult,
   OrgHoursView,
   VolunteerHoursAnomaly,
   VolunteerHoursAnomalyKind,
@@ -51,7 +53,7 @@ export const LEADERBOARD_MAX_LIMIT = 50
 export const LEADERBOARD_MAX_OFFSET = 500
 export const EVENT_HOURS_MEMBER_CAP = 2000
 
-const HOURS_ENTRIES_DEFAULT_LIMIT = 20
+export const HOURS_ENTRIES_DEFAULT_LIMIT = 20
 const HOURS_ENTRIES_MAX_LIMIT = 50
 
 const LEADERBOARD_EXTRAS_MIN_LIMIT = 25
@@ -62,13 +64,15 @@ const HOURS_NOTIFY_CONCURRENCY = 8
 
 const HOURS_ROUNDING_FACTOR = 100
 
-const EVENT_WINDOW_GRACE_MS = MS_PER_HOUR
-
 export const DAILY_HOURS_CAP = 24
 
 export const WEEKLY_HOURS_FLAG_DEFAULT = 60
 
 export const RECIPROCAL_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000
+
+export const MANUAL_CREDIT_REPEAT_WINDOW_MS = 60_000
+
+export const OPERATOR_LEDGER_MAX_LIMIT = ADMIN_USER_HOURS_PAGE_MAX
 
 export interface HoursModerationSink {
   flag(input: {
@@ -78,24 +82,6 @@ export interface HoursModerationSink {
     counterpartUserId: string | null
     hours: number | null
   }): Promise<void>
-}
-
-export interface EventHoursWindow {
-  scheduledAt: Date
-  endsAt: Date
-  completedAt: Date | null
-}
-
-export function creditableHoursForEvent(cleanup: EventHoursWindow): number {
-  const windowMs = eventDurationMs(cleanup)
-  if (windowMs <= 0) return 0
-  const hours = (windowMs + EVENT_WINDOW_GRACE_MS) / MS_PER_HOUR
-  return Math.min(MAX_EVENT_HOURS, round2(hours))
-}
-
-function eventDurationMs(cleanup: EventHoursWindow): number {
-  const end = cleanup.completedAt ?? cleanup.endsAt
-  return end.getTime() - cleanup.scheduledAt.getTime()
 }
 
 export const ITEMISED_SOURCES: readonly VolunteerHoursSource[] = ["event", "manual"]
@@ -250,45 +236,29 @@ function toVolunteerHoursEntryDTO(view: VolunteerHoursEntryView): VolunteerHours
   }
 }
 
-function toEventHoursRow(entry: EventHoursLedgerEntry): {
-  userId: string
-  hours: number
-  loggedAt: string
-} {
+function toEventHoursRow(entry: EventHoursLedgerEntry): EventHoursResponse["entries"][number] {
   return {
     userId: entry.userId,
     hours: round2(entry.hours),
     loggedAt: entry.loggedAt.toISOString(),
+    creditedByOfficial: entry.creditedByOfficial,
   }
 }
 
 function assertHoursLoggable(
   cleanup: CleanupHoursView,
   actorStanding: HostStanding,
-): { durationMs: number; windowCap: number } {
+): EventCreditLimits {
   if (!can(actorStanding, "manage_event")) {
     throw AppError.forbidden("Only the event hosts can log volunteer hours.")
   }
-  if (cleanup.status === "cancelled") {
-    throw AppError.conflict("Volunteer hours can't be logged for a cancelled event.")
-  }
-  if (!hasEventEnded(eventWindowOf(cleanup), Date.now())) {
-    throw AppError.conflict("Volunteer hours can be logged once the event has ended.")
-  }
-  const durationMs = eventDurationMs(cleanup)
-  if (durationMs < MIN_EVENT_DURATION_MS) {
-    throw AppError.conflict(
-      `This event ran for less than ${MIN_EVENT_DURATION_MS / MS_PER_MINUTE} minutes, so no volunteer hours can be logged against it.`,
-    )
-  }
-  return { durationMs, windowCap: creditableHoursForEvent(cleanup) }
+  return assertEventCreditable(cleanup, Date.now())
 }
 
 function assertCreditableEntries(
   entries: readonly EventHoursEntry[],
   actorId: string,
-  durationMs: number,
-  windowCap: number,
+  limits: EventCreditLimits,
 ): void {
   if (entries.length > MAX_EVENT_HOURS_ENTRIES) {
     throw AppError.validation({
@@ -303,21 +273,50 @@ function assertCreditableEntries(
         "You can't log volunteer hours for yourself. Another host must credit you.",
       )
     }
-    if (!(entry.hours >= MIN_EVENT_HOURS) || entry.hours > MAX_EVENT_HOURS) {
-      throw AppError.validation({
-        entries: `hours must be at least ${MIN_EVENT_HOURS} and at most ${MAX_EVENT_HOURS}`,
-      })
-    }
-    if (entry.hours > windowCap) {
-      throw AppError.validation({
-        entries: `this event ran for ${round2(durationMs / MS_PER_HOUR)} h, so at most ${windowCap} h may be credited per attendee`,
-      })
-    }
+    assertCreditableEventHours(entry.hours, limits)
     if (seen.has(entry.userId)) {
       throw AppError.validation({ entries: `duplicate userId: ${entry.userId}` })
     }
     seen.add(entry.userId)
   }
+}
+
+export interface HoursCreditNotifierDeps {
+  notifier?: Pick<NotificationService, "createNotification">
+  logger?: { warn(obj: unknown, msg?: string): void }
+}
+
+export interface HoursCreditNotice {
+  titleKey: MessageKey
+  bodyKey: MessageKey
+  vars: MessageVars
+  link: string
+  logContext: Readonly<Record<string, string>>
+}
+
+export async function notifyHoursCredited(
+  deps: HoursCreditNotifierDeps,
+  recipients: readonly { userId: string; hours: number }[],
+  notice: HoursCreditNotice,
+): Promise<void> {
+  const notifier = deps.notifier
+  if (notifier === undefined) return
+  await mapWithLimit(recipients, HOURS_NOTIFY_CONCURRENCY, async (recipient) => {
+    try {
+      await notifier.createNotification(recipient.userId, {
+        type: "hours_logged",
+        titleKey: notice.titleKey,
+        bodyKey: notice.bodyKey,
+        vars: { hours: round2(recipient.hours), ...notice.vars },
+        link: notice.link,
+      })
+    } catch (err) {
+      deps.logger?.warn(
+        { err, ...notice.logContext, userId: recipient.userId },
+        "hours_logged notification failed (suppressed)",
+      )
+    }
+  })
 }
 
 export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): VolunteerHoursService {
@@ -368,34 +367,6 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       throw AppError.notFound("Event not found")
     }
     return { cleanup, standing }
-  }
-
-  async function notifyHoursLogged(
-    cleanup: { id: string; title: string },
-    changed: LogEventHoursResult["changed"],
-    actorId: string,
-  ): Promise<void> {
-    const notifier = deps.notifier
-    if (notifier === undefined) return
-    const recipients = changed.filter(
-      (c) => c.userId !== actorId && (c.previousHours === null || c.hours > c.previousHours),
-    )
-    await mapWithLimit(recipients, HOURS_NOTIFY_CONCURRENCY, async (c) => {
-      try {
-        await notifier.createNotification(c.userId, {
-          type: "hours_logged",
-          titleKey: "notification.hours_logged.title",
-          bodyKey: "notification.hours_logged.body",
-          vars: { hours: round2(c.hours), title: cleanup.title },
-          link: `/cleanups/${cleanup.id}`,
-        })
-      } catch (err) {
-        deps.logger?.warn(
-          { err, cleanupId: cleanup.id, userId: c.userId },
-          "hours_logged notification failed (suppressed)",
-        )
-      }
-    })
   }
 
   async function reportAnomalies(
@@ -545,8 +516,8 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
         input.cleanupId,
         input.actorId,
       )
-      const { durationMs, windowCap } = assertHoursLoggable(cleanup, actorStanding)
-      assertCreditableEntries(input.entries, input.actorId, durationMs, windowCap)
+      const limits = assertHoursLoggable(cleanup, actorStanding)
+      assertCreditableEntries(input.entries, input.actorId, limits)
       await assertAllAttending(input.cleanupId, input.entries)
 
       const result = await deps.repo.logEventHours({
@@ -559,10 +530,19 @@ export function makeVolunteerHoursService(deps: VolunteerHoursServiceDeps): Volu
       })
       await deps.insightsInvalidator?.bumpInsightsGeneration(input.cleanupId)
       await reportAnomalies(result.anomalies, input.cleanupId)
-      await notifyHoursLogged(
-        { id: input.cleanupId, title: cleanup.title },
-        result.changed,
-        input.actorId,
+      await notifyHoursCredited(
+        deps,
+        result.changed.filter(
+          (c) =>
+            c.userId !== input.actorId && (c.previousHours === null || c.hours > c.previousHours),
+        ),
+        {
+          titleKey: "notification.hours_logged.title",
+          bodyKey: "notification.hours_logged.body",
+          vars: { title: cleanup.title },
+          link: `/cleanups/${input.cleanupId}`,
+          logContext: { cleanupId: input.cleanupId },
+        },
       )
       return { credited: result.credited }
     },
