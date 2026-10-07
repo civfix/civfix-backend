@@ -12,20 +12,21 @@
       "ffmpeg-static"
     ],
     "//overrides": "H13. node-apn@3.0.0 (the APNs dispatcher in services/api/src/adapters/push-apns.ts, still live whenever APNS_* is configured) is ABANDONED and pins node-forge@0.7.6 — seven advisories including RSA and Ed25519 SIGNATURE FORGERY — plus jsonwebtoken@8.5.1, which signs the APNs auth token. Neither is reachable by a range bump because node-apn is unmaintained, so we force the patched majors here. Both are API-compatible for node-apn's usage (jwt.sign with ES256 + a pem key; forge only for the legacy pkcs12/cert path we never take). Revisit when node-apn is replaced or dropped.",
-    "//overrides-transitive": "H13 (cont). The remaining entries force patched versions of transitive packages whose direct parent still declares a vulnerable range, each bounded INSIDE the vulnerable package's own major so the fix stays a patch/minor for the requester: find-my-way + fast-uri (fastify/ajv, HTTP/2 DDoS + host-confusion/SSRF); brace-expansion 1/2/5, js-yaml 4, nanoid 3, postcss (eslint, minimatch, glob, vite, tsup DoS + path-traversal advisories); vite (vitest's resolution, path traversal + fs.deny bypass); protobufjs 7 (grpc/firebase, proto-parse DoS); deepmerge-ts (html-to-text stack exhaustion); uuid 9/10 (gaxios, dockerode - missing buffer bounds check); @fastify/busboy 3 and @grpc/grpc-js 1 (firebase-admin, multipart and HTTP/2 DoS); nodemailer 10 (mailparser, addressparser ReDoS); and the scoped esbuild entries for tsup, tsx, vite and drizzle-kit's abandoned @esbuild-kit/core-utils (dev-server arbitrary file read). Drop each entry once its parent ships the fixed range itself.",
+    "//overrides-transitive": "H13 (cont). The remaining entries force patched versions of transitive packages whose direct parent still declares a vulnerable range, each bounded INSIDE the vulnerable package's own major so the fix stays a patch/minor for the requester: find-my-way + fast-uri (fastify/ajv, HTTP/2 DDoS + host-confusion/SSRF); brace-expansion 1/2/5, js-yaml 4, nanoid 3, postcss, source-map-js 1 (eslint, minimatch, glob, vite, tsup DoS + path-traversal advisories; postcss 8.5.28 still declares a vulnerable source-map-js range); vite (vitest's resolution, path traversal + fs.deny bypass); protobufjs 7 (grpc/firebase, proto-parse DoS); deepmerge-ts (html-to-text stack exhaustion); uuid 9/10 (gaxios, dockerode - missing buffer bounds check); @fastify/busboy 3 and @grpc/grpc-js 1 (firebase-admin, multipart and HTTP/2 DoS); nodemailer 10 (mailparser, addressparser ReDoS); and the scoped esbuild entries for tsup, tsx, vite and drizzle-kit's abandoned @esbuild-kit/core-utils (dev-server arbitrary file read). Drop each entry once its parent ships the fixed range itself.",
     "overrides": {
       "node-forge": "^1.4.0",
       "jsonwebtoken": "^9.0.2",
       "find-my-way": ">=9.9.0 <10",
-      "fast-uri": ">=3.1.7 <4",
+      "fast-uri": ">=3.1.8 <4",
       "websocket-driver@<0.7.5": "^0.7.5",
       "form-data@<2.5.6": "^2.5.6",
-      "brace-expansion@1": ">=1.1.18 <2",
+      "brace-expansion@1": ">=1.1.21 <2",
       "brace-expansion@2": ">=2.1.6 <3",
-      "brace-expansion@5": ">=5.0.9 <6",
+      "brace-expansion@5": ">=5.0.12 <6",
       "js-yaml@4": ">=4.3.2 <5",
       "nanoid@3": ">=3.3.18 <4",
       "postcss": ">=8.5.28 <9",
+      "source-map-js@1": ">=1.2.2 <2",
       "vite": ">=7.3.6 <8",
       "protobufjs@7": ">=7.6.6 <8",
       "deepmerge-ts": ">=8.0.2 <9",
@@ -59,8 +60,8 @@
     "clean": "turbo run clean"
   },
   "devDependencies": {
-    "prettier": "^3.4.2",
-    "turbo": "^2.3.3",
-    "typescript": "^5.6.3"
+    "prettier": "^3.9.9",
+    "turbo": "^2.11.7",
+    "typescript": "^5.9.3"
   }
 }
